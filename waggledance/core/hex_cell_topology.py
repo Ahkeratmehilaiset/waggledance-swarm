@@ -101,8 +101,9 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
         "electricity", "sähkö", "grid", "solar", "battery",
     ],
     CELL_SAFETY: [
-        "safety", "turvallisuus", "alarm", "hälytys", "fire", "tulipalo",
-        "smoke", "savu", "violation", "risk", "riski", "danger",
+        "safety", "turvallisuus", "alarm", "hälytys", "palovaroitin",
+        "fire", "tulipalo", "smoke", "savu", "violation", "risk", "riski",
+        "danger",
     ],
     CELL_SEASONAL: [
         "season", "vuodenaika", "spring", "kevät", "summer", "kesä",

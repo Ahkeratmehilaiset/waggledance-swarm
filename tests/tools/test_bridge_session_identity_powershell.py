@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,7 @@ def _run_script(
     script_name: str,
     *args: str,
     bound_agent: str | None = BOUND_AGENT,
-    extra_env: dict[str, str] | None = None,
+    extra_env: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
@@ -42,8 +43,17 @@ def _run_script(
         env.pop("AGENT_BRIDGE_AGENT", None)
     else:
         env["AGENT_BRIDGE_AGENT"] = bound_agent
+    env["AGENT_BRIDGE_SESSION_ID"] = "pytest-event-session"
+    env["AGENT_BRIDGE_OWNER_SESSION_ID"] = "pytest-session"
+    env["AGENT_BRIDGE_OWNER_TOKEN"] = "a" * 64
+    env["AGENT_BRIDGE_OWNER_PID"] = str(os.getpid())
+    env["AGENT_BRIDGE_OWNER_PROCESS_START_UTC"] = "2026-07-28T00:00:00Z"
     if extra_env:
-        env.update(extra_env)
+        for name, value in extra_env.items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
     return subprocess.run(
         [
             _powershell(),
@@ -1031,6 +1041,11 @@ def test_start_session_binds_requested_agent_in_calling_process(
         "-SkipWakeWatcher -SkipHeartbeatJob | Out-Null; "
         "[pscustomobject]@{ "
         "agent = [string]$env:AGENT_BRIDGE_AGENT; "
+        "session_id = [string]$env:AGENT_BRIDGE_SESSION_ID; "
+        "owner_session_id = [string]$env:AGENT_BRIDGE_OWNER_SESSION_ID; "
+        "owner_token = [string]$env:AGENT_BRIDGE_OWNER_TOKEN; "
+        "owner_pid = [string]$env:AGENT_BRIDGE_OWNER_PID; "
+        "owner_process_start_utc = [string]$env:AGENT_BRIDGE_OWNER_PROCESS_START_UTC; "
         "role = [string]$env:AGENT_BRIDGE_ROLE; "
         "agent_uuid = [string]$env:AGENT_BRIDGE_AGENT_UUID; "
         "capabilities = [string]$env:AGENT_BRIDGE_CAPABILITIES "
@@ -1055,12 +1070,16 @@ def test_start_session_binds_requested_agent_in_calling_process(
 
     assert completed.returncode == 0, completed.stderr
     identity = json.loads(completed.stdout)
-    assert identity == {
-        "agent": OTHER_AGENT,
-        "role": "",
-        "agent_uuid": "",
-        "capabilities": "",
-    }
+    assert identity["agent"] == OTHER_AGENT
+    assert identity["session_id"].startswith(f"{OTHER_AGENT}-")
+    assert identity["owner_session_id"] == identity["session_id"]
+    assert len(identity["owner_token"]) == 64
+    assert set(identity["owner_token"]) <= set("0123456789abcdef")
+    assert int(identity["owner_pid"]) > 0
+    assert identity["owner_process_start_utc"].endswith("Z")
+    assert identity["role"] == ""
+    assert identity["agent_uuid"] == ""
+    assert identity["capabilities"] == ""
     assert runtime_root.is_dir()
 
 
@@ -1234,6 +1253,8 @@ def test_unbound_consumer_does_not_adopt_stale_identity_metadata(
         "agent = [string]$env:AGENT_BRIDGE_AGENT; "
         "run_id = [string]$env:AGENT_BRIDGE_RUN_ID; "
         "session_id = [string]$env:AGENT_BRIDGE_SESSION_ID; "
+        "owner_session_id = [string]$env:AGENT_BRIDGE_OWNER_SESSION_ID; "
+        "owner_token_length = ([string]$env:AGENT_BRIDGE_OWNER_TOKEN).Length; "
         "role = [string]$env:AGENT_BRIDGE_ROLE; "
         "agent_uuid = [string]$env:AGENT_BRIDGE_AGENT_UUID; "
         "capabilities = [string]$env:AGENT_BRIDGE_CAPABILITIES "
@@ -1257,14 +1278,15 @@ def test_unbound_consumer_does_not_adopt_stale_identity_metadata(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {
-        "agent": "codex",
-        "run_id": "",
-        "session_id": "",
-        "role": "",
-        "agent_uuid": "",
-        "capabilities": "",
-    }
+    identity = json.loads(completed.stdout)
+    assert identity["agent"] == "codex"
+    assert identity["run_id"] == ""
+    assert identity["session_id"] == ""
+    assert identity["owner_session_id"].startswith("consumer-codex-")
+    assert identity["owner_token_length"] == 64
+    assert identity["role"] == ""
+    assert identity["agent_uuid"] == ""
+    assert identity["capabilities"] == ""
 
 
 @pytest.mark.parametrize(
@@ -1345,6 +1367,10 @@ def test_consumer_does_not_run_codex_when_start_audit_writer_is_missing(
     ):
         env.pop(name, None)
     env["AGENT_BRIDGE_AGENT"] = "codex"
+    env["AGENT_BRIDGE_OWNER_SESSION_ID"] = "missing-audit-fixture"
+    env["AGENT_BRIDGE_OWNER_TOKEN"] = "c" * 64
+    env["AGENT_BRIDGE_OWNER_PID"] = str(os.getpid())
+    env["AGENT_BRIDGE_OWNER_PROCESS_START_UTC"] = "2026-07-28T00:00:00Z"
     env["BRIDGE_TEST_SENTINEL"] = str(sentinel)
     env["BRIDGE_CONSUMER_SCRIPT"] = str(
         isolated_bin / "Start-AgentBridgeConsumerLoop.ps1"
@@ -1580,3 +1606,236 @@ def test_claim_uses_diagnostic_writer_pid_not_session_owner_pid(
     assert isinstance(claim["writer_pid"], int)
     assert claim["writer_pid"] > 0
     assert claim["writer_pid_semantics"] == "diagnostic_only"
+    assert claim["owner_session_id"] == "pytest-session"
+    assert claim["owner_token_sha256"] == hashlib.sha256(
+        ("a" * 64).encode()
+    ).hexdigest()
+    assert claim["owner_pid"] == os.getpid()
+    assert claim["owner_process_start_utc"].startswith(
+        "2026-07-28T00:00:00"
+    )
+    assert "a" * 64 not in json.dumps(claim, sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    [
+        "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN",
+        "AGENT_BRIDGE_OWNER_PID",
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+    ],
+)
+def test_claim_requires_complete_generation_owner_context_before_runtime_write(
+    tmp_path: Path,
+    missing_name: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "missing-owner-context",
+        "-Summary",
+        "must fail before creating runtime state",
+        bound_agent="codex",
+        extra_env={missing_name: None},
+    )
+
+    assert completed.returncode != 0
+    assert "claim_owner_mismatch" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_same_agent_other_generation_cannot_force_replace_claim(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "generation-bound-force"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "owned by generation A",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    original_claim = claim_path.read_text(encoding="utf-8")
+
+    replaced = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "generation B must not replace",
+        "-Force",
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_OWNER_TOKEN": "b" * 64},
+    )
+
+    assert replaced.returncode != 0
+    assert "claim_owner_mismatch" in replaced.stderr
+    assert claim_path.read_text(encoding="utf-8") == original_claim
+
+
+def test_same_agent_other_generation_heartbeat_does_not_refresh_claim(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "generation-bound-heartbeat"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "owned by generation A",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    before = json.loads(claim_path.read_text(encoding="utf-8"))
+
+    foreign_heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        "generation-b-heartbeat",
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_OWNER_TOKEN": "b" * 64},
+    )
+
+    assert foreign_heartbeat.returncode == 0, foreign_heartbeat.stderr
+    after_foreign = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert after_foreign["last_heartbeat_utc"] == before["last_heartbeat_utc"]
+    assert (
+        after_foreign["claim_lease_expires_utc"]
+        == before["claim_lease_expires_utc"]
+    )
+
+    owner_heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        "generation-a-heartbeat",
+        bound_agent="codex",
+    )
+    assert owner_heartbeat.returncode == 0, owner_heartbeat.stderr
+    after_owner = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert after_owner["last_heartbeat_utc"] != before["last_heartbeat_utc"]
+
+
+def test_same_agent_other_generation_cannot_release_claim(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "generation-bound-release"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "owned by generation A",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+
+    foreign_release = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_OWNER_TOKEN": "b" * 64},
+    )
+
+    assert foreign_release.returncode != 0
+    assert "claim_owner_mismatch" in foreign_release.stderr
+    assert claim_path.is_file()
+    assert not list((runtime_root / "work_queue" / "done").glob("*.json"))
+
+    owner_release = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+    assert owner_release.returncode == 0, owner_release.stderr
+    assert not claim_path.exists()
+    archived = list((runtime_root / "work_queue" / "done").glob("*.json"))
+    assert len(archived) == 1
+    released_claim = json.loads(archived[0].read_text(encoding="utf-8"))
+    assert released_claim["release_status"] == "done"
+
+
+def test_legacy_tokenless_claim_cannot_be_refreshed_or_released(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    task_id = "legacy-tokenless-claim"
+    claim_path = claims_dir / f"{task_id}.json"
+    legacy_claim = {
+        "claimed_at_utc": "2026-07-28T00:00:00Z",
+        "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+        "agent": "codex",
+        "task_id": task_id,
+        "summary": "legacy claim must expire instead of changing owner",
+        "mode": "read-only",
+        "write_scope": [],
+        "lease_seconds": 300,
+        "claim_lease_expires_utc": "2099-01-01T00:00:00Z",
+    }
+    claim_path.write_text(json.dumps(legacy_claim), encoding="utf-8")
+
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        bound_agent="codex",
+    )
+    release = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+
+    assert heartbeat.returncode == 0, heartbeat.stderr
+    assert release.returncode != 0
+    assert "claim_owner_mismatch" in release.stderr
+    assert json.loads(claim_path.read_text(encoding="utf-8")) == legacy_claim

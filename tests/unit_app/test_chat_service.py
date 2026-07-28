@@ -276,6 +276,55 @@ class TestChatService:
 
         asyncio.run(_run())
 
+    def test_deterministic_solver_preempts_confident_micromodel(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            original_get = mock_config.get.side_effect
+            mock_config.get.side_effect = lambda key, default=None: (
+                True
+                if key == "advanced_learning.micro_model_enabled"
+                else original_get(key, default)
+            )
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            svc._probe_micromodel = MagicMock(return_value=(True, 0.99))
+            query = "what is 15% of 300"
+
+            result = await svc.handle(ChatRequest(query=query))
+
+            assert result.source == "solver"
+            assert result.response == "45"
+            svc._probe_micromodel.assert_called_once_with(query)
+            route_selection = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "route_selection"
+            )
+            solver_stage = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "deterministic_solver"
+            )
+            assert route_selection["route_type"] == "solver"
+            assert solver_stage == {
+                "stage": "deterministic_solver",
+                "intent": "math",
+                "answered": True,
+            }
+            mock_orchestrator.handle_task.assert_not_called()
+
+        asyncio.run(_run())
+
     def test_chat_served_emits_for_authoritative_hybrid_return(
         self,
         mock_orchestrator,

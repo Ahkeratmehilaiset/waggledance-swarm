@@ -1,10 +1,12 @@
 """Routing policy — pure function, no I/O.
 
 Ported from core/smart_router_v2.py and backend/routes/chat.py.
-Routing order: hotcache -> micromodel -> solver -> memory -> llm -> swarm.
-Only returns route types from ALLOWED_ROUTE_TYPES.
+Routing order keeps hot-cache first, then prefers eligible deterministic
+solvers over specialist micromodel hits before falling back to memory, swarm,
+or LLM paths. Only returns route types from ALLOWED_ROUTE_TYPES.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from waggledance.core.domain.task import TaskRoute
@@ -55,15 +57,17 @@ class RoutingFeatures:
 
 
 def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
-    """Pure routing decision. Order: hotcache -> micromodel -> solver -> memory -> llm -> swarm.
+    """Return one bounded route with eligible deterministic solvers first.
 
     Only returns route_type from ALLOWED_ROUTE_TYPES.
 
     Decision logic ported from core/smart_router_v2.py:
     - Hot cache hit (confidence=1.0) -> hotcache
-    - Solver-eligible intent (math/thermal/stats) -> solver
+    - Explicit registry solver commands -> solver
+    - Solver-eligible non-time/system intent -> solver
+    - High-confidence micromodel hit -> micromodel
+    - Remaining time/system query -> llm
     - High memory score (>0.7) -> memory
-    - Time/system queries or short queries -> llm
     - Complex queries (long, multi-keyword) with swarm enabled -> swarm
     - Default -> llm
     """
@@ -78,17 +82,6 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
-    if (
-        features.micromodel_enabled
-        and features.has_micromodel_hit
-        and features.micromodel_confidence > 0.85
-    ):
-        return TaskRoute(
-            route_type="micromodel",
-            confidence=features.micromodel_confidence,
-            routing_latency_ms=(time.monotonic() - start) * 1000,
-        )
-
     # Explicit registry solver commands carry JSON payloads where words like
     # "date" or "status" are data, not chat-level time/system intents.
     if features.solver_intent == "v3_13_0_solver":
@@ -98,19 +91,43 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
+    # Solver-first: eligible deterministic work must not be pre-empted by a
+    # probabilistic specialist hit. Time/system flags exclude ordinary solver
+    # selection and continue through the existing specialist/fallback order.
+    if (
+        not features.is_time_query
+        and not features.is_system_query
+        and features.solver_intent in SOLVER_INTENTS
+    ):
+        return TaskRoute(
+            route_type="solver",
+            confidence=0.95,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    micromodel_confidence = features.micromodel_confidence
+    confidence_is_bounded = (
+        type(micromodel_confidence) in {int, float}
+        and 0.0 <= micromodel_confidence <= 1.0
+        and math.isfinite(float(micromodel_confidence))
+    )
+    if (
+        features.micromodel_enabled
+        and features.has_micromodel_hit
+        and confidence_is_bounded
+        and micromodel_confidence > 0.85
+    ):
+        return TaskRoute(
+            route_type="micromodel",
+            confidence=float(micromodel_confidence),
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
     # Time/system queries override solver ("paljonko kello" is time, not math)
     if features.is_time_query or features.is_system_query:
         return TaskRoute(
             route_type="llm",
             confidence=0.8,
-            routing_latency_ms=(time.monotonic() - start) * 1000,
-        )
-
-    # Solver-first: math, thermal, stats intents get deterministic answers
-    if features.solver_intent in SOLVER_INTENTS:
-        return TaskRoute(
-            route_type="solver",
-            confidence=0.95,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 

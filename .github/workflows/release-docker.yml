@@ -1,9 +1,7 @@
 name: Release Docker images to GHCR
 
-# R21.6 — operator decision 3: GHCR primary, no Docker Hub yet.
-# Triggered manually after a prerelease tag matching the R20/R21 alpha
-# pattern lands. Builds four image tags per the R21 release plan and
-# publishes them to ghcr.io/ahkeratmehilaiset/waggledance:*.
+# Prerelease workflow. It publishes the versioned alpha tag, smokes the exact
+# digest, and only then moves explicitly validated alpha aliases.
 
 on:
   workflow_dispatch:
@@ -13,7 +11,7 @@ on:
         required: true
         type: string
       promote_alias:
-        description: "Sliding alias to update (e.g. axis-b-alpha). Empty = none."
+        description: "Lowercase *-alpha alias to update (e.g. axis-b-alpha). Empty = none."
         required: false
         type: string
         default: "axis-b-alpha"
@@ -30,38 +28,102 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: waggledance-docker-release-aliases
+  queue: max
+  cancel-in-progress: false
+
 jobs:
-  build-and-push:
+  validate-inputs:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      promote_alias: ${{ steps.validate.outputs.promote_alias }}
+      profile_aliases: ${{ steps.validate.outputs.profile_aliases }}
     steps:
-      - name: Resolve target tag
-        id: target
+      - name: Validate prerelease tag and aliases
+        id: validate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PROMOTE_ALIAS: ${{ inputs.promote_alias }}
+          INPUT_PROFILE_ALIASES: ${{ inputs.profile_aliases }}
+        shell: python
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "promote_alias=axis-b-alpha" >> "$GITHUB_OUTPUT"
-            echo "profile_aliases=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "promote_alias=${{ inputs.promote_alias }}" >> "$GITHUB_OUTPUT"
-            echo "profile_aliases=${{ inputs.profile_aliases }}" >> "$GITHUB_OUTPUT"
-          fi
+          import os
+          import re
+          import sys
 
-      - name: Refuse to publish if target tag does NOT match the alpha shape
-        run: |
-          TAG="${{ steps.target.outputs.tag }}"
-          # Operator decision 2: only publish prerelease alpha tags from
-          # this workflow. waggledance:latest must NEVER move from this
-          # workflow until a stable tag arrives via a future workflow.
-          if [[ ! "$TAG" =~ alpha$ ]]; then
-            echo "Target tag '$TAG' does not end in 'alpha' — refusing to publish."
-            echo "Stable tags require a separate workflow with explicit operator gate."
-            exit 1
-          fi
+          if os.environ.get("EVENT_NAME") == "release":
+              tag = os.environ.get("RELEASE_TAG", "")
+              promote_alias = "axis-b-alpha"
+              profile_aliases = "yes"
+          else:
+              tag = os.environ.get("INPUT_TAG", "")
+              promote_alias = os.environ.get("INPUT_PROMOTE_ALIAS", "")
+              profile_aliases = os.environ.get("INPUT_PROFILE_ALIASES", "")
 
+          prerelease_shape = re.compile(
+              r"v[0-9]+\.[0-9]+\.[0-9]+"
+              r"(?:-[a-z0-9]+(?:[._-][a-z0-9]+)*)?-alpha"
+          )
+          alias_shape = re.compile(
+              r"[a-z0-9]+(?:[._-][a-z0-9]+)*-alpha"
+          )
+          version_alias_shape = re.compile(r"v[0-9]+\.")
+          protected_aliases = {
+              "latest",
+              "stable",
+              "small-stable",
+              "medium-stable",
+          }
+
+          errors = []
+          if not 1 <= len(tag) <= 128 or prerelease_shape.fullmatch(tag) is None:
+              errors.append(f"invalid prerelease tag: {tag!r}")
+          if promote_alias in protected_aliases:
+              errors.append(f"protected alias refused: {promote_alias!r}")
+          if version_alias_shape.match(promote_alias):
+              errors.append(
+                  f"version-tag namespace refused for alias: {promote_alias!r}"
+              )
+          if promote_alias.startswith(("small-", "medium-")):
+              errors.append(
+                  f"profile-alias namespace refused for generic alias: "
+                  f"{promote_alias!r}"
+              )
+          if promote_alias and (
+              len(promote_alias) > 128
+              or alias_shape.fullmatch(promote_alias) is None
+          ):
+              errors.append(f"invalid prerelease alias: {promote_alias!r}")
+          if profile_aliases not in {"yes", "no"}:
+              errors.append(f"invalid profile_aliases: {profile_aliases!r}")
+          if errors:
+              for error in errors:
+                  print(f"::error::{error}", file=sys.stderr)
+              raise SystemExit(1)
+
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a",
+              encoding="utf-8",
+              newline="\n",
+          ) as output:
+              output.write(f"tag={tag}\n")
+              output.write(f"promote_alias={promote_alias}\n")
+              output.write(f"profile_aliases={profile_aliases}\n")
+
+  build-and-push:
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.canonical.outputs.digest }}
+    steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ steps.target.outputs.tag }}
+          ref: refs/tags/${{ needs.validate-inputs.outputs.tag }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -73,73 +135,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Canonical image (full tag from operator decision 2 / 3)
       - name: Build and push canonical image
+        id: canonical
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
           push: true
           tags: |
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-          # NOTE: waggledance:latest is intentionally NOT updated here
-          # per operator decision 2 ("do NOT promote to v3.11.0 stable").
-
-      # Sliding alias (e.g. axis-b-alpha)
-      - name: Tag sliding alias
-        if: ${{ steps.target.outputs.promote_alias != '' }}
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.promote_alias }} \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-
-      # Profile S/M aliases (operator decision 3 image plan).
-      # The Dockerfile is single-stage; the small/medium variants share
-      # the same image but document the supported deployment profile via
-      # tag aliasing. Real Profile S filtering happens at runtime via
-      # WAGGLE_PROFILE / Start-WaggleDanceSolver.ps1 + solver-profiles/*.json.
-      - name: Tag Profile S alias
-        if: ${{ steps.target.outputs.profile_aliases == 'yes' }}
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/ahkeratmehilaiset/waggledance:small-axis-b-alpha \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-
-      - name: Tag Profile M alias
-        if: ${{ steps.target.outputs.profile_aliases == 'yes' }}
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/ahkeratmehilaiset/waggledance:medium-axis-b-alpha \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
+            ghcr.io/ahkeratmehilaiset/waggledance:${{ needs.validate-inputs.outputs.tag }}
 
   smoke-test:
-    needs: build-and-push
+    needs: [validate-inputs, build-and-push]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SOURCE_REF: ghcr.io/ahkeratmehilaiset/waggledance@${{ needs.build-and-push.outputs.digest }}
     steps:
-      - name: Resolve target tag (smoke)
-        id: target
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: docker pull
-        run: |
-          docker pull ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
+      - name: Pull canonical digest
+        run: docker pull "$SOURCE_REF"
 
       - name: docker run — module-import sanity
         run: |
-          # Profile S smoke: the image must boot to a Python prompt and
-          # importing waggledance.core.bridge_llm must NOT pull in any
-          # cloud LLM SDK. Operator decision 4 "fail closed if redaction
-          # is unavailable" is enforced inside the package; the import
-          # discipline is the canary.
           docker run --rm \
             -e WAGGLE_PROFILE=small \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }} \
+            "$SOURCE_REF" \
             python -c "
           import sys
           from waggledance.core.bridge_llm import (
@@ -152,3 +179,103 @@ jobs:
           assert BridgeLLMRedactor().redact('alice@example.org').applied
           print('SMOKE_OK')
           "
+
+  promote-aliases:
+    needs: [validate-inputs, build-and-push, smoke-test]
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REF: ghcr.io/ahkeratmehilaiset/waggledance@${{ needs.build-and-push.outputs.digest }}
+      PROMOTE_ALIAS: ${{ needs.validate-inputs.outputs.promote_alias }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag sliding prerelease alias
+        if: ${{ needs.validate-inputs.outputs.promote_alias != '' }}
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag "ghcr.io/ahkeratmehilaiset/waggledance:$PROMOTE_ALIAS" \
+            "$SOURCE_REF"
+
+      - name: Tag Profile S alias
+        if: ${{ needs.validate-inputs.outputs.profile_aliases == 'yes' }}
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag ghcr.io/ahkeratmehilaiset/waggledance:small-axis-b-alpha \
+            "$SOURCE_REF"
+
+      - name: Tag Profile M alias
+        if: ${{ needs.validate-inputs.outputs.profile_aliases == 'yes' }}
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag ghcr.io/ahkeratmehilaiset/waggledance:medium-axis-b-alpha \
+            "$SOURCE_REF"
+
+  verify-aliases:
+    needs: [validate-inputs, build-and-push, promote-aliases]
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REF: ghcr.io/ahkeratmehilaiset/waggledance@${{ needs.build-and-push.outputs.digest }}
+      PROMOTE_ALIAS: ${{ needs.validate-inputs.outputs.promote_alias }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify requested prerelease alias
+        if: ${{ needs.validate-inputs.outputs.promote_alias != '' }}
+        run: |
+          EXPECTED_DIGEST="${SOURCE_REF#*@}"
+          ALIAS_DIGEST=$(
+            docker buildx imagetools inspect \
+              "ghcr.io/ahkeratmehilaiset/waggledance:$PROMOTE_ALIAS" \
+              --format '{{json .Manifest}}' |
+              python -c 'import json, sys; print(json.load(sys.stdin)["digest"])'
+          )
+          if [ "$ALIAS_DIGEST" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::requested prerelease alias does not resolve to canonical digest"
+            exit 1
+          fi
+
+      - name: Verify Profile S alias
+        if: ${{ needs.validate-inputs.outputs.profile_aliases == 'yes' }}
+        run: |
+          EXPECTED_DIGEST="${SOURCE_REF#*@}"
+          ALIAS_DIGEST=$(
+            docker buildx imagetools inspect \
+              ghcr.io/ahkeratmehilaiset/waggledance:small-axis-b-alpha \
+              --format '{{json .Manifest}}' |
+              python -c 'import json, sys; print(json.load(sys.stdin)["digest"])'
+          )
+          if [ "$ALIAS_DIGEST" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::Profile S alias does not resolve to canonical digest"
+            exit 1
+          fi
+
+      - name: Verify Profile M alias
+        if: ${{ needs.validate-inputs.outputs.profile_aliases == 'yes' }}
+        run: |
+          EXPECTED_DIGEST="${SOURCE_REF#*@}"
+          ALIAS_DIGEST=$(
+            docker buildx imagetools inspect \
+              ghcr.io/ahkeratmehilaiset/waggledance:medium-axis-b-alpha \
+              --format '{{json .Manifest}}' |
+              python -c 'import json, sys; print(json.load(sys.stdin)["digest"])'
+          )
+          if [ "$ALIAS_DIGEST" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::Profile M alias does not resolve to canonical digest"
+            exit 1
+          fi

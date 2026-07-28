@@ -13,6 +13,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.check_release_gate import (
+    COMMIT_PATTERN,
     SCHEMA_VERSION,
     STATUS_PASS_FIELDS,
     parse_release_readiness,
@@ -31,14 +33,20 @@ from tools.run_release_ci_status_evidence import (
     evaluate_report as evaluate_ci_status_report,
 )
 from tools.run_release_docker_policy_evidence import (
-    build_report as build_docker_policy_report,
     evaluate_report as evaluate_docker_policy_report,
-    operator_authorization_from_decision_pack as docker_authorization_from_pack,
 )
 
 
 UNKNOWN_STATUS = "unknown"
 BLOCKED_STATUS = "blocked"
+LOCAL_ARTIFACT_COLLECTION_MODE = "local_artifacts"
+MANUAL_COLLECTION_MODE = "manual"
+LOCAL_ARTIFACT_DERIVED_FIELDS = (
+    *STATUS_PASS_FIELDS,
+    "silent_failures",
+    "error_log_clean",
+    "docker_stable_policy",
+)
 
 DEFAULT_EVIDENCE_ROOT = Path("docs/runs/release_soak_evidence")
 DEFAULT_RELEASE_NOTES = Path("docs/releases/v3.12.0.md")
@@ -59,6 +67,7 @@ AXIS_A_SOLVER_SCALE_PROOF = (
     Path("v3.12.0_axis_a_solver_scale") / "solver_scale_proof.json"
 )
 AXIS_B_HEX_ALIGNED_EVAL = "v3.12.0_axis_b_hex_aligned_eval.json"
+AXIS_B_TARGET_VERSION = "v3.12.0"
 AXIS_B_EXPECTED_CELLS = {
     "bee_ops",
     "environment",
@@ -68,13 +77,14 @@ AXIS_B_EXPECTED_CELLS = {
     "production",
     "safety_security",
 }
+AXIS_B_POSITIVE_CASES_PER_CELL = 15
+AXIS_B_NEGATIVE_CASES_PER_CELL = 5
 AXIS_B_QUALITY_FLOOR = 0.74
 AXIS_B_MISMATCHED_BASELINE_QUALITY = 0.5
 AXIS_B_MINIMUM_BASELINE_DELTA = 0.20
 AXIS_B_PER_CELL_QUALITY_FLOOR = 0.6
 CI_STATUS_EVIDENCE = "v3.12.0_ci_status.json"
 DOCKER_POLICY_EVIDENCE = "v3.12.0_docker_policy.json"
-DOCKER_OPERATOR_DECISION_PACK = Path("docs/operator_inbox/docker-latest-promotion.yaml")
 SOAK_LOG_AUDIT = "v3.12.0_soak_log_audit.json"
 SOAK_LOG_AUDIT_SCHEMA_VERSION = "waggledance.release_soak_log_audit.v1"
 SOAK_LOG_AUDIT_COUNT_BLOCKERS = {
@@ -99,11 +109,14 @@ FORBIDDEN_RELEASE_NOTE_CLAIMS = (
 
 
 def _parse_timestamp(value: str) -> dt.datetime:
-    normalized = value.strip().replace("Z", "+00:00")
-    parsed = dt.datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.UTC)
-    return parsed.astimezone(dt.UTC)
+    try:
+        normalized = value.strip().replace("Z", "+00:00")
+        parsed = dt.datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("invalid ISO-8601 timestamp") from exc
 
 
 def _utc_midnight(value: dt.date) -> dt.datetime:
@@ -136,11 +149,35 @@ def _current_commit() -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        loaded = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_object,
+        )
+    except (OSError, ValueError):
         return None
     return loaded if isinstance(loaded, dict) else None
+
+
+def _exact_int(value: object) -> int | None:
+    return value if type(value) is int else None
+
+
+def _finite_number(value: object) -> int | float | None:
+    if type(value) not in (int, float):
+        return None
+    try:
+        return value if math.isfinite(float(value)) else None
+    except OverflowError:
+        return None
 
 
 def _source_digest(path: Path) -> str | None:
@@ -168,13 +205,15 @@ def _bandit_high_medium_clean(report_path: Path) -> bool | None:
     report = _read_json(report_path)
     if report is None:
         return None
-    totals = report.get("metrics", {}).get("_totals", {})
+    metrics = report.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    totals = metrics.get("_totals")
     if not isinstance(totals, dict):
         return None
-    try:
-        high = int(totals.get("SEVERITY.HIGH", 0))
-        medium = int(totals.get("SEVERITY.MEDIUM", 0))
-    except (TypeError, ValueError):
+    high = _exact_int(totals.get("SEVERITY.HIGH"))
+    medium = _exact_int(totals.get("SEVERITY.MEDIUM"))
+    if high is None or medium is None:
         return None
     return high == 0 and medium == 0
 
@@ -261,33 +300,40 @@ def _axis_a_solver_scale_status(evidence_root: Path) -> str:
     if proof is None:
         return UNKNOWN_STATUS
 
-    try:
-        descriptors = int(proof.get("synthetic_solver_descriptors_total", 0))
-        lookups = int(proof.get("lookup_pass_count", 0))
-        hits = int(proof.get("lookup_capability_hits_total", -1))
-        fallback = int(proof.get("lookup_fifo_fallback_total", -1))
-        misses = int(proof.get("lookup_miss_total", -1))
-        warm_p99 = float(proof.get("lookup_p99_ms"))
-        cold = proof.get("lookup_cold_after_attach")
-        cold_p99 = (
-            float(cold.get("lookup_p99_ms")) if isinstance(cold, dict) else None
-        )
-    except (TypeError, ValueError):
+    descriptors = _exact_int(proof.get("synthetic_solver_descriptors_total"))
+    lookups = _exact_int(proof.get("lookup_pass_count"))
+    hits = _exact_int(proof.get("lookup_capability_hits_total"))
+    fallback = _exact_int(proof.get("lookup_fifo_fallback_total"))
+    misses = _exact_int(proof.get("lookup_miss_total"))
+    warm_p99 = _finite_number(proof.get("lookup_p99_ms"))
+    cold = proof.get("lookup_cold_after_attach")
+    cold_p99 = (
+        _finite_number(cold.get("lookup_p99_ms"))
+        if isinstance(cold, dict)
+        else None
+    )
+    if None in (
+        descriptors,
+        lookups,
+        hits,
+        fallback,
+        misses,
+        warm_p99,
+        cold_p99,
+    ):
         return UNKNOWN_STATUS
 
     stats = proof.get("hot_path_cache_stats")
     if not isinstance(stats, dict):
         return UNKNOWN_STATUS
-    try:
-        warm_hits = int(stats.get("warm_hits", -1))
-        cold_hits = int(stats.get("cold_hits_warmed", -1))
-    except (TypeError, ValueError):
+    warm_hits = _exact_int(stats.get("warm_hits"))
+    cold_hits = _exact_int(stats.get("cold_hits_warmed"))
+    if warm_hits is None or cold_hits is None:
         return UNKNOWN_STATUS
 
-    try:
-        provider_jobs_delta = int(proof.get("provider_jobs_delta", -1))
-        builder_jobs_delta = int(proof.get("builder_jobs_delta", -1))
-    except (TypeError, ValueError):
+    provider_jobs_delta = _exact_int(proof.get("provider_jobs_delta"))
+    builder_jobs_delta = _exact_int(proof.get("builder_jobs_delta"))
+    if provider_jobs_delta is None or builder_jobs_delta is None:
         return UNKNOWN_STATUS
 
     if (
@@ -305,7 +351,12 @@ def _axis_a_solver_scale_status(evidence_root: Path) -> str:
         return BLOCKED_STATUS
     if warm_hits < lookups or cold_hits < lookups:
         return BLOCKED_STATUS
-    if warm_p99 > 1.0 or cold_p99 is None or cold_p99 > 50.0:
+    if (
+        warm_p99 < 0
+        or warm_p99 > 1.0
+        or cold_p99 < 0
+        or cold_p99 > 50.0
+    ):
         return BLOCKED_STATUS
     return "pass"
 
@@ -317,24 +368,38 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
 
     if report.get("schema_version") != "waggledance.axis_b_hex_eval.v1":
         return UNKNOWN_STATUS
+    if report.get("target_version") != AXIS_B_TARGET_VERSION:
+        return UNKNOWN_STATUS
     corpus = report.get("corpus")
     thresholds = report.get("thresholds")
     if not isinstance(corpus, dict) or not isinstance(thresholds, dict):
         return UNKNOWN_STATUS
-    try:
-        files = int(corpus.get("files", 0))
-        total_positive = int(corpus.get("total_positive", 0))
-        total_negative = int(corpus.get("total_negative", 0))
-        quality = float(report.get("quality"))
-        quality_floor = float(thresholds.get("quality_floor"))
-        baseline = float(thresholds.get("mismatched_baseline_quality"))
-        min_delta = float(thresholds.get("minimum_baseline_delta"))
-        per_cell_floor = float(thresholds.get("per_cell_quality_floor"))
-        micro_pos = int(report.get("micro_pos"))
-        micro_pos_total = int(report.get("micro_pos_total"))
-        micro_neg = int(report.get("micro_neg"))
-        micro_neg_total = int(report.get("micro_neg_total"))
-    except (TypeError, ValueError):
+    files = _exact_int(corpus.get("files"))
+    total_positive = _exact_int(corpus.get("total_positive"))
+    total_negative = _exact_int(corpus.get("total_negative"))
+    quality = _finite_number(report.get("quality"))
+    quality_floor = _finite_number(thresholds.get("quality_floor"))
+    baseline = _finite_number(thresholds.get("mismatched_baseline_quality"))
+    min_delta = _finite_number(thresholds.get("minimum_baseline_delta"))
+    per_cell_floor = _finite_number(thresholds.get("per_cell_quality_floor"))
+    micro_pos = _exact_int(report.get("micro_pos"))
+    micro_pos_total = _exact_int(report.get("micro_pos_total"))
+    micro_neg = _exact_int(report.get("micro_neg"))
+    micro_neg_total = _exact_int(report.get("micro_neg_total"))
+    if None in (
+        files,
+        total_positive,
+        total_negative,
+        quality,
+        quality_floor,
+        baseline,
+        min_delta,
+        per_cell_floor,
+        micro_pos,
+        micro_pos_total,
+        micro_neg,
+        micro_neg_total,
+    ):
         return UNKNOWN_STATUS
 
     cells = corpus.get("cells")
@@ -350,7 +415,7 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
         return BLOCKED_STATUS
     if files != 7 or total_positive != 105 or total_negative != 35:
         return BLOCKED_STATUS
-    if set(cells) != AXIS_B_EXPECTED_CELLS:
+    if len(cells) != files or set(cells) != AXIS_B_EXPECTED_CELLS:
         return BLOCKED_STATUS
     if (
         quality_floor != AXIS_B_QUALITY_FLOOR
@@ -358,6 +423,8 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
         or min_delta != AXIS_B_MINIMUM_BASELINE_DELTA
         or per_cell_floor != AXIS_B_PER_CELL_QUALITY_FLOOR
     ):
+        return BLOCKED_STATUS
+    if not 0.0 <= quality <= 1.0:
         return BLOCKED_STATUS
     if (
         micro_pos_total != total_positive
@@ -378,19 +445,59 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
     pos_total_seen = 0
     neg_correct_total = 0
     neg_total_seen = 0
+    derived_file_scores: list[float] = []
     for row in per_file:
         if not isinstance(row, dict):
             return UNKNOWN_STATUS
-        try:
-            cell = str(row.get("cell"))
-            file_score = float(row.get("file_score"))
-            pos_correct = int(row.get("pos_correct"))
-            pos_total = int(row.get("pos_total"))
-            neg_correct = int(row.get("neg_correct"))
-            neg_total = int(row.get("neg_total"))
-        except (TypeError, ValueError):
+        cell = row.get("cell")
+        file_score = _finite_number(row.get("file_score"))
+        pos_score = _finite_number(row.get("pos_score"))
+        neg_score = _finite_number(row.get("neg_score"))
+        pos_correct = _exact_int(row.get("pos_correct"))
+        pos_total = _exact_int(row.get("pos_total"))
+        neg_correct = _exact_int(row.get("neg_correct"))
+        neg_total = _exact_int(row.get("neg_total"))
+        if (
+            not isinstance(cell, str)
+            or file_score is None
+            or pos_score is None
+            or neg_score is None
+            or pos_correct is None
+            or pos_total is None
+            or neg_correct is None
+            or neg_total is None
+        ):
             return UNKNOWN_STATUS
         seen_cells.add(cell)
+        if (
+            not 0.0 <= file_score <= 1.0
+            or not 0.0 <= pos_score <= 1.0
+            or not 0.0 <= neg_score <= 1.0
+            or pos_total != AXIS_B_POSITIVE_CASES_PER_CELL
+            or neg_total != AXIS_B_NEGATIVE_CASES_PER_CELL
+            or pos_correct < 0
+            or neg_correct < 0
+            or pos_correct > pos_total
+            or neg_correct > neg_total
+        ):
+            return BLOCKED_STATUS
+        expected_pos_score = round(pos_correct / pos_total, 4)
+        expected_neg_score = round(neg_correct / neg_total, 4)
+        expected_file_score = round(
+            (
+                (pos_correct / pos_total)
+                + (neg_correct / neg_total)
+            )
+            / 2,
+            4,
+        )
+        if (
+            pos_score != expected_pos_score
+            or neg_score != expected_neg_score
+            or file_score != expected_file_score
+        ):
+            return BLOCKED_STATUS
+        derived_file_scores.append(expected_file_score)
         pos_correct_total += pos_correct
         pos_total_seen += pos_total
         neg_correct_total += neg_correct
@@ -405,6 +512,8 @@ def _axis_b_hex_eval_status(evidence_root: Path) -> str:
         or neg_correct_total != micro_neg
         or neg_total_seen != micro_neg_total
     ):
+        return BLOCKED_STATUS
+    if quality != round(sum(derived_file_scores) / files, 4):
         return BLOCKED_STATUS
     if report.get("result") != "pass":
         return BLOCKED_STATUS
@@ -428,44 +537,34 @@ def _default_docker_evidence_root(evidence_root: Path) -> bool:
     return normalized == default or normalized.endswith("/" + default)
 
 
-def _docker_stable_policy_from_operator_pack(expected_commit: str | None) -> str:
-    if not expected_commit or not DOCKER_OPERATOR_DECISION_PACK.exists():
-        return "draft"
-    authorization = docker_authorization_from_pack(
-        DOCKER_OPERATOR_DECISION_PACK,
-        commit=expected_commit,
-        target_version="v3.12.0",
-    )
-    if authorization is None:
-        return "draft"
-    report = build_docker_policy_report(
-        source_root=Path("."),
-        commit=expected_commit,
-        operator_authorization=authorization,
-    )
-    blockers = evaluate_docker_policy_report(
-        report,
-        expected_commit=expected_commit,
-    )
-    return "finalized" if not blockers else "draft"
-
-
-def _docker_stable_policy(evidence_root: Path, expected_commit: str | None) -> str:
+def _docker_stable_policy(
+    evidence_root: Path,
+    expected_commit: str | None,
+    *,
+    source_root: Path,
+) -> str:
     report = _read_json(evidence_root / DOCKER_POLICY_EVIDENCE)
     if report is not None:
         blockers = evaluate_docker_policy_report(
             report,
             expected_commit=expected_commit if expected_commit else None,
+            source_root=source_root,
         )
         if not blockers:
             return "finalized"
-    if _default_docker_evidence_root(evidence_root):
-        return _docker_stable_policy_from_operator_pack(expected_commit)
     return "draft"
 
 
-def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
+def _soak_log_audit_fields(
+    evidence_root: Path,
+    *,
+    source_root: Path,
+    expected_started_at: dt.datetime | None,
+    expected_ended_at: dt.datetime | None,
+) -> dict[str, Any]:
     fail_closed = {"silent_failures": None, "error_log_clean": False}
+    if expected_started_at is None or expected_ended_at is None:
+        return fail_closed
     report = _read_json(evidence_root / SOAK_LOG_AUDIT)
     if report is None:
         return fail_closed
@@ -490,6 +589,8 @@ def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
         return fail_closed
     for item in source_files:
         source = Path(item)
+        if not source.is_absolute():
+            source = source_root / source
         if not source.exists() or not source.is_file():
             return fail_closed
         expected_digest = source_hashes.get(item)
@@ -505,17 +606,29 @@ def _soak_log_audit_fields(evidence_root: Path) -> dict[str, Any]:
     if any(item not in SOAK_LOG_AUDIT_COUNT_BLOCKERS for item in blockers):
         return fail_closed
 
+    started_value = report.get("started_at_utc")
+    ended_value = report.get("ended_at_utc")
+    if not isinstance(started_value, str) or not isinstance(ended_value, str):
+        return fail_closed
     try:
-        started_at = _parse_timestamp(str(report.get("started_at_utc", "")))
-        ended_at = _parse_timestamp(str(report.get("ended_at_utc", "")))
-        silent_failures = int(report.get("silent_failure_count"))
-        error_count = int(report.get("error_count"))
-        undated_count = int(report.get("undated_record_count"))
+        started_at = _parse_timestamp(started_value)
+        ended_at = _parse_timestamp(ended_value)
     except (TypeError, ValueError):
+        return fail_closed
+    silent_failures = _exact_int(report.get("silent_failure_count"))
+    error_count = _exact_int(report.get("error_count"))
+    undated_count = _exact_int(report.get("undated_record_count"))
+    if (
+        silent_failures is None
+        or error_count is None
+        or undated_count is None
+    ):
         return fail_closed
 
     if (
         ended_at <= started_at
+        or started_at > expected_started_at
+        or ended_at < expected_ended_at
         or silent_failures < 0
         or error_count < 0
         or undated_count < 0
@@ -547,14 +660,26 @@ def local_artifact_evidence_fields(
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
     commit: str | None = None,
+    soak_started_at_utc: dt.datetime | None = None,
+    soak_ended_at_utc: dt.datetime | None = None,
+    source_root: Path | str = ROOT,
 ) -> dict[str, Any]:
     """Derive release evidence fields from local artifacts without manual stubs."""
 
+    source_root = Path(source_root)
     evidence_root = Path(evidence_root)
     release_notes = Path(release_notes)
+    if not evidence_root.is_absolute():
+        evidence_root = source_root / evidence_root
+    if not release_notes.is_absolute():
+        release_notes = source_root / release_notes
     return {
         "ci_status": _ci_status(evidence_root, commit),
-        "docker_stable_policy": _docker_stable_policy(evidence_root, commit),
+        "docker_stable_policy": _docker_stable_policy(
+            evidence_root,
+            commit,
+            source_root=source_root,
+        ),
         "profile_s_smoke": _profile_s_smoke_status(evidence_root),
         "security_privacy_gate": _security_privacy_status(evidence_root),
         "axis_a_regression": _axis_a_solver_scale_status(evidence_root),
@@ -562,7 +687,12 @@ def local_artifact_evidence_fields(
         "release_notes_anti_claims": _release_notes_anti_claims_status(
             release_notes
         ),
-        **_soak_log_audit_fields(evidence_root),
+        **_soak_log_audit_fields(
+            evidence_root,
+            source_root=source_root,
+            expected_started_at=soak_started_at_utc,
+            expected_ended_at=soak_ended_at_utc,
+        ),
     }
 
 
@@ -571,6 +701,7 @@ def local_artifact_statuses(
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
     commit: str | None = None,
+    source_root: Path | str = ROOT,
 ) -> dict[str, str]:
     """Derive release statuses from local artifacts without manual stubs."""
 
@@ -578,11 +709,62 @@ def local_artifact_statuses(
         evidence_root=evidence_root,
         release_notes=release_notes,
         commit=commit,
+        source_root=source_root,
     )
     return {
         field: value
         for field, value in fields.items()
         if field in STATUS_PASS_FIELDS and isinstance(value, str)
+    }
+
+
+def revalidate_local_artifact_evidence(
+    evidence: dict[str, Any],
+    *,
+    source_root: Path | str = ROOT,
+) -> dict[str, Any]:
+    """Recompute every locally derived field from canonical artifacts."""
+
+    if evidence.get("collection_mode") != LOCAL_ARTIFACT_COLLECTION_MODE:
+        return {
+            "verified": False,
+            "reason": "collection_mode_invalid",
+            "mismatches": [],
+        }
+    try:
+        started_at = _parse_timestamp(evidence.get("started_at_utc"))
+        ended_at = _parse_timestamp(evidence.get("ended_at_utc"))
+    except (AttributeError, TypeError, ValueError):
+        return {
+            "verified": False,
+            "reason": "soak_interval_invalid",
+            "mismatches": [],
+        }
+    commit = evidence.get("commit")
+    derived = local_artifact_evidence_fields(
+        evidence_root=DEFAULT_EVIDENCE_ROOT,
+        release_notes=DEFAULT_RELEASE_NOTES,
+        commit=commit if isinstance(commit, str) else None,
+        soak_started_at_utc=started_at,
+        soak_ended_at_utc=ended_at,
+        source_root=source_root,
+    )
+    mismatches = [
+        field
+        for field in LOCAL_ARTIFACT_DERIVED_FIELDS
+        if (
+            type(evidence.get(field)) is not type(derived.get(field))
+            or evidence.get(field) != derived.get(field)
+        )
+    ]
+    return {
+        "verified": not mismatches,
+        "reason": "verified" if not mismatches else "derived_fields_mismatch",
+        "mismatches": mismatches,
+        "derived_fields": {
+            field: derived.get(field)
+            for field in LOCAL_ARTIFACT_DERIVED_FIELDS
+        },
     }
 
 
@@ -601,10 +783,17 @@ def _derive_result(evidence: dict[str, Any], required_hours: int) -> str:
         evidence.get(field) == expected
         for field, expected in STATUS_PASS_FIELDS.items()
     )
+    commit = evidence.get("commit")
+    duration = _finite_number(evidence.get("duration_hours"))
+    silent_failures = evidence.get("silent_failures")
     release_pass = (
-        bool(evidence.get("commit"))
-        and evidence.get("duration_hours", 0) >= required_hours
-        and evidence.get("silent_failures") == 0
+        evidence.get("collection_mode") == LOCAL_ARTIFACT_COLLECTION_MODE
+        and isinstance(commit, str)
+        and COMMIT_PATTERN.fullmatch(commit) is not None
+        and duration is not None
+        and duration >= required_hours
+        and type(silent_failures) is int
+        and silent_failures == 0
         and evidence.get("error_log_clean") is True
         and evidence.get("docker_stable_policy") == "finalized"
         and statuses_pass
@@ -625,6 +814,7 @@ def build_soak_evidence(
     use_local_artifacts: bool = False,
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
+    source_root: Path | str = ROOT,
 ) -> dict[str, Any]:
     """Build a soak evidence object in the release-gate schema."""
 
@@ -643,6 +833,9 @@ def build_soak_evidence(
             evidence_root=evidence_root,
             release_notes=release_notes,
             commit=evidence_commit,
+            soak_started_at_utc=started_at_utc,
+            soak_ended_at_utc=ended_at_utc,
+            source_root=source_root,
         )
         status_values.update({
             field: value
@@ -659,6 +852,11 @@ def build_soak_evidence(
     required_hours = (readiness.soak_end - readiness.soak_start).days * 24
     evidence: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "collection_mode": (
+            LOCAL_ARTIFACT_COLLECTION_MODE
+            if use_local_artifacts
+            else MANUAL_COLLECTION_MODE
+        ),
         "target_version": readiness.target_version,
         "commit": evidence_commit,
         "started_at_utc": _format_utc(started_at_utc),
@@ -737,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--evidence-root", default=DEFAULT_EVIDENCE_ROOT, type=Path)
     parser.add_argument("--release-notes", default=DEFAULT_RELEASE_NOTES, type=Path)
+    parser.add_argument("--source-root", default=ROOT, type=Path)
     args = parser.parse_args(argv)
 
     status_overrides = dict(args.status)
@@ -753,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
             use_local_artifacts=args.use_local_artifacts,
             evidence_root=args.evidence_root,
             release_notes=args.release_notes,
+            source_root=args.source_root,
         )
         write_soak_evidence(evidence, output=args.output, history=args.history)
     except (OSError, ValueError) as exc:

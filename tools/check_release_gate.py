@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -19,7 +20,13 @@ from pathlib import Path
 from typing import Any
 
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 SCHEMA_VERSION = "waggledance.release_soak.v1"
+LOCAL_ARTIFACT_COLLECTION_MODE = "local_artifacts"
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 STATUS_PASS_FIELDS = {
     "ci_status": "pass",
@@ -37,7 +44,17 @@ _DIAGNOSTIC_STRING_VALUES = {
     "unknown",
     "draft",
     "finalized",
+    LOCAL_ARTIFACT_COLLECTION_MODE,
 }
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 @dataclass(frozen=True)
@@ -59,11 +76,20 @@ def _parse_timestamp(value: object) -> dt.datetime | None:
     normalized = value.strip().replace("Z", "+00:00")
     try:
         parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.UTC)
-    return parsed.astimezone(dt.UTC)
+
+
+def _parse_cli_timestamp(value: str) -> dt.datetime:
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(
+            "timestamp must be a valid ISO-8601 UTC instant"
+        )
+    return parsed
 
 
 def parse_release_readiness(text: str) -> tuple[ReleaseReadiness | None, list[str]]:
@@ -113,6 +139,9 @@ def parse_release_readiness(text: str) -> tuple[ReleaseReadiness | None, list[st
 def _validate_soak_evidence(
     evidence: dict[str, Any],
     readiness: ReleaseReadiness,
+    *,
+    checked_at_utc: dt.datetime,
+    source_root: Path,
 ) -> list[str]:
     blockers: list[str] = []
 
@@ -120,8 +149,23 @@ def _validate_soak_evidence(
         blockers.append("soak_evidence_schema_version_invalid")
     if evidence.get("target_version") != readiness.target_version:
         blockers.append("soak_evidence_target_version_mismatch")
-    if not evidence.get("commit"):
+    if evidence.get("collection_mode") != LOCAL_ARTIFACT_COLLECTION_MODE:
+        blockers.append("soak_evidence_collection_mode_invalid")
+    else:
+        revalidation = _revalidate_local_artifact_evidence(
+            evidence,
+            source_root=source_root,
+        )
+        if revalidation.get("verified") is not True:
+            blockers.append("soak_evidence_local_artifacts_not_verified")
+    commit = evidence.get("commit")
+    if not commit:
         blockers.append("soak_evidence_commit_missing")
+    elif (
+        not isinstance(commit, str)
+        or COMMIT_PATTERN.fullmatch(commit) is None
+    ):
+        blockers.append("soak_evidence_commit_invalid")
     if evidence.get("result") != "pass":
         blockers.append("soak_evidence_result_not_pass")
 
@@ -136,12 +180,53 @@ def _validate_soak_evidence(
 
     required_hours = (readiness.soak_end - readiness.soak_start).days * 24
     duration = evidence.get("duration_hours")
-    if not isinstance(duration, (int, float)) or duration < required_hours:
+    duration_is_finite = False
+    if (
+        isinstance(duration, (int, float))
+        and not isinstance(duration, bool)
+    ):
+        try:
+            duration_is_finite = math.isfinite(float(duration))
+        except OverflowError:
+            duration_is_finite = False
+    if not duration_is_finite or duration < required_hours:
         blockers.append(f"soak_evidence_duration_lt_{required_hours}h")
-    if ended_at is not None and ended_at.date() < readiness.soak_end:
+    if started_at is not None and ended_at is not None:
+        elapsed_hours = (ended_at - started_at).total_seconds() / 3600
+        expected_duration: int | float = (
+            int(elapsed_hours)
+            if elapsed_hours.is_integer()
+            else round(elapsed_hours, 3)
+        )
+        if (
+            elapsed_hours < required_hours
+            and duration_is_finite
+            and duration >= required_hours
+        ):
+            blockers.append(
+                f"soak_evidence_elapsed_duration_lt_{required_hours}h"
+            )
+        if duration_is_finite and duration != expected_duration:
+            blockers.append("soak_evidence_duration_mismatch")
+    required_start_utc = dt.datetime.combine(
+        readiness.soak_start,
+        dt.time(),
+        tzinfo=dt.UTC,
+    )
+    required_end_utc = dt.datetime.combine(
+        readiness.soak_end,
+        dt.time(),
+        tzinfo=dt.UTC,
+    )
+    if ended_at is not None and ended_at < required_end_utc:
         blockers.append("soak_evidence_ended_before_required_soak_end")
+    if started_at is not None and started_at > required_start_utc:
+        blockers.append("soak_evidence_started_after_required_soak_start")
+    if ended_at is not None and ended_at > checked_at_utc:
+        blockers.append("soak_evidence_ended_in_future")
 
-    if evidence.get("silent_failures") != 0:
+    silent_failures = evidence.get("silent_failures")
+    if type(silent_failures) is not int or silent_failures != 0:
         blockers.append("soak_evidence_silent_failures_nonzero")
     if evidence.get("error_log_clean") is not True:
         blockers.append("soak_evidence_error_log_not_clean")
@@ -155,7 +240,29 @@ def _validate_soak_evidence(
     return blockers
 
 
+def _revalidate_local_artifact_evidence(
+    evidence: dict[str, Any],
+    *,
+    source_root: Path,
+) -> dict[str, Any]:
+    try:
+        from tools.collect_soak_evidence import (
+            revalidate_local_artifact_evidence,
+        )
+    except (ImportError, AttributeError) as exc:
+        return {
+            "verified": False,
+            "reason": f"revalidator_unavailable:{exc.__class__.__name__}",
+        }
+    return revalidate_local_artifact_evidence(
+        evidence,
+        source_root=source_root,
+    )
+
+
 def _diagnostic_string(value: object) -> object:
+    if isinstance(value, float) and not math.isfinite(value):
+        return "<redacted>"
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if not isinstance(value, str):
@@ -191,6 +298,8 @@ def _soak_evidence_diagnostics(
     diagnostics.update({
         "target_version": _diagnostic_string(evidence.get("target_version")),
         "expected_target_version": readiness.target_version,
+        "collection_mode": _diagnostic_string(evidence.get("collection_mode")),
+        "expected_collection_mode": LOCAL_ARTIFACT_COLLECTION_MODE,
         "result": _diagnostic_string(evidence.get("result")),
         "expected_result": "pass",
         "commit_present": bool(evidence.get("commit")),
@@ -224,9 +333,20 @@ def evaluate_release_gate(
     *,
     soak_evidence_path: Path | str | None = None,
     today: dt.date | None = None,
+    checked_at_utc: dt.datetime | None = None,
+    source_root: Path | str = ROOT,
 ) -> dict[str, Any]:
-    today = today or dt.datetime.now(dt.UTC).date()
+    actual_now_utc = dt.datetime.now(dt.UTC)
+    checked_at_utc = checked_at_utc or actual_now_utc
+    if checked_at_utc.tzinfo is None:
+        checked_at_utc = checked_at_utc.replace(tzinfo=dt.UTC)
+    else:
+        checked_at_utc = checked_at_utc.astimezone(dt.UTC)
+    today = today or checked_at_utc.date()
+    source_root = Path(source_root)
     blockers: list[str] = []
+    if checked_at_utc > actual_now_utc:
+        blockers.append("checked_at_utc_in_future")
     readiness_path = Path(readiness_path)
     if soak_evidence_path is not None:
         soak_evidence_path = Path(soak_evidence_path)
@@ -260,8 +380,11 @@ def evaluate_release_gate(
         }
     else:
         try:
-            evidence = json.loads(soak_evidence_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            evidence = json.loads(
+                soak_evidence_path.read_text(encoding="utf-8"),
+                object_pairs_hook=_unique_json_object,
+            )
+        except (OSError, ValueError) as exc:
             blockers.append(f"soak_evidence_unreadable:{exc.__class__.__name__}")
             soak_diagnostics = {
                 "provided": True,
@@ -277,7 +400,14 @@ def evaluate_release_gate(
                     "object": False,
                 }
             else:
-                blockers.extend(_validate_soak_evidence(evidence, readiness))
+                blockers.extend(
+                    _validate_soak_evidence(
+                        evidence,
+                        readiness,
+                        checked_at_utc=checked_at_utc,
+                        source_root=source_root,
+                    )
+                )
                 soak_diagnostics = _soak_evidence_diagnostics(
                     evidence,
                     readiness,
@@ -315,6 +445,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Override current UTC date, YYYY-MM-DD, for reproducible checks.",
     )
     parser.add_argument(
+        "--checked-at-utc",
+        type=_parse_cli_timestamp,
+        help=(
+            "Override the exact UTC evaluation instant. Eligibility dates "
+            "derive from this instant unless --today is also supplied."
+        ),
+    )
+    parser.add_argument(
+        "--source-root",
+        default=ROOT,
+        type=Path,
+        help="Repository root containing canonical local release artifacts.",
+    )
+    parser.add_argument(
         "--allow-hold",
         action="store_true",
         help="Exit 0 even when the gate correctly reports a hold decision.",
@@ -325,6 +469,8 @@ def main(argv: list[str] | None = None) -> int:
         args.release_readiness,
         soak_evidence_path=args.soak_evidence,
         today=args.today,
+        checked_at_utc=args.checked_at_utc,
+        source_root=args.source_root,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     if result["decision"] == "pass" or args.allow_hold:

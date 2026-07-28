@@ -4,6 +4,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import pytest
+
+import tools.check_release_gate as release_gate
 from tools.run_release_gate_readonly_recheck import (
     STRICT_BLOCKED_EXIT_CODE,
     build_report,
@@ -12,9 +15,23 @@ from tools.run_release_gate_readonly_recheck import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_local_artifact_revalidation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        release_gate,
+        "_revalidate_local_artifact_evidence",
+        lambda *args, **kwargs: {
+            "verified": True,
+            "reason": "verified",
+            "mismatches": [],
+        },
+    )
+
+
 def _valid_evidence() -> dict[str, object]:
     return {
         "schema_version": "waggledance.release_soak.v1",
+        "collection_mode": "local_artifacts",
         "target_version": "v3.12.0",
         "commit": "4f49564bea93df5432238661e1daf21530915a16",
         "started_at_utc": "2026-05-10T00:00:00Z",

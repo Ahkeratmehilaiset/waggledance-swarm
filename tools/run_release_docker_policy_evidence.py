@@ -8,6 +8,9 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
+import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -20,12 +23,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.operator_decision_pack import DecisionPackError, is_signed, load_pack
+from tools.operator_decision_pack import (
+    DecisionPackError,
+    _validate_pack,
+    is_signed,
+)
 
 
-SCHEMA_VERSION = "waggledance.release_docker_policy.v1"
-AUTH_SCHEMA_VERSION = "waggledance.operator_docker_stable_authorization.v1"
-DOCKER_DECISION_PACK_ID = "docker-latest-promotion"
+SCHEMA_VERSION = "waggledance.release_docker_policy.v2"
+AUTH_SCHEMA_VERSION = "waggledance.operator_docker_stable_authorization.v2"
 DOCKER_DECISION_PACK_CATEGORY = "docker_promotion"
 DOCKER_DECISION_OPTIONS = {
     "ghcr_stable_only": {
@@ -44,10 +50,12 @@ DOCKER_DECISION_OPTIONS = {
         "docker_promotion_deferred": True,
     },
 }
+REQUIRED_DOCKER_DECISION_OPTION = "ghcr_stable_only"
 REQUIRED_DECISION_PACK_INVARIANTS = (
     "latest_move_is_operator_only",
     "agent_must_not_self_resolve",
 )
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 DEFAULT_OUTPUT = (
     Path("docs")
     / "runs"
@@ -55,6 +63,34 @@ DEFAULT_OUTPUT = (
     / "v3.12.0_docker_policy.json"
 )
 DEFAULT_TARGET_VERSION = "v3.12.0"
+
+
+def _docker_decision_pack_id(target_version: object) -> str:
+    if not isinstance(target_version, str):
+        return ""
+    slug = re.sub(r"[^a-z0-9]+", "-", target_version.lower()).strip("-")
+    return f"docker-{slug}-stable-promotion" if slug else ""
+
+
+def _docker_decision_pack_relative_path(target_version: str) -> Path:
+    return (
+        Path("docs")
+        / "operator_inbox"
+        / f"{_docker_decision_pack_id(target_version)}.yaml"
+    )
+
+
+def _sanitized_git_env() -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 CANONICAL_ENTRYPOINT = ["python", "-m", "waggledance.adapters.cli.start_runtime"]
 CANONICAL_SCRIPT = "waggledance.adapters.cli.start_runtime:main"
 REQUIRED_SOURCE_FILES = (
@@ -75,6 +111,10 @@ REVIEWED_WORKFLOW_HASHES = {
         "14dedd481e788caece20107258e3c4df"
     ),
 }
+REVIEWED_DOCKERFILE_HASH = (
+    "sha256:08773687fbdd6a3021a087ab4b9c8535"
+    "1f37924fd323fef5a1212ea4d7aaad91"
+)
 REQUIRED_STATIC_CHECKS = (
     "stable_workflow_policy_hash_pinned",
     "prerelease_workflow_policy_hash_pinned",
@@ -109,6 +149,7 @@ REQUIRED_STATIC_CHECKS = (
     "prerelease_canonical_smoke_before_alias_promotion",
     "prerelease_alias_verification_after_promotion",
     "release_alias_concurrency_serialized",
+    "dockerfile_policy_hash_pinned",
     "dockerfile_entrypoint_canonical",
     "compose_entrypoint_canonical",
     "pyproject_script_canonical",
@@ -121,37 +162,94 @@ def _format_utc(value: dt.datetime) -> str:
 
 
 def _parse_utc(value: object) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        parsed = value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
     if not isinstance(value, str) or not value.strip():
         return None
     normalized = value.strip().replace("Z", "+00:00")
     try:
         parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        return parsed.astimezone(dt.UTC)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.UTC)
-    return parsed.astimezone(dt.UTC)
 
 
-def _current_commit() -> str:
+def _dockerfile_final_stage_json_instruction(
+    text: str,
+    instruction_name: str,
+    *,
+    allow_empty: bool = False,
+) -> list[str] | None:
+    """Return one JSON-form instruction from the final Docker stage."""
+
+    final_stage_instructions: list[list[str]] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        instruction_match = re.match(r"^([A-Za-z]+)\s+(.*)$", stripped)
+        if instruction_match is None:
+            continue
+        instruction = instruction_match.group(1).upper()
+        argument = instruction_match.group(2).strip()
+        if instruction == "FROM":
+            final_stage_instructions = []
+            continue
+        if instruction != instruction_name:
+            continue
+        try:
+            parsed = json.loads(argument)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if (
+            not isinstance(parsed, list)
+            or (not parsed and not allow_empty)
+            or any(not isinstance(item, str) for item in parsed)
+        ):
+            return None
+        final_stage_instructions.append(parsed)
+
+    if len(final_stage_instructions) != 1:
+        return None
+    return final_stage_instructions[0]
+
+
+def _dockerfile_final_stage_json_cmd(text: str) -> list[str] | None:
+    return _dockerfile_final_stage_json_instruction(text, "CMD")
+
+
+def _dockerfile_final_stage_json_entrypoint(text: str) -> list[str] | None:
+    return _dockerfile_final_stage_json_instruction(
+        text,
+        "ENTRYPOINT",
+        allow_empty=True,
+    )
+
+
+def _current_commit(source_root: Path | str = Path(".")) -> str:
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            [
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(source_root),
+                "rev-parse",
+                "HEAD",
+            ],
             check=True,
             capture_output=True,
             text=True,
+            env=_sanitized_git_env(),
         )
     except (OSError, subprocess.CalledProcessError):
         return ""
     return completed.stdout.strip()
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return loaded if isinstance(loaded, dict) else None
 
 
 def _operator_signoff(value: object) -> tuple[str, str] | None:
@@ -166,37 +264,105 @@ def _operator_signoff(value: object) -> tuple[str, str] | None:
     return parts[1].strip(), _format_utc(signed_at)
 
 
-def _pack_scalar(pack: Mapping[str, Any], names: tuple[str, ...]) -> str:
-    for name in names:
-        value = pack.get(name)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+def _canonical_pack_scope(
+    pack: Mapping[str, Any],
+    canonical_name: str,
+    aliases: tuple[str, ...],
+) -> str:
+    value = pack.get(canonical_name)
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    canonical = value.strip()
+    for alias in aliases:
+        if alias not in pack:
+            continue
+        alias_value = pack.get(alias)
+        if not isinstance(alias_value, str) or alias_value.strip() != canonical:
+            return ""
+    return canonical
 
 
-def operator_authorization_from_decision_pack(
-    path: Path | str,
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: yaml.SafeLoader,
+    node: yaml.nodes.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _load_unique_decision_pack(
+    content: bytes,
     *,
+    source: str,
+) -> dict[str, Any] | None:
+    try:
+        loaded = yaml.load(
+            content.decode("utf-8"),
+            Loader=_UniqueKeyLoader,
+        )
+        if not isinstance(loaded, Mapping):
+            return None
+        _validate_pack(loaded, source=source)
+    except (
+        UnicodeDecodeError,
+        ValueError,
+        OverflowError,
+        yaml.YAMLError,
+        DecisionPackError,
+    ):
+        return None
+    return dict(loaded)
+
+
+def _authorization_from_pack_bytes(
+    content: bytes,
+    *,
+    source: str,
     commit: str,
     target_version: str,
+    expected_relative_path: Path,
 ) -> dict[str, Any] | None:
-    """Convert a signed Docker operator decision pack into authorization.
-
-    Draft, malformed, unsigned, wrong-scope, or structurally weakened packs
-    return None. That keeps the policy evidence in draft/fail-closed state.
-    """
-
-    try:
-        pack = load_pack(path)
-    except (OSError, DecisionPackError):
+    pack = _load_unique_decision_pack(content, source=source)
+    if pack is None:
         return None
-    if pack.get("decision_id") != DOCKER_DECISION_PACK_ID:
+    decision_id = _docker_decision_pack_id(target_version)
+    if not decision_id or pack.get("decision_id") != decision_id:
         return None
     if pack.get("category") != DOCKER_DECISION_PACK_CATEGORY:
         return None
     if not is_signed(pack):
         return None
-
     invariants = pack.get("structural_invariants")
     if not isinstance(invariants, Mapping):
         return None
@@ -206,54 +372,557 @@ def operator_authorization_from_decision_pack(
     ):
         return None
 
-    pack_target = _pack_scalar(pack, ("target_version", "release_version"))
-    if pack_target and pack_target != target_version:
+    pack_target = _canonical_pack_scope(
+        pack,
+        "target_version",
+        ("release_version",),
+    )
+    if pack_target != target_version:
         return None
-    pack_commit = _pack_scalar(pack, ("commit", "target_commit", "subject_commit"))
-    if pack_commit and pack_commit != commit:
+    pack_commit = _canonical_pack_scope(
+        pack,
+        "commit",
+        ("target_commit", "subject_commit"),
+    )
+    if pack_commit != commit:
         return None
 
     signoff = pack.get("operator_signoff")
     if not isinstance(signoff, Mapping):
         return None
     chosen = str(signoff.get("chosen_option", "") or "").strip()
+    if chosen != REQUIRED_DOCKER_DECISION_OPTION:
+        return None
     option_policy = DOCKER_DECISION_OPTIONS.get(chosen)
     signed = _operator_signoff(signoff.get("signed_by"))
     if option_policy is None or signed is None:
         return None
+    matching_options = [
+        option
+        for option in pack.get("options") or []
+        if isinstance(option, Mapping) and option.get("id") == chosen
+    ]
+    if len(matching_options) != 1:
+        return None
+    option_data = matching_options[0].get("data")
+    if option_data is not None:
+        if not isinstance(option_data, Mapping):
+            return None
+        expected_moves_latest = option_policy["move_latest"] == "yes"
+        recognized_expectations = {
+            "move_latest": option_policy["move_latest"],
+            "moves_latest": expected_moves_latest,
+            "stable_promotion_authorized": option_policy[
+                "stable_promotion_authorized"
+            ],
+            "docker_promotion_deferred": option_policy[
+                "docker_promotion_deferred"
+            ],
+        }
+        if any(
+            key in option_data
+            and (
+                type(option_data.get(key)) is not type(expected)
+                or option_data.get(key) != expected
+            )
+            for key, expected in recognized_expectations.items()
+        ):
+            return None
     operator_id, authorized_at_utc = signed
+    created_at = _parse_utc(pack.get("created_utc"))
+    if created_at is None:
+        return None
 
     return {
         "schema_version": AUTH_SCHEMA_VERSION,
         "target_version": target_version,
         "commit": commit,
-        "stable_promotion_authorized": option_policy["stable_promotion_authorized"],
-        "docker_promotion_deferred": option_policy["docker_promotion_deferred"],
+        "commit_scope": "exact",
+        "decision_pack_target_version": pack_target,
+        "decision_pack_commit": pack_commit,
+        "stable_promotion_authorized": option_policy[
+            "stable_promotion_authorized"
+        ],
+        "docker_promotion_deferred": option_policy[
+            "docker_promotion_deferred"
+        ],
         "move_latest": option_policy["move_latest"],
         "authorization_id": (
-            f"decision-pack:{DOCKER_DECISION_PACK_ID}:{chosen}:{operator_id}"
+            f"decision-pack:{decision_id}:{chosen}:{operator_id}"
         ),
         "authorized_at_utc": authorized_at_utc,
+        "decision_pack_created_at_utc": _format_utc(created_at),
+        "decision_pack_path": expected_relative_path.as_posix(),
+        "decision_pack_sha256": _source_bytes_sha256(content),
         "source": "operator_decision_pack",
-        "decision_id": DOCKER_DECISION_PACK_ID,
+        "decision_id": decision_id,
         "chosen_option": chosen,
         "operator_id": operator_id,
     }
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+def operator_authorization_from_decision_pack(
+    path: Path | str,
+    *,
+    commit: str,
+    target_version: str,
+    source_root: Path | str | None = None,
+) -> dict[str, Any] | None:
+    """Convert a signed Docker operator decision pack into authorization.
+
+    Draft, malformed, unsigned, wrong-scope, or structurally weakened packs
+    return None. That keeps the policy evidence in draft/fail-closed state.
+    """
+
+    if not isinstance(commit, str) or COMMIT_PATTERN.fullmatch(commit) is None:
+        return None
+    decision_id = _docker_decision_pack_id(target_version)
+    if not decision_id:
+        return None
+    pack_path = Path(path).resolve()
+    expected_relative_path = _docker_decision_pack_relative_path(target_version)
+    if source_root is None:
+        try:
+            root = pack_path.parents[2]
+        except IndexError:
+            return None
+    else:
+        root = Path(source_root).resolve()
+    expected_path = root / expected_relative_path
+    if pack_path != expected_path or not expected_path.exists():
+        return None
+    try:
+        if not stat.S_ISREG(expected_path.lstat().st_mode):
+            return None
+        content = expected_path.read_bytes()
+    except OSError:
+        return None
+    return _authorization_from_pack_bytes(
+        content,
+        source=expected_relative_path.name,
+        commit=commit,
+        target_version=target_version,
+        expected_relative_path=expected_relative_path,
+    )
 
 
-def _normalized_text_sha256(path: Path) -> str:
+def _source_bytes_sha256(content: bytes) -> str:
+    normalized = content.replace(b"\r\n", b"\n")
+    return "sha256:" + hashlib.sha256(normalized).hexdigest()
+
+
+def _normalized_bytes_sha256(content: bytes) -> str:
     """Hash UTF-8 text with platform newline translation removed."""
 
-    normalized = path.read_text(encoding="utf-8")
+    normalized = (
+        content.decode("utf-8")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
     return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def inspect_source_commit_binding(
+    source_root: Path | str,
+    commit: str,
+) -> dict[str, Any]:
+    """Verify required working-tree sources equal one exact Git commit."""
+
+    result: dict[str, Any] = {
+        "commit": commit,
+        "verified": False,
+        "reason": "",
+        "source_blob_oids": {},
+    }
+    if not isinstance(commit, str) or COMMIT_PATTERN.fullmatch(commit) is None:
+        result["reason"] = "commit_invalid"
+        return result
+
+    root = Path(source_root).resolve()
+
+    def git(
+        *args: str,
+        text: bool = True,
+    ) -> subprocess.CompletedProcess[Any] | None:
+        try:
+            return subprocess.run(
+                ["git", "--no-replace-objects", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=text,
+                env=_sanitized_git_env(),
+            )
+        except OSError:
+            return None
+
+    top_level = git("rev-parse", "--show-toplevel", text=False)
+    if top_level is None or top_level.returncode != 0:
+        result["reason"] = "git_root_unavailable"
+        return result
+    try:
+        resolved_top_level = Path(
+            os.fsdecode(top_level.stdout.rstrip(b"\r\n")),
+        ).resolve()
+    except OSError:
+        result["reason"] = "git_root_unavailable"
+        return result
+    if resolved_top_level != root:
+        result["reason"] = "source_root_not_git_top_level"
+        return result
+
+    resolved_commit = git("rev-parse", "--verify", f"{commit}^{{commit}}")
+    if resolved_commit is None or resolved_commit.returncode != 0:
+        result["reason"] = "commit_not_found"
+        return result
+    if resolved_commit.stdout.strip().lower() != commit:
+        result["reason"] = "commit_not_exact"
+        return result
+
+    ancestry = git("merge-base", "--is-ancestor", commit, "HEAD")
+    if ancestry is None or ancestry.returncode != 0:
+        result["reason"] = "commit_not_ancestor_of_head"
+        return result
+
+    source_blob_oids: dict[str, str] = {}
+    for source in REQUIRED_SOURCE_FILES:
+        path = str(source)
+        tree_entry = git(
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            commit,
+            "--",
+            path,
+            text=False,
+        )
+        if (
+            tree_entry is None
+            or tree_entry.returncode != 0
+            or not tree_entry.stdout
+        ):
+            result["reason"] = f"source_missing_at_commit:{path}"
+            return result
+        try:
+            entry = tree_entry.stdout.rstrip(b"\0")
+            metadata, entry_path = entry.split(b"\t", 1)
+            mode, object_type, oid = metadata.split(b" ", 2)
+        except ValueError:
+            result["reason"] = f"source_tree_entry_invalid:{path}"
+            return result
+        if (
+            entry_path != path.encode("utf-8")
+            or object_type != b"blob"
+            or mode not in {b"100644", b"100755"}
+        ):
+            result["reason"] = f"source_not_regular_at_commit:{path}"
+            return result
+
+        index_entry = git(
+            "ls-files",
+            "--stage",
+            "-z",
+            "--",
+            path,
+            text=False,
+        )
+        if (
+            index_entry is None
+            or index_entry.returncode != 0
+            or not index_entry.stdout
+        ):
+            result["reason"] = f"source_index_mismatch:{path}"
+            return result
+        try:
+            index_line = index_entry.stdout.rstrip(b"\0")
+            index_metadata, index_path = index_line.split(b"\t", 1)
+            index_mode, index_oid, index_stage = index_metadata.split(b" ", 2)
+        except ValueError:
+            result["reason"] = f"source_index_mismatch:{path}"
+            return result
+        if (
+            index_path != path.encode("utf-8")
+            or index_mode != mode
+            or index_oid.lower() != oid.lower()
+            or index_stage != b"0"
+        ):
+            result["reason"] = f"source_index_mismatch:{path}"
+            return result
+
+        working_path = root / source
+        try:
+            working_stat = working_path.lstat()
+            if not stat.S_ISREG(working_stat.st_mode):
+                result["reason"] = f"source_not_regular_in_worktree:{path}"
+                return result
+            working_bytes = working_path.read_bytes()
+        except OSError:
+            result["reason"] = f"source_missing_in_worktree:{path}"
+            return result
+
+        committed = git("cat-file", "blob", f"{commit}:{path}", text=False)
+        if committed is None or committed.returncode != 0:
+            result["reason"] = f"source_blob_unavailable_at_commit:{path}"
+            return result
+        committed_bytes = committed.stdout
+        if (
+            working_bytes.replace(b"\r\n", b"\n")
+            != committed_bytes.replace(b"\r\n", b"\n")
+        ):
+            result["reason"] = f"source_mismatch:{path}"
+            return result
+        source_blob_oids[path] = oid.decode("ascii").lower()
+
+    result["verified"] = True
+    result["reason"] = "verified"
+    result["source_blob_oids"] = source_blob_oids
+    return result
+
+
+def _load_committed_source_snapshot(
+    source_root: Path | str,
+    commit: str,
+) -> dict[str, bytes]:
+    """Read one immutable snapshot of every required source from Git."""
+
+    if not isinstance(commit, str) or COMMIT_PATTERN.fullmatch(commit) is None:
+        return {}
+    root = Path(source_root).resolve()
+    snapshot: dict[str, bytes] = {}
+    for source in REQUIRED_SOURCE_FILES:
+        path = str(source)
+        try:
+            completed = subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "-C",
+                    str(root),
+                    "cat-file",
+                    "blob",
+                    f"{commit}:{path}",
+                ],
+                check=False,
+                capture_output=True,
+                text=False,
+                env=_sanitized_git_env(),
+            )
+        except OSError:
+            return {}
+        if completed.returncode != 0:
+            return {}
+        snapshot[path] = completed.stdout
+    return snapshot
+
+
+def inspect_operator_authorization_source(
+    authorization: Mapping[str, Any] | None,
+    *,
+    source_root: Path | str,
+    commit: str,
+    target_version: str,
+) -> dict[str, Any]:
+    """Bind authorization to one retained, tracked decision pack."""
+
+    result: dict[str, Any] = {
+        "verified": False,
+        "reason": "",
+        "decision_pack_path": "",
+        "decision_pack_sha256": "",
+    }
+    if not isinstance(authorization, Mapping):
+        result["reason"] = "operator_authorization_missing"
+        return result
+    if not isinstance(commit, str) or COMMIT_PATTERN.fullmatch(commit) is None:
+        result["reason"] = "commit_invalid"
+        return result
+
+    decision_id = _docker_decision_pack_id(target_version)
+    expected_relative = _docker_decision_pack_relative_path(target_version)
+    expected_path_text = expected_relative.as_posix()
+    if (
+        not decision_id
+        or authorization.get("decision_id") != decision_id
+        or authorization.get("decision_pack_path") != expected_path_text
+    ):
+        result["reason"] = "decision_pack_path_invalid"
+        return result
+
+    root = Path(source_root).resolve()
+    pack_path = root / expected_relative
+    result["decision_pack_path"] = expected_path_text
+
+    def git(
+        *args: str,
+        text: bool = True,
+    ) -> subprocess.CompletedProcess[Any] | None:
+        try:
+            return subprocess.run(
+                ["git", "--no-replace-objects", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=text,
+                env=_sanitized_git_env(),
+            )
+        except OSError:
+            return None
+
+    top_level = git("rev-parse", "--show-toplevel", text=False)
+    if top_level is None or top_level.returncode != 0:
+        result["reason"] = "decision_pack_git_root_unavailable"
+        return result
+    try:
+        resolved_top_level = Path(
+            os.fsdecode(top_level.stdout.rstrip(b"\r\n")),
+        ).resolve()
+    except OSError:
+        result["reason"] = "decision_pack_git_root_unavailable"
+        return result
+    if resolved_top_level != root:
+        result["reason"] = "decision_pack_source_root_not_git_top_level"
+        return result
+
+    tree_entry = git(
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        "HEAD",
+        "--",
+        expected_path_text,
+        text=False,
+    )
+    if (
+        tree_entry is None
+        or tree_entry.returncode != 0
+        or not tree_entry.stdout
+    ):
+        result["reason"] = "decision_pack_not_tracked"
+        return result
+    try:
+        entry = tree_entry.stdout.rstrip(b"\0")
+        metadata, entry_path = entry.split(b"\t", 1)
+        mode, object_type, tree_oid = metadata.split(b" ", 2)
+    except ValueError:
+        result["reason"] = "decision_pack_tree_entry_invalid"
+        return result
+    if (
+        entry_path != expected_path_text.encode("utf-8")
+        or object_type != b"blob"
+        or mode not in {b"100644", b"100755"}
+    ):
+        result["reason"] = "decision_pack_not_regular_at_head"
+        return result
+
+    index_entry = git(
+        "ls-files",
+        "--stage",
+        "-z",
+        "--",
+        expected_path_text,
+        text=False,
+    )
+    if (
+        index_entry is None
+        or index_entry.returncode != 0
+        or not index_entry.stdout
+    ):
+        result["reason"] = "decision_pack_index_mismatch"
+        return result
+    try:
+        index_line = index_entry.stdout.rstrip(b"\0")
+        index_metadata, index_path = index_line.split(b"\t", 1)
+        index_mode, index_oid, index_stage = index_metadata.split(b" ", 2)
+    except ValueError:
+        result["reason"] = "decision_pack_index_mismatch"
+        return result
+    if (
+        index_path != expected_path_text.encode("utf-8")
+        or index_mode != mode
+        or index_oid.lower() != tree_oid.lower()
+        or index_stage != b"0"
+    ):
+        result["reason"] = "decision_pack_index_mismatch"
+        return result
+
+    try:
+        pack_stat = pack_path.lstat()
+        if not stat.S_ISREG(pack_stat.st_mode):
+            result["reason"] = "decision_pack_not_regular_in_worktree"
+            return result
+        working_bytes = pack_path.read_bytes()
+    except OSError:
+        result["reason"] = "decision_pack_missing_in_worktree"
+        return result
+    committed = git(
+        "cat-file",
+        "blob",
+        f"HEAD:{expected_path_text}",
+        text=False,
+    )
+    if committed is None or committed.returncode != 0:
+        result["reason"] = "decision_pack_blob_unavailable"
+        return result
+    if (
+        working_bytes.replace(b"\r\n", b"\n")
+        != committed.stdout.replace(b"\r\n", b"\n")
+    ):
+        result["reason"] = "decision_pack_worktree_mismatch"
+        return result
+
+    actual_digest = _source_bytes_sha256(committed.stdout)
+    result["decision_pack_sha256"] = actual_digest
+    if authorization.get("decision_pack_sha256") != actual_digest:
+        result["reason"] = "decision_pack_digest_mismatch"
+        return result
+
+    converted = _authorization_from_pack_bytes(
+        committed.stdout,
+        source=expected_relative.name,
+        commit=commit,
+        target_version=target_version,
+        expected_relative_path=expected_relative,
+    )
+    if converted is None:
+        result["reason"] = "decision_pack_invalid"
+        return result
+    if dict(authorization) != converted:
+        result["reason"] = "decision_pack_authorization_mismatch"
+        return result
+
+    commit_time_result = git("show", "-s", "--format=%cI", commit)
+    storage_time_result = git("show", "-s", "--format=%cI", "HEAD")
+    if (
+        commit_time_result is None
+        or commit_time_result.returncode != 0
+        or storage_time_result is None
+        or storage_time_result.returncode != 0
+    ):
+        result["reason"] = "decision_pack_subject_time_unavailable"
+        return result
+    commit_time = _parse_utc(commit_time_result.stdout.strip())
+    storage_time = _parse_utc(storage_time_result.stdout.strip())
+    created_at = _parse_utc(authorization.get("decision_pack_created_at_utc"))
+    authorized_at = _parse_utc(authorization.get("authorized_at_utc"))
+    if (
+        commit_time is None
+        or storage_time is None
+        or created_at is None
+        or authorized_at is None
+    ):
+        result["reason"] = "decision_pack_time_invalid"
+        return result
+    if created_at > authorized_at:
+        result["reason"] = "decision_pack_signed_before_creation"
+        return result
+    if authorized_at < commit_time:
+        result["reason"] = "decision_pack_signoff_predates_subject"
+        return result
+    if created_at > storage_time or authorized_at > storage_time:
+        result["reason"] = "decision_pack_time_after_storage_commit"
+        return result
+
+    result["verified"] = True
+    result["reason"] = "verified"
+    return result
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -295,21 +964,42 @@ def _find_uses_step(job: dict[str, Any], needle: str) -> dict[str, Any] | None:
     return None
 
 
-def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]:
+def inspect_static_policy(
+    source_root: Path | str = Path("."),
+    *,
+    source_snapshot: Mapping[str, bytes] | None = None,
+) -> dict[str, Any]:
     """Inspect static Docker release policy files without running Docker."""
 
     root = Path(source_root)
-    workflow_path = root / ".github/workflows/release-docker-stable.yml"
-    prerelease_workflow_path = root / ".github/workflows/release-docker.yml"
-    dockerfile_path = root / "Dockerfile"
-    compose_path = root / "docker-compose.yml"
-    pyproject_path = root / "pyproject.toml"
 
-    workflow = _load_yaml(workflow_path) if workflow_path.exists() else {}
+    def source_bytes(relative_path: str) -> bytes | None:
+        if source_snapshot is not None:
+            return source_snapshot.get(relative_path)
+        path = root / relative_path
+        return path.read_bytes() if path.is_file() else None
+
+    def source_text(relative_path: str) -> str | None:
+        content = source_bytes(relative_path)
+        return content.decode("utf-8") if content is not None else None
+
+    def source_yaml(relative_path: str) -> dict[str, Any]:
+        text = source_text(relative_path)
+        if text is None:
+            return {}
+        loaded = yaml.safe_load(text)
+        return loaded if isinstance(loaded, dict) else {}
+
+    workflow_bytes = source_bytes(
+        ".github/workflows/release-docker-stable.yml",
+    )
+    prerelease_workflow_bytes = source_bytes(
+        ".github/workflows/release-docker.yml",
+    )
+    dockerfile_bytes = source_bytes("Dockerfile")
+    workflow = source_yaml(".github/workflows/release-docker-stable.yml")
     prerelease_workflow = (
-        _load_yaml(prerelease_workflow_path)
-        if prerelease_workflow_path.exists()
-        else {}
+        source_yaml(".github/workflows/release-docker.yml")
     )
     workflow_on = _workflow_on(workflow)
     workflow_dispatch = (
@@ -459,17 +1149,26 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
     )
 
     try:
-        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+        pyproject_text = source_text("pyproject.toml")
+        pyproject = tomllib.loads(pyproject_text) if pyproject_text else {}
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
         pyproject = {}
     try:
-        compose = _load_yaml(compose_path)
-    except (OSError, yaml.YAMLError):
+        compose = source_yaml("docker-compose.yml")
+    except (UnicodeDecodeError, yaml.YAMLError):
         compose = {}
     try:
-        dockerfile_text = dockerfile_path.read_text(encoding="utf-8")
-    except OSError:
+        dockerfile_text = (
+            dockerfile_bytes.decode("utf-8")
+            if dockerfile_bytes is not None
+            else ""
+        )
+    except UnicodeDecodeError:
         dockerfile_text = ""
+    dockerfile_cmd = _dockerfile_final_stage_json_cmd(dockerfile_text)
+    dockerfile_entrypoint = _dockerfile_final_stage_json_entrypoint(
+        dockerfile_text,
+    )
 
     compose_command = (
         compose.get("services", {})
@@ -509,12 +1208,12 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
     )
 
     checks = {
-        "stable_workflow_policy_hash_pinned": workflow_path.is_file()
-        and _normalized_text_sha256(workflow_path)
+        "stable_workflow_policy_hash_pinned": workflow_bytes is not None
+        and _normalized_bytes_sha256(workflow_bytes)
         == REVIEWED_WORKFLOW_HASHES[str(REQUIRED_SOURCE_FILES[0])],
         "prerelease_workflow_policy_hash_pinned": (
-            prerelease_workflow_path.is_file()
-            and _normalized_text_sha256(prerelease_workflow_path)
+            prerelease_workflow_bytes is not None
+            and _normalized_bytes_sha256(prerelease_workflow_bytes)
             == REVIEWED_WORKFLOW_HASHES[str(REQUIRED_SOURCE_FILES[1])]
         ),
         "workflow_dispatch_only": isinstance(workflow_on, dict)
@@ -677,8 +1376,12 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
         == "waggledance-docker-release-aliases"
         and prerelease_concurrency.get("queue") == "max"
         and prerelease_concurrency.get("cancel-in-progress") is False,
-        "dockerfile_entrypoint_canonical": json.dumps(CANONICAL_ENTRYPOINT)
-        in dockerfile_text,
+        "dockerfile_policy_hash_pinned": dockerfile_bytes is not None
+        and _normalized_bytes_sha256(dockerfile_bytes)
+        == REVIEWED_DOCKERFILE_HASH,
+        "dockerfile_entrypoint_canonical": dockerfile_cmd
+        == CANONICAL_ENTRYPOINT
+        and dockerfile_entrypoint == [],
         "compose_entrypoint_canonical": compose_command == CANONICAL_ENTRYPOINT,
         "pyproject_script_canonical": script == CANONICAL_SCRIPT,
     }
@@ -686,27 +1389,27 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
         "checks": checks,
         "entrypoints": {
             "expected": CANONICAL_ENTRYPOINT,
-            "dockerfile_cmd": CANONICAL_ENTRYPOINT
-            if checks["dockerfile_entrypoint_canonical"]
-            else None,
+            "dockerfile_cmd": dockerfile_cmd,
+            "dockerfile_entrypoint": dockerfile_entrypoint,
             "compose_command": compose_command,
             "pyproject_script": script,
         },
         "source_files": [str(path) for path in REQUIRED_SOURCE_FILES],
         "source_hashes": {
-            str(path): _sha256(root / path)
+            str(path): _source_bytes_sha256(content)
             for path in REQUIRED_SOURCE_FILES
-            if (root / path).is_file()
+            if (content := source_bytes(str(path))) is not None
         },
     }
 
 
-def evaluate_report(
+def _evaluate_report(
     report: dict[str, Any],
     *,
     expected_commit: str | None = None,
     target_version: str = DEFAULT_TARGET_VERSION,
     source_root: Path | str = Path("."),
+    validate_derived_fields: bool,
 ) -> list[str]:
     """Return fail-closed blockers for a Docker policy evidence report."""
 
@@ -715,6 +1418,11 @@ def evaluate_report(
         blockers.append("schema_version_invalid")
     if report.get("target_version") != target_version:
         blockers.append("target_version_mismatch")
+    generated_at = _parse_utc(report.get("generated_at_utc"))
+    if generated_at is None:
+        blockers.append("generated_at_utc_invalid")
+    elif generated_at > dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5):
+        blockers.append("generated_at_utc_in_future")
     commit = report.get("commit")
     if not isinstance(commit, str) or not commit.strip():
         blockers.append("commit_missing")
@@ -722,7 +1430,29 @@ def evaluate_report(
         blockers.append("commit_mismatch")
 
     source_root = Path(source_root)
-    inspected = inspect_static_policy(source_root)
+    actual_source_commit_binding = inspect_source_commit_binding(
+        source_root,
+        commit if isinstance(commit, str) else "",
+    )
+    committed_source_snapshot = _load_committed_source_snapshot(
+        source_root,
+        commit if isinstance(commit, str) else "",
+    )
+    source_commit_binding = report.get("source_commit_binding")
+    if not isinstance(source_commit_binding, dict):
+        blockers.append("source_commit_binding_missing")
+    elif source_commit_binding != actual_source_commit_binding:
+        blockers.append("source_commit_binding_mismatch")
+    if actual_source_commit_binding.get("verified") is not True:
+        blockers.append(
+            "source_commit_not_verified:"
+            + str(actual_source_commit_binding.get("reason") or "unknown")
+        )
+
+    inspected = inspect_static_policy(
+        source_root,
+        source_snapshot=committed_source_snapshot,
+    )
     source_files = report.get("source_files")
     if not isinstance(source_files, list):
         blockers.append("source_files_missing")
@@ -730,7 +1460,10 @@ def evaluate_report(
     if source_files != inspected["source_files"]:
         blockers.append("source_files_mismatch")
     for item in source_files:
-        if not isinstance(item, str) or not (source_root / item).is_file():
+        if (
+            not isinstance(item, str)
+            or item not in committed_source_snapshot
+        ):
             blockers.append(f"source_file_missing:{item}")
 
     source_hashes = report.get("source_hashes")
@@ -759,29 +1492,129 @@ def evaluate_report(
     if not isinstance(authorization, dict):
         blockers.append("operator_authorization_missing")
     else:
+        actual_authorization_source_binding = (
+            inspect_operator_authorization_source(
+                authorization,
+                source_root=source_root,
+                commit=commit if isinstance(commit, str) else "",
+                target_version=target_version,
+            )
+        )
+        authorization_source_binding = report.get(
+            "operator_authorization_source_binding",
+        )
+        if not isinstance(authorization_source_binding, dict):
+            blockers.append("operator_authorization_source_binding_missing")
+        elif (
+            authorization_source_binding
+            != actual_authorization_source_binding
+        ):
+            blockers.append("operator_authorization_source_binding_mismatch")
+        if actual_authorization_source_binding.get("verified") is not True:
+            blockers.append(
+                "operator_authorization_source_not_verified:"
+                + str(
+                    actual_authorization_source_binding.get("reason")
+                    or "unknown"
+                )
+            )
         if authorization.get("schema_version") != AUTH_SCHEMA_VERSION:
             blockers.append("operator_authorization_schema_invalid")
         if authorization.get("target_version") != target_version:
             blockers.append("operator_authorization_target_mismatch")
-        if expected_commit is not None and authorization.get("commit") != expected_commit:
+        if authorization.get("commit") != commit:
             blockers.append("operator_authorization_commit_mismatch")
-        stable_authorized = authorization.get("stable_promotion_authorized") is True
-        docker_deferred = authorization.get("docker_promotion_deferred") is True
-        if not stable_authorized and not docker_deferred:
-            blockers.append("stable_promotion_not_authorized")
-        if authorization.get("move_latest") not in {"yes", "no"}:
-            blockers.append("move_latest_policy_missing")
-        if docker_deferred and authorization.get("move_latest") != "no":
-            blockers.append("deferred_docker_cannot_move_latest")
-        if not isinstance(
-            authorization.get("authorization_id"),
-            str,
-        ) or not authorization.get("authorization_id"):
+        commit_scope = authorization.get("commit_scope")
+        if commit_scope != "exact":
+            blockers.append("operator_authorization_commit_scope_invalid")
+        if authorization.get("decision_pack_target_version") != target_version:
+            blockers.append("operator_authorization_pack_target_mismatch")
+        decision_pack_commit = authorization.get("decision_pack_commit")
+        if decision_pack_commit != authorization.get("commit"):
+            blockers.append("operator_authorization_exact_commit_mismatch")
+        if authorization.get("source") != "operator_decision_pack":
+            blockers.append("operator_authorization_source_invalid")
+        expected_decision_id = _docker_decision_pack_id(target_version)
+        if authorization.get("decision_id") != expected_decision_id:
+            blockers.append("operator_authorization_decision_id_invalid")
+        chosen_option = authorization.get("chosen_option")
+        option_policy = (
+            DOCKER_DECISION_OPTIONS.get(chosen_option)
+            if chosen_option == REQUIRED_DOCKER_DECISION_OPTION
+            else None
+        )
+        if option_policy is None:
+            blockers.append("operator_authorization_chosen_option_invalid")
+        else:
+            for field in (
+                "stable_promotion_authorized",
+                "docker_promotion_deferred",
+                "move_latest",
+            ):
+                actual = authorization.get(field)
+                required = option_policy[field]
+                if type(actual) is not type(required) or actual != required:
+                    blockers.append(
+                        f"operator_authorization_{field}_mismatch"
+                    )
+        operator_id = authorization.get("operator_id")
+        if (
+            not isinstance(operator_id, str)
+            or not operator_id.strip()
+            or operator_id != operator_id.strip()
+        ):
+            blockers.append("operator_authorization_operator_id_missing")
+        authorization_id = authorization.get("authorization_id")
+        if not isinstance(authorization_id, str) or not authorization_id:
             blockers.append("operator_authorization_id_missing")
-        if _parse_utc(authorization.get("authorized_at_utc")) is None:
+        elif (
+            option_policy is not None
+            and isinstance(operator_id, str)
+            and operator_id.strip()
+            and authorization_id
+            != (
+                f"decision-pack:{expected_decision_id}:"
+                f"{chosen_option}:{operator_id}"
+            )
+        ):
+            blockers.append("operator_authorization_id_mismatch")
+        authorized_at = _parse_utc(authorization.get("authorized_at_utc"))
+        if authorized_at is None:
             blockers.append("operator_authorized_at_invalid")
+        elif generated_at is not None and authorized_at > generated_at:
+            blockers.append("operator_authorized_after_report_generation")
+
+    if validate_derived_fields:
+        semantic_blockers = list(blockers)
+        if report.get("post_tag_runtime_verification_required") is not True:
+            blockers.append("post_tag_runtime_verification_not_required")
+        if report.get("latest_move_requires_operator_opt_in") is not True:
+            blockers.append("latest_move_operator_opt_in_not_required")
+        if report.get("blockers") != semantic_blockers:
+            blockers.append("reported_blockers_mismatch")
+        expected_policy = "finalized" if not semantic_blockers else "draft"
+        if report.get("docker_stable_policy") != expected_policy:
+            blockers.append("docker_stable_policy_mismatch")
 
     return blockers
+
+
+def evaluate_report(
+    report: dict[str, Any],
+    *,
+    expected_commit: str | None = None,
+    target_version: str = DEFAULT_TARGET_VERSION,
+    source_root: Path | str = Path("."),
+) -> list[str]:
+    """Strictly validate semantic, provenance, and derived report fields."""
+
+    return _evaluate_report(
+        report,
+        expected_commit=expected_commit,
+        target_version=target_version,
+        source_root=source_root,
+        validate_derived_fields=True,
+    )
 
 
 def build_report(
@@ -793,25 +1626,51 @@ def build_report(
     generated_at_utc: dt.datetime | None = None,
 ) -> dict[str, Any]:
     generated_at_utc = generated_at_utc or dt.datetime.now(dt.UTC)
-    static = inspect_static_policy(source_root)
+    source_commit_binding = inspect_source_commit_binding(
+        source_root,
+        commit,
+    )
+    committed_source_snapshot = _load_committed_source_snapshot(
+        source_root,
+        commit,
+    )
+    static = inspect_static_policy(
+        source_root,
+        source_snapshot=committed_source_snapshot,
+    )
+    authorization_source_binding = (
+        inspect_operator_authorization_source(
+            operator_authorization,
+            source_root=source_root,
+            commit=commit,
+            target_version=target_version,
+        )
+        if isinstance(operator_authorization, Mapping)
+        else None
+    )
     report = {
         "schema_version": SCHEMA_VERSION,
         "target_version": target_version,
         "commit": commit,
         "generated_at_utc": _format_utc(generated_at_utc),
+        "source_commit_binding": source_commit_binding,
         "source_files": static["source_files"],
         "source_hashes": static["source_hashes"],
         "static_checks": static["checks"],
         "entrypoints": static["entrypoints"],
         "operator_authorization": operator_authorization,
+        "operator_authorization_source_binding": (
+            authorization_source_binding
+        ),
         "post_tag_runtime_verification_required": True,
         "latest_move_requires_operator_opt_in": True,
     }
-    blockers = evaluate_report(
+    blockers = _evaluate_report(
         report,
         expected_commit=commit,
         target_version=target_version,
         source_root=source_root,
+        validate_derived_fields=False,
     )
     report["blockers"] = blockers
     report["docker_stable_policy"] = "finalized" if not blockers else "draft"
@@ -833,7 +1692,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    commit = args.commit or _current_commit()
+    commit = args.commit or _current_commit(args.source_root)
     if (
         args.operator_authorization is not None
         and args.operator_decision_pack is not None
@@ -845,12 +1704,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     if args.operator_authorization is not None:
-        authorization = _read_json(args.operator_authorization)
-    elif args.operator_decision_pack is not None:
+        print(
+            "run_release_docker_policy_evidence: raw operator authorization "
+            "JSON is not accepted; use an exact-scoped signed "
+            "--operator-decision-pack",
+            file=sys.stderr,
+        )
+        return 2
+    if args.operator_decision_pack is not None:
         authorization = operator_authorization_from_decision_pack(
             args.operator_decision_pack,
             commit=commit,
             target_version=args.target_version,
+            source_root=args.source_root,
         )
     else:
         authorization = None

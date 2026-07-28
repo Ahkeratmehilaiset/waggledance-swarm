@@ -59,26 +59,56 @@ CANONICAL_ENTRYPOINT = ["python", "-m", "waggledance.adapters.cli.start_runtime"
 CANONICAL_SCRIPT = "waggledance.adapters.cli.start_runtime:main"
 REQUIRED_SOURCE_FILES = (
     ".github/workflows/release-docker-stable.yml",
+    ".github/workflows/release-docker.yml",
     "Dockerfile",
     "docker-compose.yml",
     "pyproject.toml",
     "docs/deployment/DOCKER_QUICKSTART.md",
 )
+REVIEWED_WORKFLOW_HASHES = {
+    ".github/workflows/release-docker-stable.yml": (
+        "sha256:4c567285627e2c6f95bf0afca46ed90e"
+        "35a003a11febc2fb02194a786f21c9f8"
+    ),
+    ".github/workflows/release-docker.yml": (
+        "sha256:8f5f76c476229bf1d26d97722c19dd9c"
+        "14dedd481e788caece20107258e3c4df"
+    ),
+}
 REQUIRED_STATIC_CHECKS = (
+    "stable_workflow_policy_hash_pinned",
+    "prerelease_workflow_policy_hash_pinned",
     "workflow_dispatch_only",
     "tag_input_required",
     "stable_tag_shape_guard",
     "prerelease_tag_refused",
+    "stable_tag_validation_expression_safe",
+    "stable_checkout_tag_ref_qualified",
     "move_latest_operator_gated",
     "move_latest_default_no",
     "ghcr_primary",
     "canonical_image_pushed",
+    "stable_canonical_digest_bound",
+    "stable_aliases_absent_before_smoke",
+    "stable_canonical_smoke_before_alias_promotion",
     "stable_alias_tagged",
     "profile_aliases_opt_in",
     "stable_profile_s_smoke",
     "stable_alias_smoke",
     "stable_alias_fail_closed",
     "latest_alias_smoke_if_moved",
+    "stable_alias_verification_after_promotion",
+    "prerelease_tag_shape_guard",
+    "prerelease_alias_shape_guard",
+    "prerelease_protected_aliases_refused",
+    "prerelease_validation_expression_safe",
+    "prerelease_checkout_tag_ref_qualified",
+    "prerelease_canonical_image_pushed",
+    "prerelease_canonical_digest_bound",
+    "prerelease_aliases_absent_before_smoke",
+    "prerelease_canonical_smoke_before_alias_promotion",
+    "prerelease_alias_verification_after_promotion",
+    "release_alias_concurrency_serialized",
     "dockerfile_entrypoint_canonical",
     "compose_entrypoint_canonical",
     "pyproject_script_canonical",
@@ -219,6 +249,13 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _normalized_text_sha256(path: Path) -> str:
+    """Hash UTF-8 text with platform newline translation removed."""
+
+    normalized = path.read_text(encoding="utf-8")
+    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     return loaded if isinstance(loaded, dict) else {}
@@ -233,10 +270,27 @@ def _steps(job: dict[str, Any]) -> list[dict[str, Any]]:
     return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
 
 
+def _needs(job: dict[str, Any]) -> set[str]:
+    needs = job.get("needs", [])
+    if isinstance(needs, str):
+        return {needs}
+    if isinstance(needs, list):
+        return {item for item in needs if isinstance(item, str)}
+    return set()
+
+
 def _find_step(job: dict[str, Any], needle: str) -> dict[str, Any] | None:
     needle = needle.lower()
     for step in _steps(job):
         if needle in str(step.get("name", "")).lower():
+            return step
+    return None
+
+
+def _find_uses_step(job: dict[str, Any], needle: str) -> dict[str, Any] | None:
+    needle = needle.lower()
+    for step in _steps(job):
+        if needle in str(step.get("uses", "")).lower():
             return step
     return None
 
@@ -246,11 +300,17 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
 
     root = Path(source_root)
     workflow_path = root / ".github/workflows/release-docker-stable.yml"
+    prerelease_workflow_path = root / ".github/workflows/release-docker.yml"
     dockerfile_path = root / "Dockerfile"
     compose_path = root / "docker-compose.yml"
     pyproject_path = root / "pyproject.toml"
 
     workflow = _load_yaml(workflow_path) if workflow_path.exists() else {}
+    prerelease_workflow = (
+        _load_yaml(prerelease_workflow_path)
+        if prerelease_workflow_path.exists()
+        else {}
+    )
     workflow_on = _workflow_on(workflow)
     workflow_dispatch = (
         workflow_on.get("workflow_dispatch", {})
@@ -265,15 +325,137 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
     validate_job = jobs.get("validate-tag", {}) if isinstance(jobs.get("validate-tag"), dict) else {}
     build_job = jobs.get("build-and-push", {}) if isinstance(jobs.get("build-and-push"), dict) else {}
     smoke_job = jobs.get("smoke-test", {}) if isinstance(jobs.get("smoke-test"), dict) else {}
+    promote_job = jobs.get("promote-aliases", {}) if isinstance(jobs.get("promote-aliases"), dict) else {}
+    verify_job = jobs.get("verify-aliases", {}) if isinstance(jobs.get("verify-aliases"), dict) else {}
 
     validate_run = "\n".join(str(step.get("run", "")) for step in _steps(validate_job))
     build_run = "\n".join(str(step.get("run", "")) for step in _steps(build_job))
     smoke_run = "\n".join(str(step.get("run", "")) for step in _steps(smoke_job))
+    promote_run = "\n".join(str(step.get("run", "")) for step in _steps(promote_job))
+    verify_run = "\n".join(str(step.get("run", "")) for step in _steps(verify_job))
+    validate_step = _find_step(validate_job, "validate strict stable tag")
+    stable_checkout = _find_uses_step(build_job, "actions/checkout")
     canonical_build = _find_step(build_job, "canonical stable image")
-    latest_step = _find_step(build_job, "latest")
-    latest_smoke = _find_step(smoke_job, "latest")
+    latest_step = _find_step(promote_job, "latest")
+    latest_smoke = _find_step(verify_job, "latest")
     canonical_build_with = (
         canonical_build.get("with", {}) if isinstance(canonical_build, dict) else {}
+    )
+    canonical_tags = (
+        str(canonical_build_with.get("tags", ""))
+        if isinstance(canonical_build_with, dict)
+        else ""
+    )
+    stable_validation_env = (
+        validate_step.get("env", {}) if isinstance(validate_step, dict) else {}
+    )
+    stable_build_outputs = (
+        build_job.get("outputs", {}) if isinstance(build_job.get("outputs"), dict) else {}
+    )
+    stable_checkout_with = (
+        stable_checkout.get("with", {}) if isinstance(stable_checkout, dict) else {}
+    )
+    stable_smoke_env = (
+        smoke_job.get("env", {}) if isinstance(smoke_job.get("env"), dict) else {}
+    )
+    stable_promote_env = (
+        promote_job.get("env", {}) if isinstance(promote_job.get("env"), dict) else {}
+    )
+    stable_verify_env = (
+        verify_job.get("env", {}) if isinstance(verify_job.get("env"), dict) else {}
+    )
+
+    prerelease_jobs = (
+        prerelease_workflow.get("jobs", {})
+        if isinstance(prerelease_workflow.get("jobs"), dict)
+        else {}
+    )
+    prerelease_validate_job = (
+        prerelease_jobs.get("validate-inputs", {})
+        if isinstance(prerelease_jobs.get("validate-inputs"), dict)
+        else {}
+    )
+    prerelease_build_job = (
+        prerelease_jobs.get("build-and-push", {})
+        if isinstance(prerelease_jobs.get("build-and-push"), dict)
+        else {}
+    )
+    prerelease_smoke_job = (
+        prerelease_jobs.get("smoke-test", {})
+        if isinstance(prerelease_jobs.get("smoke-test"), dict)
+        else {}
+    )
+    prerelease_promote_job = (
+        prerelease_jobs.get("promote-aliases", {})
+        if isinstance(prerelease_jobs.get("promote-aliases"), dict)
+        else {}
+    )
+    prerelease_verify_job = (
+        prerelease_jobs.get("verify-aliases", {})
+        if isinstance(prerelease_jobs.get("verify-aliases"), dict)
+        else {}
+    )
+    prerelease_validate_step = _find_step(
+        prerelease_validate_job,
+        "validate prerelease tag and aliases",
+    )
+    prerelease_checkout = _find_uses_step(
+        prerelease_build_job,
+        "actions/checkout",
+    )
+    prerelease_canonical_build = _find_step(
+        prerelease_build_job,
+        "canonical image",
+    )
+    prerelease_validate_run = "\n".join(
+        str(step.get("run", "")) for step in _steps(prerelease_validate_job)
+    )
+    prerelease_build_run = "\n".join(
+        str(step.get("run", "")) for step in _steps(prerelease_build_job)
+    )
+    prerelease_smoke_run = "\n".join(
+        str(step.get("run", "")) for step in _steps(prerelease_smoke_job)
+    )
+    prerelease_promote_run = "\n".join(
+        str(step.get("run", "")) for step in _steps(prerelease_promote_job)
+    )
+    prerelease_verify_run = "\n".join(
+        str(step.get("run", "")) for step in _steps(prerelease_verify_job)
+    )
+    prerelease_validation_env = (
+        prerelease_validate_step.get("env", {})
+        if isinstance(prerelease_validate_step, dict)
+        else {}
+    )
+    prerelease_canonical_with = (
+        prerelease_canonical_build.get("with", {})
+        if isinstance(prerelease_canonical_build, dict)
+        else {}
+    )
+    prerelease_build_outputs = (
+        prerelease_build_job.get("outputs", {})
+        if isinstance(prerelease_build_job.get("outputs"), dict)
+        else {}
+    )
+    prerelease_checkout_with = (
+        prerelease_checkout.get("with", {})
+        if isinstance(prerelease_checkout, dict)
+        else {}
+    )
+    prerelease_smoke_env = (
+        prerelease_smoke_job.get("env", {})
+        if isinstance(prerelease_smoke_job.get("env"), dict)
+        else {}
+    )
+    prerelease_promote_env = (
+        prerelease_promote_job.get("env", {})
+        if isinstance(prerelease_promote_job.get("env"), dict)
+        else {}
+    )
+    prerelease_verify_env = (
+        prerelease_verify_job.get("env", {})
+        if isinstance(prerelease_verify_job.get("env"), dict)
+        else {}
     )
 
     try:
@@ -304,39 +486,197 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
         else None
     )
 
+    stable_concurrency = (
+        workflow.get("concurrency", {})
+        if isinstance(workflow.get("concurrency"), dict)
+        else {}
+    )
+    prerelease_concurrency = (
+        prerelease_workflow.get("concurrency", {})
+        if isinstance(prerelease_workflow.get("concurrency"), dict)
+        else {}
+    )
+    stable_digest_ref = (
+        "ghcr.io/ahkeratmehilaiset/waggledance@"
+        "${{ needs.build-and-push.outputs.digest }}"
+    )
+    prerelease_digest_ref = stable_digest_ref
+    stable_alias_tokens = (
+        "waggledance:stable",
+        "waggledance:latest",
+        "waggledance:small-stable",
+        "waggledance:medium-stable",
+    )
+
     checks = {
+        "stable_workflow_policy_hash_pinned": workflow_path.is_file()
+        and _normalized_text_sha256(workflow_path)
+        == REVIEWED_WORKFLOW_HASHES[str(REQUIRED_SOURCE_FILES[0])],
+        "prerelease_workflow_policy_hash_pinned": (
+            prerelease_workflow_path.is_file()
+            and _normalized_text_sha256(prerelease_workflow_path)
+            == REVIEWED_WORKFLOW_HASHES[str(REQUIRED_SOURCE_FILES[1])]
+        ),
         "workflow_dispatch_only": isinstance(workflow_on, dict)
         and set(workflow_on) == {"workflow_dispatch"},
         "tag_input_required": isinstance(tag_input, dict)
         and tag_input.get("required") is True,
-        "stable_tag_shape_guard": "v[0-9]+\\.[0-9]+\\.[0-9]+" in validate_run,
-        "prerelease_tag_refused": "alpha|beta|rc|dev|pre" in validate_run,
+        "stable_tag_shape_guard": "v[0-9]+\\.[0-9]+\\.[0-9]+" in validate_run
+        and "re.fullmatch" in validate_run
+        and "len(tag) > 128" in validate_run,
+        "prerelease_tag_refused": "re.fullmatch" in validate_run
+        and "v[0-9]+\\.[0-9]+\\.[0-9]+" in validate_run,
+        "stable_tag_validation_expression_safe": isinstance(
+            stable_validation_env,
+            dict,
+        )
+        and stable_validation_env.get("INPUT_TAG") == "${{ inputs.tag }}"
+        and "${{ inputs.tag }}" not in validate_run
+        and 0 <= validate_run.find("re.fullmatch") < validate_run.find("with open"),
+        "stable_checkout_tag_ref_qualified": isinstance(
+            stable_checkout_with,
+            dict,
+        )
+        and stable_checkout_with.get("ref")
+        == "refs/tags/${{ needs.validate-tag.outputs.tag }}",
         "move_latest_operator_gated": isinstance(latest_step, dict)
         and "inputs.move_latest == 'yes'" in str(latest_step.get("if", "")),
         "move_latest_default_no": isinstance(move_latest, dict)
         and move_latest.get("default") == "no"
         and set(move_latest.get("options", [])) == {"yes", "no"},
-        "ghcr_primary": "ghcr.io/ahkeratmehilaiset/waggledance" in build_run
-        and "docker.io" not in build_run.lower(),
+        "ghcr_primary": "ghcr.io/ahkeratmehilaiset/waggledance" in canonical_tags
+        and "docker.io" not in canonical_tags.lower(),
         "canonical_image_pushed": isinstance(canonical_build, dict)
         and "docker/build-push-action" in str(canonical_build.get("uses", ""))
         and isinstance(canonical_build_with, dict)
-        and canonical_build_with.get("push") is True,
-        "stable_alias_tagged": "waggledance:stable" in build_run,
+        and canonical_build_with.get("push") is True
+        and canonical_build.get("id") == "canonical",
+        "stable_canonical_digest_bound": stable_build_outputs.get("digest")
+        == "${{ steps.canonical.outputs.digest }}"
+        and stable_smoke_env.get("SOURCE_REF") == stable_digest_ref
+        and stable_promote_env.get("SOURCE_REF") == stable_digest_ref
+        and stable_verify_env.get("SOURCE_REF") == stable_digest_ref
+        and '"$SOURCE_REF"' in smoke_run
+        and promote_run.count('"$SOURCE_REF"')
+        == promote_run.count("imagetools create")
+        and promote_run.count("imagetools create")
+        == promote_run.count("--prefer-index=false")
+        and promote_run.count("imagetools create") > 0,
+        "stable_aliases_absent_before_smoke": "imagetools create" not in build_run
+        and not any(token in canonical_tags for token in stable_alias_tokens),
+        "stable_canonical_smoke_before_alias_promotion": {
+            "validate-tag",
+            "build-and-push",
+            "smoke-test",
+        }
+        <= _needs(promote_job),
+        "stable_alias_tagged": "waggledance:stable" in promote_run,
         "profile_aliases_opt_in": isinstance(profile_aliases, dict)
         and profile_aliases.get("default") == "yes"
-        and "small-stable" in build_run
-        and "medium-stable" in build_run,
+        and "small-stable" in promote_run
+        and "medium-stable" in promote_run,
         "stable_profile_s_smoke": "SMOKE_OK_STABLE" in smoke_run
         and "WAGGLE_PROFILE=small" in smoke_run,
-        "stable_alias_smoke": "waggledance:stable" in smoke_run
-        and "CANONICAL_DIGEST" in smoke_run,
-        "stable_alias_fail_closed": "::error::stable alias" in smoke_run
-        and "exit 1" in smoke_run
-        and "::warning::stable alias" not in smoke_run,
+        "stable_alias_smoke": "waggledance:stable" in verify_run
+        and "waggledance:small-stable" in verify_run
+        and "waggledance:medium-stable" in verify_run
+        and verify_run.count("docker buildx imagetools inspect") == 4
+        and verify_run.count("{{json .Manifest}}") == 4
+        and verify_run.count('EXPECTED_DIGEST="${SOURCE_REF#*@}"') == 4,
+        "stable_alias_fail_closed": "::error::stable alias" in verify_run
+        and "exit 1" in verify_run
+        and "::warning::stable alias" not in verify_run,
         "latest_alias_smoke_if_moved": isinstance(latest_smoke, dict)
         and "inputs.move_latest == 'yes'" in str(latest_smoke.get("if", ""))
         and "waggledance:latest" in str(latest_smoke.get("run", "")),
+        "stable_alias_verification_after_promotion": "promote-aliases"
+        in _needs(verify_job)
+        and "waggledance:stable" in verify_run
+        and "docker buildx imagetools inspect" in verify_run,
+        "prerelease_tag_shape_guard": "prerelease_shape" in prerelease_validate_run
+        and "fullmatch(tag)" in prerelease_validate_run
+        and "len(tag) <= 128" in prerelease_validate_run,
+        "prerelease_alias_shape_guard": "alias_shape" in prerelease_validate_run
+        and "fullmatch(promote_alias)" in prerelease_validate_run
+        and "len(promote_alias) > 128" in prerelease_validate_run,
+        "prerelease_protected_aliases_refused": all(
+            alias in prerelease_validate_run
+            for alias in ("latest", "stable", "small-stable", "medium-stable")
+        )
+        and "promote_alias in protected_aliases" in prerelease_validate_run
+        and "version_alias_shape.match(promote_alias)"
+        in prerelease_validate_run
+        and 'promote_alias.startswith(("small-", "medium-"))'
+        in prerelease_validate_run,
+        "prerelease_validation_expression_safe": isinstance(
+            prerelease_validation_env,
+            dict,
+        )
+        and prerelease_validation_env.get("INPUT_TAG") == "${{ inputs.tag }}"
+        and prerelease_validation_env.get("INPUT_PROMOTE_ALIAS")
+        == "${{ inputs.promote_alias }}"
+        and prerelease_validation_env.get("RELEASE_TAG")
+        == "${{ github.event.release.tag_name }}"
+        and "${{" not in prerelease_validate_run
+        and 0
+        <= prerelease_validate_run.find("if errors:")
+        < prerelease_validate_run.find("with open"),
+        "prerelease_checkout_tag_ref_qualified": isinstance(
+            prerelease_checkout_with,
+            dict,
+        )
+        and prerelease_checkout_with.get("ref")
+        == "refs/tags/${{ needs.validate-inputs.outputs.tag }}",
+        "prerelease_canonical_image_pushed": isinstance(
+            prerelease_canonical_build,
+            dict,
+        )
+        and "docker/build-push-action"
+        in str(prerelease_canonical_build.get("uses", ""))
+        and isinstance(prerelease_canonical_with, dict)
+        and prerelease_canonical_with.get("push") is True
+        and prerelease_canonical_build.get("id") == "canonical",
+        "prerelease_canonical_digest_bound": prerelease_build_outputs.get(
+            "digest",
+        )
+        == "${{ steps.canonical.outputs.digest }}"
+        and prerelease_smoke_env.get("SOURCE_REF") == prerelease_digest_ref
+        and prerelease_promote_env.get("SOURCE_REF") == prerelease_digest_ref
+        and prerelease_verify_env.get("SOURCE_REF") == prerelease_digest_ref
+        and '"$SOURCE_REF"' in prerelease_smoke_run
+        and prerelease_promote_run.count('"$SOURCE_REF"')
+        == prerelease_promote_run.count("imagetools create")
+        and prerelease_promote_run.count("imagetools create")
+        == prerelease_promote_run.count("--prefer-index=false")
+        and prerelease_promote_run.count("imagetools create") > 0,
+        "prerelease_aliases_absent_before_smoke": "imagetools create"
+        not in prerelease_build_run,
+        "prerelease_canonical_smoke_before_alias_promotion": {
+            "validate-inputs",
+            "build-and-push",
+            "smoke-test",
+        }
+        <= _needs(prerelease_promote_job)
+        and "imagetools create" in prerelease_promote_run,
+        "prerelease_alias_verification_after_promotion": "promote-aliases"
+        in _needs(prerelease_verify_job)
+        and prerelease_verify_env.get("SOURCE_REF") == prerelease_digest_ref
+        and prerelease_verify_run.count("docker buildx imagetools inspect") == 3
+        and prerelease_verify_run.count("{{json .Manifest}}") == 3
+        and prerelease_verify_run.count(
+            'EXPECTED_DIGEST="${SOURCE_REF#*@}"'
+        )
+        == 3
+        and "::error::requested prerelease alias" in prerelease_verify_run
+        and "exit 1" in prerelease_verify_run,
+        "release_alias_concurrency_serialized": stable_concurrency.get("group")
+        == "waggledance-docker-release-aliases"
+        and stable_concurrency.get("queue") == "max"
+        and stable_concurrency.get("cancel-in-progress") is False
+        and prerelease_concurrency.get("group")
+        == "waggledance-docker-release-aliases"
+        and prerelease_concurrency.get("queue") == "max"
+        and prerelease_concurrency.get("cancel-in-progress") is False,
         "dockerfile_entrypoint_canonical": json.dumps(CANONICAL_ENTRYPOINT)
         in dockerfile_text,
         "compose_entrypoint_canonical": compose_command == CANONICAL_ENTRYPOINT,

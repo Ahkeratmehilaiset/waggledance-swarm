@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.adapters.config.settings_loader import WaggleSettings
 from waggledance.bootstrap.container import Container
@@ -416,12 +418,36 @@ def test_enabled_container_failure_injects_non_none_noop_and_blocks_private_fall
     assert captured["chat_served_emitter"] is emitter
 
 
+@pytest.mark.parametrize(
+    "gap_point",
+    [None, "llm"],
+    ids=["all-receipts", "one-explicit-gap"],
+)
 def test_container_runtime_window_completes_real_five_point_measurement(
     tmp_path: Path,
+    monkeypatch,
+    gap_point: str | None,
 ) -> None:
+    from waggledance.core.magma import chat_served_claim_window_evidence as evidence
+
     receipt_root = tmp_path / "receipts"
     evidence_root = tmp_path / "evidence"
     registry_path = tmp_path / "receiver" / "verified-windows.jsonl"
+    verification_results = []
+    marker_exists_at_verification = []
+    verify_production_window = evidence.verify_production_window
+
+    def capture_verification(**kwargs):
+        marker_exists_at_verification.append(marker_path.exists())
+        result = verify_production_window(**kwargs)
+        verification_results.append(result)
+        return result
+
+    monkeypatch.setattr(
+        evidence,
+        "verify_production_window",
+        capture_verification,
+    )
     container = Container(
         settings=_settings_with_chat_served_receipts(
             {
@@ -442,12 +468,30 @@ def test_container_runtime_window_completes_real_five_point_measurement(
     )
     window = container.chat_served_runtime_window
     emitter = container.chat_served_emitter
+    marker_path = Path(
+        container._chat_served_claim_window_binding[
+            "clean_shutdown_marker_path"
+        ]
+    )
+    real_write_bundle = emitter._write_bundle
+    served_ids = {
+        point: new_served_id()
+        for point in sorted(REQUIRED_CHAT_SERVED_POINTS)
+    }
+    gap_served_id = served_ids.get(gap_point)
+
+    def write_bundle_or_gap(summary, now, ordinal, served_id):
+        if served_id == gap_served_id:
+            raise RuntimeError("forced receipt build failure")
+        return real_write_bundle(summary, now, ordinal, served_id)
+
+    emitter._write_bundle = write_bundle_or_gap
 
     async def run():
         started = await window.start()
         assert started.status == "running"
         for point in sorted(REQUIRED_CHAT_SERVED_POINTS):
-            served_id = new_served_id()
+            served_id = served_ids[point]
             query = f"private {point} query DO_NOT_LEAK"
             assert emitter.record_pending(
                 served_id,
@@ -472,6 +516,22 @@ def test_container_runtime_window_completes_real_five_point_measurement(
                 agent_id=None,
                 language="fi",
                 profile="HOME",
+                route_stage_trace=(
+                    [
+                        {
+                            "stage": "route_selection",
+                            "route_type": "solver",
+                            "solver_intent": "chat",
+                        },
+                        {
+                            "stage": "deterministic_solver",
+                            "intent": "chat",
+                            "answered": True,
+                        },
+                    ]
+                    if point == "solver"
+                    else None
+                ),
             )
         return await window.shutdown()
 
@@ -481,11 +541,32 @@ def test_container_runtime_window_completes_real_five_point_measurement(
     assert result.lifecycle_verified is True
     assert result.clean_marker_written is True
     assert result.registry_state == "reserved_pre_marker"
-    marker_path = Path(
-        container._chat_served_claim_window_binding[
-            "clean_shutdown_marker_path"
-        ]
-    )
+    accounting = coverage_from_ledger(str(receipt_root / "ledger.jsonl"))
+    expected_gaps = int(gap_point is not None)
+    assert accounting.served == len(REQUIRED_CHAT_SERVED_POINTS)
+    assert accounting.receipts == len(REQUIRED_CHAT_SERVED_POINTS) - expected_gaps
+    assert accounting.gaps == expected_gaps
+    assert accounting.unresolved_pending == 0
+    assert accounting.ratio == (1.0 if gap_point is None else 0.8)
+    assert accounting.eligible is (gap_point is None)
+    assert accounting.reason == (None if gap_point is None else "gaps_present")
+    assert len(verification_results) == 1
+    assert marker_exists_at_verification == [False]
+    verification = verification_results[0]
+    assert verification.ok is True
+    assert verification.phase == "pre_marker_verified"
+    assert verification.marker_verified is False
+    assert verification.ledger_entries == 2 * len(REQUIRED_CHAT_SERVED_POINTS)
+    assert verification.receipt_terminals == accounting.receipts
+    assert verification.receipt_index_entries == accounting.receipts
+    assert verification.served_total == len(REQUIRED_CHAT_SERVED_POINTS)
+    assert verification.served_with_receipt_total == accounting.receipts
+    assert verification.served_with_receipt_ratio == accounting.ratio
+    assert verification.solver_first_served_total == 1
+    assert verification.solver_first_served_ratio == 0.2
+    assert verification.measurement_only is True
+    assert verification.claim_safe_count == 0
+    assert verification.authority == "measurement_only"
     assert marker_path.exists()
     registry = ChatServedWindowRegistry(registry_path).snapshot()
     assert registry.consumed_window_ids == (result.window_id,)

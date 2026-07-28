@@ -818,11 +818,103 @@ def test_drain_accounts_receipt_failure_resolved_as_gap(tmp_path) -> None:
         return await emitter.drain(1.0)
 
     result = asyncio.run(run())
+    assert result["status"] == "drained"
+    assert result["reason"] is None
+    assert result["completed"] == 1
+    assert result["failed"] == 0
+    assert result["cancelled"] == 0
+    assert sink.counts()["gaps"] == 1
+
+
+class _ForgedTerminalString(str):
+    pass
+
+
+class _EqualityForgingOutcome:
+    def __eq__(self, _other):
+        return True
+
+    def __ne__(self, _other):
+        return False
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        None,
+        "unresolved",
+        _ForgedTerminalString("receipt"),
+        _ForgedTerminalString("gap"),
+        _EqualityForgingOutcome(),
+    ],
+)
+def test_drain_rejects_nonexact_or_unresolved_terminal_outcomes(
+    tmp_path,
+    outcome,
+) -> None:
+    emitter, _sink, _ledger = _emitter(tmp_path)
+
+    async def fake_resolve(_served_id, **_kwargs):
+        return outcome
+
+    emitter._resolve = fake_resolve
+
+    async def run() -> dict[str, object]:
+        emitter.schedule_receipt(
+            new_served_id(),
+            query="q",
+            response="a",
+            source="solver",
+            route_type="solver",
+            confidence=1.0,
+            latency_ms=1.0,
+            cached=False,
+            round_table=False,
+            agent_id=None,
+            language="fi",
+            profile="HOME",
+        )
+        emitter.close_intake()
+        return await emitter.drain(1.0)
+
+    result = asyncio.run(run())
+    assert result["status"] == "not_clean"
     assert result["reason"] == "task_failures"
     assert result["completed"] == 1
     assert result["failed"] == 1
-    assert result["cancelled"] == 0
-    assert sink.counts()["gaps"] == 1
+
+
+def test_drain_rejects_receipt_task_exception(tmp_path) -> None:
+    emitter, _sink, _ledger = _emitter(tmp_path)
+
+    async def fake_resolve(_served_id, **_kwargs):
+        raise RuntimeError("receipt task failed")
+
+    emitter._resolve = fake_resolve
+
+    async def run() -> dict[str, object]:
+        emitter.schedule_receipt(
+            new_served_id(),
+            query="q",
+            response="a",
+            source="solver",
+            route_type="solver",
+            confidence=1.0,
+            latency_ms=1.0,
+            cached=False,
+            round_table=False,
+            agent_id=None,
+            language="fi",
+            profile="HOME",
+        )
+        emitter.close_intake()
+        return await emitter.drain(1.0)
+
+    result = asyncio.run(run())
+    assert result["status"] == "not_clean"
+    assert result["reason"] == "task_failures"
+    assert result["completed"] == 1
+    assert result["failed"] == 1
 
 
 def test_end_to_end_pending_then_receipt_eligible(tmp_path) -> None:

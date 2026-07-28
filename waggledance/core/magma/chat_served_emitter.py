@@ -247,7 +247,11 @@ class ChatServedEmitter:
         except BaseException:  # noqa: BLE001 -- account even unusual task failures
             self._failed_tasks += 1
             return
-        if outcome != "receipt":
+        # A durable explicit gap is a completed measurement terminal, not a
+        # task failure.  Keep every other outcome fail-closed, and require an
+        # exact built-in string so equality-forging subclasses cannot make an
+        # unresolved task look clean.
+        if type(outcome) is not str or outcome not in ("receipt", "gap"):
             self._failed_tasks += 1
 
     def _drain_result(

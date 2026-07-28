@@ -47,8 +47,28 @@ function Add-Check {
 
 $tempTaskId = "bridge-guard-smoke-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $cleanupRequired = $false
-
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
+$savedRuntimeRoot = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_RUNTIME_ROOT',
+    'Process'
+)
+$tempRuntimeRoot = ''
 try {
+    $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    $tempRuntimeRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $tempBase "waggledance-bridge-guard-$([guid]::NewGuid().ToString('N'))")
+    )
+    if (-not $tempRuntimeRoot.StartsWith(
+            $tempBase,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "temporary guard runtime escaped the system temp root: $tempRuntimeRoot"
+    }
+    [void](New-Item -ItemType Directory -Path $tempRuntimeRoot -Force)
+    $env:AGENT_BRIDGE_RUNTIME_ROOT = $tempRuntimeRoot
+
     Write-Host 'Bridge guard smoke test' -ForegroundColor Cyan
     Write-Host '======================='
     Write-Host ''
@@ -106,7 +126,7 @@ try {
         -Detail "git status exit=$LASTEXITCODE"
 
     # ── 5: claude -Force is REJECTED ─────────────────────────────
-    Write-Host '   Claude -Force is rejected (only operator/system may force):'
+    Write-Host '   Claude -Force is rejected (only a bound operator may force):'
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $rawLines = & $invokeGit -Agent claude -Force -- switch main 2>&1
@@ -146,11 +166,29 @@ try {
         -Detail "did_not_throw=$statusOk"
 
 } finally {
-    if ($cleanupRequired) {
-        Write-Host ''
-        Write-Host 'Cleanup: releasing temporary codex claim...'
-        & $releaseTask -Agent codex -TaskId $tempTaskId `
-            -Status done -Message 'smoke-test cleanup' | Out-Null
+    try {
+        if ($cleanupRequired) {
+            Write-Host ''
+            Write-Host 'Cleanup: releasing temporary codex claim...'
+            & $releaseTask -Agent codex -TaskId $tempTaskId `
+                -Status done -Message 'smoke-test cleanup' | Out-Null
+        }
+    } finally {
+        try {
+            if ($null -ne $savedRuntimeRoot) {
+                $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRuntimeRoot
+            } else {
+                Remove-Item Env:AGENT_BRIDGE_RUNTIME_ROOT `
+                    -ErrorAction SilentlyContinue
+            }
+            Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
+        } finally {
+            if ($tempRuntimeRoot -and
+                (Test-Path -LiteralPath $tempRuntimeRoot -PathType Container)) {
+                Remove-Item -LiteralPath $tempRuntimeRoot -Recurse -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 

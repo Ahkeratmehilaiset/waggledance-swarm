@@ -8,9 +8,9 @@
     `bridge-branch-switch-during-active-claim-2026-05-09` filed by
     Codex on 2026-05-09T11:30Z.
 
-    The bridge runs as multiple agents sharing a single worktree
-    (C:\Python\project2-master). When one agent has an active write
-    claim, another agent doing `git switch / checkout / rebase /
+    When multiple agents share the canonical source worktree
+    (C:\Python\project2), one agent can hold an active write
+    claim while another agent doing `git switch / checkout / rebase /
     merge` mutates the first agent's working tree from under them -
     they may stage stale paths or commit on the wrong branch.
 
@@ -34,7 +34,7 @@
     claims (own-agent claims do not block; they're your work).
 
 .PARAMETER Force
-    Override the safety check and emit a `decision/override` event
+    Bound-operator-only override. Emits a `decision/override` event
     so the audit trail captures the unsafe switch.
 
 .PARAMETER Json
@@ -44,7 +44,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [switch] $Force,
@@ -53,6 +52,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+if ($Force -and $Agent -cne 'operator') {
+    Write-Error -Message '-Force is restricted to a bound operator session' `
+        -Category PermissionDenied -ErrorAction Continue
+    exit 2
+}
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
@@ -95,6 +103,47 @@ $blocking = @(
             $_.agent -notin @('operator','system')
         }
 )
+
+function Write-BranchSwitchOverrideAudit {
+    param([Parameter(Mandatory)] [object[]] $BlockingClaims)
+
+    $writeAgentEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
+    if (-not (Test-Path -LiteralPath $writeAgentEvent -PathType Leaf)) {
+        throw 'cannot authorize branch-switch override without Write-AgentEvent.ps1'
+    }
+
+    $blockedBy = @(
+        $BlockingClaims | ForEach-Object {
+            [pscustomobject]@{
+                task_id = [string]$_.task_id
+                agent   = [string]$_.agent
+            }
+        }
+    )
+    $payload = [pscustomobject]@{
+        override_reason = 'force'
+        blocked_by      = $blockedBy
+    }
+    $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $taskId = "bridge-branch-switch-override-$stamp"
+    $msg = "Branch-switch override: $($BlockingClaims.Count) active write claim(s) by other agent(s) at switch time."
+    & $writeAgentEvent `
+        -Agent $Agent `
+        -Type decision `
+        -Status override `
+        -Severity medium `
+        -TaskId $taskId `
+        -Message $msg `
+        -PayloadJson $payloadJson |
+        Out-Null
+}
+
+# Record the unsafe override before either the JSON or human output path can
+# return success. Audit unavailability is fail-closed.
+if ($blocking.Count -gt 0 -and $Force) {
+    Write-BranchSwitchOverrideAudit -BlockingClaims $blocking
+}
 
 if ($Json) {
     [pscustomobject]@{
@@ -155,34 +204,6 @@ if ($Force) {
     Write-Host ''
     Write-Host "OVERRIDE - proceeding with branch switch despite active claims." `
         -ForegroundColor Red
-    $writeAgentEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
-    if (Test-Path -LiteralPath $writeAgentEvent) {
-        $blockedBy = @(
-            $blocking | ForEach-Object {
-                [pscustomobject]@{
-                    task_id = [string]$_.task_id
-                    agent   = [string]$_.agent
-                }
-            }
-        )
-        $payload = [pscustomobject]@{
-            override_reason = 'force'
-            blocked_by      = $blockedBy
-        }
-        $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
-        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-        $taskId = "bridge-branch-switch-override-$stamp"
-        $msg = "Branch-switch override: $($blocking.Count) active write claim(s) by other agent(s) at switch time."
-        & $writeAgentEvent `
-            -Agent $Agent `
-            -Type decision `
-            -Status override `
-            -Severity medium `
-            -TaskId $taskId `
-            -Message $msg `
-            -PayloadJson $payloadJson `
-            | Out-Null
-    }
     exit 0
 }
 

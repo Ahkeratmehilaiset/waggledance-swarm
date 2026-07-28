@@ -13,7 +13,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [int] $Tail = 5000,
@@ -27,6 +26,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
     [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
@@ -52,15 +55,23 @@ if (
 }
 
 function ConvertTo-BridgeUtcDateTime {
-    param([string] $Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    param([object] $Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).UtcDateTime
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
     $styles = (
         [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
         [System.Globalization.DateTimeStyles]::AdjustToUniversal
     )
     try {
         return ([System.DateTimeOffset]::Parse(
-            $Value,
+            $text,
             [System.Globalization.CultureInfo]::InvariantCulture,
             $styles
         )).UtcDateTime
@@ -171,7 +182,7 @@ $requestsForAgent = @(
 $freshRequestsForAgent = New-Object System.Collections.Generic.List[object]
 $staleRequests = New-Object System.Collections.Generic.List[object]
 foreach ($req in $requestsForAgent) {
-    $requestTs = ConvertTo-BridgeUtcDateTime -Value ([string]$req.ts_utc)
+    $requestTs = ConvertTo-BridgeUtcDateTime -Value $req.ts_utc
     if ($null -ne $requestTs -and $requestTs -lt $openRequestCutoffUtc) {
         [void]$staleRequests.Add($req)
     } else {
@@ -182,12 +193,16 @@ foreach ($req in $requestsForAgent) {
 function Test-BridgeRequestStillOpen {
     param([Parameter(Mandatory)] [object] $Request)
 
+    $requestTs = ConvertTo-BridgeUtcDateTime -Value $Request.ts_utc
     $answer = @(
         $events |
             Where-Object {
+                $eventTs = ConvertTo-BridgeUtcDateTime -Value $_.ts_utc
                 [string]$_.agent -eq $Agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
-                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
+                $null -ne $requestTs -and
+                $null -ne $eventTs -and
+                $eventTs -gt $requestTs -and
                 (Test-BridgeAnswerEvent -Event $_)
             } |
             Select-Object -First 1
@@ -196,9 +211,12 @@ function Test-BridgeRequestStillOpen {
     $requesterClosure = @(
         $events |
             Where-Object {
+                $eventTs = ConvertTo-BridgeUtcDateTime -Value $_.ts_utc
                 [string]$_.agent -eq [string]$Request.agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
-                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
+                $null -ne $requestTs -and
+                $null -ne $eventTs -and
+                $eventTs -gt $requestTs -and
                 (Test-BridgeRequesterClosureEvent -Event $_)
             } |
             Select-Object -First 1

@@ -7,10 +7,10 @@ We are continuing WaggleDance v3.13.0 release-prep from the 2026-05-15 cottage p
 
 Source of truth:
 - GitHub main and persistent C-drive repo/worktrees only.
-- Start in C:\Python\project2-master.
+- Start in C:\Python\project2.
 - Read docs/handoffs/2026-05-15-v3.13.0-cottage-session-parking.md first.
 - Do not use temp/RAM/U: paths for source work.
-- Use dedicated C:\Python\project2-worktrees\... worktrees for new write scopes.
+- Use dedicated C:\Python\waggledance-agent-worktrees\... worktrees for new write scopes.
 - Use tools/savepoint.ps1 for every green checkpoint after staging only intended files.
 
 Release rule:

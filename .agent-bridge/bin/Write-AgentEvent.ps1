@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
+    [Parameter(Mandatory)] [string] $Agent,
     [Parameter(Mandatory)] [ValidateSet('status','intent','claim','release','message','finding','decision','test','blocked','handoff','done','heartbeat','wake_request','liveness')] [string] $Type,
     [string] $TaskId = '',
     [string] $Status = '',
@@ -15,11 +15,200 @@ param(
     [string] $AgentUuid = '',
     [string] $SessionId = '',
     [string[]] $Capabilities = @(),
-    [string] $PayloadJson = '{}'
+    [string] $PayloadJson = '{}',
+    [string] $InternalStaleLeaseArchivePath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+
+function ConvertTo-BridgeInvariantUtcText {
+    param([object] $Value)
+
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime().ToString(
+            'o',
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime().ToString(
+            'o',
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    return [string]$Value
+}
+
+# Stale-claim sweeping emits the existing internal `system` release event.
+# The exception is bound to the canonical sweep caller and to the archived
+# claim it just removed; public arguments alone never grant system identity.
+$hasInternalStaleLeaseShape = (
+    $Agent -ceq 'system' -and
+    $Type -ceq 'release' -and
+    $Status -ceq 'stale_lease' -and
+    -not [string]::IsNullOrWhiteSpace($TaskId)
+)
+$expectedStaleSweepPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1')
+)
+$callerPath = if ($MyInvocation.PSCommandPath) {
+    [System.IO.Path]::GetFullPath([string]$MyInvocation.PSCommandPath)
+} else {
+    ''
+}
+$hasCanonicalStaleSweepCaller = (
+    $hasInternalStaleLeaseShape -and
+    [string]::Equals(
+        $callerPath,
+        $expectedStaleSweepPath,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+)
+$isInternalStaleLeaseRelease = $false
+if ($hasCanonicalStaleSweepCaller) {
+    if ([string]::IsNullOrWhiteSpace($InternalStaleLeaseArchivePath)) {
+        throw 'internal system stale_lease release requires an archived claim proof'
+    }
+
+    $proofBridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
+        [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+    } else {
+        Split-Path -Parent $PSScriptRoot
+    }
+    $proofDoneDir = [System.IO.Path]::GetFullPath(
+        (Join-Path $proofBridgeRoot 'work_queue\done')
+    )
+    $proofArchivePath = [System.IO.Path]::GetFullPath(
+        $InternalStaleLeaseArchivePath
+    )
+    $proofArchiveParent = [System.IO.Path]::GetDirectoryName($proofArchivePath)
+    if (-not [string]::Equals(
+            $proofArchiveParent,
+            $proofDoneDir,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $proofArchivePath.EndsWith(
+            '.stale_lease.json',
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'internal system stale_lease archive proof must be under work_queue/done'
+    }
+    if (-not (Test-Path -LiteralPath $proofArchivePath -PathType Leaf)) {
+        throw 'internal system stale_lease archive proof does not exist'
+    }
+
+    try {
+        $proofClaim = Get-Content -Raw -LiteralPath $proofArchivePath -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw 'internal system stale_lease archive proof is not valid JSON'
+    }
+    if (-not $proofClaim.PSObject.Properties['task_id'] -or
+        [string]$proofClaim.task_id -cne $TaskId -or
+        -not $proofClaim.PSObject.Properties['release_status'] -or
+        [string]$proofClaim.release_status -cne 'stale_lease' -or
+        -not $proofClaim.PSObject.Properties['released_at_utc'] -or
+        [string]::IsNullOrWhiteSpace([string]$proofClaim.released_at_utc)) {
+        throw 'internal system stale_lease archive proof does not match the released task'
+    }
+
+    try {
+        $proofPayload = ([string]$PayloadJson) |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw 'internal system stale_lease payload must be valid JSON'
+    }
+    if (-not $proofPayload.PSObject.Properties['archived_path']) {
+        throw 'internal system stale_lease payload must identify the archived claim proof'
+    }
+    $payloadArchivePath = [System.IO.Path]::GetFullPath(
+        [string]$proofPayload.archived_path
+    )
+    if (-not [string]::Equals(
+            $payloadArchivePath,
+            $proofArchivePath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'internal system stale_lease payload archive does not match its proof'
+    }
+    foreach ($requiredGenerationField in @(
+            'claim_claimed_at_utc',
+            'claim_run_id',
+            'archive_released_at_utc',
+            'archive_state_semantics'
+        )) {
+        if (-not $proofPayload.PSObject.Properties[$requiredGenerationField]) {
+            throw 'internal system stale_lease payload must identify the archived claim generation'
+        }
+    }
+    $proofClaimedAtUtc = if ($proofClaim.PSObject.Properties['claimed_at_utc']) {
+        ConvertTo-BridgeInvariantUtcText -Value $proofClaim.claimed_at_utc
+    } else {
+        ''
+    }
+    $proofRunId = if ($proofClaim.PSObject.Properties['run_id']) {
+        [string]$proofClaim.run_id
+    } else {
+        ''
+    }
+    $payloadClaimedAtUtc = ConvertTo-BridgeInvariantUtcText `
+        -Value $proofPayload.claim_claimed_at_utc
+    if ($payloadClaimedAtUtc -cne $proofClaimedAtUtc) {
+        throw 'internal system stale_lease payload claimed_at generation does not match its proof'
+    }
+    if ([string]$proofPayload.claim_run_id -cne $proofRunId) {
+        throw 'internal system stale_lease payload run_id generation does not match its proof'
+    }
+    $proofReleasedAtUtc = ConvertTo-BridgeInvariantUtcText `
+        -Value $proofClaim.released_at_utc
+    $payloadReleasedAtUtc = ConvertTo-BridgeInvariantUtcText `
+        -Value $proofPayload.archive_released_at_utc
+    if ($payloadReleasedAtUtc -cne $proofReleasedAtUtc) {
+        throw 'internal system stale_lease payload released_at generation does not match its proof'
+    }
+    if ([string]$proofPayload.archive_state_semantics -cne
+        'verified_before_event_append') {
+        throw 'internal system stale_lease payload semantics do not match its proof'
+    }
+
+    $proofClaimsDir = Join-Path $proofBridgeRoot 'work_queue\claims'
+    if (-not (Test-Path -LiteralPath $proofClaimsDir -PathType Container)) {
+        throw 'internal system stale_lease release cannot verify active claims'
+    }
+    try {
+        $activeClaimFiles = @(
+            Get-ChildItem -LiteralPath $proofClaimsDir `
+                -Filter '*.json' -File -ErrorAction Stop
+        )
+    } catch {
+        throw 'internal system stale_lease release cannot verify active claims'
+    }
+    foreach ($activeClaimFile in $activeClaimFiles) {
+        try {
+            $activeClaim = Get-Content -Raw -LiteralPath $activeClaimFile.FullName `
+                -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw 'internal system stale_lease release cannot verify active claims'
+        }
+        if ($activeClaim.PSObject.Properties['task_id'] -and
+            [string]$activeClaim.task_id -ceq $TaskId) {
+            throw 'internal system stale_lease release conflicts with an active claim'
+        }
+    }
+
+    $isInternalStaleLeaseRelease = $true
+}
+if ($Agent -ceq 'system' -and -not $isInternalStaleLeaseRelease) {
+    throw 'identity_mismatch: system agent is reserved for the verified stale-claim sweep'
+}
+Assert-AgentBridgeSessionIdentity `
+    -RequestedAgent $Agent `
+    -AllowInternalStaleLeaseRelease:$isInternalStaleLeaseRelease
 
 $privateMarkers = @('PRIVATE_MARKER', '_DO_NOT_LEAK')
 function Assert-NoPrivateMarker {
@@ -99,31 +288,56 @@ function Assert-BridgeAgentTargets {
     }
 }
 
-$Role = Resolve-BridgeMetadataString -Explicit $Role -EnvName 'AGENT_BRIDGE_ROLE'
-$AgentUuid = Resolve-BridgeMetadataString -Explicit $AgentUuid -EnvName 'AGENT_BRIDGE_AGENT_UUID'
-$SessionId = Resolve-BridgeMetadataString -Explicit $SessionId -EnvName 'AGENT_BRIDGE_SESSION_ID'
-$Capabilities = @(Resolve-BridgeCapabilities -Explicit $Capabilities)
+if ($isInternalStaleLeaseRelease) {
+    if ($RunId -or $Role -or $AgentUuid -or $SessionId -or @($Capabilities).Count -gt 0) {
+        throw 'internal system stale_lease release must not carry agent identity metadata'
+    }
+    $RunId = ''
+    $Role = ''
+    $AgentUuid = ''
+    $SessionId = ''
+    $Capabilities = @()
+} else {
+    if (-not $RunId) {
+        $RunId = if ($env:AGENT_BRIDGE_RUN_ID) {
+            [string]$env:AGENT_BRIDGE_RUN_ID
+        } else {
+            ''
+        }
+    }
+    $Role = Resolve-BridgeMetadataString -Explicit $Role -EnvName 'AGENT_BRIDGE_ROLE'
+    $AgentUuid = Resolve-BridgeMetadataString -Explicit $AgentUuid -EnvName 'AGENT_BRIDGE_AGENT_UUID'
+    $SessionId = Resolve-BridgeMetadataString -Explicit $SessionId -EnvName 'AGENT_BRIDGE_SESSION_ID'
+    $Capabilities = @(Resolve-BridgeCapabilities -Explicit $Capabilities)
 
-if (-not $SessionId -and $RunId) {
-    $SessionId = $RunId
+    if (-not $SessionId -and $RunId) {
+        $SessionId = $RunId
+    }
 }
 
+Assert-NoPrivateMarker -Label 'run_id' -Value $RunId
 Assert-NoPrivateMarker -Label 'role' -Value $Role
 Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
 Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 
-if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
+if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
+}
+if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
     throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
 }
 if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
     throw "agent_uuid must be a UUID"
 }
+if ($AgentUuid) {
+    $AgentUuid = $AgentUuid.ToLowerInvariant()
+}
 if ($SessionId -and $SessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
     throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
 foreach ($capability in @($Capabilities)) {
-    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
@@ -493,10 +707,6 @@ foreach ($dir in @($sharedDir, $outboxDir)) {
     if (-not (Test-Path -LiteralPath $dir)) {
         [void](New-Item -ItemType Directory -Path $dir -Force)
     }
-}
-
-if (-not $RunId) {
-    $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
 }
 
 $event = [ordered]@{

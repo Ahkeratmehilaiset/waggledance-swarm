@@ -79,6 +79,9 @@ function Add-RawEvent {
 $tempRoot = Join-Path $env:TEMP "bridge-polymorphic-continuity-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $nextActionNow = '2026-05-11T18:00:00.0000000Z'
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge polymorphic continuity smoke test' -ForegroundColor Cyan
@@ -237,6 +240,7 @@ try {
         -Detail "action=$($nextClaude.action), task=$($nextClaude.task_id)"
 
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

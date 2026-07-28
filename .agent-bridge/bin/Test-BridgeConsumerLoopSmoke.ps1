@@ -22,6 +22,10 @@ $wakePath = Join-Path $runtimeRoot 'wake_codex-tools-1'
 $fakeCodex = Join-Path $tmpRoot 'fake-codex.ps1'
 $slowCodex = Join-Path $tmpRoot 'slow-codex.ps1'
 $slowChildPid = Join-Path $tmpRoot 'slow-child.pid'
+$promptCapture = Join-Path $tmpRoot 'consumer-prompt.txt'
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     [void](New-Item -ItemType Directory -Path $runtimeRoot -Force -ErrorAction Stop)
@@ -31,8 +35,13 @@ try {
 $ErrorActionPreference = 'Stop'
 $root = [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
 $agent = [string]$env:AGENT_BRIDGE_AGENT
+$promptPath = [string]$env:BRIDGE_CONSUMER_PROMPT_PATH
+$promptText = (@($input) -join [Environment]::NewLine)
 if (-not $root) { throw 'missing AGENT_BRIDGE_RUNTIME_ROOT' }
 if (-not $agent) { throw 'missing AGENT_BRIDGE_AGENT' }
+if ($promptPath) {
+    [System.IO.File]::WriteAllText($promptPath, $promptText)
+}
 $claims = Join-Path $root 'work_queue\claims'
 [void](New-Item -ItemType Directory -Path $claims -Force -ErrorAction Stop)
 $claimPath = Join-Path $claims 'consumer-heartbeat-smoke.json'
@@ -59,6 +68,7 @@ Wait-Process -Id $child.Id
 exit 0
 '@ | Set-Content -LiteralPath $slowCodex -Encoding UTF8
     $env:BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH = $slowChildPid
+    $env:BRIDGE_CONSUMER_PROMPT_PATH = $promptCapture
 
     $script = Join-Path $PSScriptRoot 'Start-AgentBridgeConsumerLoop.ps1'
     $result = @(& $script `
@@ -128,6 +138,18 @@ exit 0
     Assert-True ($liveRun[0].codex_timeout_seconds -eq 600) 'default codex timeout should be 600 seconds'
     Assert-True (-not [string]$liveRun[0].status_event_error) 'status event write should succeed'
     Assert-True ([string]$liveRun[0].heartbeat_job_id -ne '') 'real codex tick should start heartbeat job'
+    $capturedPrompt = @(
+        Get-Content -Raw -LiteralPath $promptCapture -Encoding UTF8
+    ) -join "`n"
+    Assert-True `
+        -Condition $capturedPrompt.Contains('bridge_next_action.py --agent codex-tools-1 --json') `
+        -Message 'prompt missing bound bridge_next_action command'
+    Assert-True `
+        -Condition $capturedPrompt.Contains('agent_next_task.py --agent codex-tools-1 --json') `
+        -Message 'prompt missing bound agent_next_task command'
+    Assert-True `
+        -Condition (-not $capturedPrompt.Contains('--agent codex-lead-1')) `
+        -Message 'tools prompt must not infer the lead lane'
 
     $claimPath = Join-Path $runtimeRoot 'work_queue\claims\consumer-heartbeat-smoke.json'
     $claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
@@ -163,7 +185,9 @@ exit 0
 
     'Bridge consumer loop smoke passed.'
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     Remove-Item Env:\BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_PROMPT_PATH -ErrorAction SilentlyContinue
     $tmpFull = [System.IO.Path]::GetFullPath($tmpRoot)
     $auditFull = [System.IO.Path]::GetFullPath($auditRoot)
     if ($tmpFull.StartsWith($auditFull, [System.StringComparison]::OrdinalIgnoreCase) -and

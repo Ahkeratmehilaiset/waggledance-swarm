@@ -33,7 +33,7 @@
 #>
 [CmdletBinding(DefaultParameterSetName = 'Liveness')]
 param(
-    [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
+    [Parameter(Mandatory)] [string] $Agent,
 
     [Parameter(ParameterSetName = 'Liveness')]
     [ValidateSet('active','sleeping')] [string] $State = 'active',
@@ -56,6 +56,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 $writeEventScript = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
 

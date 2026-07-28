@@ -107,6 +107,25 @@ function ConvertTo-BridgeUtc {
     }
 }
 
+function ConvertTo-BridgeInvariantUtcText {
+    param([object] $Value)
+
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime().ToString(
+            'o',
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime().ToString(
+            'o',
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    return [string]$Value
+}
+
 # Emit zero or more swept-claim records into the pipeline; caller
 # wraps with @(...) to always get an array. Avoid the
 # Generic.List + return-comma trick that PSStrictMode's boolean
@@ -200,16 +219,30 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     try {
         $writeEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
         if (Test-Path -LiteralPath $writeEvent -PathType Leaf) {
+            $claimClaimedAtUtc = if ($claim.PSObject.Properties['claimed_at_utc']) {
+                ConvertTo-BridgeInvariantUtcText -Value $claim.claimed_at_utc
+            } else {
+                ''
+            }
+            $claimRunId = if ($claim.PSObject.Properties['run_id']) {
+                [string]$claim.run_id
+            } else {
+                ''
+            }
             $payload = [pscustomobject]@{
                 task_id            = [string]$claim.task_id
                 claim_agent        = $agent
+                claim_claimed_at_utc = $claimClaimedAtUtc
+                claim_run_id       = $claimRunId
                 last_heartbeat_utc = $tsString
                 age_seconds        = [int]$ageSeconds
                 stale_threshold_s  = $effectiveLeaseSeconds
                 claim_lease_seconds = $claimLeaseSeconds
                 claim_lease_expires_utc = $effectiveExpiresUtc.ToString('o')
+                archive_released_at_utc = ConvertTo-BridgeInvariantUtcText `
+                    -Value $claim.released_at_utc
                 archived_path      = $donePath
-                swept_by           = $env:AGENT_BRIDGE_RUN_ID
+                archive_state_semantics = 'verified_before_event_append'
             }
             $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
             & $writeEvent `
@@ -219,7 +252,8 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                 -Severity medium `
                 -TaskId ([string]$claim.task_id) `
                 -Message ("auto-released stale claim by $agent (heartbeat $([int]$ageSeconds)s old)") `
-                -PayloadJson $payloadJson | Out-Null
+                -PayloadJson $payloadJson `
+                -InternalStaleLeaseArchivePath $donePath | Out-Null
         }
     } catch {
         Write-Warning ("stale-lease release event emit failed: {0}" -f `

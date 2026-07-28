@@ -61,6 +61,7 @@ def _run_bridge_script(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for name in (
+        "AGENT_BRIDGE_AGENT",
         "AGENT_BRIDGE_AGENT_UUID",
         "AGENT_BRIDGE_CAPABILITIES",
         "AGENT_BRIDGE_ROLE",
@@ -68,6 +69,10 @@ def _run_bridge_script(
         "AGENT_BRIDGE_SESSION_ID",
     ):
         env.pop(name, None)
+    if "-Agent" in args:
+        agent_index = args.index("-Agent")
+        if agent_index + 1 < len(args):
+            env["AGENT_BRIDGE_AGENT"] = args[agent_index + 1]
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
     return subprocess.run(
         [
@@ -1205,9 +1210,9 @@ def test_registry_bound_agent_uuid_match_writes_without_runtime_profile(
         "-Type",
         "message",
         "-Message",
-        "matching registry-bound uuid",
+        "matching uppercase registry-bound uuid",
         "-AgentUuid",
-        CODEX_TOOLS_UUID,
+        CODEX_TOOLS_UUID.upper(),
     )
 
     assert completed.returncode == 0, completed.stderr

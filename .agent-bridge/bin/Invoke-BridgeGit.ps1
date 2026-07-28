@@ -8,8 +8,8 @@
     bridge-branch-switch-during-active-claim-2026-05-09 (filed
     2026-05-09T11:30Z, hardened per operator spec 2026-05-09T~12:10Z).
 
-    The bridge runs as multiple agents sharing a single worktree at
-    C:\Python\project2-master. Active claims protect file PATHS, but
+    When multiple agents share the canonical source worktree at
+    C:\Python\project2, active claims protect file PATHS, but
     a `git switch / checkout / merge / rebase / pull` changes the
     branch context for every active claim's working tree at once.
     That can cause:
@@ -41,8 +41,8 @@
     for any branch-moving verb.
 
 .PARAMETER Force
-    Override the safety check. RESTRICTED: only operator/system
-    agents may use -Force. Claude/Codex passing -Force is rejected.
+    Override the safety check. RESTRICTED: only a bound operator
+    session may use -Force. Agent/system callers are rejected.
     Override emits a decision/override audit event.
 
 .EXAMPLE
@@ -60,7 +60,6 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [switch] $Force,
@@ -71,6 +70,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 # Strip a leading "--" sentinel some shells insert before the trailing args.
 if ($GitArgs.Count -gt 0 -and $GitArgs[0] -eq '--') {
@@ -210,52 +213,53 @@ foreach ($claim in $blocking) {
     Write-Error -Message "    summary: $([string]$claim.summary)" `
         -Category PermissionDenied -ErrorAction Continue
 }
-Write-Error -Message 'Safe options: (1) use a separate worktree (git worktree add ../wd-temp <branch>) (2) wait for release (3) operator/system may pass -Force (Claude/Codex may NOT)' `
+Write-Error -Message 'Safe options: (1) use a separate worktree (git worktree add ../wd-temp <branch>) (2) wait for release (3) a bound operator may pass -Force (agents/system may NOT)' `
     -Category PermissionDenied -ErrorAction Continue
 
 if (-not $Force) {
     exit 2
 }
 
-# ── Force path: restricted to privileged agents ───────────────────
-if ($Agent -notin @('operator','system')) {
-    $rejectMsg = "REJECTED: -Force is restricted to operator/system. Claude/Codex may not bypass the guard during autonomous bridge-loop work. Use a separate worktree or wait for the conflicting claim to release."
+# ── Force path: restricted to the bound operator ──────────────────
+if ($Agent -cne 'operator') {
+    $rejectMsg = "REJECTED: -Force is restricted to a bound operator session. Agents/system may not bypass the guard during autonomous bridge-loop work. Use a separate worktree or wait for the conflicting claim to release."
     Write-Error -Message $rejectMsg -Category PermissionDenied -ErrorAction Continue
     exit 2
 }
 
-# Operator/system override: emit audit event then run.
-Write-Warning "OVERRIDE: operator/system -Force engaged. Running $verb anyway."
+# Operator override: emit audit event then run.
+Write-Warning "OVERRIDE: bound operator -Force engaged. Running $verb anyway."
 
 $writeAgentEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
-if (Test-Path -LiteralPath $writeAgentEvent) {
-    $blockedBy = @(
-        $blocking | ForEach-Object {
-            [pscustomobject]@{
-                task_id = [string]$_.task_id
-                agent   = [string]$_.agent
-            }
-        }
-    )
-    $payload = [pscustomobject]@{
-        override_reason = 'force_by_privileged_agent'
-        verb            = $verb
-        git_args        = @($GitArgs)
-        blocked_by      = $blockedBy
-    }
-    $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
-    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-    $taskId = "bridge-git-override-$stamp"
-    $msg = "git $verb override by $Agent over $($blocking.Count) active claim(s)"
-    & $writeAgentEvent `
-        -Agent $Agent `
-        -Type decision `
-        -Status override `
-        -Severity medium `
-        -TaskId $taskId `
-        -Message $msg `
-        -PayloadJson $payloadJson `
-        | Out-Null
+if (-not (Test-Path -LiteralPath $writeAgentEvent -PathType Leaf)) {
+    throw 'cannot authorize git override without Write-AgentEvent.ps1'
 }
+$blockedBy = @(
+    $blocking | ForEach-Object {
+        [pscustomobject]@{
+            task_id = [string]$_.task_id
+            agent   = [string]$_.agent
+        }
+    }
+)
+$payload = [pscustomobject]@{
+    override_reason = 'force_by_privileged_agent'
+    verb            = $verb
+    git_args        = @($GitArgs)
+    blocked_by      = $blockedBy
+}
+$payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+$taskId = "bridge-git-override-$stamp"
+$msg = "git $verb override by $Agent over $($blocking.Count) active claim(s)"
+& $writeAgentEvent `
+    -Agent $Agent `
+    -Type decision `
+    -Status override `
+    -Severity medium `
+    -TaskId $taskId `
+    -Message $msg `
+    -PayloadJson $payloadJson |
+    Out-Null
 
 Invoke-GitAndExit -ArgsToGit $GitArgs

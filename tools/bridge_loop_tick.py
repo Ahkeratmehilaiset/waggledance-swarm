@@ -52,6 +52,10 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
     recommend_next_action,
 )
+from tools.bridge_session_identity import (  # noqa: E402
+    cli_identity_mismatch,
+    emit_identity_mismatch,
+)
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
 )
@@ -972,6 +976,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    identity_mismatch = cli_identity_mismatch(args.agent)
+    if identity_mismatch is not None:
+        emit_identity_mismatch(identity_mismatch, as_json=args.json)
+        return 2
+
     bridge_root = resolve_bridge_root(args.bridge_root)
     events_path = args.events or (bridge_root / "shared" / "events.jsonl")
     snapshot_fn: SnapshotFn | None = None

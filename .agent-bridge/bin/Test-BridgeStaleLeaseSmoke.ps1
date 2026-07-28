@@ -56,9 +56,31 @@ function Add-Check {
     if ($Detail) { Write-Host "        $Detail" }
 }
 
+function Convert-SmokeTimestampUtc {
+    param([Parameter(Mandatory)] [object] $Value)
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).UtcDateTime
+    }
+    $styles = (
+        [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    )
+    return ([DateTimeOffset]::Parse(
+        [string]$Value,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        $styles
+    )).UtcDateTime
+}
+
 $tempRoot = Join-Path $env:TEMP `
     "bridge-r15-stale-lease-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge stale-lease smoke test' -ForegroundColor Cyan
@@ -179,8 +201,8 @@ try {
     # Re-read claim and confirm last_heartbeat_utc was bumped.
     $obj3 = Get-Content -Raw -Path $freshClaimPath -Encoding UTF8 |
         ConvertFrom-Json
-    $bumpedTs = [DateTime]::Parse([string]$obj3.last_heartbeat_utc).ToUniversalTime()
-    $oldTsParsed = [DateTime]::Parse($oldTs).ToUniversalTime()
+    $bumpedTs = Convert-SmokeTimestampUtc -Value $obj3.last_heartbeat_utc
+    $oldTsParsed = Convert-SmokeTimestampUtc -Value $oldTs
     Add-Check -Name 'heartbeat bumped last_heartbeat_utc on own claim' `
         -Passed ($bumpedTs -gt $oldTsParsed) `
         -Detail "old=$oldTs new=$([string]$obj3.last_heartbeat_utc)"
@@ -195,9 +217,21 @@ try {
     # ── 4: operator/system claims are immune ───────────────────
     Write-Host ''
     Write-Host '4. operator/system claims immune from sweep:'
-    & $claimTask -Agent operator -TaskId 'r15-smoke-operator' `
-        -Summary 'R15 smoke: operator claim' -Mode read-only | Out-Null
     $opClaimPath = Join-Path $claimsDir 'r15-smoke-operator.json'
+    $operatorFixtureNow = (Get-Date).ToUniversalTime()
+    [ordered]@{
+        claimed_at_utc = $operatorFixtureNow.ToString('o')
+        last_heartbeat_utc = $operatorFixtureNow.ToString('o')
+        agent = 'operator'
+        task_id = 'r15-smoke-operator'
+        summary = 'R15 smoke: operator claim fixture'
+        mode = 'read-only'
+        write_scope = @()
+        run_id = ''
+        lease_seconds = 300
+        claim_lease_expires_utc = $operatorFixtureNow.AddSeconds(300).ToString('o')
+    } | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $opClaimPath -Encoding UTF8
 
     # Backdate it
     $opObj = Get-Content -Raw -Path $opClaimPath -Encoding UTF8 |
@@ -292,6 +326,7 @@ try {
         -ErrorAction SilentlyContinue
 
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force `

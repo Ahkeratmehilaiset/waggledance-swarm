@@ -37,12 +37,28 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent = ''
 )
 
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+$boundSessionAgent = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_AGENT',
+    'Process'
+)
+$effectiveAgent = $Agent
+if ([string]::IsNullOrWhiteSpace($effectiveAgent) -and
+    -not [string]::IsNullOrWhiteSpace($boundSessionAgent)) {
+    $effectiveAgent = [string]$boundSessionAgent
+}
+if (-not [string]::IsNullOrWhiteSpace($effectiveAgent)) {
+    Assert-AgentBridgeSessionIdentity -RequestedAgent $effectiveAgent
+    $Agent = $effectiveAgent
+}
+$ErrorActionPreference = 'Continue'
 
 $pattern = if ($Agent) {
     "agent-bridge-*-$Agent"
@@ -68,7 +84,11 @@ foreach ($job in $jobs) {
 # Clear the env vars regardless of whether jobs were stopped — they may
 # point at jobs in a now-dead parent process which we cannot touch, but
 # clearing them prevents downstream tooling from waving a stale id around.
-if (-not $Agent -or $Agent -eq 'claude' -or $Agent -eq 'codex' -or $Agent -eq 'operator' -or $Agent -eq 'system') {
+$isBoundSessionAgent = (
+    -not [string]::IsNullOrWhiteSpace($boundSessionAgent) -and
+    $Agent -ceq $boundSessionAgent
+)
+if (-not $Agent -or $isBoundSessionAgent -or $Agent -eq 'claude' -or $Agent -eq 'codex' -or $Agent -eq 'operator' -or $Agent -eq 'system') {
     if ($PSCmdlet.ShouldProcess(
             'AGENT_BRIDGE_WAKE_JOB / AGENT_BRIDGE_HEARTBEAT_JOB',
             'Clear process env vars'

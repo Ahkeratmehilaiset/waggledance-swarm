@@ -39,6 +39,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.bridge_session_identity import (  # noqa: E402
+    cli_identity_mismatch,
+    emit_identity_mismatch,
+)
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     _default_production_liveness_suppression_config,
@@ -302,6 +306,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    identity_mismatch = cli_identity_mismatch(args.agent)
+    if identity_mismatch is not None:
+        emit_identity_mismatch(identity_mismatch, as_json=args.json)
+        return 2
+
     now_utc = _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
     bridge_root = _bridge_root_for_args(args.events, args.bridge_root)
     events_path = _events_path_for_args(args.events, bridge_root)

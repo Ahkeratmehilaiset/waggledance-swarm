@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
+    [Parameter(Mandatory)] [string] $Agent,
     [Parameter(Mandatory)] [string] $TaskId,
     [Parameter(Mandatory)] [string] $Summary,
     [ValidateSet('read-only','write')] [string] $Mode = 'read-only',
@@ -16,6 +16,91 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
+function Assert-NoBridgePrivateMarker {
+    param(
+        [Parameter(Mandatory)] [string] $Label,
+        [AllowNull()] $Value
+    )
+
+    foreach ($item in @($Value)) {
+        $text = [string]$item
+        foreach ($marker in @('PRIVATE_MARKER', '_DO_NOT_LEAK')) {
+            if ($text.IndexOf(
+                    $marker,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -ge 0) {
+                throw "Bridge claim $Label contains a private marker"
+            }
+        }
+    }
+}
+
+if (-not $RunId) {
+    $RunId = if ($env:AGENT_BRIDGE_RUN_ID) {
+        [string]$env:AGENT_BRIDGE_RUN_ID
+    } else {
+        ''
+    }
+}
+if (-not $Role -and $env:AGENT_BRIDGE_ROLE) {
+    $Role = [string]$env:AGENT_BRIDGE_ROLE
+}
+if (-not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
+    $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
+}
+if (@($Capabilities).Count -eq 0 -and $env:AGENT_BRIDGE_CAPABILITIES) {
+    $Capabilities = @([string]$env:AGENT_BRIDGE_CAPABILITIES)
+}
+$Capabilities = @(
+    @($Capabilities) |
+        ForEach-Object { [string]$_ -split '[,;]' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+$sessionId = [string]$env:AGENT_BRIDGE_SESSION_ID
+if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
+}
+if ($sessionId -and $sessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
+}
+if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
+}
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw "agent_uuid must be a UUID"
+}
+if ($AgentUuid) {
+    $AgentUuid = $AgentUuid.ToLowerInvariant()
+}
+foreach ($capability in @($Capabilities)) {
+    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
+    }
+}
+if ([string]::IsNullOrWhiteSpace($TaskId)) {
+    throw 'Bridge event type=claim requires non-empty -TaskId before writing'
+}
+if ($Mode -eq 'write' -and @($WriteScope).Count -eq 0) {
+    throw 'write claims require at least one -WriteScope path'
+}
+$safeTask = (($TaskId -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+if (-not $safeTask) {
+    throw 'TaskId does not produce a safe claim filename'
+}
+Assert-NoBridgePrivateMarker -Label 'task_id' -Value $TaskId
+Assert-NoBridgePrivateMarker -Label 'summary' -Value $Summary
+Assert-NoBridgePrivateMarker -Label 'write_scope' -Value $WriteScope
+Assert-NoBridgePrivateMarker -Label 'run_id' -Value $RunId
+Assert-NoBridgePrivateMarker -Label 'role' -Value $Role
+Assert-NoBridgePrivateMarker -Label 'agent_uuid' -Value $AgentUuid
+Assert-NoBridgePrivateMarker -Label 'session_id' -Value $sessionId
+Assert-NoBridgePrivateMarker -Label 'capabilities' -Value $Capabilities
 
 # R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
 # per-agent worktrees can share one runtime state directory. Codex
@@ -35,11 +120,6 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 if (-not (Test-Path -LiteralPath $claimsDir)) {
     [void](New-Item -ItemType Directory -Path $claimsDir -Force)
-}
-
-function ConvertTo-SafeName {
-    param([string] $Name)
-    return (($Name -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
 }
 
 function Normalize-Scope {
@@ -77,12 +157,6 @@ function Get-CurrentGitBranch {
     return ''
 }
 
-if ($Mode -eq 'write' -and @($WriteScope).Count -eq 0) {
-    throw 'write claims require at least one -WriteScope path'
-}
-
-$safeTask = ConvertTo-SafeName $TaskId
-if (-not $safeTask) { throw 'TaskId does not produce a safe claim filename' }
 $claimPath = Join-Path $claimsDir ($safeTask + '.json')
 
 # R15 follow-up (Codex review 2026-05-09): claim acquisition is the
@@ -121,35 +195,6 @@ foreach ($file in $activeClaims) {
     }
 }
 
-if (-not $RunId) {
-    $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
-}
-if (-not $Role -and $env:AGENT_BRIDGE_ROLE) {
-    $Role = [string]$env:AGENT_BRIDGE_ROLE
-}
-if (-not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
-    $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
-}
-if (@($Capabilities).Count -eq 0 -and $env:AGENT_BRIDGE_CAPABILITIES) {
-    $Capabilities = @([string]$env:AGENT_BRIDGE_CAPABILITIES)
-}
-$Capabilities = @(
-    @($Capabilities) |
-        ForEach-Object { [string]$_ -split '[,;]' } |
-        ForEach-Object { $_.Trim() } |
-        Where-Object { $_ }
-)
-if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
-    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
-}
-if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
-    throw "agent_uuid must be a UUID"
-}
-foreach ($capability in @($Capabilities)) {
-    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
-        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
-    }
-}
 if ($LeaseSeconds -le 0 -and $env:AGENT_BRIDGE_STALE_LEASE_SECONDS) {
     $parsedLease = 0
     if ([int]::TryParse([string]$env:AGENT_BRIDGE_STALE_LEASE_SECONDS, [ref]$parsedLease) -and $parsedLease -gt 0) {
@@ -177,7 +222,10 @@ $claim = [ordered]@{
     run_id              = $RunId
     lease_seconds       = $LeaseSeconds
     claim_lease_expires_utc = $leaseExpiresUtc
-    pid                 = $PID
+    # This is the short-lived PowerShell writer process, not the owning
+    # agent session and never an ownership or liveness signal.
+    writer_pid          = $PID
+    writer_pid_semantics = 'diagnostic_only'
     cwd                 = (Get-Location).Path
     git_branch          = Get-CurrentGitBranch
 }

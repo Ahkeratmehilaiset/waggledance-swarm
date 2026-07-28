@@ -54,6 +54,9 @@ $tempRoot = Join-Path $env:TEMP `
 
 # Save current env so we can restore it
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge runtime-root smoke test' -ForegroundColor Cyan
@@ -178,6 +181,7 @@ try {
     }
 
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     # Always restore env + clean up the temp tree
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     if (Test-Path -LiteralPath $tempRoot) {

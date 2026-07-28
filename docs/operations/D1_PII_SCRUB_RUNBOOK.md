@@ -106,7 +106,7 @@ git log --all -p -S "<ACTUAL_Y_TUNNUS>" | Measure-Object
 # Expected: count = 0
 
 # Verify the codebase still works on the scrubbed test clone
-& C:\Python\project2-master\.python\Python313\python.exe -m pytest tests/test_hex_mesh.py -q
+python -m pytest tests/test_hex_mesh.py -q
 # Expected: same green pass-rate as on live repo
 ```
 
@@ -118,7 +118,7 @@ If anything in Step 1 fails (test breakage, residual matches),
 ## Step 2 — Backup, then scrub the live repo
 
 ```powershell
-# Working directory: C:\Python\project2-master (the live repo)
+# Working directory: C:\Python\project2 (the canonical source repo)
 
 # 1. Tag the current HEAD as a recovery point on the LOCAL repo
 git tag pre-d1-archive HEAD
@@ -213,8 +213,8 @@ message: |
 
 Codex worktrees specifically:
 ```powershell
-# For each worktree under C:\tmp\wd-*:
-foreach ($wt in (Get-ChildItem -Path C:\tmp\wd-* -Directory)) {
+# For each persistent agent worktree:
+foreach ($wt in (Get-ChildItem -Path C:\Python\waggledance-agent-worktrees -Directory)) {
     cd $wt.FullName
     git fetch origin
     git reset --hard origin/main  # or operator-specified branch

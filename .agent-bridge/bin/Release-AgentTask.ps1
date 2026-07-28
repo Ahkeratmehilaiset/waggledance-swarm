@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
+    [Parameter(Mandatory)] [string] $Agent,
     [Parameter(Mandatory)] [string] $TaskId,
     [ValidateSet('done','blocked','abandoned','handoff')] [string] $Status = 'done',
     [string] $Message = '',
@@ -10,6 +10,70 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
+function Assert-NoBridgePrivateMarker {
+    param(
+        [Parameter(Mandatory)] [string] $Label,
+        [AllowNull()] $Value
+    )
+
+    foreach ($item in @($Value)) {
+        $text = [string]$item
+        foreach ($marker in @('PRIVATE_MARKER', '_DO_NOT_LEAK')) {
+            if ($text.IndexOf(
+                    $marker,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -ge 0) {
+                throw "Bridge release $Label contains a private marker"
+            }
+        }
+    }
+}
+
+if (-not $RunId) {
+    $RunId = if ($env:AGENT_BRIDGE_RUN_ID) {
+        [string]$env:AGENT_BRIDGE_RUN_ID
+    } else {
+        ''
+    }
+}
+if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
+}
+$eventRole = [string]$env:AGENT_BRIDGE_ROLE
+$eventAgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
+$eventSessionId = [string]$env:AGENT_BRIDGE_SESSION_ID
+$eventCapabilities = @(
+    [string]$env:AGENT_BRIDGE_CAPABILITIES -split '[,;]' |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+if ($eventRole -and $eventRole -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
+}
+if ($eventAgentUuid -and $eventAgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw "agent_uuid must be a UUID"
+}
+if ($eventSessionId -and
+    $eventSessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
+}
+foreach ($eventCapability in $eventCapabilities) {
+    if ($eventCapability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
+    }
+}
+Assert-NoBridgePrivateMarker -Label 'task_id' -Value $TaskId
+Assert-NoBridgePrivateMarker -Label 'message' -Value $Message
+Assert-NoBridgePrivateMarker -Label 'run_id' -Value $RunId
+Assert-NoBridgePrivateMarker -Label 'role' -Value $eventRole
+Assert-NoBridgePrivateMarker -Label 'agent_uuid' -Value $eventAgentUuid
+Assert-NoBridgePrivateMarker -Label 'session_id' -Value $eventSessionId
+Assert-NoBridgePrivateMarker -Label 'capabilities' -Value $eventCapabilities
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path). Codex
@@ -45,10 +109,6 @@ $claim = Get-Content -Raw -Path $claimPath -Encoding UTF8 | ConvertFrom-Json
 if ([string]$claim.agent -ne $Agent) {
     Write-Error ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent)
     exit 3
-}
-
-if (-not $RunId) {
-    $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
 }
 
 $claim | Add-Member -NotePropertyName released_at_utc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force

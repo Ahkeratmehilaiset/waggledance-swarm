@@ -52,13 +52,13 @@ tooling path explicitly authorizes that external side effect.
 Run these checks before installing any schedule:
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 $env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 15
 
-.\.venv\Scripts\python.exe tools\idle_loop_once.py --json
+python tools\idle_loop_once.py --json
 ```
 
 Expected preflight shape:
@@ -76,8 +76,8 @@ Expected preflight shape:
 Install a 30-minute schedule from an elevated PowerShell session:
 
 ```powershell
-$repo = 'C:\Python\project2-master'
-$python = Join-Path $repo '.venv\Scripts\python.exe'
+$repo = 'C:\Python\project2'
+$python = (Get-Command python).Source
 $taskName = 'WaggleDance Idle Loop Once'
 
 $action = New-ScheduledTaskAction `
@@ -325,6 +325,11 @@ events (decision/clarification/finding/message) on the same or other tasks.
 It is cleared only when a strictly LATER peer event for the SAME `task_id`
 is terminal: `type=done` (any status) or `status` in
 `PEER_TERMINAL_STATUSES` = `{blocked, abandoned, released}`.
+This peer-claim wakeup heuristic is intentionally separate from
+`Get-BridgeNextAction` request closure: its coarse `type=done` rule must not
+be used to infer that a peer request was answered. Request continuity treats
+`done/request` and explicitly negated answer statuses such as `done/not_done`
+as nonterminal.
 `_recommended_wakeup` consumes that signal and returns `WAKEUP_IN_FLIGHT`
 so the next tick can catch the imminent PR with time to RCO before the merge
 gate would otherwise have to stop at `operator_review_required`.

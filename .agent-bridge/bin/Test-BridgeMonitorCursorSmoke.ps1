@@ -40,6 +40,9 @@ function Add-Check {
 $tempRoot = Join-Path $env:TEMP `
     "bridge-monitor-cursor-smoke-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $savedRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge monitor cursor smoke test' -ForegroundColor Cyan
@@ -142,6 +145,7 @@ try {
     }
     exit 0
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     if ($null -ne $savedRoot) {
         $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRoot
     } else {

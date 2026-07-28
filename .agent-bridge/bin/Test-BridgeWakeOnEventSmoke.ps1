@@ -55,6 +55,9 @@ $tempRoot = Join-Path $env:TEMP `
     "bridge-r23-wake-smoke-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedWakeEnabled = $env:WAGGLE_BRIDGE_WAKE_ENABLED
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 function Reset-State {
     # Ensure a clean events.jsonl + no leftover wake files between tests.
@@ -190,6 +193,7 @@ try {
     }
     exit 0
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     if ($null -ne $savedEnv) {
         $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     } else {

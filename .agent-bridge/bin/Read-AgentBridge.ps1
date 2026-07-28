@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent = '',
+    [string] $Agent = '',
     [int] $Tail = 40,
     # Keep the interactive continuity view responsive on large bridge logs.
     # Use 0 only for deep audits that intentionally scan all history.
@@ -17,6 +17,22 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+$boundSessionAgent = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_AGENT',
+    'Process'
+)
+$effectiveAgent = $Agent
+if ([string]::IsNullOrWhiteSpace($effectiveAgent) -and
+    -not [string]::IsNullOrWhiteSpace($boundSessionAgent)) {
+    $effectiveAgent = [string]$boundSessionAgent
+}
+if (-not [string]::IsNullOrWhiteSpace($effectiveAgent)) {
+    Assert-AgentBridgeSessionIdentity -RequestedAgent $effectiveAgent
+    $Agent = $effectiveAgent
+}
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).

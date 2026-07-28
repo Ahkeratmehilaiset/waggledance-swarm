@@ -14,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.bridge_session_identity import (  # noqa: E402
+    cli_identity_mismatch,
+    emit_identity_mismatch,
+)
 from waggledance.core.work_queue import (  # noqa: E402
     WorkQueueError,
     check_scope_overlap,
@@ -78,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command in {"claim", "release", "heartbeat"}:
+        identity_mismatch = cli_identity_mismatch(args.agent)
+        if identity_mismatch is not None:
+            emit_identity_mismatch(identity_mismatch, as_json=args.json)
+            return 2
+
     try:
         report = _dispatch(args)
     except WorkQueueError as exc:

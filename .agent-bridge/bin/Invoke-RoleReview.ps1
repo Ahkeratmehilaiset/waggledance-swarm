@@ -58,7 +58,6 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent = 'claude',
 
     [Parameter(Mandatory)]
@@ -78,6 +77,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 # ── Resolve helper paths ─────────────────────────────────────────
 

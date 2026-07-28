@@ -99,6 +99,12 @@ function Test-BridgeRequesterClosureEvent {
             $status.StartsWith('canceled_', [System.StringComparison]::OrdinalIgnoreCase)
     }
     if (@('done','release','decision') -notcontains $type) { return $false }
+    if (
+        $type -eq 'done' -and
+        (Test-BridgeNegatedAnswerStatus -Status $status)
+    ) {
+        return $false
+    }
     return (Test-BridgeRequesterClosureStatus -Status $status)
 }
 
@@ -117,8 +123,9 @@ function Test-BridgeRequestLikeEvent {
         return $false
     }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
+    if ($type -eq 'done') { return $status -eq 'request' }
 
-    $requestTypes = @('message','handoff','blocked','finding','decision','done','wake_request')
+    $requestTypes = @('message','handoff','blocked','finding','decision','wake_request')
     $requestStatuses = @(
         'request','ready','blocked','open','proposal',
         'fix-pushed','fix-branch-pushed','pushed',
@@ -141,6 +148,28 @@ function Test-BridgeRequestLikeEvent {
     return $false
 }
 
+function Test-BridgeNegatedAnswerStatus {
+    param([AllowEmptyString()] [string] $Status)
+
+    $tokens = @(
+        $Status.ToLowerInvariant() -split '[^a-z0-9]+' |
+            Where-Object { $_ }
+    )
+    $answerTokens = @(
+        'abandoned','accepted','ack','acknowledged','answered','approved',
+        'block','blocked','canceled','cancelled','changes','closed',
+        'completed','done','merged',
+        'observed','pass','passed','received','reported','resolved',
+        'retracted','seen','superseded','validated','verified','withdrawn'
+    )
+    for ($index = 0; $index -lt ($tokens.Count - 1); $index++) {
+        if ($tokens[$index] -eq 'not' -and $answerTokens -contains $tokens[$index + 1]) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Test-BridgeAnswerEvent {
     param([Parameter(Mandatory)] [object] $Event)
 
@@ -150,6 +179,15 @@ function Test-BridgeAnswerEvent {
 
     $type = [string]$Event.type
     $status = [string]$Event.status
+
+    if (
+        $type -eq 'done' -and (
+            $status -eq 'request' -or
+            (Test-BridgeNegatedAnswerStatus -Status $status)
+        )
+    ) {
+        return $false
+    }
 
     if ($type -eq 'message') {
         if (Test-BridgeMessageAnswerStatus -Status $status) { return $true }

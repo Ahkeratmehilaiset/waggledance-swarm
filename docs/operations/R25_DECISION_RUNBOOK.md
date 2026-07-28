@@ -60,7 +60,7 @@ docker start waggledance-prod
 ## Running the tool
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 
 python -m tools.runtime_gap_signal_concurrency_histogram `
   --db C:\snapshots\control_plane_2026_MM_DD.db `

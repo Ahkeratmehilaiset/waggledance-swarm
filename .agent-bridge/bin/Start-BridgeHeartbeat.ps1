@@ -37,6 +37,7 @@ Set-StrictMode -Version Latest
 $sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
 . $sessionIdentity
 Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+$ownerContext = Get-AgentBridgeClaimOwnerContext
 
 if ($env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED -eq '0') {
     Write-Output "Start-BridgeHeartbeat: disabled via WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0; exiting."
@@ -63,7 +64,8 @@ if (-not (Test-Path -LiteralPath $sendLiveness -PathType Leaf)) {
 function Get-AgentActiveClaimCount {
     param(
         [Parameter(Mandatory)] [string] $Root,
-        [Parameter(Mandatory)] [string] $AgentName
+        [Parameter(Mandatory)] [string] $AgentName,
+        [Parameter(Mandatory)] $OwnerContext
     )
 
     $claimsDir = Join-Path $Root 'work_queue\claims'
@@ -79,7 +81,11 @@ function Get-AgentActiveClaimCount {
         } catch {
             continue
         }
-        if ($claim.PSObject.Properties['agent'] -and [string]$claim.agent -eq $AgentName) {
+        if ($claim.PSObject.Properties['agent'] -and
+            [string]$claim.agent -eq $AgentName -and
+            (Test-AgentBridgeClaimOwner `
+                -Claim $claim `
+                -OwnerContext $OwnerContext)) {
             $count++
         }
     }
@@ -92,7 +98,10 @@ $idleWithoutClaimIterations = 0
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
     Start-Sleep -Milliseconds $sleepMs
-    $activeClaimCount = Get-AgentActiveClaimCount -Root $bridgeRoot -AgentName $Agent
+    $activeClaimCount = Get-AgentActiveClaimCount `
+        -Root $bridgeRoot `
+        -AgentName $Agent `
+        -OwnerContext $ownerContext
     if ($activeClaimCount -le 0) {
         $idleWithoutClaimIterations++
         if ($MaxIdleWithoutClaimIterations -gt 0 -and

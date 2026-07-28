@@ -75,12 +75,20 @@ function Assert-CompatibleSessionIdentityBundle {
             "AgentBridgeSessionIdentityContract = 'v1'",
             [System.StringComparison]::Ordinal
         ) -lt 0 -or
+        $IdentityText.IndexOf(
+            "AgentBridgeClaimOwnerContract = 'v1'",
+            [System.StringComparison]::Ordinal
+        ) -lt 0 -or
         $SessionText.IndexOf(
             'Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent',
             [System.StringComparison]::Ordinal
         ) -lt 0 -or
         $SessionText.IndexOf(
             '$env:AGENT_BRIDGE_AGENT = $Agent',
+            [System.StringComparison]::Ordinal
+        ) -lt 0 -or
+        $SessionText.IndexOf(
+            'Initialize-AgentBridgeClaimOwnerContext -SessionId $RunId',
             [System.StringComparison]::Ordinal
         ) -lt 0) {
         throw "incompatible identity-bound session bundle at $Source"

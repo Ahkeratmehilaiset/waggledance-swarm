@@ -127,6 +127,7 @@ $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_AGENT = $Agent
 $env:AGENT_BRIDGE_RUN_ID = $RunId
 $env:AGENT_BRIDGE_SESSION_ID = $RunId
+$claimOwner = Initialize-AgentBridgeClaimOwnerContext -SessionId $RunId
 if ($Role) {
     $env:AGENT_BRIDGE_ROLE = $Role
 } else {
@@ -305,6 +306,9 @@ if (-not $cleanupAlreadyRegistered) {
     dedicated_worktree = $isDedicatedWorktree
     runtime_root   = $runtimeFull
     run_id         = $RunId
+    session_id     = $RunId
+    claim_owner_pid = $claimOwner.owner_pid
+    claim_owner_process_start_utc = $claimOwner.owner_process_start_utc
     role           = $Role
     agent_uuid     = $AgentUuid
     capabilities   = @($Capabilities)

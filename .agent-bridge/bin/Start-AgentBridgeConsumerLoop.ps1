@@ -513,6 +513,13 @@ $env:AGENT_BRIDGE_AGENT = $Agent
 if (-not $hasSameBoundSession) {
     Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
     Remove-Item Env:AGENT_BRIDGE_SESSION_ID -ErrorAction SilentlyContinue
+    $ownerStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+    [void](Initialize-AgentBridgeClaimOwnerContext `
+        -SessionId "consumer-$Agent-$ownerStamp-$PID")
+} else {
+    # A source-upgraded consumer must not silently run under an older,
+    # tokenless session. Controlled rollout restarts the session first.
+    [void](Get-AgentBridgeClaimOwnerContext)
 }
 if ($AgentUuid) {
     $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid

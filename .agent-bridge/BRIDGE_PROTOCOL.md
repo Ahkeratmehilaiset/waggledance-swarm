@@ -150,26 +150,41 @@ canonical non-reserved agent id. This includes existing ordinary-agent
 legacy command paths, so it is compatibility behavior rather than ownership
 proof. New write-capable sessions must use the bootstrap and carry a binding.
 The current fence protects a bound lane from acting under a different label;
-strict unbound-write rejection and generation-bound ownership remain separate
-hardening work. A branch name, profile discovered from bridge history,
+strict unbound-write rejection remains separate hardening work. A branch
+name, profile discovered from bridge history,
 `run_id`, or `session_id` does not override a conflicting bound agent.
 Direct/raw emitters outside the enumerated canonical entry points are not
 implicitly covered by this v1 fence and must not be treated as identity proof.
 
-Claim records may carry `writer_pid`, which identifies only the short-lived
-process that serialized the claim. It is diagnostic metadata, never an owner
-or liveness signal. A missing or exited writer process does not release a
-claim and never permits adoption. Ownership changes only through an explicit
-release/handoff or the canonical heartbeat/lease expiry path below. Legacy
-claim records may still contain the old ambiguous `pid` field; readers must
-treat it with the same diagnostic-only semantics.
+New claim records carry `owner_session_id`, `owner_token_sha256`,
+`owner_pid`, and `owner_process_start_utc`. The session bootstrap generates
+the 256-bit `AGENT_BRIDGE_OWNER_TOKEN`, binds it to
+`AGENT_BRIDGE_OWNER_SESSION_ID`, and records stable process diagnostics;
+only the token's SHA-256 digest is persisted. Claim refresh,
+same-agent `-Force` replacement, and release require the exact session id and
+token digest. The PID and process-start fields are diagnostics that identify
+the stable bootstrap shell; they are not authority checks and do not grant
+adoption when a process exits.
+
+Claim records may also carry `writer_pid`, which identifies only the
+short-lived process that serialized the claim. It is diagnostic metadata,
+never an owner or liveness signal. A missing or exited writer process does
+not release a claim and never permits adoption. Ownership changes only
+through an explicit release/handoff by the owning generation or the
+canonical heartbeat/lease expiry path below. Legacy claim records may still
+contain the old ambiguous `pid` field; readers must treat it with the same
+diagnostic-only semantics. Legacy tokenless claims cannot be refreshed,
+force-replaced, or explicitly released by an ordinary session; they expire
+through the stale-lease sweep.
 An event record's `pid` likewise identifies only the short-lived serializer
 process; it is never session ownership, liveness, or authority evidence.
 
-This binding prevents one named lane from accidentally acting as another. It
-does not yet distinguish two processes deliberately started with the same
-`-Agent` value, which is why concurrent instances must use unique lane ids.
-Generation-bound session ownership is tracked as a separate hardening step.
+The lane binding prevents one named lane from accidentally acting as another.
+The generation-bound claim fields additionally distinguish concurrent
+processes deliberately started with the same `-Agent` value. The owner token
+does not grant operator, `system`, RCO, merge, wake, restart, deployment,
+promotion, canary, or `claim_safe` authority; all existing role and workflow
+gates remain separate.
 
 Multi-lane bridge smokes snapshot, clear, and finally restore the full
 session identity tuple before creating their isolated fixtures. This lets a
@@ -201,7 +216,8 @@ distinct worktrees/branches while the source repo branch remains unchanged.
 
 Claim records carry a `last_heartbeat_utc` field that is bumped
 by `Send-Liveness.ps1` on every `liveness/active` and
-`heartbeat/active` event for the claim's owning agent. If
+`heartbeat/active` event from the exact owning session generation. A
+same-name session with a different owner token cannot extend the lease. If
 `now` is at or past the claim's effective lease expiry, the claim
 is automatically archived to
 `work_queue/done/<task>.<utc>.stale_lease.json` and a

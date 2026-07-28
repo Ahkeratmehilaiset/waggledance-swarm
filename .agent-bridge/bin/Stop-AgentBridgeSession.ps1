@@ -97,6 +97,22 @@ if (-not $Agent -or $isBoundSessionAgent -or $Agent -eq 'claude' -or $Agent -eq 
         Remove-Item Env:AGENT_BRIDGE_HEARTBEAT_JOB -ErrorAction SilentlyContinue
     }
 }
+if (-not $Agent -or $isBoundSessionAgent) {
+    if ($PSCmdlet.ShouldProcess(
+            'AGENT_BRIDGE claim owner context',
+            'Clear process env vars'
+        )) {
+        foreach ($ownerEnvName in @(
+                'AGENT_BRIDGE_OWNER_SESSION_ID',
+                'AGENT_BRIDGE_OWNER_TOKEN',
+                'AGENT_BRIDGE_OWNER_PID',
+                'AGENT_BRIDGE_OWNER_PROCESS_START_UTC'
+            )) {
+            Remove-Item -Path ("Env:{0}" -f $ownerEnvName) `
+                -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 [pscustomobject]@{
     pattern = $pattern

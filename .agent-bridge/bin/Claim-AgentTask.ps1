@@ -101,6 +101,7 @@ Assert-NoBridgePrivateMarker -Label 'role' -Value $Role
 Assert-NoBridgePrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoBridgePrivateMarker -Label 'session_id' -Value $sessionId
 Assert-NoBridgePrivateMarker -Label 'capabilities' -Value $Capabilities
+$ownerContext = Get-AgentBridgeClaimOwnerContext
 
 # R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
 # per-agent worktrees can share one runtime state directory. Codex
@@ -186,6 +187,16 @@ foreach ($file in $activeClaims) {
         if ([string]$existing.agent -ne $Agent -and $Agent -notin @('operator','system')) {
             Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $file.FullName) -Code 3
         }
+        if ([string]$existing.agent -eq $Agent) {
+            try {
+                Assert-AgentBridgeClaimOwner `
+                    -Claim $existing `
+                    -OwnerContext $ownerContext `
+                    -Operation 'force-update'
+            } catch {
+                Stop-BridgeClaim -Message $_.Exception.Message -Code 3
+            }
+        }
         continue
     }
     if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
@@ -222,6 +233,10 @@ $claim = [ordered]@{
     run_id              = $RunId
     lease_seconds       = $LeaseSeconds
     claim_lease_expires_utc = $leaseExpiresUtc
+    owner_session_id    = $ownerContext.session_id
+    owner_token_sha256  = $ownerContext.token_sha256
+    owner_pid           = $ownerContext.owner_pid
+    owner_process_start_utc = $ownerContext.owner_process_start_utc
     # This is the short-lived PowerShell writer process, not the owning
     # agent session and never an ownership or liveness signal.
     writer_pid          = $PID

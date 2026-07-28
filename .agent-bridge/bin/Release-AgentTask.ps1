@@ -110,6 +110,11 @@ if ([string]$claim.agent -ne $Agent) {
     Write-Error ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent)
     exit 3
 }
+$ownerContext = Get-AgentBridgeClaimOwnerContext
+Assert-AgentBridgeClaimOwner `
+    -Claim $claim `
+    -OwnerContext $ownerContext `
+    -Operation 'release'
 
 $claim | Add-Member -NotePropertyName released_at_utc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
 $claim | Add-Member -NotePropertyName release_status -NotePropertyValue $Status -Force

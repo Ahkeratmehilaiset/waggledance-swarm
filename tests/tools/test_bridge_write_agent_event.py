@@ -67,6 +67,10 @@ def _run_bridge_script(
         "AGENT_BRIDGE_ROLE",
         "AGENT_BRIDGE_RUN_ID",
         "AGENT_BRIDGE_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN",
+        "AGENT_BRIDGE_OWNER_PID",
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
     ):
         env.pop(name, None)
     if "-Agent" in args:
@@ -74,6 +78,10 @@ def _run_bridge_script(
         if agent_index + 1 < len(args):
             env["AGENT_BRIDGE_AGENT"] = args[agent_index + 1]
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    env["AGENT_BRIDGE_OWNER_SESSION_ID"] = "write-event-pytest-session"
+    env["AGENT_BRIDGE_OWNER_TOKEN"] = "d" * 64
+    env["AGENT_BRIDGE_OWNER_PID"] = str(os.getpid())
+    env["AGENT_BRIDGE_OWNER_PROCESS_START_UTC"] = "2026-07-28T00:00:00Z"
     return subprocess.run(
         [
             _powershell(),

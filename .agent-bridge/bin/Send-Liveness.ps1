@@ -79,6 +79,14 @@ if ($Wake) {
     }
 }
 
+$ownerContext = $null
+if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
+    # Resolve and validate before emitting an active event. The event may
+    # describe this session, but it must never refresh another generation's
+    # claim merely because both sessions use the same public agent lane.
+    $ownerContext = Get-AgentBridgeClaimOwnerContext
+}
+
 # Default heartbeat / liveness messages so the bridge is readable
 # even when the caller passes no -Message.
 if (-not $Message) {
@@ -138,6 +146,11 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
                     ConvertFrom-Json
             } catch { continue }
             if ([string]$obj.agent -ne $Agent) { continue }
+            if (-not (Test-AgentBridgeClaimOwner `
+                    -Claim $obj `
+                    -OwnerContext $ownerContext)) {
+                continue
+            }
             # Bump field, preserving claim shape.
             if ($obj.PSObject.Properties['last_heartbeat_utc']) {
                 $obj.last_heartbeat_utc = $heartbeatTs

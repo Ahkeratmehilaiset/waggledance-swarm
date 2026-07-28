@@ -382,23 +382,38 @@ def evaluate_report(
         blockers.append("commit_mismatch")
 
     source_root = Path(source_root)
+    inspected = inspect_static_policy(source_root)
     source_files = report.get("source_files")
     if not isinstance(source_files, list):
         blockers.append("source_files_missing")
         source_files = []
-    if set(source_files) != set(REQUIRED_SOURCE_FILES):
+    if source_files != inspected["source_files"]:
         blockers.append("source_files_mismatch")
     for item in source_files:
         if not isinstance(item, str) or not (source_root / item).is_file():
             blockers.append(f"source_file_missing:{item}")
 
+    source_hashes = report.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        blockers.append("source_hashes_missing")
+    elif source_hashes != inspected["source_hashes"]:
+        blockers.append("source_hashes_mismatch")
+
     static_checks = report.get("static_checks")
     if not isinstance(static_checks, dict):
         blockers.append("static_checks_missing")
         static_checks = {}
+    elif static_checks != inspected["checks"]:
+        blockers.append("static_checks_source_mismatch")
     for check in REQUIRED_STATIC_CHECKS:
         if static_checks.get(check) is not True:
             blockers.append(f"static_check_not_pass:{check}")
+
+    entrypoints = report.get("entrypoints")
+    if not isinstance(entrypoints, dict):
+        blockers.append("entrypoints_missing")
+    elif entrypoints != inspected["entrypoints"]:
+        blockers.append("entrypoints_mismatch")
 
     authorization = report.get("operator_authorization")
     if not isinstance(authorization, dict):

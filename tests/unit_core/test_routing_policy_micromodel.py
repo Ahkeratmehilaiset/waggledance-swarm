@@ -19,6 +19,14 @@ def _mock_config(**overrides):
     return cfg
 
 
+class _HostileConfigValue:
+    def __bool__(self):
+        raise AssertionError("truthiness must not be evaluated")
+
+    def __eq__(self, _other):
+        raise AssertionError("equality must not be evaluated")
+
+
 class TestMicromodelInRouteTypes:
     def test_micromodel_allowed(self):
         assert "micromodel" in ALLOWED_ROUTE_TYPES
@@ -136,6 +144,149 @@ class TestSelectRouteMicromodel:
 
         assert route.route_type == "solver"
         assert route.confidence == 0.95
+
+    def test_explicit_solver_first_true_beats_confident_micromodel(self):
+        features = RoutingFeatures(
+            solver_intent="math",
+            micromodel_enabled=True,
+            has_micromodel_hit=True,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(
+            features,
+            _mock_config(
+                **{"routing.deterministic_solver_first_enabled": True}
+            ),
+        )
+
+        assert route.route_type == "solver"
+
+    def test_explicit_solver_first_false_restores_micromodel_priority(self):
+        features = RoutingFeatures(
+            solver_intent="math",
+            micromodel_enabled=True,
+            has_micromodel_hit=True,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(
+            features,
+            _mock_config(
+                **{"routing.deterministic_solver_first_enabled": False}
+            ),
+        )
+
+        assert route.route_type == "micromodel"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            0,
+            1,
+            0.0,
+            1.0,
+            "false",
+            "true",
+            [],
+            {},
+            _HostileConfigValue(),
+        ],
+    )
+    def test_malformed_solver_first_values_keep_safe_default(self, value):
+        features = RoutingFeatures(
+            solver_intent="math",
+            micromodel_enabled=True,
+            has_micromodel_hit=True,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(
+            features,
+            _mock_config(
+                **{"routing.deterministic_solver_first_enabled": value}
+            ),
+        )
+
+        assert route.route_type == "solver"
+
+    def test_solver_first_false_changes_priority_not_solver_availability(self):
+        features = RoutingFeatures(
+            solver_intent="math",
+            micromodel_enabled=True,
+            has_micromodel_hit=False,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(
+            features,
+            _mock_config(
+                **{"routing.deterministic_solver_first_enabled": False}
+            ),
+        )
+
+        assert route.route_type == "solver"
+
+    def test_explicit_registry_solver_is_not_affected_by_precedence_rollback(self):
+        features = RoutingFeatures(
+            solver_intent="v3_13_0_solver",
+            micromodel_enabled=True,
+            has_micromodel_hit=True,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(
+            features,
+            _mock_config(
+                **{"routing.deterministic_solver_first_enabled": False}
+            ),
+        )
+
+        assert route.route_type == "solver"
+
+    @pytest.mark.parametrize(
+        ("features", "expected_route"),
+        [
+            (
+                RoutingFeatures(
+                    has_hot_cache_hit=True,
+                    solver_intent="math",
+                    micromodel_enabled=True,
+                    has_micromodel_hit=True,
+                    micromodel_confidence=0.99,
+                ),
+                "hotcache",
+            ),
+            (
+                RoutingFeatures(
+                    is_time_query=True,
+                    solver_intent="math",
+                ),
+                "llm",
+            ),
+            (
+                RoutingFeatures(
+                    is_system_query=True,
+                    solver_intent="math",
+                ),
+                "llm",
+            ),
+        ],
+    )
+    def test_precedence_rollback_preserves_unrelated_routing_invariants(
+        self,
+        features,
+        expected_route,
+    ):
+        route = select_route(
+            features,
+            _mock_config(
+                **{"routing.deterministic_solver_first_enabled": False}
+            ),
+        )
+
+        assert route.route_type == expected_route
 
     @pytest.mark.parametrize(
         "confidence",

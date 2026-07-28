@@ -544,7 +544,10 @@ def test_entrypoint_malformed_requested_agent_uses_escaped_identity_error(
     assert "requested agent" in completed.stderr
     assert "\nforged-entry: yes" not in completed.stderr
     if "forged-entry" in malformed_agent:
-        assert r"\r\nforged-entry: yes\t\\tail" in completed.stderr
+        # pwsh -File may insert platform-specific diagnostic formatting
+        # between words while preserving the escaped, injection-safe value.
+        assert r"\r\nforged-entry:" in completed.stderr
+        assert r"yes\t\\tail" in completed.stderr
     else:
         assert r"\t" in completed.stderr
     assert not runtime_root.exists()

@@ -14,6 +14,9 @@ import pytest
 
 from waggledance.adapters.http.api import lifespan
 from waggledance.core.magma import chat_served_claim_window_evidence as evidence
+from waggledance.core.magma.chat_served_accounting import (
+    REQUIRED_CHAT_SERVED_POINTS,
+)
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     ProductionWindowVerification,
 )
@@ -139,6 +142,26 @@ def _window(
     return window, paths
 
 
+def _pre_marker_verdict() -> ProductionWindowVerification:
+    return ProductionWindowVerification(
+        ok=True,
+        phase="pre_marker_verified",
+        reason=None,
+        marker_verified=False,
+        ledger_entries=2,
+        enabled_samples=2,
+        pending_failures=0,
+        receipt_index_entries=1,
+        served_point_observations=len(REQUIRED_CHAT_SERVED_POINTS),
+        receipt_terminals=1,
+        served_total=1,
+        served_with_receipt_total=1,
+        served_with_receipt_ratio=1.0,
+        solver_first_served_total=1,
+        solver_first_served_ratio=1.0,
+    )
+
+
 def test_runtime_window_writes_marker_last_after_pre_marker_verification(
     tmp_path: Path,
     monkeypatch,
@@ -154,9 +177,7 @@ def test_runtime_window_writes_marker_last_after_pre_marker_verification(
         assert kwargs["previously_verified_window_ids"] == ()
         assert len(kwargs["enabled_samples"]) == 2
         assert kwargs["ledger_entries"] == ()
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
     real_write_marker = _write_clean_marker_last
@@ -222,18 +243,7 @@ def test_runtime_registry_passes_all_prior_consumed_ids_to_verifier(
         prior_binding,
         lambda prior_ids: RegistryVerificationApproval(
             prior_binding,
-            ProductionWindowVerification(
-                True,
-                "pre_marker_verified",
-                None,
-                False,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ),
+            _pre_marker_verdict(),
         ),
     )
     runtime_root = tmp_path / "runtime"
@@ -247,9 +257,7 @@ def test_runtime_registry_passes_all_prior_consumed_ids_to_verifier(
 
     def verify(**kwargs):
         seen_prior_ids.append(kwargs["previously_verified_window_ids"])
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -292,9 +300,7 @@ def test_runtime_registry_replay_fails_before_any_new_evidence(
     def verify(**_kwargs):
         nonlocal verifier_calls
         verifier_calls += 1
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -324,9 +330,7 @@ def test_runtime_mutation_after_reservation_burns_id_without_marker(
     window, paths = _window(tmp_path, emitter)
 
     def verify(**_kwargs):
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -371,9 +375,7 @@ def test_runtime_post_reservation_failure_reports_unknown_and_writes_no_marker(
     window, paths = _window(tmp_path, emitter)
 
     def verify(**_kwargs):
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -416,9 +418,7 @@ def test_runtime_missing_reservation_readback_writes_no_marker(
     window, paths = _window(tmp_path, emitter)
 
     def verify(**_kwargs):
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -470,9 +470,7 @@ def test_runtime_window_rejects_on_disk_mutation_during_pre_verification(
 
     def verify(**_kwargs):
         _append_jsonl(paths["points"], ({"tampered": True},))
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -501,9 +499,7 @@ def test_runtime_window_rejects_boundary_mutation_during_pre_verification(
 
     def verify(**_kwargs):
         paths["final"].write_text('{"tampered":true}\n', encoding="utf-8")
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -531,9 +527,7 @@ def test_runtime_window_rejects_anchor_mutation_during_pre_verification(
 
     def verify(**_kwargs):
         paths["anchors"].write_text('{"tampered":true}\n', encoding="utf-8")
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -881,9 +875,7 @@ def test_runtime_window_rejects_receipt_hardlink_created_during_drain(
     def verify(**_kwargs):
         nonlocal verifier_called
         verifier_called = True
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 
@@ -957,9 +949,7 @@ def test_runtime_window_rejects_evidence_relinked_by_verifier_callback(
         callback_ran = True
         paths["ledger"].unlink()
         os.link(bundle_extra, paths["ledger"])
-        return ProductionWindowVerification(
-            True, "pre_marker_verified", None, False, 0, 2, 0, 0, 0, 0
-        )
+        return _pre_marker_verdict()
 
     monkeypatch.setattr(evidence, "verify_production_window", verify, raising=False)
 

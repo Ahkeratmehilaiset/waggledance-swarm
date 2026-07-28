@@ -63,6 +63,11 @@ def _verdict(
         receipt_index_entries=1,
         served_point_observations=5,
         receipt_terminals=1,
+        served_total=1,
+        served_with_receipt_total=1,
+        served_with_receipt_ratio=1.0,
+        solver_first_served_total=1,
+        solver_first_served_ratio=1.0,
     )
     return verdict._replace(**overrides)
 
@@ -552,6 +557,7 @@ def test_callbacks_receive_consumed_ids_with_target_excluded_on_finalize(
         ("claim_safe_count", 0.0),
         ("claim_safe_count", False),
         ("schema_version", "wrong.schema.v1"),
+        ("authority", "runtime"),
     ],
 )
 def test_reservation_rejects_any_non_pre_marker_verdict_field(
@@ -571,6 +577,179 @@ def test_reservation_rejects_any_non_pre_marker_verdict_field(
             lambda _prior: _approval(
                 binding,
                 **{field: value},
+            ),
+        )
+
+    assert registry.snapshot().records == ()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"ledger_entries": False}, "ledger_entries"),
+        ({"receipt_index_entries": True}, "receipt_index_entries"),
+        ({"receipt_terminals": True}, "receipt_terminals"),
+        ({"served_total": False}, "served_total"),
+        ({"served_with_receipt_total": -1}, "served_with_receipt_total"),
+        ({"solver_first_served_total": -1}, "solver_first_served_total"),
+        ({"served_total": 0}, "counter_totals"),
+        ({"enabled_samples": 1}, "counter_totals"),
+        ({"pending_failures": 1}, "counter_totals"),
+        ({"served_point_observations": 0}, "counter_totals"),
+        ({"served_point_observations": 6}, "counter_totals"),
+        ({"ledger_entries": 3}, "counter_totals"),
+        ({"served_with_receipt_total": 2}, "counter_totals"),
+        ({"solver_first_served_total": 2}, "counter_totals"),
+        ({"served_with_receipt_ratio": None}, "served_with_receipt_ratio"),
+        ({"served_with_receipt_ratio": float("nan")}, "served_with_receipt_ratio"),
+        ({"served_with_receipt_ratio": float("inf")}, "served_with_receipt_ratio"),
+        ({"served_with_receipt_ratio": 0.5}, "served_with_receipt_ratio"),
+        ({"solver_first_served_ratio": False}, "solver_first_served_ratio"),
+        ({"solver_first_served_ratio": 0.5}, "solver_first_served_ratio"),
+    ],
+)
+def test_reservation_rejects_forged_counter_contract(
+    tmp_path,
+    overrides,
+    reason,
+) -> None:
+    registry = R.ChatServedWindowRegistry(tmp_path / "registry.jsonl")
+    binding = _binding()
+
+    with pytest.raises(
+        R.WindowRegistryVerificationError,
+        match=f"verification_verdict_invalid:{reason}",
+    ):
+        registry.reserve_after_verification(
+            binding,
+            lambda _prior: _approval(binding, **overrides),
+        )
+
+    assert registry.snapshot().records == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        R.MAX_PRODUCTION_WINDOW_RECORDS + 1,
+        10**5000,
+    ],
+    ids=["above_limit", "extreme"],
+)
+def test_reservation_rejects_unbounded_verification_counts(
+    tmp_path,
+    value,
+) -> None:
+    registry = R.ChatServedWindowRegistry(tmp_path / "registry.jsonl")
+    binding = _binding()
+
+    with pytest.raises(
+        R.WindowRegistryVerificationError,
+        match="verification_verdict_invalid:enabled_samples",
+    ):
+        registry.reserve_after_verification(
+            binding,
+            lambda _prior: _approval(
+                binding,
+                enabled_samples=value,
+            ),
+        )
+
+    assert registry.snapshot().records == ()
+
+
+class _SpoofedString(str):
+    def __eq__(self, _other):
+        return True
+
+    def __ne__(self, _other):
+        return False
+
+
+class _EqualNone(int):
+    def __eq__(self, other):
+        return other is None
+
+    def __ne__(self, other):
+        return other is not None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("phase", _SpoofedString("forged_phase")),
+        ("schema_version", _SpoofedString("forged.schema.v0")),
+        ("authority", _SpoofedString("runtime")),
+        ("reason", _EqualNone(7)),
+    ],
+)
+def test_reservation_rejects_equality_spoofed_verdict_fields(
+    tmp_path,
+    field,
+    value,
+) -> None:
+    registry = R.ChatServedWindowRegistry(tmp_path / "registry.jsonl")
+    binding = _binding()
+
+    with pytest.raises(
+        R.WindowRegistryVerificationError,
+        match=f"verification_verdict_invalid:{field}",
+    ):
+        registry.reserve_after_verification(
+            binding,
+            lambda _prior: _approval(
+                binding,
+                **{field: value},
+            ),
+        )
+
+    assert registry.snapshot().records == ()
+
+
+class _EqualBinding:
+    def __eq__(self, _other):
+        return True
+
+    def __ne__(self, _other):
+        return False
+
+
+def test_reservation_requires_exact_binding_type(tmp_path) -> None:
+    registry = R.ChatServedWindowRegistry(tmp_path / "registry.jsonl")
+    binding = _binding()
+
+    with pytest.raises(
+        R.WindowRegistryVerificationError,
+        match="verification_approval_binding_mismatch",
+    ):
+        registry.reserve_after_verification(
+            binding,
+            lambda _prior: R.RegistryVerificationApproval(
+                binding=_EqualBinding(),
+                verdict=_verdict("pre_marker_verified", False),
+            ),
+        )
+
+    assert registry.snapshot().records == ()
+
+
+def test_reservation_rejects_equality_spoofed_binding_field(tmp_path) -> None:
+    registry = R.ChatServedWindowRegistry(tmp_path / "registry.jsonl")
+    binding = _binding()
+    forged_binding = replace(
+        binding,
+        window_id=_SpoofedString("window:forged"),
+    )
+
+    with pytest.raises(
+        R.WindowRegistryVerificationError,
+        match="verification_approval_binding_mismatch",
+    ):
+        registry.reserve_after_verification(
+            binding,
+            lambda _prior: R.RegistryVerificationApproval(
+                binding=forged_binding,
+                verdict=_verdict("pre_marker_verified", False),
             ),
         )
 

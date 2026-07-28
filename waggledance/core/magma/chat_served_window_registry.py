@@ -48,7 +48,12 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
+from waggledance.core.magma.chat_served_accounting import (
+    REQUIRED_CHAT_SERVED_POINTS,
+)
 from waggledance.core.magma.chat_served_claim_window_evidence import (
+    MAX_PRODUCTION_WINDOW_RECORDS,
+    PRODUCTION_WINDOW_COUNTER_AUTHORITY,
     PRODUCTION_WINDOW_VERIFICATION_SCHEMA,
     ProductionWindowVerification,
 )
@@ -393,7 +398,12 @@ def _require_exact_verification_approval(
         raise WindowRegistryVerificationError(
             "verification_approval_type_invalid"
         )
-    if approval.binding != binding:
+    if type(approval.binding) is not WindowRegistryBinding or any(
+        type(getattr(approval.binding, field)) is not str
+        or type(getattr(binding, field)) is not str
+        or getattr(approval.binding, field) != getattr(binding, field)
+        for field in _BINDING_FIELDS
+    ):
         raise WindowRegistryVerificationError(
             "verification_approval_binding_mismatch"
         )
@@ -410,16 +420,72 @@ def _require_exact_verification_approval(
         "measurement_only": True,
         "claim_safe_count": 0,
         "schema_version": PRODUCTION_WINDOW_VERIFICATION_SCHEMA,
+        "authority": PRODUCTION_WINDOW_COUNTER_AUTHORITY,
     }
     for field, value in expected.items():
         observed = _verdict_field(verdict, field)
-        if field in {"ok", "marker_verified", "measurement_only"}:
+        if value is None:
+            matches = observed is None
+        elif type(value) is bool:
             matches = observed is value
-        elif field == "claim_safe_count":
-            matches = type(observed) is int and observed == 0
         else:
-            matches = observed == value
+            matches = type(observed) is type(value) and observed == value
         if not matches:
+            raise WindowRegistryVerificationError(
+                f"verification_verdict_invalid:{field}"
+            )
+
+    totals: dict[str, int] = {}
+    for field in (
+        "ledger_entries",
+        "enabled_samples",
+        "pending_failures",
+        "receipt_index_entries",
+        "served_point_observations",
+        "receipt_terminals",
+        "served_total",
+        "served_with_receipt_total",
+        "solver_first_served_total",
+    ):
+        observed = _verdict_field(verdict, field)
+        if (
+            type(observed) is not int
+            or not 0 <= observed <= MAX_PRODUCTION_WINDOW_RECORDS
+        ):
+            raise WindowRegistryVerificationError(
+                f"verification_verdict_invalid:{field}"
+            )
+        totals[field] = observed
+    if (
+        totals["served_total"] == 0
+        or totals["enabled_samples"] < 2
+        or totals["pending_failures"] != 0
+        or totals["served_point_observations"]
+        != len(REQUIRED_CHAT_SERVED_POINTS)
+        or totals["ledger_entries"] != 2 * totals["served_total"]
+        or totals["solver_first_served_total"]
+        > totals["served_with_receipt_total"]
+        or totals["served_with_receipt_total"] > totals["served_total"]
+        or totals["served_with_receipt_total"]
+        != totals["receipt_terminals"]
+        or totals["served_with_receipt_total"]
+        != totals["receipt_index_entries"]
+    ):
+        raise WindowRegistryVerificationError(
+            "verification_verdict_invalid:counter_totals"
+        )
+    for field, numerator_field in (
+        ("served_with_receipt_ratio", "served_with_receipt_total"),
+        ("solver_first_served_ratio", "solver_first_served_total"),
+    ):
+        observed = _verdict_field(verdict, field)
+        expected_ratio = totals[numerator_field] / totals["served_total"]
+        if (
+            type(observed) is not float
+            or not math.isfinite(observed)
+            or not 0.0 <= observed <= 1.0
+            or observed != expected_ratio
+        ):
             raise WindowRegistryVerificationError(
                 f"verification_verdict_invalid:{field}"
             )

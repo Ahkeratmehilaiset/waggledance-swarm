@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import stat
@@ -20,7 +21,12 @@ from waggledance.core.magma.canonical import (  # noqa: E402
     canonical_json_bytes,
     sha256_digest,
 )
+from waggledance.core.magma.chat_served_accounting import (  # noqa: E402
+    REQUIRED_CHAT_SERVED_POINTS,
+)
 from waggledance.core.magma.chat_served_claim_window_evidence import (  # noqa: E402
+    MAX_PRODUCTION_WINDOW_RECORDS,
+    PRODUCTION_WINDOW_COUNTER_AUTHORITY,
     PRODUCTION_WINDOW_VERIFICATION_SCHEMA,
     ProductionWindowVerification,
     derive_production_window_registry_binding_digest,
@@ -57,6 +63,7 @@ _MANIFEST_ENTRY_KEYS = frozenset({"receipt", "payload", "evaluation_result"})
 _CHAT_SERVED_CHAIN_ID = "magma:chat_service:served:v0"
 MAX_JSON_INPUT_BYTES = 64 * 1024 * 1024
 MAX_CLEAN_MARKER_BYTES = 64 * 1024
+MAX_VERIFICATION_REASON_LENGTH = 128
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -532,14 +539,27 @@ def _safe_failed_verification_result(
     if (
         type(result) is not ProductionWindowVerification
         or result.ok is not False
+        or type(result.phase) is not str
         or result.phase not in {"pre_marker_rejected", "final_rejected"}
-        or not isinstance(result.reason, str)
+        or type(result.reason) is not str
+        or len(result.reason) > MAX_VERIFICATION_REASON_LENGTH
         or re.fullmatch(r"[a-z0-9_:]+", result.reason) is None
         or result.marker_verified is not False
         or result.measurement_only is not True
         or type(result.claim_safe_count) is not int
         or result.claim_safe_count != 0
+        or type(result.schema_version) is not str
         or result.schema_version != PRODUCTION_WINDOW_VERIFICATION_SCHEMA
+        or type(result.authority) is not str
+        or result.authority != PRODUCTION_WINDOW_COUNTER_AUTHORITY
+        or type(result.served_total) is not int
+        or result.served_total != 0
+        or type(result.served_with_receipt_total) is not int
+        or result.served_with_receipt_total != 0
+        or result.served_with_receipt_ratio is not None
+        or type(result.solver_first_served_total) is not int
+        or result.solver_first_served_total != 0
+        or result.solver_first_served_ratio is not None
     ):
         return False
     for field in (
@@ -551,7 +571,76 @@ def _safe_failed_verification_result(
         "receipt_terminals",
     ):
         value = getattr(result, field)
-        if type(value) is not int or value < 0:
+        if (
+            type(value) is not int
+            or not 0 <= value <= MAX_PRODUCTION_WINDOW_RECORDS
+        ):
+            return False
+    return True
+
+
+def _safe_successful_verification_result(
+    result: object,
+) -> bool:
+    if (
+        type(result) is not ProductionWindowVerification
+        or result.ok is not True
+        or type(result.phase) is not str
+        or result.phase != "final_verified"
+        or result.reason is not None
+        or result.marker_verified is not True
+        or result.measurement_only is not True
+        or type(result.claim_safe_count) is not int
+        or result.claim_safe_count != 0
+        or type(result.schema_version) is not str
+        or result.schema_version != PRODUCTION_WINDOW_VERIFICATION_SCHEMA
+        or type(result.authority) is not str
+        or result.authority != PRODUCTION_WINDOW_COUNTER_AUTHORITY
+    ):
+        return False
+    integer_fields = (
+        "ledger_entries",
+        "enabled_samples",
+        "pending_failures",
+        "receipt_index_entries",
+        "served_point_observations",
+        "receipt_terminals",
+        "served_total",
+        "served_with_receipt_total",
+        "solver_first_served_total",
+    )
+    if any(
+        type(getattr(result, field)) is not int
+        or not 0
+        <= getattr(result, field)
+        <= MAX_PRODUCTION_WINDOW_RECORDS
+        for field in integer_fields
+    ):
+        return False
+    if (
+        result.served_total == 0
+        or result.enabled_samples < 2
+        or result.pending_failures != 0
+        or result.served_point_observations
+        != len(REQUIRED_CHAT_SERVED_POINTS)
+        or result.ledger_entries != 2 * result.served_total
+        or result.solver_first_served_total
+        > result.served_with_receipt_total
+        or result.served_with_receipt_total > result.served_total
+        or result.served_with_receipt_total != result.receipt_terminals
+        or result.served_with_receipt_total != result.receipt_index_entries
+    ):
+        return False
+    for ratio, numerator in (
+        (result.served_with_receipt_ratio, result.served_with_receipt_total),
+        (result.solver_first_served_ratio, result.solver_first_served_total),
+    ):
+        if (
+            type(ratio) is not float
+            or not math.isfinite(ratio)
+            or not 0.0 <= ratio <= 1.0
+            or ratio != numerator / result.served_total
+        ):
             return False
     return True
 
@@ -681,11 +770,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _registry_failure_result(exc)
     except Exception:  # noqa: BLE001 - no paths or exception text enter JSON
         result = _invalid_result()
+    safe_result = (
+        _safe_successful_verification_result(result)
+        if type(result) is ProductionWindowVerification and result.ok is True
+        else _safe_failed_verification_result(result)
+    )
+    if not safe_result:
+        result = _invalid_result("verification_result_contract_invalid")
     payload = result._asdict()
     # Defensive contract assertions keep the stable output non-authorizing.
     assert payload["schema_version"] == PRODUCTION_WINDOW_VERIFICATION_SCHEMA
     assert payload["measurement_only"] is True
     assert payload["claim_safe_count"] == 0
+    assert payload["authority"] == PRODUCTION_WINDOW_COUNTER_AUTHORITY
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
     return 0 if result.ok else 1
 

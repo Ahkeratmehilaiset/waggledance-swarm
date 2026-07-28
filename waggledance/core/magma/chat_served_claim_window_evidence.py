@@ -65,8 +65,9 @@ RECEIPT_INDEX_ENTRY_HASH_DOMAIN = (
     "magma.chat_served_receipt_index_entry_hash.v1"
 )
 PRODUCTION_WINDOW_VERIFICATION_SCHEMA = (
-    "magma.chat_served_production_window_verification.v1"
+    "magma.chat_served_production_window_verification.v2"
 )
+PRODUCTION_WINDOW_COUNTER_AUTHORITY = "measurement_only"
 PRODUCTION_WINDOW_REGISTRY_BINDING_SCHEMA = (
     "magma.chat_served_production_window_registry_binding.v1"
 )
@@ -178,6 +179,22 @@ class ProductionWindowVerification(NamedTuple):
     measurement_only: bool = True
     claim_safe_count: int = 0
     schema_version: str = PRODUCTION_WINDOW_VERIFICATION_SCHEMA
+    served_total: int = 0
+    served_with_receipt_total: int = 0
+    served_with_receipt_ratio: float | None = None
+    solver_first_served_total: int = 0
+    solver_first_served_ratio: float | None = None
+    authority: str = PRODUCTION_WINDOW_COUNTER_AUTHORITY
+
+
+class _ProductionMetadataSnapshot(NamedTuple):
+    query_digest: str
+    source: str
+    route_type: str
+    language: str
+    profile: str
+    world_snapshot_ref: str
+    agent_id: str | None
 
 
 def _canonical_without(entry: Mapping[str, Any], hash_field: str) -> dict[str, Any]:
@@ -1134,6 +1151,11 @@ def _production_verdict(
     receipt_index_entries: int,
     served_point_observations: int,
     receipt_terminals: int,
+    served_total: int = 0,
+    served_with_receipt_total: int = 0,
+    served_with_receipt_ratio: float | None = None,
+    solver_first_served_total: int = 0,
+    solver_first_served_ratio: float | None = None,
 ) -> ProductionWindowVerification:
     return ProductionWindowVerification(
         ok=ok,
@@ -1146,6 +1168,11 @@ def _production_verdict(
         receipt_index_entries=receipt_index_entries,
         served_point_observations=served_point_observations,
         receipt_terminals=receipt_terminals,
+        served_total=served_total,
+        served_with_receipt_total=served_with_receipt_total,
+        served_with_receipt_ratio=served_with_receipt_ratio,
+        solver_first_served_total=solver_first_served_total,
+        solver_first_served_ratio=solver_first_served_ratio,
     )
 
 
@@ -1222,6 +1249,119 @@ def _valid_production_metadata(value: object) -> bool:
     if value.get("normalization_version") != NORMALIZATION_VERSION:
         return False
     return bool(_SHA256_RE.fullmatch(str(value.get("query_digest"))))
+
+
+def _production_metadata_snapshot(
+    metadata: Mapping[str, Any],
+) -> _ProductionMetadataSnapshot | None:
+    """Freeze exact builtin scalars before any receipt callback can run."""
+    values = tuple(
+        metadata.get(field)
+        for field in (
+            "query_digest",
+            "source",
+            "route_type",
+            "language",
+            "profile",
+            "world_snapshot_ref",
+        )
+    )
+    agent_id = metadata.get("agent_id")
+    if (
+        any(type(value) is not str for value in values)
+        or (agent_id is not None and type(agent_id) is not str)
+    ):
+        return None
+    return _ProductionMetadataSnapshot(*values, agent_id)
+
+
+def _receipt_payload_matches_pending_metadata(
+    payload: Mapping[str, Any],
+    metadata: _ProductionMetadataSnapshot,
+) -> bool:
+    """Bind claim-facing receipt fields to the synchronous served event."""
+    observed = tuple(
+        payload.get(field)
+        for field in (
+            "query_digest",
+            "source",
+            "route_type",
+            "language",
+            "profile",
+            "world_snapshot_ref",
+        )
+    )
+    agent_id = payload.get("agent_id")
+    if (
+        any(type(value) is not str for value in observed)
+        or (agent_id is not None and type(agent_id) is not str)
+    ):
+        return False
+    return (*observed, agent_id) == metadata
+
+
+def _receipt_proves_solver_first(payload: Mapping[str, Any]) -> bool:
+    """Conservatively derive solver-first from the receipt's route trace."""
+    if (
+        type(payload.get("route_type")) is not str
+        or payload["route_type"] != "solver"
+        or type(payload.get("source")) is not str
+        or payload["source"] != "solver"
+    ):
+        return False
+    trace = payload.get("route_stage_trace")
+    if type(trace) is not list:
+        return False
+
+    route_selection_intent: str | None = None
+    deterministic_intent: str | None = None
+    first_serving_stage: str | None = None
+    later_serving_stage = False
+    for event in trace:
+        if type(event) is not dict or type(event.get("stage")) is not str:
+            return False
+        stage = event["stage"]
+        if stage == "route_selection":
+            route_type = event.get("route_type")
+            solver_intent = event.get("solver_intent")
+            if (
+                type(route_type) is not str
+                or route_type != "solver"
+                or type(solver_intent) is not str
+            ):
+                return False
+            route_selection_intent = solver_intent
+        elif stage == "deterministic_solver":
+            intent = event.get("intent")
+            if type(intent) is not str:
+                return False
+            deterministic_intent = intent
+
+        serves = (
+            (stage == "hot_cache" and event.get("hit") is True)
+            or (
+                stage
+                in {
+                    "deterministic_solver",
+                    "hybrid_retrieval_8_cell",
+                    "hex_neighbor_assist_7_cell",
+                }
+                and event.get("answered") is True
+            )
+            or stage == "orchestrator_llm_fallback"
+        )
+        if serves:
+            if first_serving_stage is None:
+                first_serving_stage = stage
+            else:
+                later_serving_stage = True
+
+    return bool(
+        first_serving_stage == "deterministic_solver"
+        and not later_serving_stage
+        and route_selection_intent is not None
+        and route_selection_intent == deterministic_intent
+    )
 
 
 def _valid_enabled_transition_sequence(
@@ -1379,7 +1519,7 @@ def verify_production_window(
     content_address_receipt: Callable[[Mapping[str, Any]], str],
     previously_verified_window_ids: Iterable[str] = (),
 ) -> ProductionWindowVerification:
-    """Independently verify one exact, record-cursor-bound v1 measurement window.
+    """Independently verify one exact, record-cursor-bound production window.
 
     ``clean_shutdown_marker=None`` is the coordinator's pre-marker mode. A passing
     result is then explicitly ``pre_marker_verified``: it permits only the final
@@ -1589,7 +1729,7 @@ def verify_production_window(
 
     previous_hash = str(start_boundary["start_ledger_head"])
     previous_ts = start_ts
-    query_by_served: dict[str, str] = {}
+    metadata_by_served: dict[str, _ProductionMetadataSnapshot] = {}
     state: dict[str, str] = {}
     receipt_terminals: list[tuple[str, str]] = []
     for entry in ledger:
@@ -1625,7 +1765,20 @@ def verify_production_window(
         served_id = str(entry["served_id"])
         entry_type = entry["entry_type"]
         if entry_type == SERVED_PENDING:
-            if served_id in state or not _valid_production_metadata(entry.get("metadata")):
+            metadata = entry.get("metadata")
+            if (
+                served_id in state
+                or not _valid_production_metadata(metadata)
+                or not isinstance(metadata, Mapping)
+            ):
+                return _production_failure(
+                    "ledger_pending_invalid",
+                    marker_present=marker_present,
+                    receipt_terminals=len(receipt_terminals),
+                    **counts,
+                )
+            metadata_snapshot = _production_metadata_snapshot(metadata)
+            if metadata_snapshot is None:
                 return _production_failure(
                     "ledger_pending_invalid",
                     marker_present=marker_present,
@@ -1633,7 +1786,7 @@ def verify_production_window(
                     **counts,
                 )
             state[served_id] = "pending"
-            query_by_served[served_id] = str(entry["metadata"]["query_digest"])
+            metadata_by_served[served_id] = metadata_snapshot
         elif entry_type in {RECEIPT_TERMINAL, GAP_TERMINAL}:
             if state.get(served_id) != "pending":
                 return _production_failure(
@@ -1643,14 +1796,10 @@ def verify_production_window(
                     **counts,
                 )
             if entry_type == GAP_TERMINAL:
-                return _production_failure(
-                    "ledger_gap_present",
-                    marker_present=marker_present,
-                    receipt_terminals=len(receipt_terminals),
-                    **counts,
-                )
-            state[served_id] = "receipt"
-            receipt_terminals.append((served_id, str(entry["receipt_ref"])))
+                state[served_id] = "gap"
+            else:
+                state[served_id] = "receipt"
+                receipt_terminals.append((served_id, str(entry["receipt_ref"])))
         else:  # defensive: wellformed_reason already pins the set
             return _production_failure(
                 "ledger_entry_type_invalid",
@@ -1665,7 +1814,9 @@ def verify_production_window(
             receipt_terminals=len(receipt_terminals),
             **counts,
         )
-    if not state or any(value != "receipt" for value in state.values()):
+    if not state or any(
+        value not in {"receipt", "gap"} for value in state.values()
+    ):
         return _production_failure(
             "ledger_unresolved_pending",
             marker_present=marker_present,
@@ -1733,12 +1884,15 @@ def verify_production_window(
                 receipt_terminals=len(receipt_terminals),
                 **counts,
             )
-    sort_key = lambda row: (
-        str(row["manifest_ref"]),
-        str(row["served_id"]),
-        str(row["receipt_ref"]),
+    index_pins = tuple(
+        (
+            str(row["manifest_ref"]),
+            str(row["served_id"]),
+            str(row["receipt_ref"]),
+        )
+        for row in index
     )
-    if list(index) != sorted(index, key=sort_key):
+    if index_pins != tuple(sorted(index_pins)):
         return _production_failure(
             "receipt_index_not_sorted",
             marker_present=marker_present,
@@ -1746,10 +1900,17 @@ def verify_production_window(
             **counts,
         )
     indexed_terminals = [
-        (str(row["served_id"]), str(row["receipt_ref"])) for row in index
+        (served_id, receipt_ref)
+        for _manifest_ref, served_id, receipt_ref in index_pins
     ]
-    manifest_refs = [str(row["manifest_ref"]) for row in index]
-    indexed_receipt_refs = [str(row["receipt_ref"]) for row in index]
+    manifest_refs = [
+        manifest_ref
+        for manifest_ref, _served_id, _receipt_ref in index_pins
+    ]
+    indexed_receipt_refs = [
+        receipt_ref
+        for _manifest_ref, _served_id, receipt_ref in index_pins
+    ]
     if (
         len(set(indexed_terminals)) != len(indexed_terminals)
         or len(set(manifest_refs)) != len(manifest_refs)
@@ -1763,9 +1924,29 @@ def verify_production_window(
             **counts,
         )
 
-    def verify_resolved_bundle(row: Mapping[str, Any]) -> str | None:
+    bundle_pins: list[
+        tuple[str, str, str, _ProductionMetadataSnapshot]
+    ] = []
+    for manifest_ref, served_id, receipt_ref in index_pins:
+        pending_metadata = metadata_by_served.get(served_id)
+        if pending_metadata is None:
+            return _production_failure(
+                "receipt_index_not_exact",
+                marker_present=marker_present,
+                receipt_terminals=len(receipt_terminals),
+                **counts,
+            )
+        bundle_pins.append(
+            (manifest_ref, served_id, receipt_ref, pending_metadata)
+        )
+    frozen_bundle_pins = tuple(bundle_pins)
+
+    def verify_resolved_bundle(
+        pin: tuple[str, str, str, _ProductionMetadataSnapshot],
+    ) -> tuple[str, bool] | None:
         try:
-            bundle = resolve_receipt_bundle(str(row["manifest_ref"]))
+            manifest_ref, _served_id, receipt_ref, pending_metadata = pin
+            bundle = resolve_receipt_bundle(manifest_ref)
             if type(bundle) is not dict or set(bundle) != {"receipt", "payload"}:
                 return None
             receipt = bundle.get("receipt")
@@ -1776,12 +1957,16 @@ def verify_production_window(
                 return None
             before = sha256_digest(bundle)
             validate_chat_served_payload(payload)
+            if not _receipt_payload_matches_pending_metadata(
+                payload,
+                pending_metadata,
+            ):
+                return None
+            solver_first = _receipt_proves_solver_first(payload)
             if receipt.get("canonical_payload_digest") != sha256_digest(payload):
                 return None
-            if payload.get("query_digest") != query_by_served.get(str(row["served_id"])):
-                return None
             canonical_ref = sha256_digest(receipt)
-            if canonical_ref != row.get("receipt_ref"):
+            if canonical_ref != receipt_ref:
                 return None
             if content_address_receipt(receipt) != canonical_ref:
                 return None
@@ -1789,20 +1974,24 @@ def verify_production_window(
                 return None
             if sha256_digest(bundle) != before:
                 return None
-            return before
+            return before, solver_first
         except Exception:  # noqa: BLE001 - resolver/verifier failures fail closed
             return None
 
-    for row in index:
-        first_bundle_digest = verify_resolved_bundle(row)
-        second_bundle_digest = verify_resolved_bundle(row)
-        if first_bundle_digest is None or second_bundle_digest != first_bundle_digest:
+    served_with_receipt_total = 0
+    solver_first_served_total = 0
+    for pin in frozen_bundle_pins:
+        first_observation = verify_resolved_bundle(pin)
+        second_observation = verify_resolved_bundle(pin)
+        if first_observation is None or second_observation != first_observation:
             return _production_failure(
                 "receipt_bundle_verification_failed",
                 marker_present=marker_present,
                 receipt_terminals=len(receipt_terminals),
                 **counts,
             )
+        served_with_receipt_total += 1
+        solver_first_served_total += int(first_observation[1])
 
     try:
         if sha256_digest(all_evidence) != evidence_digest:
@@ -1820,12 +2009,31 @@ def verify_production_window(
             **counts,
         )
 
+    served_total = len(state)
+    if not (
+        0
+        <= solver_first_served_total
+        <= served_with_receipt_total
+        <= served_total
+    ):
+        return _production_failure(
+            "receipt_counter_invariant_failed",
+            marker_present=marker_present,
+            receipt_terminals=len(receipt_terminals),
+            **counts,
+        )
+
     return _production_verdict(
         ok=True,
         phase="final_verified" if marker_present else "pre_marker_verified",
         reason=None,
         marker_verified=marker_present,
         receipt_terminals=len(receipt_terminals),
+        served_total=served_total,
+        served_with_receipt_total=served_with_receipt_total,
+        served_with_receipt_ratio=served_with_receipt_total / served_total,
+        solver_first_served_total=solver_first_served_total,
+        solver_first_served_ratio=solver_first_served_total / served_total,
         **counts,
     )
 
@@ -2065,6 +2273,7 @@ __all__ = [
     "MAX_PRIVACY_SCAN_DEPTH",
     "MAX_PRIVACY_SCAN_NODES",
     "MAX_PRODUCTION_WINDOW_RECORDS",
+    "PRODUCTION_WINDOW_COUNTER_AUTHORITY",
     "PRODUCTION_WINDOW_REGISTRY_BINDING_SCHEMA",
     "PRODUCTION_WINDOW_VERIFICATION_SCHEMA",
     "RECEIPT_INDEX_ENTRY_HASH_DOMAIN",

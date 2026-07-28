@@ -97,6 +97,11 @@ _DIGEST_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 _HEAD_SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _METADATA_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+_ALLOWED_RUNTIME_UNTRACKED_PREFIXES = (
+    b".agent-bridge/outbox/",
+    b".agent-bridge/shared/",
+    b".agent-bridge/work_queue/",
+)
 
 DEFAULT_CORPUS: tuple[dict[str, Any], ...] = (
     {"id": "solver_math_percent", "query": "what is 15% of 300", "profile": "HOME"},
@@ -276,16 +281,45 @@ def _corpus_digest(rows: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def _source_status_is_measurement_clean(status_output: object) -> bool:
+    """Accept only clean status or documented machine-local bridge runtime data."""
+    if not isinstance(status_output, bytes):
+        return False
+    if not status_output:
+        return True
+    if not status_output.endswith(b"\0"):
+        return False
+    records = status_output[:-1].split(b"\0")
+    if not records or any(not record for record in records):
+        return False
+    return all(
+        record.startswith(b"?? ")
+        and any(
+            record[3:].startswith(prefix)
+            for prefix in _ALLOWED_RUNTIME_UNTRACKED_PREFIXES
+        )
+        for record in records
+    )
+
+
 def _current_head_commit_sha() -> str:
     try:
         status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ],
             cwd=ROOT,
             check=False,
             capture_output=True,
-            text=True,
         )
-        if status.returncode != 0 or status.stdout.strip():
+        if (
+            status.returncode != 0
+            or not _source_status_is_measurement_clean(status.stdout)
+        ):
             raise HeaderValidationError("source_worktree_not_clean")
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],

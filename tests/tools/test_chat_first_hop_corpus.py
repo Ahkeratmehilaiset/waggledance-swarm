@@ -633,10 +633,97 @@ def test_head_is_rechecked_after_measurement(monkeypatch) -> None:
     assert report["validation_errors"] == ["measurement_context_changed"]
 
 
+@pytest.mark.parametrize(
+    ("status_output", "expected"),
+    [
+        (b"", True),
+        (
+            b"?? .agent-bridge/outbox/a\nb\0"
+            b"?? .agent-bridge/shared/\xff.jsonl\0"
+            b"?? .agent-bridge/work_queue/done/task.json\0",
+            True,
+        ),
+        (b"?? source.py\0", False),
+        (b"?? .agent-bridge/outbox-evil/file\0", False),
+        (b"?? .agent-bridge/shared-evil/file\0", False),
+        (b"?? .agent-bridge/work_queue-evil/file\0", False),
+        (b"?? .agent-bridge/outbox\0", False),
+        (b" M source.py\0", False),
+        (b"A  source.py\0", False),
+        (b"R  renamed.py\0old.py\0", False),
+        (b"UU conflicted.py\0", False),
+        (b"?? .agent-bridge/outbox/file", False),
+        (b"?? .agent-bridge/outbox/file\0\0", False),
+        (b"??\0", False),
+        (b"?? .agent-bridge\\outbox\\file\0", False),
+        (b"?? .AGENT-BRIDGE/outbox/file\0", False),
+        ("?? .agent-bridge/outbox/file\0", False),
+    ],
+    ids=[
+        "clean",
+        "documented-runtime-paths-with-hostile-filenames",
+        "outside-untracked-source",
+        "outbox-prefix-lookalike",
+        "shared-prefix-lookalike",
+        "work-queue-prefix-lookalike",
+        "exact-directory-symlink",
+        "tracked-modification",
+        "staged-addition",
+        "rename-pair",
+        "unmerged-path",
+        "missing-final-nul",
+        "empty-intermediate-record",
+        "short-record",
+        "backslash-path",
+        "case-drift",
+        "non-bytes",
+    ],
+)
+def test_measurement_clean_porcelain_v1_z_matrix(
+    status_output,
+    expected,
+) -> None:
+    assert mod._source_status_is_measurement_clean(status_output) is expected
+
+
+def test_current_head_allows_documented_runtime_untracked_entries(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ["git", "status"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    b"?? .agent-bridge/outbox/codex/event.jsonl\0"
+                    b"?? .agent-bridge/shared/events.jsonl\0"
+                    b"?? .agent-bridge/work_queue/done/task.json\0"
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout=HEAD_A + "\n")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert REAL_CURRENT_HEAD_COMMIT_SHA() == HEAD_A
+    assert calls[0][0] == [
+        "git",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    ]
+    assert calls[0][1].get("text", False) is False
+    assert calls[1][0] == ["git", "rev-parse", "HEAD"]
+    assert calls[1][1]["text"] is True
+
+
 def test_untracked_file_prevents_commit_bound_header(monkeypatch) -> None:
     def fake_run(args, **kwargs):
         assert args[:2] == ["git", "status"]
-        return SimpleNamespace(returncode=0, stdout="?? untracked.py\n")
+        assert "-z" in args
+        return SimpleNamespace(returncode=0, stdout=b"?? untracked.py\0")
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
 

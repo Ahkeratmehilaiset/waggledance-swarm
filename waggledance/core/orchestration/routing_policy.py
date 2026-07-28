@@ -1,9 +1,10 @@
 """Routing policy — pure function, no I/O.
 
 Ported from core/smart_router_v2.py and backend/routes/chat.py.
-Routing order keeps hot-cache first, then prefers eligible deterministic
-solvers over specialist micromodel hits before falling back to memory, swarm,
-or LLM paths. Only returns route types from ALLOWED_ROUTE_TYPES.
+Routing order keeps hot-cache first, then by default prefers eligible
+deterministic solvers over specialist micromodel hits before falling back to
+memory, swarm, or LLM paths. The ordinary solver/micromodel precedence is
+config-reversible. Only returns route types from ALLOWED_ROUTE_TYPES.
 """
 
 import math
@@ -38,6 +39,18 @@ TIME_KEYWORDS = frozenset({
 })
 
 
+def _strict_config_bool(config: ConfigPort, key: str, default: bool) -> bool:
+    """Read one boolean without truthiness coercion.
+
+    A missing or malformed solver-first value keeps the safety-oriented
+    canonical default.  Only an exact YAML/Python boolean can change it; values
+    such as ``"false"``, ``0``, or hostile truthiness objects cannot silently
+    alter routing authority.
+    """
+    value = config.get(key, default)
+    return value if type(value) is bool else default
+
+
 @dataclass
 class RoutingFeatures:
     """Extracted features used for routing decisions."""
@@ -57,15 +70,16 @@ class RoutingFeatures:
 
 
 def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
-    """Return one bounded route with eligible deterministic solvers first.
+    """Return one bounded route with deterministic solvers first by default.
 
     Only returns route_type from ALLOWED_ROUTE_TYPES.
 
     Decision logic ported from core/smart_router_v2.py:
     - Hot cache hit (confidence=1.0) -> hotcache
     - Explicit registry solver commands -> solver
-    - Solver-eligible non-time/system intent -> solver
+    - Solver-eligible non-time/system intent -> solver when precedence is enabled
     - High-confidence micromodel hit -> micromodel
+    - Remaining solver-eligible intent -> solver
     - Remaining time/system query -> llm
     - High memory score (>0.7) -> memory
     - Complex queries (long, multi-keyword) with swarm enabled -> swarm
@@ -82,6 +96,12 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
+    solver_first_enabled = _strict_config_bool(
+        config,
+        "routing.deterministic_solver_first_enabled",
+        True,
+    )
+
     # Explicit registry solver commands carry JSON payloads where words like
     # "date" or "status" are data, not chat-level time/system intents.
     if features.solver_intent == "v3_13_0_solver":
@@ -95,7 +115,8 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
     # probabilistic specialist hit. Time/system flags exclude ordinary solver
     # selection and continue through the existing specialist/fallback order.
     if (
-        not features.is_time_query
+        solver_first_enabled
+        and not features.is_time_query
         and not features.is_system_query
         and features.solver_intent in SOLVER_INTENTS
     ):
@@ -128,6 +149,15 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
         return TaskRoute(
             route_type="llm",
             confidence=0.8,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    # A disabled precedence flag restores the legacy micromodel priority; it
+    # never disables deterministic solvers when no valid specialist hit exists.
+    if features.solver_intent in SOLVER_INTENTS:
+        return TaskRoute(
+            route_type="solver",
+            confidence=0.95,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 

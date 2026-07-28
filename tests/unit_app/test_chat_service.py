@@ -325,6 +325,55 @@ class TestChatService:
 
         asyncio.run(_run())
 
+    def test_configured_solver_first_rollback_uses_micromodel_route(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            original_get = mock_config.get.side_effect
+
+            def configured(key, default=None):
+                if key == "advanced_learning.micro_model_enabled":
+                    return True
+                if key == "routing.deterministic_solver_first_enabled":
+                    return False
+                return original_get(key, default)
+
+            mock_config.get.side_effect = configured
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            svc._probe_micromodel = MagicMock(return_value=(True, 0.99))
+            svc._try_solver = MagicMock(return_value="must not be used")
+
+            result = await svc.handle(
+                ChatRequest(query="what is 15% of 300")
+            )
+
+            route_selection = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "route_selection"
+            )
+            assert route_selection["route_type"] == "micromodel"
+            assert all(
+                event["stage"] != "deterministic_solver"
+                for event in result.route_stage_trace
+            )
+            svc._try_solver.assert_not_called()
+            mock_orchestrator.handle_task.assert_awaited_once()
+            routed = mock_orchestrator.handle_task.await_args.args[1]
+            assert routed.route_type == "micromodel"
+
+        asyncio.run(_run())
+
     def test_chat_served_emits_for_authoritative_hybrid_return(
         self,
         mock_orchestrator,

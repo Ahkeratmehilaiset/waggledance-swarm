@@ -76,6 +76,7 @@ agent_levels:
   enabled: true
 routing:
   confusion_memory: true
+  deterministic_solver_first_enabled: true
   topic_fingerprints: true
 round_table:
   enabled: true

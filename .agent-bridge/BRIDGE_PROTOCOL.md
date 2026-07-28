@@ -3,8 +3,12 @@
 Purpose: let Claude and Codex coordinate without the operator relaying
 "done", "continue", or "who owns this file" messages.
 
-This is a runtime bridge, not the source of truth. It lives under
-`.agent-bridge/` and is safe to clear between sessions.
+The tracked bridge code and protocol under
+`C:\Python\project2\.agent-bridge` are source of truth. Execute them only from
+a committed checkpoint in that repo or from a worktree created from that
+checkpoint. Live state is separate runtime data under
+`C:\Python\project2-master\.agent-bridge`; do not execute scripts or perform
+Git maintenance in `project2-master`.
 
 ### Reboot bootstrap
 
@@ -16,10 +20,12 @@ history or operator paste-relay.
 
 ### Runtime root override
 
-By default the bridge resolves its state directories
-(`shared/`, `work_queue/`, `outbox/`, `inbox/`) under the same
-`.agent-bridge/` directory the scripts live in. That works for the
-default single-worktree layout (`C:\Python\project2-master`).
+When `AGENT_BRIDGE_RUNTIME_ROOT` is unset, the bridge has a compatibility
+fallback that resolves its state directories (`shared/`, `work_queue/`,
+`outbox/`, `inbox/`) beside the invoked scripts. That fallback is suitable
+for isolated local runs and smoke tests, not for the shared live deployment.
+Live agent sessions and worktrees must explicitly use
+`C:\Python\project2-master\.agent-bridge` as their runtime-data root.
 
 For per-agent-worktree setups (R23.2 default for parallel write work), set
 `AGENT_BRIDGE_RUNTIME_ROOT` to a shared path that all agent worktrees
@@ -76,7 +82,7 @@ fix scriptable: create a dedicated worktree before starting a write-capable
 agent session.
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 git fetch origin main
 $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
   -Agent codex `
@@ -89,13 +95,20 @@ cd $wt.worktree_path
 Use `-Agent claude` for Claude. Both worktrees point to the same bridge
 runtime root, so claims and events remain shared while branch state is
 separate. `Start-AgentBridgeSession.ps1 -RequireDedicatedWorktree` refuses to
-bootstrap from the primary shared repo (`C:\Python\project2-master`) and is
+bootstrap from the canonical source repo (`C:\Python\project2`) and is
 the safest default for autonomous write loops.
 
+Production agent worktrees default to the persistent
+`C:\Python\waggledance-agent-worktrees` root. Detached PR-review worktrees
+created by `New-BridgePrReviewWorktree.ps1` default to
+`C:\Python\waggledance-pr-review-worktrees`. `C:\tmp`, `$env:TEMP`, RAM disks,
+and zip-extract directories are allowed only for disposable test fixtures,
+never for development work that may need to survive a restart.
+
 Optional role metadata is supported for multi-instance runs. Keep `-Agent`
-as the stable human-readable process id (`codex-impl-1`,
-`claude-rco-scout`) and use `-Role`, `-AgentUuid`, and `-Capabilities` for
-audit metadata:
+as the stable human-readable lane id (`codex-impl-1`,
+`claude-rco-scout`) and make it unique for every concurrently running
+instance. Use `-Role`, `-AgentUuid`, and `-Capabilities` for audit metadata:
 
 ```powershell
 . .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 `
@@ -109,6 +122,71 @@ The C14 metadata path is declarative only: bridge readers display it and
 events/claims preserve it, but role-based scheduling and lease enforcement
 remain follow-up work. Existing `codex`/`claude` sessions without these
 parameters remain valid.
+
+### Bound session-agent identity
+
+`Start-AgentBridgeSession.ps1` binds `AGENT_BRIDGE_AGENT` to the session's
+`-Agent` value. The canonical PowerShell claim/event/liveness/continuity,
+consumer, heartbeat, wake, worktree, review, and guarded-git entry points
+dot-source `AgentBridgeSessionIdentity.ps1`. The canonical Python
+`bridge_next_action.py`, `agent_next_task.py`, `bridge_loop_tick.py`,
+mutating `work_queue.py` subcommands, and `agent_identity.py register` use
+`bridge_session_identity.py`. These enumerated entry points compare their
+requested agent with the binding before bridge state access. A malformed
+binding, malformed requested id, or different non-empty binding is an
+`identity_mismatch`; the operation fails before it can recommend, claim,
+heartbeat, emit, release, or register work for the other lane.
+
+`operator` requires an exact bound operator session. `system` has no public
+CLI authority. Its sole exception is the canonical
+`Invoke-StaleClaimSweep.ps1` -> `Write-AgentEvent.ps1` path, where the writer
+verifies the caller path, the matching archive under `work_queue/done`, the
+absence of a live claim for that task, and identity-neutral event metadata.
+Supplying the same public `system/release/stale_lease` arguments directly is
+not sufficient.
+
+An unset or blank `AGENT_BRIDGE_AGENT` remains compatible for an explicit,
+canonical non-reserved agent id. This includes existing ordinary-agent
+legacy command paths, so it is compatibility behavior rather than ownership
+proof. New write-capable sessions must use the bootstrap and carry a binding.
+The current fence protects a bound lane from acting under a different label;
+strict unbound-write rejection and generation-bound ownership remain separate
+hardening work. A branch name, profile discovered from bridge history,
+`run_id`, or `session_id` does not override a conflicting bound agent.
+Direct/raw emitters outside the enumerated canonical entry points are not
+implicitly covered by this v1 fence and must not be treated as identity proof.
+
+Claim records may carry `writer_pid`, which identifies only the short-lived
+process that serialized the claim. It is diagnostic metadata, never an owner
+or liveness signal. A missing or exited writer process does not release a
+claim and never permits adoption. Ownership changes only through an explicit
+release/handoff or the canonical heartbeat/lease expiry path below. Legacy
+claim records may still contain the old ambiguous `pid` field; readers must
+treat it with the same diagnostic-only semantics.
+An event record's `pid` likewise identifies only the short-lived serializer
+process; it is never session ownership, liveness, or authority evidence.
+
+This binding prevents one named lane from accidentally acting as another. It
+does not yet distinguish two processes deliberately started with the same
+`-Agent` value, which is why concurrent instances must use unique lane ids.
+Generation-bound session ownership is tracked as a separate hardening step.
+
+Multi-lane bridge smokes snapshot, clear, and finally restore the full
+session identity tuple before creating their isolated fixtures. This lets a
+bound production shell run the documented smokes without either impersonating
+the caller's lane or leaking fixture metadata back into that shell.
+
+This contract is source code until it is deployed as one verified bundle.
+The helper and every guarded caller must come from the same committed
+checkpoint. The bundle manifest must record that version's Git commit SHA and
+SHA-256 hashes for every deployed bridge script. An older `origin/main`,
+reused worktree, runtime script copy, session, consumer, watcher, or supervisor
+remains unprotected until a helper-first/atomic bundle activation verifies the
+complete manifest and restarts or recreates all affected processes. Never
+whole-directory overwrite, pull, switch, checkout, merge, or rebase
+`project2-master`; its `.agent-bridge` is shared runtime data, not a code
+deployment target. Until that controlled rollout is completed, report the
+live identity fence as **not deployed**.
 
 Verify the substrate with:
 
@@ -146,6 +224,15 @@ is a no-op when no claims are stale.
 `operator` and `system` claims are **immune** from auto-release
 even when stale — those are privileged claims that may
 legitimately outlive the lease.
+
+The `release/stale_lease` payload binds the audit record to the archived
+claim's `claimed_at_utc`, `run_id`, and `released_at_utc`. Its active-claim
+absence proof has check-time semantics: another process can legitimately
+re-claim the same task id after that check but before the audit append. The
+new active claim file remains authoritative, and `stale_lease` is not a
+successful-completion status. A strict ordering guarantee requires the
+separate generation-token/shared claim-lock hardening; a second unlocked
+re-check would only narrow, not close, that race.
 
 To verify the sweep works on your setup:
 
@@ -206,8 +293,8 @@ operation lock / lease for TOCTOU).
      / rebase / pull` is forbidden when other agents may hold active claims.
      The wrapper enforces the same-agent + matching-cwd rule and blocks
      unsafe operations with exit 2; pass-through verbs (status, log, diff,
-     add, commit, push, ...) run unchanged. `-Force` is restricted to
-     operator/system; Claude/Codex agents may NOT bypass the guard.
+     add, commit, push, ...) run unchanged. `-Force` is restricted to a
+     bound `operator` session; agents and `system` may NOT bypass the guard.
    - **Separate git worktrees are the preferred model for real parallel
      implementation.** Use `New-AgentBridgeWorktree.ps1` so each agent's
      working tree is independent and a claim's branch state cannot be moved
@@ -343,7 +430,8 @@ operation lock / lease for TOCTOU).
 
 ## Commands
 
-From the repo root:
+From the committed `C:\Python\project2` source root or a worktree created from
+the same verified bundle (never from `project2-master`):
 
 ```powershell
 # See recent cross-agent state and active claims.
@@ -400,7 +488,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Get-Agen
 
 # PREFERRED: branch-aware git wrapper. Pass-through for status/log/diff/...;
 # blocks switch/checkout/merge/rebase/pull when another agent holds an
-# active claim. -Force is operator/system only.
+# active claim. -Force is bound-operator only.
 #
 # IMPORTANT: invoke via -Command (not -File). PowerShell -File mode treats
 # `--` as an ambiguous parameter and the trailing git args do not bind to

@@ -48,6 +48,10 @@ function Convert-ClaimTimestampUtc {
     ).ToUniversalTime()
 }
 
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
+
 try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $tempRoot
     $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED = '1'
@@ -98,6 +102,7 @@ try {
     Write-Host "        events_before=$eventCountBeforeNoClaim events_after=$eventCountAfterNoClaim output=$noClaimOutput"
     exit 1
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     if ($null -ne $savedRoot) {
         $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRoot
     } else {

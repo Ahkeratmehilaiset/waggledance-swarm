@@ -15,15 +15,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [Parameter(Mandatory)]
     [ValidateRange(1, 2147483647)]
     [int] $PullRequest,
 
-    [string] $SourceRepoRoot = 'C:\Python\project2-master',
-    [string] $WorktreeRoot = 'C:\tmp\waggledance-pr-review-worktrees',
+    [string] $SourceRepoRoot = 'C:\Python\project2',
+    [string] $WorktreeRoot = 'C:\Python\waggledance-pr-review-worktrees',
     [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge',
     [string] $Remote = 'origin',
     [string] $ReviewRef = '',
@@ -33,6 +32,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)

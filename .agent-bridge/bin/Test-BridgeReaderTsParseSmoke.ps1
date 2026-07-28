@@ -39,6 +39,9 @@ function Add-Check {
 $tempRoot = Join-Path $env:TEMP `
     "bridge-reader-ts-smoke-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $savedRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge reader timestamp parse smoke test' -ForegroundColor Cyan
@@ -69,6 +72,7 @@ try {
         (($out -join "`n") -match 'codex\s+liveness\s+\d+s ago') `
         (($out -join "`n"))
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     if ($null -eq $savedRoot) {
         Remove-Item Env:\AGENT_BRIDGE_RUNTIME_ROOT -ErrorAction SilentlyContinue
     } else {

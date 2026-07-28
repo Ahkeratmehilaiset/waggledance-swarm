@@ -303,6 +303,46 @@ def test_open_request_closure_scan_is_indexed(monkeypatch) -> None:
     assert answer_like_calls == len(events)
 
 
+@pytest.mark.parametrize(
+    ("request_ts", "ack_ts"),
+    [
+        ("2026-07-28T10:00:00.900000Z", "2026-07-28T10:00:00Z"),
+        ("2026-07-28T10:00:00.900000Z", "malformed"),
+        ("malformed", "2026-07-28T10:00:01Z"),
+    ],
+)
+def test_ack_with_stale_or_malformed_timestamp_does_not_close_request(
+    request_ts: str,
+    ack_ts: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": request_ts,
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "timestamped-ack-request",
+            "status": "request",
+            "message": "please acknowledge this exact request generation",
+        },
+        {
+            "ts_utc": ack_ts,
+            "agent": "codex",
+            "to": "claude",
+            "type": "message",
+            "task_id": "timestamped-ack-request",
+            "status": "acknowledged",
+            "message": "acknowledgement from another generation",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "timestamped-ack-request"
+    assert report["open_incoming_count"] == 1
+
+
 def test_request_changes_status_remains_open_request() -> None:
     events = [
         {
@@ -593,6 +633,45 @@ def test_negated_terminal_words_do_not_close_request_statuses(status: str) -> No
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "not_resolved",
+        "not_acknowledged",
+        "not_verified",
+        "not_done",
+        "blocked_not_closed",
+    ],
+)
+def test_negated_answer_event_does_not_close_request(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-07-28T10:00:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "negated-answer-task",
+            "status": "request",
+            "message": "please finish this task",
+        },
+        {
+            "ts_utc": "2026-07-28T10:01:00Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "message",
+            "task_id": "negated-answer-task",
+            "status": status,
+            "message": "this is explicitly not a terminal answer",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "negated-answer-task"
+    assert report["open_incoming_count"] == 1
+
+
 def test_ignores_stale_incoming_request_when_bridge_has_moved_on() -> None:
     events = [
         {
@@ -763,6 +842,44 @@ def test_stale_sweep_finding_before_request_does_not_suppress_new_stale_request(
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 1
     assert report["stale_incoming_task_ids"] == ["stale-wake-request-20260611"]
+
+
+def test_stale_sweep_with_older_mixed_precision_timestamp_does_not_suppress() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-11T17:34:52.900000Z",
+            "agent": "operator",
+            "to": "codex-tools-1",
+            "type": "wake_request",
+            "task_id": "mixed-precision-stale-request",
+            "status": "open",
+            "message": "new request in the same second as the prior sweep",
+        },
+        {
+            "ts_utc": "2026-06-11T17:34:52Z",
+            "agent": "codex-tools-1",
+            "to": "operator",
+            "type": "finding",
+            "task_id": "prior-stale-sweep",
+            "status": "stale_incoming_sweep_complete",
+            "message": "older stale sweep",
+            "payload": {
+                "stale_task_ids": ["mixed-precision-stale-request"],
+            },
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 13, 6, 0, tzinfo=timezone.utc),
+    )
+
+    assert report["stale_incoming_count"] == 1
+    assert report["stale_incoming_task_ids"] == [
+        "mixed-precision-stale-request"
+    ]
 
 
 def test_other_agent_stale_sweep_finding_does_not_suppress_target_stale_request() -> None:
@@ -1623,6 +1740,42 @@ def test_real_rco_pass_closes_direct_rco_pass_request() -> None:
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
+
+
+def test_older_mixed_precision_rco_pass_does_not_close_newer_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00.900000Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-new-rco-pass",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1208 has a new exact-head pass/block request.",
+            "payload": {"pr": 1208, "head": "d" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "claude-rco-2",
+            "to": "codex-tools-1,codex-lead-1",
+            "type": "decision",
+            "task_id": "pr1208-old-rco-pass",
+            "status": "rco_pass",
+            "message": "RCO_PASS for the older request generation.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:01:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr1208-new-rco-pass"
+    assert report["open_incoming_count"] == 1
 
 
 def test_rco_pass_decision_remains_response_only() -> None:
@@ -2777,6 +2930,46 @@ def test_idle_protocol_proposal_is_closed_by_later_response() -> None:
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
+
+
+def test_older_mixed_precision_idle_response_does_not_close_newer_proposal() -> None:
+    events = [
+        {
+            "ts_utc": "2026-05-18T05:53:31.900000Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "idle-protocol-new-round",
+            "status": "idle_proposal",
+            "message": "new proposal in the same second",
+            "payload": {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_proposal",
+                "proposal_id": "idle-proposal-mixed-precision",
+            },
+        },
+        {
+            "ts_utc": "2026-05-18T05:53:31Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "message",
+            "task_id": "idle-protocol-old-round",
+            "status": "idle_counter_proposal",
+            "message": "older response from the same second",
+            "payload": {
+                "protocol_version": "idle-protocol.v1",
+                "event_type": "idle_counter_proposal",
+                "proposal_id": "idle-counter-old-round",
+                "responds_to": "idle-proposal-mixed-precision",
+            },
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "idle-protocol-new-round"
+    assert report["open_incoming_count"] == 1
 
 
 def test_read_events_honors_tail_before_validation(tmp_path: Path) -> None:

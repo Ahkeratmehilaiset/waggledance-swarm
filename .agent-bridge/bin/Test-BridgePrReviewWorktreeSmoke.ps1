@@ -61,6 +61,9 @@ $tempParentFull = [System.IO.Path]::GetFullPath($env:TEMP)
 $sourceRepoRoot = Join-Path $tempRootFull 'repo'
 $worktreeRoot = Join-Path $tempRootFull 'review-worktrees'
 $runtimeRoot = Join-Path $tempRootFull 'runtime'
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge PR review worktree smoke test' -ForegroundColor Cyan
@@ -146,6 +149,7 @@ try {
         ($sourceBranchAfterTwo -eq 'main') `
         "after=$sourceBranchAfterTwo"
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     if (Test-Path -LiteralPath $tempRootFull) {
         $safeTempChild = $tempRootFull.StartsWith(
             $tempParentFull.TrimEnd('\') + '\',

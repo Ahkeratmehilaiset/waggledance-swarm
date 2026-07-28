@@ -40,7 +40,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [int] $PollIntervalMs = 1000,
@@ -59,6 +58,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 if ($env:WAGGLE_BRIDGE_WAKE_ENABLED -eq '0') {
     Write-Output "Watch-Bridge: disabled via WAGGLE_BRIDGE_WAKE_ENABLED=0; exiting."

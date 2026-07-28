@@ -45,6 +45,9 @@ $savedRuntime = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedRunId = $env:AGENT_BRIDGE_RUN_ID
 $savedLocation = (Get-Location).Path
 $agentUuid = '11111111-2222-3333-4444-555555555555'
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Bridge session bootstrap smoke test' -ForegroundColor Cyan
@@ -140,6 +143,7 @@ try {
         -Passed (-not $readThrew)
 
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     Set-Location -LiteralPath $savedLocation
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRuntime
     $env:AGENT_BRIDGE_RUN_ID = $savedRunId

@@ -12,7 +12,7 @@ unusual.
 ## 1. The one-line bootstrap
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 
 # If the previous session crashed (BSOD / Ctrl+C close on host / OOM),
 # clear orphaned background jobs first:
@@ -23,8 +23,13 @@ cd C:\Python\project2-master
 ```
 
 Replace `-Agent codex` with `-Agent claude` for a Claude shell. Both can
-run in the same primary repo for read-only review; for parallel write work
+run in the same canonical source repo for read-only review; for parallel write work
 each agent should be in its own worktree (see Section 4).
+
+Run these scripts only from a committed, hash-verified bridge bundle in
+`C:\Python\project2` or a worktree created from it. The
+`C:\Python\project2-master\.agent-bridge` path below is runtime data only; do
+not run scripts or Git update/branch commands from `project2-master`.
 
 What this single command does automatically:
 
@@ -56,8 +61,8 @@ Without the key, all other work continues normally; R22.3 just stays blocked.
 
 | Location | Purpose | Tracked? |
 |---|---|---|
-| `.agent-bridge/shared/events.jsonl` | Authoritative event log between Claude + Codex | gitignored, machine-local |
-| `.agent-bridge/work_queue/` | Active claims + done/stale/superseded archive | gitignored, machine-local |
+| `C:\Python\project2-master\.agent-bridge\shared\events.jsonl` | Authoritative event log between Claude + Codex | untracked machine-local runtime data; never stage |
+| `C:\Python\project2-master\.agent-bridge\work_queue\` | Active claims + done/stale/superseded archive | untracked machine-local runtime data; never stage |
 | `iterations/codex_scout_tasks/*.md` | All scout-RFCs, drafts, decision artifacts | gitignored, machine-local |
 | `.codex-audit/` | Codex's audit + measurement runs (DBs, manifests, drafts) | gitignored, machine-local |
 | `C:\Users\mfi0jjko\.claude\projects\C--Python-project2\memory\` | Claude's auto-memory (MEMORY.md + topic files) | machine-local |
@@ -72,7 +77,7 @@ machine has all of it.
 ## 4. Per-agent worktrees (parallel write)
 
 If Codex and Claude both need to write at once, neither should run from the
-primary repo. From `C:\Python\project2-master`:
+canonical source repo. From `C:\Python\project2`:
 
 ```powershell
 $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
@@ -84,8 +89,10 @@ cd $wt.worktree_path
 . .\.agent-bridge\bin\Start-AgentBridgeSession.ps1 -Agent codex -RequireDedicatedWorktree
 ```
 
-Both worktrees write to the same `.agent-bridge/` runtime root, so claims
-and events stay synchronized.
+Both worktrees write to the same
+`C:\Python\project2-master\.agent-bridge` runtime-data root, so claims and
+events stay synchronized. Agent worktrees default to the persistent
+`C:\Python\waggledance-agent-worktrees` root.
 
 ## 5. Open development findings (post-2026-05-11)
 

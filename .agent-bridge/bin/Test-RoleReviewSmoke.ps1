@@ -68,6 +68,9 @@ function Read-AllEvents {
 $tempRoot = Join-Path $env:TEMP `
     "role-review-smoke-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     Write-Host 'Invoke-RoleReview smoke test' -ForegroundColor Cyan
@@ -175,6 +178,7 @@ try {
     if ($fail -gt 0) { exit 1 } else { exit 0 }
 }
 finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

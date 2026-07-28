@@ -52,13 +52,13 @@ tooling path explicitly authorizes that external side effect.
 Run these checks before installing any schedule:
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 $env:AGENT_BRIDGE_RUNTIME_ROOT = 'C:\Python\project2-master\.agent-bridge'
 
 powershell -NoProfile -ExecutionPolicy Bypass -File `
   .\.agent-bridge\bin\Get-AgentBridgeStatus.ps1 -MaxUnresolved 15
 
-.\.venv\Scripts\python.exe tools\idle_loop_once.py --json
+python tools\idle_loop_once.py --json
 ```
 
 Expected preflight shape:
@@ -76,8 +76,8 @@ Expected preflight shape:
 Install a 30-minute schedule from an elevated PowerShell session:
 
 ```powershell
-$repo = 'C:\Python\project2-master'
-$python = Join-Path $repo '.venv\Scripts\python.exe'
+$repo = 'C:\Python\project2'
+$python = (Get-Command python).Source
 $taskName = 'WaggleDance Idle Loop Once'
 
 $action = New-ScheduledTaskAction `

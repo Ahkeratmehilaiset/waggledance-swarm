@@ -141,7 +141,7 @@ available now:
    worktree bootstrap:
 
    ```powershell
-   cd C:\Python\project2-master
+   cd C:\Python\project2
    . .\.agent-bridge\bin\Start-AgentBridgeWorktreeSession.ps1 -Agent codex
    ```
 

@@ -28,6 +28,9 @@ function Add-Check {
 
 $tempRoot = Join-Path $env:TEMP "bridge-r23-1-smoke-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $savedRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+. $identityIsolation
+$identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
 try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $tempRoot
@@ -67,6 +70,7 @@ try {
     Write-Host ("Result: {0}/{1} checks passed" -f $passed, $results.Count) -ForegroundColor $color
     if ($failed -gt 0) { exit 1 } else { exit 0 }
 } finally {
+    Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     if ($null -ne $savedRoot) {
         $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRoot
     } else {

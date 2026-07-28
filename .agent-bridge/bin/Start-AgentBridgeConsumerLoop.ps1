@@ -24,7 +24,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [string] $AgentUuid = '',
@@ -60,6 +59,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+$boundSessionAgent = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_AGENT',
+    'Process'
+)
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+$hasSameBoundSession = (
+    -not [string]::IsNullOrWhiteSpace($boundSessionAgent) -and
+    $boundSessionAgent -ceq $Agent
+)
 
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
@@ -412,25 +423,46 @@ if ($HeartbeatMaxIdleWithoutClaimIterations -lt 1) {
 if ((-not $Forever) -and $DurationMinutes -eq 0 -and $MaxIterations -le 0) {
     throw 'Use -Forever or set -MaxIterations when DurationMinutes is 0'
 }
-if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
+$boundRunId = if ($hasSameBoundSession) {
+    [string]$env:AGENT_BRIDGE_RUN_ID
+} else {
+    ''
+}
+$boundSessionId = if ($hasSameBoundSession) {
+    [string]$env:AGENT_BRIDGE_SESSION_ID
+} else {
+    ''
+}
+if ($boundRunId -and $boundRunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw 'run_id must match ^[A-Za-z0-9._:-]{1,128}$'
+}
+if ($boundSessionId -and
+    $boundSessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw 'session_id must match ^[A-Za-z0-9._:-]{1,128}$'
+}
+if ($hasSameBoundSession -and -not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
+    $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
+}
+if ($hasSameBoundSession -and -not $Role -and $env:AGENT_BRIDGE_ROLE) {
+    $Role = [string]$env:AGENT_BRIDGE_ROLE
+}
+if ($hasSameBoundSession -and
+    @($Capabilities).Count -eq 0 -and
+    $env:AGENT_BRIDGE_CAPABILITIES) {
+    $Capabilities = @([string]$env:AGENT_BRIDGE_CAPABILITIES)
+}
+$Capabilities = Normalize-Capabilities -Values $Capabilities
+if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
     throw 'role must match ^[a-z][a-z0-9_-]{1,32}$'
 }
 if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
     throw 'agent_uuid must be a UUID'
 }
-
-if (-not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
-    $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
+if ($AgentUuid) {
+    $AgentUuid = $AgentUuid.ToLowerInvariant()
 }
-if (-not $Role -and $env:AGENT_BRIDGE_ROLE) {
-    $Role = [string]$env:AGENT_BRIDGE_ROLE
-}
-if (@($Capabilities).Count -eq 0 -and $env:AGENT_BRIDGE_CAPABILITIES) {
-    $Capabilities = @([string]$env:AGENT_BRIDGE_CAPABILITIES)
-}
-$Capabilities = Normalize-Capabilities -Values $Capabilities
 foreach ($capability in @($Capabilities)) {
-    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
@@ -457,9 +489,9 @@ if (-not (Test-Path -LiteralPath $logFull -PathType Container)) {
 
 if (-not $Prompt) {
     $Prompt = @(
-        'Read the bridge via tools\bridge_next_action.py.'
+        "Read the bridge with: python tools\bridge_next_action.py --agent $Agent --json."
         'Handle any open incoming request first.'
-        'If there is no incoming request, run tools\agent_next_task.py and claim the highest-value unblocked non-overlapping task you can safely advance.'
+        "If there is no incoming request, run: python tools\agent_next_task.py --agent $Agent --json. Claim the highest-value unblocked non-overlapping task you can safely advance."
         'Do one bounded useful slice: implement, test, review, or write bridge evidence as appropriate.'
         'Write bridge events/status/tests as needed, release any completed claim, then stop.'
         'Do not wait for operator input unless the bridge or repo evidence shows a protected-path, secret, destructive, external-payment, legal/security-sensitive, or unresolved write-scope conflict stop condition.'
@@ -478,10 +510,24 @@ $heartbeatDuringCodex = (
 
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_AGENT = $Agent
-if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
-if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
+if (-not $hasSameBoundSession) {
+    Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:AGENT_BRIDGE_SESSION_ID -ErrorAction SilentlyContinue
+}
+if ($AgentUuid) {
+    $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid
+} else {
+    Remove-Item Env:AGENT_BRIDGE_AGENT_UUID -ErrorAction SilentlyContinue
+}
+if ($Role) {
+    $env:AGENT_BRIDGE_ROLE = $Role
+} else {
+    Remove-Item Env:AGENT_BRIDGE_ROLE -ErrorAction SilentlyContinue
+}
 if (@($Capabilities).Count -gt 0) {
     $env:AGENT_BRIDGE_CAPABILITIES = (@($Capabilities) -join ',')
+} else {
+    Remove-Item Env:AGENT_BRIDGE_CAPABILITIES -ErrorAction SilentlyContinue
 }
 if (-not $Model -and $env:AGENT_BRIDGE_CODEX_MODEL) {
     $Model = [string]$env:AGENT_BRIDGE_CODEX_MODEL
@@ -534,6 +580,7 @@ while ($true) {
     $heartbeatJob = $null
     $heartbeatError = ''
     $statusEventError = ''
+    $ranCodex = $false
 
     if ($shouldRun -and -not $DryRun) {
         try {
@@ -552,6 +599,9 @@ while ($true) {
                 -RoleName $Role `
                 -AgentUuidValue $AgentUuid `
                 -CapabilityValues $Capabilities
+            if ($statusEventError) {
+                throw "consumer start audit failed: $statusEventError"
+            }
             if ($heartbeatDuringCodex) {
                 $heartbeatJob = Start-ConsumerHeartbeatJob `
                     -ScriptPath $heartbeatScript `
@@ -564,6 +614,7 @@ while ($true) {
                     -MaxIdleWithoutClaimIterations $HeartbeatMaxIdleWithoutClaimIterations `
                     -Iteration $iteration
             }
+            $ranCodex = $true
             $codexResult = Invoke-CodexTick `
                 -Command $codexCommandResolved `
                 -Arguments @($codexArgs) `
@@ -620,7 +671,7 @@ while ($true) {
         wake_only         = [bool]$WakeOnly
         dry_run           = [bool]$DryRun
         would_run_codex   = $shouldRun
-        ran_codex         = ($shouldRun -and -not $DryRun)
+        ran_codex         = $ranCodex
         codex_command     = $codexCommandResolved
         codex_args        = @($codexArgs)
         codex_timeout_seconds = $CodexTimeoutSeconds
@@ -632,6 +683,9 @@ while ($true) {
         heartbeat_job_id  = if ($null -ne $heartbeatJob) { [string]$heartbeatJob.Id } else { '' }
         heartbeat_error   = $heartbeatError
         status_event_error = $statusEventError
+    }
+    if ($statusEventError) {
+        throw "consumer status audit failed: $statusEventError"
     }
 
     if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }

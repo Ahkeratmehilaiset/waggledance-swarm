@@ -23,6 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.bridge_session_identity import (  # noqa: E402
+    cli_identity_mismatch,
+    emit_identity_mismatch,
+)
 from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
@@ -240,6 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    identity_mismatch = cli_identity_mismatch(args.agent)
+    if identity_mismatch is not None:
+        emit_identity_mismatch(identity_mismatch, as_json=args.json)
+        return 2
+
     try:
         bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = args.events or (bridge_root / "shared" / "events.jsonl")
@@ -742,14 +751,16 @@ def _open_requests_for_agent(
 
 def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, datetime]]:
     """Return latest answer-like event timestamps by task and closing agent."""
-    closure_index: dict[str, dict[str, str]] = {}
+    closure_index: dict[str, dict[str, datetime]] = {}
     for event in events:
         if not _is_answer_like(event):
             continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
         event_agent = _event_agent(event)
-        event_ts = _event_ts(event)
         task_id = _task_id(event)
         if task_id:
             closure_keys = {_task_closure_key(task_id)}
@@ -760,16 +771,25 @@ def _build_request_closure_index(
             closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
             task_closures = closure_index.setdefault(closure_key, {})
-            if event_ts > task_closures.get(event_agent, ""):
+            if (
+                event_agent not in task_closures
+                or event_ts > task_closures[event_agent]
+            ):
                 task_closures[event_agent] = event_ts
             if _is_same_task_terminal_receipt(event):
-                if event_ts > task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, ""):
+                if (
+                    TERMINAL_RECEIPT_AGENT_KEY not in task_closures
+                    or event_ts > task_closures[TERMINAL_RECEIPT_AGENT_KEY]
+                ):
                     task_closures[TERMINAL_RECEIPT_AGENT_KEY] = event_ts
             if closure_key.startswith(
                 PR_CLOSURE_KEY_PREFIX
             ) and _is_explicit_terminal_pr_closure(event):
                 terminal_agent = _pr_requester_terminal_agent_key(event_agent)
-                if event_ts > task_closures.get(terminal_agent, ""):
+                if (
+                    terminal_agent not in task_closures
+                    or event_ts > task_closures[terminal_agent]
+                ):
                     task_closures[terminal_agent] = event_ts
     return closure_index
 
@@ -778,10 +798,12 @@ def _request_closed_by_index(
     *,
     request: Mapping[str, Any],
     agent: str,
-    closure_index: Mapping[str, Mapping[str, str]],
+    closure_index: Mapping[str, Mapping[str, datetime]],
 ) -> bool:
     task_id = _task_id(request)
-    request_ts = _event_ts(request)
+    request_ts = _parse_utc(_event_ts(request))
+    if request_ts is None:
+        return False
     closure_keys = []
     if task_id:
         closure_keys.append(_task_closure_key(task_id))
@@ -797,21 +819,27 @@ def _request_closed_by_index(
         task_closures = closure_index.get(pr_closure_key, {})
         if task_closures:
             target_agent = agent.lower()
-            if task_closures.get(target_agent, "") > request_ts:
+            if task_closures.get(target_agent, request_ts) > request_ts:
                 return True
             requester_terminal_agent = _pr_requester_terminal_agent_key(
                 _event_agent(request)
             )
-            if task_closures.get(requester_terminal_agent, "") > request_ts:
+            if (
+                task_closures.get(requester_terminal_agent, request_ts)
+                > request_ts
+            ):
                 return True
     for closure_key in closure_keys:
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
             continue
-        if task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, "") > request_ts:
+        if (
+            task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, request_ts)
+            > request_ts
+        ):
             return True
         for closing_agent in {agent.lower(), _event_agent(request)}:
-            if task_closures.get(closing_agent, "") > request_ts:
+            if task_closures.get(closing_agent, request_ts) > request_ts:
                 return True
     return False
 
@@ -905,7 +933,7 @@ def _closes_request_for_agent(
 ) -> bool:
     if _task_id(event) != _task_id(request):
         return False
-    if _event_ts(event) <= _event_ts(request):
+    if not _event_occurs_after(event, request):
         return False
     if not _is_answer_like(event):
         return False
@@ -957,9 +985,9 @@ def _build_stale_incoming_suppression_index(
     events: Sequence[Mapping[str, Any]],
     *,
     agent: str,
-) -> dict[str, str]:
+) -> dict[str, datetime]:
     """Return target-authored stale-sweep finding timestamps by stale task."""
-    suppression_index: dict[str, str] = {}
+    suppression_index: dict[str, datetime] = {}
     for event in events:
         if _event_agent(event) != agent:
             continue
@@ -967,9 +995,14 @@ def _build_stale_incoming_suppression_index(
             continue
         if "stale_incoming" not in _event_status(event):
             continue
-        event_ts = _event_ts(event)
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
         for task_id in _stale_finding_task_ids(event):
-            if event_ts > suppression_index.get(task_id, ""):
+            if (
+                task_id not in suppression_index
+                or event_ts > suppression_index[task_id]
+            ):
                 suppression_index[task_id] = event_ts
     return suppression_index
 
@@ -994,12 +1027,15 @@ def _stale_finding_task_ids(event: Mapping[str, Any]) -> set[str]:
 def _stale_request_suppressed_by_index(
     request: Mapping[str, Any],
     *,
-    stale_suppression_index: Mapping[str, str],
+    stale_suppression_index: Mapping[str, datetime],
 ) -> bool:
     task_id = _task_id(request)
     if not task_id:
         return False
-    return stale_suppression_index.get(task_id, "") > _event_ts(request)
+    request_ts = _parse_utc(_event_ts(request))
+    if request_ts is None:
+        return False
+    return stale_suppression_index.get(task_id, request_ts) > request_ts
 
 
 def _split_active_and_stale_claims(
@@ -1044,13 +1080,15 @@ def _idle_protocol_progressed(
 
 def _build_idle_protocol_progress_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, str]:
-    progress_index: dict[str, str] = {}
+) -> dict[str, datetime]:
+    progress_index: dict[str, datetime] = {}
     for event in events:
         payload = _payload(event)
         if payload.get("protocol_version") != "idle-protocol.v1":
             continue
-        event_ts = _event_ts(event)
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None:
+            continue
         for field in (
             "responds_to",
             "consensus_target_proposal_id",
@@ -1058,14 +1096,17 @@ def _build_idle_protocol_progress_index(
             "rejected_event_id",
         ):
             proposal_id = str(payload.get(field) or "")
-            if proposal_id and event_ts > progress_index.get(proposal_id, ""):
+            if proposal_id and (
+                proposal_id not in progress_index
+                or event_ts > progress_index[proposal_id]
+            ):
                 progress_index[proposal_id] = event_ts
     return progress_index
 
 
 def _idle_protocol_progressed_by_index(
     request: Mapping[str, Any],
-    progress_index: Mapping[str, str],
+    progress_index: Mapping[str, datetime],
 ) -> bool:
     payload = _payload(request)
     if payload.get("protocol_version") != "idle-protocol.v1":
@@ -1073,8 +1114,10 @@ def _idle_protocol_progressed_by_index(
     proposal_id = str(payload.get("proposal_id") or "")
     if not proposal_id:
         return False
-    request_ts = _event_ts(request)
-    return progress_index.get(proposal_id, "") > request_ts
+    request_ts = _parse_utc(_event_ts(request))
+    if request_ts is None:
+        return False
+    return progress_index.get(proposal_id, request_ts) > request_ts
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
@@ -1152,14 +1195,16 @@ def _direct_rco_pass_block_request_closed(
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> bool:
-    request_ts = _event_ts(request)
+    request_ts = _parse_utc(_event_ts(request))
+    if request_ts is None:
+        return False
     request_task_id = _task_id(request)
     request_pr_key = _pr_closure_key_for_event(request)
     requester = _event_agent(request)
     target = agent.lower()
     for event in events:
-        event_ts = _event_ts(event)
-        if event_ts <= request_ts:
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None or event_ts <= request_ts:
             continue
         same_task = bool(request_task_id and _task_id(event) == request_task_id)
         event_pr_key = _pr_closure_key_for_event(event)
@@ -1237,11 +1282,27 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
     if _event_type(event) == "done":
         return True
     status = _event_status(event)
-    return _event_type(event) in ANSWER_TYPES and (
-        status in CLOSED_REQUEST_STATUSES
-        or _is_response_only_status(status)
-        or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
-    )
+    if _event_type(event) not in ANSWER_TYPES:
+        return False
+    if status in CLOSED_REQUEST_STATUSES or _is_response_only_status(status):
+        return True
+    tokens = _status_tokens(status)
+    if "not" in tokens or tokens.intersection(
+        {
+            "open",
+            "proposal",
+            "request",
+            "requested",
+            "required",
+            "needed",
+            "missing",
+            "ready",
+            "pushed",
+            "active",
+        }
+    ):
+        return False
+    return _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
 
 
 def _is_closed_request_status(status: str) -> bool:
@@ -1362,6 +1423,19 @@ def _event_type(event: Mapping[str, Any]) -> str:
 
 def _event_ts(event: Mapping[str, Any]) -> str:
     return str(event.get("ts_utc") or event.get("timestamp") or "")
+
+
+def _event_occurs_after(
+    event: Mapping[str, Any],
+    reference: Mapping[str, Any],
+) -> bool:
+    event_ts = _parse_utc(_event_ts(event))
+    reference_ts = _parse_utc(_event_ts(reference))
+    return (
+        event_ts is not None
+        and reference_ts is not None
+        and event_ts > reference_ts
+    )
 
 
 def _bounded_message(value: object) -> str:

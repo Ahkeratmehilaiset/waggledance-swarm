@@ -11,7 +11,7 @@ dot-source the bridge bootstrap before launching the agent.
 Codex shell:
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 git fetch origin main
 $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
   -Agent codex `
@@ -24,7 +24,7 @@ cd $wt.worktree_path
 Claude shell:
 
 ```powershell
-cd C:\Python\project2-master
+cd C:\Python\project2
 git fetch origin main
 $wt = & .\.agent-bridge\bin\New-AgentBridgeWorktree.ps1 `
   -Agent claude `

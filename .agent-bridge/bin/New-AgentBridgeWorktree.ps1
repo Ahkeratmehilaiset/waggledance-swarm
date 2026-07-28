@@ -15,14 +15,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [Parameter(Mandatory)]
     [string] $TaskId,
 
-    [string] $SourceRepoRoot = 'C:\Python\project2-master',
-    [string] $WorktreeRoot = 'C:\tmp\waggledance-agent-worktrees',
+    [string] $SourceRepoRoot = 'C:\Python\project2',
+    [string] $WorktreeRoot = 'C:\Python\waggledance-agent-worktrees',
     [string] $Base = 'origin/main',
     [string] $Branch = '',
     [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge'
@@ -30,6 +29,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)

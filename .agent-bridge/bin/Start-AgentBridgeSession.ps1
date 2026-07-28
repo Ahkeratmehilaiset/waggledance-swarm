@@ -16,7 +16,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })]
     [string] $Agent,
 
     [string] $RuntimeRoot = 'C:\Python\project2-master\.agent-bridge',
@@ -32,11 +31,15 @@ param(
     [switch] $SkipWakeWatcher,
     [switch] $SkipHeartbeatJob,
     [switch] $RequireDedicatedWorktree,
-    [string] $PrimaryRepoRoot = 'C:\Python\project2-master'
+    [string] $PrimaryRepoRoot = 'C:\Python\project2'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
@@ -75,6 +78,34 @@ if ($RequireDedicatedWorktree -and -not $isDedicatedWorktree) {
     ) -f $repoFull)
 }
 
+if (-not $RunId) {
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $RunId = "$Agent-$stamp"
+}
+if ($RunId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    throw 'run_id must match ^[A-Za-z0-9._:-]{1,128}$'
+}
+if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
+}
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    throw "agent_uuid must be a UUID"
+}
+if ($AgentUuid) {
+    $AgentUuid = $AgentUuid.ToLowerInvariant()
+}
+$Capabilities = @(
+    @($Capabilities) |
+        ForEach-Object { [string]$_ -split '[,;]' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+foreach ($capability in @($Capabilities)) {
+    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
+    }
+}
+
 $runtimeDirs = @(
     $runtimeFull,
     (Join-Path $runtimeFull 'shared'),
@@ -92,36 +123,24 @@ foreach ($dir in $runtimeDirs) {
     }
 }
 
-if (-not $RunId) {
-    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-    $RunId = "$Agent-$stamp"
-}
-
-if ($Role -and $Role -notmatch '^[a-z][a-z0-9_-]{1,32}$') {
-    throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
-}
-if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
-    throw "agent_uuid must be a UUID"
-}
-$Capabilities = @(
-    @($Capabilities) |
-        ForEach-Object { [string]$_ -split '[,;]' } |
-        ForEach-Object { $_.Trim() } |
-        Where-Object { $_ }
-)
-foreach ($capability in @($Capabilities)) {
-    if ($capability -notmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
-        throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
-    }
-}
-
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
+$env:AGENT_BRIDGE_AGENT = $Agent
 $env:AGENT_BRIDGE_RUN_ID = $RunId
 $env:AGENT_BRIDGE_SESSION_ID = $RunId
-if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
-if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
+if ($Role) {
+    $env:AGENT_BRIDGE_ROLE = $Role
+} else {
+    Remove-Item Env:AGENT_BRIDGE_ROLE -ErrorAction SilentlyContinue
+}
+if ($AgentUuid) {
+    $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid
+} else {
+    Remove-Item Env:AGENT_BRIDGE_AGENT_UUID -ErrorAction SilentlyContinue
+}
 if (@($Capabilities).Count -gt 0) {
     $env:AGENT_BRIDGE_CAPABILITIES = ((@($Capabilities)) -join ',')
+} else {
+    Remove-Item Env:AGENT_BRIDGE_CAPABILITIES -ErrorAction SilentlyContinue
 }
 
 Set-Location -LiteralPath $repoFull

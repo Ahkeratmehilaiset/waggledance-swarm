@@ -48,7 +48,12 @@ function Add-Check {
 $tempRoot = Join-Path $env:TEMP `
     "bridge-r23.1.1-cleanup-smoke-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $savedRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
+$savedAgent = $env:AGENT_BRIDGE_AGENT
 $savedRunId = $env:AGENT_BRIDGE_RUN_ID
+$savedSessionId = $env:AGENT_BRIDGE_SESSION_ID
+$savedRole = $env:AGENT_BRIDGE_ROLE
+$savedAgentUuid = $env:AGENT_BRIDGE_AGENT_UUID
+$savedCapabilities = $env:AGENT_BRIDGE_CAPABILITIES
 $savedWakeJob = $env:AGENT_BRIDGE_WAKE_JOB
 $savedHbJob = $env:AGENT_BRIDGE_HEARTBEAT_JOB
 $savedFlagVar = Get-Variable -Name '__AgentBridgeCleanupRegistered' `
@@ -69,6 +74,9 @@ try {
         Unregister-Event -Force -ErrorAction SilentlyContinue
     Remove-Variable -Name '__AgentBridgeCleanupRegistered' `
         -Scope Global -ErrorAction SilentlyContinue
+    # The smoke models fresh agent shells inside one PowerShell host. Do not
+    # inherit the caller's real bound bridge identity as test fixture state.
+    Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
 
     # ── 1: bootstrap launches both jobs ───────────────────────────────
     Write-Host '1. Start-AgentBridgeSession launches wake + heartbeat jobs:'
@@ -144,11 +152,13 @@ try {
 
     # ── 4: Stop-AgentBridgeSession -Agent stops only that agent ───────
     Write-Host '4. Stop-AgentBridgeSession -Agent <name> filters by agent:'
-    # Bootstrap two agents in same host
+    # Bootstrap two agents in the same test host while modelling the clean
+    # identity environment each separate agent shell receives.
     . $startSession -Agent claude -RuntimeRoot $tempRoot `
         -SkipBridgeRead -SkipLiveness -SkipGitStatus | Out-Null
     Start-Sleep -Milliseconds 200
     $claudeWakeId = $env:AGENT_BRIDGE_WAKE_JOB
+    Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
     . $startSession -Agent codex -RuntimeRoot $tempRoot `
         -SkipBridgeRead -SkipLiveness -SkipGitStatus | Out-Null
     Start-Sleep -Milliseconds 200
@@ -188,7 +198,12 @@ try {
         Where-Object { $_.SourceIdentifier -eq 'PowerShell.Exiting' } |
         Unregister-Event -Force -ErrorAction SilentlyContinue
     if ($null -ne $savedRoot) { $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedRoot } else { Remove-Item Env:AGENT_BRIDGE_RUNTIME_ROOT -ErrorAction SilentlyContinue }
+    if ($null -ne $savedAgent) { $env:AGENT_BRIDGE_AGENT = $savedAgent } else { Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue }
     if ($null -ne $savedRunId) { $env:AGENT_BRIDGE_RUN_ID = $savedRunId } else { Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue }
+    if ($null -ne $savedSessionId) { $env:AGENT_BRIDGE_SESSION_ID = $savedSessionId } else { Remove-Item Env:AGENT_BRIDGE_SESSION_ID -ErrorAction SilentlyContinue }
+    if ($null -ne $savedRole) { $env:AGENT_BRIDGE_ROLE = $savedRole } else { Remove-Item Env:AGENT_BRIDGE_ROLE -ErrorAction SilentlyContinue }
+    if ($null -ne $savedAgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $savedAgentUuid } else { Remove-Item Env:AGENT_BRIDGE_AGENT_UUID -ErrorAction SilentlyContinue }
+    if ($null -ne $savedCapabilities) { $env:AGENT_BRIDGE_CAPABILITIES = $savedCapabilities } else { Remove-Item Env:AGENT_BRIDGE_CAPABILITIES -ErrorAction SilentlyContinue }
     if ($null -ne $savedWakeJob) { $env:AGENT_BRIDGE_WAKE_JOB = $savedWakeJob } else { Remove-Item Env:AGENT_BRIDGE_WAKE_JOB -ErrorAction SilentlyContinue }
     if ($null -ne $savedHbJob) { $env:AGENT_BRIDGE_HEARTBEAT_JOB = $savedHbJob } else { Remove-Item Env:AGENT_BRIDGE_HEARTBEAT_JOB -ErrorAction SilentlyContinue }
     if ($null -ne $savedFlag) {

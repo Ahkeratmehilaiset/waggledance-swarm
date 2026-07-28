@@ -1078,47 +1078,116 @@ def test_legacy_evidence_reason_is_lifecycle_binding_missing(tmp_path) -> None:
     assert missing_point.input_ready is False
 
 
-def _production_window_inputs():
-    query = "hello"
-    query_digest = canonical_query_digest(query)
-    summary = build_chat_served_summary(
-        query=query,
-        response="world",
-        route_type="solver",
-        source="chat",
-        confidence=1.0,
-        latency_ms=1.0,
-        cached=False,
-        round_table=False,
-        agent_id=None,
-        language="en",
-        profile="HOME",
-        world_snapshot_ref=WORLD_SNAPSHOT_NA_MARKER,
-        route_stage_trace=[],
-    )
-    payload, _evaluation, receipt = build_chat_served_receipt(
-        summary_payload=summary,
-        now_utc=datetime(2026, 7, 4, 16, 0, tzinfo=timezone.utc),
-        ordinal=1,
-    )
-    receipt_ref = sha256_digest(receipt)
-    metadata = {
-        "source": "chat",
-        "route_type": "solver",
-        "language": "en",
-        "profile": "HOME",
-        "world_snapshot_ref": WORLD_SNAPSHOT_NA_MARKER,
-        "query_digest": query_digest,
-        "normalization_version": NORMALIZATION_VERSION,
-    }
-    pending = L.new_served_pending("q1", L.GENESIS_PREV_HASH, _TS, metadata)
-    terminal = L.new_receipt_terminal(
-        "q1",
-        pending["entry_hash"],
-        _TS_1,
-        receipt_ref,
-    )
-    ledger = [pending, terminal]
+def _production_window_inputs(
+    served_routes=(("solver", "receipt"),),
+    *,
+    pending_route_types=None,
+    pending_failures=(),
+    route_stage_traces=None,
+):
+    ledger = []
+    index = []
+    bundles = {}
+    previous_hash = L.GENESIS_PREV_HASH
+    for ordinal, (route_type, terminal_kind) in enumerate(
+        served_routes,
+        start=1,
+    ):
+        served_id = f"q{ordinal}"
+        query = "hello" if ordinal == 1 else f"hello {ordinal}"
+        source = route_type
+        pending_route_type = (
+            route_type
+            if pending_route_types is None
+            else pending_route_types[ordinal - 1]
+        )
+        metadata = {
+            "source": source,
+            "route_type": pending_route_type,
+            "language": "en",
+            "profile": "HOME",
+            "world_snapshot_ref": WORLD_SNAPSHOT_NA_MARKER,
+            "query_digest": canonical_query_digest(query),
+            "normalization_version": NORMALIZATION_VERSION,
+        }
+        pending = L.new_served_pending(
+            served_id,
+            previous_hash,
+            _TS_1,
+            metadata,
+        )
+        ledger.append(pending)
+        previous_hash = pending["entry_hash"]
+        if terminal_kind == "gap":
+            terminal = L.new_gap_terminal(
+                served_id,
+                previous_hash,
+                _TS_1,
+                "receipt_build_failed",
+            )
+        else:
+            if route_stage_traces is None:
+                route_stage_trace = [
+                    {
+                        "stage": "route_selection",
+                        "route_type": route_type,
+                        "solver_intent": "chat",
+                    },
+                ]
+                if route_type == "solver":
+                    route_stage_trace.append(
+                        {
+                            "stage": "deterministic_solver",
+                            "intent": "chat",
+                            "answered": True,
+                        }
+                    )
+            else:
+                route_stage_trace = copy.deepcopy(
+                    route_stage_traces[ordinal - 1]
+                )
+            summary = build_chat_served_summary(
+                query=query,
+                response=f"world {ordinal}",
+                route_type=route_type,
+                source=source,
+                confidence=1.0,
+                latency_ms=1.0,
+                cached=False,
+                round_table=False,
+                agent_id=None,
+                language="en",
+                profile="HOME",
+                world_snapshot_ref=WORLD_SNAPSHOT_NA_MARKER,
+                route_stage_trace=route_stage_trace,
+            )
+            payload, _evaluation, receipt = build_chat_served_receipt(
+                summary_payload=summary,
+                now_utc=datetime(2026, 7, 4, 16, 0, tzinfo=timezone.utc),
+                ordinal=ordinal,
+            )
+            receipt_ref = sha256_digest(receipt)
+            terminal = L.new_receipt_terminal(
+                served_id,
+                previous_hash,
+                _TS_1,
+                receipt_ref,
+            )
+            manifest_ref = f"served-{served_id}/manifest.json"
+            index.append(
+                new_receipt_index_entry(
+                    window_id=_WINDOW,
+                    served_id=served_id,
+                    receipt_ref=receipt_ref,
+                    manifest_ref=manifest_ref,
+                )
+            )
+            bundles[manifest_ref] = {
+                "receipt": receipt,
+                "payload": payload,
+            }
+        ledger.append(terminal)
+        previous_hash = terminal["entry_hash"]
     samples = [
         new_enabled_state_sample(
             window_id=_WINDOW,
@@ -1145,8 +1214,8 @@ def _production_window_inputs():
     start_offsets = _side_offsets(0)
     final_offsets = {
         "enabled_state_samples": len(samples),
-        "pending_append_failures": 0,
-        "receipt_index": 1,
+        "pending_append_failures": len(pending_failures),
+        "receipt_index": len(index),
         "served_point_observations": len(observations),
     }
     sequence_digest = E.derive_enabled_sample_sequence_digest(
@@ -1167,7 +1236,7 @@ def _production_window_inputs():
     final = new_claim_window_final_boundary(
         window_id=_WINDOW,
         start_boundary_digest=start["boundary_hash"],
-        final_ledger_head=terminal["entry_hash"],
+        final_ledger_head=ledger[-1]["entry_hash"],
         final_ledger_offset=len(ledger),
         side_stream_offsets=final_offsets,
         end_enabled_sample_digest=samples[-1]["sample_hash"],
@@ -1183,16 +1252,6 @@ def _production_window_inputs():
         end_enabled_sample_digest=final["end_enabled_sample_digest"],
         ts_utc=_TS_3,
     )
-    manifest_ref = "served-q1/manifest.json"
-    index = [
-        new_receipt_index_entry(
-            window_id=_WINDOW,
-            served_id="q1",
-            receipt_ref=receipt_ref,
-            manifest_ref=manifest_ref,
-        )
-    ]
-    bundles = {manifest_ref: {"receipt": receipt, "payload": payload}}
     return {
         "expected_window_id": _WINDOW,
         "expected_source_head": _SOURCE_HEAD,
@@ -1201,7 +1260,7 @@ def _production_window_inputs():
         "clean_shutdown_marker": marker,
         "ledger_entries": ledger,
         "enabled_samples": samples,
-        "pending_failures": [],
+        "pending_failures": list(pending_failures),
         "receipt_index": index,
         "served_point_observations": observations,
         "resolve_receipt_bundle": bundles.get,
@@ -1233,8 +1292,238 @@ def test_production_window_pre_marker_and_final_verdicts_are_non_authorizing() -
     for verdict in (pre_marker, final):
         assert verdict.measurement_only is True
         assert verdict.claim_safe_count == 0
+        assert verdict.served_total == 1
+        assert verdict.served_with_receipt_total == 1
+        assert verdict.served_with_receipt_ratio == 1.0
+        assert verdict.solver_first_served_total == 1
+        assert verdict.solver_first_served_ratio == 1.0
+        assert verdict.authority == E.PRODUCTION_WINDOW_COUNTER_AUTHORITY
         assert "eligible" not in verdict._fields
         assert "clean_shutdown" not in verdict._fields
+
+
+def test_production_window_derives_mixed_route_counters_from_receipts() -> None:
+    inputs = _production_window_inputs(
+        (("solver", "receipt"), ("llm", "receipt")),
+    )
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is True
+    assert result.receipt_terminals == 2
+    assert result.served_total == 2
+    assert result.served_with_receipt_total == 2
+    assert result.served_with_receipt_ratio == 1.0
+    assert result.solver_first_served_total == 1
+    assert result.solver_first_served_ratio == 0.5
+    assert result.authority == "measurement_only"
+    assert result.claim_safe_count == 0
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        [
+            {
+                "stage": "route_selection",
+                "route_type": "llm",
+                "solver_intent": "chat",
+            },
+        ],
+        [
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "chat",
+            },
+            {
+                "stage": "deterministic_solver",
+                "intent": "chat",
+                "answered": False,
+            },
+        ],
+        [
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "math",
+            },
+            {
+                "stage": "deterministic_solver",
+                "intent": "chat",
+                "answered": True,
+            },
+        ],
+        [
+            {"stage": "hot_cache", "hit": True},
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "chat",
+            },
+            {
+                "stage": "deterministic_solver",
+                "intent": "chat",
+                "answered": True,
+            },
+        ],
+        [
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "chat",
+            },
+            {
+                "stage": "deterministic_solver",
+                "intent": "chat",
+                "answered": True,
+            },
+            {"stage": "orchestrator_llm_fallback"},
+        ],
+    ],
+)
+def test_production_window_does_not_inflate_solver_first_from_unproven_trace(
+    trace,
+) -> None:
+    inputs = _production_window_inputs(route_stage_traces=(trace,))
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is True
+    assert result.served_total == 1
+    assert result.served_with_receipt_total == 1
+    assert result.served_with_receipt_ratio == 1.0
+    assert result.solver_first_served_total == 0
+    assert result.solver_first_served_ratio == 0.0
+
+
+def test_solver_first_classifier_rejects_equality_spoofed_route_type() -> None:
+    class SpoofedRouteType(str):
+        def __eq__(self, other):
+            return other == "solver"
+
+        def __ne__(self, other):
+            return other != "solver"
+
+    payload = {
+        "route_type": SpoofedRouteType("llm"),
+        "source": "solver",
+        "route_stage_trace": [
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "chat",
+            },
+            {
+                "stage": "deterministic_solver",
+                "intent": "chat",
+                "answered": True,
+            },
+        ],
+    }
+
+    assert E._receipt_proves_solver_first(payload) is False
+
+
+def test_production_window_keeps_explicit_gap_in_served_denominator() -> None:
+    inputs = _production_window_inputs(
+        (("solver", "receipt"), ("llm", "gap")),
+    )
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is True
+    assert result.receipt_terminals == 1
+    assert result.served_total == 2
+    assert result.served_with_receipt_total == 1
+    assert result.served_with_receipt_ratio == 0.5
+    assert result.solver_first_served_total == 1
+    assert result.solver_first_served_ratio == 0.5
+    assert result.authority == "measurement_only"
+    assert result.claim_safe_count == 0
+
+
+def test_production_window_all_gap_is_measured_zero_not_unverified() -> None:
+    inputs = _production_window_inputs((("llm", "gap"),))
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is True
+    assert result.receipt_terminals == 0
+    assert result.receipt_index_entries == 0
+    assert result.served_total == 1
+    assert result.served_with_receipt_total == 0
+    assert result.served_with_receipt_ratio == 0.0
+    assert result.solver_first_served_total == 0
+    assert result.solver_first_served_ratio == 0.0
+    assert result.authority == "measurement_only"
+
+
+def _assert_unverified_p1_counters(result) -> None:
+    assert result.served_total == 0
+    assert result.served_with_receipt_total == 0
+    assert result.served_with_receipt_ratio is None
+    assert result.solver_first_served_total == 0
+    assert result.solver_first_served_ratio is None
+    assert result.authority == "measurement_only"
+
+
+def test_production_window_rejects_route_metadata_counter_inflation() -> None:
+    inputs = _production_window_inputs(
+        pending_route_types=("llm",),
+    )
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is False
+    assert result.reason == "receipt_bundle_verification_failed"
+    _assert_unverified_p1_counters(result)
+
+
+def test_production_window_freezes_pending_metadata_before_callbacks() -> None:
+    inputs = _production_window_inputs(
+        pending_route_types=("llm",),
+    )
+    ledger = inputs["ledger_entries"]
+    original_resolver = inputs["resolve_receipt_bundle"]
+    original_verifier = inputs["verify_receipt_bundle"]
+
+    def mutating_resolver(manifest_ref):
+        ledger[0]["metadata"]["route_type"] = "solver"
+        return original_resolver(manifest_ref)
+
+    def restoring_verifier(bundle):
+        ledger[0]["metadata"]["route_type"] = "llm"
+        return original_verifier(bundle)
+
+    inputs["resolve_receipt_bundle"] = mutating_resolver
+    inputs["verify_receipt_bundle"] = restoring_verifier
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is False
+    assert result.reason == "receipt_bundle_verification_failed"
+    _assert_unverified_p1_counters(result)
+
+
+def test_production_window_pending_failure_keeps_counters_unverified() -> None:
+    pending_failure = {
+        "schema_version": "magma.chat_served_pending_append_failure.v0",
+        "served_id_hash": sha256_digest({"served_id": "failed-q"}),
+        "ts_utc": _TS_1,
+        "reason": "sink_write_failed",
+        "metadata": {"source": "chat"},
+    }
+    inputs = _production_window_inputs(
+        pending_failures=(pending_failure,),
+    )
+
+    result = verify_production_window(**inputs)
+
+    assert result.ok is False
+    assert result.reason == "pending_append_failures_present"
+    assert result.pending_failures == 1
+    _assert_unverified_p1_counters(result)
 
 
 def test_production_window_registry_binding_digest_pins_context_and_all_evidence() -> None:
@@ -1411,6 +1700,7 @@ def test_production_window_rejects_nested_raw_and_absolute_paths(
     result = verify_production_window(**inputs)
 
     assert result.reason == "receipt_bundle_verification_failed"
+    _assert_unverified_p1_counters(result)
 
 
 @pytest.mark.parametrize(
@@ -1445,6 +1735,7 @@ def test_production_window_rejects_post_marker_evidence_mutation() -> None:
     result = verify_production_window(**inputs)
 
     assert result.reason == "evidence_mutated_during_verification"
+    _assert_unverified_p1_counters(result)
 
 
 def test_receipt_index_schema_is_closed_domain_bound_and_path_safe() -> None:

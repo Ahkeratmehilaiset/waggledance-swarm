@@ -21,6 +21,7 @@ from waggledance.core.magma.chat_served_accounting import (
 )
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     CLAIM_WINDOW_SIDE_STREAMS,
+    MAX_PRODUCTION_WINDOW_RECORDS,
     PRODUCTION_WINDOW_VERIFICATION_SCHEMA,
     ProductionWindowVerification,
     derive_enabled_sample_sequence_digest,
@@ -57,6 +58,14 @@ _TS_2 = "2026-07-27T00:00:02Z"
 _TS_3 = "2026-07-27T00:00:03Z"
 
 
+class _SpoofedString(str):
+    def __eq__(self, _other):
+        return True
+
+    def __ne__(self, _other):
+        return False
+
+
 def _side_offsets(value: int) -> dict[str, int]:
     return {name: value for name in CLAIM_WINDOW_SIDE_STREAMS}
 
@@ -70,7 +79,7 @@ def _write_fixture(tmp_path):
         query=query,
         response="cli response",
         route_type="solver",
-        source="chat",
+        source="solver",
         confidence=1.0,
         latency_ms=1.0,
         cached=False,
@@ -79,7 +88,18 @@ def _write_fixture(tmp_path):
         language="en",
         profile="HOME",
         world_snapshot_ref=WORLD_SNAPSHOT_NA_MARKER,
-        route_stage_trace=[],
+        route_stage_trace=[
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "chat",
+            },
+            {
+                "stage": "deterministic_solver",
+                "intent": "chat",
+                "answered": True,
+            },
+        ],
     )
     bundle_report = write_chat_served_receipt_bundle(
         out_dir=receipt_root / "served-q1",
@@ -91,7 +111,7 @@ def _write_fixture(tmp_path):
     receipt = bundle_report["receipt"]
     receipt_ref = sha256_digest(receipt)
     metadata = {
-        "source": "chat",
+        "source": "solver",
         "route_type": "solver",
         "language": "en",
         "profile": "HOME",
@@ -577,6 +597,16 @@ def test_cli_verifies_final_window_with_stable_non_authorizing_json(
     assert report["marker_verified"] is True
     assert report["measurement_only"] is True
     assert report["claim_safe_count"] == 0
+    assert report["served_total"] == 1
+    assert report["served_with_receipt_total"] == 1
+    assert report["served_with_receipt_ratio"] == 1.0
+    assert report["solver_first_served_total"] == 1
+    assert report["solver_first_served_ratio"] == 1.0
+    assert report["authority"] == "measurement_only"
+    assert (
+        report["schema_version"]
+        == "magma.chat_served_production_window_verification.v2"
+    )
     assert "eligible" not in report
     assert "clean_shutdown" not in report
     assert str(tmp_path) not in json.dumps(report)
@@ -1003,7 +1033,21 @@ def test_cli_rechecks_durable_marker_after_core_verification(
 
 @pytest.mark.parametrize(
     "forgery",
-    ["wrong_phase", "wrong_schema", "unsafe_failure_contract"],
+    [
+        "wrong_phase",
+        "wrong_schema",
+        "wrong_authority",
+        "forged_ratio",
+        "bool_total",
+        "pending_failures",
+        "short_enabled_timeline",
+        "wrong_point_count",
+        "over_bound_count",
+        "extreme_count",
+        "spoofed_authority",
+        "huge_failure_count",
+        "unsafe_failure_contract",
+    ],
 )
 def test_cli_never_reports_success_when_registry_rejects_verdict(
     tmp_path,
@@ -1032,6 +1076,11 @@ def test_cli_never_reports_success_when_registry_rejects_verdict(
         1,
         len(REQUIRED_CHAT_SERVED_POINTS),
         1,
+        served_total=1,
+        served_with_receipt_total=1,
+        served_with_receipt_ratio=1.0,
+        solver_first_served_total=1,
+        solver_first_served_ratio=1.0,
     )
     if forgery == "wrong_phase":
         forged = forged._replace(
@@ -1044,7 +1093,35 @@ def test_cli_never_reports_success_when_registry_rejects_verdict(
                 PRODUCTION_WINDOW_VERIFICATION_SCHEMA + ".forged"
             )
         )
-    else:
+    elif forgery == "wrong_authority":
+        forged = forged._replace(authority="runtime")
+    elif forgery == "forged_ratio":
+        forged = forged._replace(solver_first_served_ratio=0.5)
+    elif forgery == "bool_total":
+        forged = forged._replace(served_total=True)
+    elif forgery == "pending_failures":
+        forged = forged._replace(pending_failures=1)
+    elif forgery == "short_enabled_timeline":
+        forged = forged._replace(enabled_samples=1)
+    elif forgery == "wrong_point_count":
+        forged = forged._replace(served_point_observations=0)
+    elif forgery == "over_bound_count":
+        forged = forged._replace(
+            enabled_samples=MAX_PRODUCTION_WINDOW_RECORDS + 1
+        )
+    elif forgery == "extreme_count":
+        forged = forged._replace(enabled_samples=10**5000)
+    elif forgery == "spoofed_authority":
+        forged = forged._replace(authority=_SpoofedString("runtime"))
+    elif forgery == "huge_failure_count":
+        forged = forged._replace(
+            ok=False,
+            phase="final_rejected",
+            reason="hostile_count",
+            marker_verified=False,
+            enabled_samples=10**5000,
+        )
+    elif forgery == "unsafe_failure_contract":
         forged = forged._replace(
             ok=False,
             phase="final_rejected",
@@ -1052,6 +1129,8 @@ def test_cli_never_reports_success_when_registry_rejects_verdict(
             marker_verified=False,
             measurement_only=False,
         )
+    else:  # pragma: no cover - parametrization is a closed set
+        raise AssertionError(f"unknown forgery: {forgery}")
     monkeypatch.setattr(
         verifier_cli,
         "_verify",
@@ -1164,7 +1243,23 @@ def test_cli_rejects_unknown_input_fields_with_fixed_shape(tmp_path, capsys) -> 
         "measurement_only",
         "claim_safe_count",
         "schema_version",
+        "served_total",
+        "served_with_receipt_total",
+        "served_with_receipt_ratio",
+        "solver_first_served_total",
+        "solver_first_served_ratio",
+        "authority",
     }
+    assert report["served_total"] == 0
+    assert report["served_with_receipt_total"] == 0
+    assert report["served_with_receipt_ratio"] is None
+    assert report["solver_first_served_total"] == 0
+    assert report["solver_first_served_ratio"] is None
+    assert report["authority"] == "measurement_only"
+    assert (
+        report["schema_version"]
+        == "magma.chat_served_production_window_verification.v2"
+    )
 
 
 def test_cli_rejects_traversal_manifest_reference(tmp_path, capsys) -> None:

@@ -1003,6 +1003,10 @@ def test_stale_sweep_event_fails_closed_when_active_claims_cannot_be_verified(
     assert len(list((runtime_root / "work_queue" / "done").glob("*.json"))) == 1
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="bridge bootstrap requires a persistent Windows C: repo",
+)
 def test_start_session_binds_requested_agent_in_calling_process(
     tmp_path: Path,
 ) -> None:
@@ -1060,6 +1064,10 @@ def test_start_session_binds_requested_agent_in_calling_process(
     assert runtime_root.is_dir()
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="bridge bootstrap requires a persistent Windows C: repo",
+)
 def test_start_session_normalizes_uppercase_agent_uuid(
     tmp_path: Path,
 ) -> None:
@@ -1158,6 +1166,10 @@ def test_start_session_rejects_rebinding_before_runtime_write(
             "capability must match",
         ),
     ],
+)
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="session metadata validation requires a persistent Windows C: repo",
 )
 def test_start_session_rejects_invalid_metadata_before_runtime_write(
     tmp_path: Path,
@@ -1476,6 +1488,10 @@ def test_worktree_session_rejects_old_base_before_git_or_runtime_mutation(
     assert branch.returncode != 0
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="bridge worktree bootstrap requires a persistent Windows C: repo",
+)
 def test_worktree_session_rejects_dirty_reused_incompatible_target(
     tmp_path: Path,
 ) -> None:

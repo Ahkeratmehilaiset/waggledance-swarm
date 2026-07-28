@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 from waggledance.core.magma.chat_served_claim_window_evidence import (
     CLAIM_WINDOW_SIDE_STREAMS,
     MAX_ENABLED_SAMPLES_PER_WINDOW,
@@ -203,12 +203,7 @@ def _write_clean_marker_last(path: Path, value: Mapping[str, Any]) -> None:
     _guard_no_reparse_components(path)
     if os.path.lexists(os.fspath(path)):
         raise FileExistsError(path)
-    payload = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
+    payload = canonical_json_bytes(value) + b"\n"
     temporary = path.with_name(
         f".{path.name}.{os.getpid()}.{id(value):x}.pending"
     )
@@ -216,8 +211,8 @@ def _write_clean_marker_last(path: Path, value: Mapping[str, Any]) -> None:
     if os.path.lexists(os.fspath(temporary)):
         raise FileExistsError(temporary)
     try:
-        with open(temporary, "x", encoding="utf-8") as handle:
-            handle.write(payload + "\n")
+        with open(temporary, "xb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         _guard_no_reparse_components(path.parent)

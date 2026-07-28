@@ -45,6 +45,9 @@ from waggledance.core.magma.chat_served_receipt import (
     build_chat_served_summary,
     write_chat_served_receipt_bundle,
 )
+from waggledance.core.magma.chat_served_runtime_window import (
+    _write_clean_marker_last,
+)
 
 _WINDOW = "window:cli"
 _SOURCE_HEAD = "a" * 40
@@ -204,6 +207,22 @@ def _tree_hashes(root):
 
 def _registry_path(tmp_path):
     return tmp_path / "receiver" / "verified-windows.jsonl"
+
+
+def test_receiver_accepts_runtime_generated_clean_marker_exact_bytes(
+    tmp_path,
+) -> None:
+    _receipt_root, _evidence_path, envelope = _write_fixture(tmp_path)
+    marker = envelope["clean_shutdown_marker"]
+    marker_path = tmp_path / "runtime" / "clean-shutdown.json"
+
+    _write_clean_marker_last(marker_path, marker)
+
+    assert marker_path.read_bytes() == canonical_json_bytes(marker) + b"\n"
+    assert (
+        verifier_cli._read_clean_shutdown_marker(marker_path.resolve())
+        == marker
+    )
 
 
 def _reserve_registry(

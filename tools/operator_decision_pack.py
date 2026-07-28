@@ -57,6 +57,46 @@ class DecisionPackError(ValueError):
     """Raised when a pack does not satisfy the v1 schema."""
 
 
+if yaml is not None:
+    class _UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+
+    def _construct_unique_mapping(
+        loader: yaml.SafeLoader,
+        node: yaml.nodes.MappingNode,
+        deep: bool = False,
+    ) -> dict[Any, Any]:
+        loader.flatten_mapping(node)
+        mapping: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as exc:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable key",
+                    key_node.start_mark,
+                ) from exc
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = loader.construct_object(value_node, deep=deep)
+        return mapping
+
+
+    _UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        _construct_unique_mapping,
+    )
+
+
 def load_pack(path: Path | str) -> dict[str, Any]:
     """Load and validate one decision pack. Raises DecisionPackError on schema
     violations. Does not mutate the file."""
@@ -64,7 +104,10 @@ def load_pack(path: Path | str) -> dict[str, Any]:
         raise DecisionPackError("PyYAML is required to read decision packs")
     path = Path(path)
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.load(
+            path.read_text(encoding="utf-8"),
+            Loader=_UniqueKeyLoader,
+        )
     except yaml.YAMLError as exc:  # type: ignore[union-attr]
         raise DecisionPackError(f"invalid YAML in {path.name}: {exc}") from exc
     if not isinstance(raw, Mapping):

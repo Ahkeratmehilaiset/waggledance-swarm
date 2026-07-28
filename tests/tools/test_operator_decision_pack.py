@@ -94,6 +94,22 @@ def test_chosen_option_must_exist(tmp_path):
         load_pack(_write(tmp_path, "p.yaml", bad))
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        SIGNED + "\ndecision_id: duplicate\n",
+        SIGNED.replace(
+            '  signed_by: "operator:jani:2026-05-22T15:00:00Z"\n',
+            '  signed_by: "operator:jani:2026-05-22T15:00:00Z"\n'
+            '  signed_by: "operator:attacker:2999-01-01T00:00:00Z"\n',
+        ),
+    ],
+)
+def test_duplicate_yaml_keys_are_rejected(tmp_path, bad):
+    with pytest.raises(DecisionPackError, match="duplicate key"):
+        load_pack(_write(tmp_path, "p.yaml", bad))
+
+
 def test_scan_inbox_open_vs_signed_vs_invalid(tmp_path):
     _write(tmp_path, "open.yaml", DRAFT)
     _write(tmp_path, "signed.yaml", SIGNED.replace("torch-cuda-vs-cpu", "docker-latest"))

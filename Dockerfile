@@ -50,4 +50,7 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost
 # all of which delegate to waggledance.adapters.cli.start_runtime:main.
 # start_waggledance.py is retained as a dev-convenience wrapper but
 # the production-shape entrypoint is the python -m form.
+# Explicitly clear any ENTRYPOINT inherited from the base image so CMD remains
+# the complete effective runtime command.
+ENTRYPOINT []
 CMD ["python", "-m", "waggledance.adapters.cli.start_runtime"]

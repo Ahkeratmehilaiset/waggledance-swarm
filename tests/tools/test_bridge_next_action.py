@@ -672,6 +672,115 @@ def test_negated_answer_event_does_not_close_request(status: str) -> None:
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "not_done",
+        "done_not_done",
+        "closed_not_done",
+        "superseded_not_closed",
+        "not_abandoned",
+        "not_block",
+        "not_changes_requested",
+        "request",
+    ],
+)
+def test_nonterminal_done_event_does_not_close_request(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-07-28T10:00:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "nonterminal-done-task",
+            "status": "request",
+            "message": "please finish this task",
+        },
+        {
+            "ts_utc": "2026-07-28T10:01:00Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "done",
+            "task_id": "nonterminal-done-task",
+            "status": status,
+            "message": "this event is explicitly nonterminal",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "nonterminal-done-task"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["", "pr1366_merged_reauthor_not_needed", "completed_pr1324_pushed"],
+)
+def test_legacy_done_status_closes_request(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-07-28T10:00:00Z",
+            "agent": "claude",
+            "to": "codex",
+            "type": "message",
+            "task_id": "terminal-done-task",
+            "status": "request",
+            "message": "please finish this task",
+        },
+        {
+            "ts_utc": "2026-07-28T10:01:00Z",
+            "agent": "codex",
+            "to": "claude",
+            "type": "done",
+            "task_id": "terminal-done-task",
+            "status": status,
+            "message": "the task is complete and reauthorization is unnecessary",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_done_request_is_actionable_incoming() -> None:
+    event = {
+        "ts_utc": "2026-07-28T10:00:00Z",
+        "agent": "claude",
+        "to": "codex",
+        "type": "done",
+        "task_id": "done-request-task",
+        "status": "request",
+        "message": "please handle this follow-up",
+    }
+
+    report = recommend_next_action(agent="codex", events=[event], claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "done-request-task"
+    assert report["open_incoming_count"] == 1
+
+
+def test_done_open_is_terminal_not_actionable_incoming() -> None:
+    event = {
+        "ts_utc": "2026-07-28T10:00:00Z",
+        "agent": "claude",
+        "to": "codex",
+        "type": "done",
+        "task_id": "done-open-task",
+        "status": "open",
+        "message": "the domain status is open",
+    }
+
+    report = recommend_next_action(agent="codex", events=[event], claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
 def test_ignores_stale_incoming_request_when_bridge_has_moved_on() -> None:
     events = [
         {
@@ -1707,6 +1816,91 @@ def test_wake_ack_does_not_close_direct_rco_pass_request() -> None:
     assert report["open_incoming_count"] == 1
 
 
+def test_negated_done_does_not_close_direct_rco_pass_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1208 is CI green; RCO pass/block required.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:01:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "done",
+            "task_id": "pr1208-rco-pass",
+            "status": "not_done",
+            "message": "The pass/block request remains open.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr1208-rco-pass"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "rco_pass_not_done",
+        "rco_not_pass",
+        "rco_not_block",
+        "block_not_closed",
+        "not_changes_requested",
+        "changes_requested_not_resolved",
+    ],
+)
+def test_negated_done_target_response_does_not_close_direct_rco_request(
+    status: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1208 is CI green; RCO pass/block required.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:01:00Z",
+            "agent": "claude-rco-2",
+            "to": "codex-tools-1",
+            "type": "done",
+            "task_id": "pr1208-rco-pass",
+            "status": status,
+            "message": "The pass/block response is explicitly nonterminal.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr1208-rco-pass"
+    assert report["open_incoming_count"] == 1
+
+
 def test_real_rco_pass_closes_direct_rco_pass_request() -> None:
     events = [
         {
@@ -2702,6 +2896,50 @@ def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
     assert wake["target_agent"] == "claude-rco-1"
     assert wake["wake_request_count"] == 2
     assert wake["latest_wake_age_minutes"] == 15.0
+
+
+def test_unrelated_negated_done_does_not_clear_wake_delivery_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "review-task",
+            "status": "open",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "review-task",
+            "status": "open",
+            "message": "please review",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "codex-lead-1",
+            "to": "operator",
+            "type": "done",
+            "task_id": "review-task",
+            "status": "not_done",
+            "message": "the review is explicitly incomplete",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["decision"] == "wake_delivery_stalled"
+    assert delivery["by_agent"] == {"claude-rco-1": 1}
 
 
 def test_wake_send_failure_changes_wake_delivery_escalation() -> None:

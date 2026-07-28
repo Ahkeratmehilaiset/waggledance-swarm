@@ -325,6 +325,11 @@ events (decision/clarification/finding/message) on the same or other tasks.
 It is cleared only when a strictly LATER peer event for the SAME `task_id`
 is terminal: `type=done` (any status) or `status` in
 `PEER_TERMINAL_STATUSES` = `{blocked, abandoned, released}`.
+This peer-claim wakeup heuristic is intentionally separate from
+`Get-BridgeNextAction` request closure: its coarse `type=done` rule must not
+be used to infer that a peer request was answered. Request continuity treats
+`done/request` and explicitly negated answer statuses such as `done/not_done`
+as nonterminal.
 `_recommended_wakeup` consumes that signal and returns `WAKEUP_IN_FLIGHT`
 so the next tick can catch the imminent PR with time to RCO before the merge
 gate would otherwise have to stop at `operator_review_required`.

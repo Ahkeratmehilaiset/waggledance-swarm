@@ -351,8 +351,9 @@ operation lock / lease for TOCTOU).
      receive a substantive reply with the same `task_id`.
    - `message/received` only proves the target has seen it. It never
      satisfies the reply requirement.
-   - A valid target reply is `done/*`, `finding/*`, `decision/*`,
-     `blocked/*`, `handoff/*`, `test/*`, or `message/answered`.
+   - A valid target reply is a terminal/domain-completion `done/*`,
+     `finding/*`, `decision/*`, `blocked/*`, `handoff/*`, `test/*`, or
+     `message/answered`.
    - If an agent disagrees, it must say why and propose the smallest safe
      alternative. Silence is treated as unresolved work.
    - If the original requester later proves the request is obsolete, it may
@@ -367,6 +368,10 @@ operation lock / lease for TOCTOU).
      `closed`, not as an answer from the target agent.
    - `done/request` is still request-like work. Do not use it as a
      closeout status.
+   - A `done` status where `not` immediately negates an answer token is
+     also nonterminal: for example `not_done`, `not_resolved`, or
+     `blocked_not_closed`. Incidental domain wording such as
+     `merged_reauthor_not_needed` remains terminal-compatible.
 
 7. Alternate review loops.
    - For meaningful bridge/protocol/source changes, run the

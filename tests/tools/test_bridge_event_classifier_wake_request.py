@@ -50,7 +50,8 @@ def _classify(event: dict[str, str]) -> dict[str, bool]:
         "$e = $input | ConvertFrom-Json\n"
         "$r = [bool](Test-BridgeRequestLikeEvent -Event $e)\n"
         "$a = [bool](Test-BridgeAnswerEvent -Event $e)\n"
-        "[pscustomobject]@{ request_like = $r; answer = $a } "
+        "$c = [bool](Test-BridgeRequesterClosureEvent -Event $e)\n"
+        "[pscustomobject]@{ request_like = $r; answer = $a; requester_closure = $c } "
         "| ConvertTo-Json -Compress\n"
     )
     completed = subprocess.run(  # noqa: S603
@@ -164,7 +165,19 @@ def test_directed_message_request_still_routes() -> None:
 
 @pytest.mark.parametrize(
     ("event_type", "status"),
-    [("decision", "rco_pass"), ("done", "merged_observed")],
+    [
+        ("decision", "rco_pass"),
+        ("done", ""),
+        ("done", "open"),
+        ("done", "proposal"),
+        ("done", "ready"),
+        ("done", "blocked"),
+        ("done", "pushed"),
+        ("done", "merged_observed"),
+        ("done", "completed_pr1324_pushed"),
+        ("done", "completed_read_only_next_step_proposal"),
+        ("done", "pr1366_merged_reauthor_not_needed"),
+    ],
 )
 def test_closure_events_still_count_as_answers(
     event_type: str, status: str
@@ -172,6 +185,70 @@ def test_closure_events_still_count_as_answers(
     verdict = _classify(_event(event_type, status))
     assert verdict["request_like"] is False
     assert verdict["answer"] is True
+
+
+@pytest.mark.parametrize(
+    ("status", "request_like"),
+    [
+        ("not_done", False),
+        ("done_not_done", False),
+        ("closed_not_done", False),
+        ("superseded_not_closed", False),
+        ("not_abandoned", False),
+        ("not_block", False),
+        ("not_changes_requested", False),
+        ("request", True),
+    ],
+)
+def test_nonterminal_done_event_is_not_an_answer(
+    status: str, request_like: bool
+) -> None:
+    verdict = _classify(_event("done", status))
+    assert verdict["request_like"] is request_like
+    assert verdict["answer"] is False
+    assert verdict["requester_closure"] is False
+
+
+def test_next_action_keeps_request_open_after_negated_done(tmp_path: Path) -> None:
+    request = _event("message", "request")
+    request["agent"] = "claude"
+    request["to"] = "fable-5"
+    request["task_id"] = "negated-done-task"
+    request["ts_utc"] = "2026-06-13T02:30:00Z"
+
+    nonterminal = _event("done", "not_done")
+    nonterminal["agent"] = "fable-5"
+    nonterminal["to"] = "claude"
+    nonterminal["task_id"] = "negated-done-task"
+    nonterminal["ts_utc"] = "2026-06-13T02:31:00Z"
+
+    report = _next_action(tmp_path, [request, nonterminal])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "negated-done-task"
+    assert report["open_incoming_count"] == 1
+
+
+def test_requester_negated_done_prefix_does_not_close_request(
+    tmp_path: Path,
+) -> None:
+    request = _event("message", "request")
+    request["agent"] = "claude"
+    request["to"] = "fable-5"
+    request["task_id"] = "requester-negated-done-task"
+    request["ts_utc"] = "2026-06-13T02:30:00Z"
+
+    nonterminal = _event("done", "done_not_done")
+    nonterminal["agent"] = "claude"
+    nonterminal["to"] = "operator"
+    nonterminal["task_id"] = "requester-negated-done-task"
+    nonterminal["ts_utc"] = "2026-06-13T02:31:00Z"
+
+    report = _next_action(tmp_path, [request, nonterminal])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "requester-negated-done-task"
+    assert report["open_incoming_count"] == 1
 
 
 def test_next_action_ages_out_old_operator_wake_request(tmp_path: Path) -> None:

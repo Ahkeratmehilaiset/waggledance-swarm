@@ -879,10 +879,9 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
 
 
 def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) == "done"
-        or _event_status(event) in CLOSED_REQUEST_STATUSES
-    )
+    if _event_type(event) == "done":
+        return not _is_nonterminal_done_status(_event_status(event))
+    return _event_status(event) in CLOSED_REQUEST_STATUSES
 
 
 def _is_same_task_terminal_receipt(event: Mapping[str, Any]) -> bool:
@@ -1128,6 +1127,8 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
         return False
     if _is_response_only_status(status):
         return False
+    if _event_type(event) == "done":
+        return status == "request"
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
     )
@@ -1220,6 +1221,10 @@ def _direct_rco_pass_block_request_closed(
 
 
 def _is_substantive_rco_pass_block_response(event: Mapping[str, Any]) -> bool:
+    if _event_type(event) == "done" and _is_nonterminal_done_status(
+        _event_status(event)
+    ):
+        return False
     status_tokens = _status_tokens(_event_status(event))
     if status_tokens.intersection(KNOWN_ACK_STATUSES) or {"wake", "ack"}.issubset(
         status_tokens
@@ -1279,10 +1284,11 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
 
 
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
-    if _event_type(event) == "done":
-        return True
+    event_type = _event_type(event)
     status = _event_status(event)
-    if _event_type(event) not in ANSWER_TYPES:
+    if event_type == "done":
+        return not _is_nonterminal_done_status(status)
+    if event_type not in ANSWER_TYPES:
         return False
     if status in CLOSED_REQUEST_STATUSES or _is_response_only_status(status):
         return True
@@ -1327,6 +1333,49 @@ def _is_response_only_status(status: str) -> bool:
 
 def _status_tokens(status: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+
+
+def _status_negates_answer(status: str) -> bool:
+    tokens = [
+        token for token in re.split(r"[^a-z0-9]+", status.lower()) if token
+    ]
+    answer_tokens = {
+        "abandoned",
+        "accepted",
+        "ack",
+        "acknowledged",
+        "answered",
+        "approved",
+        "block",
+        "blocked",
+        "canceled",
+        "cancelled",
+        "closed",
+        "completed",
+        "changes",
+        "done",
+        "merged",
+        "observed",
+        "pass",
+        "passed",
+        "received",
+        "reported",
+        "resolved",
+        "retracted",
+        "seen",
+        "superseded",
+        "validated",
+        "verified",
+        "withdrawn",
+    }
+    return any(
+        token == "not" and tokens[index + 1] in answer_tokens
+        for index, token in enumerate(tokens[:-1])
+    )
+
+
+def _is_nonterminal_done_status(status: str) -> bool:
+    return status == "request" or _status_negates_answer(status)
 
 
 def _addressed_to(event: Mapping[str, Any], agent: str) -> bool:
@@ -2011,7 +2060,10 @@ def _clear_wake_delivery_groups_for_terminal_task(
     groups: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
 ) -> None:
-    if _event_type(event) != "done" and _event_status(event) not in CLOSED_REQUEST_STATUSES:
+    if _event_type(event) == "done":
+        if _is_nonterminal_done_status(_event_status(event)):
+            return
+    elif _event_status(event) not in CLOSED_REQUEST_STATUSES:
         return
     task_id = _task_id(event)
     if not task_id:

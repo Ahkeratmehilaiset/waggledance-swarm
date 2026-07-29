@@ -27,7 +27,7 @@ V1 ei yhdistä seuraavia topologioita yhdeksi nimeämättömäksi verkoksi:
 |---|---:|---|
 | `axial_agent_mesh` | 7 solua: keskus ja kuusi aksiaalista naapuria | Agenttien paikallinen, geometrisesti rajattu reititys |
 | `logical_solver_overlay` | 8 loogista solver-solua | Solverien haku, naapuriapu ja kyvykkyyden eristäminen |
-| `hierarchical_runtime_shadow` | Yhden juuren parent-child-hierarkia ja yleinen vikasietoinen recovery-ring | Subdivisionin ja jälleenrakennuksen shadow-harjoittelu |
+| `hierarchical_runtime_shadow` | Skeema ja validointisopimus ovat olemassa, mutta nykyiselle instanssille ei vielä ole auktoritatiivista tracked-lähdettä | Subdivisionin ja jälleenrakennuksen shadow-harjoittelu |
 
 Auditissa 7-solun verkon halkaisija oli 2 ja 8-solun verkon halkaisija 3.
 Molemmat nykyiset graafit säilyivät yhteydessä minkä tahansa yhden tai kahden
@@ -171,6 +171,148 @@ Sen täytyy tulla ehdokasbundlesta riippumattomasta luotetusta kanavasta tai
 checkpointista. Ehdokasbundlesta juuri ennen ajoa laskettu arvo todistaa vain
 bundlen sisäisen konsistenssin, ei sen alkuperää.
 
+## Exact-Git current-topology -bundlegeneraattori
+
+`tools/build_hex_recovery_bundle.py` tuottaa nykyisestä exact HEADista yhden
+deterministisen source-only-bundlen:
+
+```powershell
+python tools\build_hex_recovery_bundle.py `
+  --expected-head <40-lowercase-hex> `
+  --out-dir <ennestään-puuttuva-paikallinen-hakemisto> `
+  --json
+```
+
+Generaattori ei lue topology- tai state-inputteja working treestä, indexistä,
+`data/`- tai `models/`-hakemistoista eikä live-ledgeristä. Se hyväksyy vain
+annetun SHA:n kanssa yhtäpitävän `HEAD`in, poistaa perityt `GIT_*`-ohjaukset,
+estää replace-object- ja lazy-fetch-käytön ja lukee sallitut topology-inputit
+suoraan commitin tree- ja blob-objekteista. Jokainen lähde saa raw-byte
+SHA-256:n; commit- ja blob-objektien Git-identiteetit lasketaan lisäksi
+uudelleen. Historiallista topology-Python-moduulia ei importata eikä suoriteta.
+
+CLI tarkistaa ennen buildiä ja uudelleen ennen kirjoitusta, että ajettava
+generaattori sekä importoidut recovery-contract- ja canonical-digest-moduulit
+tulevat odotetuista repo-poluista ja vastaavat exact HEADin Git-blob-tavuja
+(CRLF/LF-tekstinormalisointi sallitaan). Näin dirty working tree ei voi
+huomaamatta vaihtaa manifestin tai digestien rakentajaa, vaikka topology-data
+itsessään luetaan jo commit-objekteista.
+
+Sallitut nykyiset lähteet ovat:
+
+- `configs/hex_cells.yaml`,
+  `waggledance/core/domain/hex_mesh.py` ja
+  `waggledance/application/services/hex_topology_registry.py` 7-solun
+  aksiaaliverkolle;
+- `waggledance/core/hex_cell_topology.py` ja
+  `core/symbolic_solver.py` 8-solun logical overlaylle; sekä
+- kaikki exact commitin `configs/axioms/**/*.yaml`-tiedostot.
+
+YAML parsitaan ilman PyYAML:n Python-objektikonstruktoreita. Duplicate keyt,
+alias-, anchor-, merge- ja explicit-tag-rakenteet, epäkanoniset scalarit sekä
+ei-finiittiset luvut torjutaan. Python-topologioista poimitaan rajattu
+deklaratiivinen AST-projektio: `AXIAL_DIRECTIONS` sekä
+`CELL_*`/`ALL_CELLS`/`_ADJACENCY`. Näiden deklaratioiden arvoilta vaaditaan
+literal-muoto, eikä parseri suorita historiallista Pythonia. Parserin
+mutation- ja namespace-guardit ovat vain puolustava lisäraja: ympäröivän
+yleisen Python-lähteen runtime-semanttista puhtautta ei päätellä
+AST-heuristiikalla. V1 pinnaa siksi molempien suoritettavaa Pythonia
+sisältävien topology-lähteiden tarkistetut raw SHA-256-digestit. Yhdenkin
+tavun muutos tiedostoissa
+`waggledance/core/domain/hex_mesh.py` tai
+`waggledance/core/hex_cell_topology.py` pysäyttää buildin virheeseen
+`topology_source_revision_unreviewed`, kunnes lähde, projektio ja digest-pin
+on katselmoitu yhdessä.
+
+Tämän checkpointin tulos sisältää:
+
+- `agent.axial`: 7 genomia, aksiaalisuuntien mukainen naapurijärjestys ja
+  laskettu halkaisija 2;
+- `solver.logical`: 8 genomia, runtimea vastaava järjestetty
+  naapurijärjestys ja laskettu halkaisija 3;
+- kaikki 22 tracked aksiomia niiden eksplisiittisten ja yksikäsitteisten
+  `model_id`- ja `cell_id`-kenttien perusteella; sekä
+- 15 `verified_copy`-genome-artifactia ja nolla replikaa tai mutable-state-
+  artifactia.
+
+Jokaisella required capability -lähteellä on vastaava
+`repo_artifact`/`git_checkout`-input. Agenttisolut sitovat config-, geometry-
+ja registry-lähteet; solver-solut sitovat overlayn, symbolic solver -enginen ja
+vain omalle `cell_id`:lleen nimetyt aksiomit. `repair_peer_cell_ids` sisältää
+kaikki ring-1-naapurit. Se on korjausaikomus ja reitityssopimus, ei todiste
+siitä, että peer todella säilyttää tavut eri hostilla tai levyllä.
+
+Capability-rivit ovat digest-sidottuja source-inventory-deklaraatioita, eivät
+todiste siitä, että jokainen solver antaa oikean funktionaalisen vastauksen
+palautuksen jälkeen. Generaattori tarkistaa registry- ja solver-lähteiden
+vaaditun class/method-pinnan sekä aksiomien vähimmäisrakenteen
+(`formulas`, `variables`, `solver_output_schema`), mutta se ei suorita
+aksiomeja. CLI lukitsee siksi
+`functional_capability_recovery_verified: false`- ja
+`mutable_state_coverage_complete: false` -kentät. Myös
+`source_inventory_complete` pysyy epätotena writer-rajalla, koska writer
+hyväksyy minkä tahansa contract-validin bundle-kuvan eikä voi yksin todistaa,
+että sen kutsuja käytti exact-Git-lukijaa. Sen sijaan
+`bundle_artifact_inventory_complete: true` tarkoittaa vain writerin todella
+todistamaa manifestin ja genome-blobien täsmällistä artifact-joukkoa.
+Funktionaaliset capability-kohtaiset probe-oracle-testit kuuluvat
+neighbor-assisted shadow-rebuild -porttiin.
+
+Commitin committer-epoch normalisoidaan sekuntitarkkaan UTC `Z` -muotoon.
+Topology-epoch on kanonisen semanttisen graafiprojektion sisältöjohdettu
+63-bittiseen rajaan mahtuva identiteetti; se ei väitä olevansa runtime-
+kronologian laskuri. Samalla commitilla tuotetut manifesti- ja genome-tavut
+ovat toistettavia käyttöjärjestelmän newline-asetuksista riippumatta.
+
+Output kirjoitetaan vain paikallisen, ennestään puuttuvan kohteen
+sibling-stagingiin exclusive/no-follow-kirjoituksilla. Source-repo,
+sen `.git`-metadata ja kaikki muut source-repon alihakemistot ovat kiellettyjä
+output-kohteita. Ennen atomista no-replace-promotionia generaattori varmistaa
+tarkan inventaarion, tyypit, koot ja digestit. Bundleen ei lisätä
+raporttitiedostoa:
+
+```text
+<out-dir>/
+  hive_recovery_manifest.v1.json
+  blobs/
+    sha256/
+      <15 raw-genome-digestiä>
+```
+
+Jos directory-durabilityä ei voida todistaa, CLI ei yritä destruktiivista
+rollbackia eikä väitä jo promotoitua kohdetta puuttuvaksi. Se palauttaa
+exit-koodin 3 sekä kentät `bundle_complete: true`,
+`promotion_completed: true`, `directory_durability_verified: false` ja
+virheen. POSIX-alustalla destination-parentin viimeisen `fsync`-kutsun
+epäonnistuminen tuottaa
+`error: parent_directory_fsync_failed_after_promotion`.
+
+V1 ei toteuta Windowsille tuettua directory-`fsync`- tai muuta vastaavaa
+crash-durability-barrieria. Siksi Windowsilla no-op ei saa koskaan muuttua
+onnistumisväitteeksi: `staging_directory_fsync_completed: false`,
+`parent_directory_fsync_completed: false`,
+`directory_durability_verified: false` ja
+`error: directory_fsync_unavailable_after_promotion`. Tiedostosisällöt on
+silti `fsync`attu, bundle näkyy atomisen promotion jälkeen ja sen sisältö on
+rehashattu, mutta crash-durability vaatii uuden varmennuksen tai myöhemmän
+todistetun Windows-barrierin.
+
+CLI tulostaa raw manifest -tiedoston
+`candidate_manifest_file_digest`-arvon, mutta samalla eksplisiittisesti
+`candidate_digest_is_independently_trusted: false`. Arvo pitää siirtää
+riippumattomaan luotettuun kanavaan ennen kuin sitä käytetään myöhemmän
+materialisoinnin `--expected-manifest-digest`-ankkurina.
+
+Generaattori ei lisää `hierarchical_runtime_shadow`-topologiaa. Repolla on
+hierarkian validointikoodi ja proof-fixtureitä, mutta ei yhtä tracked,
+auktoritatiivista nykyisen runtime-hierarkian lähdettä. Fixturen nimeäminen
+nykyiseksi topologiaksi keksisi arkkitehtuuria. Siksi CLI raportoi
+`authoritative_hierarchical_runtime_shadow_available: false`,
+`hierarchical_runtime_shadow_included: false` ja
+`target_state_topology_coverage_complete: false`. Tämä ei estä 7- ja
+8-solun exact-Git-genomien käyttämistä seuraavan portin inputtina, mutta se
+estää kutsumasta bundlea koko Image #1 -tavoitetilan topologiaksi.
+
 ## Nykyinen local shadow-bundle -materialisointi
 
 `tools/run_hex_blank_disk_recovery_dry_run.py` tekee yhden rajatun V1-vaiheen:
@@ -263,8 +405,10 @@ falsifioida.
 
 ## Seuraavan vaiheen porttijärjestys
 
-1. **Current-topology manifest generator:** rakenna genomit ja hive-manifesti
-   suoraan nykyisestä 7-, 8- ja shadow-topologiasta exact HEADissa.
+1. **Current-topology manifest generator:** exact-Git-generaattori tuottaa nyt
+   nykyiset auktoritatiiviset 7- ja 8-solun genomit sekä hive-manifestin.
+   Lisää hierarchical shadow vasta, kun sen konkreettinen tracked-lähde on
+   määritetty; proof-fixtureä ei saa ylentää tuotantototuudeksi.
 2. **Encrypted off-host replica:** toteuta salattu, sisältöosoitteinen kopio
    kaikelle vaaditulle ei-Git-mutable statelle ja varmista riippumaton
    failure-domain.

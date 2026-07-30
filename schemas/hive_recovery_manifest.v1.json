@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/hive_recovery_manifest.v1.json",
+  "title": "HiveRecoveryManifestV1",
+  "description": "Content-addressed, exact-commit, shadow-first recovery manifest for a WaggleDance hive.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "canonicalization",
+    "manifest_id",
+    "created_at_utc",
+    "source_repository",
+    "topologies",
+    "artifacts",
+    "replicas",
+    "recovery_policy",
+    "genome_root",
+    "memory_root",
+    "hive_state_root",
+    "external_replication_verified",
+    "blank_disk_dry_run_verified",
+    "production_ready_claim",
+    "previous_manifest_digest",
+    "manifest_digest"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "hive_recovery_manifest.v1"
+    },
+    "canonicalization": {
+      "const": "magma-jcs-subset-v1"
+    },
+    "manifest_id": {
+      "$ref": "#/definitions/id_token"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64
+    },
+    "source_repository": {
+      "$ref": "#/definitions/source_repository"
+    },
+    "topologies": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/topology"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/artifact"
+      }
+    },
+    "replicas": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/replica"
+      }
+    },
+    "recovery_policy": {
+      "$ref": "#/definitions/recovery_policy"
+    },
+    "genome_root": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "memory_root": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "hive_state_root": {
+      "$ref": "#/definitions/sha256_digest"
+    },
+    "external_replication_verified": {
+      "const": false
+    },
+    "blank_disk_dry_run_verified": {
+      "const": false
+    },
+    "production_ready_claim": {
+      "const": false
+    },
+    "previous_manifest_digest": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/sha256_digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "manifest_digest": {
+      "$ref": "#/definitions/sha256_digest"
+    }
+  },
+  "definitions": {
+    "id_token": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "safe_posix_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "opaque_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "mesh_kind": {
+      "type": "string",
+      "enum": [
+        "axial_agent_mesh",
+        "logical_solver_overlay",
+        "hierarchical_runtime_shadow"
+      ]
+    },
+    "source_repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository_ref",
+        "commit_sha",
+        "source_of_truth",
+        "require_clean_clone",
+        "backup_as_primary"
+      ],
+      "properties": {
+        "repository_ref": {
+          "$ref": "#/definitions/opaque_ref"
+        },
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source_of_truth": {
+          "const": "git_primary"
+        },
+        "require_clean_clone": {
+          "const": true
+        },
+        "backup_as_primary": {
+          "const": false
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mesh_id",
+        "mesh_kind",
+        "topology_epoch",
+        "cells",
+        "routing_invariants",
+        "topology_digest"
+      ],
+      "properties": {
+        "mesh_id": {
+          "$ref": "#/definitions/id_token"
+        },
+        "mesh_kind": {
+          "$ref": "#/definitions/mesh_kind"
+        },
+        "topology_epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "cells": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/cell_genome_ref"
+          }
+        },
+        "routing_invariants": {
+          "$ref": "#/definitions/routing_invariants"
+        },
+        "topology_digest": {
+          "$ref": "#/definitions/sha256_digest"
+        }
+      }
+    },
+    "cell_genome_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell_id",
+        "genome_ref",
+        "genome_digest",
+        "expected_cell_state_root"
+      ],
+      "properties": {
+        "cell_id": {
+          "$ref": "#/definitions/id_token"
+        },
+        "genome_ref": {
+          "$ref": "#/definitions/safe_posix_relative_path"
+        },
+        "genome_digest": {
+          "$ref": "#/definitions/sha256_digest"
+        },
+        "expected_cell_state_root": {
+          "$ref": "#/definitions/sha256_digest"
+        }
+      }
+    },
+    "routing_invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connected",
+        "bidirectional_neighbors",
+        "survive_single_cell_loss",
+        "max_route_hops"
+      ],
+      "properties": {
+        "connected": {
+          "const": true
+        },
+        "bidirectional_neighbors": {
+          "const": true
+        },
+        "survive_single_cell_loss": {
+          "const": true
+        },
+        "max_route_hops": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "relative_path",
+        "content_digest",
+        "byte_size",
+        "classification",
+        "required",
+        "restore_strategy"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/definitions/id_token"
+        },
+        "relative_path": {
+          "$ref": "#/definitions/safe_posix_relative_path"
+        },
+        "content_digest": {
+          "$ref": "#/definitions/sha256_digest"
+        },
+        "byte_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "genome",
+            "mutable_state",
+            "rebuildable_cache",
+            "external_dependency"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "restore_strategy": {
+          "type": "string",
+          "enum": [
+            "git_checkout",
+            "verified_copy",
+            "rebuild",
+            "external_reprovision"
+          ]
+        }
+      }
+    },
+    "replica": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "replica_id",
+        "failure_domain",
+        "locator_ref",
+        "verified_at_utc",
+        "content_digest"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/definitions/id_token"
+        },
+        "replica_id": {
+          "$ref": "#/definitions/id_token"
+        },
+        "failure_domain": {
+          "$ref": "#/definitions/id_token"
+        },
+        "locator_ref": {
+          "$ref": "#/definitions/opaque_ref"
+        },
+        "verified_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        },
+        "content_digest": {
+          "$ref": "#/definitions/sha256_digest"
+        }
+      }
+    },
+    "recovery_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "restore_state",
+        "require_exact_commit",
+        "require_all_digests",
+        "require_off_host_replica_for_non_git",
+        "transport_enabled",
+        "runtime_activation_authority_granted",
+        "operator_gate_required_for_activation",
+        "claim_safe_upgrade"
+      ],
+      "properties": {
+        "restore_state": {
+          "const": "shadow_only"
+        },
+        "require_exact_commit": {
+          "const": true
+        },
+        "require_all_digests": {
+          "const": true
+        },
+        "require_off_host_replica_for_non_git": {
+          "const": true
+        },
+        "transport_enabled": {
+          "const": false
+        },
+        "runtime_activation_authority_granted": {
+          "const": false
+        },
+        "operator_gate_required_for_activation": {
+          "const": true
+        },
+        "claim_safe_upgrade": {
+          "const": false
+        }
+      }
+    }
+  }
+}

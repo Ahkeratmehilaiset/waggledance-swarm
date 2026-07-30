@@ -557,6 +557,19 @@ exit 7
     assert "--model 'grok-9.9'" in persisted["usage"]["single_turn"]
     assert "--effort high" in persisted["usage"]["single_turn"]
 
+    repeated = _run_powershell(
+        f"& '{resolver}' -GrokCommand '{fake_quoted}' "
+        f"-OutputDirectory '{output_quoted}' "
+        "-NowUtc ([DateTimeOffset]'2026-07-30T10:05:00Z') "
+        "| ConvertTo-Json -Depth 8 -Compress"
+    )
+    repeated_record = json.loads(repeated.stdout)
+    assert repeated_record["Status"] == "verified_persisted"
+    replaced = json.loads(
+        (tmp_path / "WD_GROK_MODEL_CURRENT.json").read_text(encoding="utf-8")
+    )
+    assert replaced["discovered_utc"] == "2026-07-30T10:05:00.0000000+00:00"
+
     fake.write_text("Write-Error 'offline'; exit 7\n", encoding="utf-8")
     cached = _run_powershell(
         f"& '{resolver}' -GrokCommand '{fake_quoted}' "

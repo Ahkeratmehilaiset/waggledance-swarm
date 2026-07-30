@@ -287,7 +287,12 @@ function Write-TextAtomic {
     try {
         [IO.File]::WriteAllText($temporaryPath, $Content, $utf8WithoutBom)
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [IO.File]::Replace($temporaryPath, $Path, $null, $true)
+            # Bare $null is coerced to an empty string for this overload.
+            [IO.File]::Replace(
+                $temporaryPath,
+                $Path,
+                [System.Management.Automation.Language.NullString]::Value,
+                $true)
         }
         else {
             [IO.File]::Move($temporaryPath, $Path)

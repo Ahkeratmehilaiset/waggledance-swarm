@@ -1,0 +1,481 @@
+{
+  "agent_cell_oracle_dir": "tests/oracle_hex",
+  "base_commit": "69926c874779aef2859c09cbe80d9c81127c2986",
+  "corpus_version": "hex_capability_probe_corpus.v1",
+  "distinct_capability_contract": {
+    "agent": 7,
+    "genome_rows": 59,
+    "router": 3,
+    "solver": 23,
+    "total": 33
+  },
+  "oracle_bases": [
+    "derived_from_declared_formulas",
+    "executability_only",
+    "imported_from_axiom_examples_unverified",
+    "operator_adjudicated"
+  ],
+  "solver_axiom_cases": [
+    {
+      "capability_id": "solver.axiom.autumn_preparation",
+      "case_id": "autumn_preparation.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "autumn_preparation",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.battery_discharge",
+      "case_id": "battery_discharge.example.0",
+      "expected_type": "number",
+      "expected_value": 3704,
+      "inputs": {
+        "I_active": 80,
+        "I_sleep": 0.01,
+        "capacity_mah": 3000,
+        "duty_cycle": 0.01
+      },
+      "model_id": "battery_discharge",
+      "note": "ESP32 LoRa, 1% duty",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.battery_discharge",
+      "case_id": "battery_discharge.example.1",
+      "expected_type": "number",
+      "expected_value": 20,
+      "inputs": {
+        "I_active": 500,
+        "I_sleep": 500,
+        "capacity_mah": 10000,
+        "duty_cycle": 1.0
+      },
+      "model_id": "battery_discharge",
+      "note": "Raspberry Pi always on",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.battery_discharge",
+      "case_id": "battery_discharge.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "battery_discharge",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.colony_food_reserves",
+      "case_id": "colony_food_reserves.example.0",
+      "expected_type": "number",
+      "expected_value": 0.0,
+      "inputs": {
+        "bee_cluster_kg": 2.5,
+        "food_available_kg": 15,
+        "winter_months": 5
+      },
+      "model_id": "colony_food_reserves",
+      "note": "Strong cluster, adequate stores",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.colony_food_reserves",
+      "case_id": "colony_food_reserves.example.1",
+      "expected_type": "number",
+      "expected_value": 0.25,
+      "inputs": {
+        "bee_cluster_kg": 1.5,
+        "food_available_kg": 5,
+        "winter_months": 5
+      },
+      "model_id": "colony_food_reserves",
+      "note": "Weak cluster, insufficient stores",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.colony_food_reserves",
+      "case_id": "colony_food_reserves.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "colony_food_reserves",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.colony_growth_rate",
+      "case_id": "colony_growth_rate.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "colony_growth_rate",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.comfort_energy_tradeoff",
+      "case_id": "comfort_energy_tradeoff.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "comfort_energy_tradeoff",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.heat_pump_cop",
+      "case_id": "heat_pump_cop.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "heat_pump_cop",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.heating_cost",
+      "case_id": "heating_cost.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "heating_cost",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.hive_thermal_balance",
+      "case_id": "hive_thermal_balance.example.0",
+      "expected_type": "number",
+      "expected_value": 85,
+      "inputs": {
+        "N_bees": 30000,
+        "T_outside": -5
+      },
+      "model_id": "hive_thermal_balance",
+      "note": "Strong colony, mild winter",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.hive_thermal_balance",
+      "case_id": "hive_thermal_balance.example.1",
+      "expected_type": "number",
+      "expected_value": -8,
+      "inputs": {
+        "N_bees": 5000,
+        "R_insulation": 0.8,
+        "T_outside": -25
+      },
+      "model_id": "hive_thermal_balance",
+      "note": "Weak colony, harsh winter",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.hive_thermal_balance",
+      "case_id": "hive_thermal_balance.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "hive_thermal_balance",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.honey_yield",
+      "case_id": "honey_yield.example.0",
+      "expected_type": "number",
+      "expected_value": 63.0,
+      "inputs": {
+        "colony_strength": 60000,
+        "flow_days": 60
+      },
+      "model_id": "honey_yield",
+      "note": "Strong colony, good nectar flow",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.honey_yield",
+      "case_id": "honey_yield.example.1",
+      "expected_type": "number",
+      "expected_value": 15.75,
+      "inputs": {
+        "colony_strength": 30000,
+        "flow_days": 30
+      },
+      "model_id": "honey_yield",
+      "note": "Average colony, short flow",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.honey_yield",
+      "case_id": "honey_yield.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "honey_yield",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.indoor_air_quality",
+      "case_id": "indoor_air_quality.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "indoor_air_quality",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.mtbf_prediction",
+      "case_id": "mtbf_prediction.exec.no_inputs",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "mtbf_prediction",
+      "note": "no inputs: this model declares variables without defaults",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.mtbf_prediction",
+      "case_id": "mtbf_prediction.exec.supplied",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {
+        "number_of_failures": 4,
+        "total_operating_hours": 8760
+      },
+      "model_id": "mtbf_prediction",
+      "note": "caller-supplied inputs inside declared ranges",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.nectar_flow_timing",
+      "case_id": "nectar_flow_timing.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "nectar_flow_timing",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.oee_decomposition",
+      "case_id": "oee_decomposition.exec.no_inputs",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "oee_decomposition",
+      "note": "no inputs: this model declares variables without defaults",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.oee_decomposition",
+      "case_id": "oee_decomposition.exec.supplied",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {
+        "actual_output": 400,
+        "downtime": 30,
+        "good_units": 390,
+        "ideal_cycle_rate": 1.0,
+        "planned_time": 480,
+        "total_units": 400
+      },
+      "model_id": "oee_decomposition",
+      "note": "caller-supplied inputs inside declared ranges",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.pipe_freezing",
+      "case_id": "pipe_freezing.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "pipe_freezing",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.queen_age_replacement",
+      "case_id": "queen_age_replacement.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "queen_age_replacement",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.signal_propagation",
+      "case_id": "signal_propagation.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "signal_propagation",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.solar_yield",
+      "case_id": "solar_yield.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "solar_yield",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.spring_inspection_timing",
+      "case_id": "spring_inspection_timing.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "spring_inspection_timing",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.swarm_risk",
+      "case_id": "swarm_risk.example.0",
+      "expected_type": "number",
+      "expected_value": 100,
+      "inputs": {
+        "empty_combs": 1,
+        "queen_age_years": 2.5,
+        "queen_cells": 3,
+        "season_factor": 1.0,
+        "total_combs": 12
+      },
+      "model_id": "swarm_risk",
+      "note": "Crowded hive, peak spring, old queen",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.swarm_risk",
+      "case_id": "swarm_risk.example.1",
+      "expected_type": "number",
+      "expected_value": 12.1,
+      "inputs": {
+        "empty_combs": 8,
+        "queen_age_years": 0.5,
+        "queen_cells": 0,
+        "season_factor": 0.1,
+        "total_combs": 12
+      },
+      "model_id": "swarm_risk",
+      "note": "Spacious hive, new queen, off-season",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.swarm_risk",
+      "case_id": "swarm_risk.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "swarm_risk",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.varroa_treatment",
+      "case_id": "varroa_treatment.example.0",
+      "expected_type": "number",
+      "expected_value": 4.8,
+      "inputs": {
+        "colony_strength": 25000,
+        "combs_with_bees": 8,
+        "varroa_before": 1200
+      },
+      "model_id": "varroa_treatment",
+      "note": "Broodless colony, moderate infestation (mite load %)",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.varroa_treatment",
+      "case_id": "varroa_treatment.example.1",
+      "expected_type": "number",
+      "expected_value": 15.0,
+      "inputs": {
+        "colony_strength": 20000,
+        "combs_with_bees": 6,
+        "varroa_before": 3000
+      },
+      "model_id": "varroa_treatment",
+      "note": "Heavy infestation before winter (mite load %)",
+      "oracle_basis": "imported_from_axiom_examples_unverified",
+      "tolerance_ratio": 0.01
+    },
+    {
+      "capability_id": "solver.axiom.varroa_treatment",
+      "case_id": "varroa_treatment.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "varroa_treatment",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.varroa_treatment_calendar",
+      "case_id": "varroa_treatment_calendar.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "varroa_treatment_calendar",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    },
+    {
+      "capability_id": "solver.axiom.winter_feeding_decision",
+      "case_id": "winter_feeding_decision.exec.defaults",
+      "expected_type": "number",
+      "expected_value": null,
+      "inputs": {},
+      "model_id": "winter_feeding_decision",
+      "note": "declared defaults only; proves the capability runs, not that its value is right",
+      "oracle_basis": "executability_only",
+      "tolerance_ratio": null
+    }
+  ],
+  "verified_oracle_bases": [
+    "derived_from_declared_formulas",
+    "operator_adjudicated"
+  ]
+}

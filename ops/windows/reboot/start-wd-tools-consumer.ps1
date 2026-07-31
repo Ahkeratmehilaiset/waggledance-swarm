@@ -40,6 +40,40 @@ function Get-RequiredText {
     return [string]$property.Value
 }
 
+function Get-InitialTickDisposition {
+    param([Parameter(Mandatory)] [psobject] $Result)
+
+    $exitCodeProperty = $Result.PSObject.Properties['exit_code']
+    $timedOutProperty = $Result.PSObject.Properties['codex_timed_out']
+    $ranCodexProperty = $Result.PSObject.Properties['ran_codex']
+    if (
+        $null -eq $exitCodeProperty -or
+        $null -eq $timedOutProperty -or
+        $null -eq $ranCodexProperty -or
+        $exitCodeProperty.Value -isnot [int] -or
+        $timedOutProperty.Value -isnot [bool] -or
+        $ranCodexProperty.Value -isnot [bool]
+    ) {
+        return 'invalid'
+    }
+    if (-not [bool]$ranCodexProperty.Value) {
+        return 'failed'
+    }
+    if (
+        [int]$exitCodeProperty.Value -eq 0 -and
+        -not [bool]$timedOutProperty.Value
+    ) {
+        return 'success'
+    }
+    if (
+        [int]$exitCodeProperty.Value -eq 124 -and
+        [bool]$timedOutProperty.Value
+    ) {
+        return 'recoverable_timeout'
+    }
+    return 'failed'
+}
+
 function Resolve-ContainedScript {
     param(
         [Parameter(Mandatory)] [string] $Worktree,
@@ -1077,7 +1111,12 @@ $initialResult = @(
 if ($null -eq $initialResult) {
     throw 'initial tools consumer tick returned no structured result'
 }
-if ($null -eq $initialResult.exit_code -or [int]$initialResult.exit_code -ne 0) {
+# A bounded Codex timeout is a recoverable task failure after a real launch,
+# not a reason to restart-loop the durable consumer. Every other initial
+# failure remains fatal.
+$initialTickDisposition = Get-InitialTickDisposition -Result $initialResult
+$initialTickTimedOut = $initialTickDisposition -ceq 'recoverable_timeout'
+if ($initialTickDisposition -cnotin @('success', 'recoverable_timeout')) {
     throw "initial tools consumer tick failed with exit_code=$($initialResult.exit_code)"
 }
 
@@ -1091,6 +1130,8 @@ $readinessRecord = [ordered]@{
     worktree = $worktree
     branch = $actualBranch
     head = $actualHead
+    initial_tick_exit_code = [int]$initialResult.exit_code
+    initial_tick_timed_out = $initialTickTimedOut
     ready_at_utc = [DateTime]::UtcNow.ToString('o')
 }
 $utf8NoBom = New-Object Text.UTF8Encoding($false)

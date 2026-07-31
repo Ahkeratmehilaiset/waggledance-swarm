@@ -147,6 +147,10 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "Test-ContainsApplySwitch $commandLine" in launch_text
     assert "-Loop\\s+-PollSeconds\\s+120" in launch_text
     assert "-Loop\\s+-PollSeconds\\s+120" in supervisor
+    assert "$toolsStarting.ProcessId" not in launch_text
+    assert "$toolsStale.ProcessId" not in launch_text
+    assert "Assert-DirectoryPathWithoutReparse" in launch_text
+    assert "WD_TOOLS_CODEX_RUNTIME_ROOT" in launch_text
     assert "required watcher source is missing" in supervisor
     assert "required tools consumer launcher is missing" in supervisor
     assert "WARN tools consumer launcher missing" not in supervisor
@@ -186,7 +190,235 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "supervisor deployment manifest is not externally anchored" in supervisor
     assert "Test-ToolsWrapperReadiness" in supervisor
     assert "Test-ToolsWrapperWithinStartupGrace" in supervisor
+    assert "function Start-OutOfTaskJobPowerShell" in supervisor
+    assert "Invoke-CimMethod `" in supervisor
+    assert "-ClassName Win32_Process `" in supervisor
+    assert "-ClassName Win32_ProcessStartup `" in supervisor
+    assert "-Property @{" in supervisor
+    assert "0x08000000 -bor" in supervisor
+    assert "0x00000400" in supervisor
+    assert "ShowWindow = [uint16]0" in supervisor
+    assert "EnvironmentVariables = [string[]]$environment.ToArray()" in (
+        supervisor
+    )
+    assert supervisor.count("Start-OutOfTaskJobPowerShell `") == 2
+    assert "Tools consumer preflight did not resolve stable Windows PowerShell" in (
+        supervisor
+    )
     assert supervisor.index("-ValidateOnly") < supervisor.index("$watcherScript =")
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_supervisor_quotes_out_of_task_job_native_arguments() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'ConvertTo-WindowsCommandLineArgument'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing native argument quote helper' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+@(
+  [pscustomobject]@{{
+    input = 'plain'
+    output = ConvertTo-WindowsCommandLineArgument 'plain'
+  }}
+  [pscustomobject]@{{
+    input = ''
+    output = ConvertTo-WindowsCommandLineArgument ''
+  }}
+  [pscustomobject]@{{
+    input = 'C:\\Program Files\\PowerShell\\pwsh.exe'
+    output = ConvertTo-WindowsCommandLineArgument (
+      'C:\\Program Files\\PowerShell\\pwsh.exe'
+    )
+  }}
+  [pscustomobject]@{{
+    input = 'plain"quote'
+    output = ConvertTo-WindowsCommandLineArgument 'plain"quote'
+  }}
+  [pscustomobject]@{{
+    input = 'C:\\path with space\\'
+    output = ConvertTo-WindowsCommandLineArgument 'C:\\path with space\\'
+  }}
+) | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == [
+        {"input": "plain", "output": "plain"},
+        {"input": "", "output": '""'},
+        {
+            "input": r"C:\Program Files\PowerShell\pwsh.exe",
+            "output": r'"C:\Program Files\PowerShell\pwsh.exe"',
+        },
+        {"input": 'plain"quote', "output": r'"plain\"quote"'},
+        {
+            "input": "C:\\path with space\\",
+            "output": '"C:\\path with space\\\\"',
+        },
+    ]
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_out_of_task_job_launch_is_hidden_and_inherits_environment() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+  'ConvertTo-WindowsCommandLineArgument',
+  'Start-OutOfTaskJobPowerShell'
+)) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$script:capturedArguments = $null
+function Invoke-CimMethod {{
+  [CmdletBinding()]
+  param(
+    [string] $ClassName,
+    [string] $MethodName,
+    [hashtable] $Arguments
+  )
+  if ($ClassName -cne 'Win32_Process' -or $MethodName -cne 'Create') {{
+    throw 'unexpected process request'
+  }}
+  $script:capturedArguments = $Arguments
+  [pscustomobject]@{{
+    ReturnValue = 0
+    ProcessId = 4242
+  }}
+}}
+$actions = New-Object 'System.Collections.Generic.List[string]'
+Start-OutOfTaskJobPowerShell `
+  -HostPath 'C:\\Program Files\\PowerShell\\pwsh.exe' `
+  -ArgumentList @(
+    '-File',
+    'C:\\Python\\tools.ps1',
+    '-ConfigPath',
+    'C:\\Path With Space\\config.json'
+  ) `
+  -Name 'consumer-loop:codex-tools-1'
+$startup = $script:capturedArguments.ProcessStartupInformation
+[pscustomobject]@{{
+  command_line = [string]$script:capturedArguments.CommandLine
+  create_flags = [uint32]$startup.CreateFlags
+  show_window = [uint16]$startup.ShowWindow
+  has_path = [bool]@(
+    $startup.EnvironmentVariables |
+      Where-Object {{ $_ -match '^(?i:PATH)=' }}
+  ).Count
+  action = [string]$actions[0]
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "command_line": (
+            r'"C:\Program Files\PowerShell\pwsh.exe" '
+            r"-File C:\Python\tools.ps1 "
+            r'-ConfigPath "C:\Path With Space\config.json"'
+        ),
+        "create_flags": 0x08000400,
+        "show_window": 0,
+        "has_path": True,
+        "action": (
+            "RELAUNCHED consumer-loop:codex-tools-1 "
+            "pid=4242 out-of-task-job"
+        ),
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_tools_writable_bridge_validation_is_pristine_safe(tmp_path: Path) -> None:
+    wrapper = str(REBOOT / "start-wd-tools-consumer.ps1").replace("'", "''")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    candidate = runtime_root / "outbox" / "codex-tools-1"
+    root_quoted = str(runtime_root).replace("'", "''")
+    candidate_quoted = str(candidate).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{wrapper}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'tools consumer parse failed' }}
+foreach ($name in @(
+  'Test-PathAtOrBelow',
+  'Assert-DirectoryPathWithoutReparse'
+)) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$allowMissingPassed = $false
+Assert-DirectoryPathWithoutReparse `
+  -Candidate '{candidate_quoted}' `
+  -Root '{root_quoted}' `
+  -AllowMissing
+$allowMissingPassed = $true
+$strictMissingFailed = $false
+try {{
+  Assert-DirectoryPathWithoutReparse `
+    -Candidate '{candidate_quoted}' `
+    -Root '{root_quoted}'
+}} catch {{
+  $strictMissingFailed = $true
+}}
+$createdDuringValidation = Test-Path -LiteralPath '{candidate_quoted}'
+[void](New-Item -ItemType Directory -Path '{candidate_quoted}' -Force)
+Assert-DirectoryPathWithoutReparse `
+  -Candidate '{candidate_quoted}' `
+  -Root '{root_quoted}'
+[pscustomobject]@{{
+  allow_missing_passed = $allowMissingPassed
+  strict_missing_failed = $strictMissingFailed
+  created_during_validation = $createdDuringValidation
+  strict_existing_passed = $true
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "allow_missing_passed": True,
+        "strict_missing_failed": True,
+        "created_during_validation": False,
+        "strict_existing_passed": True,
+    }
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
@@ -946,6 +1178,8 @@ def test_tools_codex_shim_restores_safe_path_and_forwards_tick(
     wrapper_text = wrapper_path.read_text(encoding="utf-8")
     assert "WD_TOOLS_CODEX_REAL_COMMAND" in wrapper_text
     assert "WD_TOOLS_CODEX_SAFE_PATH" in wrapper_text
+    assert "WD_TOOLS_CODEX_ADDITIONAL_WRITABLE_DIRS" in wrapper_text
+    assert "codex_additional_writable_directories" in wrapper_text
     assert "CodexCommand = $codexShim" in wrapper_text
 
     fake_codex = tmp_path / "fake-codex.ps1"
@@ -972,6 +1206,20 @@ $exitCode = if ($env:WD_FAKE_MODE -eq 'nonzero') { 9 } else { 0 }
     shim = str(shim_path).replace("'", "''")
     fake = str(fake_codex).replace("'", "''")
     capture_quoted = str(capture).replace("'", "''")
+    runtime_root = tmp_path / "bridge root"
+    runtime_root.mkdir()
+    writable_dirs = [
+        runtime_root / "shared",
+        runtime_root / "outbox" / "codex-tools-1",
+        runtime_root / "spool",
+        runtime_root / "work_queue",
+    ]
+    for writable_dir in writable_dirs:
+        writable_dir.mkdir(parents=True)
+    writable_json = json.dumps([str(path) for path in writable_dirs]).replace(
+        "'", "''"
+    )
+    runtime_root_quoted = str(runtime_root).replace("'", "''")
     safe_path = (
         str(Path(os.environ["SystemRoot"]) / "System32")
         + ";"
@@ -980,6 +1228,8 @@ $exitCode = if ($env:WD_FAKE_MODE -eq 'nonzero') { 9 } else { 0 }
     invocation = f"""
 $env:WD_TOOLS_CODEX_REAL_COMMAND = '{fake}'
 $env:WD_TOOLS_CODEX_SAFE_PATH = '{safe_path}'
+$env:WD_TOOLS_CODEX_ADDITIONAL_WRITABLE_DIRS = '{writable_json}'
+$env:WD_TOOLS_CODEX_RUNTIME_ROOT = '{runtime_root_quoted}'
 $env:WD_FAKE_CAPTURE = '{capture_quoted}'
 $env:Path = 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_test'
 "line one`nline two" | & '{shim}' `
@@ -1001,6 +1251,11 @@ exit 1
             r"C:\Repo With Space",
             "--sandbox",
             "workspace-write",
+            *[
+                value
+                for writable_dir in writable_dirs
+                for value in ("--add-dir", str(writable_dir))
+            ],
             "-",
         ],
         "stdin": "line one\nline two",

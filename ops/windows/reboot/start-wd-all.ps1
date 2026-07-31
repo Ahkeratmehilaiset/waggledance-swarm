@@ -1178,13 +1178,13 @@ $toolsStarting = @($toolsProcessState.starting)
 $toolsStale = @($toolsProcessState.stale)
 $toolsLegacy = @($toolsProcessState.legacy)
 if ($toolsLive.Count -gt 1) {
-  throw "duplicate supervisor-managed Tools consumers PID(s): $(@($toolsLive.ProcessId) -join ',')"
+  throw "duplicate supervisor-managed Tools consumers PID(s): $(@($toolsLive | ForEach-Object { [string]$_.ProcessId }) -join ',')"
 }
 if ($toolsStarting.Count -gt 1) {
-  throw "duplicate starting Tools consumers PID(s): $(@($toolsStarting.ProcessId) -join ',')"
+  throw "duplicate starting Tools consumers PID(s): $(@($toolsStarting | ForEach-Object { [string]$_.ProcessId }) -join ',')"
 }
 if ($toolsLegacy.Count -gt 0) {
-  throw "legacy Tools consumers block safe restore PID(s): $(@($toolsLegacy.ProcessId) -join ',')"
+  throw "legacy Tools consumers block safe restore PID(s): $(@($toolsLegacy | ForEach-Object { [string]$_.ProcessId }) -join ',')"
 }
 if (
   $toolsStale.Count -gt 1 -or
@@ -1196,9 +1196,9 @@ if (
 ) {
   throw (
     'conflicting Tools wrappers current/starting/stale PID(s): ' +
-    "$(@($toolsLive.ProcessId) -join ',') / " +
-    "$(@($toolsStarting.ProcessId) -join ',') / " +
-    "$(@($toolsStale.ProcessId) -join ',')"
+    "$(@($toolsLive | ForEach-Object { [string]$_.ProcessId }) -join ',') / " +
+    "$(@($toolsStarting | ForEach-Object { [string]$_.ProcessId }) -join ',') / " +
+    "$(@($toolsStale | ForEach-Object { [string]$_.ProcessId }) -join ',')"
   )
 }
 $toolsValidationLauncher = if ($bundleMode -ceq 'deployed') {

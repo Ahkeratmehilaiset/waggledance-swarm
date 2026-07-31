@@ -387,6 +387,55 @@ function Test-PathAtOrBelow {
     )
 }
 
+function Assert-DirectoryPathWithoutReparse {
+    param(
+        [Parameter(Mandatory)] [string] $Candidate,
+        [Parameter(Mandatory)] [string] $Root,
+        [switch] $AllowMissing
+    )
+
+    $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd(
+        [char]92,
+        [char]47
+    )
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([char]92, [char]47)
+    if (-not (Test-PathAtOrBelow -Candidate $candidateFull -Root $rootFull)) {
+        throw "directory path escaped its trusted root: $candidateFull"
+    }
+    if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) {
+        throw "trusted directory root is missing: $rootFull"
+    }
+    $rootItem = Get-Item -LiteralPath $rootFull -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "trusted directory root cannot be a reparse point: $rootFull"
+    }
+
+    $relative = $candidateFull.Substring($rootFull.Length).TrimStart(
+        [char]92,
+        [char]47
+    )
+    $current = $rootFull
+    foreach ($segment in @($relative -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($segment)) {
+            continue
+        }
+        $current = Join-Path $current $segment
+        if (-not (Test-Path -LiteralPath $current)) {
+            if ($AllowMissing) {
+                return
+            }
+            throw "required directory path component is missing: $current"
+        }
+        if (-not (Test-Path -LiteralPath $current -PathType Container)) {
+            throw "directory path component is not a directory: $current"
+        }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "directory path component cannot be a reparse point: $current"
+        }
+    }
+}
+
 function New-CodexSandboxPath {
     param(
         [Parameter(Mandatory)] [string] $CurrentPath,
@@ -644,6 +693,9 @@ if (-not (Test-Path -LiteralPath $worktree -PathType Container)) {
 if (-not (Test-Path -LiteralPath $primaryRepoRoot -PathType Container)) {
     throw "primary repo root does not exist: $primaryRepoRoot"
 }
+if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+    throw "bridge runtime root does not exist: $runtimeRoot"
+}
 if (-not (Test-Path -LiteralPath $expectedCommonGitDir -PathType Container)) {
     throw "expected common Git directory does not exist: $expectedCommonGitDir"
 }
@@ -697,6 +749,31 @@ if ($sandbox -cnotin @('read-only', 'workspace-write', 'danger-full-access')) {
 }
 if ($approvalPolicy -cnotin @('untrusted', 'on-failure', 'on-request', 'never')) {
     throw "unsupported tools approval policy: $approvalPolicy"
+}
+
+$codexWritableDirectories = @(
+    (Join-Path $runtimeRoot 'shared'),
+    (Join-Path (Join-Path $runtimeRoot 'outbox') $agent),
+    (Join-Path $runtimeRoot 'spool'),
+    (Join-Path $runtimeRoot 'work_queue')
+) | ForEach-Object { [IO.Path]::GetFullPath($_) }
+foreach ($writableDirectory in $codexWritableDirectories) {
+    Assert-DirectoryPathWithoutReparse `
+        -Candidate $writableDirectory `
+        -Root $runtimeRoot `
+        -AllowMissing
+    if (-not $ValidateOnly) {
+        if (-not (Test-Path -LiteralPath $writableDirectory -PathType Container)) {
+            [void](New-Item `
+                -ItemType Directory `
+                -Path $writableDirectory `
+                -Force `
+                -ErrorAction Stop)
+        }
+        Assert-DirectoryPathWithoutReparse `
+            -Candidate $writableDirectory `
+            -Root $runtimeRoot
+    }
 }
 
 $capabilities = @(
@@ -866,6 +943,7 @@ $validation = [pscustomobject]@{
     consumer_host = $currentPowerShellHost
     sandbox_shell = $sandboxShell
     python_executable = $pythonExecutable
+    codex_additional_writable_directories = @($codexWritableDirectories)
     windows_apps_path_entries_removed = @(
         $codexPathPlan.RemovedWindowsAppsEntries
     )
@@ -898,6 +976,16 @@ $env:Path = $codexPathPlan.Path
 [Environment]::SetEnvironmentVariable(
     'WD_TOOLS_CODEX_SAFE_PATH',
     $codexPathPlan.Path,
+    'Process'
+)
+[Environment]::SetEnvironmentVariable(
+    'WD_TOOLS_CODEX_ADDITIONAL_WRITABLE_DIRS',
+    ($codexWritableDirectories | ConvertTo-Json -Compress),
+    'Process'
+)
+[Environment]::SetEnvironmentVariable(
+    'WD_TOOLS_CODEX_RUNTIME_ROOT',
+    $runtimeRoot,
     'Process'
 )
 Test-CodexSandboxShell `

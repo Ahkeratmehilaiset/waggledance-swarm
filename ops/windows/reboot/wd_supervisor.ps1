@@ -459,6 +459,114 @@ function Start-DetachedPowerShell {
     $actions.Add("RELAUNCHED $Name pid=$($process.Id)")
 }
 
+function ConvertTo-WindowsCommandLineArgument {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string] $Value
+    )
+
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    # Win32_Process.Create accepts one native command-line string. Quote each
+    # argv element with the CommandLineToArgvW backslash/quote rules so paths
+    # containing whitespace or literal quotes cannot change argument shape.
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq '"') {
+            if ($backslashes -gt 0) {
+                [void]$builder.Append(('\' * ($backslashes * 2)))
+            }
+            [void]$builder.Append('\"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append(('\' * $backslashes))
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append(('\' * ($backslashes * 2)))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Start-OutOfTaskJobPowerShell {
+    param(
+        [Parameter(Mandatory)] [string] $HostPath,
+        [Parameter(Mandatory)] [string[]] $ArgumentList,
+        [Parameter(Mandatory)] [string] $Name
+    )
+
+    # A direct Start-Process child remains in Task Scheduler's job and can be
+    # terminated as soon as this short supervisor action exits. WMI creates the
+    # long-lived headless consumer outside that job while retaining the same
+    # interactive user token and session.
+    $commandParts = New-Object 'System.Collections.Generic.List[string]'
+    $commandParts.Add((ConvertTo-WindowsCommandLineArgument $HostPath))
+    foreach ($argument in $ArgumentList) {
+        $commandParts.Add((ConvertTo-WindowsCommandLineArgument $argument))
+    }
+    $commandLine = $commandParts -join ' '
+    $environment = New-Object 'System.Collections.Generic.List[string]'
+    $processEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    foreach ($environmentKey in @($processEnvironment.Keys | Sort-Object)) {
+        $environmentName = [string]$environmentKey
+        $environmentValue = [string]$processEnvironment[$environmentKey]
+        if (
+            $environmentName.IndexOf([char]0) -ge 0 -or
+            $environmentName.IndexOf('=') -ge 0 -or
+            $environmentValue.IndexOf([char]0) -ge 0
+        ) {
+            throw "cannot forward invalid process environment entry '$environmentName'"
+        }
+        $environment.Add("${environmentName}=${environmentValue}")
+    }
+    $startup = New-CimInstance `
+        -ClassName Win32_ProcessStartup `
+        -Property @{
+            CreateFlags = [uint32](
+                0x08000000 -bor  # CREATE_NO_WINDOW
+                0x00000400       # CREATE_UNICODE_ENVIRONMENT
+            )
+            ShowWindow = [uint16]0  # SW_HIDE
+            EnvironmentVariables = [string[]]$environment.ToArray()
+        } `
+        -ClientOnly `
+        -ErrorAction Stop
+    $created = Invoke-CimMethod `
+        -ClassName Win32_Process `
+        -MethodName Create `
+        -Arguments @{
+            CommandLine = $commandLine
+            ProcessStartupInformation = $startup
+        } `
+        -ErrorAction Stop
+    if (
+        [int]$created.ReturnValue -ne 0 -or
+        [int]$created.ProcessId -le 0
+    ) {
+        throw (
+            "out-of-task-job launch failed for ${Name}: " +
+            "return_value=$($created.ReturnValue) pid=$($created.ProcessId)"
+        )
+    }
+    $actions.Add(
+        "RELAUNCHED $Name pid=$([int]$created.ProcessId) out-of-task-job"
+    )
+}
+
 function Write-ToolsReplacementConflict {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -921,6 +1029,7 @@ $toolsExpectedHead = ''
 $toolsLauncher = ''
 $toolsConfig = ''
 $toolsConflictPath = ''
+$toolsPowerShellHost = ''
 if ($toolsEnabled) {
     $toolsAgent = Get-RequiredText $tools 'agent'
     $toolsExpectedHead = (Get-RequiredText $tools 'expected_head').ToLowerInvariant()
@@ -988,6 +1097,21 @@ if ($toolsEnabled) {
         -not [bool]$toolsValidation.require_dedicated_worktree
     ) {
         throw 'Tools consumer preflight does not match supervisor generation'
+    }
+    $toolsPowerShellHost = [IO.Path]::GetFullPath(
+        [string]$toolsValidation.consumer_host
+    )
+    $stableWindowsPowerShell = [IO.Path]::GetFullPath(
+        (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    )
+    if (
+        -not $toolsPowerShellHost.Equals(
+            $stableWindowsPowerShell,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not (Test-Path -LiteralPath $toolsPowerShellHost -PathType Leaf)
+    ) {
+        throw 'Tools consumer preflight did not resolve stable Windows PowerShell'
     }
     if (Test-Path -LiteralPath $toolsConflictPath -PathType Leaf) {
         throw (
@@ -1203,8 +1327,8 @@ if ($toolsEnabled) {
                 )
             }
             Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
-            Start-DetachedPowerShell `
-                $powerShellHost `
+            Start-OutOfTaskJobPowerShell `
+                $toolsPowerShellHost `
                 $toolsArguments `
                 'consumer-loop:codex-tools-1'
         }
@@ -1221,8 +1345,8 @@ if ($toolsEnabled) {
     }
     else {
         Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
-        Start-DetachedPowerShell `
-            $powerShellHost `
+        Start-OutOfTaskJobPowerShell `
+            $toolsPowerShellHost `
             $toolsArguments `
             'consumer-loop:codex-tools-1'
     }

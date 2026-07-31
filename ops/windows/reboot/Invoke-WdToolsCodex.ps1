@@ -172,8 +172,20 @@ foreach ($directory in $writableDirectories) {
     $insertAt += 1
 }
 $nativeArguments = [string[]]$forwardArguments.ToArray()
-$input | & $realCommand @nativeArguments
-$exitCode = $LASTEXITCODE
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 represents a native process's stderr as
+    # NativeCommandError. Codex writes its startup banner there, so keep that
+    # stream visible without turning a successful native launch into a
+    # terminating PowerShell error. The real process exit code remains
+    # authoritative.
+    $ErrorActionPreference = 'Continue'
+    $input | & $realCommand @nativeArguments
+    $exitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
 if ($null -eq $exitCode) {
     $exitCode = if ($?) { 0 } else { 1 }
 }

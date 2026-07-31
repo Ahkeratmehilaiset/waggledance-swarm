@@ -1297,6 +1297,24 @@ exit 1
     )
     assert nonzero.returncode == 9
 
+    native_codex = tmp_path / "fake-native-codex.cmd"
+    native_codex.write_text(
+        "@echo OpenAI Codex test banner 1>&2\n@exit /b 0\n",
+        encoding="utf-8",
+    )
+    native = str(native_codex).replace("'", "''")
+    native_stderr_invocation = invocation.replace(
+        f"$env:WD_TOOLS_CODEX_REAL_COMMAND = '{fake}'",
+        f"$env:WD_TOOLS_CODEX_REAL_COMMAND = '{native}'",
+    )
+    native_stderr = _run_powershell(
+        native_stderr_invocation,
+        check=False,
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert native_stderr.returncode == 0, native_stderr.stderr
+    assert "OpenAI Codex test banner" in native_stderr.stderr
+
 
 def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None:
     launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")

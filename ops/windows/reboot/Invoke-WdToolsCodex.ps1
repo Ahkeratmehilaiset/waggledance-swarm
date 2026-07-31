@@ -59,10 +59,14 @@ if ([string]::IsNullOrWhiteSpace($writableDirectoriesJson)) {
     throw 'WD_TOOLS_CODEX_ADDITIONAL_WRITABLE_DIRS is missing'
 }
 try {
-    $writableDirectories = @(
+    $parsedWritableDirectories = (
         $writableDirectoriesJson |
-            ConvertFrom-Json -ErrorAction Stop |
-            ForEach-Object { [string]$_ }
+            ConvertFrom-Json -ErrorAction Stop
+    )
+    $writableDirectories = @(
+        foreach ($directory in $parsedWritableDirectories) {
+            [string]$directory
+        }
     )
 }
 catch {

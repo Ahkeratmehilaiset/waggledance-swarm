@@ -23,13 +23,33 @@ POWERSHELL = (
     or shutil.which("powershell")
     or shutil.which("powershell.exe")
 )
+WINDOWS_POWERSHELL_PATH = (
+    Path(os.environ["SystemRoot"])
+    / "System32"
+    / "WindowsPowerShell"
+    / "v1.0"
+    / "powershell.exe"
+    if os.name == "nt"
+    else None
+)
+WINDOWS_POWERSHELL = (
+    str(WINDOWS_POWERSHELL_PATH)
+    if WINDOWS_POWERSHELL_PATH is not None
+    and WINDOWS_POWERSHELL_PATH.is_file()
+    else None
+)
 
 
-def _run_powershell(script: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    assert POWERSHELL is not None
+def _run_powershell(
+    script: str,
+    *,
+    check: bool = True,
+    executable: str | None = POWERSHELL,
+) -> subprocess.CompletedProcess[str]:
+    assert executable is not None
     return subprocess.run(
         [
-            POWERSHELL,
+            executable,
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -1167,7 +1187,7 @@ catch {{
 
 
 @pytest.mark.skipif(
-    POWERSHELL is None or os.name != "nt",
+    WINDOWS_POWERSHELL is None,
     reason="Windows PowerShell is unavailable",
 )
 def test_tools_codex_shim_restores_safe_path_and_forwards_tick(
@@ -1239,7 +1259,11 @@ if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}
 if ($?) {{ exit 0 }}
 exit 1
 """
-    success = _run_powershell(invocation, check=False)
+    success = _run_powershell(
+        invocation,
+        check=False,
+        executable=WINDOWS_POWERSHELL,
+    )
     assert success.returncode == 0, success.stderr
     payload = json.loads(capture.read_text(encoding="utf-8"))
     assert payload == {
@@ -1266,7 +1290,11 @@ exit 1
     nonzero_invocation = (
         "$env:WD_FAKE_MODE = 'nonzero'\n" + invocation
     )
-    nonzero = _run_powershell(nonzero_invocation, check=False)
+    nonzero = _run_powershell(
+        nonzero_invocation,
+        check=False,
+        executable=WINDOWS_POWERSHELL,
+    )
     assert nonzero.returncode == 9
 
 

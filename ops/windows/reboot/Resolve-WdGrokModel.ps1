@@ -81,7 +81,6 @@ function Invoke-GrokProbe {
         [Parameter(Mandatory = $true)][string]$ProbeName
     )
 
-    $LASTEXITCODE = 0
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'

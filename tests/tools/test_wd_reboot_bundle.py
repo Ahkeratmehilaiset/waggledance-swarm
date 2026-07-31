@@ -650,6 +650,73 @@ catch {{
     }
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_grok_probe_rejects_nonzero_exit_even_when_output_parses() -> None:
+    """The Grok probe must fail closed on a nonzero exit code.
+
+    Regression guard: assigning ``$LASTEXITCODE`` inside the function creates a
+    function-scoped variable that shadows the automatic one, so the native
+    command's real exit code is never read and the guard becomes dead code.
+    The dangerous case is a CLI that exits nonzero while still emitting
+    parseable output -- the parser cannot catch that, only the exit code can.
+    """
+    resolver = str(REBOOT / "Resolve-WdGrokModel.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{resolver}', [ref]$tokens, [ref]$errors
+)
+foreach ($name in @('Remove-AnsiEscape', 'Invoke-GrokProbe')) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "function not found: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$ErrorActionPreference = 'Stop'
+$success = Invoke-GrokProbe `
+  -Executable $env:ComSpec `
+  -ArgumentList @('/d', '/c', 'echo Default model: grok-ok & exit /b 0') `
+  -ProbeName success
+$failureCaught = $false
+try {{
+  Invoke-GrokProbe `
+    -Executable $env:ComSpec `
+    -ArgumentList @('/d', '/c', 'echo Default model: grok-bad & exit /b 9') `
+    -ProbeName models |
+    Out-Null
+}}
+catch {{
+  $failureCaught = $_.Exception.Message -match 'exit code 9'
+}}
+[pscustomobject]@{{
+  success_returned = @($success).Count -ge 1
+  failure_caught = $failureCaught
+  preference_restored = $ErrorActionPreference -eq 'Stop'
+}} | ConvertTo-Json -Compress
+"""
+    )
+    record = json.loads(
+        next(
+            line
+            for line in reversed(result.stdout.splitlines())
+            if line.startswith("{")
+        )
+    )
+    assert record == {
+        "success_returned": True,
+        "failure_caught": True,
+        "preference_restored": True,
+    }
+
+
 def test_deployed_wrappers_preserve_named_parameters() -> None:
     text = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     assert "ValueFromRemainingArguments" not in text
@@ -863,6 +930,10 @@ exit 7
     )
     assert stale.returncode != 0
     stale_text = re.sub(r"\x1b\[[0-9;]*m", "", stale.stdout + stale.stderr)
+    # PowerShell 7 renders errors with a "|" gutter on wrapped continuation
+    # lines. Strip it so this assertion depends on the message text and not on
+    # where the renderer happens to wrap, which moves with the message length.
+    stale_text = re.sub(r"(?m)^\s*\|\s?", "", stale_text)
     stale_normalized = " ".join(stale_text.split()).lower()
     assert "refusing to" in stale_normalized
     assert "guess or use a hard-coded model" in stale_normalized

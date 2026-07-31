@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -60,6 +61,9 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert manifest["schema_version"] == 2
     assert manifest["primary_repo_root"] == r"C:\Python\project2"
     assert manifest["runtime_root"] == r"C:\Python\project2-master\.agent-bridge"
+    assert "Invoke-WdToolsCodex.ps1" in (
+        manifest["deployment"]["required_bundle_files"]
+    )
 
     lanes = {lane["agent"]: lane for lane in manifest["lanes"]}
     assert set(lanes) == {
@@ -271,11 +275,277 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
     assert tools["agent"] == "codex-tools-1"
     assert tools["agent_uuid"] == "7a8af68d-20bc-4598-9953-23c5dd98b102"
     assert tools["worktree"] == r"C:\Python\project2"
+    assert tools["sandbox"] == "workspace-write"
+    assert tools["approval_policy"] == "never"
     assert "executable" not in tools
     assert "model" not in tools
     serialized = json.dumps(snapshot)
     assert "WindowsApps" not in serialized
     assert "7.6.3" not in serialized
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
+def test_tools_consumer_removes_windowsapps_from_codex_path() -> None:
+    wrapper_path = REBOOT / "start-wd-tools-consumer.ps1"
+    wrapper_text = wrapper_path.read_text(encoding="utf-8")
+    assert "function Test-CodexSandboxShell" in wrapper_text
+    assert "$env:Path = $codexPathPlan.Path" in wrapper_text
+    assert "':workspace'" in wrapper_text
+
+    wrapper = str(wrapper_path).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{wrapper}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'tools consumer parse failed' }}
+foreach ($name in @('Test-PathAtOrBelow', 'New-CodexSandboxPath')) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$packageRoot = 'C:\\Program Files\\WindowsApps'
+$aliasRoot = 'C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps'
+$currentPath = @(
+  'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.4.0_x64__8wekyb3d8bbwe',
+  'C:\\WINDOWS\\System32',
+  'C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps',
+  'C:\\Program Files\\Git\\cmd',
+  'C:\\Users\\janik\\AppData\\Roaming\\npm',
+  'c:\\windows\\system32',
+  'C:\\'
+) -join ';'
+$plan = New-CodexSandboxPath `
+  -CurrentPath $currentPath `
+  -PythonExecutable 'C:\\Tools\\Python313\\python.exe' `
+  -PowerShellExecutable 'C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' `
+  -WindowsAppsRoots @($packageRoot, $aliasRoot)
+[pscustomobject]@{{
+  entries = @($plan.Entries)
+  removed = @($plan.RemovedWindowsAppsEntries)
+}} | ConvertTo-Json -Depth 4 -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "entries": [
+            r"C:\WINDOWS\System32\WindowsPowerShell\v1.0",
+            r"C:\Tools\Python313",
+            r"C:\Tools\Python313\Scripts",
+            r"C:\WINDOWS\System32",
+            r"C:\Program Files\Git\cmd",
+            r"C:\Users\janik\AppData\Roaming\npm",
+            "C:\\",
+        ],
+        "removed": [
+            (
+                r"C:\Program Files\WindowsApps"
+                r"\Microsoft.PowerShell_7.6.4.0_x64__8wekyb3d8bbwe"
+            ),
+            r"C:\Users\janik\AppData\Local\Microsoft\WindowsApps",
+        ],
+    }
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
+def test_tools_consumer_sandbox_probe_is_exact_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    wrapper_path = REBOOT / "start-wd-tools-consumer.ps1"
+    fake_codex = tmp_path / "fake-codex.ps1"
+    capture = tmp_path / "arguments.json"
+    fake_codex.write_text(
+        """
+[IO.File]::WriteAllText(
+  $env:WD_FAKE_CAPTURE,
+  (ConvertTo-Json -InputObject ([string[]]$args) -Compress)
+)
+if ($env:WD_FAKE_MODE -eq 'missing-marker') {
+  Write-Output 'WRONG_MARKER'
+  & $env:ComSpec /c exit 0
+  return
+}
+Write-Output 'WD_TOOLS_SANDBOX_OK'
+if ($env:WD_FAKE_MODE -eq 'nonzero') {
+  & $env:ComSpec /c exit 9
+  return
+}
+& $env:ComSpec /c exit 0
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    wrapper = str(wrapper_path).replace("'", "''")
+    fake = str(fake_codex).replace("'", "''")
+    capture_quoted = str(capture).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{wrapper}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'tools consumer parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Test-CodexSandboxShell'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing sandbox probe function' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+$env:WD_FAKE_CAPTURE = '{capture_quoted}'
+$env:WD_FAKE_MODE = 'success'
+Test-CodexSandboxShell `
+  -CodexCommand '{fake}' `
+  -Worktree 'C:\\Python\\project2' `
+  -ShellPath 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+$arguments = Get-Content -LiteralPath '{capture_quoted}' -Raw | ConvertFrom-Json
+$env:WD_FAKE_MODE = 'missing-marker'
+try {{
+  Test-CodexSandboxShell `
+    -CodexCommand '{fake}' `
+    -Worktree 'C:\\Python\\project2' `
+    -ShellPath 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+  $missingMarkerFailed = $false
+}}
+catch {{
+  $missingMarkerFailed = $_.Exception.Message -like '*cannot launch*'
+}}
+$env:WD_FAKE_MODE = 'nonzero'
+try {{
+  Test-CodexSandboxShell `
+    -CodexCommand '{fake}' `
+    -Worktree 'C:\\Python\\project2' `
+    -ShellPath 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+  $nonzeroFailed = $false
+}}
+catch {{
+  $nonzeroFailed = $_.Exception.Message -like '*exit=9*'
+}}
+[pscustomobject]@{{
+  arguments = [string[]]$arguments
+  missing_marker_failed = $missingMarkerFailed
+  nonzero_failed = $nonzeroFailed
+}} | ConvertTo-Json -Depth 5 -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "arguments": [
+            "sandbox",
+            "-P",
+            ":workspace",
+            "-C",
+            r"C:\Python\project2",
+            "--",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::Out.Write('WD_TOOLS_SANDBOX_OK')",
+        ],
+        "missing_marker_failed": True,
+        "nonzero_failed": True,
+    }
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
+def test_tools_codex_shim_restores_safe_path_and_forwards_tick(
+    tmp_path: Path,
+) -> None:
+    wrapper_path = REBOOT / "start-wd-tools-consumer.ps1"
+    shim_path = REBOOT / "Invoke-WdToolsCodex.ps1"
+    wrapper_text = wrapper_path.read_text(encoding="utf-8")
+    assert "WD_TOOLS_CODEX_REAL_COMMAND" in wrapper_text
+    assert "WD_TOOLS_CODEX_SAFE_PATH" in wrapper_text
+    assert "CodexCommand = $codexShim" in wrapper_text
+
+    fake_codex = tmp_path / "fake-codex.ps1"
+    capture = tmp_path / "shim-capture.json"
+    fake_codex.write_text(
+        """
+$stdinText = (@($input | ForEach-Object { [string]$_ }) -join "`n")
+$capture = [pscustomobject]@{
+  arguments = [string[]]$args
+  stdin = $stdinText
+  path = $env:Path
+}
+[IO.File]::WriteAllText(
+  $env:WD_FAKE_CAPTURE,
+  ($capture | ConvertTo-Json -Depth 4 -Compress)
+)
+$exitCode = if ($env:WD_FAKE_MODE -eq 'nonzero') { 9 } else { 0 }
+& $env:ComSpec /c exit $exitCode
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    shim = str(shim_path).replace("'", "''")
+    fake = str(fake_codex).replace("'", "''")
+    capture_quoted = str(capture).replace("'", "''")
+    safe_path = (
+        str(Path(os.environ["SystemRoot"]) / "System32")
+        + ";"
+        + str(Path(os.environ["SystemRoot"]).anchor)
+    ).replace("'", "''")
+    invocation = f"""
+$env:WD_TOOLS_CODEX_REAL_COMMAND = '{fake}'
+$env:WD_TOOLS_CODEX_SAFE_PATH = '{safe_path}'
+$env:WD_FAKE_CAPTURE = '{capture_quoted}'
+$env:Path = 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_test'
+"line one`nline two" | & '{shim}' `
+  '--ask-for-approval' 'never' 'exec' '-C' 'C:\\Repo With Space' `
+  '--sandbox' 'workspace-write' '-'
+if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}
+if ($?) {{ exit 0 }}
+exit 1
+"""
+    success = _run_powershell(invocation, check=False)
+    assert success.returncode == 0, success.stderr
+    payload = json.loads(capture.read_text(encoding="utf-8"))
+    assert payload == {
+        "arguments": [
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "-C",
+            r"C:\Repo With Space",
+            "--sandbox",
+            "workspace-write",
+            "-",
+        ],
+        "stdin": "line one\nline two",
+        "path": safe_path,
+    }
+    assert "windowsapps" not in payload["path"].casefold()
+
+    nonzero_invocation = (
+        "$env:WD_FAKE_MODE = 'nonzero'\n" + invocation
+    )
+    nonzero = _run_powershell(nonzero_invocation, check=False)
+    assert nonzero.returncode == 9
 
 
 def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None:
@@ -311,6 +581,7 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert upstream_gate < first_copy
     assert "WD_REBOOT_INTEGRITY_CURRENT.sha256" in text
     assert "wd-reboot-backups" in text
+    assert "'Invoke-WdToolsCodex.ps1'," in text
     assert r"C:\Python\project2\.git" in text
     assert "manifest hash differs from source commit" in text
     preflight = text.index("Running mutation-free deployment preflight")

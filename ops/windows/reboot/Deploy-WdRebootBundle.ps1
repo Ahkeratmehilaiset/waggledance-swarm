@@ -283,6 +283,7 @@ foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
         'start-wd-tools-consumer.ps1',
+        'Invoke-WdToolsCodex.ps1',
         'wd-fleet.json',
         'wd_supervisor.ps1',
         'wd_supervisor_loop.json',

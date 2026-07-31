@@ -80,6 +80,216 @@ function Invoke-GitText {
     return (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim()
 }
 
+function Test-PathAtOrBelow {
+    param(
+        [Parameter(Mandatory)] [string] $Candidate,
+        [Parameter(Mandatory)] [string] $Root
+    )
+
+    try {
+        $candidateFull = [IO.Path]::GetFullPath(
+            $Candidate.Trim().Trim([char]34)
+        ).TrimEnd([char]92, [char]47)
+        $rootFull = [IO.Path]::GetFullPath(
+            $Root.Trim().Trim([char]34)
+        ).TrimEnd([char]92, [char]47)
+    }
+    catch {
+        return $false
+    }
+
+    return (
+        $candidateFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidateFull.StartsWith(
+            $rootFull + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    )
+}
+
+function New-CodexSandboxPath {
+    param(
+        [Parameter(Mandatory)] [string] $CurrentPath,
+        [Parameter(Mandatory)] [string] $PythonExecutable,
+        [Parameter(Mandatory)] [string] $PowerShellExecutable,
+        [Parameter(Mandatory)] [string[]] $WindowsAppsRoots
+    )
+
+    $pythonFull = [IO.Path]::GetFullPath($PythonExecutable)
+    $powerShellFull = [IO.Path]::GetFullPath($PowerShellExecutable)
+    $pythonDirectory = Split-Path -Parent $pythonFull
+    $candidateEntries = New-Object 'System.Collections.Generic.List[string]'
+    $candidateEntries.Add((Split-Path -Parent $powerShellFull))
+    $candidateEntries.Add($pythonDirectory)
+    $candidateEntries.Add((Join-Path $pythonDirectory 'Scripts'))
+    foreach ($entry in @($CurrentPath -split [IO.Path]::PathSeparator)) {
+        $candidateEntries.Add([string]$entry)
+    }
+
+    $plannedEntries = New-Object 'System.Collections.Generic.List[string]'
+    $removedEntries = New-Object 'System.Collections.Generic.List[string]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' (
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($candidateEntry in $candidateEntries) {
+        if ([string]::IsNullOrWhiteSpace($candidateEntry)) {
+            continue
+        }
+        $trimmedEntry = $candidateEntry.Trim().Trim([char]34)
+        if (-not [IO.Path]::IsPathRooted($trimmedEntry)) {
+            throw "Tools process PATH contains a relative entry: $trimmedEntry"
+        }
+        $entryFull = [IO.Path]::GetFullPath($trimmedEntry)
+        $entryRoot = [IO.Path]::GetPathRoot($entryFull)
+        if (-not $entryFull.Equals(
+                $entryRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            $entryFull = $entryFull.TrimEnd([char]92, [char]47)
+        }
+
+        $isWindowsApps = $false
+        foreach ($windowsAppsRoot in $WindowsAppsRoots) {
+            if (
+                -not [string]::IsNullOrWhiteSpace($windowsAppsRoot) -and
+                (Test-PathAtOrBelow $entryFull $windowsAppsRoot)
+            ) {
+                $isWindowsApps = $true
+                break
+            }
+        }
+        if ($isWindowsApps) {
+            $removedEntries.Add($entryFull)
+            continue
+        }
+        if ($seen.Add($entryFull)) {
+            $plannedEntries.Add($entryFull)
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        Path = $plannedEntries -join [IO.Path]::PathSeparator
+        Entries = @($plannedEntries)
+        RemovedWindowsAppsEntries = @($removedEntries)
+    }
+}
+
+function Find-ApplicationInPath {
+    param(
+        [Parameter(Mandatory)] [string] $PathValue,
+        [Parameter(Mandatory)] [string[]] $ExecutableNames
+    )
+
+    $entries = @(
+        $PathValue -split [IO.Path]::PathSeparator |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    foreach ($executableName in $ExecutableNames) {
+        foreach ($entry in $entries) {
+            $candidate = Join-Path $entry $executableName
+            if ([IO.File]::Exists($candidate)) {
+                return [IO.Path]::GetFullPath($candidate)
+            }
+        }
+    }
+    return $null
+}
+
+function Resolve-ToolsPythonExecutable {
+    param([Parameter(Mandatory)] [string[]] $WindowsAppsRoots)
+
+    $pythonFull = $null
+    $launcher = Get-Command py.exe `
+        -CommandType Application `
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $launcher) {
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $pythonOutput = @(
+                & $launcher.Source -3 -c 'import sys; print(sys.executable)' 2>&1
+            )
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        if ($exitCode -ne 0) {
+            throw "Python launcher failed with exit code ${exitCode}: $($pythonOutput -join ' ')"
+        }
+        $pythonLines = @(
+            $pythonOutput |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        if ($pythonLines.Count -ne 1) {
+            throw 'Python launcher did not return one exact executable path'
+        }
+        $pythonFull = [IO.Path]::GetFullPath($pythonLines[0].Trim())
+    }
+    else {
+        $python = Get-Command python.exe `
+            -CommandType Application `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($null -ne $python) {
+            $pythonFull = [IO.Path]::GetFullPath($python.Source)
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($pythonFull) -or -not [IO.File]::Exists($pythonFull)) {
+        throw 'Could not resolve a real Python executable for the Tools consumer'
+    }
+    foreach ($windowsAppsRoot in $WindowsAppsRoots) {
+        if (Test-PathAtOrBelow $pythonFull $windowsAppsRoot) {
+            throw "Tools Python resolves inside WindowsApps and is not sandbox-launchable: $pythonFull"
+        }
+    }
+    return $pythonFull
+}
+
+function Test-CodexSandboxShell {
+    param(
+        [Parameter(Mandatory)] [string] $CodexCommand,
+        [Parameter(Mandatory)] [string] $Worktree,
+        [Parameter(Mandatory)] [string] $ShellPath
+    )
+
+    $marker = 'WD_TOOLS_SANDBOX_OK'
+    $probeArguments = @(
+        'sandbox',
+        '-P', ':workspace',
+        '-C', $Worktree,
+        '--',
+        $ShellPath,
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command', "[Console]::Out.Write('$marker')"
+    )
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $probeOutput = @(& $CodexCommand @probeArguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $probeLines = @(
+        $probeOutput |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($exitCode -ne 0 -or $probeLines -cnotcontains $marker) {
+        throw (
+            "Codex workspace sandbox cannot launch the validated shell " +
+            "'$ShellPath' (exit=$exitCode): $($probeLines -join ' | ')"
+        )
+    }
+}
+
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
     throw "tools consumer configuration not found: $configFull"
@@ -186,6 +396,49 @@ $consumerScript = Resolve-ContainedScript `
     $worktree `
     (Get-RequiredText $tools 'consumer_script_relative') `
     'bridge consumer script'
+$codexShim = [IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot 'Invoke-WdToolsCodex.ps1')
+)
+if (-not [IO.File]::Exists($codexShim)) {
+    throw "Tools Codex PATH shim is missing: $codexShim"
+}
+
+$windowsAppsRoots = @(
+    Join-Path $env:ProgramFiles 'WindowsApps'
+    Join-Path (
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::LocalApplicationData
+        )
+    ) 'Microsoft\WindowsApps'
+)
+$pythonExecutable = Resolve-ToolsPythonExecutable `
+    -WindowsAppsRoots $windowsAppsRoots
+$systemPowerShell = Join-Path `
+    $env:SystemRoot `
+    'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not [IO.File]::Exists($systemPowerShell)) {
+    throw "System Windows PowerShell is missing: $systemPowerShell"
+}
+$codexPathPlan = New-CodexSandboxPath `
+    -CurrentPath $env:Path `
+    -PythonExecutable $pythonExecutable `
+    -PowerShellExecutable $systemPowerShell `
+    -WindowsAppsRoots $windowsAppsRoots
+$sandboxShell = [IO.Path]::GetFullPath($systemPowerShell)
+try {
+    $currentPowerShellHost = [IO.Path]::GetFullPath(
+        [string](Get-Process -Id $PID -ErrorAction Stop).Path
+    )
+}
+catch {
+    throw "Could not resolve the current Tools PowerShell host: $($_.Exception.Message)"
+}
+$codexCommand = Find-ApplicationInPath `
+    -PathValue $codexPathPlan.Path `
+    -ExecutableNames @('codex.cmd', 'codex.exe')
+if ([string]::IsNullOrWhiteSpace($codexCommand)) {
+    throw 'Tools process PATH contains no Codex CLI application'
+}
 
 $validation = [pscustomobject]@{
     schema = 'wd.tools-consumer-validation.v1'
@@ -200,6 +453,14 @@ $validation = [pscustomobject]@{
     capabilities = @($capabilities)
     session_script = $sessionScript
     consumer_script = $consumerScript
+    codex_command = $codexCommand
+    codex_shim = $codexShim
+    consumer_host = $currentPowerShellHost
+    sandbox_shell = $sandboxShell
+    python_executable = $pythonExecutable
+    windows_apps_path_entries_removed = @(
+        $codexPathPlan.RemovedWindowsAppsEntries
+    )
     model_override = $null
     validated = $true
 }
@@ -207,6 +468,22 @@ if ($ValidateOnly) {
     $validation
     return
 }
+
+$env:Path = $codexPathPlan.Path
+[Environment]::SetEnvironmentVariable(
+    'WD_TOOLS_CODEX_REAL_COMMAND',
+    $codexCommand,
+    'Process'
+)
+[Environment]::SetEnvironmentVariable(
+    'WD_TOOLS_CODEX_SAFE_PATH',
+    $codexPathPlan.Path,
+    'Process'
+)
+Test-CodexSandboxShell `
+    -CodexCommand $codexCommand `
+    -Worktree $worktree `
+    -ShellPath $sandboxShell
 
 # The supervisor may itself have been invoked from an agent-bound shell. This
 # is a new dedicated process, so inherited identity must not constrain the
@@ -261,6 +538,7 @@ $commonConsumerArguments = @{
     CodexTimeoutSeconds = $codexTimeoutSeconds
     LogDir = $logDir
     Prompt = $prompt
+    CodexCommand = $codexShim
 }
 
 # The first tick is intentionally not WakeOnly. It reads the durable handoff

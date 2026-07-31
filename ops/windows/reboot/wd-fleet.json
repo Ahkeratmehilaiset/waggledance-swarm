@@ -19,6 +19,7 @@
     "required_bundle_files": [
       "start-wd-all.ps1",
       "start-wd-agent.ps1",
+      "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
       "Resolve-WdGrokModel.ps1"
     ]

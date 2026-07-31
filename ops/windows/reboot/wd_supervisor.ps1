@@ -38,6 +38,138 @@ function Get-RequiredText {
     return [string]$property.Value
 }
 
+function Read-Utf8SupervisorSnapshot {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString(
+            $sha.ComputeHash($bytes)
+        ).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+        $text = $text.Substring(1)
+    }
+    return [pscustomobject]@{
+        Hash = $hash
+        Text = $text
+    }
+}
+
+function Resolve-OwnBundleGeneration {
+    param([Parameter(Mandatory)] [string] $ScriptRoot)
+
+    $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
+    if (Test-Path -LiteralPath $deploymentPath -PathType Leaf) {
+        $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+        $deploymentSnapshot = Read-Utf8SupervisorSnapshot -Path $deploymentPath
+        $actualManifestHash = ([string]$deploymentSnapshot.Hash).ToUpperInvariant()
+        if (
+            $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            $actualManifestHash -cne $expectedManifestHash.ToUpperInvariant()
+        ) {
+            throw 'supervisor deployment manifest is not externally anchored'
+        }
+        $deployment = [string]$deploymentSnapshot.Text |
+            ConvertFrom-Json -ErrorAction Stop
+        $generation = ([string]$deployment.source_commit).ToLowerInvariant()
+        $expectedHashProperty = $deployment.files.PSObject.Properties[
+            'wd_supervisor.ps1'
+        ]
+        $scriptPath = Join-Path $ScriptRoot 'wd_supervisor.ps1'
+        if (
+            [int]$deployment.schema_version -ne 1 -or
+            $generation -cnotmatch '^[0-9a-f]{40}$' -or
+            [IO.Path]::GetFileName(
+                [IO.Path]::GetFullPath($ScriptRoot).TrimEnd('\')
+            ) -cne $generation -or
+            $null -eq $expectedHashProperty -or
+            (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash -cne
+                [string]$expectedHashProperty.Value
+        ) {
+            throw 'supervisor deployment generation is not exact'
+        }
+        return $generation
+    }
+
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& git -C $ScriptRoot rev-parse HEAD 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $generation = (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim().ToLowerInvariant()
+    if ($exitCode -ne 0 -or $generation -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'supervisor source generation is not a full Git commit'
+    }
+    return $generation
+}
+
+function Assert-SupervisorBundleFileIntegrity {
+    param([Parameter(Mandatory)] [string] $RelativePath)
+
+    $deploymentPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
+    if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
+        return
+    }
+    $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+    $deploymentSnapshot = Read-Utf8SupervisorSnapshot -Path $deploymentPath
+    if (
+        $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$deploymentSnapshot.Hash -cne
+            $expectedManifestHash.ToUpperInvariant()
+    ) {
+        throw 'supervisor deployment manifest changed after external attestation'
+    }
+    $manifestRelative = $RelativePath.Replace('\', '/').TrimStart('/')
+    if (
+        [IO.Path]::IsPathRooted($RelativePath) -or
+        $manifestRelative -match '(^|/)\.\.(/|$)'
+    ) {
+        throw "unsafe supervisor bundle dependency path: $RelativePath"
+    }
+    $deployment = [string]$deploymentSnapshot.Text |
+        ConvertFrom-Json -ErrorAction Stop
+    $hashProperty = $deployment.files.PSObject.Properties[$manifestRelative]
+    $candidate = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $RelativePath))
+    $bundlePrefix = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
+    if (
+        -not $candidate.StartsWith(
+            $bundlePrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        $null -eq $hashProperty -or
+        -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -cne
+            [string]$hashProperty.Value
+    ) {
+        throw "supervisor bundle dependency hash mismatch: $manifestRelative"
+    }
+}
+
+function Assert-MachineToolsConfigExact {
+    param([Parameter(Mandatory)] [string] $MachineConfigPath)
+
+    Assert-SupervisorBundleFileIntegrity `
+        -RelativePath 'wd_supervisor_loop.json'
+    $bundledConfigPath = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
+    if (
+        -not (Test-Path -LiteralPath $MachineConfigPath -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $MachineConfigPath -Algorithm SHA256).Hash -cne
+            (Get-FileHash -LiteralPath $bundledConfigPath -Algorithm SHA256).Hash
+    ) {
+        throw 'machine Tools config differs from the externally anchored bundle'
+    }
+}
+
 function Resolve-PowerShellChildHost {
     $candidates = New-Object 'System.Collections.Generic.List[string]'
     $currentWindowsPowerShell = ''
@@ -143,6 +275,112 @@ function Test-TextContains {
     return $Text.IndexOf($Expected, [StringComparison]::OrdinalIgnoreCase) -ge 0
 }
 
+function Test-NamedCommandLineArgument {
+    param(
+        [AllowEmptyString()] [string] $CommandLine,
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+    $pattern = '(?i)(?:^|\s)-{0}\s+(?:"{1}"|{1})(?:\s|$)' -f
+        [Regex]::Escape($Name),
+        [Regex]::Escape($Value)
+    return $CommandLine -match $pattern
+}
+
+function ConvertTo-SupervisorUtc {
+    param([Parameter(Mandatory)] $Value)
+
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime()
+    }
+    if ($Value -is [DateTime]) {
+        $dateTime = [DateTime]$Value
+        if ($dateTime.Kind -eq [DateTimeKind]::Unspecified) {
+            $dateTime = [DateTime]::SpecifyKind($dateTime, [DateTimeKind]::Utc)
+        }
+        return ([DateTimeOffset]$dateTime).ToUniversalTime()
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+            [string]$Value,
+            [Globalization.CultureInfo]::InvariantCulture,
+            (
+                [Globalization.DateTimeStyles]::AssumeUniversal -bor
+                [Globalization.DateTimeStyles]::AdjustToUniversal
+            ),
+            [ref]$parsed
+        )) {
+        throw 'invalid Tools timestamp'
+    }
+    return $parsed.ToUniversalTime()
+}
+
+function Test-ToolsWrapperReadiness {
+    param(
+        [Parameter(Mandatory)] $Process,
+        [Parameter(Mandatory)] $Tools,
+        [Parameter(Mandatory)] [string] $Generation,
+        [Parameter(Mandatory)] [string] $ConfigPath,
+        [Parameter(Mandatory)] [string] $ReadinessPath
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $ReadinessPath -PathType Leaf)) {
+            return $false
+        }
+        $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+        if (
+            [string]$record.schema -cne 'wd.tools-consumer-ready.v1' -or
+            [string]$record.generation -cne $Generation -or
+            [int]$record.pid -ne [int]$Process.ProcessId -or
+            [string]$record.branch -cne [string]$Tools.expected_branch -or
+            [string]$record.head -cne [string]$Tools.expected_head -or
+            -not ([string]$record.config_path).Equals(
+                $ConfigPath,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not ([string]$record.worktree).Equals(
+                [string]$Tools.worktree,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            return $false
+        }
+        $processCreated = ConvertTo-SupervisorUtc $Process.CreationDate
+        $recordCreated = ConvertTo-SupervisorUtc $record.process_start_utc
+        $readyAt = ConvertTo-SupervisorUtc $record.ready_at_utc
+        return (
+            [Math]::Abs(($recordCreated - $processCreated).TotalSeconds) -le 1 -and
+            $readyAt -ge $recordCreated
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-ToolsWrapperWithinStartupGrace {
+    param(
+        [Parameter(Mandatory)] $Process,
+        [Parameter(Mandatory)] [int] $GraceSeconds
+    )
+
+    try {
+        $age = [DateTimeOffset]::UtcNow - (
+            ConvertTo-SupervisorUtc $Process.CreationDate
+        )
+        return $age.TotalSeconds -ge -5 -and $age.TotalSeconds -le $GraceSeconds
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-AgentCommandProcesses {
     param(
         [Parameter(Mandatory)] [object[]] $Processes,
@@ -219,6 +457,318 @@ function Start-DetachedPowerShell {
         -PassThru `
         -ErrorAction Stop
     $actions.Add("RELAUNCHED $Name pid=$($process.Id)")
+}
+
+function Write-ToolsReplacementConflict {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [int] $RootPid,
+        [Parameter(Mandatory)] [string] $Reason,
+        [int[]] $ProcessIds = @()
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
+    }
+    $temporary = "$Path.$PID.tmp"
+    $record = [ordered]@{
+        schema = 'wd.tools-replacement-conflict.v1'
+        created_at_utc = [DateTime]::UtcNow.ToString('o')
+        supervisor_pid = $PID
+        stale_root_pid = $RootPid
+        process_ids = @($ProcessIds | Sort-Object -Unique)
+        reason = $Reason
+    }
+    try {
+        $record |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath $temporary -Encoding UTF8
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Throw-ToolsReplacementConflict {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [int] $RootPid,
+        [Parameter(Mandatory)] [string] $Reason,
+        [int[]] $ProcessIds = @()
+    )
+
+    try {
+        Write-ToolsReplacementConflict `
+            -Path $Path `
+            -RootPid $RootPid `
+            -Reason $Reason `
+            -ProcessIds $ProcessIds
+    }
+    catch {
+        throw (
+            "$Reason; additionally failed to persist Tools replacement conflict " +
+            "marker '$Path': $($_.Exception.Message)"
+        )
+    }
+    throw "$Reason; persistent replacement conflict recorded at '$Path'"
+}
+
+function Test-ToolsLineageEdge {
+    param(
+        [Parameter(Mandatory)] $ParentProcess,
+        [Parameter(Mandatory)] $ChildProcess
+    )
+
+    if (
+        [int]$ChildProcess.ProcessId -eq [int]$ParentProcess.ProcessId -or
+        [int]$ChildProcess.ParentProcessId -ne [int]$ParentProcess.ProcessId
+    ) {
+        return $false
+    }
+    $parentCreated = (
+        [DateTime]$ParentProcess.CreationDate
+    ).ToUniversalTime()
+    $childCreated = (
+        [DateTime]$ChildProcess.CreationDate
+    ).ToUniversalTime()
+    return $childCreated.Ticks -ge $parentCreated.Ticks
+}
+
+function Stop-VerifiedProcessTree {
+    param(
+        [Parameter(Mandatory)] $RootProcess,
+        [Parameter(Mandatory)] [object[]] $InitialProcesses,
+        [Parameter(Mandatory)] [string] $ConflictPath
+    )
+
+    $rootPid = [int]$RootProcess.ProcessId
+    $initialTree = @($RootProcess)
+    $initialLineage = @{ $rootPid = $RootProcess }
+    do {
+        $added = $false
+        foreach ($candidate in $InitialProcesses) {
+            $candidatePid = [int]$candidate.ProcessId
+            $parentPid = [int]$candidate.ParentProcessId
+            if (
+                -not $initialLineage.ContainsKey($candidatePid) -and
+                $initialLineage.ContainsKey($parentPid) -and
+                (Test-ToolsLineageEdge `
+                    -ParentProcess $initialLineage[$parentPid] `
+                    -ChildProcess $candidate)
+            ) {
+                $initialLineage[$candidatePid] = $candidate
+                $initialTree += $candidate
+                $added = $true
+            }
+        }
+    } while ($added)
+    $lineageByPid = @{}
+    foreach ($process in $initialTree) {
+        $lineageByPid[[int]$process.ProcessId] = $process
+    }
+
+    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+    if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf)) {
+        Throw-ToolsReplacementConflict `
+            -Path $ConflictPath `
+            -RootPid $rootPid `
+            -Reason "taskkill is missing: $taskkill" `
+            -ProcessIds @($lineageByPid.Keys)
+    }
+
+    $deadline = (Get-Date).AddSeconds(5)
+    $clearSamples = 0
+    $rootKillSucceeded = $false
+    $lastActiveIds = @()
+    do {
+        $currentProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $currentRoot = @(
+            $currentProcesses |
+                Where-Object { [int]$_.ProcessId -eq $rootPid }
+        )
+        if ($currentRoot.Count -gt 1) {
+            Throw-ToolsReplacementConflict `
+                -Path $ConflictPath `
+                -RootPid $rootPid `
+                -Reason "multiple current processes reported stale Tools PID $rootPid" `
+                -ProcessIds @($rootPid)
+        }
+        if (-not $rootKillSucceeded -and $currentRoot.Count -eq 0) {
+            Throw-ToolsReplacementConflict `
+                -Path $ConflictPath `
+                -RootPid $rootPid `
+                -Reason (
+                    'stale Tools wrapper exited before its process tree could be ' +
+                    "re-attested and stopped: $rootPid"
+                ) `
+                -ProcessIds @($lineageByPid.Keys)
+        }
+
+        # Persist every observed lineage identity across samples. This still
+        # finds a grandchild after its parent has exited and closes the common
+        # wrapper-exit/orphan race before a replacement can launch.
+        $currentTree = @()
+        foreach ($candidate in $currentProcesses) {
+            $candidatePid = [int]$candidate.ProcessId
+            if (-not $lineageByPid.ContainsKey($candidatePid)) {
+                continue
+            }
+            $expected = $lineageByPid[$candidatePid]
+            $expectedCreated = (
+                [DateTime]$expected.CreationDate
+            ).ToUniversalTime()
+            $candidateCreated = (
+                [DateTime]$candidate.CreationDate
+            ).ToUniversalTime()
+            if ($candidateCreated.Ticks -ne $expectedCreated.Ticks) {
+                Throw-ToolsReplacementConflict `
+                    -Path $ConflictPath `
+                    -RootPid $rootPid `
+                    -Reason (
+                        "stale Tools lineage PID identity changed: $candidatePid"
+                    ) `
+                    -ProcessIds @($candidatePid)
+            }
+            if (
+                $candidatePid -eq $rootPid -and
+                (
+                    [string]$candidate.Name -cne [string]$RootProcess.Name -or
+                    [string]$candidate.CommandLine -cne
+                        [string]$RootProcess.CommandLine
+                )
+            ) {
+                Throw-ToolsReplacementConflict `
+                    -Path $ConflictPath `
+                    -RootPid $rootPid `
+                    -Reason (
+                        "stale Tools PID identity changed before tree replacement: " +
+                        $rootPid
+                    ) `
+                    -ProcessIds @($rootPid)
+            }
+            $currentTree += $candidate
+        }
+        do {
+            $added = $false
+            foreach ($candidate in $currentProcesses) {
+                $candidatePid = [int]$candidate.ProcessId
+                $parentPid = [int]$candidate.ParentProcessId
+                if (
+                    -not $lineageByPid.ContainsKey($candidatePid) -and
+                    $lineageByPid.ContainsKey($parentPid) -and
+                    (Test-ToolsLineageEdge `
+                        -ParentProcess $lineageByPid[$parentPid] `
+                        -ChildProcess $candidate)
+                ) {
+                    $lineageByPid[$candidatePid] = $candidate
+                    $currentTree += $candidate
+                    $added = $true
+                }
+            }
+        } while ($added)
+
+        $lastActiveIds = @(
+            $currentTree | ForEach-Object { [int]$_.ProcessId }
+        )
+        if ($lastActiveIds.Count -eq 0) {
+            if (-not $rootKillSucceeded) {
+                Throw-ToolsReplacementConflict `
+                    -Path $ConflictPath `
+                    -RootPid $rootPid `
+                    -Reason 'stale Tools tree cleared without a verified root-tree stop' `
+                    -ProcessIds @($lineageByPid.Keys)
+            }
+            $clearSamples++
+            if ($clearSamples -ge 2) {
+                return $initialTree.Count
+            }
+            Start-Sleep -Milliseconds 150
+            continue
+        }
+        $clearSamples = 0
+
+        # Never use taskkill /T here: Windows builds that tree from untrusted
+        # live ParentProcessId values and could include a PID-reuse bystander.
+        # Stop only lineage members whose creation identity is re-attested
+        # immediately before the individual kill.
+        $killTargets = @(
+            $currentTree |
+                Sort-Object {
+                    ([DateTime]$_.CreationDate).ToUniversalTime()
+                } -Descending
+        )
+        foreach ($killTarget in $killTargets) {
+            $killPid = [int]$killTarget.ProcessId
+            $reattested = Get-CimInstance `
+                -ClassName Win32_Process `
+                -Filter "ProcessId=$killPid" `
+                -ErrorAction SilentlyContinue
+            if ($null -eq $reattested) {
+                continue
+            }
+            $expectedCreated = (
+                [DateTime]$killTarget.CreationDate
+            ).ToUniversalTime()
+            $reattestedCreated = (
+                [DateTime]$reattested.CreationDate
+            ).ToUniversalTime()
+            if ($reattestedCreated.Ticks -ne $expectedCreated.Ticks) {
+                Throw-ToolsReplacementConflict `
+                    -Path $ConflictPath `
+                    -RootPid $rootPid `
+                    -Reason (
+                        "stale Tools kill target PID identity changed: $killPid"
+                    ) `
+                    -ProcessIds @($killPid)
+            }
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $killOutput = @(& $taskkill /PID $killPid /F 2>&1)
+                $killExit = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            if ($killExit -ne 0) {
+                $afterFailure = Get-CimInstance `
+                    -ClassName Win32_Process `
+                    -Filter "ProcessId=$killPid" `
+                    -ErrorAction SilentlyContinue
+                if (
+                    $killPid -ne $rootPid -and
+                    $null -eq $afterFailure
+                ) {
+                    continue
+                }
+                Throw-ToolsReplacementConflict `
+                    -Path $ConflictPath `
+                    -RootPid $rootPid `
+                    -Reason (
+                        "taskkill failed for stale Tools lineage PID $killPid " +
+                        "with exit $killExit`: $($killOutput -join ' ')"
+                    ) `
+                    -ProcessIds $lastActiveIds
+            }
+            if ($killPid -eq $rootPid) {
+                $rootKillSucceeded = $true
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    } while ((Get-Date) -lt $deadline)
+
+    Throw-ToolsReplacementConflict `
+        -Path $ConflictPath `
+        -RootPid $rootPid `
+        -Reason (
+            'stale Tools process tree did not stop before replacement deadline; ' +
+            "survivors=$($lastActiveIds -join ',')"
+        ) `
+        -ProcessIds $lastActiveIds
 }
 
 function Test-LegacyDriverProvenNonApply {
@@ -323,10 +873,22 @@ $configFull = [IO.Path]::GetFullPath($ConfigPath)
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
     throw "supervisor configuration not found: $configFull"
 }
-$configuration = Get-Content -LiteralPath $configFull -Raw -Encoding UTF8 |
+$supervisorConfigSnapshot = Read-Utf8SupervisorSnapshot -Path $configFull
+$loadedSupervisorConfigHash = [string]$supervisorConfigSnapshot.Hash
+$configuration = [string]$supervisorConfigSnapshot.Text |
     ConvertFrom-Json -ErrorAction Stop
 if ([string]$configuration.schema -cne 'wd.supervisor-loop.v2') {
     throw "unsupported supervisor configuration schema: $($configuration.schema)"
+}
+Assert-SupervisorBundleFileIntegrity -RelativePath 'wd_supervisor_loop.json'
+$bundledSupervisorConfig = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
+if (
+    $loadedSupervisorConfigHash -cne
+        (Get-FileHash -LiteralPath $bundledSupervisorConfig -Algorithm SHA256).Hash -or
+    (Get-FileHash -LiteralPath $configFull -Algorithm SHA256).Hash -cne
+        $loadedSupervisorConfigHash
+) {
+    throw 'supervisor config differs from the externally anchored bundle'
 }
 
 $runtimeRoot = [IO.Path]::GetFullPath((Get-RequiredText $configuration 'runtime_root'))
@@ -348,12 +910,110 @@ $processes = @(
         }
 )
 
+if ($null -eq $configuration.tools_consumer) {
+    throw 'supervisor configuration has no tools_consumer object'
+}
+$tools = $configuration.tools_consumer
+$toolsEnabled = [bool]$tools.enabled
+$toolsAgent = ''
+$toolsGeneration = ''
+$toolsExpectedHead = ''
+$toolsLauncher = ''
+$toolsConfig = ''
+$toolsConflictPath = ''
+if ($toolsEnabled) {
+    $toolsAgent = Get-RequiredText $tools 'agent'
+    $toolsExpectedHead = (Get-RequiredText $tools 'expected_head').ToLowerInvariant()
+    if ($toolsExpectedHead -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'tools expected_head must be a full lowercase Git commit'
+    }
+    $toolsGeneration = Resolve-OwnBundleGeneration -ScriptRoot $PSScriptRoot
+    $toolsLauncher = [IO.Path]::GetFullPath(
+        (Get-RequiredText $tools 'launcher_script')
+    )
+    $toolsConfig = [IO.Path]::GetFullPath(
+        (Get-RequiredText $tools 'config_path')
+    )
+    $toolsConflictPath = [IO.Path]::GetFullPath(
+        (Get-RequiredText $tools 'replacement_conflict_path')
+    )
+    $readinessPath = [IO.Path]::GetFullPath(
+        (Get-RequiredText $tools 'readiness_path')
+    )
+    if (
+        -not (Split-Path -Parent $toolsConflictPath).Equals(
+            (Split-Path -Parent $readinessPath),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [IO.Path]::GetExtension($toolsConflictPath) -cne '.json'
+    ) {
+        throw 'Tools replacement conflict marker is outside the readiness directory'
+    }
+    if (-not (Test-Path -LiteralPath $toolsLauncher -PathType Leaf)) {
+        throw "required tools consumer launcher is missing: $toolsLauncher"
+    }
+    if (-not (Test-Path -LiteralPath $toolsConfig -PathType Leaf)) {
+        throw "required tools consumer config is missing: $toolsConfig"
+    }
+    Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
+    $toolsValidationOutput = @(
+        & $toolsLauncher `
+            -ConfigPath $toolsConfig `
+            -Generation $toolsGeneration `
+            -ValidateOnly
+    )
+    $toolsValidation = @(
+        $toolsValidationOutput |
+            Where-Object {
+                $_ -is [psobject] -and
+                [string]$_.schema -ceq 'wd.tools-consumer-validation.v1'
+            }
+    )
+    if ($toolsValidation.Count -ne 1) {
+        throw 'Tools consumer preflight returned no exact validation record'
+    }
+    $toolsValidation = $toolsValidation[0]
+    if (
+        -not [bool]$toolsValidation.validated -or
+        [string]$toolsValidation.generation -cne $toolsGeneration -or
+        [string]$toolsValidation.head -cne $toolsExpectedHead -or
+        -not ([string]$toolsValidation.readiness_path).Equals(
+            $readinessPath,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not ([string]$toolsValidation.worktree).Equals(
+            [string]$tools.worktree,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [bool]$toolsValidation.require_dedicated_worktree
+    ) {
+        throw 'Tools consumer preflight does not match supervisor generation'
+    }
+    if (Test-Path -LiteralPath $toolsConflictPath -PathType Leaf) {
+        throw (
+            'Tools replacement is blocked by persistent orphan-conflict marker: ' +
+            $toolsConflictPath
+        )
+    }
+}
+
 if ($null -eq $configuration.watchers) {
     throw 'supervisor configuration has no watchers object'
 }
+$watcherRelative = Get-RequiredText $configuration.watchers 'script_relative'
+if ([IO.Path]::IsPathRooted($watcherRelative)) {
+    throw 'supervisor watcher script must be relative to the reboot bundle'
+}
 $watcherScript = [IO.Path]::GetFullPath(
-    (Get-RequiredText $configuration.watchers 'script_path')
+    (Join-Path $PSScriptRoot $watcherRelative)
 )
+$bundlePrefix = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
+if (-not $watcherScript.StartsWith(
+        $bundlePrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "supervisor watcher script escapes the reboot bundle: $watcherRelative"
+}
 $watcherAgents = @(
     @($configuration.watchers.agents) |
         ForEach-Object { [string]$_ } |
@@ -366,6 +1026,7 @@ if (-not (Test-Path -LiteralPath $watcherScript -PathType Leaf)) {
     throw "required watcher source is missing: $watcherScript"
 }
 else {
+    Assert-SupervisorBundleFileIntegrity -RelativePath $watcherRelative
     foreach ($agent in $watcherAgents) {
         if ($agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
             throw "invalid configured watcher identity: $agent"
@@ -407,41 +1068,77 @@ else {
             '-Agent', $agent,
             '-RuntimeRoot', $runtimeRoot
         )
+        Assert-SupervisorBundleFileIntegrity -RelativePath $watcherRelative
         Invoke-WithChildIdentity $agent $runtimeRoot {
             Start-DetachedPowerShell $powerShellHost $watcherArguments "watcher:$agent"
         }
     }
 }
 
-if ($null -eq $configuration.tools_consumer) {
-    throw 'supervisor configuration has no tools_consumer object'
-}
-$tools = $configuration.tools_consumer
-if ([bool]$tools.enabled) {
-    $toolsAgent = Get-RequiredText $tools 'agent'
-    $toolsLauncher = [IO.Path]::GetFullPath(
-        (Get-RequiredText $tools 'launcher_script')
-    )
-    $toolsConfig = [IO.Path]::GetFullPath(
-        (Get-RequiredText $tools 'config_path')
-    )
-    if (-not (Test-Path -LiteralPath $toolsLauncher -PathType Leaf)) {
-        throw "required tools consumer launcher is missing: $toolsLauncher"
-    }
-    if (-not (Test-Path -LiteralPath $toolsConfig -PathType Leaf)) {
-        throw "required tools consumer config is missing: $toolsConfig"
-    }
+if ($toolsEnabled) {
     $wrapperProcesses = @(
         $processes |
             Where-Object {
-                Test-TextContains ([string]$_.CommandLine) $toolsLauncher
+                [string]$_.Name -match '^(?i:powershell|pwsh)\.exe$' -and
+                (Test-NamedCommandLineArgument `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -Name 'File' `
+                    -Value $toolsLauncher)
+            }
+    )
+    $configuredWrapperProcesses = @(
+        $wrapperProcesses |
+            Where-Object {
+                Test-NamedCommandLineArgument `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -Name 'ConfigPath' `
+                    -Value $toolsConfig
             }
     )
     $exactWrapperProcesses = @(
-        $wrapperProcesses |
+        $configuredWrapperProcesses |
             Where-Object {
-                Test-TextContains ([string]$_.CommandLine) $toolsConfig
+                Test-NamedCommandLineArgument `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -Name 'Generation' `
+                    -Value $toolsGeneration
             }
+    )
+    $readyWrapperProcesses = @(
+        $exactWrapperProcesses |
+            Where-Object {
+                Test-ToolsWrapperReadiness `
+                    -Process $_ `
+                    -Tools $tools `
+                    -Generation $toolsGeneration `
+                    -ConfigPath $toolsConfig `
+                    -ReadinessPath $readinessPath
+            }
+    )
+    $readyWrapperIds = @(
+        $readyWrapperProcesses |
+            ForEach-Object { [int]$_.ProcessId }
+    )
+    $startingWrapperProcesses = @(
+        $exactWrapperProcesses |
+            Where-Object { [int]$_.ProcessId -notin $readyWrapperIds }
+    )
+    $toolsStartupGraceSeconds = [int]$tools.codex_timeout_seconds + 60
+    $graceWrapperProcesses = @(
+        $startingWrapperProcesses |
+            Where-Object {
+                Test-ToolsWrapperWithinStartupGrace `
+                    -Process $_ `
+                    -GraceSeconds $toolsStartupGraceSeconds
+            }
+    )
+    $graceWrapperIds = @(
+        $graceWrapperProcesses |
+            ForEach-Object { [int]$_.ProcessId }
+    )
+    $expiredWrapperProcesses = @(
+        $startingWrapperProcesses |
+            Where-Object { [int]$_.ProcessId -notin $graceWrapperIds }
     )
     $legacyConsumers = @(
         Get-AgentCommandProcesses `
@@ -449,11 +1146,68 @@ if ([bool]$tools.enabled) {
             'Start-AgentBridgeConsumerLoop.ps1' `
             $toolsAgent
     )
+    $toolsArguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $toolsLauncher,
+        '-ConfigPath', $toolsConfig,
+        '-Generation', $toolsGeneration
+    )
 
-    if ($exactWrapperProcesses.Count -eq 1 -and
+    if ($readyWrapperProcesses.Count -eq 1 -and
+        $exactWrapperProcesses.Count -eq 1 -and
         $wrapperProcesses.Count -eq 1 -and
         $legacyConsumers.Count -eq 0) {
-        # Healthy: the wrapper owns both the initial and Forever/WakeOnly phases.
+        # Healthy: readiness is bound to this PID, start time, and generation.
+    }
+    elseif ($graceWrapperProcesses.Count -eq 1 -and
+        $exactWrapperProcesses.Count -eq 1 -and
+        $wrapperProcesses.Count -eq 1 -and
+        $legacyConsumers.Count -eq 0) {
+        $actions.Add(
+            "STARTING consumer-loop:codex-tools-1 pid=$($graceWrapperProcesses[0].ProcessId)"
+        )
+    }
+    elseif ($wrapperProcesses.Count -eq 1 -and
+        $configuredWrapperProcesses.Count -eq 1 -and
+        (
+            $exactWrapperProcesses.Count -eq 0 -or
+            $expiredWrapperProcesses.Count -eq 1
+        ) -and
+        $legacyConsumers.Count -eq 0) {
+        $staleProcess = $wrapperProcesses[0]
+        $replacementReason = if ($expiredWrapperProcesses.Count -eq 1) {
+            'expired-startup'
+        } else {
+            'stale-generation'
+        }
+        if (-not $Apply) {
+            $actions.Add(
+                "WOULD-REPLACE $replacementReason consumer-loop:codex-tools-1 pid=$($staleProcess.ProcessId)"
+            )
+        }
+        else {
+            $stalePid = [int]$staleProcess.ProcessId
+            $stoppedCount = Stop-VerifiedProcessTree `
+                -RootProcess $staleProcess `
+                -InitialProcesses $processes `
+                -ConflictPath $toolsConflictPath
+            if ($stoppedCount -gt 0) {
+                $actions.Add(
+                    "STOPPED $replacementReason consumer-loop:codex-tools-1 tree=$stoppedCount pid=$stalePid"
+                )
+            }
+            else {
+                $actions.Add(
+                    "STALE-EXITED consumer-loop:codex-tools-1 pid=$stalePid"
+                )
+            }
+            Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
+            Start-DetachedPowerShell `
+                $powerShellHost `
+                $toolsArguments `
+                'consumer-loop:codex-tools-1'
+        }
     }
     elseif ($wrapperProcesses.Count -gt 0 -or $legacyConsumers.Count -gt 0) {
         $wrapperIds = @($wrapperProcesses | ForEach-Object { [string]$_.ProcessId }) -join ','
@@ -466,12 +1220,7 @@ if ([bool]$tools.enabled) {
         $actions.Add('WOULD-RELAUNCH consumer-loop:codex-tools-1')
     }
     else {
-        $toolsArguments = @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', $toolsLauncher,
-            '-ConfigPath', $toolsConfig
-        )
+        Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
         Start-DetachedPowerShell `
             $powerShellHost `
             $toolsArguments `

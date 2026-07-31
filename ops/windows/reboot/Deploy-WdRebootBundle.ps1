@@ -70,6 +70,26 @@ function Write-Utf8NoBomAtomic {
     }
 }
 
+function Read-Utf8DeploymentSnapshot {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString(
+            $sha.ComputeHash($bytes)
+        ).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+        $text = $text.Substring(1)
+    }
+    return [pscustomobject]@{ Hash = $hash; Text = $text }
+}
+
 function Get-RelativeFileHashMap {
     param([Parameter(Mandatory)] [string] $Root)
     $result = [ordered]@{}
@@ -111,6 +131,7 @@ function New-ForwardingWrapper {
     param(
         [Parameter(Mandatory)] [string] $Target,
         [Parameter(Mandatory)] [string] $ExpectedHash,
+        [Parameter(Mandatory)] [string] $ExpectedManifestHash,
         [Parameter(Mandatory)]
         [ValidateSet('fleet', 'agent', 'tools', 'supervisor')]
         [string] $WrapperKind,
@@ -137,6 +158,7 @@ param(
     [string] $RunId = '',
     [string] $ManifestPath = '',
     [string] $HandshakeDirectory = '',
+    [string] $ExpectedManifestHash = '',
     [switch] $DryRun
 )
 '@
@@ -150,6 +172,7 @@ param(
     [string] $RunId = '',
     [string] $ManifestPath = '',
     [string] $HandshakeDirectory = '',
+    [string] $ExpectedManifestHash = '',
     [switch] $DryRun
 )
 '@
@@ -159,6 +182,9 @@ param(
 @'
 param(
     [string] $ConfigPath = '',
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-f]{40}$')]
+    [string] $Generation,
     [switch] $ValidateOnly
 )
 '@
@@ -196,13 +222,22 @@ foreach (`$key in `$PSBoundParameters.Keys) {
 $parameterBlock
 `$ErrorActionPreference = 'Stop'
 `$target = '$escapedTarget'
+`$manifestPath = Join-Path (Split-Path -Parent `$target) 'deployment-manifest.json'
 if (-not (Test-Path -LiteralPath `$target -PathType Leaf)) {
     throw "WD reboot bundle entry point is missing: `$target"
+}
+if (
+    -not (Test-Path -LiteralPath `$manifestPath -PathType Leaf) -or
+    (Get-FileHash -LiteralPath `$manifestPath -Algorithm SHA256).Hash -cne
+        '$ExpectedManifestHash'
+) {
+    throw "WD reboot deployment manifest integrity mismatch for `$target"
 }
 `$actualHash = (Get-FileHash -LiteralPath `$target -Algorithm SHA256).Hash
 if (`$actualHash -cne '$ExpectedHash') {
     throw "WD reboot bundle integrity mismatch for `$target"
 }
+`$env:WD_REBOOT_EXPECTED_MANIFEST_HASH = '$ExpectedManifestHash'
 $targetInvocation
 "@
 }
@@ -242,13 +277,20 @@ if (-not $commonGit.Equals(
 
 $statusProbe = Invoke-GitCapture `
     -Worktree $gitRoot `
-    -ArgumentList @('status', '--porcelain', '--', 'ops/windows/reboot')
+    -ArgumentList @(
+        'status',
+        '--porcelain',
+        '--',
+        'ops/windows/reboot',
+        '.agent-bridge/bin',
+        'configs/bridge_identity_registry.json'
+    )
 if ($statusProbe.ExitCode -ne 0) {
-    throw 'git status failed for ops/windows/reboot'
+    throw 'git status failed for reboot sources'
 }
 $relativeSource = @($statusProbe.Output)
 if (@($relativeSource).Count -gt 0) {
-    throw 'refusing to deploy an uncommitted reboot bundle'
+    throw 'refusing to deploy uncommitted reboot or Tools bootstrap sources'
 }
 
 $headProbe = Invoke-GitCapture -Worktree $gitRoot -ArgumentList @('rev-parse', 'HEAD')
@@ -278,7 +320,76 @@ if ($upstreamHeadProbe.ExitCode -ne 0 -or $upstreamHead -cne $head) {
     throw "reboot-bundle commit is not pushed to its upstream ($upstream)"
 }
 
-$sourceHashes = Get-RelativeFileHashMap -Root $sourceRoot
+$temporaryParent = Resolve-FullPath ([IO.Path]::GetTempPath())
+$materializationRoot = Assert-ChildPath `
+    -Parent $temporaryParent `
+    -Child (Join-Path $temporaryParent (
+        'wd-reboot-head-' + [guid]::NewGuid().ToString('N')
+    ))
+[void](New-Item -ItemType Directory -Path $materializationRoot -ErrorAction Stop)
+try {
+$archivePath = Join-Path $materializationRoot 'head.zip'
+$archiveProbe = Invoke-GitCapture `
+    -Worktree $gitRoot `
+    -ArgumentList @(
+        'archive',
+        '--format=zip',
+        "--output=$archivePath",
+        $head,
+        '--',
+        'ops/windows/reboot',
+        '.agent-bridge/bin',
+        'configs/bridge_identity_registry.json'
+    )
+if (
+    $archiveProbe.ExitCode -ne 0 -or
+    -not (Test-Path -LiteralPath $archivePath -PathType Leaf)
+) {
+    throw "could not materialize exact reboot inputs from commit $head"
+}
+$archiveRoot = Join-Path $materializationRoot 'tree'
+Expand-Archive `
+    -LiteralPath $archivePath `
+    -DestinationPath $archiveRoot `
+    -Force
+
+$materializedRebootRoot = Join-Path $archiveRoot 'ops\windows\reboot'
+$toolsBootstrapSource = Join-Path $archiveRoot '.agent-bridge\bin'
+$identityRegistrySource = Join-Path (
+    Join-Path $archiveRoot 'configs'
+) 'bridge_identity_registry.json'
+foreach ($materializedPath in @(
+        $materializedRebootRoot,
+        $toolsBootstrapSource
+    )) {
+    if (-not (Test-Path -LiteralPath $materializedPath -PathType Container)) {
+        throw "commit archive is missing required directory: $materializedPath"
+    }
+}
+if (-not (Test-Path -LiteralPath $identityRegistrySource -PathType Leaf)) {
+    throw "commit archive is missing bridge identity registry: $identityRegistrySource"
+}
+
+$sourceHashes = Get-RelativeFileHashMap -Root $materializedRebootRoot
+$sourcePaths = @{}
+foreach ($name in $sourceHashes.Keys) {
+    $sourcePaths[[string]$name] = Join-Path $materializedRebootRoot ([string]$name)
+}
+foreach ($file in @(
+        Get-ChildItem -LiteralPath $toolsBootstrapSource -File |
+            Sort-Object Name
+    )) {
+    $relativeName = 'tools-bootstrap/.agent-bridge/bin/{0}' -f $file.Name
+    $sourceHashes[$relativeName] = (
+        Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+    ).Hash.ToUpperInvariant()
+    $sourcePaths[$relativeName] = $file.FullName
+}
+$identityRegistryRelative = 'tools-bootstrap/configs/bridge_identity_registry.json'
+$sourceHashes[$identityRegistryRelative] = (
+    Get-FileHash -LiteralPath $identityRegistrySource -Algorithm SHA256
+).Hash.ToUpperInvariant()
+$sourcePaths[$identityRegistryRelative] = $identityRegistrySource
 foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
@@ -289,7 +400,16 @@ foreach ($required in @(
         'wd_supervisor_loop.json',
         'Resolve-WdGrokModel.ps1',
         'Register-WdScheduledTasks.ps1',
-        'BOOT_AFTER_REBOOT.md'
+        'BOOT_AFTER_REBOOT.md',
+        'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeSession.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Start-BridgeHeartbeat.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Test-BridgeWake.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Watch-Bridge.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1',
+        'tools-bootstrap/configs/bridge_identity_registry.json'
     )) {
     if (-not $sourceHashes.Contains($required)) {
         throw "required reboot bundle file is missing: $required"
@@ -311,14 +431,14 @@ Write-Host "Install target: $targetRoot"
 
 Write-Host 'Running mutation-free deployment preflight...'
 if (-not $SkipGrokResolve) {
-    & (Join-Path $sourceRoot 'Resolve-WdGrokModel.ps1') `
+    & (Join-Path $materializedRebootRoot 'Resolve-WdGrokModel.ps1') `
         -DryRun `
         -OutputDirectory $machineFull |
         Out-Host
 }
 if (-not $SkipTaskRegistration) {
-    & (Join-Path $sourceRoot 'Register-WdScheduledTasks.ps1') `
-        -SupervisorScript (Join-Path $sourceRoot 'wd_supervisor.ps1')
+    & (Join-Path $materializedRebootRoot 'Register-WdScheduledTasks.ps1') `
+        -SupervisorScript (Join-Path $materializedRebootRoot 'wd_supervisor.ps1')
 }
 
 if ($DryRun) {
@@ -344,9 +464,14 @@ if (Test-Path -LiteralPath $targetRoot) {
     [void](New-Item -ItemType Directory -Path $stage)
     try {
         foreach ($name in $sourceHashes.Keys) {
-            Copy-Item -LiteralPath (Join-Path $sourceRoot $name) -Destination (Join-Path $stage $name)
+            $destination = Join-Path $stage $name
+            $destinationParent = Split-Path -Parent $destination
+            if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+                [void](New-Item -ItemType Directory -Path $destinationParent -Force)
+            }
+            Copy-Item -LiteralPath $sourcePaths[[string]$name] -Destination $destination
             $copiedHash = (
-                Get-FileHash -LiteralPath (Join-Path $stage $name) -Algorithm SHA256
+                Get-FileHash -LiteralPath $destination -Algorithm SHA256
             ).Hash.ToUpperInvariant()
             if ($copiedHash -cne $sourceHashes[$name]) {
                 throw "copied reboot bundle hash mismatch: $name"
@@ -365,7 +490,11 @@ if (Test-Path -LiteralPath $targetRoot) {
 }
 
 $installedManifestPath = Join-Path $targetRoot 'deployment-manifest.json'
-$installedManifest = Get-Content -LiteralPath $installedManifestPath -Raw | ConvertFrom-Json
+$installedManifestSnapshot = Read-Utf8DeploymentSnapshot `
+    -Path $installedManifestPath
+$installedManifest = [string]$installedManifestSnapshot.Text |
+    ConvertFrom-Json -ErrorAction Stop
+$installedManifestHash = ([string]$installedManifestSnapshot.Hash).ToUpperInvariant()
 if (
     [int]$installedManifest.schema_version -ne 1 -or
     [string]$installedManifest.source_commit -cne $head
@@ -390,6 +519,32 @@ foreach ($property in $installedManifest.files.PSObject.Properties) {
     $actual = (Get-FileHash -LiteralPath $installedFile -Algorithm SHA256).Hash
     if ($actual -cne [string]$property.Value) {
         throw "installed reboot bundle integrity mismatch: $($property.Name)"
+    }
+}
+$expectedInstalledSet = @{ 'deployment-manifest.json' = $true }
+foreach ($property in $installedManifest.files.PSObject.Properties) {
+    $expectedInstalledSet[
+        ([string]$property.Name).Replace('\', '/').ToLowerInvariant()
+    ] = $true
+}
+$targetPrefix = (Resolve-FullPath $targetRoot).TrimEnd('\') + '\'
+$actualInstalledFiles = @(
+    Get-ChildItem -LiteralPath $targetRoot -Recurse -File -ErrorAction Stop
+)
+if ($actualInstalledFiles.Count -ne $expectedInstalledSet.Count) {
+    throw "installed reboot bundle contains an unexpected recursive file set"
+}
+foreach ($file in $actualInstalledFiles) {
+    $fullName = Resolve-FullPath $file.FullName
+    if (-not $fullName.StartsWith(
+            $targetPrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "installed reboot bundle enumeration escaped target root: $fullName"
+    }
+    $relativeName = $fullName.Substring($targetPrefix.Length).Replace('\', '/')
+    if (-not $expectedInstalledSet.ContainsKey($relativeName.ToLowerInvariant())) {
+        throw "installed reboot bundle contains unexpected file: $relativeName"
     }
 }
 
@@ -457,6 +612,7 @@ foreach ($spec in $wrapperSpecs) {
     $wrapper = New-ForwardingWrapper `
         -Target $target `
         -ExpectedHash $hash `
+        -ExpectedManifestHash $installedManifestHash `
         -WrapperKind $spec.Kind `
         -FixedAgent $spec.Agent
     Write-Utf8NoBomAtomic -Path $machinePath -Content $wrapper
@@ -585,4 +741,17 @@ Write-Host 'One-line restore:'
 Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1'
 if ($backedUp) {
     Write-Host "Previous machine-local launchers were backed up to: $backupRoot"
+}
+}
+finally {
+    if (Test-Path -LiteralPath $materializationRoot -PathType Container) {
+        $verifiedTemporary = Assert-ChildPath `
+            -Parent $temporaryParent `
+            -Child $materializationRoot
+        Remove-Item `
+            -LiteralPath $verifiedTemporary `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
 }

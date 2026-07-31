@@ -12,6 +12,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 REBOOT = ROOT / "ops" / "windows" / "reboot"
+TOOLS_WORKTREE = (
+    r"C:\Python\waggledance-agent-worktrees"
+    r"\codex-tools-1-post-reboot-tools-sandbox-followup-20260731"
+)
+TOOLS_BRANCH = "codex-tools-1/post-reboot-tools-sandbox-followup-20260731"
+TOOLS_HEAD = "1c4e388355d045835edcd1f30cd53eddfdc3d2cb"
 POWERSHELL = (
     shutil.which("pwsh")
     or shutil.which("powershell")
@@ -64,6 +70,16 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert "Invoke-WdToolsCodex.ps1" in (
         manifest["deployment"]["required_bundle_files"]
     )
+    tools_supervisor = manifest["tools_supervisor"]
+    assert tools_supervisor["worktree"] == TOOLS_WORKTREE
+    assert tools_supervisor["branch"] == TOOLS_BRANCH
+    assert tools_supervisor["head"] == TOOLS_HEAD
+    assert tools_supervisor["require_dedicated_worktree"] is True
+    assert tools_supervisor["wait_seconds"] == 660
+    assert tools_supervisor["replacement_conflict_path"] == (
+        r"C:\Python\wd-reboot-runtime"
+        r"\codex-tools-1-replacement-conflict.json"
+    )
 
     lanes = {lane["agent"]: lane for lane in manifest["lanes"]}
     assert set(lanes) == {
@@ -87,6 +103,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert len({lane["agent_uuid"] for lane in lanes.values()}) == 4
     for lane in lanes.values():
         assert lane["worktree"].startswith("C:\\")
+        assert lane["worktree"] != TOOLS_WORKTREE
         assert len(lane["head"]) == 40
         assert "model" not in lane
 
@@ -145,6 +162,31 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "Get-OptionalScheduledTask" in supervisor
     assert "$allAgentWatchers = @(" in supervisor
     assert "$legacyConsumers = @(" in supervisor
+    assert "'-Generation', $toolsGeneration" in supervisor
+    assert "WOULD-REPLACE $replacementReason consumer-loop:codex-tools-1" in supervisor
+    assert "'expired-startup'" in supervisor
+    assert "'stale-generation'" in supervisor
+    assert "Stop-VerifiedProcessTree `" in supervisor
+    assert "-RootProcess $staleProcess `" in supervisor
+    assert "-InitialProcesses $processes `" in supervisor
+    assert "-ConflictPath $toolsConflictPath" in supervisor
+    assert "System32\\taskkill.exe" in supervisor
+    assert "/PID $killPid /F" in supervisor
+    assert "/PID $killPid /T /F" not in supervisor
+    assert "kill target PID identity changed" in supervisor
+    assert "stale Tools process tree did not stop" in supervisor
+    assert "wd.tools-replacement-conflict.v1" in supervisor
+    assert "$lineageByPid" in supervisor
+    assert "$rootKillSucceeded" in supervisor
+    assert "Tools consumer preflight does not match supervisor generation" in supervisor
+    assert "Assert-MachineToolsConfigExact" in supervisor
+    assert "Assert-SupervisorBundleFileIntegrity -RelativePath $watcherRelative" in (
+        supervisor
+    )
+    assert "supervisor deployment manifest is not externally anchored" in supervisor
+    assert "Test-ToolsWrapperReadiness" in supervisor
+    assert "Test-ToolsWrapperWithinStartupGrace" in supervisor
+    assert supervisor.index("-ValidateOnly") < supervisor.index("$watcherScript =")
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
@@ -230,6 +272,50 @@ def test_supervisor_preflight_requires_exact_registered_action_tuple() -> None:
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_tools_lineage_rejects_older_process_with_reused_parent_pid() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Test-ToolsLineageEdge'
+  }},
+  $true
+)
+. ([scriptblock]::Create($functionAst.Extent.Text))
+$parent = [pscustomobject]@{{
+  ProcessId = 500
+  ParentProcessId = 1
+  CreationDate = [DateTime]::UtcNow
+}}
+$olderUnrelated = [pscustomobject]@{{
+  ProcessId = 501
+  ParentProcessId = 500
+  CreationDate = ([DateTime]$parent.CreationDate).AddMinutes(-5)
+}}
+$newerChild = [pscustomobject]@{{
+  ProcessId = 502
+  ParentProcessId = 500
+  CreationDate = ([DateTime]$parent.CreationDate).AddSeconds(1)
+}}
+[pscustomobject]@{{
+  older = Test-ToolsLineageEdge $parent $olderUnrelated
+  newer = Test-ToolsLineageEdge $parent $newerChild
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {"older": False, "newer": True}
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
 def test_live_apply_detection_rejects_powershell_abbreviations() -> None:
     launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
     result = _run_powershell(
@@ -266,15 +352,273 @@ $functionAst = $ast.Find(
     }
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_live_lane_pin_drift_is_skipped_but_missing_lane_stays_fail_closed() -> None:
+    launcher_path = REBOOT / "start-wd-all.ps1"
+    launcher_text = launcher_path.read_text(encoding="utf-8")
+    assert "duplicate live lane" in launcher_text
+    launcher = str(launcher_path).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'fleet launcher parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Resolve-LanePinState'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing lane pin resolver' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+$lane = [pscustomobject]@{{
+  agent = 'codex-lead-1'
+  worktree = 'C:\\Python\\project2'
+  require_dedicated_worktree = $false
+  branch = 'pinned/branch'
+  head = '1111111111111111111111111111111111111111'
+}}
+$exact = Resolve-LanePinState `
+  -Lane $lane `
+  -PrimaryRepoRoot 'C:\\Python\\project2' `
+  -ActualBranch $lane.branch `
+  -ActualHead $lane.head `
+  -LiveCount 0
+$liveDrift = Resolve-LanePinState `
+  -Lane $lane `
+  -PrimaryRepoRoot 'C:\\Python\\project2' `
+  -ActualBranch 'active/branch' `
+  -ActualHead '2222222222222222222222222222222222222222' `
+  -LiveCount 1 `
+  -LiveGenerationAttested:$true
+try {{
+  [void](Resolve-LanePinState `
+    -Lane $lane `
+    -PrimaryRepoRoot 'C:\\Python\\project2' `
+    -ActualBranch 'active/branch' `
+    -ActualHead $lane.head `
+    -LiveCount 1 `
+    -LiveGenerationAttested:$false)
+  $unattestedLiveDriftRejected = $false
+}}
+catch {{
+  $unattestedLiveDriftRejected = $_.Exception.Message -like '*branch mismatch*'
+}}
+$dedicatedLane = [pscustomobject]@{{
+  agent = 'claude-rco-1'
+  worktree = 'C:\\Python\\waggledance-agent-worktrees\\claude-rco-1'
+  require_dedicated_worktree = $true
+  branch = 'pinned/branch'
+  head = '1111111111111111111111111111111111111111'
+}}
+try {{
+  [void](Resolve-LanePinState `
+    -Lane $dedicatedLane `
+    -PrimaryRepoRoot 'C:\\Python\\project2' `
+    -ActualBranch 'active/branch' `
+    -ActualHead $dedicatedLane.head `
+    -LiveCount 1)
+  $dedicatedLiveDriftRejected = $false
+}}
+catch {{
+  $dedicatedLiveDriftRejected = $_.Exception.Message -like '*branch mismatch*'
+}}
+try {{
+  [void](Resolve-LanePinState `
+    -Lane $lane `
+    -PrimaryRepoRoot 'C:\\Python\\project2' `
+    -ActualBranch 'active/branch' `
+    -ActualHead $lane.head `
+    -LiveCount 0)
+  $missingBranchRejected = $false
+}}
+catch {{
+  $missingBranchRejected = $_.Exception.Message -like '*branch mismatch*'
+}}
+try {{
+  [void](Resolve-LanePinState `
+    -Lane $lane `
+    -PrimaryRepoRoot 'C:\\Python\\project2' `
+    -ActualBranch $lane.branch `
+    -ActualHead '2222222222222222222222222222222222222222' `
+    -LiveCount 0)
+  $missingHeadRejected = $false
+}}
+catch {{
+  $missingHeadRejected = $_.Exception.Message -like '*HEAD mismatch*'
+}}
+[pscustomobject]@{{
+  exact = [bool]$exact.exact
+  live_drift_exact = [bool]$liveDrift.exact
+  live_drift_summary = [string]$liveDrift.summary
+  unattested_live_drift_rejected = $unattestedLiveDriftRejected
+  dedicated_live_drift_rejected = $dedicatedLiveDriftRejected
+  missing_branch_rejected = $missingBranchRejected
+  missing_head_rejected = $missingHeadRejected
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "exact": True,
+        "live_drift_exact": False,
+        "live_drift_summary": (
+            "already live; worktree branch/head drift accepted without relaunch"
+        ),
+        "unattested_live_drift_rejected": True,
+        "dedicated_live_drift_rejected": True,
+        "missing_branch_rejected": True,
+        "missing_head_rejected": True,
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_tools_process_generation_distinguishes_current_stale_and_legacy(
+    tmp_path: Path,
+) -> None:
+    launcher_path = REBOOT / "start-wd-all.ps1"
+    launcher = str(launcher_path).replace("'", "''")
+    readiness_path = str(tmp_path / "tools-ready.json").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'fleet launcher parse failed' }}
+foreach ($name in @(
+    'Resolve-NormalizedPath',
+    'ConvertTo-UtcDateTimeOffset',
+    'Test-NamedCommandLineArgument',
+    'Test-ToolsProcessReadiness',
+    'Get-ToolsProcessState'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$config = [pscustomobject]@{{
+  launcher_script = 'C:\\Python\\start-wd-tools-consumer.ps1'
+  config_path = 'C:\\Python\\wd_supervisor_loop.json'
+  readiness_path = '{readiness_path}'
+  worktree = 'C:\\Python\\tools-worktree'
+  branch = 'tools/test'
+  head = '{TOOLS_HEAD}'
+  agent = 'codex-tools-1'
+}}
+$bundleGeneration = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+$processStarted = [DateTimeOffset]::UtcNow.AddSeconds(-1)
+$current = [pscustomobject]@{{
+  ProcessId = 101
+  Name = 'powershell.exe'
+  CreationDate = $processStarted
+  CommandLine = (
+    'powershell.exe -File C:\\Python\\start-wd-tools-consumer.ps1 ' +
+    '-ConfigPath C:\\Python\\wd_supervisor_loop.json ' +
+    '-Generation ' + $bundleGeneration
+  )
+}}
+$ready = [ordered]@{{
+  schema = 'wd.tools-consumer-ready.v1'
+  generation = $bundleGeneration
+  pid = 101
+  process_start_utc = $processStarted.ToString('o')
+  config_path = $config.config_path
+  worktree = $config.worktree
+  branch = $config.branch
+  head = $config.head
+  ready_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+}}
+$ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
+$stale = [pscustomobject]@{{
+  ProcessId = 102
+  Name = 'powershell.exe'
+  CommandLine = (
+    'powershell.exe -File C:\\Python\\start-wd-tools-consumer.ps1 ' +
+    '-ConfigPath C:\\Python\\wd_supervisor_loop.json'
+  )
+}}
+$legacy = [pscustomobject]@{{
+  ProcessId = 103
+  Name = 'pwsh.exe'
+  CommandLine = (
+    'pwsh.exe -File C:\\repo\\Start-AgentBridgeConsumerLoop.ps1 ' +
+    '-Agent codex-tools-1'
+  )
+}}
+$substringNoise = [pscustomobject]@{{
+  ProcessId = 104
+  Name = 'powershell.exe'
+  CommandLine = (
+    'powershell.exe -Command "Write-Output ' +
+    'C:\\Python\\start-wd-tools-consumer.ps1"'
+  )
+}}
+$state = Get-ToolsProcessState `
+  -ToolsConfig $config `
+  -Generation $bundleGeneration `
+  -Processes @($current, $stale, $legacy, $substringNoise)
+[pscustomobject]@{{
+  current = @($state.current).Count
+  current_pid = [int](@($state.current)[0].ProcessId)
+  starting = @($state.starting).Count
+  stale = @($state.stale).Count
+  stale_pid = [int](@($state.stale)[0].ProcessId)
+  legacy = @($state.legacy).Count
+  legacy_pid = [int](@($state.legacy)[0].ProcessId)
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "current": 1,
+        "current_pid": 101,
+        "starting": 0,
+        "stale": 1,
+        "stale_pid": 102,
+        "legacy": 1,
+        "legacy_pid": 103,
+    }
+
+
 def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
     snapshot = json.loads(
         (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
     )
     assert snapshot["schema"] == "wd.supervisor-loop.v2"
     tools = snapshot["tools_consumer"]
+    assert snapshot["watchers"]["script_relative"] == (
+        r"tools-bootstrap\.agent-bridge\bin\Watch-Bridge.ps1"
+    )
     assert tools["agent"] == "codex-tools-1"
     assert tools["agent_uuid"] == "7a8af68d-20bc-4598-9953-23c5dd98b102"
-    assert tools["worktree"] == r"C:\Python\project2"
+    assert tools["worktree"] == TOOLS_WORKTREE
+    assert tools["primary_repo_root"] == r"C:\Python\project2"
+    assert tools["expected_common_git_dir"] == r"C:\Python\project2\.git"
+    assert tools["require_dedicated_worktree"] is True
+    assert tools["expected_branch"] == TOOLS_BRANCH
+    assert tools["expected_head"] == TOOLS_HEAD
+    assert tools["readiness_path"] == (
+        r"C:\Python\wd-reboot-runtime\codex-tools-1-ready.json"
+    )
+    assert tools["replacement_conflict_path"] == (
+        r"C:\Python\wd-reboot-runtime"
+        r"\codex-tools-1-replacement-conflict.json"
+    )
+    assert tools["log_dir"] == TOOLS_WORKTREE + (
+        r"\.codex-audit\bridge-consumer-canonical-tools"
+    )
     assert tools["sandbox"] == "workspace-write"
     assert tools["approval_policy"] == "never"
     assert "executable" not in tools
@@ -282,6 +626,128 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
     serialized = json.dumps(snapshot)
     assert "WindowsApps" not in serialized
     assert "7.6.3" not in serialized
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
+def test_tools_consumer_rejects_primary_repo_even_if_config_disables_dedication(
+    tmp_path: Path,
+) -> None:
+    wrapper = REBOOT / "start-wd-tools-consumer.ps1"
+    config = json.loads(
+        (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
+    )
+    tools = config["tools_consumer"]
+    tools["worktree"] = r"C:\Python\project2"
+    tools["log_dir"] = r"C:\Python\project2\.codex-audit\tools-negative-test"
+    tools["require_dedicated_worktree"] = False
+    config_path = tmp_path / "unsafe-tools-config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            POWERSHELL,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper),
+            "-ConfigPath",
+            str(config_path),
+            "-Generation",
+            TOOLS_HEAD,
+            "-ValidateOnly",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "requires require_dedicated_worktree=true" in (
+        result.stdout + result.stderr
+    )
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
+def test_tools_consumer_rejects_modified_tracked_bootstrap_helper(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "bootstrap-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "WD Test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "wd@example.invalid"],
+        check=True,
+    )
+    bootstrap = repo / "bootstrap"
+    bootstrap.mkdir()
+    script_path = bootstrap / "consumer.ps1"
+    helper_path = bootstrap / "helper.ps1"
+    script_path.write_text("Write-Output 'pinned'\n", encoding="utf-8")
+    helper_path.write_text("Write-Output 'helper'\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "--", "bootstrap"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "pin bootstrap"],
+        check=True,
+    )
+
+    wrapper_path = REBOOT / "start-wd-tools-consumer.ps1"
+    wrapper = str(wrapper_path).replace("'", "''")
+    repo_quoted = str(repo).replace("'", "''")
+    helper_quoted = str(helper_path).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{wrapper}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'tools consumer parse failed' }}
+foreach ($name in @('Invoke-GitText', 'Assert-TrackedScriptsMatchHead')) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+Assert-TrackedScriptsMatchHead `
+  -Worktree '{repo_quoted}' `
+  -RelativePaths @('bootstrap') `
+  -Label 'bootstrap test'
+[IO.File]::AppendAllText('{helper_quoted}', "# modified`n")
+try {{
+  Assert-TrackedScriptsMatchHead `
+    -Worktree '{repo_quoted}' `
+    -RelativePaths @('bootstrap') `
+    -Label 'bootstrap test'
+  $modifiedRejected = $false
+}}
+catch {{
+  $modifiedRejected = $_.Exception.Message -like '*does not match pinned HEAD*'
+}}
+[pscustomobject]@{{ modified_rejected = $modifiedRejected }} |
+  ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {"modified_rejected": True}
 
 
 @pytest.mark.skipif(
@@ -393,6 +859,7 @@ if ($env:WD_FAKE_MODE -eq 'nonzero') {
     wrapper = str(wrapper_path).replace("'", "''")
     fake = str(fake_codex).replace("'", "''")
     capture_quoted = str(capture).replace("'", "''")
+    tools_worktree = TOOLS_WORKTREE.replace("'", "''")
     result = _run_powershell(
         f"""
 $tokens = $null
@@ -415,14 +882,14 @@ $env:WD_FAKE_CAPTURE = '{capture_quoted}'
 $env:WD_FAKE_MODE = 'success'
 Test-CodexSandboxShell `
   -CodexCommand '{fake}' `
-  -Worktree 'C:\\Python\\project2' `
+  -Worktree '{tools_worktree}' `
   -ShellPath 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 $arguments = Get-Content -LiteralPath '{capture_quoted}' -Raw | ConvertFrom-Json
 $env:WD_FAKE_MODE = 'missing-marker'
 try {{
   Test-CodexSandboxShell `
     -CodexCommand '{fake}' `
-    -Worktree 'C:\\Python\\project2' `
+    -Worktree '{tools_worktree}' `
     -ShellPath 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
   $missingMarkerFailed = $false
 }}
@@ -433,7 +900,7 @@ $env:WD_FAKE_MODE = 'nonzero'
 try {{
   Test-CodexSandboxShell `
     -CodexCommand '{fake}' `
-    -Worktree 'C:\\Python\\project2' `
+    -Worktree '{tools_worktree}' `
     -ShellPath 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
   $nonzeroFailed = $false
 }}
@@ -453,7 +920,7 @@ catch {{
             "-P",
             ":workspace",
             "-C",
-            r"C:\Python\project2",
+            TOOLS_WORKTREE,
             "--",
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             "-NoLogo",
@@ -550,6 +1017,9 @@ exit 1
 
 def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None:
     launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    tools_wrapper = (
+        REBOOT / "start-wd-tools-consumer.ps1"
+    ).read_text(encoding="utf-8")
     assert launcher.count("-Arguments @('update')") == 2
     assert "codex update (once)" in launcher
     assert "claude update (once)" in launcher
@@ -568,20 +1038,74 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "if (Test-Path -LiteralPath $handshakeDirectory)" in launcher
     assert "Grok model viability probe" in launcher
     assert "Tools consumer config differs from the committed deployed bundle" in launcher
+    tools_validation = launcher.index("-ValidateOnly")
+    assert tools_validation < launcher.index("Updating Codex CLI once")
+    assert tools_validation < launcher.index("Resolving the current Grok model")
+    assert tools_validation < launcher.index("Start-ScheduledTask")
+    assert "Tools consumer validation does not match fleet pins" in launcher
+    assert "-Generation $bundleGeneration" in launcher
+    assert "Get-ToolsProcessState" in launcher
+    assert "ask WD-Supervisor to replace stale generation" in launcher
+    assert "$toolsValidationLauncher = if ($bundleMode -ceq 'deployed')" in launcher
+    assert "$toolsValidationConfig = if ($bundleMode -ceq 'deployed')" in launcher
+    assert "source-tree reboot rehearsal requires -DryRun" in launcher
+    assert "$toolsSnapshotPath = if ($bundleMode -ceq 'source')" in launcher
+    deployed_gate = launcher.index("if ($bundleMode -ceq 'deployed')")
+    assert deployed_gate < launcher.index(
+        "Tools consumer config differs from the committed deployed bundle"
+    )
+    assert "-RequireDedicatedWorktree:$requireDedicatedWorktree" in tools_wrapper
+    assert "-PrimaryRepoRoot $primaryRepoRoot" in tools_wrapper
+    assert "tools process generation mismatch" in tools_wrapper
+    assert "Tools bundle dependency hash mismatch" in tools_wrapper
+    assert "machine Tools config differs from the externally anchored bundle" in (
+        tools_wrapper
+    )
+    assert "WD_REBOOT_EXPECTED_MANIFEST_HASH" in tools_wrapper
+    bootstrap_gates = [
+        match.start()
+        for match in re.finditer(
+            re.escape("Assert-ToolsBootstrapIntegrity `"),
+            tools_wrapper,
+        )
+    ]
+    assert len(bootstrap_gates) == 4
+    assert bootstrap_gates[0] < tools_wrapper.index(". $sessionScript `")
+    initial_call = tools_wrapper.index("$initialOutput = @(& $consumerScript")
+    assert initial_call < bootstrap_gates[1]
+    wake_call = tools_wrapper.index("$wakeOutput = @(& $consumerScript @wakeArguments)")
+    assert bootstrap_gates[1] < bootstrap_gates[2] < wake_call < bootstrap_gates[3]
+    assert (
+        "Join-Path $PSScriptRoot 'tools-bootstrap\\.agent-bridge\\bin'"
+        in tools_wrapper
+    )
+    assert "tools-bootstrap/configs/bridge_identity_registry.json" in tools_wrapper
+    assert "$foreverArguments['Forever']" not in tools_wrapper
 
 
 def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     text = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
-    status_gate = text.index(
-        "@('status', '--porcelain', '--', 'ops/windows/reboot')"
-    )
+    status_gate = text.index("'.agent-bridge/bin'")
     upstream_gate = text.index("reboot-bundle commit is not pushed")
-    first_copy = text.index("Copy-Item -LiteralPath (Join-Path $sourceRoot $name)")
+    first_copy = text.index("Copy-Item -LiteralPath $sourcePaths[[string]$name]")
     assert status_gate < first_copy
     assert upstream_gate < first_copy
     assert "WD_REBOOT_INTEGRITY_CURRENT.sha256" in text
     assert "wd-reboot-backups" in text
     assert "'Invoke-WdToolsCodex.ps1'," in text
+    assert "'tools-bootstrap/.agent-bridge/bin/{0}' -f $file.Name" in text
+    assert (
+        "'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'"
+        in text
+    )
+    assert "'tools-bootstrap/configs/bridge_identity_registry.json'" in text
+    assert "'archive'," in text
+    assert "'--format=zip'," in text
+    assert "$materializedRebootRoot" in text
+    assert "WD_REBOOT_EXPECTED_MANIFEST_HASH" in text
+    assert "ExpectedManifestHash" in text
+    assert "unexpected recursive file set" in text
+    assert "$expectedInstalledSet" in text
     assert r"C:\Python\project2\.git" in text
     assert "manifest hash differs from source commit" in text
     preflight = text.index("Running mutation-free deployment preflight")
@@ -592,6 +1116,15 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert "-DryRun `" in text[preflight:first_store_write]
     assert "rollback also failed" in text
     assert "`$LASTEXITCODE" not in text
+
+
+def test_interactive_lane_uses_anchored_bundle_bootstrap() -> None:
+    launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    assert "tools-bootstrap\\.agent-bridge\\bin" in launcher
+    assert "lane deployment manifest is not externally anchored" in launcher
+    assert "Assert-LaneBootstrapIntegrity" in launcher
+    assert "source lane launcher supports -DryRun only" in launcher
+    assert "Join-Path $worktree '.agent-bridge\\bin" not in launcher
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
@@ -658,6 +1191,7 @@ def test_deployed_wrappers_preserve_named_parameters() -> None:
     assert "[switch] $DryRun" in text
     assert "[switch] $Apply" in text
     assert "[switch] $ValidateOnly" in text
+    assert "[string] $Generation" in text
     assert "$targetParameters['Agent']" in text
 
 
@@ -703,12 +1237,35 @@ param(
         + "\n",
         encoding="utf-8",
     )
+    tools_target = tmp_path / "tools-target.ps1"
+    tools_target.write_text(
+        """
+[CmdletBinding()]
+param(
+  [string] $ConfigPath = '',
+  [Parameter(Mandatory)] [string] $Generation,
+  [switch] $ValidateOnly
+)
+[pscustomobject]@{
+  config_path = $ConfigPath
+  generation = $Generation
+  validate_only = [bool]$ValidateOnly
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    deployment_manifest = tmp_path / "deployment-manifest.json"
+    deployment_manifest.write_text('{"schema_version":1}\n', encoding="utf-8")
 
     deploy = str(REBOOT / "Deploy-WdRebootBundle.ps1").replace("'", "''")
     target_quoted = str(target).replace("'", "''")
     agent_target_quoted = str(agent_target).replace("'", "''")
+    tools_target_quoted = str(tools_target).replace("'", "''")
     fleet_wrapper = str(tmp_path / "fleet-wrapper.ps1").replace("'", "''")
     agent_wrapper = str(tmp_path / "agent-wrapper.ps1").replace("'", "''")
+    tools_wrapper = str(tmp_path / "tools-wrapper.ps1").replace("'", "''")
+    deployment_manifest_quoted = str(deployment_manifest).replace("'", "''")
     result = _run_powershell(
         f"""
 $tokens = $null
@@ -728,24 +1285,39 @@ $functionAst = $ast.Find(
 if ($null -eq $functionAst) {{ throw 'wrapper generator function not found' }}
 . ([scriptblock]::Create($functionAst.Extent.Text))
 $utf8 = New-Object Text.UTF8Encoding($false)
+$manifestHash = (
+  Get-FileHash -LiteralPath '{deployment_manifest_quoted}' -Algorithm SHA256
+).Hash
 $fleetText = New-ForwardingWrapper `
   -Target '{target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{target_quoted}' -Algorithm SHA256).Hash `
+  -ExpectedManifestHash $manifestHash `
   -WrapperKind fleet
 [IO.File]::WriteAllText('{fleet_wrapper}', $fleetText, $utf8)
 $agentText = New-ForwardingWrapper `
   -Target '{agent_target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{agent_target_quoted}' -Algorithm SHA256).Hash `
+  -ExpectedManifestHash $manifestHash `
   -WrapperKind agent `
   -FixedAgent fable-5
 [IO.File]::WriteAllText('{agent_wrapper}', $agentText, $utf8)
+$toolsText = New-ForwardingWrapper `
+  -Target '{tools_target_quoted}' `
+  -ExpectedHash (Get-FileHash -LiteralPath '{tools_target_quoted}' -Algorithm SHA256).Hash `
+  -ExpectedManifestHash $manifestHash `
+  -WrapperKind tools
+[IO.File]::WriteAllText('{tools_wrapper}', $toolsText, $utf8)
 $fleet = & '{fleet_wrapper}' `
   -RunId reboot-123 `
   -HandshakeTimeoutSeconds 42 `
   -SkipCliUpdate `
   -DryRun
 $agent = & '{agent_wrapper}' -RunId lane-456 -DryRun
-[pscustomobject]@{{ fleet = $fleet; agent = $agent }} |
+$tools = & '{tools_wrapper}' `
+  -ConfigPath C:\\Python\\wd_supervisor_loop.json `
+  -Generation {TOOLS_HEAD} `
+  -ValidateOnly
+[pscustomobject]@{{ fleet = $fleet; agent = $agent; tools = $tools }} |
   ConvertTo-Json -Depth 6 -Compress
 """
     )
@@ -761,6 +1333,11 @@ $agent = & '{agent_wrapper}' -RunId lane-456 -DryRun
         "agent": "fable-5",
         "run_id": "lane-456",
         "dry_run": True,
+    }
+    assert record["tools"] == {
+        "config_path": r"C:\Python\wd_supervisor_loop.json",
+        "generation": TOOLS_HEAD,
+        "validate_only": True,
     }
 
 

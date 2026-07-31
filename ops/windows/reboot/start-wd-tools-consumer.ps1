@@ -4,10 +4,10 @@
     Start the durable codex-tools-1 bridge consumer from a pinned repo state.
 
 .DESCRIPTION
-    Validates the configured C-drive worktree, branch, and full commit before
-    loading any bridge code. The process receives one initial bounded Codex
-    tick so a reboot handoff is read even when no wake sentinel exists, then
-    remains in the wake-only consumer loop.
+    Validates the configured C-drive worktree, branch, full commit, and exact
+    tracked bootstrap scripts before loading any bridge code. The process
+    receives one initial bounded Codex tick so a reboot handoff is read even
+    when no wake sentinel exists, then remains in the wake-only consumer loop.
 
     This wrapper deliberately supplies no model override. Codex therefore uses
     the provider default selected by the installed CLI.
@@ -15,6 +15,9 @@
 [CmdletBinding()]
 param(
     [string] $ConfigPath = '',
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-f]{40}$')]
+    [string] $Generation,
     [switch] $ValidateOnly
 )
 
@@ -78,6 +81,283 @@ function Invoke-GitText {
         throw "git $Operation failed in ${Worktree}: $($output -join ' ')"
     }
     return (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim()
+}
+
+function Read-Utf8FileSnapshot {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString(
+            $sha.ComputeHash($bytes)
+        ).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+        $text = $text.Substring(1)
+    }
+    return [pscustomobject]@{
+        Hash = $hash
+        Text = $text
+    }
+}
+
+function Resolve-OwnBundleGeneration {
+    param([Parameter(Mandatory)] [string] $ScriptRoot)
+
+    $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
+    if (Test-Path -LiteralPath $deploymentPath -PathType Leaf) {
+        $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+        $deploymentSnapshot = Read-Utf8FileSnapshot -Path $deploymentPath
+        $actualManifestHash = ([string]$deploymentSnapshot.Hash).ToUpperInvariant()
+        if (
+            $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            $actualManifestHash -cne $expectedManifestHash.ToUpperInvariant()
+        ) {
+            throw 'Tools launcher deployment manifest is not externally anchored'
+        }
+        $deployment = [string]$deploymentSnapshot.Text |
+            ConvertFrom-Json -ErrorAction Stop
+        $generation = ([string]$deployment.source_commit).ToLowerInvariant()
+        $expectedHashProperty = $deployment.files.PSObject.Properties[
+            'start-wd-tools-consumer.ps1'
+        ]
+        $scriptPath = Join-Path $ScriptRoot 'start-wd-tools-consumer.ps1'
+        if (
+            [int]$deployment.schema_version -ne 1 -or
+            $generation -cnotmatch '^[0-9a-f]{40}$' -or
+            [IO.Path]::GetFileName(
+                [IO.Path]::GetFullPath($ScriptRoot).TrimEnd('\')
+            ) -cne $generation -or
+            $null -eq $expectedHashProperty -or
+            (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash -cne
+                [string]$expectedHashProperty.Value
+        ) {
+            throw 'Tools launcher deployment generation is not exact'
+        }
+        return $generation
+    }
+
+    $sourceGeneration = (
+        Invoke-GitText `
+            -Worktree $ScriptRoot `
+            -ArgumentList @('rev-parse', 'HEAD') `
+            -Operation 'source generation validation'
+    ).ToLowerInvariant()
+    if ($sourceGeneration -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Tools launcher source generation is not a full Git commit'
+    }
+    return $sourceGeneration
+}
+
+function Assert-TrackedScriptsMatchHead {
+    param(
+        [Parameter(Mandatory)] [string] $Worktree,
+        [Parameter(Mandatory)] [string[]] $RelativePaths,
+        [Parameter(Mandatory)] [string] $Label
+    )
+
+    $gitPaths = @()
+    foreach ($relativePath in $RelativePaths) {
+        if (
+            [string]::IsNullOrWhiteSpace($relativePath) -or
+            [IO.Path]::IsPathRooted($relativePath)
+        ) {
+            throw "$Label contains a non-relative Git path"
+        }
+        $candidate = [IO.Path]::GetFullPath(
+            (Join-Path $Worktree $relativePath)
+        )
+        $worktreePrefix = $Worktree.TrimEnd('\') + '\'
+        if (-not $candidate.StartsWith(
+                $worktreePrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw "$Label path escapes the pinned worktree: $relativePath"
+        }
+        $gitPath = $relativePath.Replace('\', '/')
+        [void](Invoke-GitText `
+            -Worktree $Worktree `
+            -ArgumentList @(
+                'ls-files',
+                '--error-unmatch',
+                '--',
+                $gitPath
+            ) `
+            -Operation "$Label tracked-file validation")
+        $gitPaths += $gitPath
+    }
+
+    $statusArguments = @(
+        'status',
+        '--porcelain=v1',
+        '--untracked-files=all',
+        '--'
+    ) + $gitPaths
+    $status = Invoke-GitText `
+        -Worktree $Worktree `
+        -ArgumentList $statusArguments `
+        -Operation "$Label HEAD validation"
+    if (-not [string]::IsNullOrWhiteSpace($status)) {
+        throw "$Label does not match pinned HEAD: $status"
+    }
+}
+
+function Assert-ToolsBootstrapIntegrity {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [Parameter(Mandatory)] [string] $BootstrapRoot,
+        [Parameter(Mandatory)] [string] $ConfigPath,
+        [Parameter(Mandatory)] [string] $LoadedConfigHash
+    )
+
+    $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
+    if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
+        $sourceTop = [IO.Path]::GetFullPath(
+            (Invoke-GitText `
+                -Worktree $ScriptRoot `
+                -ArgumentList @('rev-parse', '--show-toplevel') `
+                -Operation 'source bootstrap top-level validation')
+        )
+        $expectedSourceRoot = [IO.Path]::GetFullPath(
+            (Join-Path $sourceTop '.agent-bridge\bin')
+        )
+        if (-not $BootstrapRoot.Equals(
+                $expectedSourceRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'source Tools bootstrap root is not canonical'
+        }
+        Assert-TrackedScriptsMatchHead `
+            -Worktree $sourceTop `
+            -RelativePaths @(
+                '.agent-bridge/bin',
+                'configs/bridge_identity_registry.json'
+            ) `
+            -Label 'source Tools bootstrap inputs'
+        return
+    }
+
+    $expectedBundleRoot = [IO.Path]::GetFullPath(
+        (Join-Path $ScriptRoot 'tools-bootstrap\.agent-bridge\bin')
+    )
+    if (-not $BootstrapRoot.Equals(
+            $expectedBundleRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'deployed Tools bootstrap root is outside its reboot bundle'
+    }
+    if (-not (Test-Path -LiteralPath $BootstrapRoot -PathType Container)) {
+        throw "deployed Tools bootstrap directory is missing: $BootstrapRoot"
+    }
+    $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+    $deploymentSnapshot = Read-Utf8FileSnapshot -Path $deploymentPath
+    if (
+        $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$deploymentSnapshot.Hash -cne
+            $expectedManifestHash.ToUpperInvariant()
+    ) {
+        throw 'Tools deployment manifest changed after external attestation'
+    }
+    $deployment = [string]$deploymentSnapshot.Text |
+        ConvertFrom-Json -ErrorAction Stop
+    foreach ($topLevelName in @(
+            'Invoke-WdToolsCodex.ps1',
+            'wd_supervisor_loop.json'
+        )) {
+        $topLevelProperty = $deployment.files.PSObject.Properties[$topLevelName]
+        $topLevelPath = Join-Path $ScriptRoot $topLevelName
+        if (
+            $null -eq $topLevelProperty -or
+            -not (Test-Path -LiteralPath $topLevelPath -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $topLevelPath -Algorithm SHA256).Hash -cne
+                [string]$topLevelProperty.Value
+        ) {
+            throw "Tools bundle dependency hash mismatch: $topLevelName"
+        }
+    }
+    $bundledConfigPath = Join-Path $ScriptRoot 'wd_supervisor_loop.json'
+    $machineConfigHash = (
+        Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256
+    ).Hash
+    $bundledConfigHash = (
+        Get-FileHash -LiteralPath $bundledConfigPath -Algorithm SHA256
+    ).Hash
+    if (
+        $LoadedConfigHash -cne $bundledConfigHash -or
+        $machineConfigHash -cne $bundledConfigHash
+    ) {
+        throw 'machine Tools config differs from the externally anchored bundle'
+    }
+    $manifestPrefix = 'tools-bootstrap/.agent-bridge/bin/'
+    $expectedFiles = @{}
+    foreach ($property in @($deployment.files.PSObject.Properties)) {
+        $relativeName = [string]$property.Name
+        if (-not $relativeName.StartsWith(
+                $manifestPrefix,
+                [StringComparison]::Ordinal
+            )) {
+            continue
+        }
+        $leaf = $relativeName.Substring($manifestPrefix.Length)
+        if (
+            [string]::IsNullOrWhiteSpace($leaf) -or
+            $leaf.IndexOfAny([char[]]@('\', '/')) -ge 0
+        ) {
+            throw "unsafe Tools bootstrap manifest path: $relativeName"
+        }
+        $candidate = Join-Path $BootstrapRoot $leaf
+        if (
+            -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -cne
+                [string]$property.Value
+        ) {
+            throw "Tools bootstrap bundle hash mismatch: $relativeName"
+        }
+        $expectedFiles[$leaf.ToLowerInvariant()] = $true
+    }
+    foreach ($requiredLeaf in @(
+            'AgentBridgeSessionIdentity.ps1',
+            'Send-Liveness.ps1',
+            'Start-AgentBridgeConsumerLoop.ps1',
+            'Start-AgentBridgeSession.ps1',
+            'Start-BridgeHeartbeat.ps1',
+            'Test-BridgeWake.ps1',
+            'Watch-Bridge.ps1',
+            'Write-AgentEvent.ps1'
+        )) {
+        if (-not $expectedFiles.ContainsKey($requiredLeaf.ToLowerInvariant())) {
+            throw "Tools bootstrap manifest is missing required helper: $requiredLeaf"
+        }
+    }
+    $actualFiles = @(
+        Get-ChildItem -LiteralPath $BootstrapRoot -File -ErrorAction Stop
+    )
+    if ($actualFiles.Count -ne $expectedFiles.Count) {
+        throw 'Tools bootstrap bundle contains an unexpected file set'
+    }
+    foreach ($file in $actualFiles) {
+        if (-not $expectedFiles.ContainsKey($file.Name.ToLowerInvariant())) {
+            throw "Tools bootstrap bundle contains an unexpected file: $($file.Name)"
+        }
+    }
+    $registryRelative = 'tools-bootstrap/configs/bridge_identity_registry.json'
+    $registryHashProperty = $deployment.files.PSObject.Properties[$registryRelative]
+    $registryPath = Join-Path (
+        Split-Path -Parent (Split-Path -Parent $BootstrapRoot)
+    ) 'configs\bridge_identity_registry.json'
+    if (
+        $null -eq $registryHashProperty -or
+        -not (Test-Path -LiteralPath $registryPath -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $registryPath -Algorithm SHA256).Hash -cne
+            [string]$registryHashProperty.Value
+    ) {
+        throw 'Tools bridge identity registry bundle hash mismatch'
+    }
 }
 
 function Test-PathAtOrBelow {
@@ -290,11 +570,20 @@ function Test-CodexSandboxShell {
     }
 }
 
+$isDeployedLauncher = Test-Path -LiteralPath (
+    Join-Path $PSScriptRoot 'deployment-manifest.json'
+) -PathType Leaf
+if (-not $isDeployedLauncher -and -not $ValidateOnly) {
+    throw 'source Tools launcher supports -ValidateOnly only; live use requires a deployed bundle'
+}
+
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
     throw "tools consumer configuration not found: $configFull"
 }
-$configuration = Get-Content -LiteralPath $configFull -Raw -Encoding UTF8 |
+$configSnapshot = Read-Utf8FileSnapshot -Path $configFull
+$loadedConfigHash = [string]$configSnapshot.Hash
+$configuration = [string]$configSnapshot.Text |
     ConvertFrom-Json -ErrorAction Stop
 if ([string]$configuration.schema -cne 'wd.supervisor-loop.v2') {
     throw "unsupported tools consumer configuration schema: $($configuration.schema)"
@@ -310,13 +599,38 @@ if (-not [bool]$tools.enabled) {
 
 $runtimeRoot = [IO.Path]::GetFullPath((Get-RequiredText $configuration 'runtime_root'))
 $worktree = [IO.Path]::GetFullPath((Get-RequiredText $tools 'worktree'))
+$primaryRepoRoot = [IO.Path]::GetFullPath(
+    (Get-RequiredText $tools 'primary_repo_root')
+)
+$expectedCommonGitDir = [IO.Path]::GetFullPath(
+    (Get-RequiredText $tools 'expected_common_git_dir')
+)
+$dedicatedProperty = $tools.PSObject.Properties['require_dedicated_worktree']
+if (
+    $null -eq $dedicatedProperty -or
+    $dedicatedProperty.Value -isnot [bool] -or
+    -not [bool]$dedicatedProperty.Value
+) {
+    throw 'tools consumer configuration requires require_dedicated_worktree=true'
+}
+$requireDedicatedWorktree = $true
 $expectedBranch = Get-RequiredText $tools 'expected_branch'
 $expectedHead = (Get-RequiredText $tools 'expected_head').ToLowerInvariant()
+$bundleGeneration = Resolve-OwnBundleGeneration -ScriptRoot $PSScriptRoot
+if ($Generation -cne $bundleGeneration) {
+    throw (
+        "tools process generation mismatch: expected '$bundleGeneration', " +
+        "got '$Generation'"
+    )
+}
 $agent = Get-RequiredText $tools 'agent'
 $agentUuid = (Get-RequiredText $tools 'agent_uuid').ToLowerInvariant()
 $role = Get-RequiredText $tools 'role'
 $runIdPrefix = Get-RequiredText $tools 'run_id_prefix'
 $logDir = [IO.Path]::GetFullPath((Get-RequiredText $tools 'log_dir'))
+$readinessPath = [IO.Path]::GetFullPath(
+    (Get-RequiredText $tools 'readiness_path')
+)
 $sandbox = Get-RequiredText $tools 'sandbox'
 $approvalPolicy = Get-RequiredText $tools 'approval_policy'
 $prompt = Get-RequiredText $tools 'prompt'
@@ -327,8 +641,41 @@ if ([IO.Path]::GetPathRoot($worktree).TrimEnd('\') -cne 'C:') {
 if (-not (Test-Path -LiteralPath $worktree -PathType Container)) {
     throw "tools worktree does not exist: $worktree"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $worktree '.git'))) {
-    throw "tools worktree has no .git metadata: $worktree"
+if (-not (Test-Path -LiteralPath $primaryRepoRoot -PathType Container)) {
+    throw "primary repo root does not exist: $primaryRepoRoot"
+}
+if (-not (Test-Path -LiteralPath $expectedCommonGitDir -PathType Container)) {
+    throw "expected common Git directory does not exist: $expectedCommonGitDir"
+}
+if (-not (Test-PathAtOrBelow -Candidate $expectedCommonGitDir -Root $primaryRepoRoot)) {
+    throw (
+        "expected common Git directory is outside the primary repo: " +
+        "$expectedCommonGitDir"
+    )
+}
+if (-not (Test-Path -LiteralPath (Join-Path $worktree '.git') -PathType Leaf)) {
+    throw "tools worktree is not a dedicated linked Git worktree: $worktree"
+}
+if (
+    $worktree.TrimEnd('\').Equals(
+        $primaryRepoRoot.TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase
+    )
+) {
+    throw "dedicated Tools worktree must differ from the primary repo: $worktree"
+}
+if (-not (Test-PathAtOrBelow -Candidate $logDir -Root $worktree)) {
+    throw "tools log_dir must stay inside the dedicated worktree: $logDir"
+}
+$readinessRoot = [IO.Path]::GetFullPath('C:\Python\wd-reboot-runtime')
+if (
+    -not (Split-Path -Parent $readinessPath).Equals(
+        $readinessRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    [IO.Path]::GetExtension($readinessPath) -cne '.json'
+) {
+    throw "tools readiness_path must be one JSON file in ${readinessRoot}: $readinessPath"
 }
 if ($expectedHead -cnotmatch '^[0-9a-f]{40}$') {
     throw 'tools expected_head must be a full lowercase Git commit'
@@ -379,6 +726,28 @@ $inside = Invoke-GitText $worktree @('rev-parse', '--is-inside-work-tree') 'work
 if ($inside -cne 'true') {
     throw "configured tools path is not a Git worktree: $worktree"
 }
+$actualTop = [IO.Path]::GetFullPath(
+    (Invoke-GitText $worktree @('rev-parse', '--show-toplevel') 'top-level validation')
+)
+if (-not $actualTop.Equals($worktree, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "tools worktree has unexpected Git top-level: $actualTop"
+}
+$actualCommonGitDir = [IO.Path]::GetFullPath(
+    (Invoke-GitText $worktree @(
+            'rev-parse',
+            '--path-format=absolute',
+            '--git-common-dir'
+        ) 'common Git directory validation')
+)
+if (-not $actualCommonGitDir.Equals(
+        $expectedCommonGitDir,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw (
+        "tools worktree has unexpected common Git directory: " +
+        "$actualCommonGitDir"
+    )
+}
 $actualBranch = Invoke-GitText $worktree @('symbolic-ref', '--quiet', '--short', 'HEAD') 'branch validation'
 if ($actualBranch -cne $expectedBranch) {
     throw "tools worktree branch mismatch: expected '$expectedBranch', got '$actualBranch'"
@@ -388,13 +757,46 @@ if ($actualHead -cne $expectedHead) {
     throw "tools worktree head mismatch: expected '$expectedHead', got '$actualHead'"
 }
 
+$sessionScriptRelative = (
+    Get-RequiredText $tools 'session_script_relative'
+).Replace('/', '\')
+$consumerScriptRelative = (
+    Get-RequiredText $tools 'consumer_script_relative'
+).Replace('/', '\')
+$expectedBridgeBinRelative = '.agent-bridge\bin'
+if (
+    (Split-Path -Parent $sessionScriptRelative) -cne $expectedBridgeBinRelative -or
+    (Split-Path -Parent $consumerScriptRelative) -cne $expectedBridgeBinRelative
+) {
+    throw 'Tools session and consumer scripts must come from .agent-bridge\bin'
+}
+$bootstrapRoot = if (Test-Path -LiteralPath (
+        Join-Path $PSScriptRoot 'deployment-manifest.json'
+    ) -PathType Leaf) {
+    [IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
+    )
+} else {
+    $sourceTop = [IO.Path]::GetFullPath(
+        (Invoke-GitText `
+            $PSScriptRoot `
+            @('rev-parse', '--show-toplevel') `
+            'source top-level validation')
+    )
+    [IO.Path]::GetFullPath((Join-Path $sourceTop '.agent-bridge\bin'))
+}
+Assert-ToolsBootstrapIntegrity `
+    -ScriptRoot $PSScriptRoot `
+    -BootstrapRoot $bootstrapRoot `
+    -ConfigPath $configFull `
+    -LoadedConfigHash $loadedConfigHash
 $sessionScript = Resolve-ContainedScript `
-    $worktree `
-    (Get-RequiredText $tools 'session_script_relative') `
+    $bootstrapRoot `
+    ([IO.Path]::GetFileName($sessionScriptRelative)) `
     'bridge session script'
 $consumerScript = Resolve-ContainedScript `
-    $worktree `
-    (Get-RequiredText $tools 'consumer_script_relative') `
+    $bootstrapRoot `
+    ([IO.Path]::GetFileName($consumerScriptRelative)) `
     'bridge consumer script'
 $codexShim = [IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot 'Invoke-WdToolsCodex.ps1')
@@ -443,8 +845,14 @@ if ([string]::IsNullOrWhiteSpace($codexCommand)) {
 $validation = [pscustomobject]@{
     schema = 'wd.tools-consumer-validation.v1'
     config_path = $configFull
+    generation = $Generation
+    readiness_path = $readinessPath
     runtime_root = $runtimeRoot
     worktree = $worktree
+    git_top = $actualTop
+    primary_repo_root = $primaryRepoRoot
+    common_git_dir = $actualCommonGitDir
+    require_dedicated_worktree = $requireDedicatedWorktree
     branch = $actualBranch
     head = $actualHead
     agent = $agent
@@ -467,6 +875,18 @@ $validation = [pscustomobject]@{
 if ($ValidateOnly) {
     $validation
     return
+}
+
+$processStartUtc = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime()
+if (-not (Test-Path -LiteralPath $readinessRoot -PathType Container)) {
+    [void](New-Item `
+        -ItemType Directory `
+        -Path $readinessRoot `
+        -Force `
+        -ErrorAction Stop)
+}
+if (Test-Path -LiteralPath $readinessPath -PathType Leaf) {
+    Remove-Item -LiteralPath $readinessPath -Force -ErrorAction Stop
 }
 
 $env:Path = $codexPathPlan.Path
@@ -517,6 +937,8 @@ if ($runId.Length -gt 128) {
     -Agent $agent `
     -RuntimeRoot $runtimeRoot `
     -RepoRoot $worktree `
+    -PrimaryRepoRoot $primaryRepoRoot `
+    -RequireDedicatedWorktree:$requireDedicatedWorktree `
     -RunId $runId `
     -Role $role `
     -AgentUuid $agentUuid `
@@ -547,7 +969,16 @@ $initialArguments = @{} + $commonConsumerArguments
 $initialArguments['DurationMinutes'] = 0
 $initialArguments['MaxIterations'] = 1
 $initialArguments['PollSeconds'] = 0
-$initialOutput = @(& $consumerScript @initialArguments)
+try {
+    $initialOutput = @(& $consumerScript @initialArguments)
+}
+finally {
+    Assert-ToolsBootstrapIntegrity `
+        -ScriptRoot $PSScriptRoot `
+        -BootstrapRoot $bootstrapRoot `
+        -ConfigPath $configFull `
+        -LoadedConfigHash $loadedConfigHash
+}
 $initialResult = @(
     $initialOutput |
         Where-Object {
@@ -562,8 +993,73 @@ if ($null -eq $initialResult.exit_code -or [int]$initialResult.exit_code -ne 0) 
     throw "initial tools consumer tick failed with exit_code=$($initialResult.exit_code)"
 }
 
-$foreverArguments = @{} + $commonConsumerArguments
-$foreverArguments['Forever'] = $true
-$foreverArguments['WakeOnly'] = $true
-$foreverArguments['PollSeconds'] = $pollSeconds
-& $consumerScript @foreverArguments
+$readinessTemporary = "$readinessPath.$PID.tmp"
+$readinessRecord = [ordered]@{
+    schema = 'wd.tools-consumer-ready.v1'
+    generation = $Generation
+    pid = $PID
+    process_start_utc = $processStartUtc.ToString('o')
+    config_path = $configFull
+    worktree = $worktree
+    branch = $actualBranch
+    head = $actualHead
+    ready_at_utc = [DateTime]::UtcNow.ToString('o')
+}
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+try {
+    [IO.File]::WriteAllText(
+        $readinessTemporary,
+        (($readinessRecord | ConvertTo-Json -Depth 4) + [Environment]::NewLine),
+        $utf8NoBom
+    )
+    Move-Item `
+        -LiteralPath $readinessTemporary `
+        -Destination $readinessPath `
+        -Force
+}
+finally {
+    if (Test-Path -LiteralPath $readinessTemporary -PathType Leaf) {
+        Remove-Item `
+            -LiteralPath $readinessTemporary `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+$wakeArguments = @{} + $commonConsumerArguments
+$wakeArguments['DurationMinutes'] = 0
+$wakeArguments['MaxIterations'] = 1
+$wakeArguments['WakeOnly'] = $true
+$wakeArguments['PollSeconds'] = 0
+
+# The immutable outer wrapper owns the long-lived loop. Each bounded workspace
+# invocation is enclosed by tracked-tree gates so a workspace-write Codex tick
+# can never plant bridge code for a later unsandboxed iteration.
+while ($true) {
+    Assert-ToolsBootstrapIntegrity `
+        -ScriptRoot $PSScriptRoot `
+        -BootstrapRoot $bootstrapRoot `
+        -ConfigPath $configFull `
+        -LoadedConfigHash $loadedConfigHash
+    try {
+        $wakeOutput = @(& $consumerScript @wakeArguments)
+    }
+    finally {
+        Assert-ToolsBootstrapIntegrity `
+            -ScriptRoot $PSScriptRoot `
+            -BootstrapRoot $bootstrapRoot `
+            -ConfigPath $configFull `
+            -LoadedConfigHash $loadedConfigHash
+    }
+    $wakeResult = @(
+        $wakeOutput |
+            Where-Object {
+                $_ -is [psobject] -and
+                $_.PSObject.Properties.Name -contains 'exit_code'
+            }
+    ) | Select-Object -Last 1
+    if ($null -eq $wakeResult) {
+        throw 'wake-only tools consumer tick returned no structured result'
+    }
+    Start-Sleep -Seconds $pollSeconds
+}

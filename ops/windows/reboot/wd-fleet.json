@@ -21,7 +21,16 @@
       "start-wd-agent.ps1",
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
-      "Resolve-WdGrokModel.ps1"
+      "Resolve-WdGrokModel.ps1",
+      "tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeSession.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Start-BridgeHeartbeat.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Test-BridgeWake.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Watch-Bridge.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1",
+      "tools-bootstrap/configs/bridge_identity_registry.json"
     ]
   },
   "tools_supervisor": {
@@ -31,14 +40,19 @@
     "supervisor_script": "C:\\Python\\wd_supervisor.ps1",
     "launcher_script": "C:\\Python\\start-wd-tools-consumer.ps1",
     "config_path": "C:\\Python\\wd_supervisor_loop.json",
+    "readiness_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-ready.json",
+    "replacement_conflict_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-replacement-conflict.json",
     "agent": "codex-tools-1",
     "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
-    "worktree": "C:\\Python\\project2",
+    "worktree": "C:\\Python\\waggledance-agent-worktrees\\codex-tools-1-post-reboot-tools-sandbox-followup-20260731",
+    "branch": "codex-tools-1/post-reboot-tools-sandbox-followup-20260731",
+    "head": "1c4e388355d045835edcd1f30cd53eddfdc3d2cb",
+    "require_dedicated_worktree": true,
     "process_markers": [
       "start-wd-tools-consumer.ps1",
       "Start-AgentBridgeConsumerLoop.ps1"
     ],
-    "wait_seconds": 45
+    "wait_seconds": 660
   },
   "merge_driver_containment": {
     "standing_task": "WD-BridgeMergeDriverStandingOneShot",

@@ -6,9 +6,10 @@
 .DESCRIPTION
   This script never creates, fetches, checks out, resets, or advances a Git
   worktree. It uses the exact worktree, branch, and HEAD recorded in
-  wd-fleet.json, then dot-sources that worktree's own bridge session starter.
-  The local handshake proves that bridge bootstrap completed before the CLI
-  was invoked; it does not claim that the model completed any work.
+  wd-fleet.json, then dot-sources the commit-anchored bridge session starter
+  from the deployed reboot bundle. The local handshake proves that bridge
+  bootstrap completed before the CLI was invoked; it does not claim that the
+  model completed any work.
 #>
 [CmdletBinding()]
 param(
@@ -20,6 +21,7 @@ param(
 
   [string] $ManifestPath = '',
   [string] $HandshakeDirectory = '',
+  [string] $ExpectedManifestHash = '',
   [switch] $DryRun
 )
 
@@ -28,10 +30,34 @@ Set-StrictMode -Version Latest
 if (-not $ManifestPath) {
   $ManifestPath = Join-Path $PSScriptRoot 'wd-fleet.json'
 }
+$script:LaneManifestAnchor = if ($ExpectedManifestHash) {
+  $ExpectedManifestHash
+} else {
+  [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+}
 
 function Resolve-NormalizedPath {
   param([Parameter(Mandatory)] [string] $Path)
   return [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+
+function Read-Utf8LaneSnapshot {
+  param([Parameter(Mandatory)] [string] $Path)
+
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = [BitConverter]::ToString(
+      $sha.ComputeHash($bytes)
+    ).Replace('-', '')
+  } finally {
+    $sha.Dispose()
+  }
+  $text = [Text.Encoding]::UTF8.GetString($bytes)
+  if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+    $text = $text.Substring(1)
+  }
+  return [pscustomobject]@{ Hash = $hash; Text = $text }
 }
 
 function Read-NonEmptyFile {
@@ -68,10 +94,121 @@ function Invoke-CheckedGit {
   return (($output -join "`n").Trim())
 }
 
+function Assert-LaneBootstrapIntegrity {
+  param(
+    [Parameter(Mandatory)] [string] $ScriptRoot,
+    [Parameter(Mandatory)] [string] $BootstrapRoot
+  )
+
+  $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
+  if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
+    return
+  }
+  $expectedManifestHash = [string]$script:LaneManifestAnchor
+  if (
+    $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+    (Get-FileHash -LiteralPath $deploymentPath -Algorithm SHA256).Hash -cne
+      $expectedManifestHash.ToUpperInvariant()
+  ) {
+    throw 'lane deployment manifest is not externally anchored'
+  }
+  $deploymentSnapshot = Read-Utf8LaneSnapshot -Path $deploymentPath
+  if ([string]$deploymentSnapshot.Hash -cne $expectedManifestHash.ToUpperInvariant()) {
+    throw 'lane deployment manifest changed during bootstrap verification'
+  }
+  $deployment = [string]$deploymentSnapshot.Text |
+    ConvertFrom-Json -ErrorAction Stop
+  $prefix = 'tools-bootstrap/.agent-bridge/bin/'
+  $expectedFiles = @{}
+  foreach ($property in @($deployment.files.PSObject.Properties)) {
+    $relativeName = [string]$property.Name
+    if (-not $relativeName.StartsWith(
+        $prefix,
+        [StringComparison]::Ordinal
+      )) {
+      continue
+    }
+    $leaf = $relativeName.Substring($prefix.Length)
+    if (
+      [string]::IsNullOrWhiteSpace($leaf) -or
+      $leaf.IndexOfAny([char[]]@('\', '/')) -ge 0
+    ) {
+      throw "unsafe lane bootstrap manifest path: $relativeName"
+    }
+    $candidate = Join-Path $BootstrapRoot $leaf
+    if (
+      -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+      (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -cne
+        [string]$property.Value
+    ) {
+      throw "lane bootstrap bundle hash mismatch: $relativeName"
+    }
+    $expectedFiles[$leaf.ToLowerInvariant()] = $true
+  }
+  if (-not $expectedFiles.ContainsKey('start-agentbridgesession.ps1')) {
+    throw 'lane bootstrap manifest is missing Start-AgentBridgeSession.ps1'
+  }
+  $actualFiles = @(Get-ChildItem -LiteralPath $BootstrapRoot -File)
+  if ($actualFiles.Count -ne $expectedFiles.Count) {
+    throw 'lane bootstrap bundle contains an unexpected file set'
+  }
+  $registryRelative = 'tools-bootstrap/configs/bridge_identity_registry.json'
+  $registryProperty = $deployment.files.PSObject.Properties[$registryRelative]
+  $registryPath = Join-Path (
+    Split-Path -Parent (Split-Path -Parent $BootstrapRoot)
+  ) 'configs\bridge_identity_registry.json'
+  if (
+    $null -eq $registryProperty -or
+    -not (Test-Path -LiteralPath $registryPath -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $registryPath -Algorithm SHA256).Hash -cne
+      [string]$registryProperty.Value
+  ) {
+    throw 'lane bridge identity registry bundle hash mismatch'
+  }
+}
+
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
   throw "fleet manifest is missing: $ManifestPath"
 }
-$manifest = (Get-Content -LiteralPath $ManifestPath -Raw -ErrorAction Stop) |
+$manifestSnapshot = Read-Utf8LaneSnapshot -Path $ManifestPath
+$fixedDeploymentManifest = Join-Path $PSScriptRoot 'deployment-manifest.json'
+if (Test-Path -LiteralPath $fixedDeploymentManifest -PathType Leaf) {
+  $bundledFleetPath = Resolve-NormalizedPath -Path (
+    Join-Path $PSScriptRoot 'wd-fleet.json'
+  )
+  if (-not (Resolve-NormalizedPath -Path $ManifestPath).Equals(
+      $bundledFleetPath,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw 'deployed lane launcher requires its bundled wd-fleet.json'
+  }
+  $expectedManifestHash = [string]$script:LaneManifestAnchor
+  $deploymentSnapshot = Read-Utf8LaneSnapshot -Path $fixedDeploymentManifest
+  if (
+    $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+    [string]$deploymentSnapshot.Hash -cne
+      $expectedManifestHash.ToUpperInvariant()
+  ) {
+    throw 'lane deployment manifest is not externally anchored'
+  }
+  $deploymentAnchor = [string]$deploymentSnapshot.Text |
+    ConvertFrom-Json -ErrorAction Stop
+  $fleetHashProperty = $deploymentAnchor.files.PSObject.Properties['wd-fleet.json']
+  $selfHashProperty = $deploymentAnchor.files.PSObject.Properties[
+    'start-wd-agent.ps1'
+  ]
+  if (
+    $null -eq $fleetHashProperty -or
+    [string]$manifestSnapshot.Hash -cne [string]$fleetHashProperty.Value -or
+    $null -eq $selfHashProperty -or
+    (Get-FileHash `
+      -LiteralPath (Join-Path $PSScriptRoot 'start-wd-agent.ps1') `
+      -Algorithm SHA256).Hash -cne [string]$selfHashProperty.Value
+  ) {
+    throw 'loaded lane launcher or fleet manifest does not match the anchored bundle'
+  }
+}
+$manifest = [string]$manifestSnapshot.Text |
   ConvertFrom-Json -ErrorAction Stop
 if ([int]$manifest.schema_version -ne 2) {
   throw "unsupported fleet manifest schema: $($manifest.schema_version)"
@@ -137,8 +274,6 @@ if ($actualHead -cne [string]$lane.head) {
   throw "lane '$Agent' HEAD mismatch: expected '$($lane.head)', found '$actualHead'"
 }
 
-$starter = Join-Path $worktree '.agent-bridge\bin\Start-AgentBridgeSession.ps1'
-[void](Read-NonEmptyFile -Path $starter -Label "lane '$Agent' bridge starter")
 $currentPointer = [string]$manifest.state_precedence.current_state_pointer
 $deploymentManifest = Join-Path $PSScriptRoot 'deployment-manifest.json'
 $sourceTreeMode = $false
@@ -170,6 +305,26 @@ if (-not (Test-Path -LiteralPath $deploymentManifest -PathType Leaf)) {
     throw "undeployed lane launcher is not inside canonical C:\Python\project2"
   }
 }
+if ($sourceTreeMode -and -not $DryRun) {
+  throw 'source lane launcher supports -DryRun only; live use requires a deployed bundle'
+}
+$bootstrapRoot = if ($sourceTreeMode) {
+  $sourceTop = Resolve-NormalizedPath -Path (
+    Invoke-CheckedGit -Worktree $PSScriptRoot -Arguments @(
+      'rev-parse',
+      '--show-toplevel'
+    )
+  )
+  Join-Path $sourceTop '.agent-bridge\bin'
+} else {
+  Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin'
+}
+$bootstrapRoot = Resolve-NormalizedPath -Path $bootstrapRoot
+$starter = Join-Path $bootstrapRoot 'Start-AgentBridgeSession.ps1'
+Assert-LaneBootstrapIntegrity `
+  -ScriptRoot $PSScriptRoot `
+  -BootstrapRoot $bootstrapRoot
+[void](Read-NonEmptyFile -Path $starter -Label "lane '$Agent' bridge starter")
 if (
   $DryRun -and
   $sourceTreeMode -and
@@ -290,7 +445,14 @@ if ([bool]$lane.require_dedicated_worktree) {
 }
 
 Set-Location -LiteralPath $worktree
-$session = . $starter @sessionArgs
+try {
+  $session = . $starter @sessionArgs
+}
+finally {
+  Assert-LaneBootstrapIntegrity `
+    -ScriptRoot $PSScriptRoot `
+    -BootstrapRoot $bootstrapRoot
+}
 
 if (-not (Test-Path -LiteralPath $handshakeDirectoryFull -PathType Container)) {
   [void](New-Item -ItemType Directory -Path $handshakeDirectoryFull -Force)

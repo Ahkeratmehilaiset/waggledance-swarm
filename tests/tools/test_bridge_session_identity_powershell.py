@@ -6,14 +6,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 
 from waggledance.core.work_queue import (
+    WorkQueueError,
+    _claim_mutation_lock,
+    archive_stale_claims as python_archive_stale_claims,
     claim_task as python_claim_task,
     heartbeat as python_heartbeat,
     release_task as python_release_task,
@@ -24,6 +28,13 @@ ROOT = Path(__file__).resolve().parents[2]
 BRIDGE_BIN = ROOT / ".agent-bridge" / "bin"
 BOUND_AGENT = "codex-tools-1"
 OTHER_AGENT = "codex-lead-1"
+
+
+def _slash_claim_basename(task_id: str) -> str:
+    assert "/" in task_id
+    safe = task_id.replace("/", "_").strip("_")
+    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:12]
+    return f"{safe}-{digest}"
 
 
 @pytest.fixture(autouse=True)
@@ -1682,6 +1693,60 @@ def test_claim_requires_complete_generation_owner_context_before_runtime_write(
     assert not runtime_root.exists()
 
 
+def test_release_validates_owner_context_before_claim_existence(
+    tmp_path: Path,
+) -> None:
+    missing_root = tmp_path / "missing-runtime"
+    missing_release = _run_script(
+        missing_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "missing-owner-release",
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_OWNER_TOKEN": None},
+    )
+
+    assert missing_release.returncode == 3
+    assert "claim_owner_mismatch" in missing_release.stderr
+    assert "no active claim" not in missing_release.stderr
+    assert not missing_root.exists()
+
+    runtime_root = tmp_path / "existing-runtime"
+    task_id = "existing-owner-release"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "owner context ordering fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    original = claim_path.read_bytes()
+
+    existing_release = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_OWNER_TOKEN": None},
+    )
+
+    assert existing_release.returncode == 3
+    assert "claim_owner_mismatch" in existing_release.stderr
+    assert claim_path.read_bytes() == original
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
 def test_same_agent_other_generation_cannot_force_replace_claim(
     tmp_path: Path,
 ) -> None:
@@ -1717,7 +1782,7 @@ def test_same_agent_other_generation_cannot_force_replace_claim(
     )
 
     assert replaced.returncode != 0
-    assert "claim_owner_mismatch" in replaced.stderr
+    assert "claim_owner_wrong_generation" in replaced.stderr
     assert claim_path.read_text(encoding="utf-8") == original_claim
 
 
@@ -1806,8 +1871,8 @@ def test_same_agent_other_generation_cannot_release_claim(
         extra_env={"AGENT_BRIDGE_OWNER_TOKEN": "b" * 64},
     )
 
-    assert foreign_release.returncode != 0
-    assert "claim_owner_mismatch" in foreign_release.stderr
+    assert foreign_release.returncode == 3
+    assert "claim_owner_wrong_generation" in foreign_release.stderr
     assert claim_path.is_file()
     assert not list((runtime_root / "work_queue" / "done").glob("*.json"))
 
@@ -1868,14 +1933,16 @@ def test_legacy_tokenless_claim_cannot_be_refreshed_or_released(
     )
 
     assert heartbeat.returncode == 0, heartbeat.stderr
-    assert release.returncode != 0
-    assert "claim_owner_mismatch" in release.stderr
+    assert release.returncode == 3
+    assert "claim_owner_legacy_tokenless" in release.stderr
     assert json.loads(claim_path.read_text(encoding="utf-8")) == legacy_claim
 
 
 def test_powershell_claim_can_be_heartbeated_and_released_by_python_owner(
     tmp_path: Path,
 ) -> None:
+    initialized = _git("init", "-b", "diagnostic-test", cwd=tmp_path)
+    assert initialized.returncode == 0, initialized.stderr
     runtime_root = tmp_path / "bridge-runtime"
     task_id = "powershell-to-python-owner-parity"
     created = _run_script(
@@ -1901,6 +1968,22 @@ def test_powershell_claim_can_be_heartbeated_and_released_by_python_owner(
             "owner_process_start_utc",
         )
     }
+    expected_diagnostics = {
+        name: original[name]
+        for name in (
+            "writer_pid",
+            "writer_pid_semantics",
+            "cwd",
+            "git_branch",
+        )
+        if original.get(name)
+    }
+    assert set(expected_diagnostics) == {
+        "writer_pid",
+        "writer_pid_semantics",
+        "cwd",
+        "git_branch",
+    }
 
     refreshed = python_heartbeat(
         agent="codex",
@@ -1920,6 +2003,9 @@ def test_powershell_claim_can_be_heartbeated_and_released_by_python_owner(
     assert {
         name: after_heartbeat[name] for name in expected_owner
     } == expected_owner
+    assert {
+        name: after_heartbeat[name] for name in expected_diagnostics
+    } == expected_diagnostics
 
     released = python_release_task(
         agent="codex",
@@ -1935,6 +2021,9 @@ def test_powershell_claim_can_be_heartbeated_and_released_by_python_owner(
     assert len(done_files) == 1
     done = json.loads(done_files[0].read_text(encoding="utf-8"))
     assert {name: done[name] for name in expected_owner} == expected_owner
+    assert {
+        name: done[name] for name in expected_diagnostics
+    } == expected_diagnostics
 
 
 def test_python_claim_can_be_heartbeated_and_released_by_powershell_owner(
@@ -1996,3 +2085,1561 @@ def test_python_claim_can_be_heartbeated_and_released_by_powershell_owner(
     done = json.loads(done_files[0].read_text(encoding="utf-8"))
     assert done["session_id"] == original["session_id"]
     assert {name: done[name] for name in expected_owner} == expected_owner
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("owner_session_id", "invalid owner session"),
+        ("owner_session_id", "pytest-session\n"),
+        ("owner_session_id", 123),
+        ("owner_token_sha256", "A" * 64),
+        (
+            "owner_token_sha256",
+            hashlib.sha256(("a" * 64).encode("utf-8")).hexdigest() + "\n",
+        ),
+        ("owner_pid", 0),
+        ("owner_pid", "not-a-pid"),
+        ("owner_pid", " 1 "),
+        ("owner_pid", True),
+        ("owner_pid", 1.0),
+        ("owner_pid", 2**31),
+        ("owner_process_start_utc", "not-a-time"),
+        ("owner_process_start_utc", "2026-07-28 00:00:00Z"),
+        ("owner_process_start_utc", "2026-07-28T00:00:00Z\n"),
+        ("owner_process_start_utc", "2026-07-28T00:00:00z"),
+        ("owner_process_start_utc", "2026-07-28T00:00:00+0300"),
+    ],
+    ids=[
+        "malformed-session",
+        "session-trailing-lf",
+        "session-nonstring",
+        "uppercase-digest",
+        "digest-trailing-lf",
+        "nonpositive-pid",
+        "malformed-pid",
+        "whitespace-pid",
+        "boolean-pid",
+        "floating-pid",
+        "overflow-pid",
+        "malformed-process-start",
+        "loose-process-start",
+        "process-start-trailing-lf",
+        "lowercase-z-process-start",
+        "compact-offset-process-start",
+    ],
+)
+def test_present_but_invalid_stored_owner_is_legacy_tokenless(
+    tmp_path: Path,
+    field: str,
+    invalid_value: object,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"invalid-stored-owner-{field}-{type(invalid_value).__name__}"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "stored owner validation fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim[field] = invalid_value
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+    mutated = claim_path.read_text(encoding="utf-8")
+
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+    forced = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "must not replace malformed stored owner",
+        "-Force",
+        bound_agent="codex",
+    )
+
+    assert released.returncode == 3
+    assert "claim_owner_legacy_tokenless" in released.stderr
+    assert forced.returncode != 0
+    assert "claim_owner_legacy_tokenless" in forced.stderr
+    assert claim_path.read_text(encoding="utf-8") == mutated
+
+
+@pytest.mark.parametrize(
+    (
+        "requested_agent",
+        "bound_agent",
+        "task_id",
+        "extra_env",
+        "expected_error",
+    ),
+    [
+        (
+            "codex\n",
+            "codex",
+            "requested-agent-trailing-lf",
+            None,
+            "identity_mismatch",
+        ),
+        (
+            "codex",
+            "codex\n",
+            "bound-agent-trailing-lf",
+            None,
+            "identity_mismatch",
+        ),
+        (
+            "codex",
+            "codex",
+            "task-trailing-lf\n",
+            None,
+            "task_id invalid",
+        ),
+        (
+            "codex",
+            "codex",
+            "owner-session-trailing-lf",
+            {"AGENT_BRIDGE_OWNER_SESSION_ID": "pytest-session\n"},
+            "claim_owner_mismatch",
+        ),
+        (
+            "codex",
+            "codex",
+            "owner-token-trailing-lf",
+            {"AGENT_BRIDGE_OWNER_TOKEN": ("a" * 64) + "\n"},
+            "claim_owner_mismatch",
+        ),
+        (
+            "codex",
+            "codex",
+            "loose-owner-process-start",
+            {
+                "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": (
+                    "2026-07-28 00:00:00Z"
+                )
+            },
+            "claim_owner_mismatch",
+        ),
+    ],
+    ids=[
+        "requested-agent",
+        "bound-agent",
+        "task-id",
+        "owner-session",
+        "owner-token",
+        "owner-process-start",
+    ],
+)
+def test_claim_rejects_noncanonical_identity_values_before_runtime_write(
+    tmp_path: Path,
+    requested_agent: str,
+    bound_agent: str,
+    task_id: str,
+    extra_env: dict[str, str] | None,
+    expected_error: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        requested_agent,
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "must reject before runtime write",
+        bound_agent=bound_agent,
+        extra_env=extra_env,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_claim_accepts_canonical_fractional_offset_owner_process_start(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "canonical-owner-process-start"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "canonical offset timestamp is valid",
+        bound_agent="codex",
+        extra_env={
+            "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": (
+                "2026-07-28T03:04:05.1234567+03:00"
+            )
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    claim = json.loads(
+        (
+            runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert claim["owner_process_start_utc"].startswith(
+        "2026-07-28T00:04:05.1234567"
+    )
+
+
+@pytest.mark.parametrize(
+    "stale_env",
+    [None, "123"],
+    ids=["stale-env-unset", "stale-env-set"],
+)
+def test_powershell_claim_default_lease_matches_python_default(
+    tmp_path: Path,
+    stale_env: str | None,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "default-lease-parity"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "omitted lease uses shared default",
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_STALE_LEASE_SECONDS": stale_env},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    claim = json.loads(
+        (
+            runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+    claimed_at = datetime.fromisoformat(claim["claimed_at_utc"])
+    expires_at = datetime.fromisoformat(claim["claim_lease_expires_utc"])
+    assert claim["lease_seconds"] == 900
+    assert (expires_at - claimed_at).total_seconds() == 900
+
+
+@pytest.mark.parametrize("lease_seconds", ["0", "-1"])
+def test_powershell_claim_rejects_explicit_nonpositive_lease_before_write(
+    tmp_path: Path,
+    lease_seconds: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        f"invalid-lease-{lease_seconds.replace('-', 'negative')}",
+        "-Summary",
+        "must reject explicit nonpositive lease",
+        "-LeaseSeconds",
+        lease_seconds,
+        bound_agent="codex",
+    )
+
+    assert completed.returncode != 0
+    assert "lease_seconds must be a positive Int32" in completed.stderr
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize(
+    "write_scope",
+    ["", "   ", ", ,"],
+    ids=["empty", "whitespace", "commas-only"],
+)
+def test_powershell_write_claim_rejects_empty_normalized_scope_before_write(
+    tmp_path: Path,
+    write_scope: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "empty-normalized-write-scope",
+        "-Summary",
+        "must reject unscoped write claim",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        write_scope,
+        bound_agent="codex",
+    )
+
+    assert completed.returncode != 0
+    assert "write claims require at least one -WriteScope path" in (
+        completed.stderr
+    )
+    assert not runtime_root.exists()
+
+
+def test_heartbeat_skips_duplicate_task_group_but_refreshes_unique_claim(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    duplicate_task = "duplicate-heartbeat-group"
+    unique_task = "unique-heartbeat-claim"
+
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        duplicate_task,
+        "-Summary",
+        "heartbeat duplicate grouping fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+
+    claims_dir = runtime_root / "work_queue" / "claims"
+    duplicate_path = claims_dir / f"{duplicate_task}.json"
+    duplicate_shadow = claims_dir / "duplicate-heartbeat-shadow.json"
+    shutil.copy2(duplicate_path, duplicate_shadow)
+    unique_path = claims_dir / f"{unique_task}.json"
+    unique_claim = json.loads(duplicate_path.read_text(encoding="utf-8"))
+    unique_claim["task_id"] = unique_task
+    unique_claim["summary"] = "unique heartbeat grouping fixture"
+    unique_claim["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+    unique_claim["claim_lease_expires_utc"] = "2026-07-28T00:15:00Z"
+    unique_path.write_text(json.dumps(unique_claim), encoding="utf-8")
+    duplicate_before = {
+        path.name: path.read_bytes()
+        for path in (duplicate_path, duplicate_shadow)
+    }
+
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        "duplicate-group-heartbeat-event",
+        bound_agent="codex",
+    )
+
+    assert heartbeat.returncode == 0, heartbeat.stderr
+    assert "duplicate active claim records for exact task_id" in (
+        heartbeat.stdout + heartbeat.stderr
+    )
+    assert {
+        path.name: path.read_bytes()
+        for path in (duplicate_path, duplicate_shadow)
+    } == duplicate_before
+    refreshed_unique = json.loads(unique_path.read_text(encoding="utf-8"))
+    assert refreshed_unique["last_heartbeat_utc"] != "2026-07-28T00:00:00Z"
+    assert (
+        refreshed_unique["claim_lease_expires_utc"]
+        != "2026-07-28T00:15:00Z"
+    )
+
+
+def test_heartbeat_stored_agent_comparison_is_case_sensitive(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "case-sensitive-heartbeat-agent"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "case-sensitive stored agent fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim["agent"] = "Codex"
+    claim["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+    original = claim_path.read_bytes()
+
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        "case-sensitive-agent-heartbeat-event",
+        bound_agent="codex",
+    )
+
+    assert heartbeat.returncode == 0, heartbeat.stderr
+    assert claim_path.read_bytes() == original
+
+
+def test_release_missing_runtime_root_refuses_without_writing(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "missing-release-task",
+        bound_agent="codex",
+    )
+
+    assert released.returncode == 2
+    assert "no active claim found for task" in released.stderr
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "a",
+        "invalid task",
+        "a//b",
+        "a/./b",
+        "a/../b",
+        "a" * 122,
+    ],
+    ids=[
+        "too-short",
+        "space",
+        "empty-segment",
+        "dot-segment",
+        "parent-segment",
+        "too-long",
+    ],
+)
+def test_powershell_claim_and_release_reject_python_invalid_task_ids_before_write(
+    tmp_path: Path,
+    task_id: str,
+) -> None:
+    claim_root = tmp_path / "claim-runtime"
+    release_root = tmp_path / "release-runtime"
+
+    claimed = _run_script(
+        claim_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "must reject invalid task id",
+        bound_agent="codex",
+    )
+    released = _run_script(
+        release_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+
+    assert claimed.returncode != 0
+    assert "task_id invalid" in claimed.stderr
+    assert released.returncode != 0
+    assert "task_id invalid" in released.stderr
+    assert not claim_root.exists()
+    assert not release_root.exists()
+
+
+def test_slash_task_powershell_claim_python_force_heartbeat_release(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "powershell/slash-to-python"
+    claim_basename = _slash_claim_basename(task_id)
+    claim_path = (
+        runtime_root / "work_queue" / "claims" / f"{claim_basename}.json"
+    )
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "PowerShell slash claim consumed by Python",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    assert claim_path.is_file()
+    assert not (
+        runtime_root
+        / "work_queue"
+        / "claims"
+        / "powershell_slash-to-python.json"
+    ).exists()
+    original = json.loads(claim_path.read_text(encoding="utf-8"))
+    original_diagnostics = {
+        name: original[name]
+        for name in ("writer_pid", "writer_pid_semantics", "cwd", "git_branch")
+        if original.get(name)
+    }
+
+    now = datetime.now(timezone.utc)
+    refreshed_before_force = python_heartbeat(
+        agent="codex",
+        task_id=task_id,
+        bridge_root=runtime_root,
+        now_utc=now,
+    )
+    assert refreshed_before_force.task_id == task_id
+    after_first_heartbeat = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert {
+        name: after_first_heartbeat[name] for name in original_diagnostics
+    } == original_diagnostics
+
+    forced = python_claim_task(
+        agent="codex",
+        task_id=task_id,
+        summary="Python force-updated the discovered slash claim",
+        bridge_root=runtime_root,
+        now_utc=now + timedelta(seconds=1),
+        force=True,
+    )
+    assert forced.task_id == task_id
+    after_force = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert after_force["summary"] == "Python force-updated the discovered slash claim"
+    assert len(list(claim_path.parent.glob("*.json"))) == 1
+
+    refreshed = python_heartbeat(
+        agent="codex",
+        task_id=task_id,
+        bridge_root=runtime_root,
+        now_utc=now + timedelta(seconds=2),
+    )
+    assert refreshed.task_id == task_id
+
+    released = python_release_task(
+        agent="codex",
+        task_id=task_id,
+        bridge_root=runtime_root,
+        now_utc=now + timedelta(seconds=3),
+    )
+    assert released.task_id == task_id
+    assert not claim_path.exists()
+    done_files = list((runtime_root / "work_queue" / "done").glob("*.json"))
+    assert len(done_files) == 1
+    assert done_files[0].name.startswith(f"{claim_basename}-")
+
+
+def test_slash_task_python_claim_powershell_force_heartbeat_release(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "python/slash-to-powershell"
+    claim_basename = _slash_claim_basename(task_id)
+    claim_path = (
+        runtime_root / "work_queue" / "claims" / f"{claim_basename}.json"
+    )
+    python_claim_task(
+        agent="codex",
+        task_id=task_id,
+        summary="Python slash claim consumed by PowerShell",
+        bridge_root=runtime_root,
+        now_utc=datetime.now(timezone.utc),
+    )
+    assert claim_path.is_file()
+    before = json.loads(claim_path.read_text(encoding="utf-8"))
+
+    forced = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "PowerShell force-updated the discovered slash claim",
+        "-Force",
+        bound_agent="codex",
+    )
+    assert forced.returncode == 0, forced.stderr
+    assert claim_path.is_file()
+    assert len(list(claim_path.parent.glob("*.json"))) == 1
+    after_force = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert (
+        after_force["summary"]
+        == "PowerShell force-updated the discovered slash claim"
+    )
+    assert after_force["owner_session_id"] == before["owner_session_id"]
+    assert after_force["owner_token_sha256"] == before["owner_token_sha256"]
+    assert not (
+        claim_path.parent / "python_slash-to-powershell.json"
+    ).exists()
+
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+    assert heartbeat.returncode == 0, heartbeat.stderr
+    after_heartbeat = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert (
+        after_heartbeat["last_heartbeat_utc"]
+        != after_force["last_heartbeat_utc"]
+    )
+
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+    assert released.returncode == 0, released.stderr
+    assert not claim_path.exists()
+    done_files = list((runtime_root / "work_queue" / "done").glob("*.json"))
+    assert len(done_files) == 1
+    assert done_files[0].name.startswith(f"{claim_basename}.")
+
+
+def test_powershell_claim_and_release_refuse_duplicate_exact_task_records(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "duplicate/slash-task"
+    claim_basename = _slash_claim_basename(task_id)
+    claim_path = (
+        runtime_root / "work_queue" / "claims" / f"{claim_basename}.json"
+    )
+    python_claim_task(
+        agent="codex",
+        task_id=task_id,
+        summary="duplicate exact task fixture",
+        bridge_root=runtime_root,
+        now_utc=datetime.now(timezone.utc),
+    )
+    shadow_path = claim_path.parent / "duplicate-shadow.json"
+    shutil.copy2(claim_path, shadow_path)
+    original = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (claim_path, shadow_path)
+    }
+
+    forced = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "must refuse duplicate task records",
+        "-Force",
+        bound_agent="codex",
+    )
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+
+    assert forced.returncode != 0
+    assert "duplicate active claim records for exact task_id" in forced.stderr
+    assert released.returncode != 0
+    assert "duplicate active claim records for exact task_id" in released.stderr
+    assert {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (claim_path, shadow_path)
+    } == original
+
+
+def test_python_and_powershell_share_legacy_expiry_decisions(
+    tmp_path: Path,
+) -> None:
+    python_root = tmp_path / "python-runtime"
+    powershell_root = tmp_path / "powershell-runtime"
+    fixture_now = datetime.now(timezone.utc)
+
+    def iso(value: datetime) -> str:
+        return value.isoformat().replace("+00:00", "Z")
+
+    fixtures = {
+        "legacy-parity-stale": {
+            "claimed_at_utc": iso(fixture_now - timedelta(seconds=600)),
+            "last_heartbeat_utc": iso(fixture_now + timedelta(days=1)),
+            "owner_pid": "not-a-pid",
+        },
+        "legacy-parity-fresh": {
+            "claimed_at_utc": iso(fixture_now - timedelta(seconds=60)),
+            "last_heartbeat_utc": iso(fixture_now + timedelta(days=1)),
+            "owner_pid": os.getpid(),
+            "owner_process_start_utc": "not-a-time",
+        },
+    }
+    for runtime_root in (python_root, powershell_root):
+        claims_dir = runtime_root / "work_queue" / "claims"
+        claims_dir.mkdir(parents=True)
+        for task_id, overrides in fixtures.items():
+            payload = {
+                "agent": "codex",
+                "task_id": task_id,
+                "summary": "shared legacy expiry fixture",
+                "mode": "read-only",
+                "write_scope": [],
+                "run_id": "legacy-parity",
+                "claimed_at_utc": "",
+                "last_heartbeat_utc": "",
+                "lease_seconds": 300,
+                "claim_lease_expires_utc": iso(
+                    fixture_now + timedelta(days=1)
+                ),
+                "owner_session_id": "pytest-session",
+                "owner_token_sha256": hashlib.sha256(
+                    ("a" * 64).encode("utf-8")
+                ).hexdigest(),
+                "owner_pid": os.getpid(),
+                "owner_process_start_utc": "2026-07-28T00:00:00Z",
+                "writer_pid": 4242,
+                "writer_pid_semantics": "diagnostic_only",
+                "cwd": "C:\\diagnostic-fixture",
+                "git_branch": "diagnostic-branch",
+            }
+            payload.update(overrides)
+            (claims_dir / f"{task_id}.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+
+    python_archived = python_archive_stale_claims(
+        bridge_root=python_root,
+        now_utc=fixture_now,
+        max_age_seconds=300,
+        apply=True,
+    )
+    powershell_sweep = _run_script(
+        powershell_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "300",
+        "-Quiet",
+    )
+
+    assert [item.claim.task_id for item in python_archived] == [
+        "legacy-parity-stale"
+    ]
+    assert powershell_sweep.returncode == 0, powershell_sweep.stderr
+    for runtime_root in (python_root, powershell_root):
+        claims_dir = runtime_root / "work_queue" / "claims"
+        assert not (claims_dir / "legacy-parity-stale.json").exists()
+        assert (claims_dir / "legacy-parity-fresh.json").is_file()
+        done_files = list(
+            (runtime_root / "work_queue" / "done").glob(
+                "legacy-parity-stale*.json"
+            )
+        )
+        assert len(done_files) == 1
+        archived = json.loads(done_files[0].read_text(encoding="utf-8-sig"))
+        assert "legacy tokenless claim claimed_at_utc" in archived[
+            "release_reason"
+        ]
+        assert archived["last_heartbeat_utc"] == fixtures[
+            "legacy-parity-stale"
+        ]["last_heartbeat_utc"]
+        assert archived["claim_lease_expires_utc"] == iso(
+            fixture_now + timedelta(days=1)
+        )
+        assert archived["writer_pid"] == 4242
+        assert archived["writer_pid_semantics"] == "diagnostic_only"
+        assert archived["cwd"] == "C:\\diagnostic-fixture"
+        assert archived["git_branch"] == "diagnostic-branch"
+
+
+def test_powershell_stale_sweep_treats_out_of_range_owner_offset_as_legacy(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    task_id = "owner-offset-out-of-range"
+    payload = {
+        "agent": "codex",
+        "task_id": task_id,
+        "summary": "out-of-range offset must be legacy",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "offset-review",
+        "claimed_at_utc": (
+            now - timedelta(seconds=600)
+        ).isoformat().replace("+00:00", "Z"),
+        "last_heartbeat_utc": (
+            now + timedelta(days=1)
+        ).isoformat().replace("+00:00", "Z"),
+        "lease_seconds": 300,
+        "claim_lease_expires_utc": (
+            now + timedelta(days=1)
+        ).isoformat().replace("+00:00", "Z"),
+        "owner_session_id": "pytest-session",
+        "owner_token_sha256": hashlib.sha256(
+            ("a" * 64).encode("utf-8")
+        ).hexdigest(),
+        "owner_pid": os.getpid(),
+        "owner_process_start_utc": "2026-07-28T00:00:00+15:00",
+    }
+    claim_path = claims_dir / f"{task_id}.json"
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "300",
+        "-Quiet",
+    )
+
+    assert swept.returncode == 0, swept.stderr
+    assert not claim_path.exists()
+
+
+def test_powershell_stale_sweep_clamps_max_timestamp_lease_overflow(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    task_id = "max-timestamp-lease"
+    payload = {
+        "agent": "codex",
+        "task_id": task_id,
+        "summary": "maximum timestamp must not abort sweep",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "max-time-review",
+        "claimed_at_utc": "9999-12-31T23:59:59Z",
+        "last_heartbeat_utc": "9999-12-31T23:59:59Z",
+        "lease_seconds": 300,
+        "claim_lease_expires_utc": "",
+        "owner_session_id": "pytest-session",
+        "owner_token_sha256": hashlib.sha256(
+            ("a" * 64).encode("utf-8")
+        ).hexdigest(),
+        "owner_pid": os.getpid(),
+        "owner_process_start_utc": "2026-07-28T00:00:00Z",
+    }
+    claim_path = claims_dir / f"{task_id}.json"
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "300",
+        "-Quiet",
+    )
+
+    assert swept.returncode == 0, swept.stderr
+    assert claim_path.is_file()
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
+@pytest.mark.parametrize("threshold", ["0", "-1"])
+def test_powershell_stale_sweep_rejects_nonpositive_threshold_before_write(
+    tmp_path: Path,
+    threshold: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        threshold,
+        "-Quiet",
+    )
+
+    assert swept.returncode != 0
+    assert "StaleSeconds must be a positive Int32" in swept.stderr
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize(
+    "write_scope",
+    ["///", "\\", " / , \\\\ "],
+    ids=["slashes", "backslash", "comma-packed-empty"],
+)
+def test_powershell_write_claim_rejects_overlap_empty_scope_before_write(
+    tmp_path: Path,
+    write_scope: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "overlap-empty-write-scope",
+        "-Summary",
+        "scope must normalize to a path",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        write_scope,
+        bound_agent="codex",
+    )
+
+    assert completed.returncode != 0
+    assert "write claims require at least one -WriteScope path" in (
+        completed.stderr
+    )
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize(
+    "stored_scope",
+    [
+        ["tools/foo.py, tests/bar.py"],
+        [],
+        [", ,"],
+        None,
+        [123],
+    ],
+    ids=["comma-packed", "empty", "commas-only", "null", "nonstring"],
+)
+def test_powershell_claim_refuses_legacy_unsafe_stored_write_scope(
+    tmp_path: Path,
+    stored_scope: object,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "legacy-write-scope-holder"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "legacy scope fixture",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "placeholder",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload["write_scope"] = stored_scope
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = claim_path.read_bytes()
+
+    refused = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "new-overlapping-write",
+        "-Summary",
+        "must fail closed",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tests/bar.py",
+        bound_agent="codex",
+    )
+
+    assert refused.returncode == 3
+    assert "write-scope conflict" in refused.stderr
+    assert claim_path.read_bytes() == before
+    assert not (
+        runtime_root
+        / "work_queue"
+        / "claims"
+        / "new-overlapping-write.json"
+    ).exists()
+
+
+def test_powershell_uppercase_write_mode_is_canonical_and_blocks_python(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "uppercase-write-holder"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "uppercase mode fixture",
+        "-Mode",
+        "WRITE",
+        "-WriteScope",
+        "tools",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    assert json.loads(claim_path.read_text(encoding="utf-8"))["mode"] == "write"
+
+    with pytest.raises(WorkQueueError, match="write-scope conflict"):
+        python_claim_task(
+            agent="codex-2",
+            task_id="python-overlap-uppercase-mode",
+            summary="must observe canonical PS write",
+            mode="write",
+            write_scope=["tools/example.py"],
+            bridge_root=runtime_root,
+        )
+
+
+@pytest.mark.parametrize(
+    ("lease_case", "lease_value"),
+    [
+        ("missing", None),
+        ("null", None),
+        ("boolean", True),
+        ("float", 1.0),
+        ("overflow", 2**31),
+    ],
+)
+def test_powershell_heartbeat_canonicalizes_invalid_or_missing_lease(
+    tmp_path: Path,
+    lease_case: str,
+    lease_value: object,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"heartbeat-default-lease-{lease_case}"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "heartbeat lease canonicalization fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    if lease_case == "missing":
+        payload.pop("lease_seconds", None)
+    else:
+        payload["lease_seconds"] = lease_value
+    payload.pop("claim_lease_expires_utc", None)
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    heartbeat_result = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        f"{task_id}-event",
+        bound_agent="codex",
+    )
+
+    assert heartbeat_result.returncode == 0, heartbeat_result.stderr
+    refreshed = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert type(refreshed["lease_seconds"]) is int
+    assert refreshed["lease_seconds"] == 900
+    heartbeat_at = datetime.fromisoformat(
+        refreshed["last_heartbeat_utc"].replace("Z", "+00:00")
+    )
+    expires_at = datetime.fromisoformat(
+        refreshed["claim_lease_expires_utc"].replace("Z", "+00:00")
+    )
+    assert (expires_at - heartbeat_at).total_seconds() == 900
+
+
+@pytest.mark.parametrize(
+    "owner_process_start_utc",
+    [
+        "2026-07-28T00:00:00z",
+        "2026-07-28T00:00:00+0300",
+    ],
+    ids=["lowercase-z", "compact-offset"],
+)
+def test_powershell_heartbeat_rejects_noncanonical_stored_owner_timestamp(
+    tmp_path: Path,
+    owner_process_start_utc: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "heartbeat-noncanonical-owner-time"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "owner timestamp validation fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload["owner_process_start_utc"] = owner_process_start_utc
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = claim_path.read_bytes()
+
+    heartbeat_result = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        f"{task_id}-event",
+        bound_agent="codex",
+    )
+
+    assert heartbeat_result.returncode == 0, heartbeat_result.stderr
+    assert claim_path.read_bytes() == before
+
+
+def test_powershell_stale_case_insensitive_archive_collision_is_zero_write(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    template_task = "stale-case-template"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        template_task,
+        "-Summary",
+        "case collision template",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claims_dir = runtime_root / "work_queue" / "claims"
+    template_path = claims_dir / f"{template_task}.json"
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+    template_path.unlink()
+    paths = (
+        claims_dir / "legacy-upper.json",
+        claims_dir / "legacy-lower.json",
+    )
+    for path, task_id in zip(paths, ("CaseTask", "casetask"), strict=True):
+        payload = dict(template)
+        payload["task_id"] = task_id
+        payload["claimed_at_utc"] = "2026-07-28T00:00:00Z"
+        payload["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+        payload["lease_seconds"] = 1
+        payload["claim_lease_expires_utc"] = "2026-07-28T00:00:01Z"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in paths}
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+    )
+
+    assert swept.returncode != 0
+    assert "stale archive destination collision" in swept.stderr
+    assert {path.name: path.read_bytes() for path in paths} == before
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
+def test_powershell_stale_existing_directory_collision_is_zero_write(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    paths = (
+        claims_dir / "legacy-first.json",
+        claims_dir / "legacy-second.json",
+    )
+    owner_digest = hashlib.sha256(("a" * 64).encode("utf-8")).hexdigest()
+    for path, task_id in zip(
+        paths,
+        ("directory-collision-first", "directory-collision-second"),
+        strict=True,
+    ):
+        payload = {
+            "agent": "codex",
+            "task_id": task_id,
+            "summary": "directory collision fixture",
+            "mode": "read-only",
+            "write_scope": [],
+            "run_id": "pytest",
+            "claimed_at_utc": "2026-07-28T00:00:00Z",
+            "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+            "lease_seconds": 1,
+            "claim_lease_expires_utc": "2026-07-28T00:00:01Z",
+            "owner_session_id": "pytest-session",
+            "owner_token_sha256": owner_digest,
+            "owner_pid": os.getpid(),
+            "owner_process_start_utc": "2026-07-28T00:00:00Z",
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in paths}
+    done_dir = runtime_root / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    start = datetime.now(timezone.utc)
+    for offset in range(120):
+        stamp = (start + timedelta(seconds=offset)).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        (
+            done_dir
+            / f"directory-collision-second.{stamp}.stale_lease.json"
+        ).mkdir()
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+    )
+
+    assert swept.returncode != 0
+    assert "stale archive destination already exists" in swept.stderr
+    assert {path.name: path.read_bytes() for path in paths} == before
+    assert not list(done_dir.glob("directory-collision-first.*.json"))
+
+
+def test_powershell_stale_sweep_waits_for_python_mutation_lock(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    task_id = "powershell-freshened-before-locked-sweep"
+    claim_path = claims_dir / f"{task_id}.json"
+    payload = {
+        "agent": "codex",
+        "task_id": task_id,
+        "summary": "cross-runtime lock race fixture",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "pytest",
+        "claimed_at_utc": "2026-07-28T00:00:00Z",
+        "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+        "lease_seconds": 900,
+        "claim_lease_expires_utc": "2026-07-28T00:15:00Z",
+        "owner_session_id": "pytest-session",
+        "owner_token_sha256": hashlib.sha256(
+            ("a" * 64).encode("utf-8")
+        ).hexdigest(),
+        "owner_pid": os.getpid(),
+        "owner_process_start_utc": "2026-07-28T00:00:00Z",
+    }
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    command = [
+        _powershell(),
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(BRIDGE_BIN / "Invoke-StaleClaimSweep.ps1"),
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+    ]
+
+    with _claim_mutation_lock(runtime_root):
+        process = subprocess.Popen(
+            command,
+            cwd=runtime_root.parent,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.2)
+        assert process.poll() is None
+        refreshed_at = datetime.now(timezone.utc)
+        payload["last_heartbeat_utc"] = refreshed_at.isoformat().replace(
+            "+00:00",
+            "Z",
+        )
+        payload["claim_lease_expires_utc"] = (
+            refreshed_at + timedelta(seconds=900)
+        ).isoformat().replace("+00:00", "Z")
+        claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    stdout, stderr = process.communicate(timeout=15)
+    assert process.returncode == 0, f"{stdout}\n{stderr}"
+    assert claim_path.is_file()
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
+def test_powershell_stale_sweep_rolls_back_archive_when_claim_delete_fails(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "stale-delete-denied"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "delete denial rollback fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload["claimed_at_utc"] = "2026-07-28T00:00:00Z"
+    payload["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+    payload["lease_seconds"] = 1
+    payload["claim_lease_expires_utc"] = "2026-07-28T00:00:01Z"
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before_claim = claim_path.read_bytes()
+    wrapper = tmp_path / "deny-delete-stale-sweep.ps1"
+    wrapper.write_text(
+        """
+param(
+    [Parameter(Mandatory)] [string] $ClaimPath,
+    [Parameter(Mandatory)] [string] $SweepPath
+)
+$stream = [System.IO.File]::Open(
+    $ClaimPath,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::Read
+)
+try {
+    & $SweepPath -StaleSeconds 1 -Quiet | Out-Null
+} finally {
+    $stream.Dispose()
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+
+    swept = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper),
+            "-ClaimPath",
+            str(claim_path),
+            "-SweepPath",
+            str(BRIDGE_BIN / "Invoke-StaleClaimSweep.ps1"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert swept.returncode != 0
+    assert "stale claim sweep incomplete" in swept.stderr
+    assert claim_path.read_bytes() == before_claim
+    done_dir = runtime_root / "work_queue" / "done"
+    assert not list(done_dir.glob("*.stale_lease.json"))
+    assert not list(done_dir.glob("*.tmp.*"))
+
+
+def test_powershell_stale_sweep_retains_nonstring_task_identity(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claim_path = claims_dir / "malformed-nonstring-task.json"
+    payload = {
+        "agent": "codex",
+        "task_id": 1.0,
+        "summary": "nonstring task identity fixture",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "pytest",
+        "claimed_at_utc": "2026-07-28T00:00:00Z",
+        "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+        "lease_seconds": 1,
+        "claim_lease_expires_utc": "2026-07-28T00:00:01Z",
+    }
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = claim_path.read_bytes()
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+    )
+
+    assert swept.returncode == 0, swept.stderr
+    assert claim_path.read_bytes() == before
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
+def test_powershell_release_destination_collision_is_zero_write(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "release-destination-collision"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "release collision fixture",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    before_claim = claim_path.read_bytes()
+    done_dir = runtime_root / "work_queue" / "done"
+    done_dir.mkdir(parents=True)
+    sentinel = b"preexisting-release-archive"
+    start = datetime.now(timezone.utc)
+    sentinel_paths: list[Path] = []
+    for offset in range(120):
+        stamp = (start + timedelta(seconds=offset)).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        path = done_dir / f"{task_id}.{stamp}.done.json"
+        path.write_bytes(sentinel)
+        sentinel_paths.append(path)
+
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+
+    assert released.returncode == 3
+    assert "release archive destination already exists" in released.stderr
+    assert claim_path.read_bytes() == before_claim
+    assert all(path.read_bytes() == sentinel for path in sentinel_paths)
+    assert not list(claim_path.parent.glob(f"{task_id}.json.tmp.*"))
+    assert not list(claim_path.parent.glob(f"{task_id}.json.bak.*"))
+
+
+def test_powershell_release_backup_restore_uses_valid_displaced_path(
+    tmp_path: Path,
+) -> None:
+    original_path = tmp_path / "active-claim.json"
+    backup_path = tmp_path / "active-claim.json.bak"
+    original_path.write_bytes(b"released-state")
+    backup_path.write_bytes(b"original-active-state")
+    wrapper = tmp_path / "restore-release-backup.ps1"
+    wrapper.write_text(
+        """
+param(
+    [Parameter(Mandatory)] [string] $IdentityPath,
+    [Parameter(Mandatory)] [string] $OriginalPath,
+    [Parameter(Mandatory)] [string] $BackupPath
+)
+. $IdentityPath
+Restore-AgentBridgeFileBackup `
+    -OriginalPath $OriginalPath `
+    -BackupPath $BackupPath
+""".strip(),
+        encoding="utf-8",
+    )
+
+    restored = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper),
+            "-IdentityPath",
+            str(BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"),
+            "-OriginalPath",
+            str(original_path),
+            "-BackupPath",
+            str(backup_path),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert restored.returncode == 0, restored.stderr
+    assert original_path.read_bytes() == b"original-active-state"
+    assert not backup_path.exists()
+    assert not list(tmp_path.glob("*.rollback-displaced.*"))

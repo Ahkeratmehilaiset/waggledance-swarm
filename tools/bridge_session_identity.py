@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Fail-closed session-agent identity checks for bridge command-line tools."""
+"""Fail-closed session-agent identity checks for bridge mutation surfaces."""
 from __future__ import annotations
 
 import json
@@ -21,9 +21,10 @@ def cli_identity_mismatch(
 ) -> dict[str, object] | None:
     """Return a deterministic mismatch report for an identity-bearing CLI.
 
-    The ambient identity is intentionally checked only by CLI entry points.
-    Library callers remain explicit about the ``agent`` argument and do not
-    inherit process-environment policy.
+    CLI entry points use this helper for their deterministic report shape.
+    Mutation-capable work-queue core APIs enforce the same ambient binding
+    before owner-context or filesystem access; pure evaluation libraries
+    remain explicit about their ``agent`` arguments.
     """
 
     source = os.environ if environ is None else environ

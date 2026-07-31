@@ -14,8 +14,9 @@ SCRIPT = ROOT / "tools" / "check_bridge_changes_requested.py"
 
 sys.path.insert(0, str(ROOT))
 
+import tools.check_bridge_changes_requested as gate_module  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
-    check_bridge_clear_to_merge,
+    check_bridge_clear_to_merge as _raw_check_bridge_clear_to_merge,
     _read_events,
 )
 import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
@@ -27,6 +28,13 @@ AGENT_UUIDS = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
+TASK_SCOPE_TEST_PR_NUMBER = 2_147_483_647
+
+
+def check_bridge_clear_to_merge(**kwargs):
+    """Exercise task-scope algorithms with a positive, nonmatching PR."""
+    kwargs.setdefault("pr_number", TASK_SCOPE_TEST_PR_NUMBER)
+    return _raw_check_bridge_clear_to_merge(**kwargs)
 
 
 def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
@@ -1247,7 +1255,7 @@ def test_no_block_text_does_not_downgrade_real_blocking_status() -> None:
         assert result["latest_blocking_event"]["status"] == status
 
 
-def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:
+def test_task_id_and_positive_pr_mismatch_stay_out_of_scope() -> None:
     events = [
         _event(
             "2026-05-27T07:31:39Z",
@@ -1276,6 +1284,48 @@ def test_unrelated_event_types_are_ignored() -> None:
         events=events, task_id="T", merging_agent="claude"
     )
     assert result["clear_to_merge"] is True
+
+
+def test_public_library_rejects_incomplete_pr_scope_before_registry_or_scan(
+    monkeypatch,
+) -> None:
+    def fail_registry_load():
+        raise AssertionError("identity registry must not load")
+
+    class ExplodingEvents:
+        def __iter__(self):
+            raise AssertionError("events must not be scanned")
+
+    monkeypatch.setattr(
+        gate_module,
+        "load_bridge_identity_registry",
+        fail_registry_load,
+    )
+
+    for pr_number in (None, 0, -1):
+        result = _raw_check_bridge_clear_to_merge(
+            events=ExplodingEvents(),
+            task_id="T",
+            merging_agent="claude",
+            author_agent=" codex ",
+            pr_number=pr_number,
+        )
+
+        assert result == {
+            "ok": False,
+            "clear_to_merge": False,
+            "decision": "scope_incomplete",
+            "task_id": "T",
+            "pr_number": pr_number,
+            "merging_agent": "claude",
+            "author_agent": "codex",
+            "latest_blocking_event": None,
+            "latest_approval_event": None,
+            "error": (
+                "--pr-number must be a positive integer to evaluate "
+                "complete PR scope"
+            ),
+        }
 
 
 def test_cli_rejects_incomplete_pr_scope_before_bridge_resolution(

@@ -258,6 +258,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _has_complete_pr_scope(pr_number: int | None) -> bool:
+    return type(pr_number) is int and pr_number > 0
+
+
+def _scope_incomplete_result(
+    *,
+    task_id: str,
+    pr_number: int | None,
+    merging_agent: str,
+    author_agent: str = "",
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "clear_to_merge": False,
+        "decision": "scope_incomplete",
+        "task_id": task_id,
+        "pr_number": pr_number,
+        "merging_agent": merging_agent,
+        "author_agent": (author_agent or "").strip(),
+        "latest_blocking_event": None,
+        "latest_approval_event": None,
+        "error": (
+            "--pr-number must be a positive integer to evaluate "
+            "complete PR scope"
+        ),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.task_id or not args.task_id.strip():
@@ -266,22 +294,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.from_agent or not args.from_agent.strip():
         print("--from-agent must not be empty", file=sys.stderr)
         return 2
-    if args.pr_number is None or args.pr_number <= 0:
-        result = {
-            "ok": False,
-            "clear_to_merge": False,
-            "decision": "scope_incomplete",
-            "task_id": args.task_id,
-            "pr_number": args.pr_number,
-            "merging_agent": args.from_agent,
-            "author_agent": (args.author_agent or "").strip(),
-            "latest_blocking_event": None,
-            "latest_approval_event": None,
-            "error": (
-                "--pr-number must be a positive integer to evaluate "
-                "complete PR scope"
-            ),
-        }
+    if not _has_complete_pr_scope(args.pr_number):
+        result = _scope_incomplete_result(
+            task_id=args.task_id,
+            pr_number=args.pr_number,
+            merging_agent=args.from_agent,
+            author_agent=args.author_agent,
+        )
         if args.json:
             print(json.dumps(result, sort_keys=True))
         else:
@@ -358,13 +377,22 @@ def check_bridge_clear_to_merge(
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
-    We scan events for the task_id and optional PR number, then record the most
-    recent authoritative signal. ``author_agent`` is asymmetric: author
-    approval signals are ignored as self-review, author clear/retraction
-    signals can clear that author's own prior block, and author-originated
+    We scan events for the task_id and required positive PR number, then
+    record the most recent authoritative signal. ``author_agent`` is
+    asymmetric: author approval signals are ignored as self-review, author
+    clear/retraction signals can clear that author's own prior block, and
+    author-originated
     blocking or changes-requested signals still count. If the most recent
     authoritative signal is blocking, we refuse. Otherwise we permit.
     """
+    if not _has_complete_pr_scope(pr_number):
+        return _scope_incomplete_result(
+            task_id=task_id,
+            pr_number=pr_number,
+            merging_agent=merging_agent,
+            author_agent=author_agent,
+        )
+
     author_agent = (author_agent or "").strip()
     try:
         registry = (

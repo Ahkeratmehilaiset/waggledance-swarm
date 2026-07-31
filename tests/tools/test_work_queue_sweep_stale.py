@@ -19,6 +19,7 @@ from waggledance.core.work_queue import claim_task  # noqa: E402
 @pytest.fixture(autouse=True)
 def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.delenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", raising=False)
     monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
@@ -94,6 +95,50 @@ def test_cli_uses_runtime_bridge_root_env_by_default(
     assert payload["archived"][0]["applied"] is False
     # Dry-run did not mutate the runtime-root claim.
     assert (bridge / "work_queue" / "claims" / "task-cli-env-stale.json").exists()
+
+
+def test_cli_uses_stale_lease_environment_threshold_by_default(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    task_id = "legacy-env-threshold"
+    payload = {
+        "agent": "claude-1",
+        "task_id": task_id,
+        "summary": "legacy environment threshold",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "",
+        "claimed_at_utc": (
+            now - timedelta(seconds=600)
+        ).isoformat().replace("+00:00", "Z"),
+        "last_heartbeat_utc": (
+            now + timedelta(days=1)
+        ).isoformat().replace("+00:00", "Z"),
+        "claim_lease_expires_utc": (
+            now + timedelta(days=1)
+        ).isoformat().replace("+00:00", "Z"),
+    }
+    (claims_dir / f"{task_id}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", "1000")
+
+    exit_code = sweep_cli.main(
+        ["--bridge-root", str(bridge), "--json"]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    report = json.loads(captured.out)
+    assert report["max_age_seconds"] == 1000
+    assert report["archived"] == []
 
 
 def test_cli_apply_archives_and_emits_json(

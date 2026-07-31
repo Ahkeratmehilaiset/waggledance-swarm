@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ from waggledance.core.work_queue import claim_task
 @pytest.fixture(autouse=True)
 def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.delenv("AGENT_BRIDGE_STALE_LEASE_SECONDS", raising=False)
     monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
@@ -513,6 +514,74 @@ def test_stale_command_outputs_json(tmp_path: Path, capsys) -> None:
     )
     assert exit_code == 0
     assert report == {"claims": [], "decision": "stale_claims", "ok": True}
+
+
+def test_stale_command_defaults_to_300_second_fallback(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claimed_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=301)
+    ).isoformat().replace("+00:00", "Z")
+    (claims_dir / "legacy-default-stale.json").write_text(
+        json.dumps(
+            {
+                "agent": "codex-1",
+                "task_id": "legacy-default-stale",
+                "summary": "missing stored lease uses CLI default",
+                "mode": "read-only",
+                "write_scope": [],
+                "run_id": "",
+                "claimed_at_utc": claimed_at,
+                "last_heartbeat_utc": (
+                    datetime.now(timezone.utc) + timedelta(days=1)
+                ).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "stale",
+    )
+
+    assert exit_code == 3
+    assert [claim["task_id"] for claim in report["claims"]] == [
+        "legacy-default-stale"
+    ]
+
+
+def test_claim_over_int32_lease_returns_work_queue_error_without_write(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "cli-invalid-lease",
+        "--summary",
+        "must not write",
+        "--lease-seconds",
+        str(2**31),
+    )
+
+    assert exit_code == 2
+    assert report["decision"] == "work_queue_error"
+    assert "positive Int32" in report["errors"][0]
+    assert not bridge.exists()
 
 
 def test_stale_command_returns_exit_three_for_stale_claims(

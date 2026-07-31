@@ -26,13 +26,15 @@ from pathlib import Path
 
 from waggledance.core.work_queue import (
     ArchivedClaim,
+    DEFAULT_STALE_MAX_SECONDS,
     WorkQueueError,
     archive_stale_claims,
     resolve_bridge_root,
+    resolve_stale_max_seconds,
 )
 
 
-CLI_DEFAULT_MAX_AGE_SECONDS = 300
+CLI_DEFAULT_MAX_AGE_SECONDS = DEFAULT_STALE_MAX_SECONDS
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,9 +57,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-age-seconds",
         type=int,
-        default=CLI_DEFAULT_MAX_AGE_SECONDS,
+        default=None,
         help=(
             "Lease threshold in seconds (default: "
+            "AGENT_BRIDGE_STALE_LEASE_SECONDS, then "
             f"{CLI_DEFAULT_MAX_AGE_SECONDS}s). Claims whose "
             "last_heartbeat_utc is older than this are swept."
         ),
@@ -96,10 +99,13 @@ def main(argv: list[str] | None = None) -> int:
 
     now = datetime.now(timezone.utc)
     try:
+        effective_max_age_seconds = resolve_stale_max_seconds(
+            args.max_age_seconds
+        )
         archived = archive_stale_claims(
             bridge_root=bridge_root,
             now_utc=now,
-            max_age_seconds=args.max_age_seconds,
+            max_age_seconds=effective_max_age_seconds,
             apply=args.apply,
         )
     except WorkQueueError as exc:
@@ -112,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         payload = {
             "applied": args.apply,
-            "max_age_seconds": args.max_age_seconds,
+            "max_age_seconds": effective_max_age_seconds,
             "now_utc": now.isoformat().replace("+00:00", "Z"),
             "archived": [_serialize(record) for record in archived],
         }
@@ -121,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     label = "ARCHIVED" if args.apply else "WOULD ARCHIVE"
     if not archived:
-        print(f"no stale claims (threshold {args.max_age_seconds}s)")
+        print(f"no stale claims (threshold {effective_max_age_seconds}s)")
         return 0
     for record in archived:
         print(

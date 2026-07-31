@@ -20,6 +20,8 @@ Set-StrictMode -Version Latest
 $sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
 . $sessionIdentity
 Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+Assert-AgentBridgeTaskId -TaskId $TaskId
+$Mode = $Mode.ToLowerInvariant()
 
 function Assert-NoBridgePrivateMarker {
     param(
@@ -62,6 +64,25 @@ $Capabilities = @(
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ }
 )
+$normalizedWriteScope = New-Object System.Collections.Generic.List[string]
+$seenWriteScope = New-Object 'System.Collections.Generic.HashSet[string]' (
+    [System.StringComparer]::Ordinal
+)
+foreach ($scopeValue in @($WriteScope)) {
+    foreach ($scopePart in ([string]$scopeValue -split ',')) {
+        $scope = $scopePart.Trim()
+        $overlapScope = (($scope -replace '\\','/').Trim('/'))
+        if (
+            -not $scope -or
+            -not $overlapScope -or
+            -not $seenWriteScope.Add($scope)
+        ) {
+            continue
+        }
+        [void]$normalizedWriteScope.Add($scope)
+    }
+}
+$WriteScope = @($normalizedWriteScope)
 $sessionId = [string]$env:AGENT_BRIDGE_SESSION_ID
 if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
     throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
@@ -86,13 +107,42 @@ foreach ($capability in @($Capabilities)) {
 if ([string]::IsNullOrWhiteSpace($TaskId)) {
     throw 'Bridge event type=claim requires non-empty -TaskId before writing'
 }
-if ($Mode -eq 'write' -and @($WriteScope).Count -eq 0) {
+if ($Mode -eq 'write' -and $WriteScope.Count -eq 0) {
     throw 'write claims require at least one -WriteScope path'
 }
-$safeTask = (($TaskId -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
-if (-not $safeTask) {
-    throw 'TaskId does not produce a safe claim filename'
+if ($PSBoundParameters.ContainsKey('LeaseSeconds')) {
+    if ($LeaseSeconds -le 0) {
+        throw 'lease_seconds must be a positive Int32'
+    }
+} else {
+    $LeaseSeconds = 900
 }
+
+function ConvertTo-BridgeClaimBaseName {
+    param(
+        [Parameter(Mandatory)] [string] $Value
+    )
+
+    $safeValue = (($Value -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    if (-not $safeValue) {
+        throw 'TaskId does not produce a safe claim filename'
+    }
+    if ($safeValue -ceq $Value) {
+        return $safeValue
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $valueBytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $digest = [System.BitConverter]::ToString(
+            $sha256.ComputeHash($valueBytes)
+        ).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    return '{0}-{1}' -f $safeValue, $digest.Substring(0, 12)
+}
+$claimBaseName = ConvertTo-BridgeClaimBaseName -Value $TaskId
 Assert-NoBridgePrivateMarker -Label 'task_id' -Value $TaskId
 Assert-NoBridgePrivateMarker -Label 'summary' -Value $Summary
 Assert-NoBridgePrivateMarker -Label 'write_scope' -Value $WriteScope
@@ -128,14 +178,29 @@ function Normalize-Scope {
     return (($Scope -replace '\\','/').Trim('/')).ToLowerInvariant()
 }
 
+function Expand-ScopeList {
+    param([object[]] $Scope)
+
+    foreach ($scopeValue in @($Scope)) {
+        if ($scopeValue -isnot [string]) { continue }
+        foreach ($scopePart in ([string]$scopeValue -split ',')) {
+            $normalized = Normalize-Scope $scopePart.Trim()
+            if ($normalized) { $normalized }
+        }
+    }
+}
+
 function Test-ScopeOverlap {
-    param([string[]] $A, [string[]] $B)
-    foreach ($a0 in @($A)) {
-        $a = Normalize-Scope $a0
-        if (-not $a) { continue }
-        foreach ($b0 in @($B)) {
-            $b = Normalize-Scope $b0
-            if (-not $b) { continue }
+    param([object[]] $A, [object[]] $B)
+    $normalizedA = @(Expand-ScopeList -Scope $A)
+    $normalizedB = @(Expand-ScopeList -Scope $B)
+    if ($normalizedA.Count -gt 0 -and $normalizedB.Count -eq 0) {
+        # Historical writers could persist write claims without a usable
+        # scope. Treat them as a wildcard instead of allowing unsafe overlap.
+        return $true
+    }
+    foreach ($a in $normalizedA) {
+        foreach ($b in $normalizedB) {
             if ($a -eq '*' -or $b -eq '*') { return $true }
             if ($a -eq $b) { return $true }
             if ($a.StartsWith($b + '/') -or $b.StartsWith($a + '/')) { return $true }
@@ -158,8 +223,6 @@ function Get-CurrentGitBranch {
     return ''
 }
 
-$claimPath = Join-Path $claimsDir ($safeTask + '.json')
-
 # R15 follow-up (Codex review 2026-05-09): claim acquisition is the
 # path that most needs stale-lease continuity. Status/read helpers
 # sweep opportunistically too, but a claim-first agent must not be
@@ -173,46 +236,89 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     }
 }
 
+$mutationLock = Enter-AgentBridgeMutationLock -BridgeRoot $bridgeRoot
+try {
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+$parsedClaims = @()
 foreach ($file in $activeClaims) {
     try {
-        $existing = Get-Content -Raw -Path $file.FullName -Encoding UTF8 | ConvertFrom-Json
+        $existing = ConvertFrom-AgentBridgeJson -Json (
+            Get-Content -Raw -Path $file.FullName -Encoding UTF8
+        )
     } catch {
         continue
     }
-    if ([string]$existing.task_id -eq $TaskId) {
-        if (-not $Force) {
-            Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existing.agent, $file.FullName) -Code 2
-        }
-        if ([string]$existing.agent -ne $Agent -and $Agent -notin @('operator','system')) {
-            Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $file.FullName) -Code 3
-        }
-        if ([string]$existing.agent -eq $Agent) {
-            try {
-                Assert-AgentBridgeClaimOwner `
-                    -Claim $existing `
-                    -OwnerContext $ownerContext `
-                    -Operation 'force-update'
-            } catch {
-                Stop-BridgeClaim -Message $_.Exception.Message -Code 3
-            }
-        }
-        continue
-    }
-    if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
-        if (Test-ScopeOverlap -A $WriteScope -B @($existing.write_scope)) {
-            Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $existing.task_id, $existing.agent, ((@($existing.write_scope)) -join ', ')) -Code 3
-        }
+    $parsedClaims += [pscustomobject]@{
+        file = $file
+        claim = $existing
     }
 }
 
-if ($LeaseSeconds -le 0 -and $env:AGENT_BRIDGE_STALE_LEASE_SECONDS) {
-    $parsedLease = 0
-    if ([int]::TryParse([string]$env:AGENT_BRIDGE_STALE_LEASE_SECONDS, [ref]$parsedLease) -and $parsedLease -gt 0) {
-        $LeaseSeconds = $parsedLease
+$taskMatches = @(
+    $parsedClaims |
+        Where-Object {
+            $_.claim.PSObject.Properties['task_id'] -and
+            $_.claim.task_id -is [string] -and
+            [string]$_.claim.task_id -ceq $TaskId
+        }
+)
+if ($taskMatches.Count -gt 1) {
+    $duplicatePaths = @($taskMatches | ForEach-Object { $_.file.FullName })
+    Stop-BridgeClaim `
+        -Message ("duplicate active claim records for exact task_id '{0}': {1}" -f $TaskId, ($duplicatePaths -join ', ')) `
+        -Code 3
+}
+
+$forceUpdateExisting = $false
+if ($taskMatches.Count -eq 1) {
+    $matchedEntry = $taskMatches[0]
+    $existing = $matchedEntry.claim
+    $claimPath = $matchedEntry.file.FullName
+    if (-not $Force) {
+        Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existing.agent, $claimPath) -Code 2
+    }
+    if ([string]$existing.agent -cne $Agent -and $Agent -notin @('operator','system')) {
+        Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $claimPath) -Code 3
+    }
+    if ([string]$existing.agent -ceq $Agent) {
+        try {
+            Assert-AgentBridgeClaimOwner `
+                -Claim $existing `
+                -OwnerContext $ownerContext `
+                -Operation 'force-update'
+        } catch {
+            Stop-BridgeClaim -Message $_.Exception.Message -Code 3
+        }
+    }
+    $forceUpdateExisting = $true
+} else {
+    $claimPath = Join-Path $claimsDir ($claimBaseName + '.json')
+    if (Test-Path -LiteralPath $claimPath) {
+        Stop-BridgeClaim `
+            -Message ("claim filename collision for task_id '{0}': {1}" -f $TaskId, $claimPath) `
+            -Code 3
     }
 }
-if ($LeaseSeconds -le 0) { $LeaseSeconds = 300 }
+
+foreach ($entry in $parsedClaims) {
+    if ($forceUpdateExisting -and
+        $entry.file.FullName -ceq $claimPath) {
+        continue
+    }
+    $existing = $entry.claim
+    if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
+        $existingScope = if (
+            $existing.PSObject.Properties['write_scope']
+        ) {
+            @($existing.write_scope)
+        } else {
+            @()
+        }
+        if (Test-ScopeOverlap -A $WriteScope -B $existingScope) {
+            Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $existing.task_id, $existing.agent, (($existingScope) -join ', ')) -Code 3
+        }
+    }
+}
 
 $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
 $leaseExpiresUtc = ([DateTime]::Parse($nowUtc).ToUniversalTime()).AddSeconds($LeaseSeconds).ToString('o')
@@ -221,8 +327,8 @@ $claim = [ordered]@{
     # R15: stale-claim-lease. last_heartbeat_utc is bumped by
     # Send-Liveness.ps1 on heartbeat/liveness-active events for
     # this agent; Invoke-StaleClaimSweep.ps1 archives claims whose
-    # heartbeat is older than AGENT_BRIDGE_STALE_LEASE_SECONDS
-    # (default 300s). On creation it equals claimed_at_utc so a
+    # effective stored lease (900s by default, matching the Python work
+    # queue). On creation it equals claimed_at_utc so a
     # claim that's never heart-beated still has a finite lease.
     last_heartbeat_utc  = $nowUtc
     agent               = $Agent
@@ -250,34 +356,20 @@ if (@($Capabilities).Count -gt 0) { $claim['capabilities'] = @($Capabilities) }
 $json = ($claim | ConvertTo-Json -Depth 8)
 
 $encoding = New-Object System.Text.UTF8Encoding($false)
-try {
-    $fs = New-Object System.IO.FileStream($claimPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
-    try {
-        $bytes = $encoding.GetBytes($json)
-        $fs.Write($bytes, 0, $bytes.Length)
-    } finally {
-        $fs.Dispose()
-    }
-} catch {
-    if (-not $Force) {
-        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
-    }
-    # Internal review fix R7 (2026-05-09): the -Force fallback used
-    # Set-Content, which is non-atomic; a concurrent reader could
-    # observe a partially-written claim and treat it as malformed.
-    # Write to a temp sibling and Replace() so readers always see the
-    # old or the new claim, never a torn write.
+if ($forceUpdateExisting) {
+    # Update the exact claim record discovered by task_id. In particular, this
+    # preserves Python's collision-resistant filename for task IDs containing
+    # slashes instead of creating a second sanitized-only claim.
     $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
     [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
     $backupClaim = $null
     try {
-        if (Test-Path -LiteralPath $claimPath) {
-            $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
-            [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
-            try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
-        } else {
-            [System.IO.File]::Move($tmpClaim, $claimPath)
+        if (-not (Test-Path -LiteralPath $claimPath -PathType Leaf)) {
+            throw "claim disappeared before force-update: $claimPath"
         }
+        $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
+        [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
+        try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
     } catch {
         try {
             if ($backupClaim -and (Test-Path -LiteralPath $backupClaim)) {
@@ -287,6 +379,26 @@ try {
         try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
         throw
     }
+} else {
+    try {
+        $fs = New-Object System.IO.FileStream(
+            $claimPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read
+        )
+        try {
+            $bytes = $encoding.GetBytes($json)
+            $fs.Write($bytes, 0, $bytes.Length)
+        } finally {
+            $fs.Dispose()
+        }
+    } catch {
+        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
+    }
+}
+} finally {
+    Exit-AgentBridgeMutationLock -Lock $mutationLock
 }
 
 & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `

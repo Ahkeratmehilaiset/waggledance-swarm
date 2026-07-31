@@ -50,7 +50,10 @@ def _ev(ts: str, agent: str, type_: str, status: str, task: str = "T") -> dict:
 
 def _clear(events: list[dict]) -> bool:
     return check_bridge_clear_to_merge(
-        events=events, task_id="T", merging_agent="codex-lead-1"
+        events=events,
+        task_id="T",
+        merging_agent="codex-lead-1",
+        pr_number=1,
     )["clear_to_merge"]
 
 

@@ -25,6 +25,7 @@ OWNER_SESSION_ID = "pytest-owner-session"
 
 @pytest.fixture(autouse=True)
 def _valid_owner_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
     monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-work-queue-session")
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", OWNER_SESSION_ID)
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", OWNER_TOKEN)
@@ -99,6 +100,44 @@ def test_bridge_namespaced_task_id_file_name_does_not_collide(
     claim_files = sorted((bridge / "work_queue" / "claims").glob("*.json"))
     assert len(claim_files) == 2
     assert {path.stem for path in claim_files} != {"codex-tools-1_task"}
+
+
+def test_claim_refuses_preferred_path_occupied_by_different_task_without_write(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    requested_task_id = "codex-tools-1/preferred-path-collision"
+    claim_task(
+        agent="codex-tools-1",
+        task_id="different-logical-task",
+        summary="occupy another task's preferred path",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    original_path = claims_dir / "different-logical-task.json"
+    safe = requested_task_id.replace("/", "_")
+    digest = hashlib.sha256(requested_task_id.encode("utf-8")).hexdigest()[:12]
+    collision_path = claims_dir / f"{safe}-{digest}.json"
+    original_path.rename(collision_path)
+    before = {
+        path.name: path.read_bytes()
+        for path in claims_dir.glob("*.json")
+    }
+
+    with pytest.raises(WorkQueueError, match="claim filename collision"):
+        claim_task(
+            agent="codex-tools-1",
+            task_id=requested_task_id,
+            summary="must not overwrite a different logical task",
+            bridge_root=bridge,
+            force=True,
+        )
+
+    assert {
+        path.name: path.read_bytes()
+        for path in claims_dir.glob("*.json")
+    } == before
+    assert not (bridge / "work_queue" / "done").exists()
 
 
 def test_heartbeat_accepts_legacy_powershell_namespaced_claim_file(
@@ -272,6 +311,26 @@ def test_claim_write_mode_requires_scope(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("write_scope", [["///"], ["\\"], [" / , \\\\ "]])
+def test_claim_write_mode_rejects_overlap_empty_scope_before_write(
+    tmp_path: Path,
+    write_scope: list[str],
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="write claims require"):
+        claim_task(
+            agent="claude-1",
+            task_id="overlap-empty-scope",
+            summary="scope must normalize to a path",
+            mode="write",
+            write_scope=write_scope,
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
 def test_claim_refuses_overlapping_agent_claim(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
@@ -336,6 +395,24 @@ def test_claim_requires_complete_owner_context_before_write(
             agent="claude-1",
             task_id="task-owner-context",
             summary="must fail without owner context",
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
+def test_claim_rejects_owner_pid_outside_powershell_range_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", str(2**31))
+
+    with pytest.raises(WorkQueueError, match="claim_owner_context_invalid"):
+        claim_task(
+            agent="claude-1",
+            task_id="task-owner-pid-overflow",
+            summary="must fail before writing",
             bridge_root=bridge,
         )
 
@@ -544,6 +621,18 @@ def test_diagnostic_owner_fields_do_not_authorize_mutations(
         summary="diagnostic owner fields",
         bridge_root=bridge,
     )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    claim_payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim_payload.update(
+        {
+            "writer_pid": "9876",
+            "writer_pid_semantics": "diagnostic_only",
+            "cwd": r"C:\Python\project2",
+            "git_branch": "codex-lead-1/example",
+            "owner_token": OWNER_TOKEN,
+        }
+    )
+    claim_path.write_text(json.dumps(claim_payload), encoding="utf-8")
 
     monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", "9999")
     monkeypatch.setenv(
@@ -559,6 +648,7 @@ def test_diagnostic_owner_fields_do_not_authorize_mutations(
         task_id=task_id,
         bridge_root=bridge,
     )
+    after_heartbeat = json.loads(claim_path.read_text(encoding="utf-8"))
     released = release_task(
         agent="claude-1",
         task_id=task_id,
@@ -569,7 +659,20 @@ def test_diagnostic_owner_fields_do_not_authorize_mutations(
 
     assert refreshed.owner_pid == created.owner_pid == 4242
     assert refreshed.owner_process_start_utc == created.owner_process_start_utc
+    assert refreshed.writer_pid == 9876
+    assert refreshed.writer_pid_semantics == "diagnostic_only"
+    assert refreshed.cwd == r"C:\Python\project2"
+    assert refreshed.git_branch == "codex-lead-1/example"
+    assert after_heartbeat["writer_pid"] == 9876
+    assert after_heartbeat["writer_pid_semantics"] == "diagnostic_only"
+    assert after_heartbeat["cwd"] == r"C:\Python\project2"
+    assert after_heartbeat["git_branch"] == "codex-lead-1/example"
+    assert "owner_token" not in after_heartbeat
     assert released.owner_pid == 4242
+    assert released.writer_pid == 9876
+    assert released.writer_pid_semantics == "diagnostic_only"
+    assert released.cwd == r"C:\Python\project2"
+    assert released.git_branch == "codex-lead-1/example"
     assert archived["owner_pid"] == 4242
     assert archived["owner_process_start_utc"] == "2026-07-28T00:00:00Z"
     assert archived["session_id"] == "pytest-work-queue-session"
@@ -578,6 +681,139 @@ def test_diagnostic_owner_fields_do_not_authorize_mutations(
         "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"
     )
     assert archived["capabilities"] == ["implementation", "work_queue"]
+    assert archived["writer_pid"] == 9876
+    assert archived["writer_pid_semantics"] == "diagnostic_only"
+    assert archived["cwd"] == r"C:\Python\project2"
+    assert archived["git_branch"] == "codex-lead-1/example"
+    assert "owner_token" not in archived
+
+
+def test_force_preserves_powershell_audit_fields(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "task-force-audit-fields"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="PowerShell-shaped diagnostic fixture",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    diagnostics = {
+        "writer_pid": 9876,
+        "writer_pid_semantics": "diagnostic_only",
+        "cwd": r"C:\Python\project2",
+        "git_branch": "codex-lead-1/example",
+    }
+    payload.update(diagnostics)
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    forced = claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="Python force refresh",
+        bridge_root=bridge,
+        force=True,
+    )
+    after_force = json.loads(claim_path.read_text(encoding="utf-8"))
+
+    assert forced.writer_pid == diagnostics["writer_pid"]
+    assert forced.writer_pid_semantics == diagnostics["writer_pid_semantics"]
+    assert forced.cwd == diagnostics["cwd"]
+    assert forced.git_branch == diagnostics["git_branch"]
+    assert {name: after_force[name] for name in diagnostics} == diagnostics
+
+
+def test_mutations_refuse_duplicate_exact_task_records(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "duplicate/task-record"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="duplicate exact task fixture",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = next(claims_dir.glob("*.json"))
+    shadow_path = claims_dir / "duplicate-shadow.json"
+    shadow_path.write_bytes(claim_path.read_bytes())
+    original = {
+        path.name: path.read_bytes() for path in (claim_path, shadow_path)
+    }
+
+    operations = (
+        lambda: claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="must not force one duplicate",
+            bridge_root=bridge,
+            force=True,
+        ),
+        lambda: heartbeat(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        ),
+        lambda: release_task(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(
+            WorkQueueError,
+            match="duplicate active claim records for exact task_id",
+        ):
+            operation()
+        assert {
+            path.name: path.read_bytes() for path in (claim_path, shadow_path)
+        } == original
+        assert not (bridge / "work_queue" / "done").exists()
+
+
+def test_malformed_powershell_audit_fields_coerce_to_safe_defaults(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "task-malformed-audit-fields"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="malformed audit metadata",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "writer_pid": True,
+            "writer_pid_semantics": ["not", "text"],
+            "cwd": {"not": "text"},
+            "git_branch": None,
+        }
+    )
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    listed = list_claims(bridge_root=bridge)
+    assert len(listed) == 1
+    assert listed[0].writer_pid == 0
+    assert listed[0].writer_pid_semantics == ""
+    assert listed[0].cwd == ""
+    assert listed[0].git_branch == ""
+
+    heartbeat(
+        agent="claude-1",
+        task_id=task_id,
+        bridge_root=bridge,
+    )
+    normalized = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert "writer_pid" not in normalized
+    assert "writer_pid_semantics" not in normalized
+    assert "cwd" not in normalized
+    assert "git_branch" not in normalized
 
 
 def test_legacy_tokenless_claim_cannot_be_mutated(
@@ -639,9 +875,13 @@ def test_legacy_tokenless_claim_cannot_be_mutated(
     ("field_name", "malformed_value"),
     [
         ("owner_session_id", "bad/session"),
+        ("owner_session_id", 123),
         ("owner_token_sha256", "A" * 64),
         ("owner_pid", "not-a-pid"),
+        ("owner_pid", " 4242 "),
+        ("owner_pid", 2**31),
         ("owner_process_start_utc", "not-a-time"),
+        ("owner_process_start_utc", "2026-07-28T00:00:00Z\n"),
     ],
 )
 def test_malformed_stored_owner_field_is_legacy_tokenless(
@@ -697,6 +937,62 @@ def test_claim_refuses_write_scope_conflict_across_tasks(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.parametrize(
+    ("stored_scope", "stored_mode"),
+    [
+        (["tools/foo.py, tests/bar.py"], "write"),
+        ([], "write"),
+        ([", ,"], "write"),
+        (None, "write"),
+        ([123], "write"),
+        (["tests/bar.py"], "WRITE"),
+    ],
+    ids=[
+        "comma-packed",
+        "empty",
+        "commas-only",
+        "null",
+        "nonstring",
+        "uppercase-write-mode",
+    ],
+)
+def test_claim_refuses_legacy_write_claim_with_unsafe_scope_shape(
+    tmp_path: Path,
+    stored_scope: object,
+    stored_mode: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="legacy-write-holder",
+        summary="legacy write claim fixture",
+        mode="write",
+        write_scope=["placeholder"],
+        bridge_root=bridge,
+    )
+    claim_path = (
+        bridge / "work_queue" / "claims" / "legacy-write-holder.json"
+    )
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload["write_scope"] = stored_scope
+    payload["mode"] = stored_mode
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(WorkQueueError, match="write-scope conflict"):
+        claim_task(
+            agent="codex-1",
+            task_id="overlapping-new-write",
+            summary="must fail closed against legacy claim",
+            mode="write",
+            write_scope=["tests/bar.py"],
+            bridge_root=bridge,
+        )
+
+    assert not (
+        bridge / "work_queue" / "claims" / "overlapping-new-write.json"
+    ).exists()
+
+
 def test_release_archives_to_done_dir(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
@@ -718,6 +1014,43 @@ def test_release_archives_to_done_dir(tmp_path: Path) -> None:
     done_dir = bridge / "work_queue" / "done"
     assert not (claims_dir / "task-001.json").exists()
     assert len(list(done_dir.glob("task-001-*.json"))) == 1
+
+
+def test_release_rolls_back_archive_when_active_claim_delete_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "release-delete-denied"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="release rollback fixture",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    before = claim_path.read_bytes()
+    original_unlink = Path.unlink
+
+    def deny_claim_unlink(path: Path, *args, **kwargs) -> None:
+        if path == claim_path:
+            raise PermissionError("injected active claim delete failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_claim_unlink)
+
+    with pytest.raises(
+        PermissionError,
+        match="injected active claim delete failure",
+    ):
+        release_task(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        )
+
+    assert claim_path.read_bytes() == before
+    assert not list((bridge / "work_queue" / "done").glob("*.json"))
 
 
 def test_release_rejects_wrong_agent(tmp_path: Path) -> None:
@@ -832,7 +1165,7 @@ def test_detect_stale_claims_returns_old_ones(tmp_path: Path) -> None:
         bridge_root=bridge,
         now_utc=old_time,
     )
-    fresh_time = datetime(2026, 5, 18, 9, 30, tzinfo=timezone.utc)
+    fresh_time = datetime(2026, 5, 18, 9, 50, tzinfo=timezone.utc)
     claim_task(
         agent="claude-2",
         task_id="fresh-task",
@@ -840,7 +1173,8 @@ def test_detect_stale_claims_returns_old_ones(tmp_path: Path) -> None:
         bridge_root=bridge,
         now_utc=fresh_time,
     )
-    # Check against now=10h after old, well past 1h stale window
+    # The old claim is expired; the fresh claim remains inside its stored
+    # default 900-second lease.
     now = datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc)
     stale = detect_stale_claims(
         bridge_root=bridge,
@@ -1010,3 +1344,54 @@ def test_default_lease_seconds_applied(tmp_path: Path) -> None:
     )
     claimed = datetime.fromisoformat(claim.claimed_at_utc.replace("Z", "+00:00"))
     assert expires - claimed == timedelta(seconds=DEFAULT_LEASE_SECONDS)
+
+
+@pytest.mark.parametrize(
+    "lease_seconds",
+    [0, -1, True, 1.0, 2**31],
+)
+def test_claim_rejects_non_positive_int32_lease_without_write(
+    tmp_path: Path,
+    lease_seconds: object,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="positive Int32"):
+        claim_task(
+            agent="claude-1",
+            task_id="invalid-lease",
+            summary="must fail before runtime write",
+            lease_seconds=lease_seconds,  # type: ignore[arg-type]
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
+def test_heartbeat_rejects_over_int32_lease_without_write(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(
+        agent="claude-1",
+        task_id="heartbeat-invalid-lease",
+        summary="preserve this claim",
+        bridge_root=bridge,
+    )
+    claim_path = (
+        bridge
+        / "work_queue"
+        / "claims"
+        / "heartbeat-invalid-lease.json"
+    )
+    before = claim_path.read_bytes()
+
+    with pytest.raises(WorkQueueError, match="positive Int32"):
+        heartbeat(
+            agent="claude-1",
+            task_id="heartbeat-invalid-lease",
+            lease_seconds=2**31,
+            bridge_root=bridge,
+        )
+
+    assert claim_path.read_bytes() == before

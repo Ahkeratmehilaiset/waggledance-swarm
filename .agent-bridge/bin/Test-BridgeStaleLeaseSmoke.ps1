@@ -75,6 +75,46 @@ function Convert-SmokeTimestampUtc {
     )).UtcDateTime
 }
 
+function New-SmokeRawClaim {
+    param(
+        [Parameter(Mandatory)] [string] $TaskId,
+        [string] $Agent = 'codex',
+        [Parameter(Mandatory)] [string] $ClaimedAtUtc,
+        [Parameter(Mandatory)] [string] $HeartbeatUtc,
+        [object] $LeaseSeconds = 300,
+        [string] $ExpiresUtc = '',
+        [object] $OwnerPid = 1234,
+        [string] $OwnerProcessStartUtc = '2026-07-28T00:00:00Z'
+    )
+
+    return [ordered]@{
+        claimed_at_utc = $ClaimedAtUtc
+        last_heartbeat_utc = $HeartbeatUtc
+        agent = $Agent
+        task_id = $TaskId
+        summary = "R15 parity fixture: $TaskId"
+        mode = 'read-only'
+        write_scope = @()
+        run_id = 'r15-parity-smoke'
+        lease_seconds = $LeaseSeconds
+        claim_lease_expires_utc = $ExpiresUtc
+        owner_session_id = 'r15-parity-owner'
+        owner_token_sha256 = ('a' * 64)
+        owner_pid = $OwnerPid
+        owner_process_start_utc = $OwnerProcessStartUtc
+    }
+}
+
+function Write-SmokeRawClaim {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] $Claim
+    )
+
+    $Claim | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
 $tempRoot = Join-Path $env:TEMP `
     "bridge-r15-stale-lease-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
@@ -100,10 +140,10 @@ try {
         -WriteScope 'tests/smoke/stale' | Out-Null
     $claimPath = Join-Path $claimsDir 'r15-smoke-stale.json'
 
-    # Backdate last_heartbeat_utc to 10 min ago to simulate stale.
+    # Backdate beyond the stored 900-second lease to simulate stale.
     $obj = Get-Content -Raw -Path $claimPath -Encoding UTF8 |
         ConvertFrom-Json
-    $past = (Get-Date).AddMinutes(-10).ToUniversalTime().ToString('o')
+    $past = (Get-Date).AddMinutes(-20).ToUniversalTime().ToString('o')
     $pastLeaseExpiry = ([DateTime]::Parse($past).ToUniversalTime()).AddSeconds(300).ToString('o')
     $obj.last_heartbeat_utc = $past
     $obj.claim_lease_expires_utc = $pastLeaseExpiry
@@ -236,7 +276,7 @@ try {
     # Backdate it
     $opObj = Get-Content -Raw -Path $opClaimPath -Encoding UTF8 |
         ConvertFrom-Json
-    $opObj.last_heartbeat_utc = $past  # 10 min ago
+    $opObj.last_heartbeat_utc = $past  # 20 min ago
     $opObj.claim_lease_expires_utc = $pastLeaseExpiry
     ($opObj | ConvertTo-Json -Depth 8) |
         Set-Content -Path $opClaimPath -Encoding UTF8
@@ -295,8 +335,12 @@ try {
     $legacyEnv = Get-Content -Raw -Path $legacyEnvPath -Encoding UTF8 |
         ConvertFrom-Json
     $legacyEnv.PSObject.Properties.Remove('lease_seconds')
-    $legacyEnv.PSObject.Properties.Remove('claim_lease_expires_utc')
-    $legacyEnv.last_heartbeat_utc = (Get-Date).AddSeconds(-500).ToUniversalTime().ToString('o')
+    $legacyEnv.owner_pid = 'malformed'
+    $legacyEnv.claimed_at_utc = (Get-Date).AddSeconds(-500).ToUniversalTime().ToString('o')
+    # An incomplete/malformed owner record is legacy: neither of these
+    # unauthenticated future fields may extend its lease.
+    $legacyEnv.last_heartbeat_utc = (Get-Date).AddDays(1).ToUniversalTime().ToString('o')
+    $legacyEnv.claim_lease_expires_utc = (Get-Date).AddDays(1).ToUniversalTime().ToString('o')
     ($legacyEnv | ConvertTo-Json -Depth 8) |
         Set-Content -Path $legacyEnvPath -Encoding UTF8
 
@@ -304,26 +348,307 @@ try {
     # (legacy claim is 500s old).
     $env:AGENT_BRIDGE_STALE_LEASE_SECONDS = '1000'
 
-    # With env=1000, 500s old heartbeat should NOT trigger sweep.
+    # With env=1000, a claim created 500s ago should NOT trigger sweep.
     $sweptEnvHigh = & $sweep -Quiet
     $sweptEnvHighCount = @($sweptEnvHigh).Count
     Add-Check -Name 'env threshold 1000s spares a 500s-old claim' `
         -Passed ((Test-Path -LiteralPath $legacyEnvPath) -and
                  ($sweptEnvHighCount -eq 0)) `
-        -Detail "env=1000 + 500s-old claim => 0 swept"
+        -Detail "legacy claimed_at=-500s + env=1000 => 0 swept"
 
-    # Now lower env to 100s; 500s-old claim should be swept.
+    # Now lower env to 100s; claimed_at controls even though the mutable
+    # heartbeat and explicit-expiry fields are both in the future.
     $env:AGENT_BRIDGE_STALE_LEASE_SECONDS = '100'
     $sweptEnvLow = & $sweep -Quiet
     $sweptEnvLowCount = @($sweptEnvLow).Count
     Add-Check -Name 'env threshold 100s sweeps a 500s-old claim' `
         -Passed ((-not (Test-Path -LiteralPath $legacyEnvPath)) -and
                  ($sweptEnvLowCount -ge 1)) `
-        -Detail "env=100 + 500s-old claim => >=1 swept"
+        -Detail "legacy claimed_at=-500s + future heartbeat/expiry + env=100 => >=1 swept"
 
     # Reset env for cleanup
     Remove-Item Env:AGENT_BRIDGE_STALE_LEASE_SECONDS `
         -ErrorAction SilentlyContinue
+
+    # ── 7: Cross-runtime lease and classification parity ─────────
+    Write-Host ''
+    Write-Host '7. Cross-runtime lease and owner classification parity:'
+    $future = (Get-Date).AddDays(1).ToUniversalTime().ToString('o')
+
+    $farExpiryPath = Join-Path $claimsDir 'r15-smoke-far-expiry.json'
+    Write-SmokeRawClaim -Path $farExpiryPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-smoke-far-expiry' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds 300 `
+            -ExpiresUtc '2099-01-01T00:00:00Z'
+    )
+
+    $largeLeasePath = Join-Path $claimsDir 'r15-smoke-large-lease.json'
+    Write-SmokeRawClaim -Path $largeLeasePath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-smoke-large-lease' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds ([long][int]::MaxValue + 1)
+    )
+
+    $looseOwnerPath = Join-Path $claimsDir 'r15-smoke-loose-owner.json'
+    Write-SmokeRawClaim -Path $looseOwnerPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-smoke-loose-owner' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $future `
+            -ExpiresUtc $future `
+            -OwnerProcessStartUtc 'July 30, 2026 12:00:00'
+    )
+
+    $floatPidPath = Join-Path $claimsDir 'r15-smoke-float-pid.json'
+    Write-SmokeRawClaim -Path $floatPidPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-smoke-float-pid' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $future `
+            -ExpiresUtc $future `
+            -OwnerPid ([double]1)
+    )
+
+    $mixedOperatorPath = Join-Path $claimsDir `
+        'r15-smoke-mixed-operator.json'
+    Write-SmokeRawClaim -Path $mixedOperatorPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-smoke-mixed-operator' `
+            -Agent 'Operator' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds 1
+    )
+
+    $fallbackAnchorPath = Join-Path $claimsDir `
+        'r15-smoke-fallback-anchor.json'
+    Write-SmokeRawClaim -Path $fallbackAnchorPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-smoke-fallback-anchor' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc 'not-a-canonical-time' `
+            -LeaseSeconds 300
+    )
+
+    $payloadFilterPath = Join-Path $claimsDir `
+        'r15-smoke-payload-filter.json'
+    $payloadFilter = New-SmokeRawClaim `
+        -TaskId 'r15-smoke-payload-filter' `
+        -ClaimedAtUtc $past `
+        -HeartbeatUtc $past `
+        -LeaseSeconds 1
+    $payloadFilter['write_scope'] = $null
+    $payloadFilter['capabilities'] = $null
+    $payloadFilter['owner_token'] = 'raw-owner-secret'
+    $payloadFilter['unknown_field'] = 'must-not-persist'
+    Write-SmokeRawClaim -Path $payloadFilterPath -Claim $payloadFilter
+
+    $paritySweep = @(& $sweep -StaleSeconds 300 -Quiet)
+    Add-Check -Name 'far-future explicit expiry survives without Int32 failure' `
+        -Passed (Test-Path -LiteralPath $farExpiryPath) `
+        -Detail '2099 expiry retained and sweep completed'
+    Add-Check -Name 'over-Int32 stored lease falls back and is swept' `
+        -Passed (-not (Test-Path -LiteralPath $largeLeasePath)) `
+        -Detail '2147483648 is malformed, so the 300s fallback applies'
+    Add-Check -Name 'loose owner timestamp is legacy and cannot extend lease' `
+        -Passed (-not (Test-Path -LiteralPath $looseOwnerPath)) `
+        -Detail 'future heartbeat/expiry ignored for noncanonical owner'
+    Add-Check -Name 'floating owner pid is legacy and cannot extend lease' `
+        -Passed (-not (Test-Path -LiteralPath $floatPidPath)) `
+        -Detail 'future heartbeat/expiry ignored for floating owner_pid'
+    Add-Check -Name 'mixed-case Operator spelling is not privileged' `
+        -Passed (-not (Test-Path -LiteralPath $mixedOperatorPath)) `
+        -Detail 'only exact lowercase operator/system are privileged'
+
+    $fallbackArchives = @(Get-ChildItem -Path $doneDir `
+        -Filter 'r15-smoke-fallback-anchor*.stale_lease.json' `
+        -File -ErrorAction SilentlyContinue)
+    $fallbackReason = if ($fallbackArchives.Count -eq 1) {
+        [string](
+            Get-Content -Raw -Path $fallbackArchives[0].FullName `
+                -Encoding UTF8 |
+                ConvertFrom-Json
+        ).release_reason
+    } else {
+        ''
+    }
+    Add-Check -Name 'fallback release reason reports claimed_at_utc anchor' `
+        -Passed ($fallbackReason -match '^claimed_at_utc was [0-9]+s old;') `
+        -Detail "reason=$fallbackReason"
+
+    $payloadArchives = @(Get-ChildItem -Path $doneDir `
+        -Filter 'r15-smoke-payload-filter*.stale_lease.json' `
+        -File -ErrorAction SilentlyContinue)
+    $payloadArchive = if ($payloadArchives.Count -eq 1) {
+        Get-Content -Raw -Path $payloadArchives[0].FullName -Encoding UTF8 |
+            ConvertFrom-Json
+    } else {
+        $null
+    }
+    $payloadFiltered = (
+        $null -ne $payloadArchive -and
+        -not $payloadArchive.PSObject.Properties['owner_token'] -and
+        -not $payloadArchive.PSObject.Properties['unknown_field'] -and
+        -not $payloadArchive.PSObject.Properties['capabilities'] -and
+        @($payloadArchive.write_scope).Count -eq 0
+    )
+    Add-Check -Name 'archive allowlist strips secret and malformed metadata' `
+        -Passed $payloadFiltered `
+        -Detail 'owner_token/unknown/capabilities absent; write_scope=[]'
+
+    # ── 8: Collision-resistant archive names ────────────────────
+    Write-Host ''
+    Write-Host '8. Collision-resistant create-new archive names:'
+    $slashTaskId = 'r15/smoke-slash'
+    $slashClaimPath = Join-Path $claimsDir 'legacy-r15-smoke-slash.json'
+    Write-SmokeRawClaim -Path $slashClaimPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId $slashTaskId `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds 1
+    )
+    $collisionOnePath = Join-Path $claimsDir 'collide+a.json'
+    $collisionTwoPath = Join-Path $claimsDir 'collide=a.json'
+    Write-SmokeRawClaim -Path $collisionOnePath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-collision-one' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds 1
+    )
+    Write-SmokeRawClaim -Path $collisionTwoPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId 'r15-collision-two' `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds 1
+    )
+    $collisionSweep = @(& $sweep -StaleSeconds 1 -Quiet)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $slashDigest = [System.BitConverter]::ToString(
+            $sha256.ComputeHash(
+                [System.Text.Encoding]::UTF8.GetBytes($slashTaskId)
+            )
+        ).Replace('-', '').ToLowerInvariant().Substring(0, 12)
+    } finally {
+        $sha256.Dispose()
+    }
+    $slashArchives = @(Get-ChildItem -Path $doneDir `
+        -Filter "r15_smoke-slash-$slashDigest.*.stale_lease.json" `
+        -File -ErrorAction SilentlyContinue)
+    Add-Check -Name 'slash task archive uses canonical hashed basename' `
+        -Passed (
+            (-not (Test-Path -LiteralPath $slashClaimPath)) -and
+            $slashArchives.Count -eq 1
+        ) `
+        -Detail "expected digest=$slashDigest archives=$($slashArchives.Count)"
+
+    $collisionOneArchives = @(Get-ChildItem -Path $doneDir `
+        -Filter 'r15-collision-one.*.stale_lease.json' `
+        -File -ErrorAction SilentlyContinue)
+    $collisionTwoArchives = @(Get-ChildItem -Path $doneDir `
+        -Filter 'r15-collision-two.*.stale_lease.json' `
+        -File -ErrorAction SilentlyContinue)
+    Add-Check -Name 'source-basename collision preserves both archives' `
+        -Passed (
+            (-not (Test-Path -LiteralPath $collisionOnePath)) -and
+            (-not (Test-Path -LiteralPath $collisionTwoPath)) -and
+            $collisionOneArchives.Count -eq 1 -and
+            $collisionTwoArchives.Count -eq 1
+        ) `
+        -Detail 'collide+a.json and collide=a.json archived independently'
+
+    $createNewTaskId = 'r15-create-new-existing-archive'
+    $createNewClaimPath = Join-Path $claimsDir "$createNewTaskId.json"
+    Write-SmokeRawClaim -Path $createNewClaimPath -Claim (
+        New-SmokeRawClaim `
+            -TaskId $createNewTaskId `
+            -ClaimedAtUtc $past `
+            -HeartbeatUtc $past `
+            -LeaseSeconds 1
+    )
+    $sentinelText = 'existing-archive-must-not-be-overwritten'
+    $sentinelPaths = New-Object System.Collections.Generic.List[string]
+    $sentinelStart = (Get-Date).ToUniversalTime()
+    foreach ($offset in 0..5) {
+        $sentinelStamp = $sentinelStart.AddSeconds($offset).ToString(
+            'yyyyMMddTHHmmssZ'
+        )
+        $sentinelPath = Join-Path $doneDir `
+            "$createNewTaskId.$sentinelStamp.stale_lease.json"
+        Set-Content -LiteralPath $sentinelPath -Value $sentinelText `
+            -Encoding UTF8
+        [void]$sentinelPaths.Add($sentinelPath)
+    }
+    $existingArchiveRefused = $false
+    try {
+        & $sweep -StaleSeconds 1 -Quiet | Out-Null
+    } catch {
+        $existingArchiveRefused = (
+            $_.Exception.Message -match
+            'stale archive destination already exists'
+        )
+    }
+    $sentinelsUnchanged = @(
+        $sentinelPaths |
+            Where-Object {
+                (Get-Content -Raw -LiteralPath $_ -Encoding UTF8).Trim() -ceq
+                    $sentinelText
+            }
+    ).Count -eq $sentinelPaths.Count
+    Add-Check -Name 'existing archive is create-new and leaves claim active' `
+        -Passed (
+            $existingArchiveRefused -and
+            (Test-Path -LiteralPath $createNewClaimPath) -and
+            $sentinelsUnchanged
+        ) `
+        -Detail 'pre-existing archive bytes unchanged; active claim retained'
+
+    # ── 9: Exact-task duplicate preflight ───────────────────────
+    Write-Host ''
+    Write-Host '9. Exact-task duplicate preflight is zero-write:'
+    $duplicateOnePath = Join-Path $claimsDir 'r15-duplicate-one.json'
+    $duplicateTwoPath = Join-Path $claimsDir 'r15-duplicate-two.json'
+    $duplicateClaim = New-SmokeRawClaim `
+        -TaskId 'r15-duplicate-exact-task' `
+        -ClaimedAtUtc $past `
+        -HeartbeatUtc $past `
+        -LeaseSeconds 1
+    Write-SmokeRawClaim -Path $duplicateOnePath -Claim $duplicateClaim
+    Write-SmokeRawClaim -Path $duplicateTwoPath -Claim $duplicateClaim
+    $doneCountBeforeDuplicate = @(
+        Get-ChildItem -Path $doneDir -Filter '*.json' -File `
+            -ErrorAction SilentlyContinue
+    ).Count
+    $duplicateRefused = $false
+    try {
+        & $sweep -StaleSeconds 1 -Quiet | Out-Null
+    } catch {
+        $duplicateRefused = (
+            $_.Exception.Message -match
+            'duplicate active claim records for exact task_id'
+        )
+    }
+    $doneCountAfterDuplicate = @(
+        Get-ChildItem -Path $doneDir -Filter '*.json' -File `
+            -ErrorAction SilentlyContinue
+    ).Count
+    Add-Check -Name 'duplicate exact tasks refuse before archive mutation' `
+        -Passed (
+            $duplicateRefused -and
+            (Test-Path -LiteralPath $duplicateOnePath) -and
+            (Test-Path -LiteralPath $duplicateTwoPath) -and
+            $doneCountAfterDuplicate -eq $doneCountBeforeDuplicate
+        ) `
+        -Detail 'both claims remain and done/ count is unchanged'
 
 } finally {
     Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot

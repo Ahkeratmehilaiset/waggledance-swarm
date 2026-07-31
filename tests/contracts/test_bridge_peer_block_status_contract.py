@@ -57,6 +57,7 @@ def test_authoritative_decorated_peer_veto_statuses_block(
         events=[_event(event_type, status)],
         task_id="bridge-peer-block-status-contract",
         merging_agent="codex-tools-1",
+        pr_number=1,
         identity_registry=AGENT_UUIDS,
     )
 
@@ -82,6 +83,7 @@ def test_non_authoritative_decorated_peer_veto_statuses_do_not_block(
         events=[_event(event_type, status)],
         task_id="bridge-peer-block-status-contract",
         merging_agent="codex-tools-1",
+        pr_number=1,
         identity_registry=AGENT_UUIDS,
     )
 
@@ -107,6 +109,7 @@ def test_contextual_traffic_statuses_do_not_create_peer_vetoes(
         events=[_event(event_type, status, agent="fable-5")],
         task_id="bridge-peer-block-status-contract",
         merging_agent="codex-tools-1",
+        pr_number=1,
         identity_registry=AGENT_UUIDS,
     )
 

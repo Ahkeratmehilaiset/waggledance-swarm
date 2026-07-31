@@ -109,6 +109,20 @@ if (-not $TaskId) {
     }
 }
 
+$claimMutationLock = $null
+if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
+    $activeBridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
+        [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+    } else {
+        Split-Path -Parent $PSScriptRoot
+    }
+    $activeClaimsDir = Join-Path (
+        Join-Path $activeBridgeRoot 'work_queue'
+    ) 'claims'
+    $claimMutationLock = Enter-AgentBridgeMutationLock `
+        -BridgeRoot $activeBridgeRoot
+}
+try {
 & $writeEventScript `
     -Agent $Agent `
     -Type $type `
@@ -138,14 +152,58 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
     }
     $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
     if (Test-Path -LiteralPath $claimsDir -PathType Container) {
-        $heartbeatTs = (Get-Date).ToUniversalTime().ToString('o')
+        $heartbeatNow = (Get-Date).ToUniversalTime()
+        $heartbeatTs = $heartbeatNow.ToString('o')
+        $claimGroups = [System.Collections.Generic.Dictionary[
+            string,
+            System.Collections.Generic.List[object]
+        ]]::new([System.StringComparer]::Ordinal)
         foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' `
-                                          -File -ErrorAction SilentlyContinue)) {
+                                           -File -ErrorAction SilentlyContinue)) {
             try {
-                $obj = Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
-                    ConvertFrom-Json
+                $obj = ConvertFrom-AgentBridgeJson -Json (
+                    Get-Content -Raw -Path $file.FullName -Encoding UTF8
+                )
             } catch { continue }
-            if ([string]$obj.agent -ne $Agent) { continue }
+
+            if (
+                -not $obj.PSObject.Properties['task_id'] -or
+                $obj.task_id -isnot [string]
+            ) { continue }
+            $claimTaskId = [string]$obj.task_id
+            if ([string]::IsNullOrEmpty($claimTaskId)) { continue }
+            if (-not $claimGroups.ContainsKey($claimTaskId)) {
+                $claimGroups.Add(
+                    $claimTaskId,
+                    [System.Collections.Generic.List[object]]::new()
+                )
+            }
+            $claimGroups[$claimTaskId].Add(
+                [pscustomobject]@{
+                    file = $file
+                    claim = $obj
+                }
+            )
+        }
+
+        foreach ($claimTaskId in @($claimGroups.Keys)) {
+            $entries = $claimGroups[$claimTaskId]
+            if ($entries.Count -ne 1) {
+                $duplicatePaths = @(
+                    $entries | ForEach-Object { $_.file.FullName }
+                )
+                Write-Warning (
+                    "duplicate active claim records for exact task_id '{0}'; lease refresh skipped: {1}" -f
+                    $claimTaskId,
+                    ($duplicatePaths -join ', ')
+                )
+                continue
+            }
+
+            $entry = $entries[0]
+            $file = $entry.file
+            $obj = $entry.claim
+            if ([string]$obj.agent -cne $Agent) { continue }
             if (-not (Test-AgentBridgeClaimOwner `
                     -Claim $obj `
                     -OwnerContext $ownerContext)) {
@@ -158,14 +216,26 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
                 $obj | Add-Member -NotePropertyName last_heartbeat_utc `
                     -NotePropertyValue $heartbeatTs -Force
             }
-            if ($obj.PSObject.Properties['lease_seconds']) {
-                $leaseSeconds = 0
-                if ([int]::TryParse([string]$obj.lease_seconds, [ref]$leaseSeconds) -and $leaseSeconds -gt 0) {
-                    $expires = (Get-Date).ToUniversalTime().AddSeconds($leaseSeconds).ToString('o')
-                    $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
-                        -NotePropertyValue $expires -Force
-                }
+            $leaseSeconds = if (
+                $obj.PSObject.Properties['lease_seconds']
+            ) {
+                ConvertTo-BridgePositiveInt32 -Value $obj.lease_seconds
+            } else {
+                0
             }
+            if ($leaseSeconds -le 0) { $leaseSeconds = 900 }
+            $obj | Add-Member -NotePropertyName lease_seconds `
+                -NotePropertyValue $leaseSeconds -Force
+            $expiresAt = try {
+                $heartbeatNow.AddSeconds($leaseSeconds)
+            } catch [System.ArgumentOutOfRangeException] {
+                [DateTime]::SpecifyKind(
+                    [DateTime]::MaxValue,
+                    [DateTimeKind]::Utc
+                )
+            }
+            $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
+                -NotePropertyValue $expiresAt.ToString('o') -Force
             try {
                 $json = ($obj | ConvertTo-Json -Depth 8)
                 $tmp = "$($file.FullName).tmp.$PID.$([guid]::NewGuid().ToString('N'))"
@@ -182,4 +252,7 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
             }
         }
     }
+}
+} finally {
+    Exit-AgentBridgeMutationLock -Lock $claimMutationLock
 }

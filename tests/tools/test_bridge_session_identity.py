@@ -18,7 +18,12 @@ from tools import (
     work_queue,
 )
 from tools.bridge_session_identity import cli_identity_mismatch, emit_identity_mismatch
-from waggledance.core.work_queue import claim_task
+from waggledance.core.work_queue import (
+    WorkQueueError,
+    claim_task,
+    heartbeat,
+    release_task,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -509,6 +514,99 @@ def test_mismatched_queue_claim_release_and_heartbeat_leave_state_unchanged(
         assert exit_code == 2
         _assert_json_mismatch(capsys)
         assert _snapshot_files(bridge_root) == original_state
+
+
+def test_core_queue_mutations_refuse_mismatched_bound_agent_before_owner_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    claim_task(
+        agent=REQUESTED_AGENT,
+        task_id="existing-core-task",
+        summary="must remain claimed",
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 7, 28, tzinfo=timezone.utc),
+    )
+    original_state = _snapshot_files(bridge_root)
+
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", SESSION_AGENT)
+    monkeypatch.delenv("AGENT_BRIDGE_OWNER_TOKEN")
+    operations = (
+        lambda: claim_task(
+            agent=REQUESTED_AGENT,
+            task_id="new-core-task",
+            summary="must not be created",
+            bridge_root=bridge_root,
+        ),
+        lambda: heartbeat(
+            agent=REQUESTED_AGENT,
+            task_id="existing-core-task",
+            bridge_root=bridge_root,
+        ),
+        lambda: release_task(
+            agent=REQUESTED_AGENT,
+            task_id="existing-core-task",
+            bridge_root=bridge_root,
+        ),
+    )
+
+    for operation in operations:
+        with pytest.raises(WorkQueueError, match="identity_mismatch"):
+            operation()
+        assert _snapshot_files(bridge_root) == original_state
+
+
+@pytest.mark.parametrize(
+    "bound_agent",
+    [" malformed", "Codex-Tools-1", "codex tools 1"],
+)
+def test_core_queue_claim_refuses_malformed_bound_agent_before_owner_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bound_agent: str,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", bound_agent)
+    monkeypatch.delenv("AGENT_BRIDGE_OWNER_TOKEN")
+
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        claim_task(
+            agent=REQUESTED_AGENT,
+            task_id="malformed-bound-core-task",
+            summary="must not be created",
+            bridge_root=bridge_root,
+        )
+
+    assert not bridge_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("requested_agent", "bound_agent"),
+    [("operator", None), ("system", None), ("system", "system")],
+)
+def test_core_queue_claim_refuses_unverified_reserved_agent_before_owner_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    requested_agent: str,
+    bound_agent: str | None,
+) -> None:
+    bridge_root = tmp_path / ".agent-bridge"
+    if bound_agent is None:
+        monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_BRIDGE_AGENT", bound_agent)
+    monkeypatch.delenv("AGENT_BRIDGE_OWNER_TOKEN")
+
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        claim_task(
+            agent=requested_agent,
+            task_id="reserved-core-task",
+            summary="must not be created",
+            bridge_root=bridge_root,
+        )
+
+    assert not bridge_root.exists()
 
 
 def test_queue_commands_without_agent_ignore_session_identity(

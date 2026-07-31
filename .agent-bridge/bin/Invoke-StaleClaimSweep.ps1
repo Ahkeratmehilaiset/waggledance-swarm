@@ -130,25 +130,6 @@ function Get-BridgeClaimText {
     return [string]$Claim.$Name
 }
 
-function ConvertTo-BridgeClaimBaseName {
-    param([AllowEmptyString()] [string] $Value)
-
-    $safeValue = (($Value -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
-    if (-not $safeValue) { $safeValue = 'claim' }
-    if ($safeValue -ceq $Value) { return $safeValue }
-
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $valueBytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
-        $digest = [System.BitConverter]::ToString(
-            $sha256.ComputeHash($valueBytes)
-        ).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $sha256.Dispose()
-    }
-    return '{0}-{1}' -f $safeValue, $digest.Substring(0, 12)
-}
-
 function ConvertTo-BridgeStringArray {
     param(
         [object] $Value,
@@ -220,6 +201,13 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     if ($null -eq $claim -or $claim -isnot [pscustomobject]) { continue }
     $storedTaskId = Get-BridgeClaimText -Claim $claim -Name 'task_id'
     if ([string]::IsNullOrEmpty($storedTaskId)) { continue }
+    try {
+        Assert-AgentBridgeTaskId -TaskId $storedTaskId
+    } catch {
+        # Public APIs cannot address malformed task IDs. Retain such records
+        # instead of deriving a runtime-specific archive filename for them.
+        continue
+    }
     $parsedClaims += [pscustomobject]@{
         file = $file
         claim = $claim
@@ -248,6 +236,15 @@ for ($leftIndex = 0; $leftIndex -lt $parsedClaims.Count; $leftIndex++) {
             )
         }
     }
+}
+
+# Validate the collision-resistant preferred path for every addressable claim
+# before computing or publishing any archive. A legacy claim must not route
+# around a preferred filename already occupied by another logical task.
+foreach ($entry in $parsedClaims) {
+    [void](Assert-AgentBridgePreferredClaimPath `
+        -ClaimsDir $claimsDir `
+        -TaskId ([string]$entry.task_id))
 }
 
 $stalePlans = @()
@@ -373,7 +370,7 @@ foreach ($entry in $parsedClaims) {
         "$leaseAnchorField was ${ageSeconds}s old; lease threshold ${effectiveLeaseSeconds}s"
     }
 
-    $safeTask = ConvertTo-BridgeClaimBaseName -Value $taskId
+    $safeTask = Get-AgentBridgeClaimBaseName -TaskId $taskId
     $donePath = Join-Path $doneDir ("$safeTask.$stamp.stale_lease.json")
     $stalePlans += [pscustomobject]@{
         file = $file

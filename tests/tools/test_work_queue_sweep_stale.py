@@ -221,6 +221,37 @@ def test_cli_rejects_zero_max_age_seconds(
     assert "max_age_seconds must be positive" in captured.err
 
 
+@pytest.mark.parametrize(
+    "invalid_integer",
+    ["٤٢", "1_0"],
+    ids=["unicode-digits", "python-literal-separator"],
+)
+def test_cli_max_age_requires_ascii_decimal_without_write(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    invalid_integer: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(SystemExit) as exc_info:
+        sweep_cli.main(
+            [
+                "--bridge-root",
+                str(bridge),
+                "--max-age-seconds",
+                invalid_integer,
+                "--apply",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "expected an ASCII base-10 integer" in captured.err
+    assert captured.out == ""
+    assert not bridge.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_cli_bridge_root_missing_returns_2(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

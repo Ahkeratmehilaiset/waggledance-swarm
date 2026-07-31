@@ -584,6 +584,62 @@ def test_claim_over_int32_lease_returns_work_queue_error_without_write(
     assert not bridge.exists()
 
 
+@pytest.mark.parametrize(
+    "command_args",
+    [
+        (
+            "claim",
+            "--agent",
+            "codex-1",
+            "--task-id",
+            "cli-ascii-integer-claim",
+            "--summary",
+            "must not write",
+            "--lease-seconds",
+        ),
+        (
+            "heartbeat",
+            "--agent",
+            "codex-1",
+            "--task-id",
+            "cli-ascii-integer-heartbeat",
+            "--lease-seconds",
+        ),
+        ("stale", "--max-age-seconds"),
+    ],
+    ids=["claim-lease", "heartbeat-lease", "stale-max-age"],
+)
+@pytest.mark.parametrize(
+    "invalid_integer",
+    ["٤٢", "1_0"],
+    ids=["unicode-digits", "python-literal-separator"],
+)
+def test_integer_arguments_require_ascii_decimal_without_write(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    command_args: tuple[str, ...],
+    invalid_integer: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--bridge-root",
+                str(bridge),
+                *command_args,
+                invalid_integer,
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "expected an ASCII base-10 integer" in captured.err
+    assert captured.out == ""
+    assert not bridge.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_stale_command_returns_exit_three_for_stale_claims(
     tmp_path: Path,
     capsys,

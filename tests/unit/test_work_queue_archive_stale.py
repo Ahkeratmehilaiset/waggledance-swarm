@@ -862,6 +862,36 @@ def test_apply_retains_nonstring_task_identity_without_inventing_name(
     assert not (bridge / "work_queue" / "done").exists()
 
 
+@pytest.mark.parametrize(
+    "task_id",
+    ["invalid-\U0001f600", "valid/../escape"],
+    ids=["non-bmp-unicode", "pathlike"],
+)
+def test_apply_retains_invalid_string_task_identity_without_inventing_name(
+    tmp_path: Path,
+    task_id: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claim_path = claims_dir / f"malformed-{task_id.encode().hex()}.json"
+    payload = _raw_claim_payload("placeholder", lease_seconds=1)
+    payload["task_id"] = task_id
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = claim_path.read_bytes()
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now(),
+        max_age_seconds=1,
+        apply=True,
+    )
+
+    assert archived == []
+    assert claim_path.read_bytes() == before
+    assert not (bridge / "work_queue" / "done").exists()
+
+
 def test_empty_claims_dir_returns_empty_list(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     archived = archive_stale_claims(
@@ -1144,6 +1174,56 @@ def test_apply_does_not_publish_partial_archive_when_temp_write_fails(
     assert claim_path.is_file()
     done_dir = bridge / "work_queue" / "done"
     assert not list(done_dir.glob("*.stale_lease.json"))
+    assert not list(done_dir.glob("*.tmp.*"))
+
+
+def test_apply_reports_source_and_rollback_double_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "stale-double-delete-denied"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="stale double rollback failure fixture",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    done_dir = bridge / "work_queue" / "done"
+    before = claim_path.read_bytes()
+    original_unlink = Path.unlink
+
+    def deny_source_and_archive_unlink(
+        path: Path,
+        *args,
+        **kwargs,
+    ) -> None:
+        if path == claim_path:
+            raise PermissionError("injected stale claim delete failure")
+        if path.parent == done_dir and ".tmp." not in path.name:
+            raise PermissionError("injected stale archive rollback failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_source_and_archive_unlink)
+
+    with pytest.raises(
+        WorkQueueError,
+        match=(
+            "stale active-claim delete failed and archive rollback failed"
+        ),
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert "injected stale claim delete failure" in str(exc_info.value)
+    assert "injected stale archive rollback failure" in str(exc_info.value)
+    assert claim_path.read_bytes() == before
+    assert len(list(done_dir.glob("*.stale_lease.json"))) == 1
     assert not list(done_dir.glob("*.tmp.*"))
 
 

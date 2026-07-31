@@ -118,31 +118,6 @@ if ($PSBoundParameters.ContainsKey('LeaseSeconds')) {
     $LeaseSeconds = 900
 }
 
-function ConvertTo-BridgeClaimBaseName {
-    param(
-        [Parameter(Mandatory)] [string] $Value
-    )
-
-    $safeValue = (($Value -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
-    if (-not $safeValue) {
-        throw 'TaskId does not produce a safe claim filename'
-    }
-    if ($safeValue -ceq $Value) {
-        return $safeValue
-    }
-
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $valueBytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
-        $digest = [System.BitConverter]::ToString(
-            $sha256.ComputeHash($valueBytes)
-        ).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $sha256.Dispose()
-    }
-    return '{0}-{1}' -f $safeValue, $digest.Substring(0, 12)
-}
-$claimBaseName = ConvertTo-BridgeClaimBaseName -Value $TaskId
 Assert-NoBridgePrivateMarker -Label 'task_id' -Value $TaskId
 Assert-NoBridgePrivateMarker -Label 'summary' -Value $Summary
 Assert-NoBridgePrivateMarker -Label 'write_scope' -Value $WriteScope
@@ -254,6 +229,14 @@ foreach ($file in $activeClaims) {
     }
 }
 
+try {
+    $preferredClaimPath = Assert-AgentBridgePreferredClaimPath `
+        -ClaimsDir $claimsDir `
+        -TaskId $TaskId
+} catch {
+    Stop-BridgeClaim -Message ([string]$_.Exception.Message) -Code 3
+}
+
 $taskMatches = @(
     $parsedClaims |
         Where-Object {
@@ -274,13 +257,22 @@ if ($taskMatches.Count -eq 1) {
     $matchedEntry = $taskMatches[0]
     $existing = $matchedEntry.claim
     $claimPath = $matchedEntry.file.FullName
+    if (
+        -not $existing.PSObject.Properties['agent'] -or
+        $existing.agent -isnot [string]
+    ) {
+        Stop-BridgeClaim `
+            -Message ("claim has missing or non-string agent: {0}" -f $claimPath) `
+            -Code 3
+    }
+    $existingAgent = [string]$existing.agent
     if (-not $Force) {
-        Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existing.agent, $claimPath) -Code 2
+        Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existingAgent, $claimPath) -Code 2
     }
-    if ([string]$existing.agent -cne $Agent -and $Agent -notin @('operator','system')) {
-        Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $claimPath) -Code 3
+    if ($existingAgent -cne $Agent -and $Agent -notin @('operator','system')) {
+        Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existingAgent, $claimPath) -Code 3
     }
-    if ([string]$existing.agent -ceq $Agent) {
+    if ($existingAgent -ceq $Agent) {
         try {
             Assert-AgentBridgeClaimOwner `
                 -Claim $existing `
@@ -292,12 +284,7 @@ if ($taskMatches.Count -eq 1) {
     }
     $forceUpdateExisting = $true
 } else {
-    $claimPath = Join-Path $claimsDir ($claimBaseName + '.json')
-    if (Test-Path -LiteralPath $claimPath) {
-        Stop-BridgeClaim `
-            -Message ("claim filename collision for task_id '{0}': {1}" -f $TaskId, $claimPath) `
-            -Code 3
-    }
+    $claimPath = $preferredClaimPath
 }
 
 foreach ($entry in $parsedClaims) {
@@ -306,7 +293,28 @@ foreach ($entry in $parsedClaims) {
         continue
     }
     $existing = $entry.claim
-    if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
+    if ($Mode -eq 'write') {
+        $existingMode = if (
+            $existing.PSObject.Properties['mode'] -and
+            $existing.mode -is [string]
+        ) {
+            [string]$existing.mode
+        } else {
+            ''
+        }
+        if ($existingMode -ceq 'read-only') {
+            continue
+        }
+        if ($existingMode -cne 'write') {
+            Stop-BridgeClaim `
+                -Message (
+                    "write-scope conflict with active claim {0} by {1}: " +
+                    "stored mode is missing, non-string, or invalid" -f
+                    $existing.task_id,
+                    $existing.agent
+                ) `
+                -Code 3
+        }
         $existingScope = if (
             $existing.PSObject.Properties['write_scope']
         ) {
@@ -361,40 +369,32 @@ if ($forceUpdateExisting) {
     # preserves Python's collision-resistant filename for task IDs containing
     # slashes instead of creating a second sanitized-only claim.
     $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-    [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
-    $backupClaim = $null
     try {
+        [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
         if (-not (Test-Path -LiteralPath $claimPath -PathType Leaf)) {
             throw "claim disappeared before force-update: $claimPath"
         }
-        $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
-        [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
-        try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
+        Update-AgentBridgeFileFromTemp `
+            -TempPath $tmpClaim `
+            -DestinationPath $claimPath
     } catch {
-        try {
-            if ($backupClaim -and (Test-Path -LiteralPath $backupClaim)) {
-                Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
         try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
         throw
     }
 } else {
+    $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
     try {
-        $fs = New-Object System.IO.FileStream(
-            $claimPath,
-            [System.IO.FileMode]::CreateNew,
-            [System.IO.FileAccess]::Write,
-            [System.IO.FileShare]::Read
-        )
-        try {
-            $bytes = $encoding.GetBytes($json)
-            $fs.Write($bytes, 0, $bytes.Length)
-        } finally {
-            $fs.Dispose()
-        }
+        [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
+        # Publish only a fully closed sibling. File.Move is atomic within the
+        # claims directory and refuses an existing destination.
+        [System.IO.File]::Move($tmpClaim, $claimPath)
     } catch {
         Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
+    } finally {
+        if (Test-Path -LiteralPath $tmpClaim -PathType Leaf) {
+            Remove-Item -LiteralPath $tmpClaim -Force `
+                -ErrorAction SilentlyContinue
+        }
     }
 }
 } finally {

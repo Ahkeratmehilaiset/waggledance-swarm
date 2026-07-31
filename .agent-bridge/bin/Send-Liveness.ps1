@@ -109,39 +109,17 @@ if (-not $TaskId) {
     }
 }
 
-$claimMutationLock = $null
-if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
-    $activeBridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-        [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-    } else {
-        Split-Path -Parent $PSScriptRoot
-    }
-    $activeClaimsDir = Join-Path (
-        Join-Path $activeBridgeRoot 'work_queue'
-    ) 'claims'
-    $claimMutationLock = Enter-AgentBridgeMutationLock `
-        -BridgeRoot $activeBridgeRoot
-}
-try {
-& $writeEventScript `
-    -Agent $Agent `
-    -Type $type `
-    -Status $status `
-    -Severity $Severity `
-    -To $To `
-    -Message $Message `
-    -TaskId $TaskId `
-    -Paths $Paths `
-    -Role $Role `
-    -AgentUuid $AgentUuid `
-    -Capabilities $Capabilities
-
 # R15: bump last_heartbeat_utc on this agent's active claims so
 # Invoke-StaleClaimSweep.ps1 doesn't auto-release them. Only
 # liveness/active and heartbeat/active extend the lease — a
 # liveness/sleeping or wake_request does NOT keep the claim alive
 # (that would defeat the whole point of the lease).
-if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
+$operationFailures = New-Object System.Collections.Generic.List[string]
+$leaseRefreshRequested = (
+    $type -in @('liveness','heartbeat') -and
+    $status -eq 'active'
+)
+if ($leaseRefreshRequested) {
     # Resolve runtime root the same way other bridge scripts do
     # (R13 AGENT_BRIDGE_RUNTIME_ROOT support). Inlined here to
     # keep Send-Liveness self-contained.
@@ -151,7 +129,11 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
         Split-Path -Parent $PSScriptRoot
     }
     $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
-    if (Test-Path -LiteralPath $claimsDir -PathType Container) {
+    $claimMutationLock = $null
+    try {
+        $claimMutationLock = Enter-AgentBridgeMutationLock `
+            -BridgeRoot $bridgeRoot
+        if (Test-Path -LiteralPath $claimsDir -PathType Container) {
         $heartbeatNow = (Get-Date).ToUniversalTime()
         $heartbeatTs = $heartbeatNow.ToString('o')
         $claimGroups = [System.Collections.Generic.Dictionary[
@@ -164,7 +146,13 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
                 $obj = ConvertFrom-AgentBridgeJson -Json (
                     Get-Content -Raw -Path $file.FullName -Encoding UTF8
                 )
-            } catch { continue }
+            } catch {
+                Write-Warning (
+                    "unreadable active claim skipped during lease refresh: " +
+                    "{0}: {1}" -f $file.FullName, $_.Exception.Message
+                )
+                continue
+            }
 
             if (
                 -not $obj.PSObject.Properties['task_id'] -or
@@ -172,6 +160,17 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
             ) { continue }
             $claimTaskId = [string]$obj.task_id
             if ([string]::IsNullOrEmpty($claimTaskId)) { continue }
+            try {
+                Assert-AgentBridgeTaskId -TaskId $claimTaskId
+            } catch {
+                Write-Warning (
+                    "invalid active claim task_id skipped during lease " +
+                    "refresh: {0}: {1}" -f
+                    $file.FullName,
+                    $_.Exception.Message
+                )
+                continue
+            }
             if (-not $claimGroups.ContainsKey($claimTaskId)) {
                 $claimGroups.Add(
                     $claimTaskId,
@@ -186,6 +185,7 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
             )
         }
 
+        $eligibleEntries = New-Object System.Collections.Generic.List[object]
         foreach ($claimTaskId in @($claimGroups.Keys)) {
             $entries = $claimGroups[$claimTaskId]
             if ($entries.Count -ne 1) {
@@ -203,12 +203,32 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
             $entry = $entries[0]
             $file = $entry.file
             $obj = $entry.claim
-            if ([string]$obj.agent -cne $Agent) { continue }
+            if (
+                -not $obj.PSObject.Properties['agent'] -or
+                $obj.agent -isnot [string] -or
+                [string]$obj.agent -cne $Agent
+            ) {
+                continue
+            }
             if (-not (Test-AgentBridgeClaimOwner `
                     -Claim $obj `
                     -OwnerContext $ownerContext)) {
                 continue
             }
+            [void]$eligibleEntries.Add($entry)
+        }
+
+        # Validate every owned claim before the first write. A legacy file
+        # must not route around a preferred path occupied by another task.
+        foreach ($entry in $eligibleEntries) {
+            [void](Assert-AgentBridgePreferredClaimPath `
+                -ClaimsDir $claimsDir `
+                -TaskId ([string]$entry.claim.task_id))
+        }
+
+        foreach ($entry in $eligibleEntries) {
+            $file = $entry.file
+            $obj = $entry.claim
             # Bump field, preserving claim shape.
             if ($obj.PSObject.Properties['last_heartbeat_utc']) {
                 $obj.last_heartbeat_utc = $heartbeatTs
@@ -236,23 +256,66 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
             }
             $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
                 -NotePropertyValue $expiresAt.ToString('o') -Force
+            $tmp = $null
             try {
                 $json = ($obj | ConvertTo-Json -Depth 8)
                 $tmp = "$($file.FullName).tmp.$PID.$([guid]::NewGuid().ToString('N'))"
                 $encoding = New-Object System.Text.UTF8Encoding($false)
                 [System.IO.File]::WriteAllText($tmp, $json, $encoding)
-                Move-Item -LiteralPath $tmp -Destination $file.FullName `
-                    -Force -ErrorAction Stop
+                Update-AgentBridgeFileFromTemp `
+                    -TempPath $tmp `
+                    -DestinationPath $file.FullName
             } catch {
-                # Lease bump is best-effort; failure here just
-                # means the next heartbeat will retry. Don't fail
-                # the liveness emit because of a lease-update glitch.
-                Write-Warning ("could not bump lease for {0}: {1}" -f `
-                    $file.Name, $_.Exception.Message)
+                $leaseFailure = (
+                    'could not bump lease for ' +
+                    $file.Name +
+                    ': ' +
+                    $_.Exception.Message
+                )
+                [void]$operationFailures.Add($leaseFailure)
+            } finally {
+                if (
+                    $tmp -and
+                    (Test-Path -LiteralPath $tmp -PathType Leaf)
+                ) {
+                    Remove-Item -LiteralPath $tmp -Force `
+                        -ErrorAction SilentlyContinue
+                }
             }
         }
+        }
+    } catch {
+        [void]$operationFailures.Add(
+            'lease refresh failed: ' + $_.Exception.Message
+        )
+    } finally {
+        Exit-AgentBridgeMutationLock -Lock $claimMutationLock
     }
 }
-} finally {
-    Exit-AgentBridgeMutationLock -Lock $claimMutationLock
+
+# Event append is deliberately outside the global claim mutation lock. A slow
+# or failed event writer must neither block unrelated claim mutations nor stop
+# an owned lease from being refreshed first.
+try {
+    & $writeEventScript `
+        -Agent $Agent `
+        -Type $type `
+        -Status $status `
+        -Severity $Severity `
+        -To $To `
+        -Message $Message `
+        -TaskId $TaskId `
+        -Paths $Paths `
+        -Role $Role `
+        -AgentUuid $AgentUuid `
+        -Capabilities $Capabilities
+} catch {
+    [void]$operationFailures.Add(
+        'event emit failed: ' + $_.Exception.Message
+    )
+}
+
+if ($operationFailures.Count -gt 0) {
+    $failureSummary = $operationFailures -join '; '
+    throw ('liveness operation did not fully succeed: ' + $failureSummary)
 }

@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict, is_dataclass
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Sequence
 
@@ -32,6 +33,16 @@ from waggledance.core.work_queue import (  # noqa: E402
 )
 
 
+def _parse_ascii_int(value: str) -> int:
+    """Parse one base-10 CLI integer without Python literal separators."""
+
+    if re.fullmatch(r"[+-]?[0-9]+", value) is None:
+        raise argparse.ArgumentTypeError(
+            "expected an ASCII base-10 integer"
+        )
+    return int(value, 10)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge work-queue CLI.")
     parser.add_argument(
@@ -56,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     claim.add_argument("--run-id", default="")
     claim.add_argument(
         "--lease-seconds",
-        type=int,
+        type=_parse_ascii_int,
         default=DEFAULT_LEASE_SECONDS,
     )
     claim.add_argument("--force", action="store_true")
@@ -74,14 +85,18 @@ def build_parser() -> argparse.ArgumentParser:
     beat = sub.add_parser("heartbeat")
     beat.add_argument("--agent", required=True)
     beat.add_argument("--task-id", required=True)
-    beat.add_argument("--lease-seconds", type=int, default=None)
+    beat.add_argument(
+        "--lease-seconds",
+        type=_parse_ascii_int,
+        default=None,
+    )
 
     sub.add_parser("list")
 
     stale = sub.add_parser("stale")
     stale.add_argument(
         "--max-age-seconds",
-        type=int,
+        type=_parse_ascii_int,
         default=None,
         help=(
             "Stale fallback in seconds. Defaults to "

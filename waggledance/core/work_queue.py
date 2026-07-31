@@ -315,6 +315,11 @@ def _claim_owner_context(
         )
 
     owner_pid_text = os.environ.get("AGENT_BRIDGE_OWNER_PID", "")
+    if re.fullmatch(r"[0-9]+", owner_pid_text) is None:
+        raise WorkQueueError(
+            "claim_owner_context_invalid: "
+            "AGENT_BRIDGE_OWNER_PID is missing or malformed"
+        )
     try:
         owner_pid = int(owner_pid_text)
     except (TypeError, ValueError) as exc:
@@ -734,11 +739,17 @@ def _release_task_locked(
     _write_release_file(done_path, record)
     try:
         claim_path.unlink()
-    except OSError:
+    except OSError as source_error:
         try:
             done_path.unlink()
-        except OSError:
-            pass
+        except OSError as rollback_error:
+            raise WorkQueueError(
+                "release active-claim delete failed and archive rollback "
+                "failed; active claim retained at "
+                f"{claim_path}; release archive retained at {done_path}; "
+                f"source delete: {source_error}; "
+                f"archive rollback: {rollback_error}"
+            ) from source_error
         raise
     return record
 
@@ -937,7 +948,15 @@ def _archive_stale_claims_unlocked(
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
 
     done_dir = bridge / "work_queue" / "done"
-    claims = list_claims(bridge_root=bridge)
+    claims = []
+    for claim in list_claims(bridge_root=bridge):
+        try:
+            _validate_task_id(claim.task_id)
+        except WorkQueueError:
+            # Retain malformed active records for explicit operator recovery.
+            # Never sanitize a task identity that the public mutators reject.
+            continue
+        claims.append(claim)
     claim_paths: dict[str, Path] = {}
     if apply:
         claims_dir = bridge / "work_queue" / "claims"
@@ -1072,11 +1091,17 @@ def _archive_stale_claims_unlocked(
         claim_file = claim_paths[claim.task_id]
         try:
             claim_file.unlink()
-        except OSError:
+        except OSError as source_error:
             try:
                 record.archived_path.unlink()
-            except OSError:
-                pass
+            except OSError as rollback_error:
+                raise WorkQueueError(
+                    "stale active-claim delete failed and archive rollback "
+                    "failed; active claim retained at "
+                    f"{claim_file}; stale archive retained at "
+                    f"{record.archived_path}; source delete: "
+                    f"{source_error}; archive rollback: {rollback_error}"
+                ) from source_error
             raise
     return planned
 
@@ -1085,7 +1110,12 @@ def check_scope_overlap(
     bridge_root: Path | None = None,
     write_scope: Sequence[str] = (),
 ) -> list[Claim]:
-    """Return active write-mode claims that overlap with the given write_scope."""
+    """Return active claims that may conflict with the given write_scope.
+
+    ``read-only`` is the only stored mode that is safe to ignore.  A missing,
+    non-string, or otherwise unknown mode may represent a corrupted writer,
+    so fail closed and treat it as a wildcard write claim.
+    """
     normalized_scope = _normalize_write_scope_entries(write_scope)
     if not normalized_scope:
         return []
@@ -1094,7 +1124,10 @@ def check_scope_overlap(
         return []
     overlapping: list[Claim] = []
     for claim in list_claims(bridge_root=bridge_root):
-        if claim.mode.casefold() != "write":
+        if claim.mode == "read-only":
+            continue
+        if claim.mode != "write":
+            overlapping.append(claim)
             continue
         existing_scope = {
             _normalize_scope_entry(s)
@@ -1292,14 +1325,14 @@ def _read_claim_file(path: Path) -> Claim:
         raise WorkQueueError(f"claim file must be JSON object: {path}")
     try:
         return Claim(
-            agent=str(data.get("agent", "")),
+            agent=_coerce_text(data.get("agent", "")),
             task_id=_coerce_text(data.get("task_id", "")),
-            summary=str(data.get("summary", "")),
-            mode=str(data.get("mode", "read-only")),
+            summary=_coerce_text(data.get("summary", "")),
+            mode=_coerce_text(data.get("mode", "")),
             write_scope=_normalize_write_scope_entries(
                 data.get("write_scope", [])
             ),
-            run_id=str(data.get("run_id", "")),
+            run_id=_coerce_text(data.get("run_id", "")),
             claimed_at_utc=_coerce_text(data.get("claimed_at_utc", "")),
             last_heartbeat_utc=_coerce_text(
                 data.get("last_heartbeat_utc", "")

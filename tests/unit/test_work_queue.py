@@ -419,6 +419,30 @@ def test_claim_rejects_owner_pid_outside_powershell_range_before_write(
     assert not bridge.exists()
 
 
+@pytest.mark.parametrize(
+    "owner_pid",
+    [" 4242 ", "+4242", "\u0664\u0662", "\uff14\uff12"],
+    ids=["whitespace", "plus-sign", "arabic-indic", "fullwidth"],
+)
+def test_claim_requires_ascii_only_ambient_owner_pid_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner_pid: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", owner_pid)
+
+    with pytest.raises(WorkQueueError, match="claim_owner_context_invalid"):
+        claim_task(
+            agent="claude-1",
+            task_id="task-owner-pid-ascii-only",
+            summary="must reject decorated or non-ASCII owner PID",
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
 def test_claim_serializes_owner_digest_and_optional_session_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -916,6 +940,53 @@ def test_malformed_stored_owner_field_is_legacy_tokenless(
     assert claim_path.read_bytes() == original
 
 
+def test_nonstring_stored_agent_never_authorizes_mutation(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "task-nonstring-agent"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="tamper stored agent type",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload["agent"] = ["claude-1"]
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    original = claim_path.read_bytes()
+
+    listed = list_claims(bridge_root=bridge)
+    assert len(listed) == 1
+    assert listed[0].agent == ""
+
+    operations = (
+        lambda: claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="force must reject non-string stored agent",
+            bridge_root=bridge,
+            force=True,
+        ),
+        lambda: heartbeat(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        ),
+        lambda: release_task(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(WorkQueueError):
+            operation()
+        assert claim_path.read_bytes() == original
+        assert not (bridge / "work_queue" / "done").exists()
+
+
 def test_claim_refuses_write_scope_conflict_across_tasks(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
@@ -993,6 +1064,59 @@ def test_claim_refuses_legacy_write_claim_with_unsafe_scope_shape(
     ).exists()
 
 
+@pytest.mark.parametrize(
+    ("mode_case", "stored_mode"),
+    [
+        ("missing", None),
+        ("null", None),
+        ("nonstring", ["write"]),
+        ("unknown", "read_only"),
+    ],
+)
+def test_claim_treats_malformed_or_missing_mode_as_wildcard_write(
+    tmp_path: Path,
+    mode_case: str,
+    stored_mode: object,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    holder_task_id = f"malformed-mode-holder-{mode_case}"
+    claim_task(
+        agent="claude-1",
+        task_id=holder_task_id,
+        summary="malformed stored mode fixture",
+        mode="read-only",
+        bridge_root=bridge,
+    )
+    claim_path = (
+        bridge / "work_queue" / "claims" / f"{holder_task_id}.json"
+    )
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    if mode_case == "missing":
+        payload.pop("mode")
+    else:
+        payload["mode"] = stored_mode
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    original = claim_path.read_bytes()
+
+    with pytest.raises(WorkQueueError, match="write-scope conflict"):
+        claim_task(
+            agent="codex-1",
+            task_id=f"new-write-against-{mode_case}",
+            summary="unknown mode must fail closed",
+            mode="write",
+            write_scope=["unrelated/path.py"],
+            bridge_root=bridge,
+        )
+
+    assert claim_path.read_bytes() == original
+    assert not (
+        bridge
+        / "work_queue"
+        / "claims"
+        / f"new-write-against-{mode_case}.json"
+    ).exists()
+
+
 def test_release_archives_to_done_dir(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
@@ -1051,6 +1175,55 @@ def test_release_rolls_back_archive_when_active_claim_delete_fails(
 
     assert claim_path.read_bytes() == before
     assert not list((bridge / "work_queue" / "done").glob("*.json"))
+
+
+def test_release_reports_source_and_rollback_double_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "release-double-delete-denied"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="release double rollback failure fixture",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    done_dir = bridge / "work_queue" / "done"
+    before = claim_path.read_bytes()
+    original_unlink = Path.unlink
+
+    def deny_source_and_archive_unlink(
+        path: Path,
+        *args,
+        **kwargs,
+    ) -> None:
+        if path == claim_path:
+            raise PermissionError("injected active claim delete failure")
+        if path.parent == done_dir and ".tmp." not in path.name:
+            raise PermissionError("injected release archive rollback failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_source_and_archive_unlink)
+
+    with pytest.raises(
+        WorkQueueError,
+        match=(
+            "release active-claim delete failed and archive rollback failed"
+        ),
+    ) as exc_info:
+        release_task(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        )
+
+    assert "injected active claim delete failure" in str(exc_info.value)
+    assert "injected release archive rollback failure" in str(exc_info.value)
+    assert claim_path.read_bytes() == before
+    assert len(list(done_dir.glob("*.json"))) == 1
+    assert not list(done_dir.glob("*.tmp.*"))
 
 
 def test_release_rejects_wrong_agent(tmp_path: Path) -> None:

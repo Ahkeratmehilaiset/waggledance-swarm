@@ -112,6 +112,14 @@ if (-not (Test-Path -LiteralPath $claimsDir -PathType Container)) {
 
 $mutationLock = Enter-AgentBridgeMutationLock -BridgeRoot $bridgeRoot
 try {
+try {
+    [void](Assert-AgentBridgePreferredClaimPath `
+        -ClaimsDir $claimsDir `
+        -TaskId $TaskId)
+} catch {
+    Stop-BridgeRelease -Message ([string]$_.Exception.Message) -Code 3
+}
+
 $taskMatches = @()
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue)) {
@@ -145,8 +153,17 @@ $matchedEntry = $taskMatches[0]
 $claimFile = $matchedEntry.file
 $claimPath = $claimFile.FullName
 $claim = $matchedEntry.claim
-if ([string]$claim.agent -cne $Agent) {
-    Stop-BridgeRelease -Message ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent) -Code 3
+if (
+    -not $claim.PSObject.Properties['agent'] -or
+    $claim.agent -isnot [string]
+) {
+    Stop-BridgeRelease `
+        -Message ("claim has missing or non-string agent: {0}" -f $claimPath) `
+        -Code 3
+}
+$claimAgent = [string]$claim.agent
+if ($claimAgent -cne $Agent) {
+    Stop-BridgeRelease -Message ("claim belongs to {0}, not {1}" -f $claimAgent, $Agent) -Code 3
 }
 try {
     Assert-AgentBridgeClaimOwner `
@@ -185,9 +202,9 @@ if (Test-Path -LiteralPath $donePath) {
 $encoding = New-Object System.Text.UTF8Encoding($false)
 $claimJson = ($claim | ConvertTo-Json -Depth 8)
 $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-[System.IO.File]::WriteAllText($tmpClaim, $claimJson, $encoding)
 $backupClaim = $null
 try {
+    [System.IO.File]::WriteAllText($tmpClaim, $claimJson, $encoding)
     $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
     [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
 } catch {

@@ -287,6 +287,76 @@ function Restore-AgentBridgeFileBackup {
     }
 }
 
+function Update-AgentBridgeFileFromTemp {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $TempPath,
+        [Parameter(Mandatory)] [string] $DestinationPath
+    )
+
+    if (-not (Test-Path -LiteralPath $TempPath -PathType Leaf)) {
+        throw "claim update temp file is missing: $TempPath"
+    }
+    if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
+        throw "claim disappeared before atomic update: $DestinationPath"
+    }
+
+    $backupPath = (
+        "$DestinationPath.bak.$PID." +
+        "$([guid]::NewGuid().ToString('N'))"
+    )
+    $preserveBackup = $false
+    try {
+        [System.IO.File]::Replace(
+            $TempPath,
+            $DestinationPath,
+            $backupPath
+        )
+    } catch {
+        $replaceError = $_.Exception
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            try {
+                Restore-AgentBridgeFileBackup `
+                    -OriginalPath $DestinationPath `
+                    -BackupPath $backupPath
+                $backupPath = $null
+            } catch {
+                $preserveBackup = $true
+                throw (
+                    "atomic claim update failed and destination restore " +
+                    "failed; original backup retained at {0}: {1}; " +
+                    "restore: {2}" -f
+                    $backupPath,
+                    $replaceError.Message,
+                    $_.Exception.Message
+                )
+            }
+        }
+        throw $replaceError
+    } finally {
+        if (Test-Path -LiteralPath $TempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $TempPath -Force `
+                -ErrorAction SilentlyContinue
+        }
+        if (
+            -not $preserveBackup -and
+            $backupPath -and
+            (Test-Path -LiteralPath $backupPath -PathType Leaf)
+        ) {
+            try {
+                Remove-Item -LiteralPath $backupPath -Force `
+                    -ErrorAction Stop
+            } catch {
+                Write-Warning (
+                    "could not remove atomic claim backup {0}: {1}" -f
+                    $backupPath,
+                    $_.Exception.Message
+                )
+            }
+        }
+    }
+}
+
 function Get-AgentBridgeClaimOwnerContext {
     [CmdletBinding()]
     param()
@@ -315,7 +385,16 @@ function Get-AgentBridgeClaimOwnerContext {
         throw 'claim_owner_mismatch: AGENT_BRIDGE_OWNER_TOKEN is missing or malformed'
     }
     $ownerPid = 0
-    if (-not [int]::TryParse($ownerPidText, [ref]$ownerPid) -or $ownerPid -le 0) {
+    if (
+        $ownerPidText -cnotmatch '^[0-9]+\z' -or
+        -not [int]::TryParse(
+            $ownerPidText,
+            [System.Globalization.NumberStyles]::None,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [ref]$ownerPid
+        ) -or
+        $ownerPid -le 0
+    ) {
         throw 'claim_owner_mismatch: AGENT_BRIDGE_OWNER_PID is missing or malformed'
     }
     $ownerStarted = ConvertFrom-AgentBridgeCanonicalUtc `
@@ -473,6 +552,91 @@ function Assert-AgentBridgeTaskId {
             throw "task_id invalid: '$TaskId'"
         }
     }
+}
+
+function Get-AgentBridgeClaimBaseName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $TaskId
+    )
+
+    Assert-AgentBridgeTaskId -TaskId $TaskId
+    $safeValue = (($TaskId -replace '[^A-Za-z0-9._-]', '_').Trim('_'))
+    if (-not $safeValue) {
+        throw "task_id does not produce a safe claim filename: '$TaskId'"
+    }
+    if ($safeValue -ceq $TaskId) {
+        return $safeValue
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $valueBytes = [System.Text.Encoding]::UTF8.GetBytes($TaskId)
+        $digest = [System.BitConverter]::ToString(
+            $sha256.ComputeHash($valueBytes)
+        ).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    return '{0}-{1}' -f $safeValue, $digest.Substring(0, 12)
+}
+
+function Assert-AgentBridgePreferredClaimPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ClaimsDir,
+        [Parameter(Mandatory)] [string] $TaskId
+    )
+
+    $baseName = Get-AgentBridgeClaimBaseName -TaskId $TaskId
+    $preferredPath = Join-Path $ClaimsDir ($baseName + '.json')
+    if (-not (Test-Path -LiteralPath $preferredPath)) {
+        return $preferredPath
+    }
+    if (-not (Test-Path -LiteralPath $preferredPath -PathType Leaf)) {
+        throw (
+            "claim filename collision at preferred path for task_id " +
+            "'{0}': non-file entry {1}" -f $TaskId, $preferredPath
+        )
+    }
+
+    try {
+        $preferredClaim = ConvertFrom-AgentBridgeJson -Json (
+            Get-Content -Raw -LiteralPath $preferredPath -Encoding UTF8 `
+                -ErrorAction Stop
+        )
+    } catch {
+        throw (
+            "claim filename collision at preferred path for task_id " +
+            "'{0}': unreadable record {1}" -f $TaskId, $preferredPath
+        )
+    }
+    if (
+        $null -eq $preferredClaim -or
+        $preferredClaim -isnot [pscustomobject] -or
+        -not $preferredClaim.PSObject.Properties['task_id'] -or
+        $preferredClaim.task_id -isnot [string] -or
+        [string]$preferredClaim.task_id -cne $TaskId
+    ) {
+        $storedTaskId = if (
+            $null -ne $preferredClaim -and
+            $preferredClaim -is [pscustomobject] -and
+            $preferredClaim.PSObject.Properties['task_id'] -and
+            $preferredClaim.task_id -is [string]
+        ) {
+            "'$([string]$preferredClaim.task_id)'"
+        } else {
+            '<missing-or-nonstring>'
+        }
+        throw (
+            "claim filename collision at preferred path for task_id " +
+            "'{0}': stored task_id {1} in {2}" -f
+            $TaskId,
+            $storedTaskId,
+            $preferredPath
+        )
+    }
+    return $preferredPath
 }
 
 function Test-AgentBridgeClaimOwner {

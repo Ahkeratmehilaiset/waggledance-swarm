@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,16 @@ from waggledance.core.work_queue import (
 
 
 CLI_DEFAULT_MAX_AGE_SECONDS = DEFAULT_STALE_MAX_SECONDS
+
+
+def _parse_ascii_int(value: str) -> int:
+    """Parse one base-10 CLI integer without Python literal separators."""
+
+    if re.fullmatch(r"[+-]?[0-9]+", value) is None:
+        raise argparse.ArgumentTypeError(
+            "expected an ASCII base-10 integer"
+        )
+    return int(value, 10)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,7 +67,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-age-seconds",
-        type=int,
+        type=_parse_ascii_int,
         default=None,
         help=(
             "Lease threshold in seconds (default: "

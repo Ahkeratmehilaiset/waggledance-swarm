@@ -1344,6 +1344,7 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert tools_validation < launcher.index("Resolving the current Grok model")
     assert tools_validation < launcher.index("Start-ScheduledTask")
     assert "Tools consumer validation does not match fleet pins" in launcher
+    assert "codex-tools-1 is headless and live" in launcher
     assert "-Generation $bundleGeneration" in launcher
     assert "Get-ToolsProcessState" in launcher
     assert "ask WD-Supervisor to replace stale generation" in launcher
@@ -1393,6 +1394,9 @@ def test_tools_consumer_classifies_initial_tick_fail_closed() -> None:
     wrapper_text = wrapper_path.read_text(encoding="utf-8")
     assert "initial_tick_exit_code = [int]$initialResult.exit_code" in wrapper_text
     assert "initial_tick_timed_out = $initialTickTimedOut" in wrapper_text
+    assert "status = $initialReadyStatus" in wrapper_text
+    assert "initial_tick_disposition = $initialTickDisposition" in wrapper_text
+    assert "initial_tick_log_path = [string]$initialResult.log_path" in wrapper_text
 
     wrapper = str(wrapper_path).replace("'", "''")
     result = _run_powershell(
@@ -1459,6 +1463,13 @@ if ($null -eq $functionAst) {{ throw 'missing initial timeout classifier' }}
       ran_codex = $true
     }}
   )
+  native_failure = Get-InitialTickDisposition -Result (
+    [pscustomobject]@{{
+      exit_code = 1
+      codex_timed_out = $false
+      ran_codex = $true
+    }}
+  )
   string_exit = Get-InitialTickDisposition -Result (
     [pscustomobject]@{{
       exit_code = '124'
@@ -1487,11 +1498,12 @@ if ($null -eq $functionAst) {{ throw 'missing initial timeout classifier' }}
     assert json.loads(result.stdout) == {
         "exact_timeout": "recoverable_timeout",
         "timeout_flag_missing": "invalid",
-        "timeout_flag_false": "failed",
+        "timeout_flag_false": "recoverable_failure",
         "timeout_string_false": "invalid",
         "timeout_string_true": "invalid",
         "codex_not_run": "failed",
         "wrong_exit": "failed",
+        "native_failure": "recoverable_failure",
         "string_exit": "invalid",
         "inconsistent_success": "failed",
         "success": "success",

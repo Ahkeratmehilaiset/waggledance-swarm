@@ -71,6 +71,12 @@ function Get-InitialTickDisposition {
     ) {
         return 'recoverable_timeout'
     }
+    if (
+        [int]$exitCodeProperty.Value -ne 0 -and
+        -not [bool]$timedOutProperty.Value
+    ) {
+        return 'recoverable_failure'
+    }
     return 'failed'
 }
 
@@ -1111,18 +1117,31 @@ $initialResult = @(
 if ($null -eq $initialResult) {
     throw 'initial tools consumer tick returned no structured result'
 }
-# A bounded Codex timeout is a recoverable task failure after a real launch,
-# not a reason to restart-loop the durable consumer. Every other initial
-# failure remains fatal.
+# A structured result after a real Codex launch describes one bounded task,
+# not the health of the durable wrapper. Preserve a degraded readiness state
+# for a native failure or timeout so the headless service can wait and retry.
+# Malformed results and attempts that never launched Codex remain fatal.
 $initialTickDisposition = Get-InitialTickDisposition -Result $initialResult
 $initialTickTimedOut = $initialTickDisposition -ceq 'recoverable_timeout'
-if ($initialTickDisposition -cnotin @('success', 'recoverable_timeout')) {
+if (
+    $initialTickDisposition -cnotin @(
+        'success',
+        'recoverable_timeout',
+        'recoverable_failure'
+    )
+) {
     throw "initial tools consumer tick failed with exit_code=$($initialResult.exit_code)"
+}
+$initialReadyStatus = if ($initialTickDisposition -ceq 'success') {
+    'ready'
+} else {
+    'degraded'
 }
 
 $readinessTemporary = "$readinessPath.$PID.tmp"
 $readinessRecord = [ordered]@{
     schema = 'wd.tools-consumer-ready.v1'
+    status = $initialReadyStatus
     generation = $Generation
     pid = $PID
     process_start_utc = $processStartUtc.ToString('o')
@@ -1130,8 +1149,10 @@ $readinessRecord = [ordered]@{
     worktree = $worktree
     branch = $actualBranch
     head = $actualHead
+    initial_tick_disposition = $initialTickDisposition
     initial_tick_exit_code = [int]$initialResult.exit_code
     initial_tick_timed_out = $initialTickTimedOut
+    initial_tick_log_path = [string]$initialResult.log_path
     ready_at_utc = [DateTime]::UtcNow.ToString('o')
 }
 $utf8NoBom = New-Object Text.UTF8Encoding($false)

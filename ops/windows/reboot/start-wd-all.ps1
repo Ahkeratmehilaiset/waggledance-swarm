@@ -603,6 +603,27 @@ function Test-ToolsProcessReadiness {
   }
 }
 
+function Write-ToolsReadinessWarning {
+  param([Parameter(Mandatory)] $ToolsConfig)
+
+  $readinessPath = Resolve-NormalizedPath -Path (
+    [string]$ToolsConfig.readiness_path
+  )
+  $record = (Read-NonEmptyFile `
+    -Path $readinessPath `
+    -Label 'Tools readiness record') |
+    ConvertFrom-Json -ErrorAction Stop
+  if ([string]$record.status -ceq 'degraded') {
+    Write-Warning (
+      'codex-tools-1 is headless and live, but its initial Codex tick was ' +
+      "degraded: disposition=$([string]$record.initial_tick_disposition) " +
+      "exit_code=$([string]$record.initial_tick_exit_code) " +
+      "timed_out=$([string]$record.initial_tick_timed_out) " +
+      "log=$([string]$record.initial_tick_log_path)"
+    )
+  }
+}
+
 function Get-ToolsProcessState {
   param(
     [Parameter(Mandatory)] $ToolsConfig,
@@ -1264,6 +1285,9 @@ Write-Host (
     $toolsStarting.Count,
     $toolsStale.Count
 )
+if ($toolsLive.Count -eq 1) {
+  Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
+}
 
 Write-Host '  Grok model viability probe:'
 $grokPreflight = @(
@@ -1424,6 +1448,7 @@ try {
         "$($toolsNowLegacy.Count)"
       )
     }
+    Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
   }
 
   [void](New-Item -ItemType Directory -Path $handshakeDirectory -Force)

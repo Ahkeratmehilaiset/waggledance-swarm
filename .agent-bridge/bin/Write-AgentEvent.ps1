@@ -44,6 +44,31 @@ function ConvertTo-BridgeInvariantUtcText {
     return [string]$Value
 }
 
+function Get-BridgeStrictGenerationText {
+    param(
+        [Parameter(Mandatory)] $Record,
+        [Parameter(Mandatory)] [string] $Field,
+        [Parameter(Mandatory)] [string] $Context
+    )
+
+    $property = Get-AgentBridgeExactProperty `
+        -InputObject $Record `
+        -Name $Field
+    if (-not $property) {
+        # Legacy claims may predate one or more generation fields. Missing is
+        # a stable value, but an explicitly present non-string value is not.
+        return ''
+    }
+    if ($property.Value -isnot [string]) {
+        throw (
+            "internal system stale_lease {0} generation field '{1}' must be a string" -f
+            $Context,
+            $Field
+        )
+    }
+    return [string]$property.Value
+}
+
 # Stale-claim sweeping emits the existing internal `system` release event.
 # The exception is bound to the canonical sweep caller and to the archived
 # claim it just removed; public arguments alone never grant system identity.
@@ -70,6 +95,8 @@ $hasCanonicalStaleSweepCaller = (
     )
 )
 $isInternalStaleLeaseRelease = $false
+$internalStaleLeaseMutationLock = $null
+try {
 if ($hasCanonicalStaleSweepCaller) {
     if ([string]::IsNullOrWhiteSpace($InternalStaleLeaseArchivePath)) {
         throw 'internal system stale_lease release requires an archived claim proof'
@@ -80,6 +107,8 @@ if ($hasCanonicalStaleSweepCaller) {
     } else {
         Split-Path -Parent $PSScriptRoot
     }
+    $internalStaleLeaseMutationLock = Enter-AgentBridgeMutationLock `
+        -BridgeRoot $proofBridgeRoot
     $proofDoneDir = [System.IO.Path]::GetFullPath(
         (Join-Path $proofBridgeRoot 'work_queue\done')
     )
@@ -103,31 +132,80 @@ if ($hasCanonicalStaleSweepCaller) {
     }
 
     try {
-        $proofClaim = Get-Content -Raw -LiteralPath $proofArchivePath -Encoding UTF8 |
-            ConvertFrom-Json -ErrorAction Stop
+        $proofClaim = ConvertFrom-AgentBridgeJson -Json (
+            Read-AgentBridgeStrictUtf8JsonText `
+                -LiteralPath $proofArchivePath
+        )
     } catch {
         throw 'internal system stale_lease archive proof is not valid JSON'
     }
-    if (-not $proofClaim.PSObject.Properties['task_id'] -or
-        [string]$proofClaim.task_id -cne $TaskId -or
-        -not $proofClaim.PSObject.Properties['release_status'] -or
-        [string]$proofClaim.release_status -cne 'stale_lease' -or
-        -not $proofClaim.PSObject.Properties['released_at_utc'] -or
-        [string]::IsNullOrWhiteSpace([string]$proofClaim.released_at_utc)) {
+    if ($null -eq $proofClaim -or $proofClaim -isnot [pscustomobject]) {
+        throw 'internal system stale_lease archive proof does not match the released task'
+    }
+    $proofTaskIdProperty = Get-AgentBridgeExactProperty `
+        -InputObject $proofClaim `
+        -Name 'task_id'
+    $proofReleaseStatusProperty = Get-AgentBridgeExactProperty `
+        -InputObject $proofClaim `
+        -Name 'release_status'
+    $proofReleasedAtProperty = Get-AgentBridgeExactProperty `
+        -InputObject $proofClaim `
+        -Name 'released_at_utc'
+    if (
+        $null -eq $proofTaskIdProperty -or
+        $proofTaskIdProperty.Value -isnot [string] -or
+        [string]$proofTaskIdProperty.Value -cne $TaskId -or
+        $null -eq $proofReleaseStatusProperty -or
+        $proofReleaseStatusProperty.Value -isnot [string] -or
+        [string]$proofReleaseStatusProperty.Value -cne 'stale_lease' -or
+        $null -eq $proofReleasedAtProperty -or
+        $proofReleasedAtProperty.Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace(
+            [string]$proofReleasedAtProperty.Value
+        )
+    ) {
         throw 'internal system stale_lease archive proof does not match the released task'
     }
 
+    $proofGeneration = [ordered]@{}
+    foreach ($generationField in @(
+            'claimed_at_utc',
+            'run_id',
+            'owner_session_id',
+            'owner_token_sha256'
+        )) {
+        $proofGeneration[$generationField] = (
+            Get-BridgeStrictGenerationText `
+                -Record $proofClaim `
+                -Field $generationField `
+                -Context 'archive proof'
+        )
+    }
+
     try {
-        $proofPayload = ([string]$PayloadJson) |
-            ConvertFrom-Json -ErrorAction Stop
+        $proofPayload = ConvertFrom-AgentBridgeJson -Json (
+            [string]$PayloadJson
+        )
     } catch {
         throw 'internal system stale_lease payload must be valid JSON'
     }
-    if (-not $proofPayload.PSObject.Properties['archived_path']) {
+    if ($null -eq $proofPayload -or $proofPayload -isnot [pscustomobject]) {
+        throw 'internal system stale_lease payload must be valid JSON'
+    }
+    $payloadArchivePathProperty = Get-AgentBridgeExactProperty `
+        -InputObject $proofPayload `
+        -Name 'archived_path'
+    if (
+        $null -eq $payloadArchivePathProperty -or
+        $payloadArchivePathProperty.Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace(
+            [string]$payloadArchivePathProperty.Value
+        )
+    ) {
         throw 'internal system stale_lease payload must identify the archived claim proof'
     }
     $payloadArchivePath = [System.IO.Path]::GetFullPath(
-        [string]$proofPayload.archived_path
+        [string]$payloadArchivePathProperty.Value
     )
     if (-not [string]::Equals(
             $payloadArchivePath,
@@ -142,36 +220,49 @@ if ($hasCanonicalStaleSweepCaller) {
             'archive_released_at_utc',
             'archive_state_semantics'
         )) {
-        if (-not $proofPayload.PSObject.Properties[$requiredGenerationField]) {
+        if ($null -eq (
+                Get-AgentBridgeExactProperty `
+                    -InputObject $proofPayload `
+                    -Name $requiredGenerationField
+            )) {
             throw 'internal system stale_lease payload must identify the archived claim generation'
         }
     }
-    $proofClaimedAtUtc = if ($proofClaim.PSObject.Properties['claimed_at_utc']) {
-        ConvertTo-BridgeInvariantUtcText -Value $proofClaim.claimed_at_utc
-    } else {
-        ''
-    }
-    $proofRunId = if ($proofClaim.PSObject.Properties['run_id']) {
-        [string]$proofClaim.run_id
-    } else {
-        ''
-    }
-    $payloadClaimedAtUtc = ConvertTo-BridgeInvariantUtcText `
-        -Value $proofPayload.claim_claimed_at_utc
+    $proofClaimedAtUtc = [string]$proofGeneration['claimed_at_utc']
+    $proofRunId = [string]$proofGeneration['run_id']
+    $payloadClaimedAtUtc = Get-BridgeStrictGenerationText `
+        -Record $proofPayload `
+        -Field 'claim_claimed_at_utc' `
+        -Context 'payload'
     if ($payloadClaimedAtUtc -cne $proofClaimedAtUtc) {
         throw 'internal system stale_lease payload claimed_at generation does not match its proof'
     }
-    if ([string]$proofPayload.claim_run_id -cne $proofRunId) {
+    $payloadRunId = Get-BridgeStrictGenerationText `
+        -Record $proofPayload `
+        -Field 'claim_run_id' `
+        -Context 'payload'
+    if ($payloadRunId -cne $proofRunId) {
         throw 'internal system stale_lease payload run_id generation does not match its proof'
     }
     $proofReleasedAtUtc = ConvertTo-BridgeInvariantUtcText `
-        -Value $proofClaim.released_at_utc
+        -Value $proofReleasedAtProperty.Value
+    $payloadReleasedAtProperty = Get-AgentBridgeExactProperty `
+        -InputObject $proofPayload `
+        -Name 'archive_released_at_utc'
+    if ($payloadReleasedAtProperty.Value -isnot [string]) {
+        throw 'internal system stale_lease payload released_at generation must be a string'
+    }
     $payloadReleasedAtUtc = ConvertTo-BridgeInvariantUtcText `
-        -Value $proofPayload.archive_released_at_utc
+        -Value $payloadReleasedAtProperty.Value
     if ($payloadReleasedAtUtc -cne $proofReleasedAtUtc) {
         throw 'internal system stale_lease payload released_at generation does not match its proof'
     }
-    if ([string]$proofPayload.archive_state_semantics -cne
+    $payloadArchiveStateProperty = Get-AgentBridgeExactProperty `
+        -InputObject $proofPayload `
+        -Name 'archive_state_semantics'
+    if (
+        $payloadArchiveStateProperty.Value -isnot [string] -or
+        [string]$payloadArchiveStateProperty.Value -cne
         'verified_before_event_append') {
         throw 'internal system stale_lease payload semantics do not match its proof'
     }
@@ -183,20 +274,65 @@ if ($hasCanonicalStaleSweepCaller) {
     try {
         $activeClaimFiles = @(
             Get-ChildItem -LiteralPath $proofClaimsDir `
-                -Filter '*.json' -File -ErrorAction Stop
+                -Filter '*.json' -Force -ErrorAction Stop |
+                Sort-Object FullName
         )
     } catch {
         throw 'internal system stale_lease release cannot verify active claims'
     }
     foreach ($activeClaimFile in $activeClaimFiles) {
+        if (-not (
+                Test-Path -LiteralPath $activeClaimFile.FullName -PathType Leaf
+            )) {
+            throw 'internal system stale_lease release cannot verify active claims'
+        }
         try {
-            $activeClaim = Get-Content -Raw -LiteralPath $activeClaimFile.FullName `
-                -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            $activeClaimJson = Read-AgentBridgeStrictUtf8JsonText `
+                -LiteralPath $activeClaimFile.FullName
+            $activeClaim = ConvertFrom-AgentBridgeJson -Json (
+                $activeClaimJson
+            )
         } catch {
             throw 'internal system stale_lease release cannot verify active claims'
         }
-        if ($activeClaim.PSObject.Properties['task_id'] -and
-            [string]$activeClaim.task_id -ceq $TaskId) {
+        if (
+            $null -eq $activeClaim -or
+            $activeClaim -isnot [pscustomobject] -or
+            $null -eq (
+                $activeTaskIdProperty = Get-AgentBridgeExactProperty `
+                    -InputObject $activeClaim `
+                    -Name 'task_id'
+            ) -or
+            $activeTaskIdProperty.Value -isnot [string] -or
+            [string]::IsNullOrEmpty(
+                [string]$activeTaskIdProperty.Value
+            )
+        ) {
+            throw 'internal system stale_lease release cannot verify active claims'
+        }
+        if ([string]$activeTaskIdProperty.Value -cne $TaskId) {
+            continue
+        }
+
+        $sameGeneration = $true
+        foreach ($generationField in @(
+                'claimed_at_utc',
+                'run_id',
+                'owner_session_id',
+                'owner_token_sha256'
+            )) {
+            $activeGenerationText = Get-BridgeStrictGenerationText `
+                -Record $activeClaim `
+                -Field $generationField `
+                -Context 'active claim'
+            if (
+                $activeGenerationText -cne
+                [string]$proofGeneration[$generationField]
+            ) {
+                $sameGeneration = $false
+            }
+        }
+        if ($sameGeneration) {
             throw 'internal system stale_lease release conflicts with an active claim'
         }
     }
@@ -380,7 +516,7 @@ if ([string]::IsNullOrWhiteSpace($payloadText)) {
 
 $payload = $null
 try {
-    $payload = $payloadText | ConvertFrom-Json -ErrorAction Stop
+    $payload = ConvertFrom-AgentBridgeJson -Json $payloadText
 } catch {
     throw "Bridge event payload must be valid JSON before writing"
 }
@@ -938,17 +1074,54 @@ $outboxPath = Join-Path $outboxDir $dateName
 # and rots into per-agent local-only state. Append-then-throw lets the
 # caller surface the failure without leaving asymmetric state behind.
 Add-LineWithRetry -Path $eventsPath -Line $line
-Add-LineWithRetry -Path $outboxPath -Line $line
+if ($null -ne $internalStaleLeaseMutationLock) {
+    $completedStaleLeaseMutationLock = $internalStaleLeaseMutationLock
+    $internalStaleLeaseMutationLock = $null
+    Exit-AgentBridgeMutationLock -Lock $completedStaleLeaseMutationLock
+}
+try {
+    Add-LineWithRetry -Path $outboxPath -Line $line
+} catch {
+    # The shared events.jsonl append above is the canonical commit point.
+    # Treat a later per-agent outbox failure as a degraded mirror instead of
+    # reporting the already-committed event as failed (which would invite a
+    # retry and duplicate the canonical record).
+    $outboxWarning = (
+        "canonical event committed but per-agent outbox append failed {0}: " +
+        "{1}" -f
+        $outboxPath,
+        $_.Exception.Message
+    )
+    try {
+        Write-Warning -Message $outboxWarning -WarningAction Continue
+    } catch {
+        try {
+            [Console]::Error.WriteLine("WARNING: $outboxWarning")
+        } catch {}
+    }
+}
 
 $lastPath = Join-Path $sharedDir ("last_{0}.json" -f $Agent)
 try {
     Write-JsonAtomic -Path $lastPath -Json ($event | ConvertTo-Json -Depth 12)
 } catch {
     # last_<agent>.json is an optimization for quick status reads; the
-    # canonical bridge record is already appended to shared/events.jsonl
-    # and the per-agent outbox above. Do not fail the event write because
-    # Windows had the last-file open during atomic replace.
-    Write-Warning $_.Exception.Message
+    # canonical bridge record is already appended to shared/events.jsonl.
+    # The per-agent outbox is also best-effort. Do not fail the event write
+    # because Windows had the last-file open during atomic replace.
+    $lastFileWarning = [string]$_.Exception.Message
+    try {
+        Write-Warning -Message $lastFileWarning -WarningAction Continue
+    } catch {
+        try {
+            [Console]::Error.WriteLine("WARNING: $lastFileWarning")
+        } catch {}
+    }
 }
 
 [pscustomobject]$event
+} finally {
+    $abandonedStaleLeaseMutationLock = $internalStaleLeaseMutationLock
+    $internalStaleLeaseMutationLock = $null
+    Exit-AgentBridgeMutationLock -Lock $abandonedStaleLeaseMutationLock
+}

@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -33,9 +35,23 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 )
 from waggledance.core.work_queue import (  # noqa: E402
     AGENT_ID_PATTERN,
+    CANONICAL_UTC_PATTERN,
     DEFAULT_BRIDGE_ROOT,
+    DEFAULT_STALE_MAX_SECONDS,
+    MAX_OWNER_PID,
+    OWNER_TOKEN_PATTERN,
+    PRIVILEGED_AGENTS,
+    SESSION_ID_PATTERN,
+    TASK_ID_PATTERN,
     Claim,
     WorkQueueError,
+    _claim_expiry,
+    _claim_is_legacy_tokenless,
+    _normalize_scope_entry,
+    _parse_utc as _parse_claim_utc,
+    _read_single_link_regular_file_snapshot,
+    _require_plain_directory,
+    _scope_entries_overlap,
     list_claims,
     resolve_bridge_root,
 )
@@ -44,26 +60,6 @@ from waggledance.core.work_queue import (  # noqa: E402
 DEFAULT_EVENTS_PATH = DEFAULT_BRIDGE_ROOT / "shared" / "events.jsonl"
 DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS = 12.0
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
-REQUEST_TYPES = {
-    "message",
-    "finding",
-    "handoff",
-    "wake_request",
-    "peer_review_request",
-    "simulation_open",
-    "sandbox_drop",
-    "decision",
-}
-ANSWER_TYPES = {
-    "message",
-    "done",
-    "decision",
-    "blocked",
-    "finding",
-    "test",
-    "release",
-    "handoff",
-}
 OPEN_STATUS_FRAGMENTS = (
     "open",
     "proposal",
@@ -173,6 +169,141 @@ class BridgeNextActionError(ValueError):
         self.report = report
 
 
+def _fail_closed(message: str) -> BridgeNextActionError:
+    return BridgeNextActionError(
+        {
+            "ok": False,
+            "decision": "bridge_next_action_error",
+            "errors": [message],
+        }
+    )
+
+
+def _reject_nonfinite_json_constant(value: str) -> object:
+    raise ValueError(f"non-finite JSON number is not permitted: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number is not permitted: {value}")
+    return parsed
+
+
+def _reject_duplicate_json_fields(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    seen: dict[str, str] = {}
+    for key, value in pairs:
+        folded = key.casefold()
+        if folded in seen:
+            raise ValueError(
+                "duplicate JSON object field or case collision: "
+                f"{seen[folded]!r} and {key!r}"
+            )
+        seen[folded] = key
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(raw: str) -> object:
+    return json.loads(
+        raw,
+        parse_constant=_reject_nonfinite_json_constant,
+        parse_float=_parse_finite_json_float,
+        object_pairs_hook=_reject_duplicate_json_fields,
+    )
+
+
+def _validate_event_record(
+    event: Mapping[str, object],
+    *,
+    line_no: int,
+) -> dict[str, Any]:
+    for field in ("ts_utc", "agent", "type", "task_id", "status", "to"):
+        if not isinstance(event.get(field), str):
+            raise _fail_closed(
+                f"invalid bridge event at line {line_no}: "
+                f"field {field!r} must be an exact string"
+            )
+    agent = str(event["agent"])
+    if not AGENT_ID_PATTERN.fullmatch(agent):
+        raise _fail_closed(
+            f"invalid bridge event at line {line_no}: malformed agent"
+        )
+    event_type = str(event["type"])
+    if not re.fullmatch(r"[a-z][a-z0-9_.:-]*", event_type):
+        raise _fail_closed(
+            f"invalid bridge event at line {line_no}: malformed type"
+        )
+    status = str(event["status"])
+    if (
+        status != status.strip()
+        or not status.isascii()
+        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in status)
+    ):
+        raise _fail_closed(
+            f"invalid bridge event at line {line_no}: malformed status"
+        )
+    timestamp = str(event["ts_utc"])
+    try:
+        parsed_timestamp = datetime.fromisoformat(
+            timestamp.replace("Z", "+00:00")
+        )
+    except ValueError:
+        parsed_timestamp = None
+    if (
+        parsed_timestamp is None
+        or parsed_timestamp.tzinfo is None
+        or parsed_timestamp.utcoffset() != timedelta(0)
+    ):
+        raise _fail_closed(
+            f"invalid bridge event at line {line_no}: "
+            "ts_utc must carry the UTC offset"
+        )
+    for target in str(event["to"]).split(","):
+        normalized = target.strip()
+        if (
+            normalized
+            and normalized != "github/main"
+            and not AGENT_ID_PATTERN.fullmatch(normalized)
+        ):
+            raise _fail_closed(
+                f"invalid bridge event at line {line_no}: malformed target"
+            )
+    return dict(event)
+
+
+def _validate_bridge_read_layout(
+    bridge_root: Path,
+    events_path: Path,
+) -> None:
+    root = Path(bridge_root)
+    for path, label in (
+        (root, "bridge root"),
+        (root / "shared", "bridge shared directory"),
+        (root / "work_queue", "bridge work queue directory"),
+    ):
+        if not os.path.lexists(path):
+            continue
+        try:
+            _require_plain_directory(path, label=label)
+        except WorkQueueError as exc:
+            raise _fail_closed(str(exc)) from exc
+    claims_dir = root / "work_queue" / "claims"
+    if os.path.lexists(claims_dir):
+        try:
+            _require_plain_directory(
+                claims_dir,
+                label="active claims directory",
+            )
+        except WorkQueueError as exc:
+            raise _fail_closed(str(exc)) from exc
+    if os.path.lexists(events_path) and not events_path.is_file():
+        raise _fail_closed(f"bridge event stream must be a file: {events_path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Recommend the next bridge action.")
     parser.add_argument("--agent", required=True)
@@ -252,6 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = args.events or (bridge_root / "shared" / "events.jsonl")
+        _validate_bridge_read_layout(bridge_root, events_path)
         events = read_events(events_path, tail=args.tail)
         claims = list_claims(bridge_root=bridge_root)
         now_utc = datetime.now(timezone.utc)
@@ -271,9 +403,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.production_liveness_suppression_config is not None:
             suppression_config = Path(args.production_liveness_suppression_config)
         production_liveness_suppressed_agents = (
-            _load_production_liveness_suppression_config(suppression_config)
-            if suppression_config.exists()
-            else {}
+            _load_production_liveness_suppression_config(
+                suppression_config
+            )
         )
         report = recommend_next_action(
             agent=args.agent,
@@ -317,9 +449,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
     """Read bridge JSONL events, failing closed on malformed selected lines."""
-    if not path.exists():
+    if not os.path.lexists(path):
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()
+    try:
+        raw, _, _ = _read_single_link_regular_file_snapshot(
+            path,
+            label="bridge event stream",
+        )
+        lines = raw.decode("utf-8").splitlines()
+    except (WorkQueueError, UnicodeError) as exc:
+        raise _fail_closed(
+            f"bridge event stream could not be read as strict UTF-8: "
+            f"{path}: {exc}"
+        ) from exc
     start_line = 1
     if tail > 0:
         start_line = max(1, len(lines) - tail + 1)
@@ -327,100 +469,76 @@ def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line_no, raw in enumerate(lines, start=start_line):
         if not raw.strip():
-            continue
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise BridgeNextActionError(
-                {
-                    "ok": False,
-                    "decision": "bridge_next_action_error",
-                    "errors": [
-                        (
-                            f"invalid JSON in bridge events at line "
-                            f"{line_no}: {exc.msg}"
-                        )
-                    ],
-                }
-            ) from exc
-        if event is None:
-            continue
-        if not isinstance(event, dict):
-            raise BridgeNextActionError(
-                {
-                    "ok": False,
-                    "decision": "bridge_next_action_error",
-                    "errors": [
-                        (
-                            f"invalid bridge event at line {line_no}: "
-                            "event must be a JSON object"
-                        )
-                    ],
-                }
+            raise _fail_closed(
+                f"invalid bridge event at line {line_no}: blank JSONL record"
             )
-        events.append(event)
+        try:
+            event = _strict_json_loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise _fail_closed(
+                f"invalid JSON in bridge events at line {line_no}: {exc}"
+            ) from exc
+        if not isinstance(event, dict):
+            raise _fail_closed(
+                f"invalid bridge event at line {line_no}: "
+                "event must be a JSON object"
+            )
+        events.append(_validate_event_record(event, line_no=line_no))
     return events
 
 
 def _load_production_liveness_suppression_config(path: Path) -> dict[str, str]:
     """Load optional liveness suppression config for unavailable agent lanes."""
-    if not path.exists():
+    if not os.path.lexists(path):
         return {}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise BridgeNextActionError(
-            {
-                "ok": False,
-                "decision": "bridge_next_action_error",
-                "errors": [
-                    (
-                        "invalid production liveness suppression config JSON: "
-                        f"{exc.msg}"
-                    )
-                ],
-            }
+        raw_bytes, _, _ = _read_single_link_regular_file_snapshot(
+            path,
+            label="production liveness suppression config",
+        )
+        text = raw_bytes.decode("utf-8")
+        raw = _strict_json_loads(text)
+    except (
+        WorkQueueError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
+        raise _fail_closed(
+            "invalid production liveness suppression config strict UTF-8 "
+            f"JSON: {exc}"
         ) from exc
     if not isinstance(raw, Mapping):
-        raise BridgeNextActionError(
-            {
-                "ok": False,
-                "decision": "bridge_next_action_error",
-                "errors": [
-                    "production liveness suppression config must be a JSON object"
-                ],
-            }
+        raise _fail_closed(
+            "production liveness suppression config must be a JSON object"
         )
-    agents = raw.get("suppressed_agents", {})
+    agents = raw.get("suppressed_agents")
     if not isinstance(agents, Mapping):
-        raise BridgeNextActionError(
-            {
-                "ok": False,
-                "decision": "bridge_next_action_error",
-                "errors": ["suppressed_agents must be an object"],
-            }
-        )
+        raise _fail_closed("suppressed_agents must be an exact object")
 
     suppressed: dict[str, str] = {}
     for agent, metadata in agents.items():
-        agent_id = str(agent)
+        agent_id = agent
         if not AGENT_ID_PATTERN.fullmatch(agent_id):
-            raise BridgeNextActionError(
-                {
-                    "ok": False,
-                    "decision": "bridge_next_action_error",
-                    "errors": [
-                        (
-                            "suppressed agent id must match "
-                            f"{AGENT_ID_PATTERN.pattern}: {agent_id!r}"
-                        )
-                    ],
-                }
+            raise _fail_closed(
+                "suppressed agent id must match "
+                f"{AGENT_ID_PATTERN.pattern}: {agent_id!r}"
             )
         if isinstance(metadata, Mapping):
-            reason = str(metadata.get("reason") or "")
+            reason_value = metadata.get("reason")
+            if not isinstance(reason_value, str):
+                raise _fail_closed(
+                    "suppressed agent object reason must be an exact string"
+                )
+            reason = reason_value
+        elif isinstance(metadata, str):
+            reason = metadata
         else:
-            reason = str(metadata or "")
+            raise _fail_closed(
+                "suppressed agent entry must be a string or object"
+            )
+        if not reason.strip():
+            raise _fail_closed("suppressed agent reason must not be empty")
         suppressed[agent_id] = reason
     _assert_no_private_markers(suppressed)
     return dict(sorted(suppressed.items()))
@@ -436,6 +554,110 @@ def _production_liveness_suppression_map(
     suppressed = dict(extra_suppressed_agents or {})
     _assert_no_private_markers(suppressed)
     return dict(sorted(suppressed.items()))
+
+
+def _validate_claim_snapshot(claims: Sequence[Claim]) -> None:
+    seen_task_ids: set[str] = set()
+    for claim in claims:
+        if not AGENT_ID_PATTERN.fullmatch(claim.agent):
+            raise _fail_closed("active claim agent must be a canonical string")
+        if (
+            not TASK_ID_PATTERN.fullmatch(claim.task_id)
+            or any(
+                segment in {"", ".", ".."}
+                for segment in claim.task_id.split("/")
+            )
+        ):
+            raise _fail_closed(
+                "active claim task_id must be a canonical string"
+            )
+        if claim.task_id in seen_task_ids:
+            raise _fail_closed(
+                f"duplicate active claim task_id: {claim.task_id}"
+            )
+        seen_task_ids.add(claim.task_id)
+        if claim.mode not in {"read-only", "write"}:
+            raise _fail_closed(
+                "active claim mode must be exactly 'read-only' or 'write'"
+            )
+        if claim.mode != "write":
+            continue
+        if not claim.write_scope:
+            raise _fail_closed(
+                "active write claim must have a usable write_scope"
+            )
+        for scope in claim.write_scope:
+            try:
+                normalized = _normalize_scope_entry(scope)
+            except WorkQueueError as exc:
+                raise _fail_closed(
+                    f"active write claim has unsafe write_scope: {exc}"
+                ) from exc
+            if not normalized:
+                raise _fail_closed(
+                    "active write claim must have a usable write_scope"
+                )
+
+
+def _ambient_owner_generation() -> tuple[str, str] | None:
+    session_id = os.environ.get("AGENT_BRIDGE_OWNER_SESSION_ID", "")
+    token = os.environ.get("AGENT_BRIDGE_OWNER_TOKEN", "")
+    owner_pid = os.environ.get("AGENT_BRIDGE_OWNER_PID", "")
+    owner_started = os.environ.get(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "",
+    )
+    if not SESSION_ID_PATTERN.fullmatch(session_id):
+        return None
+    if not OWNER_TOKEN_PATTERN.fullmatch(token):
+        return None
+    if not re.fullmatch(r"[0-9]+", owner_pid):
+        return None
+    try:
+        parsed_owner_pid = int(owner_pid)
+    except (TypeError, ValueError):
+        return None
+    if parsed_owner_pid <= 0 or parsed_owner_pid > MAX_OWNER_PID:
+        return None
+    if not CANONICAL_UTC_PATTERN.fullmatch(owner_started):
+        return None
+    try:
+        _parse_claim_utc(owner_started)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return session_id, digest
+
+
+def _is_current_generation_claim(
+    claim: Claim,
+    *,
+    agent: str,
+    owner_generation: tuple[str, str] | None,
+) -> bool:
+    if owner_generation is None or claim.agent != agent:
+        return False
+    if _claim_is_legacy_tokenless(claim):
+        return False
+    session_id, token_digest = owner_generation
+    return (
+        claim.owner_session_id == session_id
+        and claim.owner_token_sha256 == token_digest
+    )
+
+
+def _claim_scopes_overlap(left: Claim, right: Claim) -> bool:
+    left_scope = tuple(
+        _normalize_scope_entry(scope) for scope in left.write_scope
+    )
+    right_scope = tuple(
+        _normalize_scope_entry(scope) for scope in right.write_scope
+    )
+    return any(
+        _scope_entries_overlap(left_entry, right_entry)
+        for left_entry in left_scope
+        for right_entry in right_scope
+    )
 
 
 def recommend_next_action(
@@ -507,15 +729,30 @@ def recommend_next_action(
         )
 
     effective_now = now_utc or _latest_event_time(events) or datetime.now(timezone.utc)
+    _validate_claim_snapshot(claims)
     active_claims, stale_claims = _split_active_and_stale_claims(
         claims,
         now_utc=effective_now,
     )
-    own_claims = [claim for claim in active_claims if claim.agent == agent]
+    owner_generation = _ambient_owner_generation()
+    own_claims = [
+        claim
+        for claim in active_claims
+        if _is_current_generation_claim(
+            claim,
+            agent=agent,
+            owner_generation=owner_generation,
+        )
+    ]
     foreign_write_claims = [
         claim
         for claim in active_claims
-        if claim.agent != agent and claim.mode == "write"
+        if claim.mode == "write"
+        and not _is_current_generation_claim(
+            claim,
+            agent=agent,
+            owner_generation=owner_generation,
+        )
     ]
     all_open_requests = _open_requests_for_agent(agent=agent, events=events)
     open_request_events, stale_open_requests = _split_fresh_and_stale_requests(
@@ -572,6 +809,7 @@ def recommend_next_action(
             summary=summary,
             events=events,
             claims=active_claims,
+            own_claims=own_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
             open_request_event_count=len(open_request_events),
@@ -583,6 +821,34 @@ def recommend_next_action(
         )
     if own_claims:
         claim = own_claims[0]
+        overlapping_foreign_writes = [
+            foreign
+            for foreign in foreign_write_claims
+            if claim.mode == "write"
+            and _claim_scopes_overlap(claim, foreign)
+        ]
+        if overlapping_foreign_writes:
+            conflict = overlapping_foreign_writes[0]
+            return _report(
+                agent=agent,
+                action="parallel_read_only",
+                task_id="bridge-review-or-scout",
+                safe_mode="read-only",
+                summary=(
+                    "own write claim overlaps a foreign active write claim; "
+                    f"stop writes until conflict is resolved: {conflict.task_id}"
+                ),
+                events=events,
+                claims=active_claims,
+                own_claims=own_claims,
+                stale_claims=stale_claims,
+                open_requests=open_requests,
+                open_request_event_count=len(open_request_events),
+                stale_open_requests=reported_stale_open_requests,
+                archived_stale_open_requests=archived_stale_open_requests,
+                foreign_write_claims=foreign_write_claims,
+                production_liveness=production_liveness,
+            )
         return _report(
             agent=agent,
             action="continue_claim",
@@ -591,6 +857,7 @@ def recommend_next_action(
             summary=f"continue active claim {claim.task_id}",
             events=events,
             claims=active_claims,
+            own_claims=own_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
             open_request_event_count=len(open_request_events),
@@ -608,6 +875,7 @@ def recommend_next_action(
             summary=f"agent {agent} is suppressed unavailable: {suppression_reason}",
             events=events,
             claims=active_claims,
+            own_claims=own_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
             open_request_event_count=len(open_request_events),
@@ -639,6 +907,7 @@ def recommend_next_action(
             summary=summary,
             events=events,
             claims=active_claims,
+            own_claims=own_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
             open_request_event_count=len(open_request_events),
@@ -668,6 +937,7 @@ def recommend_next_action(
             ),
             events=events,
             claims=active_claims,
+            own_claims=own_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
             open_request_event_count=len(open_request_events),
@@ -687,6 +957,7 @@ def recommend_next_action(
             summary=f"foreign write claim active; take read-only work outside scope: {scope}",
             events=events,
             claims=active_claims,
+            own_claims=own_claims,
             stale_claims=stale_claims,
             open_requests=open_requests,
             open_request_event_count=len(open_request_events),
@@ -703,6 +974,7 @@ def recommend_next_action(
         summary="no active claim or incoming blocker; claim the highest-value unblocked work",
         events=events,
         claims=active_claims,
+        own_claims=own_claims,
         stale_claims=stale_claims,
         open_requests=open_requests,
         open_request_event_count=len(open_request_events),
@@ -879,6 +1151,8 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
 
 
 def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
+    if _event_status(event) in KNOWN_ACK_STATUSES:
+        return False
     if _event_type(event) == "done":
         return not _is_nonterminal_done_status(_event_status(event))
     return _event_status(event) in CLOSED_REQUEST_STATUSES
@@ -1053,18 +1327,16 @@ def _split_active_and_stale_claims(
 
 
 def _is_stale_claim(claim: Claim, *, now_utc: datetime) -> bool:
-    heartbeat = _parse_utc(claim.last_heartbeat_utc) or _parse_utc(
-        claim.claimed_at_utc
-    )
-    if heartbeat is None:
+    if claim.agent in PRIVILEGED_AGENTS:
         return False
-
-    lease_seconds = max(1, int(claim.lease_seconds or 0))
-    effective_expiry = heartbeat + timedelta(seconds=lease_seconds)
-    explicit_expiry = _parse_utc(claim.claim_lease_expires_utc)
-    if explicit_expiry is not None and explicit_expiry > effective_expiry:
-        effective_expiry = explicit_expiry
-    return now_utc.astimezone(timezone.utc) >= effective_expiry
+    expiry = _claim_expiry(
+        claim,
+        fallback_lease_seconds=DEFAULT_STALE_MAX_SECONDS,
+    )
+    return (
+        expiry.expires_utc is None
+        or now_utc.astimezone(timezone.utc) >= expiry.expires_utc
+    )
 
 
 def _idle_protocol_progressed(
@@ -1127,11 +1399,15 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
         return False
     if _is_response_only_status(status):
         return False
-    if _event_type(event) == "done":
+    event_type = _event_type(event)
+    if event_type in {"heartbeat", "liveness"}:
+        return False
+    if event_type == "done":
         return status == "request"
-    return _event_type(event) in REQUEST_TYPES and _status_has_any(
-        status, OPEN_STATUS_FRAGMENTS
-    )
+    # ADR-020 requires polymorphic continuity: an explicitly addressed
+    # custom domain event is request-like based on its open/request/proposal
+    # status, never on a fixed event-type allowlist.
+    return _status_has_any(status, OPEN_STATUS_FRAGMENTS)
 
 
 def _is_bridge_follow_nudge(event: Mapping[str, Any]) -> bool:
@@ -1286,10 +1562,17 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
     event_type = _event_type(event)
     status = _event_status(event)
+    if status in KNOWN_ACK_STATUSES:
+        return False
     if event_type == "done":
         return not _is_nonterminal_done_status(status)
-    if event_type not in ANSWER_TYPES:
+    if event_type in {"heartbeat", "liveness", "status", "intent", "wake_request"}:
         return False
+    if event_type != "message":
+        # ADR-020: custom substantive events close the matching request.
+        # Only explicit infrastructure/response-only types above are
+        # excluded; a fixed answer-type list silently strands domain replies.
+        return True
     if status in CLOSED_REQUEST_STATUSES or _is_response_only_status(status):
         return True
     tokens = _status_tokens(status)
@@ -1392,7 +1675,9 @@ def _event_recipients(event: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _task_id(event: Mapping[str, Any]) -> str:
-    return str(event.get("task_id") or event.get("id") or "")
+    if "task_id" in event:
+        return str(event.get("task_id") or "")
+    return str(event.get("id") or "")
 
 
 def _event_agent(event: Mapping[str, Any]) -> str:
@@ -1934,18 +2219,20 @@ def _record_wake_send_failure_for_groups(
     target = _wake_send_failed_target(event)
     if not target:
         return
-    event_ts = _event_ts(event)
+    event_ts_utc = _event_ts(event)
+    event_ts = _parse_utc(event_ts_utc)
+    if event_ts is None:
+        return
     for (group_target, _task_id_value), group in groups.items():
         if group_target != target:
             continue
-        if event_ts and str(group.get("first_ts_utc") or "") and event_ts < str(
-            group["first_ts_utc"]
-        ):
+        first_ts = _parse_utc(str(group.get("first_ts_utc") or ""))
+        if first_ts is None or event_ts < first_ts:
             continue
         group["wake_send_failed_count"] = int(
             group.get("wake_send_failed_count") or 0
         ) + 1
-        group["latest_wake_send_failed_ts_utc"] = event_ts
+        group["latest_wake_send_failed_ts_utc"] = event_ts_utc
         group["latest_wake_send_failed_message"] = _bounded_message(
             event.get("message")
         )
@@ -2047,12 +2334,15 @@ def _clear_wake_delivery_groups_for_target_activity(
     event_agent: str,
     event_ts: str,
 ) -> None:
+    parsed_event_ts = _parse_utc(event_ts)
+    if parsed_event_ts is None:
+        return
     for key, group in list(groups.items()):
         target, _task_id_value = key
         if target != event_agent:
             continue
-        last_ts = str(group["last_ts_utc"])
-        if event_ts and event_ts > last_ts:
+        last_ts = _parse_utc(str(group["last_ts_utc"]))
+        if last_ts is not None and parsed_event_ts > last_ts:
             del groups[key]
 
 
@@ -2264,11 +2554,9 @@ def _claim_metadata(claim: Claim) -> dict[str, Any]:
 
 def _claim_snapshot(
     *,
-    agent: str,
-    claims: Sequence[Claim],
+    own_claims: Sequence[Claim],
     foreign_write_claims: Sequence[Claim],
 ) -> dict[str, list[dict[str, Any]]]:
-    own_claims = [claim for claim in claims if claim.agent == agent]
     snapshot: dict[str, list[dict[str, Any]]] = {
         "own": [_claim_metadata(claim) for claim in own_claims],
         "foreign_write": [
@@ -2306,6 +2594,7 @@ def _report(
     summary: str,
     events: Sequence[Mapping[str, Any]],
     claims: Sequence[Claim],
+    own_claims: Sequence[Claim],
     open_requests: Sequence[Mapping[str, Any]],
     open_request_event_count: int,
     stale_open_requests: Sequence[Mapping[str, Any]],
@@ -2345,8 +2634,7 @@ def _report(
     if agent_profile:
         payload["agent_profile"] = agent_profile
     claim_snapshot = _claim_snapshot(
-        agent=agent,
-        claims=claims,
+        own_claims=own_claims,
         foreign_write_claims=foreign_write_claims,
     )
     if claim_snapshot["own"] or claim_snapshot["foreign_write"]:

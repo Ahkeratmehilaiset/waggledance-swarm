@@ -39,11 +39,28 @@ def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
     events_path = path / "shared" / "events.jsonl"
     events_path.parent.mkdir(parents=True)
+    payload = "\n".join(
+        json.dumps(event, sort_keys=True) for event in events
+    )
+    if payload:
+        payload += "\n"
     events_path.write_text(
-        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
+        payload,
         encoding="utf-8",
     )
     return events_path
+
+
+def _canonical_event(task_id: str) -> dict[str, object]:
+    return {
+        "ts_utc": "2026-05-18T10:00:00Z",
+        "agent": "claude",
+        "to": "codex",
+        "type": "message",
+        "task_id": task_id,
+        "status": "request",
+        "message": "test event",
+    }
 
 
 def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path) -> None:
@@ -1336,7 +1353,7 @@ def test_done_with_domain_status_closes_incoming_request() -> None:
 
 
 @pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
-def test_ack_message_statuses_close_incoming_request(status: str) -> None:
+def test_ack_message_statuses_do_not_close_incoming_request(status: str) -> None:
     events = [
         {
             "ts_utc": "2026-05-18T10:10:00Z",
@@ -1360,10 +1377,108 @@ def test_ack_message_statuses_close_incoming_request(status: str) -> None:
 
     report = recommend_next_action(agent="codex", events=events, claims=[])
 
-    assert report["action"] == "claim_unblocked_work"
-    assert report["task_id"] == "next-unclaimed-scout-or-implementation"
-    assert report["open_incoming_count"] == 0
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "ack-request"
+    assert report["open_incoming_count"] == 1
     assert report["stale_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("blocked", "blocked"),
+        ("ownership_proposal", "open"),
+        ("status", "request"),
+    ],
+)
+def test_polymorphic_directed_event_is_request_like(
+    event_type: str,
+    status: str,
+) -> None:
+    event = _canonical_event("polymorphic-request")
+    event["type"] = event_type
+    event["status"] = status
+
+    report = recommend_next_action(agent="codex", events=[event], claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["safe_mode"] == "read-only"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("reply_type", "reply_status"),
+    [
+        ("ownership_proposal", "open"),
+        ("synthesis", "complete"),
+    ],
+)
+def test_polymorphic_substantive_reply_closes_request(
+    reply_type: str,
+    reply_status: str,
+) -> None:
+    request = _canonical_event("polymorphic-reply")
+    reply = {
+        **_canonical_event("polymorphic-reply"),
+        "ts_utc": "2026-05-18T10:01:00Z",
+        "agent": "codex",
+        "to": "claude",
+        "type": reply_type,
+        "status": reply_status,
+    }
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[request, reply],
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_polymorphic_ack_reply_does_not_close_request() -> None:
+    request = _canonical_event("polymorphic-ack")
+    reply = {
+        **_canonical_event("polymorphic-ack"),
+        "ts_utc": "2026-05-18T10:01:00Z",
+        "agent": "codex",
+        "to": "claude",
+        "type": "ownership_proposal",
+        "status": "received",
+    }
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[request, reply],
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+def test_canonical_empty_task_id_never_falls_back_to_legacy_id() -> None:
+    request = _canonical_event("canonical-task")
+    unrelated_closure = {
+        **_canonical_event(""),
+        "ts_utc": "2026-05-18T10:01:00Z",
+        "agent": "codex",
+        "to": "claude",
+        "type": "decision",
+        "status": "pass",
+        "id": "canonical-task",
+    }
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[request, unrelated_closure],
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "canonical-task"
+    assert report["open_incoming_count"] == 1
 
 
 def test_observed_message_status_closes_incoming_handoff() -> None:
@@ -1991,6 +2106,43 @@ def test_older_mixed_precision_rco_pass_does_not_close_newer_request() -> None:
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.parametrize("status", ["received", "seen", "acknowledged"])
+def test_direct_rco_requester_ack_does_not_close_request(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-14T10:00:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "wake_request",
+            "task_id": "pr1208-rco-pass-ack",
+            "status": "rco_pass_required_after_ci_green",
+            "message": "PR #1208 is CI green; RCO pass/block required.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+        {
+            "ts_utc": "2026-06-14T10:01:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-2",
+            "type": "message",
+            "task_id": "pr1208-rco-pass-ack",
+            "status": status,
+            "message": "Request delivery acknowledged; decision still pending.",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="claude-rco-2",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-14T10:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "pr1208-rco-pass-ack"
+    assert report["open_incoming_count"] == 1
+
+
 def test_rco_pass_decision_remains_response_only() -> None:
     events = [
         {
@@ -2242,6 +2394,10 @@ def test_keeps_foreign_write_claim_until_explicit_expiry() -> None:
         last_heartbeat_utc="2026-06-07T18:00:00Z",
         lease_seconds=300,
         claim_lease_expires_utc="2026-06-07T18:10:00Z",
+        owner_session_id="claude-session",
+        owner_token_sha256="b" * 64,
+        owner_pid=1234,
+        owner_process_start_utc="2026-06-07T17:59:00Z",
     )
 
     report = recommend_next_action(
@@ -2255,6 +2411,106 @@ def test_keeps_foreign_write_claim_until_explicit_expiry() -> None:
     assert report["active_claim_count"] == 1
     assert report["foreign_write_claim_count"] == 1
     assert "ignored_stale_claim_count" not in report
+
+
+@pytest.mark.parametrize(
+    ("ambient_field", "ambient_value"),
+    [
+        ("AGENT_BRIDGE_OWNER_PID", "9" * 200),
+        (
+            "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+            "2026-07-31 11:00:00",
+        ),
+    ],
+)
+def test_malformed_ambient_owner_never_authorizes_same_agent_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ambient_field: str,
+    ambient_value: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    now = datetime(2026, 7, 31, 11, 0, tzinfo=timezone.utc)
+    claim = claim_task(
+        agent="codex",
+        task_id="ambient-owner-boundary",
+        summary="current claim before ambient tamper",
+        mode="write",
+        write_scope=["tools/bridge_next_action.py"],
+        bridge_root=bridge,
+        now_utc=now,
+    )
+    monkeypatch.setenv(ambient_field, ambient_value)
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[],
+        claims=[claim],
+        now_utc=datetime(2026, 7, 31, 11, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "parallel_read_only"
+    assert report["safe_mode"] == "read-only"
+    assert report["claim_snapshot"]["own"] == []
+    assert report["claim_snapshot"]["foreign_write"][0]["task_id"] == (
+        "ambient-owner-boundary"
+    )
+
+
+@pytest.mark.parametrize(
+    ("foreign_scope", "expected_action"),
+    [
+        (("tools/bridge_next_action.py",), "parallel_read_only"),
+        (("docs/independent.md",), "continue_claim"),
+    ],
+)
+def test_current_owner_write_is_blocked_only_by_overlapping_foreign_write(
+    tmp_path: Path,
+    foreign_scope: tuple[str, ...],
+    expected_action: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    now = datetime(2026, 7, 31, 11, 0, tzinfo=timezone.utc)
+    own = claim_task(
+        agent="codex",
+        task_id="current-owner-write",
+        summary="current generation work",
+        mode="write",
+        write_scope=["tools/bridge_next_action.py"],
+        bridge_root=bridge,
+        now_utc=now,
+    )
+    foreign = Claim(
+        agent="fable-5",
+        task_id="foreign-owner-write",
+        summary="independent active write",
+        mode="write",
+        write_scope=foreign_scope,
+        run_id="fable-run",
+        claimed_at_utc="2026-07-31T11:00:00Z",
+        last_heartbeat_utc="2026-07-31T11:00:00Z",
+        lease_seconds=900,
+        claim_lease_expires_utc="2026-07-31T11:15:00Z",
+        owner_session_id="fable-session",
+        owner_token_sha256="b" * 64,
+        owner_pid=4243,
+        owner_process_start_utc="2026-07-31T10:59:00Z",
+    )
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[],
+        claims=[own, foreign],
+        now_utc=datetime(2026, 7, 31, 11, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == expected_action
+    assert report["claim_snapshot"]["own"][0]["task_id"] == (
+        "current-owner-write"
+    )
+    assert report["claim_snapshot"]["foreign_write"][0]["task_id"] == (
+        "foreign-owner-write"
+    )
 
 
 def test_ignores_expired_own_claim_when_recommending() -> None:
@@ -2866,6 +3122,48 @@ def test_target_activity_clears_wake_delivery_gap() -> None:
     assert "production_liveness" not in report
 
 
+def test_later_fractional_target_activity_with_mixed_utc_format_clears_wake_gap(
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed-mixed-utc",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed-mixed-utc",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00.100000+00:00",
+            "agent": "claude-rco-1",
+            "type": "decision",
+            "task_id": "rco-needed-mixed-utc",
+            "status": "rco_pass",
+            "message": "reviewed after the latest wake",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "wake_delivery" not in report.get("production_liveness", {})
+
+
 def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
     events = [
         {
@@ -3016,6 +3314,56 @@ def test_wake_send_failure_changes_wake_delivery_escalation() -> None:
     assert wake["latest_wake_send_failed_ts_utc"] == "2026-06-06T10:04:00Z"
     assert "operator wake send failed" in wake["diagnosis"]
     assert "TitleMap" in wake["safe_next_action"]
+
+
+def test_later_fractional_wake_send_failure_with_mixed_utc_format_is_recorded(
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "lead-needed-mixed-utc",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:00:00.100000+00:00",
+            "agent": "operator",
+            "type": "message",
+            "task_id": "wd/ops/stall-rescue-watch",
+            "status": "wake_send_failed",
+            "message": "Keying 'codex-lead-1' failed (tab not found).",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "lead-needed-mixed-utc",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["delivery_escalation"]["reason"] == (
+        "operator_wake_send_failed_for_unresolved_wake"
+    )
+    wake = delivery["stalled_wakes"][0]
+    assert wake["wake_send_failed_count"] == 1
+    assert wake["latest_wake_send_failed_ts_utc"] == (
+        "2026-06-06T10:00:00.100000+00:00"
+    )
 
 
 def test_wake_delivery_gap_does_not_interrupt_active_own_claim(
@@ -3234,10 +3582,10 @@ def test_read_events_honors_tail_before_validation(tmp_path: Path) -> None:
     events_path.write_text(
         "\n".join(
             [
-                json.dumps({"task_id": "one"}),
+                json.dumps(_canonical_event("one")),
                 "{not-json",
-                json.dumps({"task_id": "two"}),
-                json.dumps({"task_id": "three"}),
+                json.dumps(_canonical_event("two")),
+                json.dumps(_canonical_event("three")),
             ]
         ),
         encoding="utf-8",
@@ -3253,9 +3601,9 @@ def test_read_events_fails_closed_on_malformed_selected_line(tmp_path: Path) -> 
     events_path.write_text(
         "\n".join(
             [
-                json.dumps({"task_id": "one"}),
+                json.dumps(_canonical_event("one")),
                 "{not-json",
-                json.dumps({"task_id": "two"}),
+                json.dumps(_canonical_event("two")),
             ]
         ),
         encoding="utf-8",
@@ -3275,9 +3623,9 @@ def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) ->
     events_path.write_text(
         "\n".join(
             [
-                json.dumps({"task_id": "one"}),
+                json.dumps(_canonical_event("one")),
                 json.dumps(["not-object"]),
-                json.dumps({"task_id": "two"}),
+                json.dumps(_canonical_event("two")),
             ]
         ),
         encoding="utf-8",
@@ -3293,19 +3641,52 @@ def test_read_events_fails_closed_on_non_object_selected_line(tmp_path: Path) ->
         raise AssertionError("non-object selected bridge event should fail closed")
 
 
-def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
+def test_read_events_fails_closed_on_bare_null_event_line(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     events_path.write_text(
         "\n".join(
             [
                 "null",
-                json.dumps({"task_id": "one"}),
+                json.dumps(_canonical_event("one")),
             ]
         ),
         encoding="utf-8",
     )
 
-    assert read_events(events_path, tail=2) == [{"task_id": "one"}]
+    with pytest.raises(BridgeNextActionError, match="JSON object"):
+        read_events(events_path, tail=2)
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-07-31T12:00:00+14:00",
+        "2026-07-31T12:00:00",
+    ],
+)
+def test_read_events_rejects_non_utc_timestamp(
+    tmp_path: Path,
+    timestamp: str,
+) -> None:
+    event = _canonical_event("non-utc-event")
+    event["ts_utc"] = timestamp
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(BridgeNextActionError, match="UTC offset"):
+        read_events(events_path)
+
+
+def test_read_events_rejects_hard_linked_stream(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text(
+        json.dumps(_canonical_event("hard-linked-event")) + "\n",
+        encoding="utf-8",
+    )
+    os.link(events_path, tmp_path / "events-alias.jsonl")
+
+    with pytest.raises(BridgeNextActionError, match="one filesystem link"):
+        read_events(events_path)
 
 
 def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
@@ -3396,6 +3777,39 @@ def test_cli_fails_closed_on_malformed_events_file(tmp_path: Path, capsys) -> No
     assert "JSON object" in report["errors"][0]
 
 
+def test_cli_fails_closed_on_unreadable_active_claim_file(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    events_path = _events_file(bridge, [])
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    (claims_dir / "foreign-held-task.json").write_text(
+        "{not-json\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex",
+            "--bridge-root",
+            str(bridge),
+            "--events",
+            str(events_path),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "bridge_next_action_error"
+    assert "foreign-held-task.json" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
 def test_cli_human_output_reports_stale_incoming(tmp_path: Path, capsys) -> None:
     bridge = tmp_path / ".agent-bridge"
     events_path = _events_file(
@@ -3483,6 +3897,7 @@ def test_cli_rejects_non_finite_production_idle_warn_minutes(
             {
                 "ts_utc": "2026-06-06T10:00:00Z",
                 "agent": "codex-lead-1",
+                "to": "codex-tools-1",
                 "type": "heartbeat",
                 "task_id": "lead-heartbeat",
                 "status": "active",
@@ -3520,6 +3935,7 @@ def test_cli_loads_liveness_suppression_config(tmp_path: Path, capsys) -> None:
             {
                 "ts_utc": "2026-06-06T10:00:00Z",
                 "agent": "grok-scout-1",
+                "to": "codex-lead-1",
                 "type": "blocked",
                 "task_id": "grok-budget",
                 "status": "redteam_blocked",
@@ -3576,6 +3992,7 @@ def test_cli_loads_default_runtime_liveness_suppression_config(
             {
                 "ts_utc": "2026-06-06T10:00:00Z",
                 "agent": "fable-5",
+                "to": "codex-lead-1",
                 "type": "status",
                 "task_id": "fable-bootstrap",
                 "status": "active",
@@ -3630,6 +4047,7 @@ def test_cli_missing_default_liveness_suppression_config_keeps_stall_actionable(
             {
                 "ts_utc": "2026-06-06T10:00:00Z",
                 "agent": "fable-5",
+                "to": "codex-lead-1",
                 "type": "status",
                 "task_id": "fable-bootstrap",
                 "status": "active",

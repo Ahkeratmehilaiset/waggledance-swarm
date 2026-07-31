@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+import waggledance.core.work_queue as work_queue_module
 from waggledance.core.work_queue import (
     DEFAULT_LEASE_SECONDS,
     Claim,
@@ -299,6 +301,97 @@ def test_claim_rejects_invalid_mode(tmp_path: Path) -> None:
         )
 
 
+def test_claim_rejects_non_ascii_write_scope(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="printable ASCII"):
+        claim_task(
+            agent="codex-1",
+            task_id="unicode-write-scope",
+            summary="reject cross-runtime scope normalization divergence",
+            mode="write",
+            write_scope=["tools/\u0130mpl.py"],
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
+@pytest.mark.parametrize(
+    "write_scope",
+    [
+        "tools//foo.py",
+        "tools/./foo.py",
+        "tools/sub/../foo.py",
+    ],
+)
+def test_claim_rejects_noncanonical_write_scope_segments(
+    tmp_path: Path,
+    write_scope: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="empty, '\\.' or '\\.\\.'"):
+        claim_task(
+            agent="codex-1",
+            task_id="noncanonical-write-scope",
+            summary="reject filesystem-alias scope spellings",
+            mode="write",
+            write_scope=[write_scope],
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
+@pytest.mark.parametrize(
+    ("write_scope", "error"),
+    [
+        ("tools/foo.py.", "end in"),
+        ("tools/dir. /foo.py", "end in"),
+        ("tools/foo.py::$DATA", "must not contain ':'"),
+        ("/tools/foo.py", "repository-relative"),
+        ("\\\\server\\share\\foo.py", "repository-relative"),
+    ],
+)
+def test_claim_rejects_windows_alias_write_scope(
+    tmp_path: Path,
+    write_scope: str,
+    error: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match=error):
+        claim_task(
+            agent="codex-1",
+            task_id="windows-alias-write-scope",
+            summary="reject Windows path aliases",
+            mode="write",
+            write_scope=[write_scope],
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
+def test_claim_rejects_nonstring_requested_write_scope_entry(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+
+    with pytest.raises(WorkQueueError, match="entries must be strings"):
+        claim_task(
+            agent="codex-1",
+            task_id="nonstring-requested-write-scope",
+            summary="reject partially coercible write scope",
+            mode="write",
+            write_scope=["tools", 123],  # type: ignore[list-item]
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
 def test_claim_write_mode_requires_scope(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     with pytest.raises(WorkQueueError, match="write claims require"):
@@ -318,7 +411,7 @@ def test_claim_write_mode_rejects_overlap_empty_scope_before_write(
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
 
-    with pytest.raises(WorkQueueError, match="write claims require"):
+    with pytest.raises(WorkQueueError, match="repository-relative"):
         claim_task(
             agent="claude-1",
             task_id="overlap-empty-scope",
@@ -908,7 +1001,7 @@ def test_legacy_tokenless_claim_cannot_be_mutated(
         ("owner_process_start_utc", "2026-07-28T00:00:00Z\n"),
     ],
 )
-def test_malformed_stored_owner_field_is_legacy_tokenless(
+def test_malformed_stored_owner_field_fails_closed_before_mutation(
     tmp_path: Path,
     field_name: str,
     malformed_value: object,
@@ -927,10 +1020,7 @@ def test_malformed_stored_owner_field_is_legacy_tokenless(
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
     original = claim_path.read_bytes()
 
-    with pytest.raises(
-        WorkQueueError,
-        match="claim_owner_legacy_tokenless",
-    ):
+    with pytest.raises(WorkQueueError):
         heartbeat(
             agent="claude-1",
             task_id=task_id,
@@ -938,6 +1028,95 @@ def test_malformed_stored_owner_field_is_legacy_tokenless(
         )
 
     assert claim_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("owner_pid", "4242"),
+        ("lease_seconds", "900"),
+        ("write_scope", "tools/authority.py"),
+        ("last_heartbeat_utc", 123),
+        ("claim_lease_expires_utc", 123),
+        ("owner_process_start_utc", "2026-07-31 11:00:00"),
+    ],
+)
+def test_raw_authority_field_type_erasure_fails_closed(
+    tmp_path: Path,
+    field_name: str,
+    malformed_value: object,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"raw-shape-{field_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="tamper authority-bearing raw field",
+        mode="write",
+        write_scope=["tools/authority.py"],
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload[field_name] = malformed_value
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    original = claim_path.read_bytes()
+
+    with pytest.raises(WorkQueueError, match=field_name):
+        list_claims(bridge_root=bridge)
+    with pytest.raises(WorkQueueError):
+        claim_task(
+            agent="codex-1",
+            task_id=f"new-against-{field_name}",
+            summary="malformed active claim must block acquisition",
+            mode="write",
+            write_scope=["tests/independent.py"],
+            bridge_root=bridge,
+        )
+
+    assert claim_path.read_bytes() == original
+    assert not (
+        bridge
+        / "work_queue"
+        / "claims"
+        / f"new-against-{field_name}.json"
+    ).exists()
+
+
+def test_active_claim_hard_link_fails_closed_for_reads_and_acquisition(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "hard-linked-active-claim"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="hard-link attack fixture",
+        mode="write",
+        write_scope=["tools/hardlink.py"],
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    os.link(claim_path, tmp_path / "external-claim-alias.json")
+
+    with pytest.raises(WorkQueueError, match="one filesystem link"):
+        list_claims(bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="one filesystem link"):
+        claim_task(
+            agent="codex-1",
+            task_id="new-against-hard-link",
+            summary="hard-linked claim must block acquisition",
+            mode="write",
+            write_scope=["tests/independent.py"],
+            bridge_root=bridge,
+        )
+
+    assert not (
+        bridge
+        / "work_queue"
+        / "claims"
+        / "new-against-hard-link.json"
+    ).exists()
 
 
 def test_nonstring_stored_agent_never_authorizes_mutation(
@@ -1016,6 +1195,11 @@ def test_claim_refuses_write_scope_conflict_across_tasks(tmp_path: Path) -> None
         ([", ,"], "write"),
         (None, "write"),
         ([123], "write"),
+        (["unrelated/path.py", 123], "write"),
+        (["unrelated/path.py", ""], "write"),
+        (["///"], "write"),
+        (["tools/foo.py."], "write"),
+        (["tools/foo.py::$DATA"], "write"),
         (["tests/bar.py"], "WRITE"),
     ],
     ids=[
@@ -1024,6 +1208,11 @@ def test_claim_refuses_write_scope_conflict_across_tasks(tmp_path: Path) -> None
         "commas-only",
         "null",
         "nonstring",
+        "mixed-nonstring",
+        "mixed-empty",
+        "slash-only",
+        "trailing-dot",
+        "alternate-data-stream",
         "uppercase-write-mode",
     ],
 )
@@ -1049,7 +1238,7 @@ def test_claim_refuses_legacy_write_claim_with_unsafe_scope_shape(
     payload["mode"] = stored_mode
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(WorkQueueError, match="write-scope conflict"):
+    with pytest.raises(WorkQueueError):
         claim_task(
             agent="codex-1",
             task_id="overlapping-new-write",
@@ -1098,7 +1287,7 @@ def test_claim_treats_malformed_or_missing_mode_as_wildcard_write(
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
     original = claim_path.read_bytes()
 
-    with pytest.raises(WorkQueueError, match="write-scope conflict"):
+    with pytest.raises(WorkQueueError):
         claim_task(
             agent="codex-1",
             task_id=f"new-write-against-{mode_case}",
@@ -1115,6 +1304,182 @@ def test_claim_treats_malformed_or_missing_mode_as_wildcard_write(
         / "claims"
         / f"new-write-against-{mode_case}.json"
     ).exists()
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "fixture_bytes"),
+    [
+        ("malformed", b"{not-json"),
+        ("array", b"[]"),
+        ("null", b"null"),
+        ("invalid-utf8", b'{"task_id":"noise","value":"\xff"}'),
+        ("utf8-bom", b'\xef\xbb\xbf{"task_id":"noise"}'),
+        ("trailing-comma", b'{"task_id":"noise",}'),
+        ("comment", b'{/*comment*/"task_id":"noise"}'),
+        ("nan", b'{"task_id":"noise","value":NaN}'),
+        ("infinity", b'{"task_id":"noise","value":Infinity}'),
+        ("overflow", b'{"task_id":"noise","value":1e9999}'),
+        ("leading-zero", b'{"task_id":"noise","value":01}'),
+        ("leading-plus", b'{"task_id":"noise","value":+1}'),
+        ("single-quote", b"{'task_id':'noise'}"),
+        ("leading-dot", b'{"task_id":"noise","value":.1}'),
+        ("trailing-dot", b'{"task_id":"noise","value":1.}'),
+        ("negative-leading-zero", b'{"task_id":"noise","value":-01}'),
+        ("double-zero", b'{"task_id":"noise","value":00}'),
+        ("dot-before-exponent", b'{"task_id":"noise","value":1.e2}'),
+        ("negative-leading-dot", b'{"task_id":"noise","value":-.1}'),
+        (
+            "invalid-escape",
+            b"""{"task_id":"noise","value":"bad\\'escape"}""",
+        ),
+        (
+            "raw-newline",
+            b"""{"task_id":"noise","value":"raw
+newline"}""",
+        ),
+        ("unquoted-key", b'{task_id:"noise"}'),
+        (
+            "duplicate-task-id",
+            b'{"task_id":"authorized","task_id":"foreign"}',
+        ),
+        (
+            "duplicate-owner-session",
+            b'{"owner_session_id":"authorized",'
+            b'"owner_session_id":"foreign"}',
+        ),
+        (
+            "case-colliding-task-id",
+            b'{"task_id":"authorized","Task_Id":"foreign"}',
+        ),
+        ("nbsp-whitespace", b'{\xc2\xa0"task_id":"noise"}'),
+        ("vertical-tab-whitespace", b'{\x0b"task_id":"noise"}'),
+    ],
+)
+@pytest.mark.parametrize("mode", ["read-only", "write"])
+def test_claim_acquisition_rejects_untrusted_active_record(
+    tmp_path: Path,
+    fixture_name: str,
+    fixture_bytes: bytes,
+    mode: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    noise_path = claims_dir / f"legacy-{fixture_name}.json"
+    noise_path.write_bytes(fixture_bytes)
+    before = noise_path.read_bytes()
+    task_id = f"strict-acquisition-{fixture_name}-{mode}"
+
+    with pytest.raises(WorkQueueError):
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="must reject untrusted active queue state",
+            mode=mode,
+            write_scope=["tools"] if mode == "write" else (),
+            bridge_root=bridge,
+        )
+
+    assert noise_path.read_bytes() == before
+    assert sorted(path.name for path in claims_dir.glob("*.json")) == [
+        noise_path.name
+    ]
+    assert not (bridge / "work_queue" / "done").exists()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"task_id":"authorized","task_id":"foreign"}',
+        b'{"owner_session_id":"authorized","owner_session_id":"foreign"}',
+        b'{"task_id":"authorized","Task_Id":"foreign"}',
+    ],
+)
+def test_claim_reader_reports_duplicate_or_case_colliding_fields(
+    tmp_path: Path,
+    raw: bytes,
+) -> None:
+    claim_path = tmp_path / "duplicate-fields.json"
+    claim_path.write_bytes(raw)
+
+    with pytest.raises(WorkQueueError, match="unreadable claim file") as caught:
+        work_queue_module._read_claim_file_snapshot(claim_path)
+
+    assert caught.value.__cause__ is not None
+    assert "duplicate JSON object field or case collision" in str(
+        caught.value.__cause__
+    )
+
+
+def test_claim_acquisition_wraps_claim_enumeration_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    original_glob = Path.glob
+
+    def fail_claim_enumeration(path: Path, pattern: str):
+        if path == claims_dir and pattern == "*.json":
+            raise PermissionError("injected claim enumeration failure")
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", fail_claim_enumeration)
+
+    with pytest.raises(
+        WorkQueueError,
+        match="cannot enumerate active claim records",
+    ):
+        claim_task(
+            agent="claude-1",
+            task_id="strict-acquisition-enumeration-error",
+            summary="must wrap enumeration failure",
+            bridge_root=bridge,
+        )
+
+    assert not list(claims_dir.iterdir())
+    assert not (bridge / "work_queue" / "done").exists()
+
+
+def test_claim_acquisition_rejects_active_claim_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    noise_path = claims_dir / "legacy-unreadable.json"
+    noise_path.write_text('{"task_id":"legacy-unreadable"}', encoding="utf-8")
+    before = noise_path.read_bytes()
+    original_snapshot = (
+        work_queue_module._read_single_link_regular_file_snapshot
+    )
+
+    def fail_claim_read(path: Path, *args, **kwargs):
+        if path == noise_path:
+            raise WorkQueueError("unreadable claim file: injected failure")
+        return original_snapshot(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_read_single_link_regular_file_snapshot",
+        fail_claim_read,
+    )
+
+    with pytest.raises(WorkQueueError, match="unreadable claim file"):
+        claim_task(
+            agent="claude-1",
+            task_id="strict-acquisition-read-error",
+            summary="must reject unreadable active queue state",
+            bridge_root=bridge,
+        )
+
+    assert noise_path.read_bytes() == before
+    assert sorted(path.name for path in claims_dir.glob("*.json")) == [
+        noise_path.name
+    ]
+    assert not (bridge / "work_queue" / "done").exists()
 
 
 def test_release_archives_to_done_dir(tmp_path: Path) -> None:
@@ -1140,90 +1505,919 @@ def test_release_archives_to_done_dir(tmp_path: Path) -> None:
     assert len(list(done_dir.glob("task-001-*.json"))) == 1
 
 
-def test_release_rolls_back_archive_when_active_claim_delete_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bridge = tmp_path / ".agent-bridge"
-    task_id = "release-delete-denied"
-    claim_task(
-        agent="claude-1",
-        task_id=task_id,
-        summary="release rollback fixture",
-        bridge_root=bridge,
-    )
-    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
-    before = claim_path.read_bytes()
-    original_unlink = Path.unlink
-
-    def deny_claim_unlink(path: Path, *args, **kwargs) -> None:
-        if path == claim_path:
-            raise PermissionError("injected active claim delete failure")
-        original_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", deny_claim_unlink)
-
-    with pytest.raises(
-        PermissionError,
-        match="injected active claim delete failure",
-    ):
-        release_task(
+def _run_normal_claim_mutation(
+    *,
+    operation_name: str,
+    bridge: Path,
+    task_id: str,
+) -> Claim | object:
+    if operation_name == "force":
+        return claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="force mutation result",
+            bridge_root=bridge,
+            now_utc=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+            force=True,
+        )
+    if operation_name == "heartbeat":
+        return heartbeat(
             agent="claude-1",
             task_id=task_id,
             bridge_root=bridge,
+            now_utc=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
         )
+    return release_task(
+        agent="claude-1",
+        task_id=task_id,
+        release_status="done",
+        bridge_root=bridge,
+        now_utc=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+    )
 
-    assert claim_path.read_bytes() == before
-    assert not list((bridge / "work_queue" / "done").glob("*.json"))
+
+def _foreign_claim_body(claim_path: Path) -> bytes:
+    payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    payload["agent"] = "codex-1"
+    payload["summary"] = "fresh foreign replacement"
+    payload["owner_session_id"] = "foreign-owner-session"
+    payload["owner_token_sha256"] = hashlib.sha256(
+        b"foreign-owner-token"
+    ).hexdigest()
+    payload["last_heartbeat_utc"] = "2026-07-31T11:59:59Z"
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
 
 
-def test_release_reports_source_and_rollback_double_failure(
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_rejects_and_restores_replacement_moved_to_quarantine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
-    task_id = "release-double-delete-denied"
+    task_id = f"snapshot-swap-{operation_name}"
     claim_task(
         agent="claude-1",
         task_id=task_id,
-        summary="release double rollback failure fixture",
+        summary="authorized original",
         bridge_root=bridge,
     )
     claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
-    done_dir = bridge / "work_queue" / "done"
-    before = claim_path.read_bytes()
-    original_unlink = Path.unlink
+    foreign_body = _foreign_claim_body(claim_path)
+    foreign_temp = claim_path.with_name(f".{claim_path.name}.foreign")
+    foreign_temp.write_bytes(foreign_body)
+    original_rename = work_queue_module._rename_file_create_new
 
-    def deny_source_and_archive_unlink(
-        path: Path,
-        *args,
-        **kwargs,
-    ) -> None:
-        if path == claim_path:
-            raise PermissionError("injected active claim delete failure")
-        if path.parent == done_dir and ".tmp." not in path.name:
-            raise PermissionError("injected release archive rollback failure")
-        original_unlink(path, *args, **kwargs)
+    def replace_before_quarantine(source, destination, *args, **kwargs):
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if (
+            source_path == claim_path
+            and ".mutation-quarantine." in destination_path.name
+        ):
+            foreign_temp.replace(claim_path)
+        return original_rename(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", deny_source_and_archive_unlink)
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_before_quarantine,
+    )
 
     with pytest.raises(
         WorkQueueError,
-        match=(
-            "release active-claim delete failed and archive rollback failed"
-        ),
-    ) as exc_info:
+        match="quarantined active claim identity mismatch",
+    ):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert claim_path.read_bytes() == foreign_body
+    quarantines = list(
+        claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+    )
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == foreign_body
+    assert not list((bridge / "work_queue" / "done").glob("*.json"))
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_quarantine_collision_preserves_both_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"quarantine-collision-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    foreign_body = b"foreign preexisting mutation quarantine\n"
+    original_rename = work_queue_module._rename_file_create_new
+    collision_path: Path | None = None
+
+    def collide_with_quarantine_destination(
+        source: Path,
+        destination: Path,
+    ) -> None:
+        nonlocal collision_path
+        if source == claim_path and collision_path is None:
+            collision_path = destination
+            destination.write_bytes(foreign_body)
+        original_rename(source, destination)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        collide_with_quarantine_destination,
+    )
+
+    with pytest.raises(WorkQueueError, match="source quarantine failed"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert collision_path is not None
+    assert collision_path.read_bytes() == foreign_body
+    assert claim_path.read_bytes() == original_body
+    assert not list((bridge / "work_queue" / "done").glob("*.json"))
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_never_overwrites_fresh_active_claim_during_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"publish-race-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    foreign_body = _foreign_claim_body(claim_path)
+    done_dir = bridge / "work_queue" / "done"
+    original_open = Path.open
+    injected = False
+
+    def recreate_active_before_publish(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ):
+        nonlocal injected
+        is_update_publish = (
+            operation_name != "release"
+            and path == claim_path
+            and mode == "xb"
+        )
+        is_release_publish = (
+            operation_name == "release"
+            and path.parent == done_dir
+            and path.suffix == ".json"
+            and mode == "xb"
+        )
+        if not injected and (is_update_publish or is_release_publish):
+            claim_path.write_bytes(foreign_body)
+            injected = True
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", recreate_active_before_publish)
+
+    if operation_name == "release":
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+        assert len(list(done_dir.glob("*.json"))) == 1
+    else:
+        with pytest.raises(WorkQueueError, match="publish failed"):
+            _run_normal_claim_mutation(
+                operation_name=operation_name,
+                bridge=bridge,
+                task_id=task_id,
+            )
+        assert not list(done_dir.glob("*.json"))
+
+    assert injected
+    assert claim_path.read_bytes() == foreign_body
+    if operation_name != "release":
+        quarantines = list(
+            claim_path.parent.glob(
+                f".{claim_path.name}.mutation-quarantine.*"
+            )
+        )
+        assert len(quarantines) == 1
+        assert quarantines[0].read_bytes() != foreign_body
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_publish_failure_restores_exact_original(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"publish-failure-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="exact rollback fixture",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    done_dir = bridge / "work_queue" / "done"
+    original_open = Path.open
+    injected = False
+
+    def fail_mutation_publish(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ):
+        nonlocal injected
+        is_update_publish = (
+            operation_name != "release"
+            and path == claim_path
+            and mode == "xb"
+        )
+        is_release_publish = (
+            operation_name == "release"
+            and path.parent == done_dir
+            and path.suffix == ".json"
+            and mode == "xb"
+        )
+        if not injected and (is_update_publish or is_release_publish):
+            injected = True
+            raise PermissionError("injected normal mutation publish failure")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_mutation_publish)
+
+    with pytest.raises(WorkQueueError, match="publish failed"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert injected
+    assert claim_path.read_bytes() == original_body
+    assert not list(done_dir.glob("*.json"))
+    assert not list(bridge.rglob("*.mutation-temp.*"))
+    recoveries = list(
+        claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].read_bytes() == original_body
+
+
+def test_release_destination_collision_restores_active_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "release-destination-collision"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    done_dir = bridge / "work_queue" / "done"
+    foreign_body = b'{"fresh_foreign_release":true}\n'
+    original_open = Path.open
+    injected_paths: list[Path] = []
+
+    def collide_with_release_destination(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ):
+        if (
+            not injected_paths
+            and mode == "xb"
+            and path.parent == done_dir
+            and path.suffix == ".json"
+        ):
+            path.write_bytes(foreign_body)
+            injected_paths.append(path)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", collide_with_release_destination)
+
+    with pytest.raises(WorkQueueError, match="publish failed"):
         release_task(
             agent="claude-1",
             task_id=task_id,
+            release_status="done",
+            bridge_root=bridge,
+            now_utc=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+        )
+
+    assert len(injected_paths) == 1
+    assert injected_paths[0].read_bytes() == foreign_body
+    assert claim_path.read_bytes() == original_body
+    recoveries = list(
+        claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].read_bytes() == original_body
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_retains_committed_snapshot_without_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"cleanup-warning-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="cleanup warning fixture",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    original_unlink = Path.unlink
+
+    def reject_quarantine_unlink(path: Path, *args, **kwargs) -> None:
+        if ".mutation-quarantine." in path.name:
+            raise AssertionError("committed recovery must never be unlinked")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", reject_quarantine_unlink)
+
+    result = _run_normal_claim_mutation(
+        operation_name=operation_name,
+        bridge=bridge,
+        task_id=task_id,
+    )
+
+    if operation_name == "release":
+        assert result.release_status == "done"
+        assert not claim_path.exists()
+        assert len(
+            list((bridge / "work_queue" / "done").glob("*.json"))
+        ) == 1
+    else:
+        assert claim_path.exists()
+        assert claim_path.read_bytes() != original_body
+    quarantines = list(
+        claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+    )
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == original_body
+
+
+def _normal_mutation_publish_target(
+    *,
+    operation_name: str,
+    claim_path: Path,
+    done_dir: Path,
+    candidate: Path,
+) -> bool:
+    if operation_name == "release":
+        return candidate.parent == done_dir and candidate.suffix == ".json"
+    return candidate == claim_path
+
+
+def _assert_failed_normal_mutation_restored_source(
+    *,
+    bridge: Path,
+    claim_path: Path,
+    original_body: bytes,
+) -> None:
+    assert claim_path.read_bytes() == original_body
+    assert not list((bridge / "work_queue" / "done").glob("*.json"))
+
+
+def _assert_failed_normal_mutation_preserved_foreign_destination(
+    *,
+    operation_name: str,
+    bridge: Path,
+    claim_path: Path,
+    original_body: bytes,
+    foreign_body: bytes,
+) -> None:
+    done_dir = bridge / "work_queue" / "done"
+    if operation_name == "release":
+        assert claim_path.read_bytes() == original_body
+        canonical_destinations = list(done_dir.glob("*.json"))
+        assert len(canonical_destinations) == 1
+        assert canonical_destinations[0].read_bytes() == foreign_body
+    else:
+        assert claim_path.read_bytes() == foreign_body
+        assert not list(done_dir.glob("*.json"))
+    recoveries = list(
+        claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].read_bytes() == original_body
+
+
+def _assert_failed_normal_mutation_retained_ambiguous_publish(
+    *,
+    operation_name: str,
+    bridge: Path,
+    claim_path: Path,
+    original_body: bytes,
+) -> Path:
+    done_dir = bridge / "work_queue" / "done"
+    if operation_name == "release":
+        assert claim_path.read_bytes() == original_body
+        canonical_destinations = list(done_dir.glob("*.json"))
+        assert len(canonical_destinations) == 1
+        published_path = canonical_destinations[0]
+    else:
+        assert claim_path.is_file()
+        assert not list(done_dir.glob("*.json"))
+        published_path = claim_path
+    assert published_path.read_bytes() != original_body
+    recoveries = list(
+        claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].read_bytes() == original_body
+    return published_path
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_detects_publish_write_before_final_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"temp-alias-write-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    done_dir = bridge / "work_queue" / "done"
+    foreign_body = b'{"foreign_alias_write":true}\n'
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    injected = False
+
+    def mutate_publish_before_final_verify(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        nonlocal injected
+        if not injected and _normal_mutation_publish_target(
+            operation_name=operation_name,
+            claim_path=claim_path,
+            done_dir=done_dir,
+            candidate=path,
+        ):
+            path.write_bytes(foreign_body)
+            injected = True
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        mutate_publish_before_final_verify,
+    )
+
+    with pytest.raises(WorkQueueError, match="publish failed"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert injected
+    _assert_failed_normal_mutation_preserved_foreign_destination(
+        operation_name=operation_name,
+        bridge=bridge,
+        claim_path=claim_path,
+        original_body=original_body,
+        foreign_body=foreign_body,
+    )
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_partial_publish_failure_retains_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"temp-consume-failure-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    done_dir = bridge / "work_queue" / "done"
+    original_open = Path.open
+    injected = False
+
+    def fail_after_partial_publish(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ):
+        nonlocal injected
+        is_publish = mode == "xb" and _normal_mutation_publish_target(
+            operation_name=operation_name,
+            claim_path=claim_path,
+            done_dir=done_dir,
+            candidate=path,
+        )
+        if not injected and is_publish:
+            handle = original_open(path, mode, *args, **kwargs)
+            handle.write(b"{")
+            handle.close()
+            injected = True
+            raise PermissionError("injected partial publish failure")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_after_partial_publish)
+
+    with pytest.raises(WorkQueueError, match="publish failed"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert injected
+    published_path = (
+        _assert_failed_normal_mutation_retained_ambiguous_publish(
+            operation_name=operation_name,
+            bridge=bridge,
+            claim_path=claim_path,
+            original_body=original_body,
+        )
+    )
+    assert published_path.read_bytes() == b"{"
+    assert not list(bridge.rglob("*.mutation-temp.*"))
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_rejects_external_publish_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"external-temp-link-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    done_dir = bridge / "work_queue" / "done"
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    aliases: list[Path] = []
+
+    def add_external_alias_before_final_verify(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if not aliases and _normal_mutation_publish_target(
+            operation_name=operation_name,
+            claim_path=claim_path,
+            done_dir=done_dir,
+            candidate=path,
+        ):
+            alias = path.with_name(path.name + ".external-alias")
+            os.link(path, alias)
+            aliases.append(alias)
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        add_external_alias_before_final_verify,
+    )
+
+    with pytest.raises(WorkQueueError, match="surviving hard-link alias"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert len(aliases) == 1
+    published_path = (
+        _assert_failed_normal_mutation_retained_ambiguous_publish(
+            operation_name=operation_name,
+            bridge=bridge,
+            claim_path=claim_path,
+            original_body=original_body,
+        )
+    )
+    assert aliases[0].is_file()
+    assert aliases[0].samefile(published_path)
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_rejects_external_quarantine_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"external-quarantine-link-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    aliases: list[Path] = []
+
+    def add_external_alias_before_quarantine_verify(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if (
+            not aliases
+            and label == "quarantined active claim"
+            and ".mutation-quarantine." in path.name
+        ):
+            alias = path.with_name(path.name + ".external-alias")
+            os.link(path, alias)
+            aliases.append(alias)
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        add_external_alias_before_quarantine_verify,
+    )
+
+    with pytest.raises(WorkQueueError, match="surviving hard-link alias"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert len(aliases) == 1
+    quarantines = [
+        path
+        for path in claim_path.parent.glob(
+            f".{claim_path.name}.mutation-quarantine.*"
+        )
+        if not path.name.endswith(".external-alias")
+    ]
+    assert len(quarantines) == 1
+    assert aliases[0].samefile(quarantines[0])
+    assert claim_path.read_bytes() == original_body
+    aliases[0].write_bytes(b'{"external_alias_mutation":true}\n')
+    assert claim_path.read_bytes() == original_body
+    assert not list((bridge / "work_queue" / "done").glob("*.json"))
+
+
+@pytest.mark.parametrize("operation_name", ["force", "heartbeat", "release"])
+def test_normal_mutation_rejects_destination_swap_before_final_verify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"final-verify-swap-{operation_name}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="authorized original",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    done_dir = bridge / "work_queue" / "done"
+    foreign_body = b'{"foreign_final_verify_swap":true}\n'
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    intended_recoveries: list[Path] = []
+    injected = False
+
+    def replace_destination_before_final_verify(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        nonlocal injected
+        if not injected and _normal_mutation_publish_target(
+            operation_name=operation_name,
+            claim_path=claim_path,
+            done_dir=done_dir,
+            candidate=path,
+        ):
+            intended = path.with_name(path.name + ".intended-recovery")
+            fresh = path.with_name(path.name + ".fresh-foreign")
+            os.link(path, intended)
+            fresh.write_bytes(foreign_body)
+            os.replace(fresh, path)
+            intended_recoveries.append(intended)
+            injected = True
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        replace_destination_before_final_verify,
+    )
+
+    with pytest.raises(WorkQueueError, match="publish failed"):
+        _run_normal_claim_mutation(
+            operation_name=operation_name,
+            bridge=bridge,
+            task_id=task_id,
+        )
+
+    assert injected
+    assert len(intended_recoveries) == 1
+    assert intended_recoveries[0].is_file()
+    _assert_failed_normal_mutation_preserved_foreign_destination(
+        operation_name=operation_name,
+        bridge=bridge,
+        claim_path=claim_path,
+        original_body=original_body,
+        foreign_body=foreign_body,
+    )
+
+
+def test_create_new_claim_rejects_external_publish_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "create-new-external-temp-link"
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    aliases: list[Path] = []
+
+    def add_external_alias_before_final_verify(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if not aliases and path == claim_path:
+            alias = path.with_name(path.name + ".external-alias")
+            os.link(path, alias)
+            aliases.append(alias)
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        add_external_alias_before_final_verify,
+    )
+
+    with pytest.raises(WorkQueueError, match="surviving hard-link alias"):
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="must fail closed",
             bridge_root=bridge,
         )
 
-    assert "injected active claim delete failure" in str(exc_info.value)
-    assert "injected release archive rollback failure" in str(exc_info.value)
-    assert claim_path.read_bytes() == before
-    assert len(list(done_dir.glob("*.json"))) == 1
-    assert not list(done_dir.glob("*.tmp.*"))
+    assert len(aliases) == 1
+    assert aliases[0].is_file()
+    assert claim_path.is_file()
+    assert aliases[0].samefile(claim_path)
+
+
+def test_create_new_claim_preserves_atomic_foreign_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "create-new-atomic-foreign-replacement"
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    foreign_body = b'{"fresh_foreign_generation":true}\n'
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    intended_recoveries: list[Path] = []
+
+    def replace_claim_before_final_verify(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if not intended_recoveries and path == claim_path:
+            intended = path.with_name(path.name + ".intended-recovery")
+            fresh = path.with_name(path.name + ".fresh-foreign")
+            os.link(path, intended)
+            fresh.write_bytes(foreign_body)
+            os.replace(fresh, path)
+            intended_recoveries.append(intended)
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        replace_claim_before_final_verify,
+    )
+
+    with pytest.raises(WorkQueueError, match="canonical destination was preserved"):
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="must preserve fresh generation",
+            bridge_root=bridge,
+        )
+
+    assert claim_path.read_bytes() == foreign_body
+    assert len(intended_recoveries) == 1
+    assert intended_recoveries[0].is_file()
 
 
 def test_release_rejects_wrong_agent(tmp_path: Path) -> None:
@@ -1292,6 +2486,22 @@ def test_heartbeat_rejects_wrong_agent(tmp_path: Path) -> None:
 def test_list_claims_returns_empty_when_no_claims(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     assert list_claims(bridge_root=bridge) == []
+
+
+def test_list_claims_fails_closed_on_unreadable_claim_file(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    unreadable = claims_dir / "foreign-held-task.json"
+    unreadable.write_text("{not-json\n", encoding="utf-8")
+
+    with pytest.raises(
+        WorkQueueError,
+        match=r"active claim file could not be read.*foreign-held-task\.json",
+    ):
+        list_claims(bridge_root=bridge)
 
 
 def test_list_claims_defaults_to_agent_bridge_runtime_root_env(

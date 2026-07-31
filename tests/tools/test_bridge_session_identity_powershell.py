@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
@@ -67,6 +69,26 @@ def _powershell() -> str:
     return executable
 
 
+def _powershells() -> list[str]:
+    executables: list[str] = []
+    seen: set[str] = set()
+    for name in ("pwsh", "powershell.exe", "powershell"):
+        executable = shutil.which(name)
+        if executable is None:
+            continue
+        key = os.path.normcase(str(Path(executable).resolve())).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        executables.append(executable)
+    return executables
+
+
+POWERSHELLS = _powershells() or [
+    pytest.param("", marks=pytest.mark.skip(reason="PowerShell is required"))
+]
+
+
 def _run_script(
     runtime_root: Path,
     script_name: str,
@@ -74,6 +96,7 @@ def _run_script(
     bound_agent: str | None = BOUND_AGENT,
     extra_env: dict[str, str | None] | None = None,
     script_root: Path = BRIDGE_BIN,
+    powershell: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
@@ -100,7 +123,7 @@ def _run_script(
                 env[name] = value
     return subprocess.run(
         [
-            _powershell(),
+            powershell or _powershell(),
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -114,6 +137,23 @@ def _run_script(
         capture_output=True,
         text=True,
     )
+
+
+def _normalized_powershell_output(
+    completed: subprocess.CompletedProcess[str],
+) -> str:
+    combined = completed.stdout + completed.stderr
+    without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", combined)
+    return " ".join(without_ansi.replace("|", " ").split())
+
+
+def _wait_for_path(path: Path, *, timeout_seconds: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for path: {path}")
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -171,6 +211,1585 @@ def _write_claim_payload(
     claim_path = claims_dir / filename
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
     return claim_path
+
+
+def _create_windows_junction(link_path: Path, target_path: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction semantics are required")
+    created = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(link_path),
+            str(target_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"could not create test junction: {created.stderr}")
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_fails_closed_on_unreadable_active_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename="foreign-write.json",
+        payload=_owner_bound_claim_payload(
+            task_id="foreign-write",
+            agent="fable-5",
+            mode="write",
+            write_scope=["waggledance/core/work_queue.py"],
+        ),
+    )
+
+    control = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+    assert control.returncode == 0, control.stderr
+    control_report = json.loads(control.stdout)
+    assert control_report["action"] == "parallel_read_only"
+    assert control_report["safe_mode"] == "read-only"
+    assert control_report["foreign_write_claim_count"] == 1
+
+    claim_path.write_text("{not-json\n", encoding="utf-8")
+    attack = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert attack.returncode == 2, attack.stderr
+    attack_report = json.loads(attack.stdout)
+    assert attack_report["ok"] is False
+    assert attack_report["decision"] == "bridge_next_action_error"
+    assert "unreadable_count=1" in attack_report["errors"][0]
+    assert "foreign-write.json" in attack_report["errors"][0]
+    assert "action" not in attack_report
+    assert "safe_mode" not in attack_report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_fails_closed_on_non_file_claim_entry(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    blocking_entry = runtime_root / "work_queue" / "claims" / "blocking.json"
+    blocking_entry.mkdir(parents=True)
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_next_action_error"
+    assert "blocking.json" in report["errors"][0]
+    assert "could not be read" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "layout_case",
+    [
+        "event-stream-directory",
+        "claims-path-file",
+        "shared-file",
+        "work-queue-file",
+    ],
+)
+def test_next_action_fails_closed_on_invalid_bridge_layout(
+    tmp_path: Path,
+    powershell: str,
+    layout_case: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    runtime_root.mkdir()
+    if layout_case == "event-stream-directory":
+        (runtime_root / "shared" / "events.jsonl").mkdir(parents=True)
+    elif layout_case == "claims-path-file":
+        claims_path = runtime_root / "work_queue" / "claims"
+        claims_path.parent.mkdir()
+        claims_path.write_text("not a directory", encoding="utf-8")
+    elif layout_case == "shared-file":
+        (runtime_root / "shared").write_text(
+            "not a directory",
+            encoding="utf-8",
+        )
+    else:
+        (runtime_root / "work_queue").write_text(
+            "not a directory",
+            encoding="utf-8",
+        )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_next_action_error"
+    assert layout_case.split("-")[0] in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("mode_case", "stored_mode"),
+    [
+        ("missing", None),
+        ("null", None),
+        ("unknown", "read_only"),
+    ],
+)
+def test_next_action_fails_closed_on_malformed_claim_mode(
+    tmp_path: Path,
+    powershell: str,
+    mode_case: str,
+    stored_mode: object,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    payload = _owner_bound_claim_payload(
+        task_id=f"foreign-{mode_case}-mode",
+        agent="fable-5",
+        mode="read-only",
+    )
+    if mode_case == "missing":
+        payload.pop("mode")
+    else:
+        payload["mode"] = stored_mode
+    _write_claim_payload(
+        runtime_root,
+        filename=f"foreign-{mode_case}-mode.json",
+        payload=payload,
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_next_action_error"
+    assert "unreadable_count=1" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("shape_case", "field_name", "stored_value"),
+    [
+        ("agent-nonstring", "agent", [BOUND_AGENT]),
+        ("agent-uppercase", "agent", BOUND_AGENT.upper()),
+        ("agent-key-case", "AGENT", BOUND_AGENT),
+        ("task-nonstring", "task_id", ["owned-task"]),
+        ("task-key-case", "TASK_ID", "owned-task"),
+        ("scope-object", "write_scope", {"path": "tools"}),
+        ("scope-nonstring", "write_scope", [123]),
+        ("scope-empty", "write_scope", []),
+    ],
+)
+def test_next_action_fails_closed_on_unsafe_claim_shape(
+    tmp_path: Path,
+    powershell: str,
+    shape_case: str,
+    field_name: str,
+    stored_value: object,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    payload = _owner_bound_claim_payload(
+        task_id="owned-task",
+        agent=BOUND_AGENT,
+        mode="write",
+        write_scope=["tools"],
+    )
+    if field_name == "AGENT":
+        payload.pop("agent")
+    elif field_name == "TASK_ID":
+        payload.pop("task_id")
+    payload[field_name] = stored_value
+    _write_claim_payload(
+        runtime_root,
+        filename=f"{shape_case}.json",
+        payload=payload,
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_next_action_error"
+    expected_error = (
+        "claim agent must be a canonical string"
+        if shape_case.startswith("agent-")
+        else (
+            "claim task_id must be a canonical string"
+            if shape_case.startswith("task-")
+            else "unreadable_count=1"
+        )
+    )
+    assert expected_error in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "stored_scope",
+    [
+        ["tools/foo.py."],
+        ["tools/foo.py::$DATA"],
+        ["unrelated/path.py", ""],
+        ["///"],
+    ],
+)
+def test_next_action_and_claim_fail_closed_on_windows_alias_scope(
+    tmp_path: Path,
+    powershell: str,
+    stored_scope: list[str],
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    _write_claim_payload(
+        runtime_root,
+        filename="aliased-scope-holder.json",
+        payload=_owner_bound_claim_payload(
+            task_id="aliased-scope-holder",
+            agent="fable-5",
+            mode="write",
+            write_scope=stored_scope,
+        ),
+    )
+
+    recommendation = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+    assert recommendation.returncode == 2, recommendation.stderr
+    report = json.loads(recommendation.stdout)
+    assert report["decision"] == "bridge_next_action_error"
+    assert "unreadable_count=1" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+    acquisition = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "new-against-aliased-scope",
+        "-Summary",
+        "malformed holder must block acquisition",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "target/file.py",
+        powershell=powershell,
+    )
+    assert acquisition.returncode != 0
+    assert not (
+        runtime_root
+        / "work_queue"
+        / "claims"
+        / "new-against-aliased-scope.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("owner_pid", "1234"),
+        ("lease_seconds", "900"),
+        ("write_scope", "tools/raw.py"),
+        ("last_heartbeat_utc", 123),
+        ("claim_lease_expires_utc", 123),
+    ],
+)
+def test_next_action_and_claim_fail_closed_on_raw_authority_type(
+    tmp_path: Path,
+    powershell: str,
+    field_name: str,
+    malformed_value: object,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    payload = _owner_bound_claim_payload(
+        task_id=f"raw-{field_name}",
+        agent=BOUND_AGENT,
+        mode="write",
+        write_scope=["tools/raw.py"],
+    )
+    payload[field_name] = malformed_value
+    _write_claim_payload(
+        runtime_root,
+        filename=f"raw-{field_name}.json",
+        payload=payload,
+    )
+
+    recommendation = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+    assert recommendation.returncode == 2, recommendation.stderr
+    report = json.loads(recommendation.stdout)
+    assert report["decision"] == "bridge_next_action_error"
+    assert "unreadable_count=1" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+    acquisition = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        f"new-against-{field_name}",
+        "-Summary",
+        "raw authority type must block acquisition",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tests/independent.py",
+        powershell=powershell,
+    )
+    assert acquisition.returncode != 0
+    assert not (
+        runtime_root
+        / "work_queue"
+        / "claims"
+        / f"new-against-{field_name}.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_and_claim_reject_hard_linked_active_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename="hard-linked-holder.json",
+        payload=_owner_bound_claim_payload(
+            task_id="hard-linked-holder",
+            agent=BOUND_AGENT,
+            mode="write",
+            write_scope=["tools/hardlink.py"],
+        ),
+    )
+    os.link(claim_path, tmp_path / "external-claim-alias.json")
+
+    recommendation = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+    assert recommendation.returncode == 2, recommendation.stderr
+    report = json.loads(recommendation.stdout)
+    assert report["decision"] == "bridge_next_action_error"
+    assert "filesystem link" in report["errors"][0]
+
+    acquisition = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "new-against-hard-link",
+        "-Summary",
+        "hard-linked active claim must block acquisition",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tests/independent.py",
+        powershell=powershell,
+    )
+    assert acquisition.returncode != 0
+    assert not (
+        runtime_root
+        / "work_queue"
+        / "claims"
+        / "new-against-hard-link.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_and_claim_reject_junction_claims_directory(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction semantics are required")
+    runtime_root = tmp_path / "runtime" / ".agent-bridge"
+    work_queue = runtime_root / "work_queue"
+    work_queue.mkdir(parents=True)
+    external_claims = tmp_path / "external-claims"
+    external_claims.mkdir()
+    (external_claims / "external-holder.json").write_text(
+        json.dumps(
+            _owner_bound_claim_payload(
+                task_id="external-holder",
+                agent=BOUND_AGENT,
+                mode="write",
+                write_scope=["tools/external.py"],
+            )
+        ),
+        encoding="utf-8",
+    )
+    claims_link = work_queue / "claims"
+    created = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(claims_link),
+            str(external_claims),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"could not create test junction: {created.stderr}")
+
+    try:
+        recommendation = _run_script(
+            runtime_root,
+            "Get-BridgeNextAction.ps1",
+            "-Agent",
+            BOUND_AGENT,
+            "-Json",
+            powershell=powershell,
+        )
+        assert recommendation.returncode == 2, recommendation.stderr
+        report = json.loads(recommendation.stdout)
+        assert report["decision"] == "bridge_next_action_error"
+        assert "reparse link" in report["errors"][0]
+
+        acquisition = _run_script(
+            runtime_root,
+            "Claim-AgentTask.ps1",
+            "-Agent",
+            BOUND_AGENT,
+            "-TaskId",
+            "new-against-junction",
+            "-Summary",
+            "junction state must block acquisition",
+            "-Mode",
+            "write",
+            "-WriteScope",
+            "tests/independent.py",
+            powershell=powershell,
+        )
+        assert acquisition.returncode != 0
+        assert not (external_claims / "new-against-junction.json").exists()
+    finally:
+        os.rmdir(claims_link)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["heartbeat", "release", "stale"])
+def test_powershell_claim_mutations_reject_junction_claims_directory(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "runtime" / ".agent-bridge"
+    work_queue = runtime_root / "work_queue"
+    work_queue.mkdir(parents=True)
+    external_claims = tmp_path / "external-claims"
+    external_claims.mkdir()
+    task_id = f"junction-claims-{operation}"
+    payload = _owner_bound_claim_payload(task_id=task_id, agent="codex")
+    if operation == "stale":
+        payload.update(
+            {
+                "claimed_at_utc": "2020-01-01T00:00:00Z",
+                "last_heartbeat_utc": "2020-01-01T00:00:00Z",
+                "lease_seconds": 1,
+                "claim_lease_expires_utc": "2020-01-01T00:00:01Z",
+            }
+        )
+    (external_claims / f"{task_id}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    (external_claims / "external-sentinel.bin").write_bytes(
+        b"external-claims-sentinel"
+    )
+    external_before = {
+        path.name: path.read_bytes()
+        for path in sorted(external_claims.iterdir())
+    }
+    claims_link = work_queue / "claims"
+    _create_windows_junction(claims_link, external_claims)
+
+    try:
+        if operation == "heartbeat":
+            completed = _run_script(
+                runtime_root,
+                "Send-Liveness.ps1",
+                "-Agent",
+                "codex",
+                "-Heartbeat",
+                "-TaskId",
+                f"{task_id}-event",
+                bound_agent="codex",
+                powershell=powershell,
+            )
+        elif operation == "release":
+            completed = _run_script(
+                runtime_root,
+                "Release-AgentTask.ps1",
+                "-Agent",
+                "codex",
+                "-TaskId",
+                task_id,
+                bound_agent="codex",
+                powershell=powershell,
+            )
+        else:
+            completed = _run_script(
+                runtime_root,
+                "Invoke-StaleClaimSweep.ps1",
+                "-StaleSeconds",
+                "1",
+                "-Quiet",
+                bound_agent="codex",
+                powershell=powershell,
+            )
+
+        assert completed.returncode != 0
+        assert "reparse link" in _normalized_powershell_output(completed)
+        assert {
+            path.name: path.read_bytes()
+            for path in sorted(external_claims.iterdir())
+        } == external_before
+        assert not (work_queue / "done").exists()
+        assert not (runtime_root / "shared" / "events.jsonl").exists()
+    finally:
+        os.rmdir(claims_link)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["heartbeat", "release", "stale"])
+def test_powershell_claim_mutations_reject_junction_done_directory(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "runtime" / ".agent-bridge"
+    task_id = f"junction-done-{operation}"
+    payload = _owner_bound_claim_payload(task_id=task_id, agent="codex")
+    if operation == "stale":
+        payload.update(
+            {
+                "claimed_at_utc": "2020-01-01T00:00:00Z",
+                "last_heartbeat_utc": "2020-01-01T00:00:00Z",
+                "lease_seconds": 1,
+                "claim_lease_expires_utc": "2020-01-01T00:00:01Z",
+            }
+        )
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=payload,
+    )
+    claim_before = claim_path.read_bytes()
+    external_done = tmp_path / "external-done"
+    external_done.mkdir()
+    (external_done / "external-archive.json").write_bytes(
+        b'{"external":"archive-sentinel"}'
+    )
+    external_before = {
+        path.name: path.read_bytes()
+        for path in sorted(external_done.iterdir())
+    }
+    done_link = runtime_root / "work_queue" / "done"
+    _create_windows_junction(done_link, external_done)
+
+    try:
+        if operation == "heartbeat":
+            completed = _run_script(
+                runtime_root,
+                "Send-Liveness.ps1",
+                "-Agent",
+                "codex",
+                "-Heartbeat",
+                "-TaskId",
+                f"{task_id}-event",
+                bound_agent="codex",
+                powershell=powershell,
+            )
+        elif operation == "release":
+            completed = _run_script(
+                runtime_root,
+                "Release-AgentTask.ps1",
+                "-Agent",
+                "codex",
+                "-TaskId",
+                task_id,
+                bound_agent="codex",
+                powershell=powershell,
+            )
+        else:
+            completed = _run_script(
+                runtime_root,
+                "Invoke-StaleClaimSweep.ps1",
+                "-StaleSeconds",
+                "1",
+                "-Quiet",
+                bound_agent="codex",
+                powershell=powershell,
+            )
+
+        assert completed.returncode != 0
+        assert "reparse link" in _normalized_powershell_output(completed)
+        assert claim_path.read_bytes() == claim_before
+        assert {
+            path.name: path.read_bytes()
+            for path in sorted(external_done.iterdir())
+        } == external_before
+        assert not (runtime_root / "shared" / "events.jsonl").exists()
+    finally:
+        os.rmdir(done_link)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_fails_closed_on_duplicate_active_task_ids(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    for filename in ("duplicate-a.json", "duplicate-b.json"):
+        _write_claim_payload(
+            runtime_root,
+            filename=filename,
+            payload=_owner_bound_claim_payload(
+                task_id="duplicate-active-task",
+                agent=BOUND_AGENT,
+                mode="write",
+                write_scope=["tools"],
+            ),
+        )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_next_action_error"
+    assert "duplicate active claim task_id" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("owner_case", ["wrong-token", "legacy-tokenless"])
+def test_next_action_never_treats_foreign_generation_as_own_write(
+    tmp_path: Path,
+    powershell: str,
+    owner_case: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    payload = _owner_bound_claim_payload(
+        task_id=f"same-agent-{owner_case}",
+        agent=BOUND_AGENT,
+        mode="write",
+        write_scope=["tools"],
+    )
+    if owner_case == "wrong-token":
+        payload["owner_token_sha256"] = "b" * 64
+    else:
+        for field in (
+            "owner_session_id",
+            "owner_token_sha256",
+            "owner_pid",
+            "owner_process_start_utc",
+        ):
+            payload.pop(field)
+    _write_claim_payload(
+        runtime_root,
+        filename=f"same-agent-{owner_case}.json",
+        payload=payload,
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["action"] == "parallel_read_only"
+    assert report["safe_mode"] == "read-only"
+    assert report["foreign_write_claim_count"] == 1
+    assert report["claim_snapshot"]["foreign_write"][0]["task_id"] == (
+        f"same-agent-{owner_case}"
+    )
+    assert report["claim_snapshot"]["own"] == []
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_fails_closed_on_unreadable_selected_event(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    valid_event = {
+        "ts_utc": "2026-07-31T12:00:00Z",
+        "agent": "fable-5",
+        "type": "message",
+        "task_id": "directed-review",
+        "status": "review_requested",
+        "to": BOUND_AGENT,
+        "message": "review the frozen snapshot",
+    }
+    events_path.write_text(
+        json.dumps(valid_event) + "\n",
+        encoding="utf-8",
+    )
+
+    control = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+    assert control.returncode == 0, control.stderr
+    control_report = json.loads(control.stdout)
+    assert control_report["action"] == "answer_incoming"
+    assert control_report["safe_mode"] == "read-only"
+    assert control_report["open_incoming_count"] == 1
+
+    events_path.write_text("{not-json\n", encoding="utf-8")
+    attack = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert attack.returncode == 2, attack.stderr
+    attack_report = json.loads(attack.stdout)
+    assert attack_report["ok"] is False
+    assert attack_report["decision"] == "bridge_next_action_error"
+    assert "invalid JSON in bridge events" in attack_report["errors"][0]
+    assert "line 1" in attack_report["errors"][0]
+    assert "action" not in attack_report
+    assert "safe_mode" not in attack_report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("attack_case", ["case-variant-keys", "array-values"])
+def test_next_action_fails_closed_on_structurally_invalid_closure_event(
+    tmp_path: Path,
+    powershell: str,
+    attack_case: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    request = {
+        "ts_utc": "2026-07-31T12:00:00Z",
+        "agent": "fable-5",
+        "type": "message",
+        "task_id": "directed-review",
+        "status": "review_requested",
+        "to": BOUND_AGENT,
+        "message": "review the frozen snapshot",
+    }
+    if attack_case == "case-variant-keys":
+        closure = {
+            "TS_UTC": "2026-07-31T12:00:30Z",
+            "AGENT": BOUND_AGENT,
+            "TYPE": "message",
+            "TASK_ID": "directed-review",
+            "STATUS": "answered",
+            "TO": "fable-5",
+        }
+    else:
+        closure = {
+            "ts_utc": ["2026-07-31T12:00:30Z"],
+            "agent": [BOUND_AGENT],
+            "type": ["message"],
+            "task_id": ["directed-review"],
+            "status": ["answered"],
+            "to": ["fable-5"],
+        }
+    events_path.write_text(
+        json.dumps(request) + "\n" + json.dumps(closure) + "\n",
+        encoding="utf-8",
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["decision"] == "bridge_next_action_error"
+    assert "line 2" in report["errors"][0]
+    assert "must be an exact string" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_matches_closure_task_id_with_exact_case(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events = [
+        {
+            "ts_utc": "2026-07-31T12:00:00Z",
+            "agent": "fable-5",
+            "type": "message",
+            "task_id": "directed-review",
+            "status": "review_requested",
+            "to": BOUND_AGENT,
+        },
+        {
+            "ts_utc": "2026-07-31T12:00:30Z",
+            "agent": BOUND_AGENT,
+            "type": "message",
+            "task_id": "DIRECTED-REVIEW",
+            "status": "answered",
+            "to": "fable-5",
+        },
+    ]
+    events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["action"] == "answer_incoming"
+    assert report["safe_mode"] == "read-only"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("blocked", "blocked"),
+        ("ownership_proposal", "open"),
+        ("status", "request"),
+    ],
+)
+def test_next_action_routes_polymorphic_request_read_only(
+    tmp_path: Path,
+    powershell: str,
+    event_type: str,
+    status: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    event = {
+        "ts_utc": "2026-07-31T12:00:00Z",
+        "agent": "fable-5",
+        "type": event_type,
+        "task_id": "polymorphic-review",
+        "status": status,
+        "to": BOUND_AGENT,
+        "message": "review this custom domain event",
+    }
+    events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["action"] == "answer_incoming"
+    assert report["safe_mode"] == "read-only"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("ack_status", ["acknowledged", "received", "seen"])
+def test_next_action_ack_never_closes_incoming_request(
+    tmp_path: Path,
+    powershell: str,
+    ack_status: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events = [
+        {
+            "ts_utc": "2026-07-31T12:00:00Z",
+            "agent": "fable-5",
+            "type": "message",
+            "task_id": "ack-only-review",
+            "status": "request",
+            "to": BOUND_AGENT,
+        },
+        {
+            "ts_utc": "2026-07-31T12:00:30Z",
+            "agent": BOUND_AGENT,
+            "type": "message",
+            "task_id": "ack-only-review",
+            "status": ack_status,
+            "to": "fable-5",
+        },
+    ]
+    events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["action"] == "answer_incoming"
+    assert report["safe_mode"] == "read-only"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_does_not_close_via_legacy_id_alias(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events = [
+        {
+            "ts_utc": "2026-07-31T12:00:00Z",
+            "agent": "fable-5",
+            "type": "message",
+            "task_id": "canonical-review",
+            "status": "request",
+            "to": BOUND_AGENT,
+        },
+        {
+            "ts_utc": "2026-07-31T12:00:30Z",
+            "agent": BOUND_AGENT,
+            "type": "decision",
+            "task_id": "",
+            "id": "canonical-review",
+            "status": "pass",
+            "to": "fable-5",
+        },
+    ]
+    events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["action"] == "answer_incoming"
+    assert report["safe_mode"] == "read-only"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-07-31T12:00:00+14:00",
+        "2026-07-31T12:00:00",
+    ],
+)
+def test_next_action_fails_closed_on_non_utc_event_timestamp(
+    tmp_path: Path,
+    powershell: str,
+    timestamp: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    event = {
+        "ts_utc": timestamp,
+        "agent": "fable-5",
+        "type": "message",
+        "task_id": "non-utc-review",
+        "status": "request",
+        "to": BOUND_AGENT,
+    }
+    events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    completed = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Now",
+        "2026-07-31T12:01:00Z",
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 2, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["decision"] == "bridge_next_action_error"
+    assert "UTC offset" in report["errors"][0]
+    assert "action" not in report
+    assert "safe_mode" not in report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_next_action_fails_closed_on_invalid_utf8_suppression_config(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    suppression_path = (
+        runtime_root / "shared" / "production_liveness_suppression.json"
+    )
+    suppression_path.parent.mkdir(parents=True)
+    suppression_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "suppressed_agents": {
+                    BOUND_AGENT: {"reason": "operator pause"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    control = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+    assert control.returncode == 0, control.stderr
+    control_report = json.loads(control.stdout)
+    assert control_report["action"] == "agent_suppressed_unavailable"
+    assert control_report["safe_mode"] == "read-only"
+
+    suppression_path.write_bytes(
+        b'{"suppressed_agents":{"codex-\xfftools-1":{"reason":"pause"}}}'
+    )
+    attack = _run_script(
+        runtime_root,
+        "Get-BridgeNextAction.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Json",
+        powershell=powershell,
+    )
+
+    assert attack.returncode == 2, attack.stderr
+    attack_report = json.loads(attack.stdout)
+    assert attack_report["ok"] is False
+    assert attack_report["decision"] == "bridge_next_action_error"
+    assert "UTF-8" in attack_report["errors"][0]
+    assert "action" not in attack_report
+    assert "safe_mode" not in attack_report
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_claim_rejects_non_ascii_scope_before_fresh_runtime_write(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "fresh-unicode-request",
+        "-Summary",
+        "reject Unicode scope before creating the runtime root",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tools/\u0130mpl.py",
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert "printable ASCII" in _normalized_powershell_output(completed)
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "write_scope",
+    [
+        "tools//foo.py",
+        "tools/./foo.py",
+        "tools/sub/../foo.py",
+    ],
+)
+def test_claim_rejects_noncanonical_scope_before_fresh_runtime_write(
+    tmp_path: Path,
+    powershell: str,
+    write_scope: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "fresh-noncanonical-scope",
+        "-Summary",
+        "reject filesystem-alias scope spellings before writing",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        write_scope,
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert "empty, '.' or '..' segments" in _normalized_powershell_output(
+        completed
+    )
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("write_scope", "error"),
+    [
+        ("tools/foo.py.", "end in"),
+        ("tools/dir. /foo.py", "end in"),
+        ("tools/foo.py::$DATA", "must not contain ':'"),
+        ("/tools/foo.py", "repository-relative"),
+        ("\\\\server\\share\\foo.py", "repository-relative"),
+    ],
+)
+def test_claim_rejects_windows_alias_scope_before_fresh_runtime_write(
+    tmp_path: Path,
+    powershell: str,
+    write_scope: str,
+    error: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "fresh-windows-alias-scope",
+        "-Summary",
+        "reject Windows alias scope spellings before writing",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        write_scope,
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert error in _normalized_powershell_output(completed)
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_claim_rejects_mixed_nonstring_stored_write_scope(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / ".agent-bridge"
+    _write_claim_payload(
+        runtime_root,
+        filename="mixed-scope-holder.json",
+        payload=_owner_bound_claim_payload(
+            task_id="mixed-scope-holder",
+            agent="fable-5",
+            mode="write",
+            write_scope=["unrelated/path.py", 123],
+        ),
+    )
+    before = _work_queue_file_snapshot(runtime_root)
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "mixed-scope-request",
+        "-Summary",
+        "stored non-string scope element must fail closed",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "target/file.py",
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert "claim field 'write_scope' must be an array of strings" in (
+        _normalized_powershell_output(completed)
+    )
+    assert not (
+        runtime_root / "work_queue" / "claims" / "mixed-scope-request.json"
+    ).exists()
+    assert _work_queue_file_snapshot(runtime_root) == before
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_claim_rejects_cross_runtime_unicode_scope_divergence(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    control_root = tmp_path / "control" / ".agent-bridge"
+    _write_claim_payload(
+        control_root,
+        filename="ascii-holder.json",
+        payload=_owner_bound_claim_payload(
+            task_id="ascii-holder",
+            agent="fable-5",
+            mode="write",
+            write_scope=["tools/impl.py"],
+        ),
+    )
+    control = _run_script(
+        control_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "ascii-request",
+        "-Summary",
+        "ASCII overlap control",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tools/impl.py",
+        powershell=powershell,
+    )
+    assert control.returncode != 0
+    assert "write-scope conflict" in _normalized_powershell_output(control)
+
+    unicode_root = tmp_path / "unicode" / ".agent-bridge"
+    _write_claim_payload(
+        unicode_root,
+        filename="python-holder.json",
+        payload=_owner_bound_claim_payload(
+            task_id="python-holder",
+            agent="fable-5",
+            mode="write",
+            # Python lower-casing U+0130 persists U+0069 + U+0307.
+            write_scope=["tools/i\u0307mpl.py"],
+        ),
+    )
+    attack = _run_script(
+        unicode_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-TaskId",
+        "unicode-request",
+        "-Summary",
+        "cross-runtime Unicode scope must fail closed",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tools/\u0130mpl.py",
+        powershell=powershell,
+    )
+
+    assert attack.returncode != 0
+    assert "printable ASCII" in _normalized_powershell_output(attack)
+    assert not (
+        unicode_root / "work_queue" / "claims" / "unicode-request.json"
+    ).exists()
+
+
+def _isolated_claim_mutation_bin_with_identity_injections(
+    tmp_path: Path,
+    *,
+    injections: list[tuple[str, str]],
+) -> Path:
+    isolated_bin = tmp_path / "isolated-claim-mutation-bin"
+    isolated_bin.mkdir()
+    for script_name in (
+        "AgentBridgeSessionIdentity.ps1",
+        "Claim-AgentTask.ps1",
+        "Invoke-StaleClaimSweep.ps1",
+        "Release-AgentTask.ps1",
+        "Send-Liveness.ps1",
+        "Write-AgentEvent.ps1",
+    ):
+        shutil.copy2(BRIDGE_BIN / script_name, isolated_bin / script_name)
+    identity_path = isolated_bin / "AgentBridgeSessionIdentity.ps1"
+    source = identity_path.read_text(encoding="utf-8")
+    for marker, replacement in injections:
+        assert source.count(marker) == 1
+        source = source.replace(marker, replacement, 1)
+    identity_path.write_text(
+        source,
+        encoding="utf-8",
+    )
+    return isolated_bin
+
+
+def _run_powershell_claim_mutation(
+    runtime_root: Path,
+    *,
+    operation: str,
+    task_id: str,
+    script_root: Path,
+    powershell: str,
+    extra_env: dict[str, str | None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if operation == "new":
+        return _run_script(
+            runtime_root,
+            "Claim-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            "-Summary",
+            "new claim through direct byte publication",
+            bound_agent="codex",
+            extra_env=extra_env,
+            script_root=script_root,
+            powershell=powershell,
+        )
+    if operation == "force":
+        return _run_script(
+            runtime_root,
+            "Claim-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            "-Summary",
+            "force update through snapshot transaction",
+            "-Force",
+            bound_agent="codex",
+            extra_env=extra_env,
+            script_root=script_root,
+            powershell=powershell,
+        )
+    if operation == "heartbeat":
+        return _run_script(
+            runtime_root,
+            "Send-Liveness.ps1",
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            task_id,
+            bound_agent="codex",
+            extra_env=extra_env,
+            script_root=script_root,
+            powershell=powershell,
+        )
+    if operation == "release":
+        return _run_script(
+            runtime_root,
+            "Release-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            bound_agent="codex",
+            extra_env=extra_env,
+            script_root=script_root,
+            powershell=powershell,
+        )
+    raise AssertionError(f"unsupported claim mutation operation: {operation}")
+
+
+def _fresh_foreign_claim_bytes(task_id: str) -> bytes:
+    payload = _owner_bound_claim_payload(task_id=task_id)
+    payload["summary"] = "fresh foreign generation"
+    payload["owner_session_id"] = "fresh-foreign-session"
+    payload["owner_token_sha256"] = hashlib.sha256(
+        ("b" * 64).encode("utf-8")
+    ).hexdigest()
+    return json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def _direct_cas_fixture(
+    runtime_root: Path,
+    *,
+    operation: str,
+    task_id: str,
+) -> tuple[Path, bytes | None]:
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    if operation == "new":
+        return claim_path, None
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=_owner_bound_claim_payload(task_id=task_id),
+    )
+    return claim_path, claim_path.read_bytes()
+
+
+def _publish_context_guard(body: str) -> str:
+    indented_body = "\n".join(
+        f"            {line}" for line in body.splitlines()
+    )
+    return (
+        "        if (\n"
+        "            $Context -ceq 'published new claim' -or\n"
+        "            $Context -ceq 'published claim transaction'\n"
+        "        ) {\n"
+        f"{indented_body}\n"
+        "        }"
+    )
+
+
+def _direct_cas_done_records(runtime_root: Path) -> list[Path]:
+    done_dir = runtime_root / "work_queue" / "done"
+    if not done_dir.is_dir():
+        return []
+    return sorted(path for path in done_dir.glob("*.json") if path.is_file())
+
+
+def _assert_no_direct_cas_event(runtime_root: Path) -> None:
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
 def _work_queue_file_snapshot(runtime_root: Path) -> dict[str, bytes]:
@@ -1708,6 +3327,7 @@ def test_claim_uses_diagnostic_writer_pid_not_session_owner_pid(
     assert isinstance(claim["writer_pid"], int)
     assert claim["writer_pid"] > 0
     assert claim["writer_pid_semantics"] == "diagnostic_only"
+    assert claim["session_id"] == "pytest-event-session"
     assert claim["owner_session_id"] == "pytest-session"
     assert claim["owner_token_sha256"] == hashlib.sha256(
         ("a" * 64).encode()
@@ -1717,6 +3337,38 @@ def test_claim_uses_diagnostic_writer_pid_not_session_owner_pid(
         "2026-07-28T00:00:00"
     )
     assert "a" * 64 not in json.dumps(claim, sort_keys=True)
+
+
+def test_powershell_claim_session_id_falls_back_to_owner_session(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "claim-session-fallback"
+
+    completed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "missing ambient session uses owner generation session",
+        bound_agent="codex",
+        extra_env={"AGENT_BRIDGE_SESSION_ID": None},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    claim = json.loads(
+        (
+            runtime_root
+            / "work_queue"
+            / "claims"
+            / f"{task_id}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert claim["session_id"] == "pytest-session"
+    assert claim["owner_session_id"] == "pytest-session"
 
 
 @pytest.mark.parametrize(
@@ -2159,6 +3811,7 @@ def test_python_claim_can_be_heartbeated_and_released_by_powershell_owner(
         ),
         ("owner_pid", 0),
         ("owner_pid", "not-a-pid"),
+        ("owner_pid", str(os.getpid())),
         ("owner_pid", " 1 "),
         ("owner_pid", True),
         ("owner_pid", 1.0),
@@ -2177,6 +3830,7 @@ def test_python_claim_can_be_heartbeated_and_released_by_powershell_owner(
         "digest-trailing-lf",
         "nonpositive-pid",
         "malformed-pid",
+        "numeric-pid-string",
         "whitespace-pid",
         "boolean-pid",
         "floating-pid",
@@ -2188,7 +3842,7 @@ def test_python_claim_can_be_heartbeated_and_released_by_powershell_owner(
         "compact-offset-process-start",
     ],
 )
-def test_present_but_invalid_stored_owner_is_legacy_tokenless(
+def test_present_but_invalid_stored_owner_cannot_be_released_or_forced(
     tmp_path: Path,
     field: str,
     invalid_value: object,
@@ -2212,6 +3866,7 @@ def test_present_but_invalid_stored_owner_is_legacy_tokenless(
     claim[field] = invalid_value
     claim_path.write_text(json.dumps(claim), encoding="utf-8")
     mutated = claim_path.read_text(encoding="utf-8")
+    before = _work_queue_file_snapshot(runtime_root)
 
     released = _run_script(
         runtime_root,
@@ -2236,10 +3891,12 @@ def test_present_but_invalid_stored_owner_is_legacy_tokenless(
     )
 
     assert released.returncode == 3
-    assert "claim_owner_legacy_tokenless" in released.stderr
-    assert forced.returncode != 0
-    assert "claim_owner_legacy_tokenless" in forced.stderr
+    assert f"claim field '{field}'" in released.stderr
+    assert forced.returncode == 3
+    assert f"claim field '{field}'" in forced.stderr
     assert claim_path.read_text(encoding="utf-8") == mutated
+    assert _work_queue_file_snapshot(runtime_root) == before
+    assert not (runtime_root / "work_queue" / "done").exists()
 
 
 @pytest.mark.parametrize(
@@ -2432,6 +4089,60 @@ def test_powershell_claim_rejects_explicit_nonpositive_lease_before_write(
     assert not runtime_root.exists()
 
 
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "payload_json",
+    [
+        '{"value":NaN}',
+        '{"value":Infinity}',
+        '{"value":1e9999}',
+        '{"value":1,}',
+        '{/*comment*/"value":1}',
+        '{"value":01}',
+        '{"value":+1}',
+        "{'value':1}",
+        '{"value":.1}',
+        '{"value":1.}',
+        '{"value":-01}',
+        '{"value":00}',
+        '{"value":1.e2}',
+        '{"value":-.1}',
+        r"""{"value":"bad\'escape"}""",
+        '{"value":"raw\nnewline"}',
+        "{value:1}",
+        '{\u00a0"value":1}',
+        '{\x0b"value":1}',
+    ],
+)
+def test_write_event_rejects_non_strict_payload_without_runtime_write(
+    tmp_path: Path,
+    powershell: str,
+    payload_json: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_script(
+        runtime_root,
+        "Write-AgentEvent.ps1",
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "invalid payload must not be written",
+        "-PayloadJson",
+        payload_json,
+        bound_agent="codex",
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert "payload must be valid JSON" in (
+        completed.stdout + completed.stderr
+    )
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
 @pytest.mark.parametrize(
     "write_scope",
     ["", "   ", ", ,"],
@@ -2460,7 +4171,7 @@ def test_powershell_write_claim_rejects_empty_normalized_scope_before_write(
     )
 
     assert completed.returncode != 0
-    assert "write claims require at least one -WriteScope path" in (
+    assert "write_scope entries must be non-empty paths" in (
         completed.stderr
     )
     assert not runtime_root.exists()
@@ -2765,6 +4476,7 @@ def test_slash_task_python_claim_powershell_force_heartbeat_release(
         after_force["summary"]
         == "PowerShell force-updated the discovered slash claim"
     )
+    assert after_force["session_id"] == "pytest-event-session"
     assert after_force["owner_session_id"] == before["owner_session_id"]
     assert after_force["owner_token_sha256"] == before["owner_token_sha256"]
     assert not (
@@ -2875,6 +4587,11 @@ def test_python_and_powershell_share_legacy_expiry_decisions(
             "last_heartbeat_utc": iso(fixture_now + timedelta(days=1)),
             "owner_pid": "not-a-pid",
         },
+        "legacy-parity-numeric-pid-string": {
+            "claimed_at_utc": iso(fixture_now - timedelta(seconds=600)),
+            "last_heartbeat_utc": iso(fixture_now + timedelta(days=1)),
+            "owner_pid": str(os.getpid()),
+        },
         "legacy-parity-fresh": {
             "claimed_at_utc": iso(fixture_now - timedelta(seconds=60)),
             "last_heartbeat_utc": iso(fixture_now + timedelta(days=1)),
@@ -2930,34 +4647,38 @@ def test_python_and_powershell_share_legacy_expiry_decisions(
         "-Quiet",
     )
 
-    assert [item.claim.task_id for item in python_archived] == [
-        "legacy-parity-stale"
+    expected_stale = [
+        "legacy-parity-numeric-pid-string",
+        "legacy-parity-stale",
     ]
+    assert [item.claim.task_id for item in python_archived] == expected_stale
     assert powershell_sweep.returncode == 0, powershell_sweep.stderr
     for runtime_root in (python_root, powershell_root):
         claims_dir = runtime_root / "work_queue" / "claims"
-        assert not (claims_dir / "legacy-parity-stale.json").exists()
+        for task_id in expected_stale:
+            assert not (claims_dir / f"{task_id}.json").exists()
         assert (claims_dir / "legacy-parity-fresh.json").is_file()
-        done_files = list(
-            (runtime_root / "work_queue" / "done").glob(
-                "legacy-parity-stale*.json"
+        for task_id in expected_stale:
+            done_files = list(
+                (runtime_root / "work_queue" / "done").glob(f"{task_id}*.json")
             )
-        )
-        assert len(done_files) == 1
-        archived = json.loads(done_files[0].read_text(encoding="utf-8-sig"))
-        assert "legacy tokenless claim claimed_at_utc" in archived[
-            "release_reason"
-        ]
-        assert archived["last_heartbeat_utc"] == fixtures[
-            "legacy-parity-stale"
-        ]["last_heartbeat_utc"]
-        assert archived["claim_lease_expires_utc"] == iso(
-            fixture_now + timedelta(days=1)
-        )
-        assert archived["writer_pid"] == 4242
-        assert archived["writer_pid_semantics"] == "diagnostic_only"
-        assert archived["cwd"] == "C:\\diagnostic-fixture"
-        assert archived["git_branch"] == "diagnostic-branch"
+            assert len(done_files) == 1
+            archived = json.loads(
+                done_files[0].read_text(encoding="utf-8-sig")
+            )
+            assert "legacy tokenless claim claimed_at_utc" in archived[
+                "release_reason"
+            ]
+            assert archived["last_heartbeat_utc"] == fixtures[task_id][
+                "last_heartbeat_utc"
+            ]
+            assert archived["claim_lease_expires_utc"] == iso(
+                fixture_now + timedelta(days=1)
+            )
+            assert archived["writer_pid"] == 4242
+            assert archived["writer_pid_semantics"] == "diagnostic_only"
+            assert archived["cwd"] == "C:\\diagnostic-fixture"
+            assert archived["git_branch"] == "diagnostic-branch"
 
 
 def test_powershell_stale_sweep_treats_out_of_range_owner_offset_as_legacy(
@@ -3096,26 +4817,33 @@ def test_powershell_write_claim_rejects_overlap_empty_scope_before_write(
     )
 
     assert completed.returncode != 0
-    assert "write claims require at least one -WriteScope path" in (
+    assert "write_scope paths must be repository-relative" in (
         completed.stderr
     )
     assert not runtime_root.exists()
 
 
 @pytest.mark.parametrize(
-    "stored_scope",
+    ("stored_scope", "expected_errors"),
     [
-        ["tools/foo.py, tests/bar.py"],
-        [],
-        [", ,"],
-        None,
-        [123],
+        (["tools/foo.py, tests/bar.py"], ("write-scope conflict",)),
+        ([], ("active write claim requires a usable write_scope",)),
+        (
+            [", ,"],
+            (
+                "claim field 'write_scope' is malformed",
+                "write_scope entries must be non-empty paths",
+            ),
+        ),
+        (None, ("claim field 'write_scope' must be an array of strings",)),
+        ([123], ("claim field 'write_scope' must be an array of strings",)),
     ],
     ids=["comma-packed", "empty", "commas-only", "null", "nonstring"],
 )
 def test_powershell_claim_refuses_legacy_unsafe_stored_write_scope(
     tmp_path: Path,
     stored_scope: object,
+    expected_errors: tuple[str, ...],
 ) -> None:
     runtime_root = tmp_path / "bridge-runtime"
     task_id = "legacy-write-scope-holder"
@@ -3139,7 +4867,7 @@ def test_powershell_claim_refuses_legacy_unsafe_stored_write_scope(
     payload = json.loads(claim_path.read_text(encoding="utf-8"))
     payload["write_scope"] = stored_scope
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
-    before = claim_path.read_bytes()
+    before = _work_queue_file_snapshot(runtime_root)
 
     refused = _run_script(
         runtime_root,
@@ -3158,8 +4886,9 @@ def test_powershell_claim_refuses_legacy_unsafe_stored_write_scope(
     )
 
     assert refused.returncode == 3
-    assert "write-scope conflict" in refused.stderr
-    assert claim_path.read_bytes() == before
+    for expected_error in expected_errors:
+        assert expected_error in refused.stderr
+    assert _work_queue_file_snapshot(runtime_root) == before
     assert not (
         runtime_root
         / "work_queue"
@@ -3208,38 +4937,35 @@ def test_powershell_uppercase_write_mode_is_canonical_and_blocks_python(
     [
         ("missing", None),
         ("null", None),
+        ("numeric-string", "900"),
         ("boolean", True),
         ("float", 1.0),
         ("overflow", 2**31),
     ],
 )
-def test_powershell_heartbeat_canonicalizes_invalid_or_missing_lease(
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_powershell_heartbeat_rejects_invalid_or_missing_lease(
     tmp_path: Path,
     lease_case: str,
     lease_value: object,
+    powershell: str,
 ) -> None:
     runtime_root = tmp_path / "bridge-runtime"
     task_id = f"heartbeat-default-lease-{lease_case}"
-    created = _run_script(
-        runtime_root,
-        "Claim-AgentTask.ps1",
-        "-Agent",
-        "codex",
-        "-TaskId",
-        task_id,
-        "-Summary",
-        "heartbeat lease canonicalization fixture",
-        bound_agent="codex",
+    payload = _owner_bound_claim_payload(
+        task_id=task_id,
+        agent="codex",
     )
-    assert created.returncode == 0, created.stderr
-    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
-    payload = json.loads(claim_path.read_text(encoding="utf-8"))
     if lease_case == "missing":
         payload.pop("lease_seconds", None)
     else:
         payload["lease_seconds"] = lease_value
-    payload.pop("claim_lease_expires_utc", None)
-    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=payload,
+    )
+    before = claim_path.read_bytes()
 
     heartbeat_result = _run_script(
         runtime_root,
@@ -3250,19 +4976,86 @@ def test_powershell_heartbeat_canonicalizes_invalid_or_missing_lease(
         "-TaskId",
         f"{task_id}-event",
         bound_agent="codex",
+        powershell=powershell,
     )
 
-    assert heartbeat_result.returncode == 0, heartbeat_result.stderr
-    refreshed = json.loads(claim_path.read_text(encoding="utf-8"))
-    assert type(refreshed["lease_seconds"]) is int
-    assert refreshed["lease_seconds"] == 900
-    heartbeat_at = datetime.fromisoformat(
-        refreshed["last_heartbeat_utc"].replace("Z", "+00:00")
+    assert heartbeat_result.returncode != 0
+    assert "lease_seconds" in (
+        heartbeat_result.stdout + heartbeat_result.stderr
     )
-    expires_at = datetime.fromisoformat(
-        refreshed["claim_lease_expires_utc"].replace("Z", "+00:00")
+    assert claim_path.read_bytes() == before
+    assert not (runtime_root / "work_queue" / "done").exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["heartbeat", "release"])
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("mode", {"unexpected": "write"}),
+        ("write_scope", "tools/raw.py"),
+        ("lease_seconds", "900"),
+        ("claimed_at_utc", 17),
+        ("last_heartbeat_utc", False),
+        ("claim_lease_expires_utc", 17),
+    ],
+    ids=[
+        "mode-object",
+        "scope-string",
+        "numeric-lease-string",
+        "claimed-at-number",
+        "heartbeat-boolean",
+        "lease-expiry-number",
+    ],
+)
+def test_powershell_owned_claim_mutations_reject_raw_authority_types(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+    field_name: str,
+    malformed_value: object,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"raw-mutation-{operation}-{field_name}"
+    payload = _owner_bound_claim_payload(task_id=task_id, agent="codex")
+    payload[field_name] = malformed_value
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=payload,
     )
-    assert (expires_at - heartbeat_at).total_seconds() == 900
+    before = claim_path.read_bytes()
+
+    if operation == "heartbeat":
+        completed = _run_script(
+            runtime_root,
+            "Send-Liveness.ps1",
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            f"{task_id}-event",
+            bound_agent="codex",
+            powershell=powershell,
+        )
+    else:
+        completed = _run_script(
+            runtime_root,
+            "Release-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            bound_agent="codex",
+            powershell=powershell,
+        )
+
+    assert completed.returncode != 0
+    assert field_name in (completed.stdout + completed.stderr)
+    assert claim_path.read_bytes() == before
+    assert not (runtime_root / "work_queue" / "done").exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
 @pytest.mark.parametrize(
@@ -3491,8 +5284,10 @@ def test_powershell_stale_sweep_waits_for_python_mutation_lock(
     assert not (runtime_root / "work_queue" / "done").exists()
 
 
-def test_powershell_stale_sweep_rolls_back_archive_when_claim_delete_fails(
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_powershell_stale_sweep_rolls_back_archive_when_source_quarantine_fails(
     tmp_path: Path,
+    powershell: str,
 ) -> None:
     runtime_root = tmp_path / "bridge-runtime"
     task_id = "stale-delete-denied"
@@ -3516,56 +5311,155 @@ def test_powershell_stale_sweep_rolls_back_archive_when_claim_delete_fails(
     payload["claim_lease_expires_utc"] = "2026-07-28T00:00:01Z"
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
     before_claim = claim_path.read_bytes()
-    wrapper = tmp_path / "deny-delete-stale-sweep.ps1"
-    wrapper.write_text(
-        """
-param(
-    [Parameter(Mandatory)] [string] $ClaimPath,
-    [Parameter(Mandatory)] [string] $SweepPath
-)
-$stream = [System.IO.File]::Open(
-    $ClaimPath,
-    [System.IO.FileMode]::Open,
-    [System.IO.FileAccess]::Read,
-    [System.IO.FileShare]::Read
-)
-try {
-    & $SweepPath -StaleSeconds 1 -Quiet | Out-Null
-} finally {
-    $stream.Dispose()
-}
-""".strip(),
+    events_path = runtime_root / "shared" / "events.jsonl"
+    before_events = events_path.read_bytes()
+    isolated_bin = tmp_path / "isolated-stale-quarantine-bin"
+    isolated_bin.mkdir()
+    shutil.copy2(
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1",
+        isolated_bin / "AgentBridgeSessionIdentity.ps1",
+    )
+    sweep_source = (
+        BRIDGE_BIN / "Invoke-StaleClaimSweep.ps1"
+    ).read_text(encoding="utf-8")
+    quarantine_source = (
+        "            [System.IO.File]::Move(\n"
+        "                [string]$plan.file.FullName,\n"
+        "                [string]$plan.source_quarantine_path\n"
+        "            )"
+    )
+    injected_quarantine = (
+        "            throw 'injected source quarantine failure'\n"
+        f"{quarantine_source}"
+    )
+    assert sweep_source.count(quarantine_source) == 1
+    (isolated_bin / "Invoke-StaleClaimSweep.ps1").write_text(
+        sweep_source.replace(
+            quarantine_source,
+            injected_quarantine,
+            1,
+        ),
         encoding="utf-8",
     )
-    env = os.environ.copy()
-    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
 
-    swept = subprocess.run(
-        [
-            _powershell(),
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(wrapper),
-            "-ClaimPath",
-            str(claim_path),
-            "-SweepPath",
-            str(BRIDGE_BIN / "Invoke-StaleClaimSweep.ps1"),
-        ],
-        cwd=tmp_path,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+        script_root=isolated_bin,
+        powershell=powershell,
     )
 
+    combined = _normalized_powershell_output(swept)
     assert swept.returncode != 0
-    assert "stale claim sweep incomplete" in swept.stderr
+    assert "injected source quarantine failure" in combined
+    assert "stale claim sweep incomplete" in combined
     assert claim_path.read_bytes() == before_claim
     done_dir = runtime_root / "work_queue" / "done"
     assert not list(done_dir.glob("*.stale_lease.json"))
     assert not list(done_dir.glob("*.tmp.*"))
+    backups = list(
+        claim_path.parent.glob(f"{claim_path.name}.stale-backup.*")
+    )
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before_claim
+    assert not list(
+        claim_path.parent.glob(f"{claim_path.name}.stale-quarantine.*")
+    )
+    assert events_path.read_bytes() == before_events
+
+
+def test_powershell_stale_sweep_rolls_back_whole_batch_on_second_quarantine_failure(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claim_paths: list[Path] = []
+    for task_id in ("stale-batch-first", "stale-batch-second"):
+        payload = _owner_bound_claim_payload(task_id=task_id)
+        payload["claimed_at_utc"] = "2026-07-28T00:00:00Z"
+        payload["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+        payload["lease_seconds"] = 1
+        payload["claim_lease_expires_utc"] = "2026-07-28T00:00:01Z"
+        claim_paths.append(
+            _write_claim_payload(
+                runtime_root,
+                filename=f"{task_id}.json",
+                payload=payload,
+            )
+        )
+    before = {path: path.read_bytes() for path in claim_paths}
+
+    isolated_bin = tmp_path / "isolated-stale-bin"
+    isolated_bin.mkdir()
+    shutil.copy2(
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1",
+        isolated_bin / "AgentBridgeSessionIdentity.ps1",
+    )
+    sweep_source = (
+        BRIDGE_BIN / "Invoke-StaleClaimSweep.ps1"
+    ).read_text(encoding="utf-8")
+    quarantine_source = (
+        "            [System.IO.File]::Move(\n"
+        "                [string]$plan.file.FullName,\n"
+        "                [string]$plan.source_quarantine_path\n"
+        "            )"
+    )
+    injected_quarantine = (
+        "            $injectedSourceQuarantineCount++\n"
+        "            if ($injectedSourceQuarantineCount -eq 2) {\n"
+        "                throw 'injected second source quarantine failure'\n"
+        "            }\n"
+        f"{quarantine_source}"
+    )
+    assert sweep_source.count(quarantine_source) == 1
+    sweep_source = sweep_source.replace(
+        "$committedPlans = @()",
+        "$committedPlans = @()\n$injectedSourceQuarantineCount = 0",
+        1,
+    ).replace(quarantine_source, injected_quarantine, 1)
+    (isolated_bin / "Invoke-StaleClaimSweep.ps1").write_text(
+        sweep_source,
+        encoding="utf-8",
+    )
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+        script_root=isolated_bin,
+    )
+
+    combined = _normalized_powershell_output(swept)
+    assert swept.returncode != 0
+    assert "injected second source quarantine failure" in combined
+    assert "rollback failures: <none>" in combined
+    assert {path: path.read_bytes() for path in claim_paths} == before
+    done_dir = runtime_root / "work_queue" / "done"
+    assert not list(done_dir.glob("*.stale_lease.json"))
+    assert not list(done_dir.glob("*.tmp.*"))
+    claims_dir = runtime_root / "work_queue" / "claims"
+    backups = list(claims_dir.glob("*.stale-backup.*"))
+    assert len(backups) == len(claim_paths)
+    for claim_path in claim_paths:
+        matching = list(
+            claims_dir.glob(f"{claim_path.name}.stale-backup.*")
+        )
+        assert len(matching) == 1
+        assert matching[0].read_bytes() == before[claim_path]
+    first_quarantines = list(
+        claims_dir.glob(f"{claim_paths[0].name}.stale-quarantine.*")
+    )
+    assert len(first_quarantines) == 1
+    assert first_quarantines[0].read_bytes() == before[claim_paths[0]]
+    assert not list(
+        claims_dir.glob(f"{claim_paths[1].name}.stale-quarantine.*")
+    )
 
 
 def test_powershell_stale_sweep_retains_nonstring_task_identity(
@@ -3654,130 +5548,764 @@ def test_powershell_release_destination_collision_is_zero_write(
     assert not list(claim_path.parent.glob(f"{task_id}.json.bak.*"))
 
 
-def test_powershell_release_backup_restore_uses_valid_displaced_path(
-    tmp_path: Path,
-) -> None:
-    original_path = tmp_path / "active-claim.json"
-    backup_path = tmp_path / "active-claim.json.bak"
-    original_path.write_bytes(b"released-state")
-    backup_path.write_bytes(b"original-active-state")
-    wrapper = tmp_path / "restore-release-backup.ps1"
-    wrapper.write_text(
-        """
-param(
-    [Parameter(Mandatory)] [string] $IdentityPath,
-    [Parameter(Mandatory)] [string] $OriginalPath,
-    [Parameter(Mandatory)] [string] $BackupPath
+@pytest.mark.parametrize(
+    ("fixture_name", "fixture_bytes"),
+    [
+        ("malformed", b"{not-json"),
+        ("array", b"[]"),
+        ("null", b"null"),
+        ("invalid-utf8", b'{"task_id":"noise","value":"\xff"}'),
+    ],
 )
-. $IdentityPath
-Restore-AgentBridgeFileBackup `
-    -OriginalPath $OriginalPath `
-    -BackupPath $BackupPath
-""".strip(),
-        encoding="utf-8",
+@pytest.mark.parametrize("mode", ["read-only", "write"])
+def test_powershell_claim_acquisition_rejects_untrusted_active_record(
+    tmp_path: Path,
+    fixture_name: str,
+    fixture_bytes: bytes,
+    mode: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    noise_path = claims_dir / f"legacy-{fixture_name}.json"
+    noise_path.write_bytes(fixture_bytes)
+    before = _work_queue_file_snapshot(runtime_root)
+    task_id = f"strict-acquisition-{fixture_name}-{mode}"
+    args = [
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "must fail before acquiring beside untrusted active state",
+        "-Mode",
+        mode,
+    ]
+    if mode == "write":
+        args.extend(["-WriteScope", "tools"])
+
+    claimed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        *args,
+        bound_agent="codex",
     )
 
-    restored = subprocess.run(
-        [
-            _powershell(),
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(wrapper),
-            "-IdentityPath",
-            str(BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"),
-            "-OriginalPath",
-            str(original_path),
-            "-BackupPath",
-            str(backup_path),
+    assert claimed.returncode != 0
+    assert "active claim" in (claimed.stdout + claimed.stderr).lower()
+    assert _work_queue_file_snapshot(runtime_root) == before
+    assert not (claims_dir / f"{task_id}.json").exists()
+    assert not (runtime_root / "work_queue" / "done").exists()
+    assert not (runtime_root / "shared").exists()
+
+
+def test_powershell_claim_acquisition_rejects_nonfile_json_entry(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    noise_dir = claims_dir / "legacy-directory.json"
+    noise_dir.mkdir()
+
+    claimed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "strict-acquisition-nonfile",
+        "-Summary",
+        "must reject a non-file queue entry",
+        bound_agent="codex",
+    )
+
+    assert claimed.returncode != 0
+    assert "active claim record must be a file" in (
+        claimed.stdout + claimed.stderr
+    )
+    assert list(claims_dir.iterdir()) == [noise_dir]
+    assert not (runtime_root / "work_queue" / "done").exists()
+    assert not (runtime_root / "shared").exists()
+
+
+def test_powershell_claim_publication_uses_direct_trusted_bytes() -> None:
+    identity = (
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"
+    ).read_text(encoding="utf-8")
+    claim = (BRIDGE_BIN / "Claim-AgentTask.ps1").read_text(encoding="utf-8")
+    heartbeat = (
+        BRIDGE_BIN / "Send-Liveness.ps1"
+    ).read_text(encoding="utf-8")
+    release = (
+        BRIDGE_BIN / "Release-AgentTask.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Publish-AgentBridgeNewFileFromBytes" in claim
+    assert "-PublishBytes $jsonBytes" in claim
+    assert "-ExpectedSourceBytes ([byte[]]$matchedEntry.snapshot_bytes)" in claim
+    assert "-ExpectedSourceBytes ([byte[]]$entry.snapshot_bytes)" in heartbeat
+    assert "-ExpectedSourceBytes ([byte[]]$matchedEntry.snapshot_bytes)" in release
+    assert "FileMode]::CreateNew" in identity
+    assert "FileAccess]::ReadWrite" in identity
+    assert "FileShare]::None" in identity
+    assert "Publish-AgentBridgeNewFileFromTemp" not in identity
+    assert "$stagePath" not in identity
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["new", "force", "heartbeat", "release"])
+def test_powershell_direct_publication_retains_partial_canonical_on_write_failure(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-partial-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    expected_path = tmp_path / "expected-publish.bin"
+    create_marker = "        # CAS V2 DIRECT MARKER: create canonical path."
+    write_marker = (
+        "        # CAS V2 DIRECT MARKER: write trusted canonical bytes."
+    )
+    capture = _publish_context_guard(
+        "[System.IO.File]::WriteAllBytes(\n"
+        "    $env:WD_TEST_EXPECTED_BYTES,\n"
+        "    $PublishBytes\n"
+        ")"
+    )
+    partial = _publish_context_guard(
+        "$partialLength = [int][Math]::Floor($PublishBytes.Length / 2)\n"
+        "if ($partialLength -lt 1) { $partialLength = 1 }\n"
+        "$stream.Write($PublishBytes, 0, $partialLength)\n"
+        "throw 'injected direct partial write failure'"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[
+            (create_marker, f"{capture}\n{create_marker}"),
+            (write_marker, f"{partial}\n{write_marker}"),
         ],
-        cwd=tmp_path,
-        check=False,
-        capture_output=True,
-        text=True,
     )
 
-    assert restored.returncode == 0, restored.stderr
-    assert original_path.read_bytes() == b"original-active-state"
-    assert not backup_path.exists()
-    assert not list(tmp_path.glob("*.rollback-displaced.*"))
-
-
-def test_powershell_new_claim_publication_uses_closed_temp_contract() -> None:
-    source = (BRIDGE_BIN / "Claim-AgentTask.ps1").read_text(encoding="utf-8")
-    force_branch = source.index("if ($forceUpdateExisting)")
-    create_branch = source.index("} else {", force_branch)
-    create_finally = source.index("} finally {", create_branch)
-    create_block = source[create_branch:create_finally]
-
-    write_temp = (
-        "[System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)"
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+        extra_env={"WD_TEST_EXPECTED_BYTES": str(expected_path)},
     )
-    publish_temp = "[System.IO.File]::Move($tmpClaim, $claimPath)"
-    assert write_temp in create_block
-    assert publish_temp in create_block
-    assert create_block.index(write_temp) < create_block.index(publish_temp)
-    assert "FileMode]::CreateNew" not in create_block
-    assert "Set-Content" not in create_block
+
+    assert completed.returncode != 0
+    expected = expected_path.read_bytes()
+    partial_length = max(1, len(expected) // 2)
+    done_records = _direct_cas_done_records(runtime_root)
+    canonical = done_records[0] if operation == "release" else claim_path
+    assert canonical.read_bytes() == expected[:partial_length]
+    if operation == "release":
+        assert original is not None
+        assert claim_path.read_bytes() == original
+        assert len(done_records) == 1
+    elif operation != "new":
+        assert original is not None
+    if original is not None:
+        recoveries = list(
+            claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+        )
+        assert any(path.read_bytes() == original for path in recoveries)
+    _assert_no_direct_cas_event(runtime_root)
 
 
-@pytest.mark.skipif(
-    os.name != "nt",
-    reason="the locked-source replacement contract uses Windows sharing",
-)
-def test_atomic_update_preserves_destination_when_temp_source_is_locked(
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["new", "force", "heartbeat", "release"])
+def test_powershell_direct_publication_rejects_final_hardlink_alias(
     tmp_path: Path,
+    powershell: str,
+    operation: str,
 ) -> None:
-    destination_path = tmp_path / "active-claim.json"
-    temp_path = tmp_path / "active-claim.json.tmp"
-    destination_path.write_bytes(b"ORIGINAL")
-    temp_path.write_bytes(b"NEW")
-    wrapper = tmp_path / "update-claim-from-temp.ps1"
-    wrapper.write_text(
-        """
-param(
-    [Parameter(Mandatory)] [string] $IdentityPath,
-    [Parameter(Mandatory)] [string] $TempPath,
-    [Parameter(Mandatory)] [string] $DestinationPath
-)
-. $IdentityPath
-Update-AgentBridgeFileFromTemp `
-    -TempPath $TempPath `
-    -DestinationPath $DestinationPath
-""".strip(),
-        encoding="utf-8",
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-hardlink-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    expected_path = tmp_path / "expected-publish.bin"
+    alias_path = tmp_path / "canonical-attack-alias.bin"
+    create_marker = "        # CAS V2 DIRECT MARKER: create canonical path."
+    final_marker = (
+        "            # CAS V2 DIRECT MARKER: final canonical identity gate."
+    )
+    capture = _publish_context_guard(
+        "[System.IO.File]::WriteAllBytes(\n"
+        "    $env:WD_TEST_EXPECTED_BYTES,\n"
+        "    $PublishBytes\n"
+        ")"
+    )
+    hardlink = _publish_context_guard(
+        "[void](New-Item -ItemType HardLink `\n"
+        "    -Path $env:WD_TEST_ALIAS_PATH `\n"
+        "    -Target $DestinationPath -ErrorAction Stop)"
+    ).replace("        if", "            if", 1).replace(
+        "\n        }", "\n            }", 1
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[
+            (create_marker, f"{capture}\n{create_marker}"),
+            (final_marker, f"{hardlink}\n{final_marker}"),
+        ],
     )
 
-    with temp_path.open("rb"):
-        updated = subprocess.run(
-            [
-                _powershell(),
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(wrapper),
-                "-IdentityPath",
-                str(BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"),
-                "-TempPath",
-                str(temp_path),
-                "-DestinationPath",
-                str(destination_path),
-            ],
-            cwd=tmp_path,
-            check=False,
-            capture_output=True,
-            text=True,
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+        extra_env={
+            "WD_TEST_EXPECTED_BYTES": str(expected_path),
+            "WD_TEST_ALIAS_PATH": str(alias_path),
+        },
+    )
+
+    assert completed.returncode != 0
+    expected = expected_path.read_bytes()
+    done_records = _direct_cas_done_records(runtime_root)
+    canonical = done_records[0] if operation == "release" else claim_path
+    assert canonical.read_bytes() == expected
+    assert alias_path.read_bytes() == expected
+    if operation == "release":
+        assert original is not None
+        assert claim_path.read_bytes() == original
+    if original is not None:
+        assert any(
+            path.read_bytes() == original
+            for path in claim_path.parent.glob(
+                f"{claim_path.name}.cas-quarantine.*"
+            )
+        )
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["new", "force", "heartbeat", "release"])
+def test_powershell_exclusive_handle_blocks_final_atomic_replacement(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-exclusive-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    expected_path = tmp_path / "expected-publish.bin"
+    foreign_path = tmp_path / "foreign-replacement.bin"
+    displaced_path = tmp_path / "displaced-canonical.bin"
+    foreign_bytes = b"FOREIGN-AT-FINAL-IDENTITY-GATE"
+    encoded_foreign = base64.b64encode(foreign_bytes).decode("ascii")
+    create_marker = "        # CAS V2 DIRECT MARKER: create canonical path."
+    final_marker = (
+        "            # CAS V2 DIRECT MARKER: final canonical identity gate."
+    )
+    capture = _publish_context_guard(
+        "[System.IO.File]::WriteAllBytes(\n"
+        "    $env:WD_TEST_EXPECTED_BYTES,\n"
+        "    $PublishBytes\n"
+        ")"
+    )
+    replace_body = (
+        "[System.IO.File]::WriteAllBytes(\n"
+        "    $env:WD_TEST_FOREIGN_PATH,\n"
+        "    [System.Convert]::FromBase64String(\n"
+        f"        '{encoded_foreign}'\n"
+        "    )\n"
+        ")\n"
+        "[System.IO.File]::Replace(\n"
+        "    $env:WD_TEST_FOREIGN_PATH,\n"
+        "    $DestinationPath,\n"
+        "    $env:WD_TEST_DISPLACED_PATH\n"
+        ")"
+    )
+    replacement = _publish_context_guard(replace_body).replace(
+        "        if", "            if", 1
+    ).replace("\n        }", "\n            }", 1)
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[
+            (create_marker, f"{capture}\n{create_marker}"),
+            (final_marker, f"{replacement}\n{final_marker}"),
+        ],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+        extra_env={
+            "WD_TEST_EXPECTED_BYTES": str(expected_path),
+            "WD_TEST_FOREIGN_PATH": str(foreign_path),
+            "WD_TEST_DISPLACED_PATH": str(displaced_path),
+        },
+    )
+
+    assert completed.returncode != 0
+    expected = expected_path.read_bytes()
+    done_records = _direct_cas_done_records(runtime_root)
+    canonical = done_records[0] if operation == "release" else claim_path
+    assert canonical.read_bytes() == expected
+    assert foreign_path.read_bytes() == foreign_bytes
+    assert not displaced_path.exists()
+    if operation == "release":
+        assert original is not None
+        assert claim_path.read_bytes() == original
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["force", "heartbeat", "release"])
+def test_powershell_fresh_source_generation_wins_before_quarantine_move(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-fresh-source-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    assert original is not None
+    fresh = _fresh_foreign_claim_bytes(task_id)
+    encoded_fresh = base64.b64encode(fresh).decode("ascii")
+    move = "    [System.IO.File]::Move($SourcePath, $quarantinePath)"
+    injected = (
+        "    [System.IO.File]::WriteAllBytes(\n"
+        "        $SourcePath,\n"
+        "        [System.Convert]::FromBase64String(\n"
+        f"            '{encoded_fresh}'\n"
+        "        )\n"
+        "    )\n"
+        f"{move}"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(move, injected)],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert claim_path.read_bytes() == fresh
+    recoveries = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert any(path.read_bytes() == fresh for path in recoveries)
+    assert not _direct_cas_done_records(runtime_root)
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["force", "heartbeat", "release"])
+def test_powershell_quarantine_swap_after_capture_restores_captured_bytes(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-q-swap-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    assert original is not None
+    foreign = b"FOREIGN-QUARANTINE-AFTER-CAPTURE"
+    encoded_foreign = base64.b64encode(foreign).decode("ascii")
+    marker = (
+        "        # CAS V2 TRANSACTION MARKER: verify captured quarantine path."
+    )
+    injected = (
+        "        $foreignQ = $quarantinePath + '.foreign-q'\n"
+        "        $displacedQ = $quarantinePath + '.displaced-q'\n"
+        "        [System.IO.File]::WriteAllBytes(\n"
+        "            $foreignQ,\n"
+        "            [System.Convert]::FromBase64String(\n"
+        f"                '{encoded_foreign}'\n"
+        "            )\n"
+        "        )\n"
+        "        [System.IO.File]::Replace(\n"
+        "            $foreignQ,\n"
+        "            $quarantinePath,\n"
+        "            $displacedQ\n"
+        "        )\n"
+        f"{marker}"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(marker, injected)],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert claim_path.read_bytes() == original
+    q_artifacts = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert any(path.read_bytes() == foreign for path in q_artifacts)
+    assert any(path.read_bytes() == original for path in q_artifacts)
+    assert not _direct_cas_done_records(runtime_root)
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["force", "heartbeat", "release"])
+def test_powershell_quarantine_hardlink_failure_restores_single_link_source(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-q-hardlink-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    assert original is not None
+    alias_path = tmp_path / "quarantine-hardlink-alias.bin"
+    move = "    [System.IO.File]::Move($SourcePath, $quarantinePath)"
+    injected = (
+        f"{move}\n"
+        "    [void](New-Item -ItemType HardLink `\n"
+        "        -Path $env:WD_TEST_Q_ALIAS_PATH `\n"
+        "        -Target $quarantinePath -ErrorAction Stop)"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(move, injected)],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+        extra_env={"WD_TEST_Q_ALIAS_PATH": str(alias_path)},
+    )
+
+    assert completed.returncode != 0
+    assert claim_path.read_bytes() == original
+    assert claim_path.stat().st_nlink == 1
+    assert alias_path.read_bytes() == original
+    recoveries = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert any(path.read_bytes() == original for path in recoveries)
+    assert not _direct_cas_done_records(runtime_root)
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["force", "heartbeat", "release"])
+def test_powershell_fresh_replacement_with_hardlink_restores_captured_generation(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-fresh-hardlink-{operation}"
+    claim_path, authorized = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    assert authorized is not None
+    fresh = _fresh_foreign_claim_bytes(task_id)
+    encoded_fresh = base64.b64encode(fresh).decode("ascii")
+    move = "    [System.IO.File]::Move($SourcePath, $quarantinePath)"
+    injected = (
+        "    $authorizedPath = $SourcePath + '.test-authorized-A'\n"
+        "    [System.IO.File]::Move($SourcePath, $authorizedPath)\n"
+        "    [System.IO.File]::WriteAllBytes(\n"
+        "        $SourcePath,\n"
+        "        [System.Convert]::FromBase64String(\n"
+        f"            '{encoded_fresh}'\n"
+        "        )\n"
+        "    )\n"
+        "    $freshAlias = $SourcePath + '.test-fresh-hardlink'\n"
+        "    [void](New-Item -ItemType HardLink `\n"
+        "        -Path $freshAlias -Target $SourcePath -ErrorAction Stop)\n"
+        f"{move}"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(move, injected)],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    authorized_path = claim_path.with_name(
+        claim_path.name + ".test-authorized-A"
+    )
+    alias_path = claim_path.with_name(
+        claim_path.name + ".test-fresh-hardlink"
+    )
+    quarantines = [
+        path
+        for path in claim_path.parent.glob(
+            f"{claim_path.name}.cas-quarantine.*"
+        )
+        if ".test-" not in path.name
+    ]
+    assert authorized_path.read_bytes() == authorized
+    assert claim_path.read_bytes() == fresh
+    assert claim_path.stat().st_nlink == 1
+    assert len(quarantines) == 1
+    assert alias_path.samefile(quarantines[0])
+    assert quarantines[0].read_bytes() == fresh
+    alias_path.write_bytes(b"MUTATED-REJECTED-FRESH-HARDLINK")
+    assert quarantines[0].read_bytes() == b"MUTATED-REJECTED-FRESH-HARDLINK"
+    assert claim_path.read_bytes() == fresh
+    assert not _direct_cas_done_records(runtime_root)
+    _assert_no_direct_cas_event(runtime_root)
+    assert "exactly one filesystem link" in _normalized_powershell_output(
+        completed
+    )
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["force", "heartbeat", "release"])
+def test_powershell_post_move_capture_failure_never_replays_authorized_bytes(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-capture-unavailable-{operation}"
+    claim_path, authorized = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    assert authorized is not None
+    open_marker = (
+        "        # CAS V2 EXISTING MARKER: open quarantined path exclusively."
+    )
+    injected = (
+        "        if ($Context -ceq 'authorized quarantined claim source') {\n"
+        "            throw 'injected pre-byte quarantine capture failure'\n"
+        "        }"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(open_marker, f"{injected}\n{open_marker}")],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    combined = _normalized_powershell_output(completed)
+    quarantines = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert completed.returncode != 0
+    assert "injected pre-byte quarantine capture failure" in combined
+    assert "not restored from pre-move authorization" in combined
+    assert not claim_path.exists()
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == authorized
+    assert not _direct_cas_done_records(runtime_root)
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_powershell_release_create_new_collision_restores_source(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "direct-release-collision"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation="release",
+        task_id=task_id,
+    )
+    assert original is not None
+    foreign = b"FOREIGN-PREEXISTING-RELEASE-DESTINATION"
+    encoded_foreign = base64.b64encode(foreign).decode("ascii")
+    marker = "        # CAS V2 DIRECT MARKER: create canonical path."
+    body = (
+        "if ($Context -ceq 'published claim transaction') {\n"
+        "    [System.IO.File]::WriteAllBytes(\n"
+        "        $DestinationPath,\n"
+        "        [System.Convert]::FromBase64String(\n"
+        f"            '{encoded_foreign}'\n"
+        "        )\n"
+        "    )\n"
+        "}"
+    )
+    guarded = "\n".join(f"        {line}" for line in body.splitlines())
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(marker, f"{guarded}\n{marker}")],
+    )
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation="release",
+        task_id=task_id,
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    assert completed.returncode != 0
+    assert claim_path.read_bytes() == original
+    done_records = _direct_cas_done_records(runtime_root)
+    assert len(done_records) == 1
+    assert done_records[0].read_bytes() == foreign
+    recoveries = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert any(path.read_bytes() == original for path in recoveries)
+    _assert_no_direct_cas_event(runtime_root)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["force", "heartbeat", "release"])
+def test_powershell_success_retains_exact_committed_recovery(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"direct-success-recovery-{operation}"
+    claim_path, original = _direct_cas_fixture(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+    )
+    assert original is not None
+
+    completed = _run_powershell_claim_mutation(
+        runtime_root,
+        operation=operation,
+        task_id=task_id,
+        script_root=BRIDGE_BIN,
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, _normalized_powershell_output(completed)
+    recoveries = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].read_bytes() == original
+    done_records = _direct_cas_done_records(runtime_root)
+    if operation == "release":
+        assert not claim_path.exists()
+        assert len(done_records) == 1
+        assert json.loads(done_records[0].read_text(encoding="utf-8"))[
+            "release_status"
+        ] == "done"
+    else:
+        assert claim_path.is_file()
+        assert claim_path.read_bytes() != original
+        assert not done_records
+    events = (
+        runtime_root / "shared" / "events.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    "raw_claim",
+    [
+        b'{"agent":"codex","task_id":"dup","task_id":"dup"}',
+        (
+            b'{"agent":"codex","task_id":"dup",'
+            b'"owner_session_id":"one","owner_session_id":"two"}'
+        ),
+        b'{"agent":"codex","task_id":"dup","task_\\u0069d":"dup"}',
+        b'{"agent":"codex","task_id":"dup","Task_Id":"dup"}',
+        '{"agent":"codex","task_id":"dup","Straße":true}'.encode(),
+    ],
+)
+def test_powershell_public_claim_paths_reject_ambiguous_json_names(
+    tmp_path: Path,
+    powershell: str,
+    raw_claim: bytes,
+) -> None:
+    calls = [
+        (
+            "Claim-AgentTask.ps1",
+            ("-Agent", "codex", "-TaskId", "new-beside-ambiguous", "-Summary", "x"),
+        ),
+        (
+            "Send-Liveness.ps1",
+            ("-Agent", "codex", "-Heartbeat", "-TaskId", "dup"),
+        ),
+        (
+            "Release-AgentTask.ps1",
+            ("-Agent", "codex", "-TaskId", "dup"),
+        ),
+    ]
+    for index, (script_name, args) in enumerate(calls):
+        runtime_root = tmp_path / f"runtime-{index}"
+        claim_path = runtime_root / "work_queue" / "claims" / "ambiguous.json"
+        claim_path.parent.mkdir(parents=True)
+        claim_path.write_bytes(raw_claim)
+
+        completed = _run_script(
+            runtime_root,
+            script_name,
+            *args,
+            bound_agent="codex",
+            powershell=powershell,
         )
 
-        assert updated.returncode != 0
-        assert destination_path.read_bytes() == b"ORIGINAL"
-        assert temp_path.read_bytes() == b"NEW"
-        assert not list(tmp_path.glob("active-claim.json.bak.*"))
-        assert not list(tmp_path.glob("*.rollback-displaced.*"))
-
-    temp_path.unlink()
+        assert completed.returncode != 0
+        assert claim_path.read_bytes() == raw_claim
+        assert not _direct_cas_done_records(runtime_root)
+        _assert_no_direct_cas_event(runtime_root)
 
 
 def test_powershell_heartbeat_refreshes_lease_when_event_writer_fails(
@@ -3853,8 +6381,10 @@ throw 'injected event emit failure'
     os.name != "nt",
     reason="the destination-lock failure uses Windows sharing semantics",
 )
+@pytest.mark.parametrize("powershell", POWERSHELLS)
 def test_powershell_heartbeat_lease_publish_failure_is_nonzero_and_zero_write(
     tmp_path: Path,
+    powershell: str,
 ) -> None:
     runtime_root = tmp_path / "bridge-runtime"
     task_id = "heartbeat-lease-publish-failure"
@@ -3865,28 +6395,59 @@ def test_powershell_heartbeat_lease_publish_failure_is_nonzero_and_zero_write(
     )
     before = claim_path.read_bytes()
 
-    with claim_path.open("rb"):
-        heartbeat = _run_script(
-            runtime_root,
-            "Send-Liveness.ps1",
-            "-Agent",
-            "codex",
-            "-Heartbeat",
-            "-TaskId",
-            task_id,
-            bound_agent="codex",
-        )
+    marker = "        # CAS V2 DIRECT MARKER: create canonical path."
+    injected_marker = (
+        "        if ($Context -ceq 'published claim transaction') {\n"
+        "            throw 'injected heartbeat lease publication failure'\n"
+        "        }\n"
+        f"{marker}"
+    )
+    isolated_bin = _isolated_claim_mutation_bin_with_identity_injections(
+        tmp_path,
+        injections=[(marker, injected_marker)],
+    )
 
-        assert heartbeat.returncode != 0
-        assert "could not bump lease" in (
-            heartbeat.stdout + heartbeat.stderr
-        ).lower()
-        assert claim_path.read_bytes() == before
-        assert not list(claim_path.parent.glob(f"{claim_path.name}.tmp.*"))
-        assert not list(claim_path.parent.glob(f"{claim_path.name}.bak.*"))
-        assert not list(
-            claim_path.parent.glob(f"{claim_path.name}.rollback-displaced.*")
-        )
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    combined = _normalized_powershell_output(heartbeat).lower()
+    assert heartbeat.returncode != 0
+    assert "could not bump lease" in combined
+    assert "injected heartbeat lease publication failure" in combined
+    assert claim_path.read_bytes() == before
+    assert not list(claim_path.parent.glob(f"{claim_path.name}.tmp.*"))
+    assert not list(claim_path.parent.glob(f"{claim_path.name}.bak.*"))
+    assert not list(
+        claim_path.parent.glob(f"{claim_path.name}.rollback-displaced.*")
+    )
+    recoveries = list(
+        claim_path.parent.glob(f"{claim_path.name}.cas-quarantine.*")
+    )
+    assert len(recoveries) == 1
+    assert recoveries[0].read_bytes() == before
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+def test_direct_publication_has_no_consumed_temp_cleanup_surface() -> None:
+    identity = (
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"
+    ).read_text(encoding="utf-8")
+    claim = (BRIDGE_BIN / "Claim-AgentTask.ps1").read_text(encoding="utf-8")
+
+    assert "$tempConsumed" not in identity
+    assert "$tmpClaimConsumed" not in claim
+    assert "Publish-AgentBridgeNewFileFromTemp" not in identity
+    assert "Update-AgentBridgeFileFromTemp" not in identity
 
 
 @pytest.mark.parametrize(
@@ -3974,7 +6535,7 @@ def test_powershell_write_claim_fails_closed_on_malformed_stored_mode(
         filename=f"{existing_task}.json",
         payload=payload,
     )
-    before = existing_path.read_bytes()
+    before = _work_queue_file_snapshot(runtime_root)
     new_task = f"malformed-mode-request-{stored_mode_case}"
 
     claimed = _run_script(
@@ -3993,11 +6554,11 @@ def test_powershell_write_claim_fails_closed_on_malformed_stored_mode(
         bound_agent="codex",
     )
 
-    assert claimed.returncode != 0
-    assert "stored mode is missing, non-string, or invalid" in (
+    assert claimed.returncode == 3
+    assert "claim field 'mode' must be exact and canonical" in (
         claimed.stdout + claimed.stderr
     )
-    assert existing_path.read_bytes() == before
+    assert _work_queue_file_snapshot(runtime_root) == before
     assert not (
         runtime_root / "work_queue" / "claims" / f"{new_task}.json"
     ).exists()
@@ -4117,3 +6678,1124 @@ def test_preferred_path_collision_refuses_mutation_without_work_queue_writes(
     assert (
         runtime_root / "work_queue" / "done"
     ).exists() is done_existed_before
+
+
+def _claim_projection_attack_payload(task_id: str) -> dict[str, object]:
+    payload = _owner_bound_claim_payload(task_id=task_id)
+    payload.update(
+        {
+            "summary": ["scalar-summary-secret"],
+            "run_id": {"secret": "scalar-run-secret"},
+            "session_id": ["scalar-session-secret"],
+            "role": ["optional-role-secret"],
+            "agent_uuid": {"secret": "optional-uuid-secret"},
+            "capabilities": [
+                " cap.one ",
+                17,
+                "cap.one",
+                "cap.two",
+                ["nested-capability-secret"],
+                None,
+            ],
+            "writer_pid": " 4321 ",
+            "writer_pid_semantics": ["optional-writer-secret"],
+            "cwd": {"secret": "optional-cwd-secret"},
+            "git_branch": False,
+            "owner_token": "raw-owner-secret",
+            "pid": 9876,
+            "unknown_field": {"secret": "unknown-field-secret"},
+        }
+    )
+    return payload
+
+
+@pytest.mark.parametrize("operation", ["heartbeat", "release"])
+def test_powershell_claim_mutations_persist_only_canonical_claim_fields(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"canonical-projection-{operation}"
+    raw_payload = _claim_projection_attack_payload(task_id)
+    expected_owner = {
+        name: raw_payload[name]
+        for name in (
+            "owner_session_id",
+            "owner_token_sha256",
+            "owner_pid",
+            "owner_process_start_utc",
+        )
+    }
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=raw_payload,
+    )
+
+    if operation == "heartbeat":
+        completed = _run_script(
+            runtime_root,
+            "Send-Liveness.ps1",
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            f"{task_id}-event",
+            bound_agent="codex",
+        )
+        persisted_path = claim_path
+    else:
+        completed = _run_script(
+            runtime_root,
+            "Release-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            bound_agent="codex",
+        )
+        archives = list(
+            (runtime_root / "work_queue" / "done").glob("*.json")
+        )
+        assert len(archives) == 1
+        persisted_path = archives[0]
+
+    assert completed.returncode == 0, completed.stderr
+    persisted = json.loads(persisted_path.read_text(encoding="utf-8"))
+    assert persisted["agent"] == "codex"
+    assert persisted["task_id"] == task_id
+    assert persisted["summary"] == ""
+    assert persisted["mode"] == "read-only"
+    assert persisted["write_scope"] == []
+    assert persisted["run_id"] == ""
+    assert persisted["claimed_at_utc"] == raw_payload["claimed_at_utc"]
+    assert persisted["session_id"] == ""
+    assert {
+        name: persisted[name] for name in expected_owner
+    } == expected_owner
+    assert persisted["capabilities"] == ["cap.one", "cap.two"]
+    assert persisted["writer_pid"] == 4321
+    for field in (
+        "role",
+        "agent_uuid",
+        "writer_pid_semantics",
+        "cwd",
+        "git_branch",
+        "owner_token",
+        "pid",
+        "unknown_field",
+    ):
+        assert field not in persisted
+
+    if operation == "heartbeat":
+        assert persisted["last_heartbeat_utc"]
+        assert persisted["lease_seconds"] == 900
+        assert persisted["claim_lease_expires_utc"]
+    else:
+        assert (
+            persisted["last_heartbeat_utc"]
+            == raw_payload["last_heartbeat_utc"]
+        )
+        assert persisted["lease_seconds"] == 900
+        assert (
+            persisted["claim_lease_expires_utc"]
+            == raw_payload["claim_lease_expires_utc"]
+        )
+        assert persisted["release_status"] == "done"
+        assert persisted["release_message"] == ""
+        assert persisted["released_at_utc"]
+
+    serialized = json.dumps(persisted, sort_keys=True)
+    for secret in (
+        "scalar-summary-secret",
+        "scalar-run-secret",
+        "scalar-session-secret",
+        "nested-capability-secret",
+        "raw-owner-secret",
+        "unknown-field-secret",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_bound_operator_force_cannot_replace_foreign_agent_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "operator-must-not-take-foreign-claim"
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=_owner_bound_claim_payload(
+            task_id=task_id,
+            agent="codex",
+        ),
+    )
+    before = claim_path.read_bytes()
+
+    forced = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "operator",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "operator force must not change ownership",
+        "-Force",
+        bound_agent="operator",
+        powershell=powershell,
+    )
+
+    assert forced.returncode == 3
+    assert "cannot force-update claim owned by codex" in forced.stderr
+    assert claim_path.read_bytes() == before
+    assert not (runtime_root / "shared").exists()
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("fixture_name", "fixture_bytes"),
+    [
+        (
+            "utf8-bom",
+            b"\xef\xbb\xbf"
+            b'{"task_id":"bom-active","mode":"read-only"}',
+        ),
+        ("trailing-comma", b'{"task_id":"trailing-active",}'),
+        ("comment", b'{/*comment*/"task_id":"comment-active"}'),
+        ("nan", b'{"task_id":"nan-active","value":NaN}'),
+        ("infinity", b'{"task_id":"infinity-active","value":Infinity}'),
+        ("overflow", b'{"task_id":"overflow-active","value":1e9999}'),
+        ("leading-zero", b'{"task_id":"leading-zero","value":01}'),
+        ("leading-plus", b'{"task_id":"leading-plus","value":+1}'),
+        ("single-quote", b"{'task_id':'single-quote'}"),
+        ("leading-dot", b'{"task_id":"leading-dot","value":.1}'),
+        ("trailing-dot", b'{"task_id":"trailing-dot","value":1.}'),
+        ("negative-leading-zero", b'{"task_id":"neg-zero","value":-01}'),
+        ("double-zero", b'{"task_id":"double-zero","value":00}'),
+        ("dot-before-exponent", b'{"task_id":"dot-exp","value":1.e2}'),
+        ("negative-leading-dot", b'{"task_id":"neg-dot","value":-.1}'),
+        (
+            "invalid-escape",
+            b"""{"task_id":"invalid-escape","value":"bad\\'escape"}""",
+        ),
+        (
+            "raw-newline",
+            b"""{"task_id":"raw-newline","value":"raw
+newline"}""",
+        ),
+        ("unquoted-key", b'{task_id:"unquoted-key"}'),
+        ("nbsp-whitespace", b'{\xc2\xa0"task_id":"nbsp"}'),
+        ("vertical-tab-whitespace", b'{\x0b"task_id":"vtab"}'),
+        (
+            "invalid-utf8",
+            b'{"task_id":"invalid-active","value":"\xff"}',
+        ),
+    ],
+)
+def test_powershell_strict_acquisition_rejects_json_extensions_on_both_engines(
+    tmp_path: Path,
+    powershell: str,
+    fixture_name: str,
+    fixture_bytes: bytes,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    untrusted_path = claims_dir / f"{fixture_name}.json"
+    untrusted_path.write_bytes(fixture_bytes)
+    before = _work_queue_file_snapshot(runtime_root)
+
+    claimed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        f"strict-{fixture_name}",
+        "-Summary",
+        "untrusted JSON must block acquisition",
+        bound_agent="codex",
+        powershell=powershell,
+    )
+
+    assert claimed.returncode != 0
+    assert "active claim" in (claimed.stdout + claimed.stderr).lower()
+    assert _work_queue_file_snapshot(runtime_root) == before
+    assert not (runtime_root / "shared").exists()
+    assert not (runtime_root / "work_queue" / "done").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+@pytest.mark.parametrize("operation", ["heartbeat", "release"])
+@pytest.mark.parametrize("fault", ["invalid-utf8", "utf8-bom"])
+def test_powershell_claim_mutators_do_not_canonicalize_untrusted_utf8(
+    tmp_path: Path,
+    powershell: str,
+    operation: str,
+    fault: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"{operation}-{fault}-claim"
+    payload = _owner_bound_claim_payload(task_id=task_id)
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    if fault == "utf8-bom":
+        raw = b"\xef\xbb\xbf" + raw
+    else:
+        raw = raw[:-1] + b',"untrusted":"\xff"}'
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    claim_path.parent.mkdir(parents=True)
+    claim_path.write_bytes(raw)
+
+    if operation == "heartbeat":
+        completed = _run_script(
+            runtime_root,
+            "Send-Liveness.ps1",
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            f"{task_id}-event",
+            bound_agent="codex",
+            powershell=powershell,
+        )
+        assert completed.returncode != 0
+        assert "unreadable active claim blocks lease refresh" in (
+            completed.stdout + completed.stderr
+        )
+    else:
+        completed = _run_script(
+            runtime_root,
+            "Release-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            bound_agent="codex",
+            powershell=powershell,
+        )
+        assert completed.returncode != 0
+
+    assert claim_path.read_bytes() == raw
+    assert not (runtime_root / "work_queue" / "done").exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+def test_direct_claim_update_has_no_backup_cleanup_warning_path() -> None:
+    identity = (
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "$backupPath" not in identity
+    assert ".bak." not in identity
+    assert "Remove-Item -LiteralPath $backupPath" not in identity
+    assert "cas-quarantine" in identity
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_last_event_warning_cannot_hide_canonical_event(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    isolated_bin = tmp_path / "isolated-event-warning-bin"
+    isolated_bin.mkdir()
+    for name in (
+        "AgentBridgeSessionIdentity.ps1",
+        "Write-AgentEvent.ps1",
+    ):
+        shutil.copy2(BRIDGE_BIN / name, isolated_bin / name)
+    writer_path = isolated_bin / "Write-AgentEvent.ps1"
+    source = writer_path.read_text(encoding="utf-8")
+    last_write = (
+        "    Write-JsonAtomic -Path $lastPath "
+        "-Json ($event | ConvertTo-Json -Depth 12)"
+    )
+    assert source.count(last_write) == 1
+    writer_path.write_text(
+        source.replace(
+            last_write,
+            "    throw 'injected last-event cache failure'",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Write-AgentEvent.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-Type",
+        "message",
+        "-TaskId",
+        "last-event-warning",
+        "-Message",
+        "canonical event must remain successful",
+        "-WarningAction",
+        "Stop",
+        script_root=isolated_bin,
+        powershell=powershell,
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode == 0, combined
+    assert "injected last-event cache failure" in combined
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(event["task_id"], event["type"]) for event in events] == [
+        ("last-event-warning", "message")
+    ]
+    assert not (
+        runtime_root / "shared" / f"last_{BOUND_AGENT}.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_liveness_event_append_stays_outside_claim_mutation_lock(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "event-outside-claim-lock"
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=_owner_bound_claim_payload(task_id=task_id),
+    )
+    before = json.loads(claim_path.read_text(encoding="utf-8"))
+
+    isolated_bin = tmp_path / "isolated-lock-boundary-bin"
+    isolated_bin.mkdir()
+    for name in (
+        "AgentBridgeSessionIdentity.ps1",
+        "Send-Liveness.ps1",
+    ):
+        shutil.copy2(BRIDGE_BIN / name, isolated_bin / name)
+    (isolated_bin / "Write-AgentEvent.ps1").write_text(
+        """
+[CmdletBinding()]
+param(
+    [string] $Agent,
+    [string] $Type,
+    [string] $Status,
+    [string] $Severity,
+    [string] $To,
+    [string] $Message,
+    [string] $TaskId,
+    [string[]] $Paths,
+    [string] $Role,
+    [string] $AgentUuid,
+    [string[]] $Capabilities
+)
+[System.IO.File]::WriteAllText(
+    [string]$env:WD_TEST_EVENT_READY,
+    'ready'
+)
+while (-not (Test-Path -LiteralPath $env:WD_TEST_EVENT_RELEASE)) {
+    Start-Sleep -Milliseconds 20
+}
+[pscustomobject]@{ task_id = $TaskId; type = $Type }
+""".strip(),
+        encoding="utf-8",
+    )
+    contender_script = tmp_path / "claim-lock-contender.ps1"
+    contender_script.write_text(
+        """
+param(
+    [string] $IdentityPath,
+    [string] $BridgeRoot,
+    [string] $AcquiredPath
+)
+. $IdentityPath
+$lock = Enter-AgentBridgeMutationLock -BridgeRoot $BridgeRoot
+try {
+    [System.IO.File]::WriteAllText($AcquiredPath, 'acquired')
+} finally {
+    Exit-AgentBridgeMutationLock -Lock $lock
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    event_ready = tmp_path / "event-ready"
+    event_release = tmp_path / "event-release"
+    lock_acquired = tmp_path / "lock-acquired"
+    env = os.environ.copy()
+    env.update(
+        {
+            "AGENT_BRIDGE_RUNTIME_ROOT": str(runtime_root),
+            "AGENT_BRIDGE_AGENT": "codex",
+            "AGENT_BRIDGE_SESSION_ID": "pytest-event-session",
+            "AGENT_BRIDGE_OWNER_SESSION_ID": "pytest-session",
+            "AGENT_BRIDGE_OWNER_TOKEN": "a" * 64,
+            "AGENT_BRIDGE_OWNER_PID": str(os.getpid()),
+            "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": (
+                "2026-07-28T00:00:00Z"
+            ),
+            "WD_TEST_EVENT_READY": str(event_ready),
+            "WD_TEST_EVENT_RELEASE": str(event_release),
+        }
+    )
+    heartbeat = subprocess.Popen(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(isolated_bin / "Send-Liveness.ps1"),
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            "slow-event-boundary",
+        ],
+        cwd=runtime_root.parent,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    contender: subprocess.Popen[str] | None = None
+    acquired_before_event_release = False
+    heartbeat_stdout = ""
+    heartbeat_stderr = ""
+    contender_stdout = ""
+    contender_stderr = ""
+    try:
+        _wait_for_path(event_ready)
+        assert heartbeat.poll() is None
+        contender = subprocess.Popen(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(contender_script),
+                "-IdentityPath",
+                str(isolated_bin / "AgentBridgeSessionIdentity.ps1"),
+                "-BridgeRoot",
+                str(runtime_root),
+                "-AcquiredPath",
+                str(lock_acquired),
+            ],
+            cwd=runtime_root.parent,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            _wait_for_path(lock_acquired, timeout_seconds=3.0)
+            acquired_before_event_release = True
+        except AssertionError:
+            acquired_before_event_release = False
+        assert heartbeat.poll() is None
+    finally:
+        event_release.write_text("release", encoding="utf-8")
+        heartbeat_stdout, heartbeat_stderr = heartbeat.communicate(
+            timeout=20
+        )
+        if contender is not None:
+            contender_stdout, contender_stderr = contender.communicate(
+                timeout=20
+            )
+
+    assert acquired_before_event_release, (
+        "claim mutation lock remained held during the slow event append"
+    )
+    assert heartbeat.returncode == 0, (
+        f"{heartbeat_stdout}\n{heartbeat_stderr}"
+    )
+    assert contender is not None
+    assert contender.returncode == 0, (
+        f"{contender_stdout}\n{contender_stderr}"
+    )
+    after = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert after["last_heartbeat_utc"] != before["last_heartbeat_utc"]
+
+
+def test_powershell_stale_archive_and_event_share_canonical_projection(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "canonical-projection-stale"
+    raw_payload = _claim_projection_attack_payload(task_id)
+    raw_payload.update(
+        {
+            "mode": {"secret": "scalar-mode-secret"},
+            "write_scope": [
+                " scope/one, scope/two ",
+                17,
+                "scope/one",
+                ["nested-scope-secret"],
+                None,
+            ],
+            "claimed_at_utc": ["scalar-claimed-secret"],
+            "last_heartbeat_utc": {"secret": "scalar-heartbeat-secret"},
+            "lease_seconds": ["900"],
+            "claim_lease_expires_utc": True,
+        }
+    )
+    raw_payload["owner_pid"] = " 4242 "
+    raw_payload["owner_process_start_utc"] = ["owner-start-secret"]
+    raw_payload["writer_pid"] = ["4321"]
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=raw_payload,
+    )
+
+    completed = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert not claim_path.exists()
+    archives = list(
+        (runtime_root / "work_queue" / "done").glob(
+            f"{task_id}*.stale_lease.json"
+        )
+    )
+    assert len(archives) == 1
+    archived = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert archived["summary"] == ""
+    assert archived["mode"] == ""
+    assert archived["write_scope"] == ["scope/one", "scope/two"]
+    assert archived["run_id"] == ""
+    assert archived["claimed_at_utc"] == ""
+    assert archived["last_heartbeat_utc"] == ""
+    assert archived["lease_seconds"] == 0
+    assert archived["claim_lease_expires_utc"] == ""
+    assert archived["capabilities"] == ["cap.one", "cap.two"]
+    assert archived["release_status"] == "stale_lease"
+    for field in (
+        "session_id",
+        "owner_pid",
+        "owner_process_start_utc",
+        "role",
+        "agent_uuid",
+        "writer_pid",
+        "writer_pid_semantics",
+        "cwd",
+        "git_branch",
+        "owner_token",
+        "pid",
+        "unknown_field",
+    ):
+        assert field not in archived
+
+    event_lines = (
+        runtime_root / "shared" / "events.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(event_lines) == 1
+    event = json.loads(event_lines[0])
+    assert event["status"] == "stale_lease"
+    assert event["payload"]["claim_claimed_at_utc"] == ""
+    assert event["payload"]["claim_run_id"] == ""
+    assert event["payload"]["last_heartbeat_utc"] == ""
+    assert Path(event["payload"]["archived_path"]) == archives[0]
+    serialized = json.dumps(
+        {"archive": archived, "event": event},
+        sort_keys=True,
+    )
+    for secret in (
+        "scalar-summary-secret",
+        "scalar-run-secret",
+        "scalar-claimed-secret",
+        "scalar-heartbeat-secret",
+        "nested-scope-secret",
+        "nested-capability-secret",
+        "owner-start-secret",
+        "raw-owner-secret",
+        "unknown-field-secret",
+    ):
+        assert secret not in serialized
+
+
+def test_powershell_stale_rollback_retains_archive_when_restore_fails(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    first_task = "stale-rollback-visible-first"
+    second_task = "stale-rollback-visible-second"
+    claim_paths: list[Path] = []
+    for task_id in (first_task, second_task):
+        payload = _owner_bound_claim_payload(task_id=task_id)
+        payload["claimed_at_utc"] = "2026-07-28T00:00:00Z"
+        payload["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+        payload["lease_seconds"] = 1
+        payload["claim_lease_expires_utc"] = "2026-07-28T00:00:01Z"
+        claim_paths.append(
+            _write_claim_payload(
+                runtime_root,
+                filename=f"{task_id}.json",
+                payload=payload,
+            )
+        )
+    before = {path: path.read_bytes() for path in claim_paths}
+
+    isolated_bin = tmp_path / "isolated-stale-restore-bin"
+    isolated_bin.mkdir()
+    shutil.copy2(
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1",
+        isolated_bin / "AgentBridgeSessionIdentity.ps1",
+    )
+    sweep_source = (
+        BRIDGE_BIN / "Invoke-StaleClaimSweep.ps1"
+    ).read_text(encoding="utf-8")
+    quarantine_source = (
+        "            [System.IO.File]::Move(\n"
+        "                [string]$plan.file.FullName,\n"
+        "                [string]$plan.source_quarantine_path\n"
+        "            )"
+    )
+    injected_quarantine = (
+        "            $injectedSourceQuarantineCount++\n"
+        "            if ($injectedSourceQuarantineCount -eq 2) {\n"
+        "                throw 'injected second source quarantine failure'\n"
+        "            }\n"
+        f"{quarantine_source}"
+    )
+    restore_source = (
+        "        $restoreResult = Invoke-AgentBridgeTrustedBytesCreateNew `\n"
+        "            -DestinationPath ([string]$plan.file.FullName) `\n"
+        "            -PublishBytes ([byte[]]$plan.rollback_source_bytes) `\n"
+        "            -ExpectedSha256 ([string]$plan.rollback_source_sha256) `\n"
+        "            -ExpectedLength ([long]$plan.rollback_source_length) `\n"
+        "            -Context 'rollback restored stale-claim source'"
+    )
+    injected_restore = (
+        f"        if ([string]$plan.task_id -ceq '{first_task}') {{\n"
+        "            $restoreResult = [pscustomobject]@{\n"
+        "                succeeded = $false\n"
+        "                error = [System.IO.IOException]::new(\n"
+        "                    'injected active source restore failure'\n"
+        "                )\n"
+        "            }\n"
+        "        } else {\n"
+        f"{restore_source.replace('        $restoreResult', '            $restoreResult', 1)}\n"
+        "        }"
+    )
+    assert sweep_source.count(quarantine_source) == 1
+    assert sweep_source.count(restore_source) == 1
+    sweep_source = sweep_source.replace(
+        "$committedPlans = @()",
+        "$committedPlans = @()\n$injectedSourceQuarantineCount = 0",
+        1,
+    ).replace(quarantine_source, injected_quarantine, 1).replace(
+        restore_source,
+        injected_restore,
+        1,
+    )
+    (isolated_bin / "Invoke-StaleClaimSweep.ps1").write_text(
+        sweep_source,
+        encoding="utf-8",
+    )
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+        script_root=isolated_bin,
+    )
+
+    combined = _normalized_powershell_output(swept)
+    assert swept.returncode != 0
+    assert "injected active source restore failure" in combined
+    assert "archive rollback retained" in combined
+    assert "source=missing" in combined
+    assert "archive=retained" in combined
+    assert "backup=retained" in combined
+    assert not claim_paths[0].exists()
+    assert claim_paths[1].read_bytes() == before[claim_paths[1]]
+
+    done_dir = runtime_root / "work_queue" / "done"
+    first_archives = list(
+        done_dir.glob(f"{first_task}*.stale_lease.json")
+    )
+    second_archives = list(
+        done_dir.glob(f"{second_task}*.stale_lease.json")
+    )
+    assert len(first_archives) == 1
+    assert not second_archives
+    recovery_backups = list(
+        claim_paths[0].parent.glob(f"{claim_paths[0].name}.stale-backup.*")
+    )
+    assert len(recovery_backups) == 1
+    assert recovery_backups[0].read_bytes() == before[claim_paths[0]]
+    second_backups = list(
+        claim_paths[1].parent.glob(
+            f"{claim_paths[1].name}.stale-backup.*"
+        )
+    )
+    assert len(second_backups) == 1
+    assert second_backups[0].read_bytes() == before[claim_paths[1]]
+
+
+def test_powershell_stale_cleanup_failure_keeps_audit_and_result(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "stale-cleanup-audit-visible"
+    payload = _owner_bound_claim_payload(task_id=task_id)
+    payload["claimed_at_utc"] = "2026-07-28T00:00:00Z"
+    payload["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
+    payload["lease_seconds"] = 1
+    payload["claim_lease_expires_utc"] = "2026-07-28T00:00:01Z"
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=payload,
+    )
+
+    isolated_bin = tmp_path / "isolated-stale-cleanup-bin"
+    isolated_bin.mkdir()
+    for script_name in (
+        "AgentBridgeSessionIdentity.ps1",
+        "Invoke-StaleClaimSweep.ps1",
+        "Write-AgentEvent.ps1",
+    ):
+        shutil.copy2(BRIDGE_BIN / script_name, isolated_bin / script_name)
+    sweep_path = isolated_bin / "Invoke-StaleClaimSweep.ps1"
+    sweep_source = sweep_path.read_text(encoding="utf-8")
+    cleanup_source = (
+        "                    # STALE V2 MARKER: exact-handle committed "
+        "backup cleanup."
+    )
+    injected_cleanup = (
+        f"{cleanup_source}\n"
+        "                    throw "
+        "'injected source backup cleanup failure'"
+    )
+    assert sweep_source.count(cleanup_source) == 1
+    sweep_path.write_text(
+        sweep_source.replace(cleanup_source, injected_cleanup, 1),
+        encoding="utf-8",
+    )
+
+    swept = _run_script(
+        runtime_root,
+        "Invoke-StaleClaimSweep.ps1",
+        "-StaleSeconds",
+        "1",
+        "-Quiet",
+        bound_agent="codex",
+        script_root=isolated_bin,
+    )
+
+    combined = _normalized_powershell_output(swept)
+    assert swept.returncode == 0, combined
+    assert "stale claim batch committed but ancillary cleanup failed" in (
+        combined
+    )
+    assert "required events and results will continue" in combined
+    assert "injected source backup cleanup failure" in combined
+    assert task_id in swept.stdout
+    assert not claim_path.exists()
+    archives = list(
+        (runtime_root / "work_queue" / "done").glob(
+            f"{task_id}*.stale_lease.json"
+        )
+    )
+    assert len(archives) == 1
+    backups = list(
+        claim_path.parent.glob(f"{claim_path.name}.stale-backup.*")
+    )
+    assert len(backups) == 1
+    event_lines = (
+        runtime_root / "shared" / "events.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(event_lines) == 1
+    event = json.loads(event_lines[0])
+    assert event["task_id"] == task_id
+    assert event["status"] == "stale_lease"
+    assert Path(event["payload"]["archived_path"]) == archives[0]
+
+
+def test_powershell_strict_acquisition_rejects_case_variant_task_id(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    payload = _owner_bound_claim_payload(task_id="case-variant-task-source")
+    payload["Task_Id"] = payload.pop("task_id")
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename="case-variant-task-source.json",
+        payload=payload,
+    )
+    before = claim_path.read_bytes()
+
+    claimed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "case-variant-task-request",
+        "-Summary",
+        "case-variant task_id must remain unknown",
+        bound_agent="codex",
+    )
+
+    assert claimed.returncode != 0
+    assert "task_id must be a non-empty string" in (
+        claimed.stdout + claimed.stderr
+    )
+    assert claim_path.read_bytes() == before
+    assert not (
+        claim_path.parent / "case-variant-task-request.json"
+    ).exists()
+
+
+def test_powershell_strict_acquisition_rejects_singleton_object_array(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claims_dir = runtime_root / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    payload = _owner_bound_claim_payload(task_id="singleton-array-source")
+    claim_path = claims_dir / "singleton-array-source.json"
+    claim_path.write_text(json.dumps([payload]), encoding="utf-8")
+    before = claim_path.read_bytes()
+
+    claimed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        "singleton-array-request",
+        "-Summary",
+        "top-level arrays are never active claim objects",
+        bound_agent="codex",
+    )
+
+    assert claimed.returncode != 0
+    assert "must be a JSON object" in (claimed.stdout + claimed.stderr)
+    assert claim_path.read_bytes() == before
+    assert not (claims_dir / "singleton-array-request.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("case_variant", "expected_error"),
+    [
+        ("MODE", "claim field 'mode' must be exact and canonical"),
+        (
+            "Write_Scope",
+            "claim field 'write_scope' must be an array of strings",
+        ),
+    ],
+)
+def test_powershell_case_variant_scope_fields_remain_fail_closed(
+    tmp_path: Path,
+    case_variant: str,
+    expected_error: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    source_task = f"case-variant-scope-{case_variant.lower()}"
+    payload = _owner_bound_claim_payload(
+        task_id=source_task,
+        agent="other-agent",
+    )
+    if case_variant == "MODE":
+        payload["MODE"] = payload.pop("mode")
+        payload["write_scope"] = ["*"]
+    else:
+        payload["mode"] = "write"
+        payload["Write_Scope"] = ["unrelated"]
+        payload.pop("write_scope")
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{source_task}.json",
+        payload=payload,
+    )
+    before = _work_queue_file_snapshot(runtime_root)
+    requested_task = f"{source_task}-request"
+
+    claimed = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        requested_task,
+        "-Summary",
+        "case variants cannot weaken wildcard conflict handling",
+        "-Mode",
+        "write",
+        "-WriteScope",
+        "tools",
+        bound_agent="codex",
+    )
+
+    assert claimed.returncode == 3
+    assert expected_error in (claimed.stdout + claimed.stderr)
+    assert _work_queue_file_snapshot(runtime_root) == before
+    assert not (claim_path.parent / f"{requested_task}.json").exists()
+
+
+@pytest.mark.parametrize("case_variant", ["agent", "owner"])
+@pytest.mark.parametrize("operation", ["release", "heartbeat", "force"])
+def test_powershell_case_variant_identity_cannot_authorize_claim_mutation(
+    tmp_path: Path,
+    case_variant: str,
+    operation: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = f"case-variant-{case_variant}-{operation}"
+    payload = _owner_bound_claim_payload(task_id=task_id, agent="codex")
+    if case_variant == "agent":
+        payload["AGENT"] = payload.pop("agent")
+    else:
+        for field in (
+            "owner_session_id",
+            "owner_token_sha256",
+            "owner_pid",
+            "owner_process_start_utc",
+        ):
+            payload[field.upper()] = payload.pop(field)
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=payload,
+    )
+    before = claim_path.read_bytes()
+
+    if operation == "release":
+        completed = _run_script(
+            runtime_root,
+            "Release-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            bound_agent="codex",
+        )
+        assert completed.returncode != 0
+    elif operation == "force":
+        completed = _run_script(
+            runtime_root,
+            "Claim-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            "-Summary",
+            "case-variant identity cannot force-update",
+            "-Force",
+            bound_agent="codex",
+        )
+        assert completed.returncode != 0
+    else:
+        completed = _run_script(
+            runtime_root,
+            "Send-Liveness.ps1",
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            f"{task_id}-event",
+            bound_agent="codex",
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    assert claim_path.read_bytes() == before
+    done_dir = runtime_root / "work_queue" / "done"
+    assert not list(done_dir.glob("*.json"))
+
+
+def test_powershell_canonical_projection_ignores_case_variant_fields(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "case-variant-canonical-projection"
+    payload = _owner_bound_claim_payload(task_id=task_id, agent="codex")
+    for field in (
+        "summary",
+        "run_id",
+        "session_id",
+    ):
+        payload.pop(field, None)
+    payload.update(
+        {
+            "SUMMARY": "case-summary-secret",
+            "RUN_ID": "case-run-secret",
+            "SESSION_ID": "case-session-secret",
+            "ROLE": "case-role-secret",
+            "CAPABILITIES": [
+                "case-capability-secret",
+                ["case-nested-secret"],
+            ],
+            "WRITER_PID": "4321",
+            "OWNER_TOKEN": "case-owner-token-secret",
+        }
+    )
+    _write_claim_payload(
+        runtime_root,
+        filename=f"{task_id}.json",
+        payload=payload,
+    )
+
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+
+    assert released.returncode == 0, released.stderr
+    archives = list(
+        (runtime_root / "work_queue" / "done").glob("*.json")
+    )
+    assert len(archives) == 1
+    archived = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert archived["summary"] == ""
+    assert archived["mode"] == "read-only"
+    assert archived["write_scope"] == []
+    assert archived["run_id"] == ""
+    assert archived["claimed_at_utc"] == payload["claimed_at_utc"]
+    assert archived["last_heartbeat_utc"] == payload["last_heartbeat_utc"]
+    assert archived["lease_seconds"] == 900
+    assert (
+        archived["claim_lease_expires_utc"]
+        == payload["claim_lease_expires_utc"]
+    )
+    assert archived["session_id"] == ""
+    for field in (
+        "role",
+        "capabilities",
+        "writer_pid",
+        "owner_token",
+    ):
+        assert field not in archived
+    serialized = json.dumps(archived, sort_keys=True)
+    for secret in (
+        "case-summary-secret",
+        "case-run-secret",
+        "case-session-secret",
+        "case-role-secret",
+        "case-capability-secret",
+        "case-nested-secret",
+        "case-owner-token-secret",
+    ):
+        assert secret not in serialized

@@ -41,7 +41,8 @@ def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
     events_path = path / "shared" / "events.jsonl"
     events_path.parent.mkdir(parents=True)
     events_path.write_text(
-        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
+        "\n".join(json.dumps(event, sort_keys=True) for event in events)
+        + ("\n" if events else ""),
         encoding="utf-8",
     )
     return events_path

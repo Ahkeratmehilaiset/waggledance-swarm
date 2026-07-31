@@ -166,6 +166,7 @@ def _heartbeat(agent: str, ts: str) -> dict:
     return {
         "ts_utc": ts,
         "agent": agent,
+        "to": "",
         "type": "heartbeat",
         "task_id": f"{agent}-heartbeat",
         "status": "active",
@@ -177,6 +178,7 @@ def _finding(agent: str, ts: str) -> dict:
     return {
         "ts_utc": ts,
         "agent": agent,
+        "to": "",
         "type": "finding",
         "task_id": f"{agent}-finding",
         "status": "reported",

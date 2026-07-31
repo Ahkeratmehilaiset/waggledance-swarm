@@ -74,8 +74,21 @@ def _assert_deferred_lift_state(state: dict) -> None:
 def _events_file(bridge_root: Path, events: list[dict]) -> Path:
     events_path = bridge_root / "shared" / "events.jsonl"
     events_path.parent.mkdir(parents=True, exist_ok=True)
+    canonical_events = [
+        {
+            "to": "",
+            "task_id": "",
+            "status": "",
+            "message": "",
+            **event,
+        }
+        for event in events
+    ]
     events_path.write_text(
-        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
+        "\n".join(
+            json.dumps(event, sort_keys=True) for event in canonical_events
+        )
+        + "\n",
         encoding="utf-8",
     )
     return events_path
@@ -1463,7 +1476,10 @@ def test_legacy_completed_same_day_smoke_claim_advances_to_next_candidate(
         bridge_root=bridge,
         now_utc=NOW,
     )
-    assert sorted(p.name for p in claims_dir.iterdir()) == []
+    # Successful claim mutations retain randomized recovery snapshots instead
+    # of deleting a mutable cleanup path. Only canonical claim JSON files count
+    # as active work.
+    assert sorted(p.name for p in claims_dir.glob("*.json")) == []
 
     report = evaluate_agent_next_task(
         agent="codex",

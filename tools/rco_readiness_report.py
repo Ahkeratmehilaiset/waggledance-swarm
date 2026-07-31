@@ -121,10 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         agent = _normalize_rco_agent(args.agent)
         events = read_events(events_path, tail=args.tail)
-        try:
-            claims = list_claims(bridge_root)
-        except WorkQueueError:
-            claims = []
+        claims = list_claims(bridge_root)
         report = build_rco_readiness_report(
             agent=agent,
             events=events,
@@ -143,6 +140,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RcoReadinessError as exc:
         report = exc.report
         exit_code = exc.exit_code
+    except WorkQueueError as exc:
+        report = {
+            "ok": False,
+            "decision": "rco_readiness_report_error",
+            "errors": [str(exc)],
+        }
+        exit_code = 2
     except OSError as exc:
         report = {
             "ok": False,
@@ -304,13 +308,14 @@ def _close_direct_requests(
     *,
     target_agent: str,
 ) -> None:
-    event_ts = _event_ts(event)
+    event_ts = _parse_utc(_event_ts(event))
     event_agent = _event_agent(event)
     event_task = _task_id(event)
     event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
     for key, state in list(open_by_key.items()):
         task_id, pr = key
-        if event_ts <= str(state["ts_utc"]):
+        request_ts = _parse_utc(str(state["ts_utc"]))
+        if event_ts is None or request_ts is None or event_ts <= request_ts:
             continue
         same_task = bool(task_id and event_task == task_id)
         same_pr = bool(pr and event_pr == pr)

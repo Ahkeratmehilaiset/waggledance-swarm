@@ -144,6 +144,33 @@ def test_real_rco_pass_closes_direct_request(tmp_path: Path) -> None:
     assert report["highest_priority_request"] == {}
 
 
+def test_later_fractional_rco_pass_with_mixed_utc_format_closes_request(
+    tmp_path: Path,
+) -> None:
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            _request(ts="2026-06-14T12:00:00Z"),
+            {
+                "ts_utc": "2026-06-14T12:00:00.100000+00:00",
+                "agent": "claude-rco-2",
+                "to": "codex-tools-1",
+                "type": "decision",
+                "task_id": "pr1208-rco-pass",
+                "status": "rco_pass",
+                "message": "RCO_PASS PR #1208 at exact head.",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_ready_no_direct_pass_block_request"
+    assert report["direct_pass_block_request_count"] == 0
+
+
 def test_pass_words_in_done_or_decision_do_not_create_direct_requests(
     tmp_path: Path,
 ) -> None:
@@ -271,3 +298,33 @@ def test_cli_returns_error_for_non_rco_agent(tmp_path: Path, capsys) -> None:
     assert rc == 2
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "rco_readiness_report_error"
+
+
+def test_cli_fails_closed_when_an_active_claim_file_is_unreadable(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _events_file(tmp_path, [_request()])
+    claims_dir = tmp_path / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    (claims_dir / "foreign-held-task.json").write_text(
+        "{not-json\n",
+        encoding="utf-8",
+    )
+
+    rc = main(
+        [
+            "--agent",
+            "claude-rco-2",
+            "--bridge-root",
+            str(tmp_path),
+            "--now",
+            "2026-06-14T12:10:00Z",
+            "--json",
+        ]
+    )
+
+    assert rc == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "rco_readiness_report_error"
+    assert "foreign-held-task.json" in " ".join(report["errors"])

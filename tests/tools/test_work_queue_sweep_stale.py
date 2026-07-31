@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import tools.work_queue_sweep_stale as sweep_cli  # noqa: E402
+import waggledance.core.work_queue as work_queue_module  # noqa: E402
 from waggledance.core.work_queue import claim_task  # noqa: E402
 
 
@@ -174,6 +176,78 @@ def test_cli_apply_archives_and_emits_json(
     assert not (bridge / "work_queue" / "claims" / "task-cli-apply.json").exists()
     archived_path = Path(payload["archived"][0]["archived_path"])
     assert archived_path.exists()
+
+
+def test_cli_apply_cleanup_warning_errors_still_emit_committed_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "task-cli-committed-cleanup-warning"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="committed cleanup warning must stay observable",
+        bridge_root=bridge,
+        now_utc=_now() - timedelta(hours=1),
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    original_verify = work_queue_module._verify_stale_source_identity
+
+    def fail_source_backup_validation(
+        path: Path,
+        plan,
+        *,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if label == "source backup cleanup":
+            return False, "injected CLI backup cleanup validation failure"
+        return original_verify(path, plan, label=label)
+
+    def show_warning_on_stderr(
+        message,
+        category,
+        filename,
+        lineno,
+        file=None,
+        line=None,
+    ) -> None:
+        del filename, lineno, file, line
+        sys.stderr.write(f"{category.__name__}: {message}\n")
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_stale_source_identity",
+        fail_source_backup_validation,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        monkeypatch.setattr(warnings, "showwarning", show_warning_on_stderr)
+        exit_code = sweep_cli.main(
+            [
+                "--bridge-root",
+                str(bridge),
+                "--max-age-seconds",
+                "60",
+                "--apply",
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    report = json.loads(captured.out)
+    assert [record["task_id"] for record in report["archived"]] == [task_id]
+    assert report["archived"][0]["applied"] is True
+    archived_path = Path(report["archived"][0]["archived_path"])
+    assert not claim_path.exists()
+    assert archived_path.is_file()
+    assert len(list(claims_dir.glob(".*.stale-backup.*"))) == 1
+    assert "RuntimeWarning: stale claim batch committed" in captured.err
+    assert "injected CLI backup cleanup validation failure" in captured.err
+    assert "archive=retained" in captured.err
 
 
 def test_cli_rejects_negative_max_age_seconds(

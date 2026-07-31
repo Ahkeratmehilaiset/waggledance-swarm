@@ -71,10 +71,49 @@ $seenWriteScope = New-Object 'System.Collections.Generic.HashSet[string]' (
 foreach ($scopeValue in @($WriteScope)) {
     foreach ($scopePart in ([string]$scopeValue -split ',')) {
         $scope = $scopePart.Trim()
-        $overlapScope = (($scope -replace '\\','/').Trim('/'))
+        if (-not $scope) {
+            throw 'write_scope entries must be non-empty paths'
+        }
+        if ($scope -and $scope -cnotmatch '^[\x20-\x7E]*\z') {
+            throw 'write_scope paths must contain printable ASCII characters only'
+        }
+        $overlapScope = ($scope -replace '\\','/')
+        if ($overlapScope.StartsWith('/')) {
+            throw 'write_scope paths must be repository-relative'
+        }
+        if ($overlapScope.Contains(':')) {
+            throw "write_scope paths must not contain ':'"
+        }
+        $scopeSegments = @(
+            $overlapScope.Split(
+                [char[]]@('/'),
+                [System.StringSplitOptions]::None
+            )
+        )
+        $invalidScopeSegments = @(
+            $scopeSegments |
+                Where-Object {
+                    $_ -ceq '' -or $_ -ceq '.' -or $_ -ceq '..'
+                }
+        )
+        if ($overlapScope -and $invalidScopeSegments.Count -gt 0) {
+            throw (
+                "write_scope paths must not contain empty, '.' or '..' " +
+                "segments"
+            )
+        }
+        $aliasedScopeSegments = @(
+            $scopeSegments |
+                Where-Object {
+                    $_.EndsWith('.') -or $_.EndsWith(' ')
+                }
+        )
+        if ($aliasedScopeSegments.Count -gt 0) {
+            throw (
+                "write_scope path segments must not end in '.' or space"
+            )
+        }
         if (
-            -not $scope -or
-            -not $overlapScope -or
             -not $seenWriteScope.Add($scope)
         ) {
             continue
@@ -140,27 +179,73 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
 } else {
     Split-Path -Parent $PSScriptRoot
 }
-if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
-    [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
-}
-$claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
-if (-not (Test-Path -LiteralPath $claimsDir)) {
-    [void](New-Item -ItemType Directory -Path $claimsDir -Force)
-}
+
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $bridgeRoot `
+    -Context 'bridge root'
+$workQueueDir = Join-Path $bridgeRoot 'work_queue'
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $workQueueDir `
+    -Context 'work queue directory'
+$claimsDir = Join-Path $workQueueDir 'claims'
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $claimsDir `
+    -Context 'active claims directory'
 
 function Normalize-Scope {
     param([string] $Scope)
-    return (($Scope -replace '\\','/').Trim('/')).ToLowerInvariant()
+    if ($Scope -cnotmatch '^[\x20-\x7E]*\z') {
+        throw 'write_scope paths must contain printable ASCII characters only'
+    }
+    if ([string]::IsNullOrWhiteSpace($Scope)) {
+        throw 'write_scope entries must be non-empty paths'
+    }
+    $normalized = ($Scope -replace '\\','/').ToLowerInvariant()
+    if ($normalized.StartsWith('/')) {
+        throw 'write_scope paths must be repository-relative'
+    }
+    if ($normalized.Contains(':')) {
+        throw "write_scope paths must not contain ':'"
+    }
+    $scopeSegments = @(
+        $normalized.Split(
+            [char[]]@('/'),
+            [System.StringSplitOptions]::None
+        )
+    )
+    $invalidSegments = @(
+        $scopeSegments |
+            Where-Object {
+                $_ -ceq '' -or $_ -ceq '.' -or $_ -ceq '..'
+            }
+    )
+    if ($normalized -and $invalidSegments.Count -gt 0) {
+        throw (
+            "write_scope paths must not contain empty, '.' or '..' segments"
+        )
+    }
+    $aliasedSegments = @(
+        $scopeSegments |
+            Where-Object {
+                $_.EndsWith('.') -or $_.EndsWith(' ')
+            }
+    )
+    if ($aliasedSegments.Count -gt 0) {
+        throw "write_scope path segments must not end in '.' or space"
+    }
+    return $normalized
 }
 
 function Expand-ScopeList {
     param([object[]] $Scope)
 
     foreach ($scopeValue in @($Scope)) {
-        if ($scopeValue -isnot [string]) { continue }
+        if ($scopeValue -isnot [string]) {
+            throw 'write_scope entries must be strings'
+        }
         foreach ($scopePart in ([string]$scopeValue -split ',')) {
             $normalized = Normalize-Scope $scopePart.Trim()
-            if ($normalized) { $normalized }
+            $normalized
         }
     }
 }
@@ -190,6 +275,96 @@ function Stop-BridgeClaim {
     exit $Code
 }
 
+function Get-StrictActiveClaimSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ClaimsDirectory
+    )
+
+    try {
+        # Do not use -File here. A directory, broken link, or other non-file
+        # entry ending in .json must block acquisition instead of disappearing
+        # from the active-claim view.
+        $claimEntries = @(
+            Get-ChildItem -LiteralPath $ClaimsDirectory -Filter '*.json' `
+                -Force -ErrorAction Stop |
+                Sort-Object FullName
+        )
+    } catch {
+        throw (
+            "cannot enumerate active claim records under {0}: {1}" -f
+            $ClaimsDirectory,
+            $_.Exception.Message
+        )
+    }
+
+    $snapshot = @()
+    foreach ($entry in $claimEntries) {
+        $claimPath = [string]$entry.FullName
+        if (-not (Test-Path -LiteralPath $claimPath -PathType Leaf)) {
+            throw "active claim record must be a file: $claimPath"
+        }
+
+        try {
+            $claimSnapshot = Read-AgentBridgeStrictUtf8JsonSnapshot `
+                -LiteralPath $claimPath
+            $claimJson = [string]$claimSnapshot.text
+        } catch {
+            throw (
+                "unreadable active claim record {0}: {1}" -f
+                $claimPath,
+                $_.Exception.Message
+            )
+        }
+
+        try {
+            $claimRecord = ConvertFrom-AgentBridgeJson -Json $claimJson
+        } catch {
+            throw (
+                "malformed active claim JSON {0}: {1}" -f
+                $claimPath,
+                $_.Exception.Message
+            )
+        }
+        if (
+            $null -eq $claimRecord -or
+            $claimRecord -isnot
+                [System.Management.Automation.PSCustomObject]
+        ) {
+            throw "active claim record must be a JSON object: $claimPath"
+        }
+        Assert-AgentBridgeActiveClaimRawAuthorityFields `
+            -Record $claimRecord `
+            -ClaimPath $claimPath
+        $taskIdProperty = Get-AgentBridgeExactProperty `
+            -InputObject $claimRecord `
+            -Name 'task_id'
+        if (
+            $null -eq $taskIdProperty -or
+            $taskIdProperty.Value -isnot [string] -or
+            [string]::IsNullOrEmpty([string]$taskIdProperty.Value)
+        ) {
+            throw (
+                "active claim task_id must be a non-empty string: {0}" -f
+                $claimPath
+            )
+        }
+
+        # Do not validate/sanitize the stored task_id against the public input
+        # grammar here. Invalid-but-readable identities remain exact strings
+        # and stay in place for explicit operator recovery.
+        $snapshot += [pscustomobject]@{
+            file = $entry
+            claim = $claimRecord
+            task_id = [string]$taskIdProperty.Value
+            snapshot_bytes = [byte[]]$claimSnapshot.bytes
+            snapshot_sha256 = [string]$claimSnapshot.sha256
+            snapshot_length = [long]$claimSnapshot.length
+        }
+    }
+    return $snapshot
+}
+
 function Get-CurrentGitBranch {
     try {
         $branch = (& git branch --show-current 2>$null)
@@ -202,6 +377,15 @@ function Get-CurrentGitBranch {
 # path that most needs stale-lease continuity. Status/read helpers
 # sweep opportunistically too, but a claim-first agent must not be
 # blocked forever by an expired conflicting write claim.
+#
+# Validate before the opportunistic sweep so an unreadable active record
+# cannot permit archive/event mutations before acquisition ultimately fails.
+try {
+    [void]@(Get-StrictActiveClaimSnapshot -ClaimsDirectory $claimsDir)
+} catch {
+    Stop-BridgeClaim -Message ([string]$_.Exception.Message) -Code 3
+}
+
 $sweepScript = Join-Path $PSScriptRoot 'Invoke-StaleClaimSweep.ps1'
 if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     try {
@@ -213,36 +397,50 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
 
 $mutationLock = Enter-AgentBridgeMutationLock -BridgeRoot $bridgeRoot
 try {
-$activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-$parsedClaims = @()
-foreach ($file in $activeClaims) {
     try {
-        $existing = ConvertFrom-AgentBridgeJson -Json (
-            Get-Content -Raw -Path $file.FullName -Encoding UTF8
+        # The pre-sweep snapshot protects zero-write failure semantics. Repeat
+        # under the shared mutation lock and use only this locked snapshot for
+        # exact-task and write-scope decisions.
+        $parsedClaims = @(
+            Get-StrictActiveClaimSnapshot -ClaimsDirectory $claimsDir
         )
     } catch {
-        continue
+        Stop-BridgeClaim -Message ([string]$_.Exception.Message) -Code 3
     }
-    $parsedClaims += [pscustomobject]@{
-        file = $file
-        claim = $existing
-    }
-}
 
-try {
-    $preferredClaimPath = Assert-AgentBridgePreferredClaimPath `
-        -ClaimsDir $claimsDir `
-        -TaskId $TaskId
-} catch {
-    Stop-BridgeClaim -Message ([string]$_.Exception.Message) -Code 3
-}
+    try {
+        $preferredClaimBaseName = Get-AgentBridgeClaimBaseName -TaskId $TaskId
+        $preferredClaimPath = [System.IO.Path]::GetFullPath(
+            (Join-Path $claimsDir ($preferredClaimBaseName + '.json'))
+        )
+    } catch {
+        Stop-BridgeClaim -Message ([string]$_.Exception.Message) -Code 3
+    }
+    $preferredEntries = @(
+        $parsedClaims |
+            Where-Object {
+                [string]$_.file.FullName -ieq $preferredClaimPath
+            }
+    )
+    if (
+        $preferredEntries.Count -eq 1 -and
+        [string]$preferredEntries[0].task_id -cne $TaskId
+    ) {
+        Stop-BridgeClaim `
+            -Message (
+                "claim filename collision at preferred path for task_id " +
+                "'{0}': stored task_id '{1}' in {2}" -f
+                $TaskId,
+                [string]$preferredEntries[0].task_id,
+                $preferredClaimPath
+            ) `
+            -Code 3
+    }
 
 $taskMatches = @(
     $parsedClaims |
         Where-Object {
-            $_.claim.PSObject.Properties['task_id'] -and
-            $_.claim.task_id -is [string] -and
-            [string]$_.claim.task_id -ceq $TaskId
+            [string]$_.task_id -ceq $TaskId
         }
 )
 if ($taskMatches.Count -gt 1) {
@@ -257,30 +455,31 @@ if ($taskMatches.Count -eq 1) {
     $matchedEntry = $taskMatches[0]
     $existing = $matchedEntry.claim
     $claimPath = $matchedEntry.file.FullName
+    $existingAgentProperty = Get-AgentBridgeExactProperty `
+        -InputObject $existing `
+        -Name 'agent'
     if (
-        -not $existing.PSObject.Properties['agent'] -or
-        $existing.agent -isnot [string]
+        $null -eq $existingAgentProperty -or
+        $existingAgentProperty.Value -isnot [string]
     ) {
         Stop-BridgeClaim `
             -Message ("claim has missing or non-string agent: {0}" -f $claimPath) `
             -Code 3
     }
-    $existingAgent = [string]$existing.agent
+    $existingAgent = [string]$existingAgentProperty.Value
     if (-not $Force) {
         Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existingAgent, $claimPath) -Code 2
     }
-    if ($existingAgent -cne $Agent -and $Agent -notin @('operator','system')) {
+    if ($existingAgent -cne $Agent) {
         Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existingAgent, $claimPath) -Code 3
     }
-    if ($existingAgent -ceq $Agent) {
-        try {
-            Assert-AgentBridgeClaimOwner `
-                -Claim $existing `
-                -OwnerContext $ownerContext `
-                -Operation 'force-update'
-        } catch {
-            Stop-BridgeClaim -Message $_.Exception.Message -Code 3
-        }
+    try {
+        Assert-AgentBridgeClaimOwner `
+            -Claim $existing `
+            -OwnerContext $ownerContext `
+            -Operation 'force-update'
+    } catch {
+        Stop-BridgeClaim -Message $_.Exception.Message -Code 3
     }
     $forceUpdateExisting = $true
 } else {
@@ -294,11 +493,14 @@ foreach ($entry in $parsedClaims) {
     }
     $existing = $entry.claim
     if ($Mode -eq 'write') {
+        $existingModeProperty = Get-AgentBridgeExactProperty `
+            -InputObject $existing `
+            -Name 'mode'
         $existingMode = if (
-            $existing.PSObject.Properties['mode'] -and
-            $existing.mode -is [string]
+            $null -ne $existingModeProperty -and
+            $existingModeProperty.Value -is [string]
         ) {
-            [string]$existing.mode
+            [string]$existingModeProperty.Value
         } else {
             ''
         }
@@ -306,24 +508,47 @@ foreach ($entry in $parsedClaims) {
             continue
         }
         if ($existingMode -cne 'write') {
+            $existingAgentProperty = Get-AgentBridgeExactProperty `
+                -InputObject $existing `
+                -Name 'agent'
+            $existingAgentDisplay = if (
+                $null -ne $existingAgentProperty -and
+                $existingAgentProperty.Value -is [string]
+            ) {
+                [string]$existingAgentProperty.Value
+            } else {
+                '<missing-or-nonstring>'
+            }
             Stop-BridgeClaim `
                 -Message (
                     "write-scope conflict with active claim {0} by {1}: " +
                     "stored mode is missing, non-string, or invalid" -f
-                    $existing.task_id,
-                    $existing.agent
+                    $entry.task_id,
+                    $existingAgentDisplay
                 ) `
                 -Code 3
         }
-        $existingScope = if (
-            $existing.PSObject.Properties['write_scope']
-        ) {
-            @($existing.write_scope)
+        $existingScopeProperty = Get-AgentBridgeExactProperty `
+            -InputObject $existing `
+            -Name 'write_scope'
+        $existingScope = if ($null -ne $existingScopeProperty) {
+            @($existingScopeProperty.Value)
         } else {
             @()
         }
         if (Test-ScopeOverlap -A $WriteScope -B $existingScope) {
-            Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $existing.task_id, $existing.agent, (($existingScope) -join ', ')) -Code 3
+            $existingAgentProperty = Get-AgentBridgeExactProperty `
+                -InputObject $existing `
+                -Name 'agent'
+            $existingAgentDisplay = if (
+                $null -ne $existingAgentProperty -and
+                $existingAgentProperty.Value -is [string]
+            ) {
+                [string]$existingAgentProperty.Value
+            } else {
+                '<missing-or-nonstring>'
+            }
+            Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $entry.task_id, $existingAgentDisplay, (($existingScope) -join ', ')) -Code 3
         }
     }
 }
@@ -345,6 +570,11 @@ $claim = [ordered]@{
     mode                = $Mode
     write_scope         = @($WriteScope)
     run_id              = $RunId
+    session_id          = if ($sessionId) {
+        $sessionId
+    } else {
+        [string]$ownerContext.session_id
+    }
     lease_seconds       = $LeaseSeconds
     claim_lease_expires_utc = $leaseExpiresUtc
     owner_session_id    = $ownerContext.session_id
@@ -364,37 +594,38 @@ if (@($Capabilities).Count -gt 0) { $claim['capabilities'] = @($Capabilities) }
 $json = ($claim | ConvertTo-Json -Depth 8)
 
 $encoding = New-Object System.Text.UTF8Encoding($false)
+$jsonBytes = $encoding.GetBytes($json)
+$expectedPublishSha256 = Get-AgentBridgeSha256Hex -Bytes $jsonBytes
+$expectedPublishLength = [long]$jsonBytes.Length
 if ($forceUpdateExisting) {
     # Update the exact claim record discovered by task_id. In particular, this
     # preserves Python's collision-resistant filename for task IDs containing
     # slashes instead of creating a second sanitized-only claim.
-    $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-    try {
-        [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
-        if (-not (Test-Path -LiteralPath $claimPath -PathType Leaf)) {
-            throw "claim disappeared before force-update: $claimPath"
-        }
-        Update-AgentBridgeFileFromTemp `
-            -TempPath $tmpClaim `
-            -DestinationPath $claimPath
-    } catch {
-        try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
-        throw
-    }
+    Update-AgentBridgeFileFromBytes `
+        -PublishBytes $jsonBytes `
+        -DestinationPath $claimPath `
+        -ExpectedSourceBytes ([byte[]]$matchedEntry.snapshot_bytes) `
+        -ExpectedSourceSha256 ([string]$matchedEntry.snapshot_sha256) `
+        -ExpectedSourceLength ([long]$matchedEntry.snapshot_length) `
+        -ExpectedPublishSha256 $expectedPublishSha256 `
+        -ExpectedPublishLength $expectedPublishLength
 } else {
-    $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
     try {
-        [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
-        # Publish only a fully closed sibling. File.Move is atomic within the
-        # claims directory and refuses an existing destination.
-        [System.IO.File]::Move($tmpClaim, $claimPath)
+        Publish-AgentBridgeNewFileFromBytes `
+            -PublishBytes $jsonBytes `
+            -DestinationPath $claimPath `
+            -ExpectedSha256 $expectedPublishSha256 `
+            -ExpectedLength $expectedPublishLength
     } catch {
-        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
-    } finally {
-        if (Test-Path -LiteralPath $tmpClaim -PathType Leaf) {
-            Remove-Item -LiteralPath $tmpClaim -Force `
-                -ErrorAction SilentlyContinue
+        $createError = [string]$_.Exception.Message
+        if ($createError -clike 'claim_destination_collision:*') {
+            Stop-BridgeClaim `
+                -Message ("could not create claim, already exists: {0}" -f $claimPath) `
+                -Code 2
         }
+        Stop-BridgeClaim `
+            -Message ("claim integrity publication failed: {0}" -f $createError) `
+            -Code 3
     }
 }
 } finally {

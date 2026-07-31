@@ -1412,3 +1412,96 @@ def test_claim_records_role_uuid_capabilities_and_lease(tmp_path: Path) -> None:
     assert event["agent_uuid"] == agent_uuid
     assert event["capabilities"] == ["bridge_event", "work_queue"]
     validate_event_line(line)
+
+
+def _all_powershells() -> list[str]:
+    executables: list[str] = []
+    seen: set[str] = set()
+    for name in ("pwsh", "powershell.exe", "powershell"):
+        executable = shutil.which(name)
+        if executable is None:
+            continue
+        key = os.path.normcase(str(Path(executable).resolve())).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        executables.append(executable)
+    return executables
+
+
+ALL_POWERSHELLS = _all_powershells() or [
+    pytest.param("", marks=pytest.mark.skip(reason="PowerShell is required"))
+]
+
+
+@pytest.mark.parametrize("powershell", ALL_POWERSHELLS)
+def test_outbox_failure_after_canonical_append_is_warning_only(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    isolated_bin = tmp_path / "isolated-bin"
+    isolated_bin.mkdir()
+    for name in ("AgentBridgeSessionIdentity.ps1", "Write-AgentEvent.ps1"):
+        shutil.copy2(root / ".agent-bridge" / "bin" / name, isolated_bin / name)
+
+    writer_path = isolated_bin / "Write-AgentEvent.ps1"
+    source = writer_path.read_text(encoding="utf-8")
+    outbox_append = "Add-LineWithRetry -Path $outboxPath -Line $line"
+    assert source.count(outbox_append) == 1
+    writer_path.write_text(
+        source.replace(
+            outbox_append,
+            "throw 'injected per-agent outbox append failure'",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    runtime_root = tmp_path / "runtime"
+    env = os.environ.copy()
+    env.update(
+        {
+            "AGENT_BRIDGE_RUNTIME_ROOT": str(runtime_root),
+            "AGENT_BRIDGE_AGENT": "codex",
+            "AGENT_BRIDGE_OWNER_SESSION_ID": "outbox-warning-session",
+            "AGENT_BRIDGE_OWNER_TOKEN": "f" * 64,
+            "AGENT_BRIDGE_OWNER_PID": str(os.getpid()),
+            "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": "2026-07-31T00:00:00Z",
+        }
+    )
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(writer_path),
+            "-Agent",
+            "codex",
+            "-Type",
+            "message",
+            "-Status",
+            "progress",
+            "-Message",
+            "canonical append survives degraded outbox mirror",
+        ],
+        cwd=root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    combined = f"{completed.stdout}\n{completed.stderr}"
+    assert completed.returncode == 0, combined
+    assert "canonical event committed" in combined
+    assert "injected per-agent outbox append failure" in combined
+    events_path = runtime_root / "shared" / "events.jsonl"
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["message"] == "canonical append survives degraded outbox mirror"
+    validate_event_line(lines[0])
+    assert not list((runtime_root / "outbox").rglob("*.jsonl"))

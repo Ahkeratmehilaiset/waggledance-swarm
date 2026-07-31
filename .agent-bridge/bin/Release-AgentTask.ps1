@@ -124,18 +124,40 @@ $taskMatches = @()
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue)) {
     try {
-        $candidate = ConvertFrom-AgentBridgeJson -Json (
-            Get-Content -Raw -Path $file.FullName -Encoding UTF8
-        )
+        $candidateSnapshot = Read-AgentBridgeStrictUtf8JsonSnapshot `
+            -LiteralPath $file.FullName
+        $candidate = ConvertFrom-AgentBridgeJson `
+            -Json ([string]$candidateSnapshot.text)
     } catch {
+        Stop-BridgeRelease `
+            -Message (
+                "malformed active claim JSON {0}: {1}" -f
+                $file.FullName,
+                $_.Exception.Message
+            ) `
+            -Code 3
+    }
+    if (
+        $null -eq $candidate -or
+        $candidate -isnot
+            [System.Management.Automation.PSCustomObject]
+    ) {
         continue
     }
-    if ($candidate.PSObject.Properties['task_id'] -and
-        $candidate.task_id -is [string] -and
-        [string]$candidate.task_id -ceq $TaskId) {
+    $candidateTaskProperty = Get-AgentBridgeExactProperty `
+        -InputObject $candidate `
+        -Name 'task_id'
+    if (
+        $null -ne $candidateTaskProperty -and
+        $candidateTaskProperty.Value -is [string] -and
+        [string]$candidateTaskProperty.Value -ceq $TaskId
+    ) {
         $taskMatches += [pscustomobject]@{
             file = $file
             claim = $candidate
+            snapshot_bytes = [byte[]]$candidateSnapshot.bytes
+            snapshot_sha256 = [string]$candidateSnapshot.sha256
+            snapshot_length = [long]$candidateSnapshot.length
         }
     }
 }
@@ -153,15 +175,25 @@ $matchedEntry = $taskMatches[0]
 $claimFile = $matchedEntry.file
 $claimPath = $claimFile.FullName
 $claim = $matchedEntry.claim
+try {
+    Assert-AgentBridgeActiveClaimRawAuthorityFields `
+        -Record $claim `
+        -ClaimPath $claimPath
+} catch {
+    Stop-BridgeRelease -Message ([string]$_.Exception.Message) -Code 3
+}
+$claimAgentProperty = Get-AgentBridgeExactProperty `
+    -InputObject $claim `
+    -Name 'agent'
 if (
-    -not $claim.PSObject.Properties['agent'] -or
-    $claim.agent -isnot [string]
+    $null -eq $claimAgentProperty -or
+    $claimAgentProperty.Value -isnot [string]
 ) {
     Stop-BridgeRelease `
         -Message ("claim has missing or non-string agent: {0}" -f $claimPath) `
         -Code 3
 }
-$claimAgent = [string]$claim.agent
+$claimAgent = [string]$claimAgentProperty.Value
 if ($claimAgent -cne $Agent) {
     Stop-BridgeRelease -Message ("claim belongs to {0}, not {1}" -f $claimAgent, $Agent) -Code 3
 }
@@ -174,13 +206,14 @@ try {
     Stop-BridgeRelease -Message ([string]$_.Exception.Message) -Code 3
 }
 
-if (-not (Test-Path -LiteralPath $doneDir)) {
-    [void](New-Item -ItemType Directory -Path $doneDir -Force)
-}
+$canonicalClaim = ConvertTo-AgentBridgeCanonicalClaim -Claim $claim
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $doneDir `
+    -Context 'claim archive directory'
 
-$claim | Add-Member -NotePropertyName released_at_utc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-$claim | Add-Member -NotePropertyName release_status -NotePropertyValue $Status -Force
-$claim | Add-Member -NotePropertyName release_message -NotePropertyValue $Message -Force
+$canonicalClaim | Add-Member -NotePropertyName released_at_utc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+$canonicalClaim | Add-Member -NotePropertyName release_status -NotePropertyValue $Status -Force
+$canonicalClaim | Add-Member -NotePropertyName release_message -NotePropertyValue $Message -Force
 
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $donePath = Join-Path $doneDir ($claimFile.BaseName + '.' + $stamp + '.' + $Status + '.json')
@@ -190,69 +223,24 @@ if (Test-Path -LiteralPath $donePath) {
         -Code 3
 }
 
-# Internal review fix R9 (2026-05-09): the previous "Set-Content done +
-# Remove-Item claim" had a race window where a concurrent reader could
-# observe both files simultaneously, or where a Remove-Item failure
-# would leave the claim "active" even though the agent had archived
-# it as done. Two-step atomic recipe:
-#   1. Update the claim content in place via temp+Replace (so the claim
-#      file already carries the released_at_utc fields).
-#   2. Atomically Move() the claim into the done dir: single FS op, no
-#      window where both files exist or neither exists.
+# Bind release to the exact raw bytes that passed identity and owner checks.
+# The shared snapshot transaction quarantines and verifies those bytes before
+# publishing the final release record directly into done/. A fresh active
+# generation that appears after quarantine is retained and is never overwritten.
 $encoding = New-Object System.Text.UTF8Encoding($false)
-$claimJson = ($claim | ConvertTo-Json -Depth 8)
-$tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-$backupClaim = $null
-try {
-    [System.IO.File]::WriteAllText($tmpClaim, $claimJson, $encoding)
-    $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
-    [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
-} catch {
-    try {
-        if ($backupClaim -and (Test-Path -LiteralPath $backupClaim)) {
-            Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue
-        }
-    } catch {}
-    try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
-    throw
-}
-$preserveBackup = $false
-try {
-    [System.IO.File]::Move($claimPath, $donePath)
-} catch {
-    $moveError = $_.Exception
-    if (
-        $backupClaim -and
-        (Test-Path -LiteralPath $backupClaim -PathType Leaf)
-    ) {
-        try {
-            Restore-AgentBridgeFileBackup `
-                -OriginalPath $claimPath `
-                -BackupPath $backupClaim
-            $backupClaim = $null
-        } catch {
-            $preserveBackup = $true
-            throw (
-                "release archive move failed and active claim restore failed; original backup retained at {0}: {1}; restore: {2}" -f
-                $backupClaim,
-                $moveError.Message,
-                $_.Exception.Message
-            )
-        }
-    }
-    throw $moveError
-} finally {
-    try {
-        if (
-            -not $preserveBackup -and
-            $backupClaim -and
-            (Test-Path -LiteralPath $backupClaim)
-        ) {
-            Remove-Item -LiteralPath $backupClaim -Force `
-                -ErrorAction SilentlyContinue
-        }
-    } catch {}
-}
+$claimJson = ($canonicalClaim | ConvertTo-Json -Depth 8)
+$claimJsonBytes = $encoding.GetBytes($claimJson)
+$expectedPublishSha256 = Get-AgentBridgeSha256Hex -Bytes $claimJsonBytes
+$expectedPublishLength = [long]$claimJsonBytes.Length
+Publish-AgentBridgeFileFromSnapshot `
+    -PublishBytes $claimJsonBytes `
+    -SourcePath $claimPath `
+    -PublishPath $donePath `
+    -ExpectedSourceBytes ([byte[]]$matchedEntry.snapshot_bytes) `
+    -ExpectedSourceSha256 ([string]$matchedEntry.snapshot_sha256) `
+    -ExpectedSourceLength ([long]$matchedEntry.snapshot_length) `
+    -ExpectedPublishSha256 $expectedPublishSha256 `
+    -ExpectedPublishLength $expectedPublishLength
 } finally {
     Exit-AgentBridgeMutationLock -Lock $mutationLock
 }

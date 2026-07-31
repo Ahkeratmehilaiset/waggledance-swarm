@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+import waggledance.core.work_queue as work_queue_module
 from waggledance.core.work_queue import (
     ArchivedClaim,
     Claim,
@@ -175,7 +178,7 @@ def test_apply_archives_legacy_powershell_namespaced_claim_file(
     assert list_claims(bridge_root=bridge) == []
 
 
-def test_legacy_tokenless_expiry_anchors_to_claimed_at_and_lease(
+def test_legacy_tokenless_expiry_ignores_forged_lease_extension(
     tmp_path: Path,
 ) -> None:
     bridge = tmp_path / ".agent-bridge"
@@ -189,7 +192,7 @@ def test_legacy_tokenless_expiry_anchors_to_claimed_at_and_lease(
             {
                 "agent": "claude-1",
                 "task_id": task_id,
-                "summary": "legacy expiry anchor",
+                "summary": "legacy expiry cannot self-extend",
                 "mode": "read-only",
                 "write_scope": [],
                 "run_id": "legacy-run",
@@ -200,7 +203,7 @@ def test_legacy_tokenless_expiry_anchors_to_claimed_at_and_lease(
                 "last_heartbeat_utc": (
                     _now() + timedelta(hours=1)
                 ).isoformat().replace("+00:00", "Z"),
-                "lease_seconds": 60,
+                "lease_seconds": 999999,
                 "claim_lease_expires_utc": "2099-01-01T00:00:00Z",
             }
         ),
@@ -210,7 +213,7 @@ def test_legacy_tokenless_expiry_anchors_to_claimed_at_and_lease(
     archived = archive_stale_claims(
         bridge_root=bridge,
         now_utc=_now(),
-        max_age_seconds=3600,
+        max_age_seconds=60,
         apply=True,
     )
 
@@ -343,10 +346,11 @@ def test_legacy_missing_or_malformed_lease_uses_global_threshold(
     if lease_value is not None:
         payload["lease_seconds"] = lease_value
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = claim_path.read_bytes()
 
-    listed = list_claims(bridge_root=bridge)
-    assert len(listed) == 1
-    assert listed[0].lease_seconds == 0
+    with pytest.raises(WorkQueueError, match="lease_seconds"):
+        list_claims(bridge_root=bridge)
+    assert claim_path.read_bytes() == before
 
     archived = archive_stale_claims(
         bridge_root=bridge,
@@ -375,10 +379,11 @@ def test_over_int32_or_huge_stored_lease_uses_fallback_safely(
         json.dumps(_raw_claim_payload(task_id, lease_seconds=lease_value)),
         encoding="utf-8",
     )
+    before = claim_path.read_bytes()
 
-    claims = list_claims(bridge_root=bridge)
-    assert len(claims) == 1
-    assert claims[0].lease_seconds == 0
+    with pytest.raises(WorkQueueError, match="lease_seconds"):
+        list_claims(bridge_root=bridge)
+    assert claim_path.read_bytes() == before
     archived = archive_stale_claims(
         bridge_root=bridge,
         now_utc=_now(),
@@ -462,6 +467,7 @@ def test_default_stale_fallback_honors_bridge_environment(
         ("owner_process_start_utc", "2026-07-28T00:00:00+15:00"),
         ("owner_process_start_utc", "0001-01-01T00:00:00+14:00"),
         ("owner_pid", 1.0),
+        ("owner_pid", "4242"),
         ("owner_pid", " 4242 "),
         ("owner_session_id", 123),
     ],
@@ -612,14 +618,15 @@ def test_malformed_owner_pid_is_legacy_and_remains_sweepable(
         ),
         encoding="utf-8",
     )
+    before = claim_path.read_bytes()
 
-    claims = list_claims(bridge_root=bridge)
-    assert len(claims) == 1
-    assert claims[0].owner_pid == 0
+    with pytest.raises(WorkQueueError, match="owner_pid"):
+        list_claims(bridge_root=bridge)
+    assert claim_path.read_bytes() == before
     archived = archive_stale_claims(
         bridge_root=bridge,
         now_utc=_now(),
-        max_age_seconds=3600,
+        max_age_seconds=60,
         apply=True,
     )
 
@@ -727,11 +734,11 @@ def test_null_optional_schema_is_normalized_without_aborting_sweep(
     )
     claim_path = claims_dir / f"{task_id}.json"
     claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = claim_path.read_bytes()
 
-    listed = list_claims(bridge_root=bridge)
-    assert len(listed) == 1
-    assert listed[0].write_scope == ()
-    assert listed[0].capabilities == ()
+    with pytest.raises(WorkQueueError, match="write_scope"):
+        list_claims(bridge_root=bridge)
+    assert claim_path.read_bytes() == before
     archived = archive_stale_claims(
         bridge_root=bridge,
         now_utc=_now(),
@@ -1144,26 +1151,38 @@ def test_apply_does_not_publish_partial_archive_when_temp_write_fails(
     claim_path = (
         bridge / "work_queue" / "claims" / "partial-archive-write.json"
     )
-    original_write_text = Path.write_text
+    original_publish = work_queue_module._publish_prepared_file_create_new
 
     def fail_archive_temp_write(
-        path: Path,
-        data: str,
-        *args,
-        **kwargs,
-    ) -> int:
-        if (
-            path.parent.name == "done"
-            and ".stale_lease.json.tmp." in path.name
-        ):
-            with path.open("w", encoding="utf-8") as handle:
-                handle.write(data[:20])
-            raise OSError("injected archive temp write failure")
-        return original_write_text(path, data, *args, **kwargs)
+        prepared_body: bytes,
+        destination_path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        operation: str,
+    ) -> None:
+        if operation == "stale archive recovery temp":
+            with destination_path.open("xb") as handle:
+                handle.write(prepared_body[:20])
+            raise WorkQueueError("injected archive temp write failure")
+        original_publish(
+            prepared_body,
+            destination_path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            operation=operation,
+        )
 
-    monkeypatch.setattr(Path, "write_text", fail_archive_temp_write)
+    monkeypatch.setattr(
+        work_queue_module,
+        "_publish_prepared_file_create_new",
+        fail_archive_temp_write,
+    )
 
-    with pytest.raises(OSError, match="injected archive temp write failure"):
+    with pytest.raises(
+        WorkQueueError,
+        match="injected archive temp write failure",
+    ):
         archive_stale_claims(
             bridge_root=bridge,
             now_utc=_stale_now(),
@@ -1173,8 +1192,928 @@ def test_apply_does_not_publish_partial_archive_when_temp_write_fails(
 
     assert claim_path.is_file()
     done_dir = bridge / "work_queue" / "done"
-    assert not list(done_dir.glob("*.stale_lease.json"))
-    assert not list(done_dir.glob("*.tmp.*"))
+    partial_temps = list(done_dir.glob("*.tmp.*"))
+    assert len(partial_temps) == 1
+    assert partial_temps[0].read_text(encoding="utf-8")
+    assert not list(
+        claim_path.parent.glob(".*.stale-backup.*")
+    )
+
+
+def test_apply_preparation_failure_on_second_record_is_zero_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_ids = ("prepare-first", "prepare-second")
+    for task_id in task_ids:
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="batch preparation must be all-or-nothing",
+            bridge_root=bridge,
+        )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_paths = tuple(claims_dir / f"{task_id}.json" for task_id in task_ids)
+    before = {path: path.read_bytes() for path in claim_paths}
+    original_publish = work_queue_module._publish_prepared_file_create_new
+    archive_temp_writes = 0
+
+    def fail_second_archive_temp_write(
+        prepared_body: bytes,
+        destination_path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        operation: str,
+    ) -> None:
+        nonlocal archive_temp_writes
+        if operation == "stale archive recovery temp":
+            archive_temp_writes += 1
+            if archive_temp_writes == 2:
+                with destination_path.open("xb") as handle:
+                    handle.write(prepared_body[:20])
+                raise WorkQueueError(
+                    "injected second archive preparation failure"
+                )
+        original_publish(
+            prepared_body,
+            destination_path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            operation=operation,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_publish_prepared_file_create_new",
+        fail_second_archive_temp_write,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected second archive preparation failure",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert "archive temp identity mismatch" in str(
+        exc_info.value
+    )
+    assert {path: path.read_bytes() for path in claim_paths} == before
+    partial_temps = list(
+        (bridge / "work_queue" / "done").glob("*.tmp.*")
+    )
+    assert len(partial_temps) == 2
+    assert len(list(claims_dir.glob(".*.stale-backup.*"))) == 1
+
+
+def test_apply_commit_failure_on_second_record_rolls_back_whole_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_ids = ("commit-first", "commit-second")
+    for task_id in task_ids:
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="batch commit must be all-or-nothing",
+            bridge_root=bridge,
+        )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_paths = tuple(claims_dir / f"{task_id}.json" for task_id in task_ids)
+    before = {path: path.read_bytes() for path in claim_paths}
+    original_rename = work_queue_module._rename_file_create_new
+
+    def fail_second_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        if Path(source) == claim_paths[1]:
+            raise PermissionError("injected second source quarantine failure")
+        original_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        fail_second_source_quarantine,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected second source quarantine failure",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    message = str(exc_info.value)
+    assert "archive rollback skipped to avoid an unbound pathname deletion" in message
+    assert "source=retained" in message
+    assert "archive=retained" in message
+    assert {path: path.read_bytes() for path in claim_paths} == before
+    assert len(
+        list((bridge / "work_queue" / "done").glob("*.stale_lease.json"))
+    ) == 2
+    assert len(list(claims_dir.glob(".*.stale-backup.*"))) == 2
+
+
+def test_apply_commit_retains_recovery_artifacts_without_unlinking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "committed-cleanup-warning"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="cleanup residue must not hide a committed release",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    before = claim_path.read_bytes()
+    original_unlink = Path.unlink
+
+    def reject_destructive_recovery_cleanup(
+        path: Path,
+        *args,
+        **kwargs,
+    ) -> None:
+        if any(
+            marker in path.name
+            for marker in (".stale-backup.", ".stale-quarantine.", ".tmp.")
+        ):
+            raise AssertionError("recovery artifacts must not be unlinked")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", reject_destructive_recovery_cleanup)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        archived = archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert [record.claim.task_id for record in archived] == [task_id]
+    assert archived[0].applied is True
+    assert not claim_path.exists()
+    assert archived[0].archived_path.is_file()
+    backups = list(claims_dir.glob(".*.stale-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
+    quarantines = list(claims_dir.glob(".*.stale-quarantine.*"))
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == before
+    archive_temps = list(archived[0].archived_path.parent.glob("*.tmp.*"))
+    assert len(archive_temps) == 1
+
+
+def test_apply_cleanup_warning_errors_and_delivery_failure_still_return_commit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "committed-cleanup-warning-delivery-failure"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="warning policy must not hide a committed release",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    original_verify = work_queue_module._verify_stale_source_identity
+
+    def fail_backup_validation(
+        path: Path,
+        plan,
+        *,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if label == "source backup cleanup":
+            return False, "injected warning-error cleanup validation failure"
+        return original_verify(path, plan, label=label)
+
+    def fail_warning_delivery(*args, **kwargs) -> None:
+        del args, kwargs
+        raise OSError("injected warning delivery failure")
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_stale_source_identity",
+        fail_backup_validation,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with monkeypatch.context() as warning_patch:
+            warning_patch.setattr(
+                warnings,
+                "showwarning",
+                fail_warning_delivery,
+            )
+            archived = archive_stale_claims(
+                bridge_root=bridge,
+                now_utc=_stale_now(),
+                max_age_seconds=60,
+                apply=True,
+            )
+
+    captured = capsys.readouterr()
+    assert [record.claim.task_id for record in archived] == [task_id]
+    assert archived[0].applied is True
+    assert not claim_path.exists()
+    assert archived[0].archived_path.is_file()
+    assert "RuntimeWarning: stale claim batch committed" in captured.err
+    assert "injected warning-error cleanup validation failure" in captured.err
+
+
+def test_apply_ambiguous_move_failure_never_restores_eligibility_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "restore-denied"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="failed restore must retain every recovery copy",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    before = claim_path.read_bytes()
+    original_rename = work_queue_module._rename_file_create_new
+
+    def quarantine_source_then_report_failure(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        original_rename(source, destination, *args, **kwargs)
+        if Path(source) == claim_path:
+            raise PermissionError(
+                "injected source quarantine failure after move"
+            )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        quarantine_source_then_report_failure,
+    )
+    with pytest.raises(
+        WorkQueueError,
+        match="injected source quarantine failure after move",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    message = str(exc_info.value)
+    done_dir = bridge / "work_queue" / "done"
+    archives = list(done_dir.glob("*.stale_lease.json"))
+    backups = list(claims_dir.glob(".*.stale-backup.*"))
+    assert "no immutable bytes were captured after quarantine" in message
+    assert "eligibility backup is not write authority" in message
+    assert "archive rollback skipped" in message
+    assert len(archives) == 1
+    assert len(backups) == 1
+    assert str(archives[0]) in message
+    assert str(backups[0]) in message
+    assert backups[0].read_bytes() == before
+    assert not claim_path.exists()
+    assert "source=missing" in message
+    assert "archive=retained" in message
+    assert "backup=retained" in message
+    assert len(list(done_dir.glob("*.tmp.*"))) == 1
+
+
+def test_apply_rollback_preserves_foreign_archive_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "foreign-archive-replacement"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="rollback must not delete a foreign archive replacement",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    done_dir = bridge / "work_queue" / "done"
+    foreign_body = b"foreign replacement must survive rollback\n"
+    original_rename = work_queue_module._rename_file_create_new
+    replaced_archive: Path | None = None
+
+    def replace_archive_after_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        nonlocal replaced_archive
+        original_rename(source, destination, *args, **kwargs)
+        if Path(source) == claim_path:
+            archives = list(done_dir.glob("*.stale_lease.json"))
+            assert len(archives) == 1
+            replaced_archive = archives[0]
+            foreign_temp = done_dir / "foreign-replacement.tmp"
+            foreign_temp.write_bytes(foreign_body)
+            foreign_temp.replace(replaced_archive)
+            raise PermissionError(
+                "injected source quarantine failure after foreign replacement"
+            )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_archive_after_source_quarantine,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected source quarantine failure after foreign replacement",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    message = str(exc_info.value)
+    assert replaced_archive is not None
+    assert not claim_path.exists()
+    assert replaced_archive.read_bytes() == foreign_body
+    assert "archive rollback skipped to avoid an unbound pathname deletion" in message
+    assert "retained archive" in message
+    assert "source=missing" in message
+    assert "archive=retained" in message
+    assert len(list(done_dir.glob("*.tmp.*"))) == 1
+    assert len(list(claims_dir.glob(".*.stale-backup.*"))) == 1
+
+
+def test_apply_rollback_preserves_recovery_after_foreign_source_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "foreign-source-replacement"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="rollback must not trust a foreign active source",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    done_dir = bridge / "work_queue" / "done"
+    before = claim_path.read_bytes()
+    foreign_body = b"foreign source replacement must not verify\n"
+    original_rename = work_queue_module._rename_file_create_new
+
+    def replace_source_then_report_failure(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        original_rename(source, destination, *args, **kwargs)
+        if Path(source) == claim_path:
+            claim_path.write_bytes(foreign_body)
+            raise PermissionError(
+                "injected failure after foreign source replacement"
+            )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_source_then_report_failure,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected failure after foreign source replacement",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    message = str(exc_info.value)
+    archives = list(done_dir.glob("*.stale_lease.json"))
+    backups = list(claims_dir.glob(".*.stale-backup.*"))
+    assert claim_path.read_bytes() == foreign_body
+    assert len(archives) == 1
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
+    assert "active source identity mismatch" in message
+    assert "archive rollback skipped" in message
+    assert "archive=retained" in message
+    assert "backup=retained" in message
+    assert len(list(done_dir.glob("*.tmp.*"))) == 1
+
+
+def test_apply_rollback_retains_recovery_when_source_verification_read_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "source-verification-read-failure"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="unreadable rollback source must remain unverified",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    done_dir = bridge / "work_queue" / "done"
+    before = claim_path.read_bytes()
+    original_open = Path.open
+    verification_started = False
+
+    def fail_source_verification_read(
+        path: Path,
+        mode: str = "r",
+        *args,
+        **kwargs,
+    ):
+        if path == claim_path and verification_started and mode == "rb":
+            raise PermissionError(
+                "injected source identity verification read failure"
+            )
+        return original_open(path, mode, *args, **kwargs)
+
+    original_rename = work_queue_module._rename_file_create_new
+
+    def guarded_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        nonlocal verification_started
+        if Path(source) == claim_path:
+            verification_started = True
+            raise PermissionError("injected source quarantine failure")
+        original_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        guarded_quarantine,
+    )
+    monkeypatch.setattr(Path, "open", fail_source_verification_read)
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected source quarantine failure",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+    verification_started = False
+
+    message = str(exc_info.value)
+    archives = list(done_dir.glob("*.stale_lease.json"))
+    backups = list(claims_dir.glob(".*.stale-backup.*"))
+    assert claim_path.read_bytes() == before
+    assert len(archives) == 1
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
+    assert "active source identity verification failed" in message
+    assert "injected source identity verification read failure" in message
+    assert "archive rollback skipped" in message
+    assert len(list(done_dir.glob("*.tmp.*"))) == 1
+
+
+def test_apply_rollback_rejects_foreign_source_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "foreign-source-backup"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="rollback must authenticate its exact-byte backup",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    done_dir = bridge / "work_queue" / "done"
+    foreign_body = b"foreign backup must not become the active claim\n"
+    original_rename = work_queue_module._rename_file_create_new
+
+    def replace_backup_then_report_failure(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        original_rename(source, destination, *args, **kwargs)
+        if Path(source) == claim_path:
+            backups = list(claims_dir.glob(".*.stale-backup.*"))
+            assert len(backups) == 1
+            foreign_temp = claims_dir / ".foreign-backup.tmp"
+            foreign_temp.write_bytes(foreign_body)
+            foreign_temp.replace(backups[0])
+            raise PermissionError(
+                "injected failure after foreign backup replacement"
+            )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_backup_then_report_failure,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected failure after foreign backup replacement",
+    ) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    message = str(exc_info.value)
+    archives = list(done_dir.glob("*.stale_lease.json"))
+    backups = list(claims_dir.glob(".*.stale-backup.*"))
+    quarantines = list(claims_dir.glob(".*.stale-quarantine.*"))
+    assert not claim_path.exists()
+    assert len(archives) == 1
+    assert len(backups) == 1
+    assert len(quarantines) == 1
+    assert backups[0].read_bytes() == foreign_body
+    assert quarantines[0].read_bytes() != foreign_body
+    assert "eligibility backup is not write authority" in message
+    assert "archive rollback skipped" in message
+    assert "archive=retained" in message
+    assert "backup=retained" in message
+    assert len(list(done_dir.glob("*.tmp.*"))) == 1
+
+
+def test_apply_rollback_retains_verified_quarantine_when_backup_is_foreign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_ids = ("verified-quarantine-first", "verified-quarantine-second")
+    for task_id in task_ids:
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="verified quarantine must remain an exact recovery copy",
+            bridge_root=bridge,
+        )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_paths = tuple(claims_dir / f"{task_id}.json" for task_id in task_ids)
+    original_first = claim_paths[0].read_bytes()
+    foreign_backup = b"foreign backup must never destroy exact quarantine\n"
+    original_rename = work_queue_module._rename_file_create_new
+
+    def fail_second_after_replacing_first_backup(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        if Path(source) == claim_paths[1]:
+            backups = list(
+                claims_dir.glob(
+                    f".{claim_paths[0].name}.stale-backup.*"
+                )
+            )
+            assert len(backups) == 1
+            backups[0].write_bytes(foreign_backup)
+            raise PermissionError(
+                "injected second quarantine failure after backup replacement"
+            )
+        original_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        fail_second_after_replacing_first_backup,
+    )
+
+    with pytest.raises(WorkQueueError) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    message = str(exc_info.value)
+    quarantines = list(
+        claims_dir.glob(f".{claim_paths[0].name}.stale-quarantine.*")
+    )
+    assert claim_paths[0].read_bytes() == original_first
+    assert claim_paths[1].is_file()
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == original_first
+    assert "archive rollback skipped" in message
+
+
+def test_apply_rollback_retains_exact_recovery_after_restored_source_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_ids = ("post-restore-swap-first", "post-restore-swap-second")
+    for task_id in task_ids:
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="rollback cleanup must not trust a stale verification",
+            bridge_root=bridge,
+        )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_paths = tuple(claims_dir / f"{task_id}.json" for task_id in task_ids)
+    original_first = claim_paths[0].read_bytes()
+    foreign_body = b"foreign active generation after restore verification\n"
+    original_rename = work_queue_module._rename_file_create_new
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    restored_verify_hits = 0
+
+    def fail_second_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        if Path(source) == claim_paths[1]:
+            raise PermissionError("injected second source quarantine failure")
+        original_rename(source, destination, *args, **kwargs)
+
+    def replace_after_restored_source_verification(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        nonlocal restored_verify_hits
+        result = original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+        if (
+            label == "restored captured active source"
+            and Path(path) == claim_paths[0]
+            and result[0]
+        ):
+            restored_verify_hits += 1
+            foreign_temp = claim_paths[0].with_name(".foreign-active.tmp")
+            foreign_temp.write_bytes(foreign_body)
+            foreign_temp.replace(claim_paths[0])
+        return result
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        fail_second_source_quarantine,
+    )
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        replace_after_restored_source_verification,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected second source quarantine failure",
+    ):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert restored_verify_hits == 1
+    assert claim_paths[0].read_bytes() == foreign_body
+    exact_recoveries = [
+        path
+        for path in bridge.rglob("*")
+        if path.is_file() and path.read_bytes() == original_first
+    ]
+    assert exact_recoveries
+
+
+def test_apply_rollback_restores_capture_after_quarantine_path_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_ids = ("post-quarantine-capture-first", "post-quarantine-capture-second")
+    for task_id in task_ids:
+        claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="rollback must restore the immutable quarantine capture",
+            bridge_root=bridge,
+        )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_paths = tuple(claims_dir / f"{task_id}.json" for task_id in task_ids)
+    original_first = claim_paths[0].read_bytes()
+    foreign_body = b"foreign quarantine generation after captured read\n"
+    original_rename = work_queue_module._rename_file_create_new
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    quarantine_verify_hits = 0
+
+    def fail_second_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        if Path(source) == claim_paths[1]:
+            raise PermissionError("injected second source quarantine failure")
+        original_rename(source, destination, *args, **kwargs)
+
+    def replace_quarantine_after_captured_verification(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        nonlocal quarantine_verify_hits
+        result = original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+        if (
+            label == "quarantined active source"
+            and f".{claim_paths[0].name}.stale-quarantine." in Path(path).name
+            and result[0]
+        ):
+            quarantine_verify_hits += 1
+            foreign_temp = Path(path).with_name(
+                ".foreign-quarantine-after-capture.tmp"
+            )
+            foreign_temp.write_bytes(foreign_body)
+            foreign_temp.replace(path)
+        return result
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        fail_second_source_quarantine,
+    )
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        replace_quarantine_after_captured_verification,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="injected second source quarantine failure",
+    ):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert quarantine_verify_hits == 1
+    assert claim_paths[0].read_bytes() == original_first
+    quarantines = list(
+        claims_dir.glob(f".{claim_paths[0].name}.stale-quarantine.*")
+    )
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == foreign_body
+
+
+def test_apply_committed_cleanup_does_not_delete_postverify_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "committed-postverify-swap"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="cleanup must retain a replacement it cannot authenticate",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path = claims_dir / f"{task_id}.json"
+    original_claim = claim_path.read_bytes()
+    foreign_body = b"foreign quarantine generation after verification\n"
+    original_verify = work_queue_module._verify_stale_source_identity
+    cleanup_verify_hits = 0
+
+    def replace_after_cleanup_verification(
+        path: Path,
+        plan,
+        *,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        nonlocal cleanup_verify_hits
+        result = original_verify(path, plan, label=label)
+        if (
+            label == "source quarantine cleanup"
+            and ".stale-quarantine." in Path(path).name
+            and result[0]
+        ):
+            cleanup_verify_hits += 1
+            foreign_temp = Path(path).with_name(".foreign-quarantine.tmp")
+            foreign_temp.write_bytes(foreign_body)
+            foreign_temp.replace(path)
+        return result
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_stale_source_identity",
+        replace_after_cleanup_verification,
+    )
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_stale_now(),
+        max_age_seconds=60,
+        apply=True,
+    )
+
+    assert cleanup_verify_hits == 1
+    assert archived[0].applied is True
+    assert archived[0].archived_path.is_file()
+    assert not claim_path.exists()
+    retained = [path for path in claims_dir.iterdir() if path.is_file()]
+    assert any(path.read_bytes() == foreign_body for path in retained)
+    assert any(path.read_bytes() == original_claim for path in retained)
+
+
+def test_apply_committed_archive_has_no_mutable_temp_hardlink_alias(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "committed-archive-no-temp-alias"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="committed archive must not share an inode with recovery temp",
+        bridge_root=bridge,
+    )
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_stale_now(),
+        max_age_seconds=60,
+        apply=True,
+    )
+
+    archive_path = archived[0].archived_path
+    expected_archive = archive_path.read_bytes()
+    archive_temps = list(archive_path.parent.glob("*.tmp.*"))
+    assert len(archive_temps) == 1
+    assert not archive_temps[0].samefile(archive_path)
+    assert archive_path.stat().st_nlink == 1
+
+    archive_temps[0].write_bytes(b"mutated retained archive temp\n")
+    assert archive_path.read_bytes() == expected_archive
 
 
 def test_apply_reports_source_and_rollback_double_failure(
@@ -1192,39 +2131,45 @@ def test_apply_reports_source_and_rollback_double_failure(
     claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
     done_dir = bridge / "work_queue" / "done"
     before = claim_path.read_bytes()
-    original_unlink = Path.unlink
+    original_rename = work_queue_module._rename_file_create_new
 
-    def deny_source_and_archive_unlink(
-        path: Path,
+    def deny_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         *args,
         **kwargs,
     ) -> None:
-        if path == claim_path:
-            raise PermissionError("injected stale claim delete failure")
-        if path.parent == done_dir and ".tmp." not in path.name:
-            raise PermissionError("injected stale archive rollback failure")
-        original_unlink(path, *args, **kwargs)
+        if Path(source) == claim_path:
+            raise PermissionError("injected stale claim quarantine failure")
+        original_rename(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", deny_source_and_archive_unlink)
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        deny_source_quarantine,
+    )
 
     with pytest.raises(
         WorkQueueError,
-        match=(
-            "stale active-claim delete failed and archive rollback failed"
-        ),
+        match="stale claim batch apply failed",
     ) as exc_info:
         archive_stale_claims(
             bridge_root=bridge,
             now_utc=_stale_now(),
             max_age_seconds=60,
             apply=True,
-        )
+    )
 
-    assert "injected stale claim delete failure" in str(exc_info.value)
-    assert "injected stale archive rollback failure" in str(exc_info.value)
+    assert "injected stale claim quarantine failure" in str(exc_info.value)
+    assert "archive rollback skipped to avoid an unbound pathname deletion" in str(
+        exc_info.value
+    )
+    assert "source=retained" in str(exc_info.value)
+    assert "archive=retained" in str(exc_info.value)
     assert claim_path.read_bytes() == before
     assert len(list(done_dir.glob("*.stale_lease.json"))) == 1
-    assert not list(done_dir.glob("*.tmp.*"))
+    assert len(list(done_dir.glob("*.tmp.*"))) == 1
+    assert len(list(claim_path.parent.glob(".*.stale-backup.*"))) == 1
 
 
 def test_apply_waits_for_mutation_lock_and_rechecks_fresh_claim(
@@ -1278,3 +2223,654 @@ def test_apply_waits_for_mutation_lock_and_rechecks_fresh_claim(
     assert json.loads(stdout)["archived"] == []
     assert claim_path.is_file()
     assert not (bridge / "work_queue" / "done").exists()
+
+
+@pytest.mark.parametrize(
+    ("artifact", "pattern", "warning_fragment"),
+    [
+        (
+            "archive-temp",
+            "work_queue/done/*.tmp.*",
+            "archive temp cleanup identity mismatch",
+        ),
+        (
+            "source-backup",
+            "work_queue/claims/*.stale-backup.*",
+            "source backup cleanup identity mismatch",
+        ),
+    ],
+)
+def test_committed_cleanup_retains_foreign_artifact_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: str,
+    pattern: str,
+    warning_fragment: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"committed-foreign-{artifact}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="committed cleanup must authenticate artifacts",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    foreign_body = f"foreign {artifact} must survive\n".encode()
+    original_rename = work_queue_module._rename_file_create_new
+    original_unlink = Path.unlink
+    replaced_path: Path | None = None
+
+    def replace_artifact_during_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        nonlocal replaced_path
+        original_rename(source, destination, *args, **kwargs)
+        if Path(source) == claim_path:
+            candidates = list(bridge.glob(pattern))
+            assert len(candidates) == 1
+            replaced_path = candidates[0]
+            original_unlink(replaced_path)
+            replaced_path.write_bytes(foreign_body)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_artifact_during_source_quarantine,
+    )
+
+    with pytest.warns(RuntimeWarning, match=warning_fragment):
+        archived = archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert [record.claim.task_id for record in archived] == [task_id]
+    assert replaced_path is not None
+    assert replaced_path.read_bytes() == foreign_body
+    assert not claim_path.exists()
+    assert archived[0].archived_path.is_file()
+
+
+@pytest.mark.parametrize(
+    ("artifact", "pattern", "error_fragment"),
+    [
+        (
+            "archive-temp",
+            "work_queue/done/*.tmp.*",
+            "archive temp identity mismatch",
+        ),
+        (
+            "source-backup",
+            "work_queue/claims/*.stale-backup.*",
+            "eligibility backup is not write authority",
+        ),
+    ],
+)
+def test_rollback_cleanup_retains_foreign_artifact_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: str,
+    pattern: str,
+    error_fragment: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"rollback-foreign-{artifact}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="rollback cleanup must authenticate artifacts",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    foreign_body = f"foreign rollback {artifact} must survive\n".encode()
+    original_rename = work_queue_module._rename_file_create_new
+    original_unlink = Path.unlink
+    replaced_path: Path | None = None
+
+    def replace_artifact_then_fail_source_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        nonlocal replaced_path
+        original_rename(source, destination, *args, **kwargs)
+        if Path(source) == claim_path:
+            candidates = list(bridge.glob(pattern))
+            assert len(candidates) == 1
+            replaced_path = candidates[0]
+            original_unlink(replaced_path)
+            replaced_path.write_bytes(foreign_body)
+            raise PermissionError(
+                f"injected source failure after {artifact} replacement"
+            )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_artifact_then_fail_source_quarantine,
+    )
+
+    with pytest.raises(WorkQueueError) as exc_info:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert replaced_path is not None
+    assert replaced_path.read_bytes() == foreign_body
+    assert not claim_path.exists()
+    assert error_fragment in str(exc_info.value)
+
+
+def test_apply_rejects_fresh_source_replacement_before_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "fresh-before-stale-backup"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="old stale snapshot",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    old_body = claim_path.read_bytes()
+    fresh_payload = json.loads(old_body)
+    fresh_payload["summary"] = "fresh replacement"
+    fresh_payload["last_heartbeat_utc"] = _stale_now().isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    fresh_body = json.dumps(fresh_payload, indent=2, sort_keys=True).encode()
+    original_copy = work_queue_module._copy_file_create_new
+    replaced = False
+
+    def replace_before_backup(
+        source: Path,
+        destination: Path,
+    ) -> tuple[str, int]:
+        nonlocal replaced
+        if source == claim_path and not replaced:
+            replaced = True
+            replacement = claim_path.with_name(".fresh-replacement.tmp")
+            replacement.write_bytes(fresh_body)
+            replacement.replace(claim_path)
+        return original_copy(source, destination)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_copy_file_create_new",
+        replace_before_backup,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="changed since eligibility snapshot",
+    ):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert replaced
+    assert claim_path.read_bytes() == fresh_body
+    assert not list(
+        (bridge / "work_queue" / "done").glob("*.stale_lease.json")
+    )
+
+
+def test_apply_quarantines_and_restores_fresh_commit_time_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "fresh-before-stale-quarantine"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="old stale snapshot",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    fresh_payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    fresh_payload["summary"] = "fresh commit-time replacement"
+    fresh_payload["last_heartbeat_utc"] = _stale_now().isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    fresh_body = json.dumps(fresh_payload, indent=2, sort_keys=True).encode()
+    original_rename = work_queue_module._rename_file_create_new
+    replaced = False
+
+    def replace_before_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        nonlocal replaced
+        if Path(source) == claim_path and not replaced:
+            replaced = True
+            replacement = claim_path.with_name(".fresh-commit-replacement.tmp")
+            replacement.write_bytes(fresh_body)
+            replacement.replace(claim_path)
+        original_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_before_quarantine,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="quarantined active source identity mismatch",
+    ):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert replaced
+    assert claim_path.read_bytes() == fresh_body
+    quarantines = list(
+        claim_path.parent.glob(f".{claim_path.name}.stale-quarantine.*")
+    )
+    assert len(quarantines) == 1
+    assert not quarantines[0].samefile(claim_path)
+    assert claim_path.stat().st_nlink == 1
+    quarantines[0].write_bytes(b"mutated retained foreign quarantine\n")
+    assert claim_path.read_bytes() == fresh_body
+
+
+def test_apply_restores_captured_quarantine_not_postverify_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "stale-quarantine-capture-once"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="old stale snapshot",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    fresh_payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    fresh_payload["summary"] = "fresh commit-time generation A"
+    fresh_payload["last_heartbeat_utc"] = _stale_now().isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    fresh_body = json.dumps(fresh_payload, indent=2, sort_keys=True).encode()
+    later_body = b'{"foreign_postverify_generation":"B"}\n'
+    original_rename = work_queue_module._rename_file_create_new
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    source_replaced = False
+    quarantine_replaced = False
+
+    def replace_before_quarantine(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args,
+        **kwargs,
+    ) -> None:
+        nonlocal source_replaced
+        if Path(source) == claim_path and not source_replaced:
+            source_replaced = True
+            replacement = claim_path.with_name(".fresh-generation-a.tmp")
+            replacement.write_bytes(fresh_body)
+            replacement.replace(claim_path)
+        original_rename(source, destination, *args, **kwargs)
+
+    def replace_after_quarantine_verification(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        nonlocal quarantine_replaced
+        result = original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+        if (
+            not quarantine_replaced
+            and label == "quarantined active source"
+            and result[0]
+        ):
+            quarantine_replaced = True
+            replacement = Path(path).with_name(".fresh-generation-b.tmp")
+            replacement.write_bytes(later_body)
+            replacement.replace(path)
+        return result
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_before_quarantine,
+    )
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        replace_after_quarantine_verification,
+    )
+
+    with pytest.raises(
+        WorkQueueError,
+        match="quarantined active source identity mismatch",
+    ):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert source_replaced
+    assert quarantine_replaced
+    assert claim_path.read_bytes() == fresh_body
+    quarantines = list(
+        claim_path.parent.glob(f".{claim_path.name}.stale-quarantine.*")
+    )
+    assert len(quarantines) == 1
+    assert quarantines[0].read_bytes() == later_body
+    quarantines[0].write_bytes(b'{"mutated_retained_generation":"C"}\n')
+    assert claim_path.read_bytes() == fresh_body
+
+
+def test_apply_rejects_external_stale_quarantine_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "stale-quarantine-external-hardlink"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="stale quarantine must remain single-link",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_body = claim_path.read_bytes()
+    original_verify = (
+        work_queue_module._verify_single_link_regular_file_identity
+    )
+    aliases: list[Path] = []
+
+    def add_alias_before_quarantine_verification(
+        path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        label: str,
+    ) -> tuple[bool, str | None]:
+        if (
+            not aliases
+            and label == "quarantined active source"
+            and ".stale-quarantine." in Path(path).name
+        ):
+            alias = Path(path).with_name(Path(path).name + ".external-alias")
+            os.link(path, alias)
+            aliases.append(alias)
+        return original_verify(
+            path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_verify_single_link_regular_file_identity",
+        add_alias_before_quarantine_verification,
+    )
+
+    with pytest.raises(WorkQueueError, match="surviving hard-link alias"):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert len(aliases) == 1
+    quarantines = [
+        path
+        for path in claim_path.parent.glob(
+            f".{claim_path.name}.stale-quarantine.*"
+        )
+        if not path.name.endswith(".external-alias")
+    ]
+    assert len(quarantines) == 1
+    assert aliases[0].samefile(quarantines[0])
+    assert claim_path.read_bytes() == original_body
+    assert claim_path.stat().st_nlink == 1
+    aliases[0].write_bytes(b'{"external_alias_mutation":true}\n')
+    assert claim_path.read_bytes() == original_body
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "captured_restore_write_failure",
+        "capture_read_failure",
+        "pre_move_source_loss",
+    ],
+)
+def test_stale_rollback_never_restores_backup_after_generation_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = f"stale-backup-revoked-{failure_mode}"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="eligibility generation A",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    eligibility_body = claim_path.read_bytes()
+    fresh_payload = json.loads(eligibility_body)
+    fresh_payload["summary"] = "fresh commit-time generation B"
+    fresh_payload["last_heartbeat_utc"] = _stale_now().isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+    fresh_body = json.dumps(fresh_payload, indent=2, sort_keys=True).encode()
+    original_rename = work_queue_module._rename_file_create_new
+    original_capture = work_queue_module._capture_raw_file_snapshot
+    original_publish = work_queue_module._publish_prepared_file_create_new
+    source_replaced = False
+    failure_injected = False
+
+    def replace_source_before_quarantine(
+        source: Path,
+        destination: Path,
+    ) -> None:
+        nonlocal failure_injected, source_replaced
+        if (
+            not source_replaced
+            and Path(source) == claim_path
+            and ".stale-quarantine." in Path(destination).name
+        ):
+            replacement = claim_path.with_name(".fresh-generation-b.tmp")
+            replacement.write_bytes(fresh_body)
+            replacement.replace(claim_path)
+            source_replaced = True
+            if failure_mode == "pre_move_source_loss":
+                claim_path.unlink()
+                failure_injected = True
+                raise PermissionError("injected pre-move fresh source loss")
+        original_rename(source, destination)
+
+    def fail_quarantine_capture(path: Path) -> tuple[bytes, str, int]:
+        nonlocal failure_injected
+        if (
+            failure_mode == "capture_read_failure"
+            and not failure_injected
+            and ".stale-quarantine." in Path(path).name
+        ):
+            failure_injected = True
+            raise WorkQueueError("injected quarantined B capture failure")
+        return original_capture(path)
+
+    def fail_first_captured_restore(
+        prepared_body: bytes,
+        destination_path: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        operation: str,
+    ) -> None:
+        nonlocal failure_injected
+        if (
+            failure_mode == "captured_restore_write_failure"
+            and not failure_injected
+            and Path(destination_path) == claim_path
+            and operation == "captured active source restore"
+        ):
+            failure_injected = True
+            raise WorkQueueError("injected captured B restore failure")
+        original_publish(
+            prepared_body,
+            destination_path,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+            operation=operation,
+        )
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        replace_source_before_quarantine,
+    )
+    monkeypatch.setattr(
+        work_queue_module,
+        "_capture_raw_file_snapshot",
+        fail_quarantine_capture,
+    )
+    monkeypatch.setattr(
+        work_queue_module,
+        "_publish_prepared_file_create_new",
+        fail_first_captured_restore,
+    )
+
+    with pytest.raises(WorkQueueError) as raised:
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert source_replaced
+    assert failure_injected
+    quarantines = list(
+        claim_path.parent.glob(f".{claim_path.name}.stale-quarantine.*")
+    )
+    backups = list(
+        claim_path.parent.glob(f".{claim_path.name}.stale-backup.*")
+    )
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == eligibility_body
+    if failure_mode == "captured_restore_write_failure":
+        assert len(quarantines) == 1
+        assert quarantines[0].read_bytes() == fresh_body
+        assert claim_path.read_bytes() == fresh_body
+        assert claim_path.stat().st_nlink == 1
+        quarantines[0].write_bytes(b'{"mutated_recovery":"C"}\n')
+        assert claim_path.read_bytes() == fresh_body
+    else:
+        if failure_mode == "capture_read_failure":
+            assert len(quarantines) == 1
+            assert quarantines[0].read_bytes() == fresh_body
+        else:
+            assert not quarantines
+        assert not claim_path.exists()
+        assert "eligibility backup is not write authority" in str(raised.value)
+
+
+def test_rename_file_create_new_preserves_existing_destination(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.json"
+    destination = tmp_path / "destination.json"
+    source_body = b"source generation\n"
+    destination_body = b"foreign destination generation\n"
+    source.write_bytes(source_body)
+    destination.write_bytes(destination_body)
+
+    with pytest.raises(OSError):
+        work_queue_module._rename_file_create_new(source, destination)
+
+    assert source.read_bytes() == source_body
+    assert destination.read_bytes() == destination_body
+
+
+def test_apply_quarantine_collision_preserves_foreign_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "stale-quarantine-create-new-collision"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="quarantine rename must never replace a foreign destination",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original_claim = claim_path.read_bytes()
+    foreign_body = b"foreign preexisting quarantine destination\n"
+    original_rename = work_queue_module._rename_file_create_new
+    collision_path: Path | None = None
+
+    def collide_with_quarantine_destination(
+        source: Path,
+        destination: Path,
+    ) -> None:
+        nonlocal collision_path
+        if source == claim_path and collision_path is None:
+            collision_path = destination
+            destination.write_bytes(foreign_body)
+        original_rename(source, destination)
+
+    monkeypatch.setattr(
+        work_queue_module,
+        "_rename_file_create_new",
+        collide_with_quarantine_destination,
+    )
+
+    with pytest.raises(WorkQueueError, match="FileExistsError"):
+        archive_stale_claims(
+            bridge_root=bridge,
+            now_utc=_stale_now(),
+            max_age_seconds=60,
+            apply=True,
+        )
+
+    assert collision_path is not None
+    assert collision_path.read_bytes() == foreign_body
+    assert claim_path.read_bytes() == original_claim

@@ -92,10 +92,9 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
 } else {
     Split-Path -Parent $PSScriptRoot
 }
-if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
-    [void](New-Item -ItemType Directory -Path $bridgeRoot -Force `
-        -ErrorAction Stop)
-}
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $bridgeRoot `
+    -Context 'bridge root'
 
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 $doneDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'done'
@@ -118,63 +117,295 @@ function ConvertTo-BridgeUtc {
     return $null
 }
 
-function Get-BridgeClaimText {
+function Get-BridgeSha256Hex {
     param(
-        [Parameter(Mandatory)] $Claim,
-        [Parameter(Mandatory)] [string] $Name
+        [Parameter(Mandatory)] [byte[]] $Bytes
     )
 
-    if (-not $Claim.PSObject.Properties[$Name]) { return '' }
-    if ($null -eq $Claim.$Name) { return '' }
-    if ($Claim.$Name -isnot [string]) { return '' }
-    return [string]$Claim.$Name
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash($Bytes)
+    } finally {
+        $sha256.Dispose()
+    }
+    return (
+        [System.BitConverter]::ToString($digest).Replace(
+            '-',
+            ''
+        ).ToLowerInvariant()
+    )
 }
 
-function ConvertTo-BridgeStringArray {
+function Get-BridgeFileSha256Hex {
     param(
-        [object] $Value,
-        [switch] $SplitComma
+        [Parameter(Mandatory)] [string] $Path
     )
 
-    if ($null -eq $Value) { return @() }
-    $source = if ($Value -is [string]) { @($Value) } else { @($Value) }
-    $result = New-Object System.Collections.Generic.List[string]
-    $seen = New-Object 'System.Collections.Generic.HashSet[string]' (
-        [System.StringComparer]::Ordinal
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "archive ownership proof is not a file: $Path"
+    }
+    return Get-BridgeSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($Path)
     )
-    foreach ($entry in $source) {
-        if ($null -eq $entry -or $entry -isnot [string]) { continue }
-        $parts = if ($SplitComma) {
-            @(([string]$entry).Split(','))
+}
+
+function Get-BridgeStaleBatchState {
+    param(
+        [Parameter(Mandatory)] [object[]] $Plans
+    )
+
+    $states = New-Object System.Collections.Generic.List[string]
+    foreach ($plan in @($Plans)) {
+        $sourceState = if (
+            Test-Path -LiteralPath $plan.file.FullName -PathType Leaf
+        ) {
+            'retained'
         } else {
-            @([string]$entry)
+            'missing'
         }
-        foreach ($part in $parts) {
-            $normalized = ([string]$part).Trim()
-            if (-not $normalized -or -not $seen.Add($normalized)) { continue }
-            [void]$result.Add($normalized)
+        $archiveState = if (Test-Path -LiteralPath $plan.done_path) {
+            'retained'
+        } else {
+            'missing'
         }
+        $backupState = if (
+            Test-Path -LiteralPath $plan.source_backup_path
+        ) {
+            'retained'
+        } else {
+            'missing'
+        }
+        $tempState = if (
+            Test-Path -LiteralPath $plan.archive_temp_path
+        ) {
+            'retained'
+        } else {
+            'missing'
+        }
+        $quarantineState = if (
+            Test-Path -LiteralPath $plan.source_quarantine_path
+        ) {
+            'retained'
+        } else {
+            'missing'
+        }
+        [void]$states.Add(
+            (
+                (
+                    "task='{0}' source={1}:{2} source_verified={3} " +
+                    "archive={4}:{5} backup={6}:{7} quarantine={8}:{9} " +
+                    "temp={10}:{11}"
+                ) -f
+                [string]$plan.task_id,
+                $sourceState,
+                $plan.file.FullName,
+                [bool]$plan.rollback_source_verified,
+                $archiveState,
+                [string]$plan.done_path,
+                $backupState,
+                [string]$plan.source_backup_path,
+                $quarantineState,
+                [string]$plan.source_quarantine_path,
+                $tempState,
+                [string]$plan.archive_temp_path
+            )
+        )
     }
-    return @($result)
+    return ($states -join ' | ')
 }
 
-function ConvertTo-BridgeInvariantUtcText {
-    param([object] $Value)
+function Invoke-BridgeStaleBatchRollback {
+    param(
+        [Parameter(Mandatory)] [object[]] $Plans,
+        [Parameter(Mandatory)] [string] $DoneDir,
+        [Parameter(Mandatory)] [bool] $RemoveDoneDir,
+        [Parameter(Mandatory)] [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]] $Failures
+    )
 
-    if ($null -eq $Value) { return '' }
-    if ($Value -is [DateTimeOffset]) {
-        return ([DateTimeOffset]$Value).ToUniversalTime().ToString(
-            'o',
-            [System.Globalization.CultureInfo]::InvariantCulture
-        )
+    # Restore every removed source before deleting any archive. Each archive
+    # is deleted only after its own active source is verified retained or
+    # restored. If rollback is interrupted or restore fails, the visible
+    # archive and exact-byte recovery backup are retained.
+    for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
+        $plan = $Plans[$index]
+        $plan.rollback_source_verified = $false
+        if (-not [bool]$plan.source_backup_prepared) {
+            # Commit cannot start before every trusted byte backup is ready.
+            # Therefore this plan's active source was never removed by this
+            # batch and no rollback publication is authorized.
+            continue
+        }
+
+        if (Test-Path -LiteralPath $plan.file.FullName -PathType Leaf) {
+            try {
+                $null = Assert-AgentBridgeExpectedRegularFileSnapshot `
+                    -LiteralPath ([string]$plan.file.FullName) `
+                    -ExpectedSha256 `
+                        ([string]$plan.rollback_source_sha256) `
+                    -ExpectedLength ([long]$plan.rollback_source_length) `
+                    -Context 'rollback active stale-claim source'
+                $plan.rollback_source_verified = $true
+            } catch {
+                [void]$Failures.Add(
+                    (
+                        "active source ownership hash mismatched {0}; " +
+                        "trusted recovery bytes and artifacts retained: {1}" -f
+                        $plan.file.FullName,
+                        $_.Exception.Message
+                    )
+                )
+            }
+            continue
+        }
+
+        if (-not [bool]$plan.rollback_source_restore_allowed) {
+            [void]$Failures.Add(
+                (
+                    (
+                        "active source restore suppressed for {0}; no " +
+                        "complete trusted post-Move generation was captured; " +
+                        "stale eligibility bytes were not republished; " +
+                        "recovery artifacts retained"
+                    ) -f $plan.file.FullName
+                )
+            )
+            continue
+        }
+
+        # STALE V2 MARKER: restore active source from captured trusted bytes.
+        $restoreResult = Invoke-AgentBridgeTrustedBytesCreateNew `
+            -DestinationPath ([string]$plan.file.FullName) `
+            -PublishBytes ([byte[]]$plan.rollback_source_bytes) `
+            -ExpectedSha256 ([string]$plan.rollback_source_sha256) `
+            -ExpectedLength ([long]$plan.rollback_source_length) `
+            -Context 'rollback restored stale-claim source'
+        if ([bool]$restoreResult.succeeded) {
+            $plan.source_removed = $false
+            $plan.rollback_source_verified = $true
+            # STALE V2 MARKER: restored source verified before recovery retention.
+        } else {
+            [void]$Failures.Add(
+                (
+                    "source restore from captured trusted bytes failed {0}: " +
+                    "{1}; recovery artifacts retained" -f
+                    $plan.file.FullName,
+                    $restoreResult.error.Message
+                )
+            )
+        }
     }
-    if ($Value -is [DateTime]) {
-        return ([DateTime]$Value).ToUniversalTime().ToString(
-            'o',
-            [System.Globalization.CultureInfo]::InvariantCulture
-        )
+
+    for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
+        $plan = $Plans[$index]
+        if (-not [bool]$plan.archive_published) { continue }
+        if (-not (Test-Path -LiteralPath $plan.done_path)) {
+            $plan.archive_published = $false
+            continue
+        }
+        if (-not [bool]$plan.rollback_source_verified) {
+            $backupState = if (
+                Test-Path `
+                    -LiteralPath $plan.source_backup_path `
+                    -PathType Leaf
+            ) {
+                'retained'
+            } else {
+                'missing'
+            }
+            [void]$Failures.Add(
+                (
+                    "archive rollback retained {0} because active source " +
+                    "identity was not verified; source={1}; " +
+                    "recovery backup={2}:{3}" -f
+                    [string]$plan.done_path,
+                    $plan.file.FullName,
+                    $backupState,
+                    [string]$plan.source_backup_path
+                )
+            )
+            continue
+        }
+        try {
+            # STALE V2 MARKER: exact-handle archive rollback cleanup.
+            Remove-AgentBridgeExactFile `
+                -LiteralPath ([string]$plan.done_path) `
+                -ExpectedSha256 ([string]$plan.archive_sha256) `
+                -ExpectedLength ([long]$plan.archive_length) `
+                -Context 'archive rollback cleanup'
+            $plan.archive_published = $false
+        } catch {
+            [void]$Failures.Add(
+                (
+                    "archive rollback retained {0} because batch ownership " +
+                    "could not be deleted by verified open handle: {1}" -f
+                    [string]$plan.done_path,
+                    $_.Exception.Message
+                )
+            )
+        }
     }
-    return [string]$Value
+
+    for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
+        $plan = $Plans[$index]
+        # Rollback deliberately retains source quarantine and source backup.
+        # A boolean produced by an earlier source check must never authorize
+        # deleting the last exact recovery generation after a later active-path
+        # replacement. Committed batches use exact-handle cleanup below.
+        if (Test-Path -LiteralPath $plan.archive_temp_path) {
+            try {
+                if ([bool]$plan.archive_temp_consumed) {
+                    throw (
+                        "path reappeared after the batch archive temp was " +
+                        "moved; retained unowned artifact"
+                    )
+                }
+                Remove-AgentBridgeExactFile `
+                    -LiteralPath ([string]$plan.archive_temp_path) `
+                    -ExpectedSha256 ([string]$plan.archive_sha256) `
+                    -ExpectedLength ([long]$plan.archive_length) `
+                    -Context 'archive temp rollback cleanup'
+            } catch {
+                [void]$Failures.Add(
+                    (
+                        "archive temp cleanup failed {0}: {1}" -f
+                        [string]$plan.archive_temp_path,
+                        $_.Exception.Message
+                    )
+                )
+            }
+        }
+    }
+
+    # Never remove DoneDir by pathname during rollback. An emptiness check
+    # cannot bind the directory generation through a later Remove-Item, so a
+    # concurrently swapped foreign empty directory must be retained.
+}
+
+function New-BridgeStaleBatchFailureMessage {
+    param(
+        [Parameter(Mandatory)] [System.Exception] $PrimaryError,
+        [Parameter(Mandatory)] [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]] $RollbackFailures,
+        [Parameter(Mandatory)] [object[]] $Plans
+    )
+
+    $rollbackSummary = if ($RollbackFailures.Count -gt 0) {
+        $RollbackFailures -join ' | '
+    } else {
+        '<none>'
+    }
+    return (
+        (
+            "stale claim sweep incomplete: stale claim batch apply failed; " +
+            "primary: {0}: {1}; " +
+            "rollback failures: {2}; state: {3}"
+        ) -f
+        $PrimaryError.GetType().Name,
+        $PrimaryError.Message,
+        $rollbackSummary,
+        (Get-BridgeStaleBatchState -Plans $Plans)
+    )
 }
 
 # Emit zero or more swept-claim records into the pipeline; caller
@@ -186,20 +417,27 @@ if (-not (Test-Path -LiteralPath $claimsDir -PathType Container)) {
     return
 }
 
+$committedPlans = @()
 $mutationLock = Enter-AgentBridgeMutationLock -BridgeRoot $bridgeRoot
 try {
 $now = (Get-Date).ToUniversalTime()
 
 $parsedClaims = @()
-foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
-        -ErrorAction SilentlyContinue)) {
+$claimFiles = @(
+    Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
+        -ErrorAction SilentlyContinue |
+        Sort-Object -Property FullName
+)
+foreach ($file in $claimFiles) {
     try {
+        $claimSnapshot = Read-AgentBridgeStrictUtf8JsonSnapshot `
+            -LiteralPath $file.FullName
         $claim = ConvertFrom-AgentBridgeJson -Json (
-            Get-Content -Raw -Path $file.FullName -Encoding UTF8
+            [string]$claimSnapshot.text
         )
     } catch { continue }
     if ($null -eq $claim -or $claim -isnot [pscustomobject]) { continue }
-    $storedTaskId = Get-BridgeClaimText -Claim $claim -Name 'task_id'
+    $storedTaskId = Get-AgentBridgeClaimText -Claim $claim -Name 'task_id'
     if ([string]::IsNullOrEmpty($storedTaskId)) { continue }
     try {
         Assert-AgentBridgeTaskId -TaskId $storedTaskId
@@ -212,6 +450,9 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         file = $file
         claim = $claim
         task_id = $storedTaskId
+        source_snapshot_bytes = [byte[]]$claimSnapshot.bytes
+        source_snapshot_sha256 = [string]$claimSnapshot.sha256
+        source_snapshot_length = [long]$claimSnapshot.length
     }
 }
 
@@ -253,30 +494,28 @@ foreach ($entry in $parsedClaims) {
     $file = $entry.file
     $claim = $entry.claim
     $taskId = [string]$entry.task_id
-    $agent = Get-BridgeClaimText -Claim $claim -Name 'agent'
+    $agent = Get-AgentBridgeClaimText -Claim $claim -Name 'agent'
     if ($agent -cin @('operator','system')) { continue }
 
     $legacyTokenless = -not (
         Test-AgentBridgeStoredClaimOwnerComplete -Claim $claim
     )
-    $storedHeartbeatValue = if (
-        $claim.PSObject.Properties['last_heartbeat_utc']
-    ) {
-        $claim.last_heartbeat_utc
+    $storedHeartbeatProperty = Get-AgentBridgeExactProperty `
+        -InputObject $claim `
+        -Name 'last_heartbeat_utc'
+    $storedHeartbeatValue = if ($null -ne $storedHeartbeatProperty) {
+        $storedHeartbeatProperty.Value
     } else {
         $null
     }
-    $storedHeartbeatUtc = ConvertTo-BridgeInvariantUtcText `
-        -Value $storedHeartbeatValue
-    $storedClaimedAtValue = if (
-        $claim.PSObject.Properties['claimed_at_utc']
-    ) {
-        $claim.claimed_at_utc
+    $storedClaimedAtProperty = Get-AgentBridgeExactProperty `
+        -InputObject $claim `
+        -Name 'claimed_at_utc'
+    $storedClaimedAtValue = if ($null -ne $storedClaimedAtProperty) {
+        $storedClaimedAtProperty.Value
     } else {
         $null
     }
-    $storedClaimedAtUtc = ConvertTo-BridgeInvariantUtcText `
-        -Value $storedClaimedAtValue
 
     $leaseAnchorField = if ($legacyTokenless) {
         'claimed_at_utc'
@@ -288,7 +527,7 @@ foreach ($entry in $parsedClaims) {
     } else {
         $ownerAnchor = ConvertTo-BridgeUtc -Value $storedHeartbeatValue
         if ($null -eq $ownerAnchor -and
-            $claim.PSObject.Properties['claimed_at_utc']) {
+            $null -ne $storedClaimedAtProperty) {
             $ownerAnchor = ConvertTo-BridgeUtc -Value $storedClaimedAtValue
             if ($null -ne $ownerAnchor) {
                 $leaseAnchorField = 'claimed_at_utc'
@@ -298,9 +537,12 @@ foreach ($entry in $parsedClaims) {
     }
 
     $claimLeaseSeconds = $StaleSeconds
-    if ($claim.PSObject.Properties['lease_seconds']) {
+    $storedLeaseProperty = Get-AgentBridgeExactProperty `
+        -InputObject $claim `
+        -Name 'lease_seconds'
+    if (-not $legacyTokenless -and $null -ne $storedLeaseProperty) {
         $parsedLease = ConvertTo-BridgePositiveInt32 `
-            -Value $claim.lease_seconds
+            -Value $storedLeaseProperty.Value
         if ($parsedLease -gt 0) {
             $claimLeaseSeconds = $parsedLease
         }
@@ -318,15 +560,16 @@ foreach ($entry in $parsedClaims) {
     } else {
         $null
     }
+    $storedClaimExpiresProperty = Get-AgentBridgeExactProperty `
+        -InputObject $claim `
+        -Name 'claim_lease_expires_utc'
     $storedClaimExpiresValue = if (
-        $claim.PSObject.Properties['claim_lease_expires_utc']
+        $null -ne $storedClaimExpiresProperty
     ) {
-        $claim.claim_lease_expires_utc
+        $storedClaimExpiresProperty.Value
     } else {
         $null
     }
-    $storedClaimExpiresUtc = ConvertTo-BridgeInvariantUtcText `
-        -Value $storedClaimExpiresValue
     if (-not $legacyTokenless -and
         $null -ne $effectiveExpiresUtc -and
         $null -ne $storedClaimExpiresValue) {
@@ -378,9 +621,6 @@ foreach ($entry in $parsedClaims) {
         task_id = $taskId
         agent = $agent
         legacy_tokenless = $legacyTokenless
-        stored_heartbeat_utc = $storedHeartbeatUtc
-        stored_claimed_at_utc = $storedClaimedAtUtc
-        stored_claim_expires_utc = $storedClaimExpiresUtc
         claim_lease_seconds = $claimLeaseSeconds
         effective_expires_text = $effectiveExpiresText
         effective_lease_seconds = $effectiveLeaseSeconds
@@ -389,6 +629,9 @@ foreach ($entry in $parsedClaims) {
         lease_anchor_utc = $leaseAnchorUtc
         release_reason = $releaseReason
         done_path = $donePath
+        source_snapshot_bytes = [byte[]]$entry.source_snapshot_bytes
+        source_snapshot_sha256 = [string]$entry.source_snapshot_sha256
+        source_snapshot_length = [long]$entry.source_snapshot_length
     }
 }
 
@@ -425,196 +668,422 @@ foreach ($plan in $stalePlans) {
     $plannedArchiveNames.Add($archiveName, $archiveName)
 }
 
-$archiveFailures = New-Object System.Collections.Generic.List[string]
+$preparedPlans = @()
+$releasedAtText = $now.ToString('o')
+$archiveEncoding = New-Object System.Text.UTF8Encoding($false)
+if (
+    $stalePlans.Count -gt 0 -and
+    (Test-Path -LiteralPath $doneDir) -and
+    -not (Test-Path -LiteralPath $doneDir -PathType Container)
+) {
+    throw "stale archive destination parent is not a directory: $doneDir"
+}
 foreach ($plan in $stalePlans) {
+    if (-not (
+            Test-Path -LiteralPath $plan.file.FullName -PathType Leaf
+        )) {
+        throw (
+            "stale claim source disappeared before batch preparation: {0}" -f
+            $plan.file.FullName
+        )
+    }
+
     $file = $plan.file
     $claim = $plan.claim
     $taskId = [string]$plan.task_id
     $agent = [string]$plan.agent
+    $releaseReason = [string]$plan.release_reason
+    $donePath = [string]$plan.done_path
+    # All raw identity, privilege, owner-completeness, and stale-eligibility
+    # checks are complete before this persistence-only projection.
+    $canonicalClaim = ConvertTo-AgentBridgeCanonicalClaim `
+        -Claim $claim `
+        -SparseOptionalFields
+    $archiveClaim = [ordered]@{}
+    foreach ($property in $canonicalClaim.PSObject.Properties) {
+        $archiveClaim[$property.Name] = $property.Value
+    }
+    $archiveClaim['released_at_utc'] = $releasedAtText
+    $archiveClaim['release_status'] = 'stale_lease'
+    $archiveClaim['release_reason'] = $releaseReason
+
+    $storedHeartbeatUtc = [string]$canonicalClaim.last_heartbeat_utc
+    $storedClaimedAtUtc = [string]$canonicalClaim.claimed_at_utc
+    $claimRunId = [string]$canonicalClaim.run_id
+    $archiveTempPath = (
+        "$donePath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+    )
+    $sourceBackupPath = (
+        "$($file.FullName).stale-backup.$PID." +
+        "$([guid]::NewGuid().ToString('N'))"
+    )
+    $sourceQuarantinePath = (
+        "$($file.FullName).stale-quarantine.$PID." +
+        "$([guid]::NewGuid().ToString('N'))"
+    )
+    $archiveJson = ($archiveClaim | ConvertTo-Json -Depth 8)
+    $archiveBytes = [byte[]]$archiveEncoding.GetBytes($archiveJson)
+    $archiveSha256 = Get-BridgeSha256Hex -Bytes $archiveBytes
+    $archiveLength = [long]$archiveBytes.Length
+    $preparedPlans += [pscustomobject]@{
+        file = $file
+        claim = $claim
+        task_id = $taskId
+        agent = $agent
+        legacy_tokenless = [bool]$plan.legacy_tokenless
+        stored_heartbeat_utc = $storedHeartbeatUtc
+        stored_claimed_at_utc = $storedClaimedAtUtc
+        claim_run_id = $claimRunId
+        claim_lease_seconds = [int]$plan.claim_lease_seconds
+        effective_expires_text = [string]$plan.effective_expires_text
+        effective_lease_seconds = [long]$plan.effective_lease_seconds
+        age_seconds = [long]$plan.age_seconds
+        lease_anchor_field = [string]$plan.lease_anchor_field
+        lease_anchor_utc = [string]$plan.lease_anchor_utc
+        done_path = $donePath
+        released_at_text = $releasedAtText
+        archive_json = $archiveJson
+        archive_bytes = $archiveBytes
+        archive_sha256 = $archiveSha256
+        archive_length = $archiveLength
+        archive_temp_path = $archiveTempPath
+        archive_temp_consumed = $false
+        source_backup_path = $sourceBackupPath
+        source_snapshot_bytes = [byte[]]$plan.source_snapshot_bytes
+        source_backup_sha256 = [string]$plan.source_snapshot_sha256
+        source_backup_length = [long]$plan.source_snapshot_length
+        source_backup_prepared = $false
+        rollback_source_bytes = [byte[]]$plan.source_snapshot_bytes
+        rollback_source_sha256 = [string]$plan.source_snapshot_sha256
+        rollback_source_length = [long]$plan.source_snapshot_length
+        # Eligibility bytes are evidence/recovery only. They never authorize
+        # recreating an active pathname that this transaction did not move.
+        rollback_source_restore_allowed = $false
+        rollback_source_generation = 'eligibility-evidence-only'
+        source_quarantine_path = $sourceQuarantinePath
+        source_quarantine_capture_completed = $false
+        source_quarantine_verified = $false
+        archive_published = $false
+        source_removed = $false
+        rollback_source_verified = $false
+    }
+}
+
+$doneDirCreated = $false
+if ($preparedPlans.Count -gt 0) {
+    try {
+        $doneDirExisted = Test-Path -LiteralPath $doneDir -PathType Container
+        Ensure-AgentBridgePlainDirectory `
+            -LiteralPath $doneDir `
+            -Context 'claim archive directory'
+        $doneDirCreated = -not $doneDirExisted
+        foreach ($plan in $preparedPlans) {
+            # STALE V2 MARKER: create archive temp from trusted bytes.
+            $archiveTempResult = Invoke-AgentBridgeTrustedBytesCreateNew `
+                -DestinationPath ([string]$plan.archive_temp_path) `
+                -PublishBytes ([byte[]]$plan.archive_bytes) `
+                -ExpectedSha256 ([string]$plan.archive_sha256) `
+                -ExpectedLength ([long]$plan.archive_length) `
+                -Context 'stale claim archive temp'
+            if (-not [bool]$archiveTempResult.succeeded) {
+                throw (
+                    "stale claim archive temp create-new failed {0}: {1}" -f
+                    [string]$plan.archive_temp_path,
+                    $archiveTempResult.error.Message
+                )
+            }
+            # STALE V2 MARKER: verify active source before trusted backup.
+            $null = Assert-AgentBridgeExpectedRegularFileSnapshot `
+                -LiteralPath ([string]$plan.file.FullName) `
+                -ExpectedSha256 ([string]$plan.source_backup_sha256) `
+                -ExpectedLength ([long]$plan.source_backup_length) `
+                -Context 'stale claim eligibility source'
+            $backupResult = Invoke-AgentBridgeTrustedBytesCreateNew `
+                -DestinationPath ([string]$plan.source_backup_path) `
+                -PublishBytes ([byte[]]$plan.source_snapshot_bytes) `
+                -ExpectedSha256 ([string]$plan.source_backup_sha256) `
+                -ExpectedLength ([long]$plan.source_backup_length) `
+                -Context 'stale claim exact recovery backup'
+            if (-not [bool]$backupResult.succeeded) {
+                throw (
+                    "stale claim exact recovery backup failed {0}: {1}" -f
+                    [string]$plan.source_backup_path,
+                    $backupResult.error.Message
+                )
+            }
+            $plan.source_backup_prepared = $true
+        }
+    } catch {
+        $primaryError = $_.Exception
+        $rollbackFailures = New-Object `
+            System.Collections.Generic.List[string]
+        Invoke-BridgeStaleBatchRollback `
+            -Plans $preparedPlans `
+            -DoneDir $doneDir `
+            -RemoveDoneDir $doneDirCreated `
+            -Failures $rollbackFailures
+        throw (
+            New-BridgeStaleBatchFailureMessage `
+                -PrimaryError $primaryError `
+                -RollbackFailures $rollbackFailures `
+                -Plans $preparedPlans
+        )
+    }
+
+    try {
+        foreach ($plan in $preparedPlans) {
+            # File.Move has create-new destination semantics on Windows
+            # PowerShell 5.1 and PowerShell 7.
+            [System.IO.File]::Move(
+                [string]$plan.archive_temp_path,
+                [string]$plan.done_path
+            )
+            $plan.archive_temp_consumed = $true
+            $plan.archive_published = $true
+            [System.IO.File]::Move(
+                [string]$plan.file.FullName,
+                [string]$plan.source_quarantine_path
+            )
+            $plan.source_removed = $true
+            # A successful Move revokes the eligibility snapshot's automatic
+            # restore authority. Only a complete same-handle Q capture may
+            # authorize any later rollback publication.
+            $plan.rollback_source_restore_allowed = $false
+            $plan.rollback_source_generation = 'post-move-capture-unavailable'
+            try {
+                $quarantineSnapshot = `
+                    Get-AgentBridgeExclusiveRawFileCapture `
+                        -LiteralPath `
+                            ([string]$plan.source_quarantine_path) `
+                        -Context 'stale claim quarantined source'
+            } catch {
+                throw (
+                    "stale claim post-Move quarantine capture failed {0}; " +
+                    "eligibility restore suppressed: {1}" -f
+                    [string]$plan.source_quarantine_path,
+                    $_.Exception.Message
+                )
+            }
+            $quarantineSha256 = [string]$quarantineSnapshot.sha256
+            $quarantineLength = [long]$quarantineSnapshot.length
+            $plan.source_quarantine_capture_completed = $true
+            $plan.rollback_source_bytes = `
+                [byte[]]$quarantineSnapshot.bytes
+            $plan.rollback_source_sha256 = $quarantineSha256
+            $plan.rollback_source_length = $quarantineLength
+            $plan.rollback_source_restore_allowed = $true
+            $plan.rollback_source_generation = 'post-move-capture'
+            $captureMatchesEligibility = [bool](-not (
+                $quarantineLength -ne
+                    [long]$plan.source_backup_length -or
+                $quarantineSha256 -cne
+                    [string]$plan.source_backup_sha256
+            ))
+            if (
+                -not [bool]$quarantineSnapshot.identity_verified -or
+                -not $captureMatchesEligibility
+            ) {
+                $restoreDetail = ''
+                if (
+                    Test-Path `
+                        -LiteralPath $plan.file.FullName `
+                        -PathType Leaf
+                ) {
+                    $restoreDetail = (
+                        "active source path was concurrently recreated; " +
+                        "foreign quarantine retained"
+                    )
+                } else {
+                    try {
+                        $freshRestore = `
+                            Invoke-AgentBridgeTrustedBytesCreateNew `
+                                -DestinationPath `
+                                    ([string]$plan.file.FullName) `
+                                -PublishBytes `
+                                    ([byte[]]$quarantineSnapshot.bytes) `
+                                -ExpectedSha256 $quarantineSha256 `
+                                -ExpectedLength $quarantineLength `
+                                -Context `
+                                    'restored fresh stale-claim generation'
+                        if (-not [bool]$freshRestore.succeeded) {
+                            throw $freshRestore.error
+                        }
+                        $plan.source_removed = $false
+                        $restoreDetail = (
+                            'captured fresh active source bytes restored'
+                        )
+                    } catch {
+                        $restoreDetail = (
+                            "foreign active source restore failed {0} from " +
+                            "{1}: {2}" -f
+                            $plan.file.FullName,
+                            [string]$plan.source_quarantine_path,
+                            $_.Exception.Message
+                        )
+                    }
+                }
+                if (-not $captureMatchesEligibility) {
+                    throw (
+                        (
+                            "quarantined active source identity mismatched " +
+                            "{0}; expected={1}:{2}; actual={3}:{4}; {5}"
+                        ) -f
+                            [string]$plan.source_quarantine_path,
+                            [string]$plan.source_backup_sha256,
+                            [long]$plan.source_backup_length,
+                            [string]$quarantineSha256,
+                            [long]$quarantineLength,
+                            $restoreDetail
+                    )
+                }
+                throw (
+                    "quarantined active source identity rejected {0} after " +
+                    "complete capture: {1}; {2}" -f
+                    [string]$plan.source_quarantine_path,
+                    $quarantineSnapshot.identity_error.Message,
+                    $restoreDetail
+                )
+            }
+            $plan.source_quarantine_verified = $true
+        }
+    } catch {
+        $primaryError = $_.Exception
+        $rollbackFailures = New-Object `
+            System.Collections.Generic.List[string]
+        Invoke-BridgeStaleBatchRollback `
+            -Plans $preparedPlans `
+            -DoneDir $doneDir `
+            -RemoveDoneDir $doneDirCreated `
+            -Failures $rollbackFailures
+        throw (
+            New-BridgeStaleBatchFailureMessage `
+                -PrimaryError $primaryError `
+                -RollbackFailures $rollbackFailures `
+                -Plans $preparedPlans
+        )
+    }
+
+    $cleanupFailures = New-Object System.Collections.Generic.List[string]
+    foreach ($plan in $preparedPlans) {
+        foreach ($cleanupEntry in @(
+                [pscustomobject]@{
+                    label = 'archive temp'
+                    path = [string]$plan.archive_temp_path
+                },
+                [pscustomobject]@{
+                    label = 'source quarantine'
+                    path = [string]$plan.source_quarantine_path
+                },
+                [pscustomobject]@{
+                    label = 'source backup'
+                    path = [string]$plan.source_backup_path
+                }
+            )) {
+            if (-not (Test-Path -LiteralPath $cleanupEntry.path)) {
+                continue
+            }
+            try {
+                if ([string]$cleanupEntry.label -ceq 'archive temp') {
+                    if ([bool]$plan.archive_temp_consumed) {
+                        throw (
+                            "path reappeared after the batch archive temp " +
+                            "was moved; retained unowned artifact"
+                        )
+                    }
+                    Remove-AgentBridgeExactFile `
+                        -LiteralPath ([string]$cleanupEntry.path) `
+                        -ExpectedSha256 ([string]$plan.archive_sha256) `
+                        -ExpectedLength ([long]$plan.archive_length) `
+                        -Context 'committed archive temp cleanup'
+                } elseif (
+                    [string]$cleanupEntry.label -ceq 'source backup'
+                ) {
+                    if (
+                        Test-Path `
+                            -LiteralPath $plan.source_quarantine_path
+                    ) {
+                        throw (
+                            "source quarantine cleanup is incomplete; " +
+                            "retained recovery backup"
+                        )
+                    }
+                    if (-not [bool]$plan.source_backup_prepared) {
+                        throw 'exact backup identity was not prepared'
+                    }
+                    # STALE V2 MARKER: exact-handle committed backup cleanup.
+                    Remove-AgentBridgeExactFile `
+                        -LiteralPath ([string]$cleanupEntry.path) `
+                        -ExpectedSha256 `
+                            ([string]$plan.source_backup_sha256) `
+                        -ExpectedLength `
+                            ([long]$plan.source_backup_length) `
+                        -Context 'committed source backup cleanup'
+                } elseif (
+                    [string]$cleanupEntry.label -ceq 'source quarantine'
+                ) {
+                    if (-not [bool]$plan.source_quarantine_verified) {
+                        throw 'batch ownership was not verified'
+                    }
+                    # STALE V2 MARKER: exact-handle committed quarantine cleanup.
+                    Remove-AgentBridgeExactFile `
+                        -LiteralPath ([string]$cleanupEntry.path) `
+                        -ExpectedSha256 `
+                            ([string]$plan.source_backup_sha256) `
+                        -ExpectedLength `
+                            ([long]$plan.source_backup_length) `
+                        -Context 'committed source quarantine cleanup'
+                }
+            } catch {
+                [void]$cleanupFailures.Add(
+                    (
+                        "{0} cleanup failed {1}: {2}" -f
+                        [string]$cleanupEntry.label,
+                        [string]$cleanupEntry.path,
+                        $_.Exception.Message
+                    )
+                )
+            }
+        }
+    }
+    $committedPlans = @($preparedPlans)
+    if ($cleanupFailures.Count -gt 0) {
+        Write-Warning `
+            -Message (
+                "stale claim batch committed but ancillary cleanup failed; " +
+                "required events and results will continue; " +
+                "cleanup failures: {0}; state: {1}" -f
+                ($cleanupFailures -join ' | '),
+                (Get-BridgeStaleBatchState -Plans $preparedPlans)
+            ) `
+            -WarningAction Continue
+    }
+}
+} finally {
+    Exit-AgentBridgeMutationLock -Lock $mutationLock
+}
+
+foreach ($plan in $committedPlans) {
+    $taskId = [string]$plan.task_id
+    $agent = [string]$plan.agent
     $legacyTokenless = [bool]$plan.legacy_tokenless
     $storedHeartbeatUtc = [string]$plan.stored_heartbeat_utc
-    $storedClaimedAtUtc = [string]$plan.stored_claimed_at_utc
-    $storedClaimExpiresUtc = [string]$plan.stored_claim_expires_utc
     $claimLeaseSeconds = [int]$plan.claim_lease_seconds
     $effectiveExpiresText = [string]$plan.effective_expires_text
     $effectiveLeaseSeconds = [long]$plan.effective_lease_seconds
     $ageSeconds = [long]$plan.age_seconds
     $leaseAnchorField = [string]$plan.lease_anchor_field
     $leaseAnchorUtc = [string]$plan.lease_anchor_utc
-    $releaseReason = [string]$plan.release_reason
     $donePath = [string]$plan.done_path
 
-    # Stale: archive the claim file to done/ with a stale_lease
-    # stamp and emit a release/stale_lease event.
-    $releasedAtText = $now.ToString('o')
-    $storedWriteScope = if (
-        $claim.PSObject.Properties['write_scope']
-    ) {
-        $claim.write_scope
-    } else {
-        $null
-    }
-    $storedLeaseValue = if (
-        $claim.PSObject.Properties['lease_seconds']
-    ) {
-        $claim.lease_seconds
-    } else {
-        $null
-    }
-
-    $archiveClaim = [ordered]@{
-        agent = $agent
-        task_id = $taskId
-        summary = Get-BridgeClaimText -Claim $claim -Name 'summary'
-        mode = Get-BridgeClaimText -Claim $claim -Name 'mode'
-        write_scope = @(
-            ConvertTo-BridgeStringArray `
-                -Value $storedWriteScope `
-                -SplitComma
-        )
-        run_id = Get-BridgeClaimText -Claim $claim -Name 'run_id'
-        claimed_at_utc = $storedClaimedAtUtc
-        last_heartbeat_utc = $storedHeartbeatUtc
-        lease_seconds = ConvertTo-BridgePositiveInt32 `
-            -Value $storedLeaseValue
-        claim_lease_expires_utc = $storedClaimExpiresUtc
-        released_at_utc = $releasedAtText
-        release_status = 'stale_lease'
-        release_reason = $releaseReason
-    }
-    foreach ($optionalTextField in @(
-            'session_id',
-            'owner_session_id',
-            'owner_token_sha256',
-            'role',
-            'agent_uuid',
-            'writer_pid_semantics',
-            'cwd',
-            'git_branch'
-        )) {
-        $optionalText = Get-BridgeClaimText `
-            -Claim $claim `
-            -Name $optionalTextField
-        if ($optionalText) {
-            $archiveClaim[$optionalTextField] = $optionalText
-        }
-    }
-    $storedOwnerProcessStart = if (
-        $claim.PSObject.Properties['owner_process_start_utc']
-    ) {
-        ConvertTo-BridgeInvariantUtcText `
-            -Value $claim.owner_process_start_utc
-    } else {
-        ''
-    }
-    if ($storedOwnerProcessStart) {
-        $archiveClaim['owner_process_start_utc'] = $storedOwnerProcessStart
-    }
-    foreach ($optionalIntegerField in @('owner_pid', 'writer_pid')) {
-        $optionalInteger = if (
-            $claim.PSObject.Properties[$optionalIntegerField]
-        ) {
-            ConvertTo-BridgePositiveInt32 `
-                -Value $claim.$optionalIntegerField
-        } else {
-            0
-        }
-        if ($optionalInteger -gt 0) {
-            $archiveClaim[$optionalIntegerField] = $optionalInteger
-        }
-    }
-    $archiveCapabilities = @(
-        if ($claim.PSObject.Properties['capabilities']) {
-            ConvertTo-BridgeStringArray `
-                -Value $claim.capabilities
-        }
-    )
-    if ($archiveCapabilities.Count -gt 0) {
-        $archiveClaim['capabilities'] = $archiveCapabilities
-    }
-
-    $archiveTempPath = "$donePath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-    $archivePublished = $false
-    try {
-        if (-not (Test-Path -LiteralPath $doneDir -PathType Container)) {
-            [void](New-Item -ItemType Directory -Path $doneDir -Force `
-                -ErrorAction Stop)
-        }
-        $archiveJson = $archiveClaim | ConvertTo-Json -Depth 8
-        $archiveEncoding = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText(
-            $archiveTempPath,
-            $archiveJson,
-            $archiveEncoding
-        )
-        # File.Move has create-new destination semantics on both Windows
-        # PowerShell 5.1 and PowerShell 7: an existing archive is never
-        # overwritten. The fully-written sibling is atomically published.
-        [System.IO.File]::Move($archiveTempPath, $donePath)
-        $archivePublished = $true
-        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
-    } catch {
-        $archiveError = $_.Exception.Message
-        if (
-            $archivePublished -and
-            (Test-Path -LiteralPath $file.FullName -PathType Leaf)
-        ) {
-            try {
-                Remove-Item -LiteralPath $donePath -Force -ErrorAction Stop
-                $archivePublished = $false
-            } catch {
-                Write-Warning (
-                    "could not roll back stale archive {0}: {1}" -f
-                    $donePath,
-                    $_.Exception.Message
-                )
-            }
-        }
-        if (
-            -not $archivePublished -or
-            (Test-Path -LiteralPath $file.FullName -PathType Leaf)
-        ) {
-            $failureMessage = (
-                "could not archive stale claim {0}: {1}" -f
-                $file.Name,
-                $archiveError
-            )
-            Write-Warning $failureMessage
-            [void]$archiveFailures.Add($failureMessage)
-            continue
-        }
-        Write-Warning (
-            "claim removal reported an error after source disappeared; keeping committed stale archive {0}: {1}" -f
-            $donePath,
-            $archiveError
-        )
-    } finally {
-        if (Test-Path -LiteralPath $archiveTempPath) {
-            Remove-Item -LiteralPath $archiveTempPath -Force `
-                -ErrorAction SilentlyContinue
-        }
-    }
-
-    # Emit release event (best-effort; lease sweep must not fail
-    # because the bridge writer is momentarily contended).
+    # Emit release event only after the whole stale batch committed.
     try {
         $writeEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
         if (Test-Path -LiteralPath $writeEvent -PathType Leaf) {
-            $claimClaimedAtUtc = if ($claim.PSObject.Properties['claimed_at_utc']) {
-                ConvertTo-BridgeInvariantUtcText -Value $claim.claimed_at_utc
-            } else {
-                ''
-            }
-            $claimRunId = if ($claim.PSObject.Properties['run_id']) {
-                [string]$claim.run_id
-            } else {
-                ''
-            }
             $payload = [pscustomobject]@{
                 task_id            = $taskId
                 claim_agent        = $agent
-                claim_claimed_at_utc = $claimClaimedAtUtc
-                claim_run_id       = $claimRunId
+                claim_claimed_at_utc = [string]$plan.stored_claimed_at_utc
+                claim_run_id       = [string]$plan.claim_run_id
                 last_heartbeat_utc = $storedHeartbeatUtc
                 age_seconds        = [long]$ageSeconds
                 stale_threshold_s  = $effectiveLeaseSeconds
@@ -623,8 +1092,7 @@ foreach ($plan in $stalePlans) {
                 lease_anchor_field = $leaseAnchorField
                 lease_anchor_utc   = $leaseAnchorUtc
                 legacy_tokenless   = $legacyTokenless
-                archive_released_at_utc = ConvertTo-BridgeInvariantUtcText `
-                    -Value $releasedAtText
+                archive_released_at_utc = [string]$plan.released_at_text
                 archived_path      = $donePath
                 archive_state_semantics = 'verified_before_event_append'
             }
@@ -640,8 +1108,12 @@ foreach ($plan in $stalePlans) {
                 -InternalStaleLeaseArchivePath $donePath | Out-Null
         }
     } catch {
-        Write-Warning ("stale-lease release event emit failed: {0}" -f `
-            $_.Exception.Message)
+        Write-Warning `
+            -Message (
+                "stale-lease release event emit failed: {0}" -f
+                $_.Exception.Message
+            ) `
+            -WarningAction Continue
     }
 
     if (-not $Quiet) {
@@ -650,21 +1122,10 @@ foreach ($plan in $stalePlans) {
             -ForegroundColor Yellow
     }
 
-    # Emit into pipeline (caller wraps with @(...)).
     [pscustomobject]@{
         task_id        = $taskId
         agent          = $agent
         age_seconds    = [long]$ageSeconds
         archived_path  = $donePath
     }
-}
-if ($archiveFailures.Count -gt 0) {
-    throw (
-        "stale claim sweep incomplete ({0} failure(s)): {1}" -f
-        $archiveFailures.Count,
-        ($archiveFailures -join '; ')
-    )
-}
-} finally {
-    Exit-AgentBridgeMutationLock -Lock $mutationLock
 }

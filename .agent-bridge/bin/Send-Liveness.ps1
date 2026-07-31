@@ -143,22 +143,34 @@ if ($leaseRefreshRequested) {
         foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' `
                                            -File -ErrorAction SilentlyContinue)) {
             try {
-                $obj = ConvertFrom-AgentBridgeJson -Json (
-                    Get-Content -Raw -Path $file.FullName -Encoding UTF8
-                )
+                $claimSnapshot = Read-AgentBridgeStrictUtf8JsonSnapshot `
+                    -LiteralPath $file.FullName
+                $obj = ConvertFrom-AgentBridgeJson `
+                    -Json ([string]$claimSnapshot.text)
             } catch {
-                Write-Warning (
-                    "unreadable active claim skipped during lease refresh: " +
-                    "{0}: {1}" -f $file.FullName, $_.Exception.Message
+                throw (
+                    "unreadable active claim blocks lease refresh: " +
+                    "{0}: {1}" -f
+                    $file.FullName,
+                    $_.Exception.Message
                 )
-                continue
             }
 
             if (
-                -not $obj.PSObject.Properties['task_id'] -or
-                $obj.task_id -isnot [string]
+                $null -eq $obj -or
+                $obj -isnot
+                    [System.Management.Automation.PSCustomObject]
+            ) {
+                continue
+            }
+            $claimTaskProperty = Get-AgentBridgeExactProperty `
+                -InputObject $obj `
+                -Name 'task_id'
+            if (
+                $null -eq $claimTaskProperty -or
+                $claimTaskProperty.Value -isnot [string]
             ) { continue }
-            $claimTaskId = [string]$obj.task_id
+            $claimTaskId = [string]$claimTaskProperty.Value
             if ([string]::IsNullOrEmpty($claimTaskId)) { continue }
             try {
                 Assert-AgentBridgeTaskId -TaskId $claimTaskId
@@ -181,6 +193,10 @@ if ($leaseRefreshRequested) {
                 [pscustomobject]@{
                     file = $file
                     claim = $obj
+                    task_id = $claimTaskId
+                    snapshot_bytes = [byte[]]$claimSnapshot.bytes
+                    snapshot_sha256 = [string]$claimSnapshot.sha256
+                    snapshot_length = [long]$claimSnapshot.length
                 }
             )
         }
@@ -203,11 +219,18 @@ if ($leaseRefreshRequested) {
             $entry = $entries[0]
             $file = $entry.file
             $obj = $entry.claim
+            $claimAgentProperty = Get-AgentBridgeExactProperty `
+                -InputObject $obj `
+                -Name 'agent'
             if (
-                -not $obj.PSObject.Properties['agent'] -or
-                $obj.agent -isnot [string] -or
-                [string]$obj.agent -cne $Agent
+                $null -eq $claimAgentProperty -or
+                $claimAgentProperty.Value -isnot [string] -or
+                [string]$claimAgentProperty.Value -cne $Agent
             ) {
+                continue
+            }
+            if (-not (Test-AgentBridgeStoredClaimOwnerComplete `
+                    -Claim $obj)) {
                 continue
             }
             if (-not (Test-AgentBridgeClaimOwner `
@@ -215,6 +238,9 @@ if ($leaseRefreshRequested) {
                     -OwnerContext $ownerContext)) {
                 continue
             }
+            Assert-AgentBridgeActiveClaimRawAuthorityFields `
+                -Record $obj `
+                -ClaimPath ([string]$file.FullName)
             [void]$eligibleEntries.Add($entry)
         }
 
@@ -223,29 +249,20 @@ if ($leaseRefreshRequested) {
         foreach ($entry in $eligibleEntries) {
             [void](Assert-AgentBridgePreferredClaimPath `
                 -ClaimsDir $claimsDir `
-                -TaskId ([string]$entry.claim.task_id))
+                -TaskId ([string]$entry.task_id))
         }
 
         foreach ($entry in $eligibleEntries) {
             $file = $entry.file
             $obj = $entry.claim
-            # Bump field, preserving claim shape.
-            if ($obj.PSObject.Properties['last_heartbeat_utc']) {
-                $obj.last_heartbeat_utc = $heartbeatTs
-            } else {
-                $obj | Add-Member -NotePropertyName last_heartbeat_utc `
-                    -NotePropertyValue $heartbeatTs -Force
-            }
-            $leaseSeconds = if (
-                $obj.PSObject.Properties['lease_seconds']
-            ) {
-                ConvertTo-BridgePositiveInt32 -Value $obj.lease_seconds
-            } else {
-                0
-            }
+            # Authorization and preferred-path validation above use the raw
+            # claim. Only the persisted copy is projected to the shared,
+            # allowlisted Claim schema.
+            $canonicalClaim = ConvertTo-AgentBridgeCanonicalClaim -Claim $obj
+            $canonicalClaim.last_heartbeat_utc = $heartbeatTs
+            $leaseSeconds = [int]$canonicalClaim.lease_seconds
             if ($leaseSeconds -le 0) { $leaseSeconds = 900 }
-            $obj | Add-Member -NotePropertyName lease_seconds `
-                -NotePropertyValue $leaseSeconds -Force
+            $canonicalClaim.lease_seconds = $leaseSeconds
             $expiresAt = try {
                 $heartbeatNow.AddSeconds($leaseSeconds)
             } catch [System.ArgumentOutOfRangeException] {
@@ -254,17 +271,22 @@ if ($leaseRefreshRequested) {
                     [DateTimeKind]::Utc
                 )
             }
-            $obj | Add-Member -NotePropertyName claim_lease_expires_utc `
-                -NotePropertyValue $expiresAt.ToString('o') -Force
-            $tmp = $null
+            $canonicalClaim.claim_lease_expires_utc = $expiresAt.ToString('o')
             try {
-                $json = ($obj | ConvertTo-Json -Depth 8)
-                $tmp = "$($file.FullName).tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+                $json = ($canonicalClaim | ConvertTo-Json -Depth 8)
                 $encoding = New-Object System.Text.UTF8Encoding($false)
-                [System.IO.File]::WriteAllText($tmp, $json, $encoding)
-                Update-AgentBridgeFileFromTemp `
-                    -TempPath $tmp `
-                    -DestinationPath $file.FullName
+                $jsonBytes = $encoding.GetBytes($json)
+                $expectedPublishSha256 = Get-AgentBridgeSha256Hex `
+                    -Bytes $jsonBytes
+                $expectedPublishLength = [long]$jsonBytes.Length
+                Update-AgentBridgeFileFromBytes `
+                    -PublishBytes $jsonBytes `
+                    -DestinationPath $file.FullName `
+                    -ExpectedSourceBytes ([byte[]]$entry.snapshot_bytes) `
+                    -ExpectedSourceSha256 ([string]$entry.snapshot_sha256) `
+                    -ExpectedSourceLength ([long]$entry.snapshot_length) `
+                    -ExpectedPublishSha256 $expectedPublishSha256 `
+                    -ExpectedPublishLength $expectedPublishLength
             } catch {
                 $leaseFailure = (
                     'could not bump lease for ' +
@@ -273,14 +295,6 @@ if ($leaseRefreshRequested) {
                     $_.Exception.Message
                 )
                 [void]$operationFailures.Add($leaseFailure)
-            } finally {
-                if (
-                    $tmp -and
-                    (Test-Path -LiteralPath $tmp -PathType Leaf)
-                ) {
-                    Remove-Item -LiteralPath $tmp -Force `
-                        -ErrorAction SilentlyContinue
-                }
             }
         }
         }
@@ -295,24 +309,28 @@ if ($leaseRefreshRequested) {
 
 # Event append is deliberately outside the global claim mutation lock. A slow
 # or failed event writer must neither block unrelated claim mutations nor stop
-# an owned lease from being refreshed first.
-try {
-    & $writeEventScript `
-        -Agent $Agent `
-        -Type $type `
-        -Status $status `
-        -Severity $Severity `
-        -To $To `
-        -Message $Message `
-        -TaskId $TaskId `
-        -Paths $Paths `
-        -Role $Role `
-        -AgentUuid $AgentUuid `
-        -Capabilities $Capabilities
-} catch {
-    [void]$operationFailures.Add(
-        'event emit failed: ' + $_.Exception.Message
-    )
+# an owned lease from being refreshed first. Do not publish an active event
+# when an owned lease refresh failed: that event would falsely attest that the
+# claim heartbeat was persisted.
+if (-not ($leaseRefreshRequested -and $operationFailures.Count -gt 0)) {
+    try {
+        & $writeEventScript `
+            -Agent $Agent `
+            -Type $type `
+            -Status $status `
+            -Severity $Severity `
+            -To $To `
+            -Message $Message `
+            -TaskId $TaskId `
+            -Paths $Paths `
+            -Role $Role `
+            -AgentUuid $AgentUuid `
+            -Capabilities $Capabilities
+    } catch {
+        [void]$operationFailures.Add(
+            'event emit failed: ' + $_.Exception.Message
+        )
+    }
 }
 
 if ($operationFailures.Count -gt 0) {

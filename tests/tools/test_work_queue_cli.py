@@ -531,7 +531,7 @@ def test_stale_command_defaults_to_300_second_fallback(
             {
                 "agent": "codex-1",
                 "task_id": "legacy-default-stale",
-                "summary": "missing stored lease uses CLI default",
+                "summary": "legacy claim uses CLI fallback instead of stored lease",
                 "mode": "read-only",
                 "write_scope": [],
                 "run_id": "",
@@ -539,6 +539,7 @@ def test_stale_command_defaults_to_300_second_fallback(
                 "last_heartbeat_utc": (
                     datetime.now(timezone.utc) + timedelta(days=1)
                 ).isoformat().replace("+00:00", "Z"),
+                "lease_seconds": 900,
             }
         ),
         encoding="utf-8",

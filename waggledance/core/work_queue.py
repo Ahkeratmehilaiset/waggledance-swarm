@@ -20,7 +20,12 @@ The claim file schema is:
   "run_id": "",
   "claimed_at_utc": "2026-05-18T07:50:00Z",
   "last_heartbeat_utc": "2026-05-18T07:50:00Z",
-  "lease_seconds": 900
+  "lease_seconds": 900,
+  "session_id": "claude-1-20260518T075000Z",
+  "owner_session_id": "claude-1-20260518T075000Z",
+  "owner_token_sha256": "<sha256 of the raw session owner token>",
+  "owner_pid": 1234,
+  "owner_process_start_utc": "2026-05-18T07:49:00Z"
 }
 ```
 
@@ -58,6 +63,14 @@ BRIDGE_ROOT_ENV_NAMES = ("AGENT_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_ROOT")
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$")
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+ROLE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
+AGENT_UUID_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_.:-]{1,64}$")
+OWNER_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 ALLOWED_MODES = ("read-only", "write")
 
 
@@ -79,6 +92,11 @@ class Claim:
     last_heartbeat_utc: str
     lease_seconds: int
     claim_lease_expires_utc: str = ""
+    session_id: str = ""
+    owner_session_id: str = ""
+    owner_token_sha256: str = ""
+    owner_pid: int = 0
+    owner_process_start_utc: str = ""
     role: str = ""
     agent_uuid: str = ""
     capabilities: tuple[str, ...] = field(default_factory=tuple)
@@ -95,6 +113,20 @@ class ReleaseRecord:
     release_message: str
     claimed_at_utc: str
     released_at_utc: str
+    mode: str = "read-only"
+    write_scope: tuple[str, ...] = field(default_factory=tuple)
+    run_id: str = ""
+    last_heartbeat_utc: str = ""
+    lease_seconds: int = DEFAULT_LEASE_SECONDS
+    claim_lease_expires_utc: str = ""
+    session_id: str = ""
+    owner_session_id: str = ""
+    owner_token_sha256: str = ""
+    owner_pid: int = 0
+    owner_process_start_utc: str = ""
+    role: str = ""
+    agent_uuid: str = ""
+    capabilities: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -106,6 +138,18 @@ class ArchivedClaim:
     age_seconds: int
     release_reason: str
     applied: bool
+
+
+@dataclass(frozen=True)
+class _ClaimOwnerContext:
+    session_id: str
+    owner_session_id: str
+    owner_token_sha256: str
+    owner_pid: int
+    owner_process_start_utc: str
+    role: str
+    agent_uuid: str
+    capabilities: tuple[str, ...]
 
 
 def resolve_bridge_root(bridge_root: Path | None = None) -> Path:
@@ -122,6 +166,169 @@ def resolve_bridge_root(bridge_root: Path | None = None) -> Path:
         if value:
             return Path(value)
     return DEFAULT_BRIDGE_ROOT
+
+
+def _claim_owner_context(
+    *,
+    include_claim_metadata: bool = False,
+) -> _ClaimOwnerContext:
+    owner_session_id = os.environ.get("AGENT_BRIDGE_OWNER_SESSION_ID", "")
+    if not SESSION_ID_PATTERN.fullmatch(owner_session_id):
+        raise WorkQueueError(
+            "claim_owner_context_invalid: "
+            "AGENT_BRIDGE_OWNER_SESSION_ID is missing or malformed"
+        )
+
+    owner_token = os.environ.get("AGENT_BRIDGE_OWNER_TOKEN", "")
+    if not OWNER_TOKEN_PATTERN.fullmatch(owner_token):
+        raise WorkQueueError(
+            "claim_owner_context_invalid: "
+            "AGENT_BRIDGE_OWNER_TOKEN is missing or malformed"
+        )
+
+    owner_pid_text = os.environ.get("AGENT_BRIDGE_OWNER_PID", "")
+    try:
+        owner_pid = int(owner_pid_text)
+    except (TypeError, ValueError) as exc:
+        raise WorkQueueError(
+            "claim_owner_context_invalid: "
+            "AGENT_BRIDGE_OWNER_PID is missing or malformed"
+        ) from exc
+    if owner_pid <= 0:
+        raise WorkQueueError(
+            "claim_owner_context_invalid: "
+            "AGENT_BRIDGE_OWNER_PID is missing or malformed"
+        )
+
+    owner_process_start = os.environ.get(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "",
+    )
+    try:
+        owner_process_start_utc = _iso(_parse_utc(owner_process_start))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise WorkQueueError(
+            "claim_owner_context_invalid: "
+            "AGENT_BRIDGE_OWNER_PROCESS_START_UTC is missing or malformed"
+        ) from exc
+
+    session_id = ""
+    role = ""
+    agent_uuid = ""
+    capabilities: list[str] = []
+    if include_claim_metadata:
+        ambient_session_id = os.environ.get("AGENT_BRIDGE_SESSION_ID", "")
+        if ambient_session_id and not SESSION_ID_PATTERN.fullmatch(
+            ambient_session_id
+        ):
+            raise WorkQueueError(
+                "claim_owner_context_invalid: "
+                "AGENT_BRIDGE_SESSION_ID is malformed"
+            )
+        session_id = ambient_session_id or owner_session_id
+
+        role = os.environ.get("AGENT_BRIDGE_ROLE", "")
+        if role and not ROLE_PATTERN.fullmatch(role):
+            raise WorkQueueError(
+                "claim_owner_context_invalid: AGENT_BRIDGE_ROLE is malformed"
+            )
+
+        agent_uuid = os.environ.get("AGENT_BRIDGE_AGENT_UUID", "")
+        if agent_uuid and not AGENT_UUID_PATTERN.fullmatch(agent_uuid):
+            raise WorkQueueError(
+                "claim_owner_context_invalid: "
+                "AGENT_BRIDGE_AGENT_UUID is malformed"
+            )
+        agent_uuid = agent_uuid.lower()
+
+        seen_capabilities: set[str] = set()
+        for capability in re.split(
+            r"[,;]",
+            os.environ.get("AGENT_BRIDGE_CAPABILITIES", ""),
+        ):
+            normalized = capability.strip()
+            if not normalized:
+                continue
+            if not CAPABILITY_PATTERN.fullmatch(normalized):
+                raise WorkQueueError(
+                    "claim_owner_context_invalid: "
+                    "AGENT_BRIDGE_CAPABILITIES contains a malformed capability"
+                )
+            if normalized not in seen_capabilities:
+                seen_capabilities.add(normalized)
+                capabilities.append(normalized)
+
+    owner_token_sha256 = hashlib.sha256(owner_token.encode("utf-8")).hexdigest()
+    return _ClaimOwnerContext(
+        session_id=session_id,
+        owner_session_id=owner_session_id,
+        owner_token_sha256=owner_token_sha256,
+        owner_pid=owner_pid,
+        owner_process_start_utc=owner_process_start_utc,
+        role=role,
+        agent_uuid=agent_uuid,
+        capabilities=tuple(capabilities),
+    )
+
+
+def _claim_is_legacy_tokenless(claim: Claim) -> bool:
+    if not isinstance(claim.owner_session_id, str) or not (
+        SESSION_ID_PATTERN.fullmatch(claim.owner_session_id)
+    ):
+        return True
+    if not isinstance(claim.owner_token_sha256, str) or not (
+        OWNER_TOKEN_PATTERN.fullmatch(claim.owner_token_sha256)
+    ):
+        return True
+    if (
+        not isinstance(claim.owner_pid, int)
+        or isinstance(claim.owner_pid, bool)
+        or claim.owner_pid <= 0
+    ):
+        return True
+    try:
+        _parse_utc(claim.owner_process_start_utc)
+    except (AttributeError, TypeError, ValueError):
+        return True
+    return False
+
+
+def _legacy_claim_expiry(
+    claim: Claim,
+    *,
+    fallback_lease_seconds: int,
+) -> tuple[datetime | None, int]:
+    lease_seconds = (
+        claim.lease_seconds
+        if claim.lease_seconds > 0
+        else fallback_lease_seconds
+    )
+    try:
+        claimed_at = _parse_utc(claim.claimed_at_utc)
+    except (AttributeError, TypeError, ValueError):
+        return None, lease_seconds
+    return claimed_at + timedelta(seconds=lease_seconds), lease_seconds
+
+
+def _assert_claim_owner(
+    claim: Claim,
+    owner_context: _ClaimOwnerContext,
+    *,
+    operation: str,
+) -> None:
+    if _claim_is_legacy_tokenless(claim):
+        raise WorkQueueError(
+            "claim_owner_legacy_tokenless: "
+            f"current session cannot {operation} a legacy tokenless claim"
+        )
+    if (
+        claim.owner_session_id != owner_context.owner_session_id
+        or claim.owner_token_sha256 != owner_context.owner_token_sha256
+    ):
+        raise WorkQueueError(
+            "claim_owner_wrong_generation: "
+            f"current session cannot {operation} a claim owned by another generation"
+        )
 
 
 def claim_task(
@@ -155,6 +362,7 @@ def claim_task(
     if lease_seconds <= 0:
         raise WorkQueueError("lease_seconds must be positive")
 
+    owner_context = _claim_owner_context(include_claim_metadata=True)
     bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
@@ -163,14 +371,19 @@ def claim_task(
     existing: Claim | None = None
     if claim_path.exists():
         existing = _read_claim_file(claim_path)
-        if existing.agent != agent and not force:
+        if not force:
             raise WorkQueueError(
                 f"task {task_id} already claimed by {existing.agent}"
             )
-        if existing.agent != agent and force:
+        if existing.agent != agent:
             raise WorkQueueError(
                 f"force claim across agents refused: existing={existing.agent}"
             )
+        _assert_claim_owner(
+            existing,
+            owner_context,
+            operation="force-update",
+        )
     if mode == "write":
         conflicts = [
             claim
@@ -201,6 +414,14 @@ def claim_task(
         last_heartbeat_utc=timestamp,
         lease_seconds=int(lease_seconds),
         claim_lease_expires_utc=lease_expires,
+        session_id=owner_context.session_id,
+        owner_session_id=owner_context.owner_session_id,
+        owner_token_sha256=owner_context.owner_token_sha256,
+        owner_pid=owner_context.owner_pid,
+        owner_process_start_utc=owner_context.owner_process_start_utc,
+        role=owner_context.role,
+        agent_uuid=owner_context.agent_uuid,
+        capabilities=owner_context.capabilities,
     )
     _write_claim_file(claim_path, claim, create_new=existing is None)
     return claim
@@ -221,10 +442,10 @@ def release_task(
     if not release_status or not release_status.strip():
         raise WorkQueueError("release_status required")
 
+    owner_context = _claim_owner_context()
     bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     done_dir = bridge / "work_queue" / "done"
-    done_dir.mkdir(parents=True, exist_ok=True)
     claim_path = _claim_path_for_task(claims_dir, task_id)
     if not claim_path.exists():
         raise WorkQueueError(f"no active claim for task {task_id}")
@@ -234,6 +455,7 @@ def release_task(
         raise WorkQueueError(
             f"release rejected: claim held by {existing.agent}, not {agent}"
         )
+    _assert_claim_owner(existing, owner_context, operation="release")
 
     released_at = _iso(now_utc or datetime.now(timezone.utc))
     record = ReleaseRecord(
@@ -244,7 +466,22 @@ def release_task(
         release_message=release_message.strip(),
         claimed_at_utc=existing.claimed_at_utc,
         released_at_utc=released_at,
+        mode=existing.mode,
+        write_scope=existing.write_scope,
+        run_id=existing.run_id,
+        last_heartbeat_utc=existing.last_heartbeat_utc,
+        lease_seconds=existing.lease_seconds,
+        claim_lease_expires_utc=existing.claim_lease_expires_utc,
+        session_id=existing.session_id,
+        owner_session_id=existing.owner_session_id,
+        owner_token_sha256=existing.owner_token_sha256,
+        owner_pid=existing.owner_pid,
+        owner_process_start_utc=existing.owner_process_start_utc,
+        role=existing.role,
+        agent_uuid=existing.agent_uuid,
+        capabilities=existing.capabilities,
     )
+    done_dir.mkdir(parents=True, exist_ok=True)
     done_path = done_dir / f"{_safe_name(task_id)}-{_safe_name(released_at)}.json"
     _write_release_file(done_path, record)
     claim_path.unlink()
@@ -262,6 +499,7 @@ def heartbeat(
     """Refresh the lease on an existing claim."""
     _validate_agent(agent)
     _validate_task_id(task_id)
+    owner_context = _claim_owner_context()
     bridge = resolve_bridge_root(bridge_root)
     claim_path = _claim_path_for_task(bridge / "work_queue" / "claims", task_id)
     if not claim_path.exists():
@@ -272,6 +510,7 @@ def heartbeat(
         raise WorkQueueError(
             f"heartbeat rejected: claim held by {existing.agent}, not {agent}"
         )
+    _assert_claim_owner(existing, owner_context, operation="heartbeat")
 
     timestamp = _iso(now_utc or datetime.now(timezone.utc))
     refreshed_lease_seconds = (
@@ -291,6 +530,11 @@ def heartbeat(
         last_heartbeat_utc=timestamp,
         lease_seconds=refreshed_lease_seconds,
         claim_lease_expires_utc=lease_expires,
+        session_id=existing.session_id,
+        owner_session_id=existing.owner_session_id,
+        owner_token_sha256=existing.owner_token_sha256,
+        owner_pid=existing.owner_pid,
+        owner_process_start_utc=existing.owner_process_start_utc,
         role=existing.role,
         agent_uuid=existing.agent_uuid,
         capabilities=existing.capabilities,
@@ -321,9 +565,18 @@ def detect_stale_claims(
     max_age_seconds: int = DEFAULT_STALE_MAX_SECONDS,
 ) -> list[Claim]:
     """Return claims whose last heartbeat is older than max_age_seconds."""
-    cutoff = (now_utc or datetime.now(timezone.utc)) - timedelta(seconds=max_age_seconds)
+    now = now_utc or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=max_age_seconds)
     stale: list[Claim] = []
     for claim in list_claims(bridge_root=bridge_root):
+        if _claim_is_legacy_tokenless(claim):
+            expires, _ = _legacy_claim_expiry(
+                claim,
+                fallback_lease_seconds=max_age_seconds,
+            )
+            if expires is None or now >= expires:
+                stale.append(claim)
+            continue
         try:
             last = _parse_utc(claim.last_heartbeat_utc)
         except (ValueError, TypeError):
@@ -377,35 +630,56 @@ def archive_stale_claims(
     for claim in list_claims(bridge_root=bridge):
         if claim.agent in PRIVILEGED_AGENTS:
             continue
-        candidates: list[str] = []
-        if claim.last_heartbeat_utc:
-            candidates.append(claim.last_heartbeat_utc)
-        if claim.claimed_at_utc and claim.claimed_at_utc not in candidates:
-            candidates.append(claim.claimed_at_utc)
-        if not candidates:
-            continue
-        last: datetime | None = None
-        for candidate in candidates:
-            try:
-                last = _parse_utc(candidate)
-                break
-            except (ValueError, TypeError):
-                continue
-        if last is None:
-            age_seconds = max_age_seconds
+        legacy_tokenless = _claim_is_legacy_tokenless(claim)
+        if legacy_tokenless:
+            expires, effective_lease_seconds = _legacy_claim_expiry(
+                claim,
+                fallback_lease_seconds=max_age_seconds,
+            )
+            if expires is None:
+                age_seconds = effective_lease_seconds
+            else:
+                if now < expires:
+                    continue
+                claimed_at = expires - timedelta(
+                    seconds=effective_lease_seconds
+                )
+                age_seconds = int((now - claimed_at).total_seconds())
+            reason = (
+                "legacy tokenless claim claimed_at_utc was "
+                f"{age_seconds}s old; lease threshold "
+                f"{effective_lease_seconds}s"
+            )
         else:
-            if last >= cutoff:
+            candidates: list[str] = []
+            if claim.last_heartbeat_utc:
+                candidates.append(claim.last_heartbeat_utc)
+            if claim.claimed_at_utc and claim.claimed_at_utc not in candidates:
+                candidates.append(claim.claimed_at_utc)
+            if not candidates:
                 continue
-            age_seconds = int((now - last).total_seconds())
+            last: datetime | None = None
+            for candidate in candidates:
+                try:
+                    last = _parse_utc(candidate)
+                    break
+                except (ValueError, TypeError):
+                    continue
+            if last is None:
+                age_seconds = max_age_seconds
+            else:
+                if last >= cutoff:
+                    continue
+                age_seconds = int((now - last).total_seconds())
+            reason = (
+                f"last_heartbeat_utc was {age_seconds}s old; "
+                f"lease threshold {max_age_seconds}s"
+            )
 
         safe_task = _safe_name(claim.task_id)
         if not safe_task:
             continue
         archive_path = done_dir / f"{safe_task}.{stamp}.stale_lease.json"
-        reason = (
-            f"last_heartbeat_utc was {age_seconds}s old; "
-            f"lease threshold {max_age_seconds}s"
-        )
         if apply:
             done_dir.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -423,6 +697,18 @@ def archive_stale_claims(
                 "release_status": "stale_lease",
                 "release_reason": reason,
             }
+            if claim.session_id:
+                payload["session_id"] = claim.session_id
+            if claim.owner_session_id:
+                payload["owner_session_id"] = claim.owner_session_id
+            if claim.owner_token_sha256:
+                payload["owner_token_sha256"] = claim.owner_token_sha256
+            if claim.owner_pid:
+                payload["owner_pid"] = claim.owner_pid
+            if claim.owner_process_start_utc:
+                payload["owner_process_start_utc"] = (
+                    claim.owner_process_start_utc
+                )
             if claim.role:
                 payload["role"] = claim.role
             if claim.agent_uuid:
@@ -544,6 +830,20 @@ def _scope_entries_overlap(left: str, right: str) -> bool:
     return left.startswith(right + "/") or right.startswith(left + "/")
 
 
+def _coerce_owner_pid(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if value > 0 else 0
+    if not isinstance(value, str):
+        return 0
+    normalized = value.strip()
+    if not normalized.isdecimal():
+        return 0
+    owner_pid = int(normalized)
+    return owner_pid if owner_pid > 0 else 0
+
+
 def _read_claim_file(path: Path) -> Claim:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -562,6 +862,13 @@ def _read_claim_file(path: Path) -> Claim:
         last_heartbeat_utc=str(data.get("last_heartbeat_utc", "")),
         lease_seconds=int(data.get("lease_seconds", DEFAULT_LEASE_SECONDS)),
         claim_lease_expires_utc=str(data.get("claim_lease_expires_utc", "")),
+        session_id=str(data.get("session_id", "")),
+        owner_session_id=str(data.get("owner_session_id", "")),
+        owner_token_sha256=str(data.get("owner_token_sha256", "")),
+        owner_pid=_coerce_owner_pid(data.get("owner_pid", 0)),
+        owner_process_start_utc=str(
+            data.get("owner_process_start_utc", "")
+        ),
         role=str(data.get("role", "")),
         agent_uuid=str(data.get("agent_uuid", "")),
         capabilities=tuple(str(s) for s in data.get("capabilities", []) if s),
@@ -580,6 +887,11 @@ def _write_claim_file(path: Path, claim: Claim, *, create_new: bool = False) -> 
         "last_heartbeat_utc": claim.last_heartbeat_utc,
         "lease_seconds": claim.lease_seconds,
         "claim_lease_expires_utc": claim.claim_lease_expires_utc,
+        "session_id": claim.session_id,
+        "owner_session_id": claim.owner_session_id,
+        "owner_token_sha256": claim.owner_token_sha256,
+        "owner_pid": claim.owner_pid,
+        "owner_process_start_utc": claim.owner_process_start_utc,
     }
     if claim.role:
         payload["role"] = claim.role
@@ -599,7 +911,24 @@ def _write_release_file(path: Path, record: ReleaseRecord) -> None:
         "release_message": record.release_message,
         "claimed_at_utc": record.claimed_at_utc,
         "released_at_utc": record.released_at_utc,
+        "mode": record.mode,
+        "write_scope": list(record.write_scope),
+        "run_id": record.run_id,
+        "last_heartbeat_utc": record.last_heartbeat_utc,
+        "lease_seconds": record.lease_seconds,
+        "claim_lease_expires_utc": record.claim_lease_expires_utc,
+        "session_id": record.session_id,
+        "owner_session_id": record.owner_session_id,
+        "owner_token_sha256": record.owner_token_sha256,
+        "owner_pid": record.owner_pid,
+        "owner_process_start_utc": record.owner_process_start_utc,
     }
+    if record.role:
+        payload["role"] = record.role
+    if record.agent_uuid:
+        payload["agent_uuid"] = record.agent_uuid
+    if record.capabilities:
+        payload["capabilities"] = list(record.capabilities)
     _write_json_file(path, payload, create_new=True)
 
 

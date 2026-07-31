@@ -1,11 +1,34 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tools.work_queue import main
 from waggledance.core.work_queue import claim_task
+
+
+@pytest.fixture(autouse=True)
+def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", str(os.getpid()))
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _run(capsys, *args: str) -> tuple[int, dict]:
@@ -31,6 +54,17 @@ def test_claim_and_list_round_trip(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert report["decision"] == "claimed"
     assert report["claim"]["agent"] == "codex-1"
+    assert report["claim"]["session_id"] == "pytest-session"
+    assert report["claim"]["owner_session_id"] == "pytest-session"
+    assert report["claim"]["owner_token_sha256"] == hashlib.sha256(
+        ("a" * 64).encode("utf-8")
+    ).hexdigest()
+    assert report["claim"]["owner_pid"] == os.getpid()
+    assert report["claim"]["owner_process_start_utc"].startswith(
+        "2026-07-28T00:00:00"
+    )
+    assert "owner_token" not in report["claim"]
+    assert "a" * 64 not in json.dumps(report, sort_keys=True)
 
     exit_code, report = _run(
         capsys,
@@ -42,6 +76,149 @@ def test_claim_and_list_round_trip(tmp_path: Path, capsys) -> None:
     assert report["decision"] == "listed"
     assert len(report["claims"]) == 1
     assert report["claims"][0]["task_id"] == "task-001"
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    [
+        "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN",
+        "AGENT_BRIDGE_OWNER_PID",
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+    ],
+)
+def test_claim_refuses_missing_owner_context_before_runtime_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    missing_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.delenv(missing_name)
+
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "missing-owner-context",
+        "--summary",
+        "must fail before creating runtime state",
+    )
+
+    assert exit_code == 3
+    assert report["ok"] is False
+    assert report["decision"] == "work_queue_error"
+    assert "claim_owner_context_invalid" in report["errors"][0]
+    assert not bridge.exists()
+
+
+def test_cli_refuses_legacy_tokenless_claim_mutations(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claim_path = claims_dir / "legacy-tokenless.json"
+    legacy_claim = {
+        "agent": "codex-1",
+        "task_id": "legacy-tokenless",
+        "summary": "legacy claim cannot acquire a new owner",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "",
+        "claimed_at_utc": "2026-07-28T00:00:00Z",
+        "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+        "lease_seconds": 900,
+    }
+    claim_path.write_text(json.dumps(legacy_claim), encoding="utf-8")
+    original = claim_path.read_bytes()
+
+    for command in ("heartbeat", "release"):
+        exit_code, report = _run(
+            capsys,
+            "--bridge-root",
+            str(bridge),
+            command,
+            "--agent",
+            "codex-1",
+            "--task-id",
+            "legacy-tokenless",
+        )
+        assert exit_code == 3
+        assert report["ok"] is False
+        assert "claim_owner_legacy_tokenless" in report["errors"][0]
+        assert claim_path.read_bytes() == original
+
+    assert not (bridge / "work_queue" / "done").exists()
+
+
+def test_cli_refuses_same_agent_wrong_generation_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    exit_code, report = _run(
+        capsys,
+        "--bridge-root",
+        str(bridge),
+        "claim",
+        "--agent",
+        "codex-1",
+        "--task-id",
+        "generation-bound",
+        "--summary",
+        "owned by generation A",
+    )
+    assert exit_code == 0, report
+    claim_path = bridge / "work_queue" / "claims" / "generation-bound.json"
+    original = claim_path.read_bytes()
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "b" * 64)
+
+    mutation_commands = [
+        (
+            "heartbeat",
+            "--agent",
+            "codex-1",
+            "--task-id",
+            "generation-bound",
+        ),
+        (
+            "release",
+            "--agent",
+            "codex-1",
+            "--task-id",
+            "generation-bound",
+        ),
+        (
+            "claim",
+            "--agent",
+            "codex-1",
+            "--task-id",
+            "generation-bound",
+            "--summary",
+            "generation B must not force replace",
+            "--force",
+        ),
+    ]
+    for command in mutation_commands:
+        exit_code, report = _run(
+            capsys,
+            "--bridge-root",
+            str(bridge),
+            *command,
+        )
+        assert exit_code == 3
+        assert report["ok"] is False
+        assert "claim_owner_wrong_generation" in report["errors"][0]
+        assert claim_path.read_bytes() == original
+
+    assert not (bridge / "work_queue" / "done").exists()
 
 
 def test_cli_defaults_to_runtime_bridge_root_env_for_list(

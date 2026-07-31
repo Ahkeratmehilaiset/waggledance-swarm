@@ -26,11 +26,12 @@ ANDed with ``tools/check_rco_pass_present.py``. Absence of a peer block is not
 an approval signal by itself.
 
     python tools/check_bridge_changes_requested.py \\
-        --task-id <task_id> --from-agent claude --bridge-root .agent-bridge
+        --task-id <task_id> --from-agent claude --pr-number <pr_number> \\
+        --bridge-root .agent-bridge
 
 Exit codes:
   0  no peer block found, safe to merge
-  3  peer block found (most recent peer-decision for this task_id was blocking)
+  3  peer block found, or complete PR scope was not provided
   2  argument error / unreadable events file
 """
 from __future__ import annotations
@@ -238,9 +239,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Optional pull request number. When provided, peer blocks whose "
-            "payload or task_id identifies this PR also block even if their "
-            "bridge task_id differs from the implementation task."
+            "Positive pull request number required for complete merge scope. "
+            "It remains syntactically optional so a missing value can return "
+            "a structured fail-closed decision."
         ),
     )
     parser.add_argument(
@@ -265,6 +266,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.from_agent or not args.from_agent.strip():
         print("--from-agent must not be empty", file=sys.stderr)
         return 2
+    if args.pr_number is None or args.pr_number <= 0:
+        result = {
+            "ok": False,
+            "clear_to_merge": False,
+            "decision": "scope_incomplete",
+            "task_id": args.task_id,
+            "pr_number": args.pr_number,
+            "merging_agent": args.from_agent,
+            "author_agent": (args.author_agent or "").strip(),
+            "latest_blocking_event": None,
+            "latest_approval_event": None,
+            "error": (
+                "--pr-number must be a positive integer to evaluate "
+                "complete PR scope"
+            ),
+        }
+        if args.json:
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print("BLOCKED: scope_incomplete", file=sys.stderr)
+            print(result["error"], file=sys.stderr)
+        return 3
 
     bridge_root = resolve_bridge_root(args.bridge_root)
     events_path = bridge_root / "shared" / "events.jsonl"

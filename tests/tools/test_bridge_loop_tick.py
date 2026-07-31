@@ -8,6 +8,7 @@ no real GitHub call fires and the live repo is never touched.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,25 @@ AGENT_UUIDS = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
+
+
+@pytest.fixture(autouse=True)
+def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", str(os.getpid()))
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _with_agent_uuid(event: dict) -> dict:

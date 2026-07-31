@@ -1278,6 +1278,80 @@ def test_unrelated_event_types_are_ignored() -> None:
     assert result["clear_to_merge"] is True
 
 
+def test_cli_rejects_incomplete_pr_scope_before_bridge_resolution(
+    tmp_path: Path,
+) -> None:
+    missing_bridge_root = tmp_path / "missing-bridge"
+    cases = [
+        ([], None),
+        (["--pr-number", "0"], 0),
+        (["--pr-number", "-1"], -1),
+    ]
+
+    for pr_args, expected_pr_number in cases:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--task-id",
+                "T",
+                "--from-agent",
+                "claude",
+                *pr_args,
+                "--bridge-root",
+                str(missing_bridge_root),
+                "--json",
+            ],
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 3
+        assert result.stderr == ""
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["clear_to_merge"] is False
+        assert payload["decision"] == "scope_incomplete"
+        assert payload["task_id"] == "T"
+        assert payload["pr_number"] == expected_pr_number
+        assert payload["merging_agent"] == "claude"
+        assert payload["author_agent"] == ""
+        assert payload["latest_blocking_event"] is None
+        assert payload["latest_approval_event"] is None
+        assert payload["error"] == (
+            "--pr-number must be a positive integer to evaluate complete PR scope"
+        )
+
+
+def test_cli_machine_driver_shaped_argv_fails_closed_before_bridge_read(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--task-id",
+            "T",
+            "--from-agent",
+            "codex-lead-1",
+            "--bridge-root",
+            str(tmp_path / "missing-bridge"),
+        ],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    assert result.stdout == ""
+    assert "scope_incomplete" in result.stderr
+    assert "--pr-number must be a positive integer" in result.stderr
+    assert "bridge events file not found" not in result.stderr
+
+
 def test_cli_smoke_returns_exit_3_on_block(tmp_path: Path) -> None:
     bridge_root = _seed_bridge(
         tmp_path,
@@ -1294,6 +1368,8 @@ def test_cli_smoke_returns_exit_3_on_block(tmp_path: Path) -> None:
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--bridge-root",
             str(bridge_root),
             "--json",
@@ -1322,6 +1398,8 @@ def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--bridge-root",
             str(bridge_root),
             "--json",
@@ -1357,6 +1435,8 @@ def test_cli_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--bridge-root",
             str(bridge_root),
             "--json",
@@ -1393,6 +1473,8 @@ def test_cli_defaults_to_runtime_bridge_root_env(tmp_path: Path) -> None:
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--json",
         ],
         cwd=str(ROOT),
@@ -1434,6 +1516,8 @@ def test_cli_explicit_bridge_root_overrides_runtime_bridge_root_env(
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--bridge-root",
             str(explicit_bridge),
             "--json",
@@ -1464,6 +1548,8 @@ def test_cli_smoke_fails_closed_on_invalid_jsonl(tmp_path: Path) -> None:
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--bridge-root",
             str(bridge_root),
             "--json",
@@ -1492,6 +1578,8 @@ def test_cli_smoke_fails_closed_on_non_object_jsonl(tmp_path: Path) -> None:
             "T",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "1",
             "--bridge-root",
             str(bridge_root),
             "--json",
@@ -1538,6 +1626,8 @@ def test_cli_smoke_reproduces_pr_527_race_pattern(tmp_path: Path) -> None:
             "idle-protocol-late-round-invariant-2026-05-21",
             "--from-agent",
             "claude",
+            "--pr-number",
+            "527",
             "--bridge-root",
             str(bridge_root),
             "--json",

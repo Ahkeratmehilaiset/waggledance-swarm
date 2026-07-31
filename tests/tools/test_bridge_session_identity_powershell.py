@@ -6,17 +6,43 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
 
+from waggledance.core.work_queue import (
+    claim_task as python_claim_task,
+    heartbeat as python_heartbeat,
+    release_task as python_release_task,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BRIDGE_BIN = ROOT / ".agent-bridge" / "bin"
 BOUND_AGENT = "codex-tools-1"
 OTHER_AGENT = "codex-lead-1"
+
+
+@pytest.fixture(autouse=True)
+def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", str(os.getpid()))
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _powershell() -> str:
@@ -48,6 +74,12 @@ def _run_script(
     env["AGENT_BRIDGE_OWNER_TOKEN"] = "a" * 64
     env["AGENT_BRIDGE_OWNER_PID"] = str(os.getpid())
     env["AGENT_BRIDGE_OWNER_PROCESS_START_UTC"] = "2026-07-28T00:00:00Z"
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        env.pop(name, None)
     if extra_env:
         for name, value in extra_env.items():
             if value is None:
@@ -1839,3 +1871,128 @@ def test_legacy_tokenless_claim_cannot_be_refreshed_or_released(
     assert release.returncode != 0
     assert "claim_owner_mismatch" in release.stderr
     assert json.loads(claim_path.read_text(encoding="utf-8")) == legacy_claim
+
+
+def test_powershell_claim_can_be_heartbeated_and_released_by_python_owner(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "powershell-to-python-owner-parity"
+    created = _run_script(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        "-Summary",
+        "PowerShell claim consumed by Python",
+        bound_agent="codex",
+    )
+    assert created.returncode == 0, created.stderr
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    original = json.loads(claim_path.read_text(encoding="utf-8"))
+    expected_owner = {
+        name: original[name]
+        for name in (
+            "owner_session_id",
+            "owner_token_sha256",
+            "owner_pid",
+            "owner_process_start_utc",
+        )
+    }
+
+    refreshed = python_heartbeat(
+        agent="codex",
+        task_id=task_id,
+        bridge_root=runtime_root,
+        now_utc=datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    after_heartbeat = json.loads(claim_path.read_text(encoding="utf-8"))
+
+    assert refreshed.owner_session_id == expected_owner["owner_session_id"]
+    assert refreshed.owner_token_sha256 == expected_owner["owner_token_sha256"]
+    assert refreshed.owner_pid == expected_owner["owner_pid"]
+    assert (
+        refreshed.owner_process_start_utc
+        == expected_owner["owner_process_start_utc"]
+    )
+    assert {
+        name: after_heartbeat[name] for name in expected_owner
+    } == expected_owner
+
+    released = python_release_task(
+        agent="codex",
+        task_id=task_id,
+        bridge_root=runtime_root,
+        now_utc=datetime(2030, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert released.owner_session_id == expected_owner["owner_session_id"]
+    assert released.owner_token_sha256 == expected_owner["owner_token_sha256"]
+    assert not claim_path.exists()
+    done_files = list((runtime_root / "work_queue" / "done").glob("*.json"))
+    assert len(done_files) == 1
+    done = json.loads(done_files[0].read_text(encoding="utf-8"))
+    assert {name: done[name] for name in expected_owner} == expected_owner
+
+
+def test_python_claim_can_be_heartbeated_and_released_by_powershell_owner(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "python-to-powershell-owner-parity"
+    claim = python_claim_task(
+        agent="codex",
+        task_id=task_id,
+        summary="Python claim consumed by PowerShell",
+        bridge_root=runtime_root,
+        now_utc=datetime(2026, 7, 28, tzinfo=timezone.utc),
+    )
+    claim_path = runtime_root / "work_queue" / "claims" / f"{task_id}.json"
+    original = json.loads(claim_path.read_text(encoding="utf-8"))
+    expected_owner = {
+        "owner_session_id": "pytest-session",
+        "owner_token_sha256": hashlib.sha256(
+            ("a" * 64).encode("utf-8")
+        ).hexdigest(),
+        "owner_pid": os.getpid(),
+        "owner_process_start_utc": claim.owner_process_start_utc,
+    }
+    assert original["session_id"] == "pytest-session"
+    assert {name: original[name] for name in expected_owner} == expected_owner
+
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        "python-owner-heartbeat",
+        bound_agent="codex",
+    )
+    assert heartbeat.returncode == 0, heartbeat.stderr
+    after_heartbeat = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert after_heartbeat["last_heartbeat_utc"] != original["last_heartbeat_utc"]
+    assert after_heartbeat["session_id"] == original["session_id"]
+    assert {
+        name: after_heartbeat[name] for name in expected_owner
+    } == expected_owner
+
+    released = _run_script(
+        runtime_root,
+        "Release-AgentTask.ps1",
+        "-Agent",
+        "codex",
+        "-TaskId",
+        task_id,
+        bound_agent="codex",
+    )
+    assert released.returncode == 0, released.stderr
+    assert not claim_path.exists()
+    done_files = list((runtime_root / "work_queue" / "done").glob("*.json"))
+    assert len(done_files) == 1
+    done = json.loads(done_files[0].read_text(encoding="utf-8"))
+    assert done["session_id"] == original["session_id"]
+    assert {name: done[name] for name in expected_owner} == expected_owner

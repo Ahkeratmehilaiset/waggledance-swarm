@@ -197,6 +197,8 @@ def _to_jsonable(value: object) -> Any:
 
 def _exit_code_for_error(message: str) -> int:
     lowered = message.lower()
+    if lowered.startswith("claim_owner_"):
+        return 3
     invalid_markers = (
         "invalid",
         "require",

@@ -17,6 +17,25 @@ from tools.bridge_next_action import (
 from waggledance.core.work_queue import Claim, claim_task
 
 
+@pytest.fixture(autouse=True)
+def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", str(os.getpid()))
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
     events_path = path / "shared" / "events.jsonl"
     events_path.parent.mkdir(parents=True)

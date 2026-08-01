@@ -118,6 +118,91 @@ def test_wake_ack_does_not_close_underlying_direct_request(tmp_path: Path) -> No
     assert report["request_closure_rule"].startswith("wake acknowledgements")
 
 
+@pytest.mark.parametrize(
+    "status",
+    ["ack", "acknowledged", "received", "seen", "wake_ack", "file_received"],
+)
+def test_requester_ack_does_not_close_direct_request(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            _request(),
+            {
+                "ts_utc": "2026-06-14T12:02:00Z",
+                "agent": "codex-tools-1",
+                "to": "claude-rco-2",
+                "type": "message",
+                "task_id": "pr1208-rco-pass",
+                "status": status,
+                "message": "Request delivery receipt; decision still pending.",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "direct_rco_pass_block_request_ready"
+    assert report["direct_pass_block_request_count"] == 1
+
+
+def test_requester_nonterminal_done_request_does_not_close_direct_request(
+    tmp_path: Path,
+) -> None:
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            _request(),
+            {
+                "ts_utc": "2026-06-14T12:02:00Z",
+                "agent": "codex-tools-1",
+                "to": "claude-rco-2",
+                "type": "done",
+                "task_id": "pr1208-rco-pass",
+                "status": "request",
+                "message": "This is another request, not terminal closure.",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "direct_rco_pass_block_request_ready"
+    assert report["direct_pass_block_request_count"] == 1
+
+
+def test_later_utc_response_closes_request_regardless_of_file_order(
+    tmp_path: Path,
+) -> None:
+    response = {
+        "ts_utc": "2026-06-14T12:00:00.100000+00:00",
+        "agent": "claude-rco-2",
+        "to": "codex-tools-1",
+        "type": "decision",
+        "task_id": "pr1208-rco-pass",
+        "status": "rco_pass",
+        "message": "RCO_PASS at the requested head.",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[response, _request(ts="2026-06-14T12:00:00Z")],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_ready_no_direct_pass_block_request"
+    assert report["direct_pass_block_request_count"] == 0
+    assert report["bridge_next_action"]["action"] == "claim_unblocked_work"
+
+
 def test_real_rco_pass_closes_direct_request(tmp_path: Path) -> None:
     report = build_rco_readiness_report(
         agent="claude-rco-2",

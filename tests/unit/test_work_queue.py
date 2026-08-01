@@ -58,6 +58,123 @@ def test_claim_creates_persistent_claim_file(tmp_path: Path) -> None:
     assert (bridge / "work_queue" / "claims" / "test-task-001.json").exists()
 
 
+def test_claim_rejects_hard_linked_mutation_lock(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    work_queue = bridge / "work_queue"
+    work_queue.mkdir(parents=True)
+    external = tmp_path / "external-lock-target"
+    external.write_bytes(b"lock")
+    lock_path = work_queue / ".claims.mutation.lock"
+    os.link(external, lock_path)
+
+    with pytest.raises(WorkQueueError, match="exactly one filesystem link"):
+        claim_task(
+            agent="claude-1",
+            task_id="hard-linked-mutation-lock",
+            summary="reject an aliased coordination lock",
+            bridge_root=bridge,
+        )
+
+    assert os.lstat(lock_path).st_nlink == 2
+    assert not (work_queue / "claims").exists()
+
+
+def test_claim_rejects_symlinked_mutation_lock(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    work_queue = bridge / "work_queue"
+    work_queue.mkdir(parents=True)
+    external = tmp_path / "external-lock-target"
+    external.write_bytes(b"lock")
+    lock_path = work_queue / ".claims.mutation.lock"
+    try:
+        os.symlink(external.resolve(), lock_path)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    with pytest.raises(WorkQueueError, match="regular file|reparse link"):
+        claim_task(
+            agent="claude-1",
+            task_id="symlinked-mutation-lock",
+            summary="reject a reparse coordination lock",
+            bridge_root=bridge,
+        )
+
+    assert not (work_queue / "claims").exists()
+
+
+def test_claim_rechecks_mutation_lock_links_after_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    lock_path = bridge / "work_queue" / ".claims.mutation.lock"
+    alias_path = tmp_path / "post-acquire-lock-alias"
+    injected = False
+    lock_module = (
+        work_queue_module.msvcrt
+        if os.name == "nt"
+        else work_queue_module.fcntl
+    )
+    lock_name = "locking" if os.name == "nt" else "lockf"
+    real_lock = getattr(lock_module, lock_name)
+
+    def lock_then_link(*args, **kwargs):
+        nonlocal injected
+        result = real_lock(*args, **kwargs)
+        if not injected:
+            os.link(lock_path, alias_path)
+            injected = True
+        return result
+
+    monkeypatch.setattr(lock_module, lock_name, lock_then_link)
+
+    with pytest.raises(WorkQueueError, match="exactly one filesystem link"):
+        claim_task(
+            agent="claude-1",
+            task_id="post-acquire-hard-link",
+            summary="revalidate the acquired coordination lock",
+            bridge_root=bridge,
+        )
+
+    assert injected is True
+    assert os.lstat(lock_path).st_nlink == 2
+    assert not (bridge / "work_queue" / "claims").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open lock paths cannot be renamed on Windows")
+def test_claim_rejects_mutation_lock_path_swap_after_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    lock_path = bridge / "work_queue" / ".claims.mutation.lock"
+    displaced_path = tmp_path / "displaced-lock"
+    real_lock = work_queue_module.fcntl.lockf
+    swapped = False
+
+    def lock_then_swap(*args, **kwargs):
+        nonlocal swapped
+        result = real_lock(*args, **kwargs)
+        if not swapped and args[1] != work_queue_module.fcntl.LOCK_UN:
+            lock_path.replace(displaced_path)
+            lock_path.write_bytes(b"foreign")
+            swapped = True
+        return result
+
+    monkeypatch.setattr(work_queue_module.fcntl, "lockf", lock_then_swap)
+
+    with pytest.raises(WorkQueueError, match="path changed after opening"):
+        claim_task(
+            agent="claude-1",
+            task_id="post-acquire-path-swap",
+            summary="bind the lock path to the acquired handle",
+            bridge_root=bridge,
+        )
+
+    assert swapped is True
+    assert not (bridge / "work_queue" / "claims").exists()
+
+
 def test_claim_accepts_bridge_namespaced_task_id(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     task_id = "codex-tools-1/magma-share-admission-status-bridge-template-20260613"
@@ -887,6 +1004,67 @@ def test_mutations_refuse_duplicate_exact_task_records(
             operation()
         assert {
             path.name: path.read_bytes() for path in (claim_path, shadow_path)
+        } == original
+        assert not (bridge / "work_queue" / "done").exists()
+
+
+def test_mutations_refuse_duplicate_records_for_another_task(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    duplicate_task_id = "duplicate/other-task"
+    unrelated_task_id = "unrelated-existing-task"
+    claim_task(
+        agent="claude-1",
+        task_id=duplicate_task_id,
+        summary="duplicate fixture",
+        bridge_root=bridge,
+    )
+    claim_task(
+        agent="claude-1",
+        task_id=unrelated_task_id,
+        summary="unrelated valid fixture",
+        bridge_root=bridge,
+    )
+    claims_dir = bridge / "work_queue" / "claims"
+    duplicate_path = next(
+        path
+        for path in claims_dir.glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["task_id"]
+        == duplicate_task_id
+    )
+    shadow_path = claims_dir / "duplicate-other-shadow.json"
+    shadow_path.write_bytes(duplicate_path.read_bytes())
+    original = {
+        path.name: path.read_bytes() for path in claims_dir.glob("*.json")
+    }
+
+    operations = (
+        lambda: claim_task(
+            agent="claude-1",
+            task_id="unrelated-new-task",
+            summary="must reject globally ambiguous queue state",
+            bridge_root=bridge,
+        ),
+        lambda: heartbeat(
+            agent="claude-1",
+            task_id=unrelated_task_id,
+            bridge_root=bridge,
+        ),
+        lambda: release_task(
+            agent="claude-1",
+            task_id=unrelated_task_id,
+            bridge_root=bridge,
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(
+            WorkQueueError,
+            match="duplicate active claim records for exact task_id",
+        ):
+            operation()
+        assert {
+            path.name: path.read_bytes() for path in claims_dir.glob("*.json")
         } == original
         assert not (bridge / "work_queue" / "done").exists()
 

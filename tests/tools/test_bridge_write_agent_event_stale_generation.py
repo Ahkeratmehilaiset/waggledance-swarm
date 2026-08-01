@@ -122,12 +122,25 @@ if ($env:WD_TEST_CLAIM_ATTEMPT) {
         )
     (isolated_bin / "Invoke-StaleClaimSweep.ps1").write_text(
         """
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'WriteEvent')]
 param(
-    [Parameter(Mandatory)] [string] $TaskId,
-    [Parameter(Mandatory)] [string] $ArchivePath,
-    [Parameter(Mandatory)] [string] $PayloadJson
+    [Parameter(Mandatory, ParameterSetName = 'WriteEvent')]
+    [string] $TaskId,
+    [Parameter(Mandatory, ParameterSetName = 'WriteEvent')]
+    [string] $ArchivePath,
+    [Parameter(Mandatory, ParameterSetName = 'WriteEvent')]
+    [string] $PayloadJson,
+    [Parameter(Mandatory, ParameterSetName = 'QuietSweep')]
+    [switch] $Quiet
 )
+
+# Claim-AgentTask performs an opportunistic quiet sweep before taking its
+# direct mutation lock. This isolated wrapper drives the event writer, so its
+# quiet-sweep role is intentionally a no-op; otherwise parameter binding would
+# stop the competing Claim before it reaches the lock-attempt marker.
+if ($Quiet) {
+    return
+}
 
 & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
     -Agent system `
@@ -302,6 +315,112 @@ def test_demonstrably_new_generation_appends_truthful_stale_event(
     assert event["task_id"] == TASK_ID
     assert event["status"] == "stale_lease"
     assert event["payload"]["archived_path"] == str(archive_path)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_postcommit_stale_lock_finalizers_are_warning_only(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    active_generation = dict(ARCHIVED_GENERATION)
+    active_generation["owner_token_sha256"] = "b" * 64
+    archive_path, proof_payload = _write_generation_fixture(
+        runtime_root,
+        active_generation=active_generation,
+    )
+    isolated_bin = _isolated_internal_writer(tmp_path)
+
+    writer_path = isolated_bin / "Write-AgentEvent.ps1"
+    source = writer_path.read_text(encoding="utf-8")
+    unlock_call = (
+        "            $stream.Unlock(0, 1)\n"
+        "        } catch {\n"
+        "            $lockFinalizationFailures += $_.Exception"
+    )
+    unlock_injection = (
+        "            throw 'injected committed stale-lock unlock failure'\n"
+        "        } catch {\n"
+        "            $lockFinalizationFailures += $_.Exception"
+    )
+    dispose_call = (
+        "            $stream.Dispose()\n"
+        "        } catch {\n"
+        "            $lockFinalizationFailures += $_.Exception"
+    )
+    dispose_injection = (
+        "            throw 'injected committed stale-lock dispose failure'\n"
+        "        } catch {\n"
+        "            $lockFinalizationFailures += $_.Exception"
+    )
+    parent_call = (
+        "    try {\n"
+        "        Exit-AgentBridgeParentDirectoryPin -Pin $parentPin\n"
+        "    } catch {\n"
+        "        $lockFinalizationFailures += $_.Exception"
+    )
+    parent_injection = (
+        "    try {\n"
+        "        throw 'injected committed stale-lock parent-pin failure'\n"
+        "    } catch {\n"
+        "        $lockFinalizationFailures += $_.Exception"
+    )
+    assert source.count(unlock_call) == 1
+    assert source.count(dispose_call) == 1
+    assert source.count(parent_call) == 1
+    writer_path.write_text(
+        source.replace(unlock_call, unlock_injection, 1)
+        .replace(dispose_call, dispose_injection, 1)
+        .replace(parent_call, parent_injection, 1),
+        encoding="utf-8",
+    )
+
+    sweep_path = isolated_bin / "Invoke-StaleClaimSweep.ps1"
+    sweep_source = sweep_path.read_text(encoding="utf-8")
+    archive_argument = "    -InternalStaleLeaseArchivePath $ArchivePath"
+    assert sweep_source.count(archive_argument) == 1
+    sweep_path.write_text(
+        sweep_source.replace(
+            archive_argument,
+            archive_argument + " `\n    -WarningAction Stop",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_internal_writer(
+        runtime_root,
+        isolated_bin,
+        archive_path,
+        proof_payload,
+        powershell=powershell,
+    )
+
+    combined = completed.stdout + completed.stderr
+    normalized = " ".join(combined.split())
+    assert completed.returncode == 0, combined
+    assert "canonical stale-release event committed" in normalized
+    for expected_failure in (
+        "injected committed stale-lock unlock failure",
+        "injected committed stale-lock dispose failure",
+        "injected committed stale-lock parent-pin failure",
+    ):
+        assert expected_failure in normalized
+
+    event_lines = (runtime_root / "shared" / "events.jsonl").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(event_lines) == 1
+    assert json.loads(event_lines[0])["task_id"] == TASK_ID
+    outbox_files = list((runtime_root / "outbox" / "system").glob("*.jsonl"))
+    assert len(outbox_files) == 1
+    assert len(outbox_files[0].read_text(encoding="utf-8").splitlines()) == 1
+    assert json.loads(
+        (runtime_root / "shared" / "last_system.json").read_text(
+            encoding="utf-8"
+        )
+    )["task_id"] == TASK_ID
+    assert not list((runtime_root / "spool").glob("*.jsonl"))
 
 
 def test_same_generation_active_claim_still_rejects_stale_event(

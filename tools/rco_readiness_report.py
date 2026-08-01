@@ -23,8 +23,8 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
+    _direct_rco_pass_block_request_closed,
     _event_agent,
     _event_recipients,
     _event_status,
@@ -233,7 +233,8 @@ def build_rco_readiness_report(
         "direct_pass_block_requests": direct_requests,
         "bridge_next_action": _next_action_summary(next_action),
         "request_closure_rule": (
-            "wake acknowledgements do not resolve direct RCO pass/block requests; "
+            "wake acknowledgements and other receipt statuses do not resolve "
+            "direct RCO pass/block requests; "
             "only substantive RCO pass/block/finding/changes responses or "
             "requester terminal closure do"
         ),
@@ -256,14 +257,20 @@ def _open_direct_rco_pass_block_requests(
         max_age_minutes = max_age_hours * 60.0
     else:
         max_age_minutes = None
-    open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    latest_by_key: dict[
+        tuple[str, str],
+        tuple[datetime, int, Mapping[str, Any], dict[str, Any]],
+    ] = {}
     for index, event in enumerate(events):
-        _close_direct_requests(open_by_key, event, target_agent=agent)
         if not _is_direct_rco_pass_block_request(agent=agent, event=event):
             continue
         task_id = _task_id(event)
-        key = (task_id, _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number"))
-        open_by_key[key] = {
+        pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
+        key = (task_id, pr)
+        event_ts = _parse_utc(_event_ts(event)) or datetime.min.replace(
+            tzinfo=timezone.utc
+        )
+        state = {
             "target_agent": agent,
             "requester": _event_agent(event),
             "task_id": task_id,
@@ -273,8 +280,21 @@ def _open_direct_rco_pass_block_requests(
             "message": _safe_message(event.get("message")),
             "event_index": index,
             "head": _payload_scalar(event, "head"),
-            "pr": _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number"),
+            "pr": pr,
         }
+        previous = latest_by_key.get(key)
+        if previous is None or (event_ts, index) > previous[:2]:
+            latest_by_key[key] = (event_ts, index, event, state)
+
+    open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, (_event_ts_value, _index, request, state) in latest_by_key.items():
+        if _direct_rco_pass_block_request_closed(
+            request=request,
+            agent=agent,
+            events=events,
+        ):
+            continue
+        open_by_key[key] = state
 
     rows: list[dict[str, Any]] = []
     for state in open_by_key.values():
@@ -300,33 +320,6 @@ def _open_direct_rco_pass_block_requests(
     for row in rows:
         row.pop("event_index", None)
     return rows
-
-
-def _close_direct_requests(
-    open_by_key: dict[tuple[str, str], dict[str, Any]],
-    event: Mapping[str, Any],
-    *,
-    target_agent: str,
-) -> None:
-    event_ts = _parse_utc(_event_ts(event))
-    event_agent = _event_agent(event)
-    event_task = _task_id(event)
-    event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
-    for key, state in list(open_by_key.items()):
-        task_id, pr = key
-        request_ts = _parse_utc(str(state["ts_utc"]))
-        if event_ts is None or request_ts is None or event_ts <= request_ts:
-            continue
-        same_task = bool(task_id and event_task == task_id)
-        same_pr = bool(pr and event_pr == pr)
-        if not same_task and not same_pr:
-            continue
-        requester = str(state["requester"])
-        if event_agent == target_agent and _is_substantive_rco_response(event):
-            del open_by_key[key]
-            continue
-        if event_agent == requester and _is_terminal_closure(event):
-            del open_by_key[key]
 
 
 def _is_direct_rco_pass_block_request(
@@ -355,48 +348,6 @@ def _is_direct_rco_pass_block_request(
         )
     )
     return wants_decision and asks_for_decision
-
-
-def _is_substantive_rco_response(event: Mapping[str, Any]) -> bool:
-    status_tokens = _tokens(_event_status(event))
-    if status_tokens.intersection({"ack", "acknowledged", "received", "seen"}):
-        return False
-    if {"wake", "ack"}.issubset(status_tokens):
-        return False
-    if _event_type(event) == "finding":
-        return True
-    tokens = _event_tokens(event)
-    if {"rco", "pass"}.issubset(tokens):
-        return True
-    if "block" in tokens or "blocked" in tokens:
-        return True
-    if {"changes", "requested"}.issubset(tokens):
-        return True
-    return False
-
-
-def _is_terminal_closure(event: Mapping[str, Any]) -> bool:
-    return _event_type(event) == "done" or _event_status(event) in CLOSED_REQUEST_STATUSES
-
-
-def _event_tokens(event: Mapping[str, Any]) -> set[str]:
-    fields = [
-        _event_type(event),
-        _event_status(event),
-        _safe_message(event.get("message")),
-    ]
-    payload = event.get("payload")
-    if isinstance(payload, Mapping):
-        for key, value in payload.items():
-            if str(key) in {
-                "current_blocker",
-                "decision",
-                "required_action",
-                "request",
-                "status",
-            } and isinstance(value, (str, int, float, bool)):
-                fields.append(str(value))
-    return _tokens(" ".join(fields))
 
 
 def _request_signal_tokens(event: Mapping[str, Any]) -> set[str]:

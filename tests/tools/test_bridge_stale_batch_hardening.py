@@ -66,6 +66,7 @@ def _isolated_bin(tmp_path: Path) -> Path:
     isolated_bin.mkdir()
     for name in (
         "AgentBridgeSessionIdentity.ps1",
+        "Claim-AgentTask.ps1",
         "Invoke-StaleClaimSweep.ps1",
         "Write-AgentEvent.ps1",
     ):
@@ -79,9 +80,12 @@ def _run_sweep(
     runtime_root: Path,
     script_root: Path,
     warning_action_stop: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    if extra_env:
+        env.update(extra_env)
     command = [
         powershell,
         "-NoProfile",
@@ -97,6 +101,47 @@ def _run_sweep(
         command.extend(["-WarningAction", "Stop"])
     return subprocess.run(
         command,
+        cwd=runtime_root.parent,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _run_claim(
+    *,
+    powershell: str,
+    runtime_root: Path,
+    script_root: Path,
+    task_id: str,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    env["AGENT_BRIDGE_AGENT"] = "codex"
+    env["AGENT_BRIDGE_OWNER_SESSION_ID"] = "stale-claim-failure-session"
+    env["AGENT_BRIDGE_OWNER_TOKEN"] = "d" * 64
+    env["AGENT_BRIDGE_OWNER_PID"] = str(os.getpid())
+    env["AGENT_BRIDGE_OWNER_PROCESS_START_UTC"] = "2026-07-31T00:00:00Z"
+    return subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_root / "Claim-AgentTask.ps1"),
+            "-Agent",
+            "codex",
+            "-TaskId",
+            task_id,
+            "-Summary",
+            "claim must stop after failed mutating stale sweep",
+            "-Mode",
+            "write",
+            "-WriteScope",
+            "waggledance/core/work_queue.py",
+        ],
         cwd=runtime_root.parent,
         env=env,
         check=False,
@@ -174,7 +219,239 @@ def _inject_after_marker(
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
-def test_cleanup_warning_cannot_hide_committed_event_or_result(
+def test_archive_publication_ignores_same_bytes_ads_temp_replacement(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "replaced-archive-preparation-temp"
+    claim_path = _write_stale_claim(runtime_root, task_id)
+    isolated_bin = _isolated_bin(tmp_path)
+    _inject_after_marker(
+        isolated_bin / "Invoke-StaleClaimSweep.ps1",
+        marker="            # STALE V3 MARKER: publish trusted archive bytes directly.",
+        body="""
+            $sameBytes = [System.IO.File]::ReadAllBytes(
+                [string]$plan.archive_temp_path
+            )
+            [System.IO.File]::Delete([string]$plan.archive_temp_path)
+            [System.IO.File]::WriteAllBytes(
+                [string]$plan.archive_temp_path,
+                $sameBytes
+            )
+            Set-Content `
+                -LiteralPath ([string]$plan.archive_temp_path) `
+                -Stream 'foreign-evidence' `
+                -Value 'FOREIGN-TEMP-ADS' `
+                -NoNewline `
+                -ErrorAction Stop
+            $tempAds = Get-Content `
+                -LiteralPath ([string]$plan.archive_temp_path) `
+                -Stream 'foreign-evidence' `
+                -Raw `
+                -ErrorAction Stop
+            if ($tempAds -cne 'FOREIGN-TEMP-ADS') {
+                throw 'archive temp ADS precondition failed'
+            }
+""".strip(),
+    )
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode == 0, combined
+    assert "intentionally retained by no-delete policy" in combined
+    assert not claim_path.exists()
+    archives = list(
+        (runtime_root / "work_queue" / "done").glob("*.stale_lease.json")
+    )
+    assert len(archives) == 1
+    assert json.loads(archives[0].read_text(encoding="utf-8"))["task_id"] == task_id
+    temps = [
+        path
+        for path in (runtime_root / "work_queue" / "done").glob("*.tmp.*")
+        if not path.name.endswith(".test-hardlink")
+    ]
+    assert len(temps) == 1
+    assert Path(f"{temps[0]}:foreign-evidence").read_text(encoding="utf-8") == (
+        "FOREIGN-TEMP-ADS"
+    )
+    assert (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_archive_publication_ignores_hardlinked_preparation_evidence(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows hard-link semantics are required")
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "hardlinked-archive-preparation-temp"
+    claim_path = _write_stale_claim(runtime_root, task_id)
+    original = claim_path.read_bytes()
+    isolated_bin = _isolated_bin(tmp_path)
+    _inject_after_marker(
+        isolated_bin / "Invoke-StaleClaimSweep.ps1",
+        marker="            # STALE V3 MARKER: publish trusted archive bytes directly.",
+        body="""
+            $archiveTempAlias = (
+                [string]$plan.archive_temp_path + '.test-hardlink'
+            )
+            [void](New-Item -ItemType HardLink `
+                -Path $archiveTempAlias `
+                -Target ([string]$plan.archive_temp_path) `
+                -ErrorAction Stop)
+""".strip(),
+    )
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode == 0, combined
+    assert "intentionally retained by no-delete policy" in combined
+    assert not claim_path.exists()
+    archives = list(
+        (runtime_root / "work_queue" / "done").glob("*.stale_lease.json")
+    )
+    assert len(archives) == 1
+    assert json.loads(archives[0].read_text(encoding="utf-8"))["task_id"] == task_id
+    temps = [
+        path
+        for path in (runtime_root / "work_queue" / "done").glob("*.tmp.*")
+        if not path.name.endswith(".test-hardlink")
+    ]
+    aliases = list(
+        (runtime_root / "work_queue" / "done").glob("*.test-hardlink")
+    )
+    assert len(temps) == 1
+    assert len(aliases) == 1
+    assert aliases[0].samefile(temps[0])
+    assert (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_claim_stops_after_failed_mutating_stale_sweep(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    old_task = "stale-source-moved-before-sweep-failure"
+    old_claim = _write_stale_claim(runtime_root, old_task)
+    isolated_bin = _isolated_bin(tmp_path)
+    sweep_script = f"""
+#requires -Version 5.1
+[CmdletBinding()]
+param([switch] $Quiet)
+$source = '{str(old_claim).replace("'", "''")}'
+$quarantine = $source + '.injected-failed-sweep'
+[System.IO.File]::Move($source, $quarantine)
+throw 'injected mutating stale sweep failure'
+""".lstrip()
+    (isolated_bin / "Invoke-StaleClaimSweep.ps1").write_text(
+        sweep_script,
+        encoding="utf-8",
+    )
+    new_task = "must-not-acquire-after-failed-sweep"
+
+    completed = _run_claim(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+        task_id=new_task,
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert "stale-claim sweep before claim acquisition failed" in combined
+    assert "injected mutating stale sweep failure" in combined
+    assert not (
+        runtime_root / "work_queue" / "claims" / f"{new_task}.json"
+    ).exists()
+    assert Path(str(old_claim) + ".injected-failed-sweep").exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_stale_quarantine_rejects_claim_parent_junction_swap(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "stale-source-parent-junction-race"
+    claim_path = _write_stale_claim(runtime_root, task_id)
+    original = claim_path.read_bytes()
+    claims_dir = claim_path.parent
+    moved_claims = claims_dir.with_name("claims-before-parent-race")
+    external = tmp_path / "external-claims"
+    external.mkdir()
+    isolated_bin = _isolated_bin(tmp_path)
+    _inject_after_marker(
+        isolated_bin / "Invoke-StaleClaimSweep.ps1",
+        marker=(
+            "            # STALE V4 MARKER: pin source parent before "
+            "quarantine move."
+        ),
+        body="""
+            [IO.Directory]::Move(
+                [Environment]::GetEnvironmentVariable(
+                    'WD_RACE_CLAIMS', 'Process'),
+                [Environment]::GetEnvironmentVariable(
+                    'WD_RACE_MOVED_CLAIMS', 'Process')
+            )
+            [void](New-Item `
+                -ItemType Junction `
+                -Path ([Environment]::GetEnvironmentVariable(
+                    'WD_RACE_CLAIMS', 'Process')) `
+                -Target ([Environment]::GetEnvironmentVariable(
+                    'WD_RACE_EXTERNAL', 'Process')) `
+                -ErrorAction Stop)
+""".strip(),
+    )
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+        extra_env={
+            "WD_RACE_CLAIMS": str(claims_dir),
+            "WD_RACE_MOVED_CLAIMS": str(moved_claims),
+            "WD_RACE_EXTERNAL": str(external),
+        },
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert "quarantine parent pin failed" in combined
+    assert "reparse point" in combined
+    assert (moved_claims / claim_path.name).read_bytes() == original
+    assert list(external.iterdir()) == []
+    retained_archives = list(
+        (runtime_root / "work_queue" / "done").glob("*.stale_lease.json")
+    )
+    assert retained_archives == []
+    rollback_archives = list(
+        (runtime_root / "work_queue" / "done").glob(
+            "*.stale_lease.json.rollback-retained.*"
+        )
+    )
+    assert len(rollback_archives) == 1
+    assert json.loads(rollback_archives[0].read_text(encoding="utf-8"))[
+        "task_id"
+    ] == task_id
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_retention_notice_cannot_hide_committed_event_or_result(
     tmp_path: Path,
     powershell: str,
 ) -> None:
@@ -182,22 +459,6 @@ def test_cleanup_warning_cannot_hide_committed_event_or_result(
     task_id = "cleanup-warning-continues"
     claim_path = _write_stale_claim(runtime_root, task_id)
     isolated_bin = _isolated_bin(tmp_path)
-    sweep_path = isolated_bin / "Invoke-StaleClaimSweep.ps1"
-    source = sweep_path.read_text(encoding="utf-8")
-    cleanup_source = (
-        "                    # STALE V2 MARKER: exact-handle committed "
-        "backup cleanup."
-    )
-    injected = (
-        f"{cleanup_source}\n"
-        "                    throw 'injected source backup cleanup failure'"
-    )
-    assert source.count(cleanup_source) == 1
-    sweep_path.write_text(
-        source.replace(cleanup_source, injected, 1),
-        encoding="utf-8",
-    )
-
     completed = _run_sweep(
         powershell=powershell,
         runtime_root=runtime_root,
@@ -207,11 +468,19 @@ def test_cleanup_warning_cannot_hide_committed_event_or_result(
 
     combined = completed.stdout + completed.stderr
     assert completed.returncode == 0, combined
-    assert "committed but ancillary cleanup failed" in combined
+    assert "recovery artifacts intentionally retained by no-delete policy" in (
+        combined
+    )
     assert task_id in completed.stdout
     assert not claim_path.exists()
     assert len(
         list(claim_path.parent.glob(f"{claim_path.name}.stale-backup.*"))
+    ) == 1
+    assert len(
+        list(claim_path.parent.glob(f"{claim_path.name}.stale-quarantine.*"))
+    ) == 1
+    assert len(
+        list((runtime_root / "work_queue" / "done").glob("*.tmp.*"))
     ) == 1
     events_path = runtime_root / "shared" / "events.jsonl"
     events = [
@@ -259,7 +528,7 @@ def test_event_warning_cannot_hide_committed_result(
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
-def test_rollback_retains_foreign_archive_replacement(
+def test_rollback_renames_held_archive_with_hardlink_and_ads_intact(
     tmp_path: Path,
     powershell: str,
 ) -> None:
@@ -269,17 +538,90 @@ def test_rollback_retains_foreign_archive_replacement(
         _write_stale_claim(runtime_root, task_id) for task_id in task_ids
     ]
     before = {path: path.read_bytes() for path in claim_paths}
+    archive_alias = tmp_path / "first-held-archive-alias.json"
     isolated_bin = _isolated_bin(tmp_path)
     _inject_second_source_quarantine_failure(
         isolated_bin / "Invoke-StaleClaimSweep.ps1",
         failure_body="""
-                $foreignArchive = [string]$preparedPlans[0].done_path
-                [System.IO.File]::Delete($foreignArchive)
-                [System.IO.File]::WriteAllText(
-                    $foreignArchive,
-                    'FOREIGN-ARCHIVE-SENTINEL'
-                )
+                $ownedArchive = [string]$preparedPlans[0].done_path
+                [void](New-Item -ItemType HardLink `
+                    -Path ([Environment]::GetEnvironmentVariable(
+                        'WD_ARCHIVE_ALIAS', 'Process')) `
+                    -Target $ownedArchive `
+                    -ErrorAction Stop)
+                Set-Content `
+                    -LiteralPath ([Environment]::GetEnvironmentVariable(
+                        'WD_ARCHIVE_ALIAS', 'Process')) `
+                    -Stream 'foreign-evidence' `
+                    -Value 'FOREIGN-ARCHIVE-ADS' `
+                    -NoNewline `
+                    -ErrorAction Stop
+                $archiveAds = Get-Content `
+                    -LiteralPath ([Environment]::GetEnvironmentVariable(
+                        'WD_ARCHIVE_ALIAS', 'Process')) `
+                    -Stream 'foreign-evidence' `
+                    -Raw `
+                    -ErrorAction Stop
+                if ($archiveAds -cne 'FOREIGN-ARCHIVE-ADS') {
+                    throw 'held archive ADS precondition failed'
+                }
 """.strip(),
+    )
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+        extra_env={"WD_ARCHIVE_ALIAS": str(archive_alias)},
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert {path: path.read_bytes() for path in claim_paths} == before
+    canonical_archives = list(
+        (runtime_root / "work_queue" / "done").glob("*.stale_lease.json")
+    )
+    retained_archives = list(
+        (runtime_root / "work_queue" / "done").glob(
+            "*.stale_lease.json.rollback-retained.*"
+        )
+    )
+    assert canonical_archives == []
+    assert len(retained_archives) == 2
+    assert archive_alias.exists()
+    first_retained = next(
+        path for path in retained_archives if path.samefile(archive_alias)
+    )
+    assert json.loads(first_retained.read_text(encoding="utf-8"))["task_id"] == (
+        task_ids[0]
+    )
+    assert Path(f"{first_retained}:foreign-evidence").read_text(
+        encoding="utf-8"
+    ) == "FOREIGN-ARCHIVE-ADS"
+    assert Path(f"{archive_alias}:foreign-evidence").read_text(
+        encoding="utf-8"
+    ) == "FOREIGN-ARCHIVE-ADS"
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+    backups = list(claim_paths[0].parent.glob("*.stale-backup.*"))
+    assert backups
+    assert any(path.read_bytes() == before[claim_paths[0]] for path in backups)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_owned_archives_are_handle_renamed_before_source_restore(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_ids = ("owned-rollback-first", "owned-rollback-second")
+    claim_paths = [
+        _write_stale_claim(runtime_root, task_id) for task_id in task_ids
+    ]
+    before = {path: path.read_bytes() for path in claim_paths}
+    isolated_bin = _isolated_bin(tmp_path)
+    _inject_second_source_quarantine_failure(
+        isolated_bin / "Invoke-StaleClaimSweep.ps1",
+        failure_body="",
     )
 
     completed = _run_sweep(
@@ -288,21 +630,187 @@ def test_rollback_retains_foreign_archive_replacement(
         script_root=isolated_bin,
     )
 
-    combined = completed.stdout + completed.stderr
+    combined = " ".join((completed.stdout + completed.stderr).split())
     assert completed.returncode != 0
-    assert "archive rollback retained" in combined
+    assert "rollback failures: <none>" in combined
     assert {path: path.read_bytes() for path in claim_paths} == before
+    done_dir = runtime_root / "work_queue" / "done"
+    assert not list(done_dir.glob("*.stale_lease.json"))
+    retained = list(
+        done_dir.glob("*.stale_lease.json.rollback-retained.*")
+    )
+    assert len(retained) == 2
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["task_id"]
+        for path in retained
+    } == set(task_ids)
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_failed_archive_write_retains_held_inode_outside_canonical_name(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_id = "failed-held-archive-write"
+    claim_path = _write_stale_claim(runtime_root, task_id)
+    original = claim_path.read_bytes()
+    isolated_bin = _isolated_bin(tmp_path)
+    identity_path = isolated_bin / "AgentBridgeSessionIdentity.ps1"
+    source = identity_path.read_text(encoding="utf-8")
+    marker = (
+        "            # CAS V2 DIRECT MARKER: durably flush canonical bytes.\n"
+        "            $stream.Flush($true)"
+    )
+    injected = (
+        f"{marker}\n"
+        "            if ($Context -ceq 'published stale claim archive') {\n"
+        "                throw 'injected held archive post-write failure'\n"
+        "            }"
+    )
+    assert source.count(marker) == 1
+    identity_path.write_text(
+        source.replace(marker, injected, 1),
+        encoding="utf-8",
+    )
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+    )
+
+    combined = " ".join((completed.stdout + completed.stderr).split())
+    done_dir = runtime_root / "work_queue" / "done"
+    assert completed.returncode != 0
+    assert "injected held archive post-write failure" in combined
+    assert "rollback failures: <none>" in combined
+    assert claim_path.read_bytes() == original
+    assert not list(done_dir.glob("*.stale_lease.json"))
+    retained = list(done_dir.glob("*.stale_lease.json.failed-retained.*"))
+    assert len(retained) == 1
+    assert json.loads(retained[0].read_text(encoding="utf-8"))["task_id"] == (
+        task_id
+    )
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_commit_close_failures_try_every_lease_and_suppress_events(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_ids = ("close-failure-first", "close-failure-second")
+    claim_paths = [
+        _write_stale_claim(runtime_root, task_id) for task_id in task_ids
+    ]
+    isolated_bin = _isolated_bin(tmp_path)
+    identity_path = isolated_bin / "AgentBridgeSessionIdentity.ps1"
+    source = identity_path.read_text(encoding="utf-8")
+    source += r"""
+
+$script:WdOriginalHeldLeaseClose =
+    ${function:Close-AgentBridgeHeldFileLease}
+$script:WdInjectedHeldLeaseCloseCount = 0
+function Close-AgentBridgeHeldFileLease {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] $Lease,
+        [string] $Context = 'injected held bridge file'
+    )
+    & $script:WdOriginalHeldLeaseClose @PSBoundParameters
+    $script:WdInjectedHeldLeaseCloseCount++
+    throw (
+        'injected committed lease close failure #{0}' -f
+        $script:WdInjectedHeldLeaseCloseCount
+    )
+}
+"""
+    identity_path.write_text(source, encoding="utf-8")
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+    )
+
+    combined = " ".join((completed.stdout + completed.stderr).split())
+    assert completed.returncode != 0
+    assert "archive lease close failed after source quarantine" in combined
+    assert "injected committed lease close failure #1" in combined
+    assert "injected committed lease close failure #2" in combined
+    assert all(not path.exists() for path in claim_paths)
     archives = list(
         (runtime_root / "work_queue" / "done").glob("*.stale_lease.json")
     )
-    assert len(archives) == 1
-    assert archives[0].read_text(encoding="utf-8") == (
-        "FOREIGN-ARCHIVE-SENTINEL"
-    )
+    assert len(archives) == 2
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["task_id"]
+        for path in archives
+    } == set(task_ids)
     assert not (runtime_root / "shared" / "events.jsonl").exists()
-    backups = list(claim_paths[0].parent.glob("*.stale-backup.*"))
-    assert backups
-    assert any(path.read_bytes() == before[claim_paths[0]] for path in backups)
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_rollback_retention_collision_is_loud_and_never_replaced(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    task_ids = ("rename-collision-first", "rename-collision-second")
+    claim_paths = [
+        _write_stale_claim(runtime_root, task_id) for task_id in task_ids
+    ]
+    isolated_bin = _isolated_bin(tmp_path)
+    sweep_path = isolated_bin / "Invoke-StaleClaimSweep.ps1"
+    _inject_second_source_quarantine_failure(
+        sweep_path,
+        failure_body="",
+    )
+    source = sweep_path.read_text(encoding="utf-8")
+    marker = (
+        "        try {\n"
+        "            Move-AgentBridgeHeldFileToRollbackRetention `"
+    )
+    injected = (
+        "        [System.IO.File]::WriteAllText(\n"
+        "            $retentionPath,\n"
+        "            'FOREIGN-ROLLBACK-RETENTION-COLLISION'\n"
+        "        )\n"
+        f"{marker}"
+    )
+    assert source.count(marker) == 1
+    sweep_path.write_text(
+        source.replace(marker, injected, 1),
+        encoding="utf-8",
+    )
+
+    completed = _run_sweep(
+        powershell=powershell,
+        runtime_root=runtime_root,
+        script_root=isolated_bin,
+    )
+
+    combined = " ".join((completed.stdout + completed.stderr).split())
+    done_dir = runtime_root / "work_queue" / "done"
+    collision_files = list(
+        done_dir.glob("*.stale_lease.json.rollback-retained.*")
+    )
+    assert completed.returncode != 0
+    assert "held rollback rename failed" in combined
+    assert "source restore suppressed" in combined
+    assert len(collision_files) == 2
+    assert all(
+        path.read_text(encoding="utf-8")
+        == "FOREIGN-ROLLBACK-RETENTION-COLLISION"
+        for path in collision_files
+    )
+    assert len(list(done_dir.glob("*.stale_lease.json"))) == 2
+    assert not claim_paths[0].exists()
+    assert claim_paths[1].exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
@@ -336,7 +844,6 @@ def test_rollback_does_not_trust_foreign_active_source(
     combined = completed.stdout + completed.stderr
     assert completed.returncode != 0
     assert "active source ownership hash mismatched" in combined
-    assert "archive rollback retained" in combined
     assert claim_paths[0].read_text(encoding="utf-8") == (
         "FOREIGN-ACTIVE-SOURCE"
     )
@@ -353,7 +860,13 @@ def test_rollback_does_not_trust_foreign_active_source(
             f"{task_ids[0]}*.stale_lease.json"
         )
     )
-    assert len(archives) == 1
+    assert archives == []
+    rollback_archives = list(
+        (runtime_root / "work_queue" / "done").glob(
+            "*.stale_lease.json.rollback-retained.*"
+        )
+    )
+    assert len(rollback_archives) == 2
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
@@ -766,7 +1279,13 @@ def test_post_move_capture_failure_does_not_replay_eligibility_bytes(
     assert quarantines[0].read_bytes() == authorized
     assert len(backups) == 1
     assert backups[0].read_bytes() == authorized
-    assert len(archives) == 1
+    assert archives == []
+    rollback_archives = list(
+        (runtime_root / "work_queue" / "done").glob(
+            f"{task_id}*.stale_lease.json.rollback-retained.*"
+        )
+    )
+    assert len(rollback_archives) == 1
     assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
@@ -932,17 +1451,21 @@ def test_rollback_retains_reappeared_foreign_archive_temp(
     combined = completed.stdout + completed.stderr
     normalized = " ".join(combined.split())
     assert completed.returncode != 0
-    assert (
-        "path reappeared after the batch archive temp was moved" in normalized
-    )
+    assert "rollback failures: <none>" in normalized
     assert {path: path.read_bytes() for path in claim_paths} == before
     foreign_temps = list(
         (runtime_root / "work_queue" / "done").glob("*.tmp.*")
     )
-    assert len(foreign_temps) == 1
-    assert foreign_temps[0].read_text(encoding="utf-8") == (
-        "FOREIGN-ARCHIVE-TEMP"
+    assert len(foreign_temps) == 2
+    assert any(
+        path.read_text(encoding="utf-8") == "FOREIGN-ARCHIVE-TEMP"
+        for path in foreign_temps
     )
+    done_dir = runtime_root / "work_queue" / "done"
+    assert not list(done_dir.glob("*.stale_lease.json"))
+    assert len(
+        list(done_dir.glob("*.stale_lease.json.rollback-retained.*"))
+    ) == 2
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
@@ -957,7 +1480,7 @@ def test_committed_cleanup_retains_reappeared_foreign_archive_temp(
     sweep_path = isolated_bin / "Invoke-StaleClaimSweep.ps1"
     source = sweep_path.read_text(encoding="utf-8")
     cleanup_start = (
-        "    $cleanupFailures = New-Object "
+        "    $retentionNotices = New-Object "
         "System.Collections.Generic.List[string]"
     )
     injected = """
@@ -985,7 +1508,9 @@ def test_committed_cleanup_retains_reappeared_foreign_archive_temp(
 
     combined = completed.stdout + completed.stderr
     assert completed.returncode == 0, combined
-    assert "archive temp cleanup failed" in combined
+    assert "recovery artifacts intentionally retained by no-delete policy" in (
+        combined
+    )
     assert not claim_path.exists()
     foreign_temps = list(
         (runtime_root / "work_queue" / "done").glob("*.tmp.*")
@@ -1064,7 +1589,7 @@ def test_post_restore_active_replacement_keeps_exact_recovery(
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
-def test_committed_quarantine_replacement_is_retained_not_deleted(
+def test_committed_same_bytes_ads_quarantine_replacement_is_retained(
     tmp_path: Path,
     powershell: str,
 ) -> None:
@@ -1077,17 +1602,34 @@ def test_committed_quarantine_replacement_is_retained_not_deleted(
     _inject_after_marker(
         sweep_path,
         marker=(
-            "                    # STALE V2 MARKER: exact-handle committed "
-            "quarantine cleanup."
+            "            # These unique artifacts are ignored by bridge "
+            "readers. Keep them"
         ),
         body="""
-                    [System.IO.File]::Delete(
-                        [string]$cleanupEntry.path
-                    )
-                    [System.IO.File]::WriteAllText(
-                        [string]$cleanupEntry.path,
-                        'FOREIGN-QUARANTINE-AFTER-VERIFY'
-                    )
+            if ([string]$cleanupEntry.label -ceq 'source quarantine') {
+                $sameBytes = [System.IO.File]::ReadAllBytes(
+                    [string]$cleanupEntry.path
+                )
+                [System.IO.File]::Delete([string]$cleanupEntry.path)
+                [System.IO.File]::WriteAllBytes(
+                    [string]$cleanupEntry.path,
+                    $sameBytes
+                )
+                Set-Content `
+                    -LiteralPath ([string]$cleanupEntry.path) `
+                    -Stream 'foreign-evidence' `
+                    -Value 'FOREIGN-QUARANTINE-ADS' `
+                    -NoNewline `
+                    -ErrorAction Stop
+                $quarantineAds = Get-Content `
+                    -LiteralPath ([string]$cleanupEntry.path) `
+                    -Stream 'foreign-evidence' `
+                    -Raw `
+                    -ErrorAction Stop
+                if ($quarantineAds -cne 'FOREIGN-QUARANTINE-ADS') {
+                    throw 'source quarantine ADS precondition failed'
+                }
+            }
 """.strip(),
     )
 
@@ -1100,14 +1642,19 @@ def test_committed_quarantine_replacement_is_retained_not_deleted(
 
     combined = completed.stdout + completed.stderr
     assert completed.returncode == 0, combined
-    assert "committed but ancillary cleanup failed" in combined
+    assert "recovery artifacts intentionally retained by no-delete policy" in (
+        combined
+    )
     assert not claim_path.exists()
     quarantines = list(
         claim_path.parent.glob(f"{claim_path.name}.stale-quarantine.*")
     )
     assert len(quarantines) == 1
-    assert quarantines[0].read_text(encoding="utf-8") == (
-        "FOREIGN-QUARANTINE-AFTER-VERIFY"
+    assert quarantines[0].read_bytes() == original
+    assert Path(f"{quarantines[0]}:foreign-evidence").read_text(
+        encoding="utf-8"
+    ) == (
+        "FOREIGN-QUARANTINE-ADS"
     )
     backups = list(
         claim_path.parent.glob(f"{claim_path.name}.stale-backup.*")

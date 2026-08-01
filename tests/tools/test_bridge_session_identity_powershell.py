@@ -234,6 +234,655 @@ def _create_windows_junction(link_path: Path, target_path: Path) -> None:
         pytest.skip(f"could not create test junction: {created.stderr}")
 
 
+def _run_identity_command(
+    tmp_path: Path,
+    powershell: str,
+    command: str,
+    *,
+    extra_env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["WD_IDENTITY_SCRIPT"] = str(
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"
+    )
+    env.update(extra_env)
+    return subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _run_identity_script_text(
+    tmp_path: Path,
+    powershell: str,
+    script_text: str,
+    *,
+    extra_env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    script_path = tmp_path / "identity-regression.ps1"
+    script_path.write_text(script_text, encoding="utf-8")
+    env = os.environ.copy()
+    env["WD_IDENTITY_SCRIPT"] = str(
+        BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"
+    )
+    env.update(extra_env)
+    return subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_v3_path_binding_loads_when_v2_type_is_already_cached(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    parent = tmp_path / "pinned-parent"
+    parent.mkdir()
+    child = parent / "child.json"
+    command = r"""
+[void](Add-Type -TypeDefinition @'
+public static class AgentBridgeExactFileDeleteV2
+{
+    public static string CachedContract() { return "old-v2"; }
+}
+'@)
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$pin = $null
+try {
+    $pin = Enter-AgentBridgeParentDirectoryPin `
+        -ChildPath ([Environment]::GetEnvironmentVariable(
+            'WD_CHILD_PATH', 'Process')) `
+        -Context 'same-process V2 to V3 test'
+    [pscustomobject]@{
+        old_v2_loaded = $null -ne ('AgentBridgeExactFileDeleteV2' -as [type])
+        new_v3_loaded = $null -ne ('AgentBridgeExactFileDeleteV3' -as [type])
+        old_contract = [AgentBridgeExactFileDeleteV2]::CachedContract()
+        pinned_parent = [string]$pin.parent_path
+    } | ConvertTo-Json -Compress
+} finally {
+    Exit-AgentBridgeParentDirectoryPin -Pin $pin
+}
+"""
+
+    completed = _run_identity_script_text(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={"WD_CHILD_PATH": str(child)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["old_v2_loaded"] is True
+    assert result["new_v3_loaded"] is True
+    assert result["old_contract"] == "old-v2"
+    assert Path(result["pinned_parent"]) == parent
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_append_rolls_back_raced_hardlink_before_throwing(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    target = tmp_path / "events.jsonl"
+    alias = tmp_path / "events-alias.jsonl"
+    original = b"seed\n"
+    target.write_bytes(original)
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$script:originalGuard = ${function:Assert-AgentBridgeRegularUnlinkedFile}
+$script:guardCalls = 0
+function Assert-AgentBridgeRegularUnlinkedFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $LiteralPath,
+        [string] $Context = 'test target'
+    )
+    & $script:originalGuard @PSBoundParameters
+    $script:guardCalls++
+    if ($script:guardCalls -eq 2) {
+        [void](New-Item `
+            -ItemType HardLink `
+            -Path ([Environment]::GetEnvironmentVariable(
+                'WD_ALIAS_PATH', 'Process')) `
+            -Target $LiteralPath `
+            -ErrorAction Stop)
+    }
+}
+$appendError = $null
+try {
+    Add-AgentBridgeBytesToRegularUnlinkedFile `
+        -LiteralPath ([Environment]::GetEnvironmentVariable(
+            'WD_TARGET_PATH', 'Process')) `
+        -Bytes ([Text.Encoding]::UTF8.GetBytes("append`n")) `
+        -Context 'raced hardlink append'
+} catch {
+    $appendError = $_.Exception.Message
+}
+[pscustomobject]@{
+    guard_calls = $script:guardCalls
+    append_error = $appendError
+} | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_command(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={
+            "WD_TARGET_PATH": str(target),
+            "WD_ALIAS_PATH": str(alias),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["guard_calls"] >= 2
+    assert "durably rolled back" in result["append_error"]
+    assert target.read_bytes() == original
+    assert alias.read_bytes() == original
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_append_rejects_parent_junction_swap_before_first_write(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    shared = bridge_root / "shared"
+    moved_shared = bridge_root / "shared-before-race"
+    external = tmp_path / "external"
+    shared.mkdir(parents=True)
+    external.mkdir()
+    target = shared / "events.jsonl"
+    external_target = external / "events.jsonl"
+    original = b"victim\n"
+    external_target.write_bytes(original)
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$script:originalGuard = ${function:Assert-AgentBridgePlainDirectory}
+$script:guardCalls = 0
+function Assert-AgentBridgePlainDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $LiteralPath,
+        [Parameter(Mandatory)] [string] $Context
+    )
+    & $script:originalGuard @PSBoundParameters
+    $script:guardCalls++
+    if ($script:guardCalls -eq 1) {
+        [IO.Directory]::Move(
+            [Environment]::GetEnvironmentVariable('WD_SHARED', 'Process'),
+            [Environment]::GetEnvironmentVariable('WD_MOVED_SHARED', 'Process')
+        )
+        [void](New-Item `
+            -ItemType Junction `
+            -Path ([Environment]::GetEnvironmentVariable(
+                'WD_SHARED', 'Process')) `
+            -Target ([Environment]::GetEnvironmentVariable(
+                'WD_EXTERNAL', 'Process')) `
+            -ErrorAction Stop)
+    }
+}
+$appendError = $null
+try {
+    Add-AgentBridgeBytesToRegularUnlinkedFile `
+        -LiteralPath ([Environment]::GetEnvironmentVariable(
+            'WD_TARGET_PATH', 'Process')) `
+        -Bytes ([Text.Encoding]::UTF8.GetBytes("append`n")) `
+        -Context 'raced parent append'
+} catch {
+    $appendError = $_.Exception.Message
+}
+[pscustomobject]@{
+    guard_calls = $script:guardCalls
+    append_error = $appendError
+} | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_command(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={
+            "WD_SHARED": str(shared),
+            "WD_MOVED_SHARED": str(moved_shared),
+            "WD_EXTERNAL": str(external),
+            "WD_TARGET_PATH": str(target),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["guard_calls"] == 1
+    assert "reparse point" in result["append_error"]
+    assert external_target.read_bytes() == original
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_trusted_create_new_rejects_parent_junction_swap(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    spool = bridge_root / "spool"
+    moved_spool = bridge_root / "spool-before-race"
+    external = tmp_path / "external"
+    spool.mkdir(parents=True)
+    external.mkdir()
+    destination = spool / "failed-event.jsonl"
+    external_destination = external / destination.name
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$script:originalGuard = ${function:Assert-AgentBridgeTrustedBytesIdentity}
+$script:guardCalls = 0
+function Assert-AgentBridgeTrustedBytesIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [string] $ExpectedSha256,
+        [Parameter(Mandatory)] [long] $ExpectedLength,
+        [string] $Context = 'trusted bytes'
+    )
+    & $script:originalGuard @PSBoundParameters
+    $script:guardCalls++
+    if ($script:guardCalls -eq 1) {
+        [IO.Directory]::Move(
+            [Environment]::GetEnvironmentVariable('WD_SPOOL', 'Process'),
+            [Environment]::GetEnvironmentVariable('WD_MOVED_SPOOL', 'Process')
+        )
+        [void](New-Item `
+            -ItemType Junction `
+            -Path ([Environment]::GetEnvironmentVariable(
+                'WD_SPOOL', 'Process')) `
+            -Target ([Environment]::GetEnvironmentVariable(
+                'WD_EXTERNAL', 'Process')) `
+            -ErrorAction Stop)
+    }
+}
+$bytes = [Text.Encoding]::UTF8.GetBytes("trusted-event`n")
+$sha256 = Get-AgentBridgeSha256Hex -Bytes $bytes
+$result = Invoke-AgentBridgeTrustedBytesCreateNew `
+    -DestinationPath ([Environment]::GetEnvironmentVariable(
+        'WD_DESTINATION', 'Process')) `
+    -PublishBytes $bytes `
+    -ExpectedSha256 $sha256 `
+    -ExpectedLength ([long]$bytes.Length) `
+    -Context 'raced create-new parent'
+[pscustomobject]@{
+    succeeded = [bool]$result.succeeded
+    error = if ($null -ne $result.error) { $result.error.Message } else { '' }
+} | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_command(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={
+            "WD_SPOOL": str(spool),
+            "WD_MOVED_SPOOL": str(moved_spool),
+            "WD_EXTERNAL": str(external),
+            "WD_DESTINATION": str(destination),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["succeeded"] is False
+    assert "reparse point" in result["error"]
+    assert not external_destination.exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_exact_delete_wrapper_refuses_destructive_cleanup(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    done = bridge_root / "done"
+    moved_done = bridge_root / "done-before-race"
+    external = tmp_path / "external"
+    done.mkdir(parents=True)
+    external.mkdir()
+    name = "archive-preparation.tmp"
+    intended = done / name
+    external_target = external / name
+    contents = b"same-authorized-bytes"
+    intended.write_bytes(contents)
+    external_target.write_bytes(contents)
+    done.rename(moved_done)
+    _create_windows_junction(done, external)
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$bytes = [IO.File]::ReadAllBytes(
+    [Environment]::GetEnvironmentVariable('WD_EXTERNAL_TARGET', 'Process'))
+$sha256 = Get-AgentBridgeSha256Hex -Bytes $bytes
+$deleteError = $null
+try {
+    Remove-AgentBridgeExactFile `
+        -LiteralPath ([Environment]::GetEnvironmentVariable(
+            'WD_INTENDED_PATH', 'Process')) `
+        -ExpectedSha256 $sha256 `
+        -ExpectedLength ([long]$bytes.Length) `
+        -Context 'raced exact-delete parent'
+} catch {
+    $deleteError = $_.Exception.Message
+}
+[pscustomobject]@{ error = $deleteError } | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_command(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={
+            "WD_INTENDED_PATH": str(done / name),
+            "WD_EXTERNAL_TARGET": str(external_target),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert "destructive cleanup is disabled" in result["error"]
+    assert (moved_done / name).read_bytes() == contents
+    assert external_target.read_bytes() == contents
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_ensure_directory_rejects_parent_junction_swap_before_creation(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    moved_bridge = tmp_path / "bridge-before-race"
+    external = tmp_path / "external"
+    bridge_root.mkdir()
+    external.mkdir()
+    target = bridge_root / "shared"
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$script:targetCalls = 0
+function Test-Path {
+    [CmdletBinding(DefaultParameterSetName='Path')]
+    param(
+        [Parameter(Position=0, ParameterSetName='Path')] [string[]] $Path,
+        [Parameter(Position=0, ParameterSetName='LiteralPath')]
+        [Alias('PSPath')] [string[]] $LiteralPath,
+        [object] $PathType,
+        [switch] $IsValid
+    )
+    $parameters = @{}
+    if ($PSBoundParameters.ContainsKey('LiteralPath')) {
+        $parameters.LiteralPath = $LiteralPath
+        $candidate = [string]$LiteralPath[0]
+    } else {
+        $parameters.Path = $Path
+        $candidate = [string]$Path[0]
+    }
+    if ($PSBoundParameters.ContainsKey('PathType')) {
+        $parameters.PathType = $PathType
+    }
+    if ($IsValid) { $parameters.IsValid = $true }
+    $answer = Microsoft.PowerShell.Management\Test-Path @parameters
+    if ($candidate -ceq [Environment]::GetEnvironmentVariable(
+            'WD_TARGET_PATH', 'Process')) {
+        $script:targetCalls++
+        if ($script:targetCalls -eq 1) {
+            [IO.Directory]::Move(
+                [Environment]::GetEnvironmentVariable('WD_BRIDGE', 'Process'),
+                [Environment]::GetEnvironmentVariable(
+                    'WD_MOVED_BRIDGE', 'Process')
+            )
+            [void](New-Item `
+                -ItemType Junction `
+                -Path ([Environment]::GetEnvironmentVariable(
+                    'WD_BRIDGE', 'Process')) `
+                -Target ([Environment]::GetEnvironmentVariable(
+                    'WD_EXTERNAL', 'Process')) `
+                -ErrorAction Stop)
+        }
+    }
+    return $answer
+}
+$ensureError = $null
+try {
+    Ensure-AgentBridgePlainDirectory `
+        -LiteralPath ([Environment]::GetEnvironmentVariable(
+            'WD_TARGET_PATH', 'Process')) `
+        -Context 'raced directory creation'
+} catch {
+    $ensureError = $_.Exception.Message
+}
+[pscustomobject]@{
+    target_calls = $script:targetCalls
+    error = $ensureError
+} | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_script_text(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={
+            "WD_TARGET_PATH": str(target),
+            "WD_BRIDGE": str(bridge_root),
+            "WD_MOVED_BRIDGE": str(moved_bridge),
+            "WD_EXTERNAL": str(external),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["target_calls"] == 1, result
+    assert "reparse" in result["error"]
+    assert not (external / "shared").exists()
+    assert not (moved_bridge / "shared").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_mutation_lock_rejects_parent_junction_swap_before_open(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    work_queue = bridge_root / "work_queue"
+    moved_work_queue = bridge_root / "work_queue-before-race"
+    external = tmp_path / "external"
+    work_queue.mkdir(parents=True)
+    external.mkdir()
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$script:originalGuard = ${function:Assert-AgentBridgeExistingQueueDirectories}
+$script:guardCalls = 0
+function Assert-AgentBridgeExistingQueueDirectories {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $WorkQueueDir)
+    & $script:originalGuard @PSBoundParameters
+    $script:guardCalls++
+    if ($script:guardCalls -eq 1) {
+        [IO.Directory]::Move(
+            [Environment]::GetEnvironmentVariable('WD_WORK_QUEUE', 'Process'),
+            [Environment]::GetEnvironmentVariable(
+                'WD_MOVED_WORK_QUEUE', 'Process')
+        )
+        [void](New-Item `
+            -ItemType Junction `
+            -Path ([Environment]::GetEnvironmentVariable(
+                'WD_WORK_QUEUE', 'Process')) `
+            -Target ([Environment]::GetEnvironmentVariable(
+                'WD_EXTERNAL', 'Process')) `
+            -ErrorAction Stop)
+    }
+}
+$lock = $null
+$lockError = $null
+try {
+    $lock = Enter-AgentBridgeMutationLock `
+        -BridgeRoot ([Environment]::GetEnvironmentVariable(
+            'WD_BRIDGE', 'Process')) `
+        -TimeoutMilliseconds 250
+} catch {
+    $lockError = $_.Exception.Message
+} finally {
+    Exit-AgentBridgeMutationLock -Lock $lock
+}
+[pscustomobject]@{
+    guard_calls = $script:guardCalls
+    error = $lockError
+} | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_command(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={
+            "WD_BRIDGE": str(bridge_root),
+            "WD_WORK_QUEUE": str(work_queue),
+            "WD_MOVED_WORK_QUEUE": str(moved_work_queue),
+            "WD_EXTERNAL": str(external),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["guard_calls"] == 1
+    assert "reparse point" in result["error"]
+    assert not (external / ".claims.mutation.lock").exists()
+    assert not (moved_work_queue / ".claims.mutation.lock").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_mutation_lock_composite_enter_exit_round_trip(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    command = r"""
+. ([Environment]::GetEnvironmentVariable('WD_IDENTITY_SCRIPT', 'Process'))
+$bridge = [Environment]::GetEnvironmentVariable('WD_BRIDGE', 'Process')
+$first = Enter-AgentBridgeMutationLock -BridgeRoot $bridge
+$isComposite = (
+    $null -ne $first.stream -and
+    $null -ne $first.parent_pin
+)
+Exit-AgentBridgeMutationLock -Lock $first
+$second = Enter-AgentBridgeMutationLock -BridgeRoot $bridge
+Exit-AgentBridgeMutationLock -Lock $second
+[pscustomobject]@{
+    is_composite = [bool]$isComposite
+    lock_exists = Test-Path -LiteralPath (
+        Join-Path $bridge 'work_queue\.claims.mutation.lock')
+} | ConvertTo-Json -Compress
+"""
+
+    completed = _run_identity_command(
+        tmp_path,
+        powershell,
+        command,
+        extra_env={"WD_BRIDGE": str(bridge_root)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result == {"is_composite": True, "lock_exists": True}
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_shared_bridge_root_resolver_matches_python_precedence(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    default_root = tmp_path / "repo-local-bridge"
+    legacy_root = tmp_path / "legacy-bridge"
+    runtime_root = tmp_path / "runtime-bridge"
+    command = (
+        ". ([Environment]::GetEnvironmentVariable("
+        "'WD_IDENTITY_SCRIPT', 'Process')); "
+        "Resolve-AgentBridgeRoot -DefaultRoot "
+        "([Environment]::GetEnvironmentVariable("
+        "'WD_DEFAULT_BRIDGE', 'Process'))"
+    )
+    cases = (
+        (None, None, default_root),
+        (None, f"  {legacy_root}  ", legacy_root),
+        (f"  {runtime_root}  ", str(legacy_root), runtime_root),
+    )
+
+    for runtime_value, legacy_value, expected in cases:
+        env = os.environ.copy()
+        env["WD_IDENTITY_SCRIPT"] = str(
+            BRIDGE_BIN / "AgentBridgeSessionIdentity.ps1"
+        )
+        env["WD_DEFAULT_BRIDGE"] = str(default_root)
+        for name, value in (
+            ("AGENT_BRIDGE_RUNTIME_ROOT", runtime_value),
+            ("AGENT_BRIDGE_ROOT", legacy_value),
+        ):
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == str(expected)
+
+
+def test_all_powershell_bridge_entry_points_use_shared_root_resolver() -> None:
+    expected_call_counts = {
+        "Claim-AgentTask.ps1": 1,
+        "Get-BridgeNextAction.ps1": 1,
+        "Invoke-StaleClaimSweep.ps1": 1,
+        "Release-AgentTask.ps1": 1,
+        "Send-Liveness.ps1": 1,
+        "Write-AgentEvent.ps1": 2,
+    }
+
+    for script_name, expected_count in expected_call_counts.items():
+        source = (BRIDGE_BIN / script_name).read_text(encoding="utf-8")
+        assert source.count("Resolve-AgentBridgeRoot") == expected_count
+
+
 @pytest.mark.parametrize("powershell", POWERSHELLS)
 def test_next_action_fails_closed_on_unreadable_active_claim(
     tmp_path: Path,
@@ -4177,8 +4826,10 @@ def test_powershell_write_claim_rejects_empty_normalized_scope_before_write(
     assert not runtime_root.exists()
 
 
-def test_heartbeat_skips_duplicate_task_group_but_refreshes_unique_claim(
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_heartbeat_fails_after_owned_duplicate_task_group(
     tmp_path: Path,
+    powershell: str,
 ) -> None:
     runtime_root = tmp_path / "bridge-runtime"
     duplicate_task = "duplicate-heartbeat-group"
@@ -4194,6 +4845,7 @@ def test_heartbeat_skips_duplicate_task_group_but_refreshes_unique_claim(
         "-Summary",
         "heartbeat duplicate grouping fixture",
         bound_agent="codex",
+        powershell=powershell,
     )
     assert created.returncode == 0, created.stderr
 
@@ -4208,10 +4860,12 @@ def test_heartbeat_skips_duplicate_task_group_but_refreshes_unique_claim(
     unique_claim["last_heartbeat_utc"] = "2026-07-28T00:00:00Z"
     unique_claim["claim_lease_expires_utc"] = "2026-07-28T00:15:00Z"
     unique_path.write_text(json.dumps(unique_claim), encoding="utf-8")
-    duplicate_before = {
+    claims_before = {
         path.name: path.read_bytes()
-        for path in (duplicate_path, duplicate_shadow)
+        for path in (duplicate_path, duplicate_shadow, unique_path)
     }
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events_before = events_path.read_bytes()
 
     heartbeat = _run_script(
         runtime_root,
@@ -4222,22 +4876,140 @@ def test_heartbeat_skips_duplicate_task_group_but_refreshes_unique_claim(
         "-TaskId",
         "duplicate-group-heartbeat-event",
         bound_agent="codex",
+        powershell=powershell,
     )
 
-    assert heartbeat.returncode == 0, heartbeat.stderr
+    assert heartbeat.returncode != 0
     assert "duplicate active claim records for exact task_id" in (
         heartbeat.stdout + heartbeat.stderr
     )
     assert {
         path.name: path.read_bytes()
-        for path in (duplicate_path, duplicate_shadow)
-    } == duplicate_before
-    refreshed_unique = json.loads(unique_path.read_text(encoding="utf-8"))
-    assert refreshed_unique["last_heartbeat_utc"] != "2026-07-28T00:00:00Z"
-    assert (
-        refreshed_unique["claim_lease_expires_utc"]
-        != "2026-07-28T00:15:00Z"
+        for path in (duplicate_path, duplicate_shadow, unique_path)
+    } == claims_before
+    assert events_path.read_bytes() == events_before
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_foreign_duplicate_group_blocks_all_powershell_mutators(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    duplicate_task = "foreign-duplicate\r\ninjected"
+    unique_task = "unique-owned-mutation-target"
+    duplicate_payload = _owner_bound_claim_payload(
+        task_id=duplicate_task,
+        agent="foreign-agent",
     )
+    duplicate_paths = (
+        _write_claim_payload(
+            runtime_root,
+            filename="foreign-duplicate-a.json",
+            payload=duplicate_payload,
+        ),
+        _write_claim_payload(
+            runtime_root,
+            filename="foreign-duplicate-b.json",
+            payload=duplicate_payload,
+        ),
+    )
+    unique_path = _write_claim_payload(
+        runtime_root,
+        filename=f"{unique_task}.json",
+        payload=_owner_bound_claim_payload(task_id=unique_task),
+    )
+    claims_before = {
+        path.name: path.read_bytes() for path in (*duplicate_paths, unique_path)
+    }
+
+    results = (
+        _run_script(
+            runtime_root,
+            "Claim-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            "new-unrelated-task",
+            "-Summary",
+            "global duplicates must block claim acquisition",
+            bound_agent="codex",
+            powershell=powershell,
+        ),
+        _run_script(
+            runtime_root,
+            "Release-AgentTask.ps1",
+            "-Agent",
+            "codex",
+            "-TaskId",
+            unique_task,
+            bound_agent="codex",
+            powershell=powershell,
+        ),
+        _run_script(
+            runtime_root,
+            "Send-Liveness.ps1",
+            "-Agent",
+            "codex",
+            "-Heartbeat",
+            "-TaskId",
+            "foreign-duplicate-heartbeat-event",
+            bound_agent="codex",
+            powershell=powershell,
+        ),
+    )
+
+    for completed in results:
+        combined = completed.stdout + completed.stderr
+        assert completed.returncode != 0, combined
+        assert "duplicate active claim records for exact task_id" in combined
+        assert "foreign-duplicate\\r\\ninjected" in combined
+        assert "foreign-duplicate\r\ninjected" not in combined
+        assert "foreign-duplicate\ninjected" not in combined
+    assert {
+        path.name: path.read_bytes() for path in (*duplicate_paths, unique_path)
+    } == claims_before
+    assert not (
+        runtime_root / "work_queue" / "claims" / "new-unrelated-task.json"
+    ).exists()
+    assert not (runtime_root / "work_queue" / "done").exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_heartbeat_fails_after_owned_invalid_task_id_claim(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    claim_path = _write_claim_payload(
+        runtime_root,
+        filename="owned-invalid-task-id.json",
+        payload=_owner_bound_claim_payload(
+            task_id="invalid?owned-task",
+            agent="codex",
+        ),
+    )
+    before = claim_path.read_bytes()
+
+    heartbeat = _run_script(
+        runtime_root,
+        "Send-Liveness.ps1",
+        "-Agent",
+        "codex",
+        "-Heartbeat",
+        "-TaskId",
+        "owned-invalid-task-heartbeat",
+        bound_agent="codex",
+        powershell=powershell,
+    )
+
+    combined = heartbeat.stdout + heartbeat.stderr
+    assert heartbeat.returncode != 0
+    assert "invalid active claim task_id skipped" in combined
+    assert "owned active claim has invalid task_id" in combined
+    assert claim_path.read_bytes() == before
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
 def test_heartbeat_stored_agent_comparison_is_case_sensitive(
@@ -5360,7 +6132,18 @@ def test_powershell_stale_sweep_rolls_back_archive_when_source_quarantine_fails(
     assert claim_path.read_bytes() == before_claim
     done_dir = runtime_root / "work_queue" / "done"
     assert not list(done_dir.glob("*.stale_lease.json"))
-    assert not list(done_dir.glob("*.tmp.*"))
+    retained_temps = list(done_dir.glob("*.tmp.*"))
+    assert len(retained_temps) == 1
+    assert json.loads(retained_temps[0].read_text(encoding="utf-8"))[
+        "task_id"
+    ] == task_id
+    retained_archives = list(
+        done_dir.glob("*.stale_lease.json.rollback-retained.*")
+    )
+    assert len(retained_archives) == 1
+    assert json.loads(retained_archives[0].read_text(encoding="utf-8"))[
+        "task_id"
+    ] == task_id
     backups = list(
         claim_path.parent.glob(f"{claim_path.name}.stale-backup.*")
     )
@@ -5442,7 +6225,21 @@ def test_powershell_stale_sweep_rolls_back_whole_batch_on_second_quarantine_fail
     assert {path: path.read_bytes() for path in claim_paths} == before
     done_dir = runtime_root / "work_queue" / "done"
     assert not list(done_dir.glob("*.stale_lease.json"))
-    assert not list(done_dir.glob("*.tmp.*"))
+    expected_task_ids = {path.stem for path in claim_paths}
+    retained_temps = list(done_dir.glob("*.tmp.*"))
+    assert len(retained_temps) == len(claim_paths)
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["task_id"]
+        for path in retained_temps
+    } == expected_task_ids
+    retained_archives = list(
+        done_dir.glob("*.stale_lease.json.rollback-retained.*")
+    )
+    assert len(retained_archives) == len(claim_paths)
+    assert {
+        json.loads(path.read_text(encoding="utf-8"))["task_id"]
+        for path in retained_archives
+    } == expected_task_ids
     claims_dir = runtime_root / "work_queue" / "claims"
     backups = list(claims_dir.glob("*.stale-backup.*"))
     assert len(backups) == len(claim_paths)
@@ -7419,9 +8216,8 @@ def test_powershell_stale_rollback_retains_archive_when_restore_fails(
     combined = _normalized_powershell_output(swept)
     assert swept.returncode != 0
     assert "injected active source restore failure" in combined
-    assert "archive rollback retained" in combined
     assert "source=missing" in combined
-    assert "archive=retained" in combined
+    assert "archive=missing" in combined
     assert "backup=retained" in combined
     assert not claim_paths[0].exists()
     assert claim_paths[1].read_bytes() == before[claim_paths[1]]
@@ -7433,8 +8229,12 @@ def test_powershell_stale_rollback_retains_archive_when_restore_fails(
     second_archives = list(
         done_dir.glob(f"{second_task}*.stale_lease.json")
     )
-    assert len(first_archives) == 1
+    assert not first_archives
     assert not second_archives
+    rollback_archives = list(
+        done_dir.glob("*.stale_lease.json.rollback-retained.*")
+    )
+    assert len(rollback_archives) == 2
     recovery_backups = list(
         claim_paths[0].parent.glob(f"{claim_paths[0].name}.stale-backup.*")
     )
@@ -7449,7 +8249,7 @@ def test_powershell_stale_rollback_retains_archive_when_restore_fails(
     assert second_backups[0].read_bytes() == before[claim_paths[1]]
 
 
-def test_powershell_stale_cleanup_failure_keeps_audit_and_result(
+def test_powershell_stale_retention_notice_keeps_audit_and_result(
     tmp_path: Path,
 ) -> None:
     runtime_root = tmp_path / "bridge-runtime"
@@ -7473,23 +8273,6 @@ def test_powershell_stale_cleanup_failure_keeps_audit_and_result(
         "Write-AgentEvent.ps1",
     ):
         shutil.copy2(BRIDGE_BIN / script_name, isolated_bin / script_name)
-    sweep_path = isolated_bin / "Invoke-StaleClaimSweep.ps1"
-    sweep_source = sweep_path.read_text(encoding="utf-8")
-    cleanup_source = (
-        "                    # STALE V2 MARKER: exact-handle committed "
-        "backup cleanup."
-    )
-    injected_cleanup = (
-        f"{cleanup_source}\n"
-        "                    throw "
-        "'injected source backup cleanup failure'"
-    )
-    assert sweep_source.count(cleanup_source) == 1
-    sweep_path.write_text(
-        sweep_source.replace(cleanup_source, injected_cleanup, 1),
-        encoding="utf-8",
-    )
-
     swept = _run_script(
         runtime_root,
         "Invoke-StaleClaimSweep.ps1",
@@ -7502,11 +8285,9 @@ def test_powershell_stale_cleanup_failure_keeps_audit_and_result(
 
     combined = _normalized_powershell_output(swept)
     assert swept.returncode == 0, combined
-    assert "stale claim batch committed but ancillary cleanup failed" in (
+    assert "recovery artifacts intentionally retained by no-delete policy" in (
         combined
     )
-    assert "required events and results will continue" in combined
-    assert "injected source backup cleanup failure" in combined
     assert task_id in swept.stdout
     assert not claim_path.exists()
     archives = list(

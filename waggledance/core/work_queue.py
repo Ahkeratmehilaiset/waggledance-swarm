@@ -128,6 +128,59 @@ def _ensure_plain_directory(path: Path, *, label: str) -> None:
     _require_plain_directory(path, label=label)
 
 
+def _require_mutation_lock_identity(
+    path: Path,
+    *,
+    handle: BinaryIO | None = None,
+) -> None:
+    """Require one plain, single-link lock file bound to its opened handle."""
+
+    try:
+        path_stat = os.lstat(path)
+    except OSError as exc:
+        raise WorkQueueError(
+            f"claim mutation lock is missing or unreadable: {path}"
+        ) from exc
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise WorkQueueError(f"claim mutation lock must be a regular file: {path}")
+    if _stat_is_reparse_point(path_stat):
+        raise WorkQueueError(
+            f"claim mutation lock must not be a reparse link: {path}"
+        )
+    if path_stat.st_nlink != 1:
+        raise WorkQueueError(
+            "claim mutation lock must have exactly one filesystem link: "
+            f"{path}"
+        )
+    if handle is None:
+        return
+
+    try:
+        opened_stat = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise WorkQueueError(
+            f"claim mutation lock opened handle is unreadable: {path}"
+        ) from exc
+    if not stat.S_ISREG(opened_stat.st_mode) or _stat_is_reparse_point(
+        opened_stat
+    ):
+        raise WorkQueueError(
+            f"claim mutation lock opened handle must be a regular file: {path}"
+        )
+    if opened_stat.st_nlink != 1:
+        raise WorkQueueError(
+            "claim mutation lock opened handle must have exactly one "
+            f"filesystem link: {path}"
+        )
+    if (opened_stat.st_dev, opened_stat.st_ino) != (
+        path_stat.st_dev,
+        path_stat.st_ino,
+    ):
+        raise WorkQueueError(
+            f"claim mutation lock path changed after opening: {path}"
+        )
+
+
 class WorkQueueError(ValueError):
     """Recoverable work-queue contract violation."""
 
@@ -268,10 +321,18 @@ def _claim_mutation_lock(bridge: Path) -> Iterator[None]:
         if os.path.lexists(state_dir):
             _require_plain_directory(state_dir, label=label)
     lock_path = work_queue_dir / ".claims.mutation.lock"
-    handle: BinaryIO = lock_path.open("a+b")
+    if os.path.lexists(lock_path):
+        _require_mutation_lock_identity(lock_path)
+    try:
+        handle: BinaryIO = lock_path.open("a+b")
+    except OSError as exc:
+        raise WorkQueueError(
+            f"could not open claim mutation lock: {lock_path}"
+        ) from exc
     acquired = False
     deadline = time.monotonic() + MUTATION_LOCK_TIMEOUT_SECONDS
     try:
+        _require_mutation_lock_identity(lock_path, handle=handle)
         while True:
             try:
                 handle.seek(0)
@@ -304,6 +365,15 @@ def _claim_mutation_lock(bridge: Path) -> Iterator[None]:
                         f"timed out acquiring claim mutation lock: {lock_path}"
                     ) from exc
                 time.sleep(MUTATION_LOCK_RETRY_SECONDS)
+        _require_mutation_lock_identity(lock_path, handle=handle)
+        _require_plain_directory(bridge, label="bridge root")
+        _require_plain_directory(work_queue_dir, label="work queue directory")
+        for state_dir, label in (
+            (work_queue_dir / "claims", "active claims directory"),
+            (work_queue_dir / "done", "completed claims directory"),
+        ):
+            if os.path.lexists(state_dir):
+                _require_plain_directory(state_dir, label=label)
         yield
     finally:
         if acquired:
@@ -792,15 +862,15 @@ def _release_task_locked(
 ) -> ReleaseRecord:
     claims_dir = bridge / "work_queue" / "claims"
     done_dir = bridge / "work_queue" / "done"
-    claim_path = _claim_path_for_task(claims_dir, task_id)
-    if not claim_path.exists():
+    claim_path, existing_snapshot = _mutation_claim_snapshot_for_task(
+        claims_dir,
+        task_id,
+    )
+    if existing_snapshot is None:
         raise WorkQueueError(f"no active claim for task {task_id}")
-
-    (
-        existing,
-        expected_source_sha256,
-        expected_source_size,
-    ) = _read_claim_file_snapshot(claim_path)
+    existing = existing_snapshot.claim
+    expected_source_sha256 = existing_snapshot.sha256
+    expected_source_size = existing_snapshot.size
     if existing.task_id != task_id:
         raise WorkQueueError(
             "release rejected: active claim changed during lookup; "
@@ -895,15 +965,16 @@ def _heartbeat_locked(
     lease_seconds: int | None,
     owner_context: _ClaimOwnerContext,
 ) -> Claim:
-    claim_path = _claim_path_for_task(bridge / "work_queue" / "claims", task_id)
-    if not claim_path.exists():
+    claims_dir = bridge / "work_queue" / "claims"
+    claim_path, existing_snapshot = _mutation_claim_snapshot_for_task(
+        claims_dir,
+        task_id,
+    )
+    if existing_snapshot is None:
         raise WorkQueueError(f"no active claim for task {task_id}")
-
-    (
-        existing,
-        expected_source_sha256,
-        expected_source_size,
-    ) = _read_claim_file_snapshot(claim_path)
+    existing = existing_snapshot.claim
+    expected_source_sha256 = existing_snapshot.sha256
+    expected_source_size = existing_snapshot.size
     if existing.task_id != task_id:
         raise WorkQueueError(
             "heartbeat rejected: active claim changed during lookup; "
@@ -2116,6 +2187,7 @@ def _strict_active_claim_snapshot(
         )
 
     snapshot: list[_ActiveClaimSnapshot] = []
+    task_paths: dict[str, Path] = {}
     for path, is_file in scanned_entries:
         if not is_file:
             raise WorkQueueError(
@@ -2131,6 +2203,13 @@ def _strict_active_claim_snapshot(
                 "active claim task_id must be a non-empty string: "
                 f"{path}"
             )
+        previous_path = task_paths.get(claim.task_id)
+        if previous_path is not None:
+            raise WorkQueueError(
+                "duplicate active claim records for exact task_id "
+                f"{claim.task_id!r}: {previous_path}, {path}"
+            )
+        task_paths[claim.task_id] = path
         snapshot.append(
             _ActiveClaimSnapshot(
                 path=path,
@@ -2176,41 +2255,48 @@ def _claim_for_task_from_snapshot(
     return preferred, None
 
 
-def _claim_path_for_task(claims_dir: Path, task_id: str) -> Path:
+def _mutation_claim_snapshot_for_task(
+    claims_dir: Path,
+    task_id: str,
+) -> tuple[Path, _ActiveClaimSnapshot | None]:
+    """Resolve one mutation target while rejecting global parsed duplicates."""
+
     preferred = claims_dir / f"{_safe_name(task_id)}.json"
     if not claims_dir.exists():
-        return preferred
-    matches: list[Path] = []
-    preferred_claim: Claim | None = None
+        return preferred, None
+
+    snapshots: list[_ActiveClaimSnapshot] = []
+    task_paths: dict[str, Path] = {}
     for path in sorted(claims_dir.glob("*.json")):
         try:
-            claim = _read_claim_file(path)
+            claim, raw_sha256, raw_size = _read_claim_file_snapshot(path)
         except WorkQueueError:
             if path == preferred:
                 raise WorkQueueError(
                     "claim filename collision at preferred path for "
                     f"task_id {task_id!r}: unreadable record {preferred}"
                 )
+            # Legacy release/heartbeat lookup deliberately tolerates an
+            # unrelated malformed record. It never treats that record as a
+            # narrowed authority or removes it.
             continue
-        if path == preferred:
-            preferred_claim = claim
-        if claim.task_id == task_id:
-            matches.append(path)
-    if preferred_claim is not None and preferred_claim.task_id != task_id:
-        raise WorkQueueError(
-            "claim filename collision at preferred path for "
-            f"task_id {task_id!r}: stored task_id "
-            f"{preferred_claim.task_id!r} in {preferred}"
+        if claim.task_id:
+            previous_path = task_paths.get(claim.task_id)
+            if previous_path is not None:
+                raise WorkQueueError(
+                    "duplicate active claim records for exact task_id "
+                    f"{claim.task_id!r}: {previous_path}, {path}"
+                )
+            task_paths[claim.task_id] = path
+        snapshots.append(
+            _ActiveClaimSnapshot(
+                path=path,
+                claim=claim,
+                sha256=raw_sha256,
+                size=raw_size,
+            )
         )
-    if len(matches) > 1:
-        duplicate_paths = ", ".join(str(path) for path in matches)
-        raise WorkQueueError(
-            "duplicate active claim records for exact task_id "
-            f"{task_id!r}: {duplicate_paths}"
-        )
-    if matches:
-        return matches[0]
-    return preferred
+    return _claim_for_task_from_snapshot(claims_dir, task_id, snapshots)
 
 
 def _normalize_scope_entry(scope: str) -> str:

@@ -3,6 +3,38 @@
 $script:AgentBridgeSessionIdentityContract = 'v1'
 $script:AgentBridgeClaimOwnerContract = 'v1'
 
+function Resolve-AgentBridgeRoot {
+    <#
+    .SYNOPSIS
+        Resolve the shared runtime bridge with cross-runtime precedence.
+
+    .DESCRIPTION
+        Python bridge consumers and producers accept the current
+        AGENT_BRIDGE_RUNTIME_ROOT name first, the legacy AGENT_BRIDGE_ROOT
+        name second, and finally their repo-local default. Keep every
+        PowerShell entry point on that exact ordering so reads and writes
+        cannot silently split across two bridge trees.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $DefaultRoot
+    )
+
+    foreach ($environmentName in @(
+            'AGENT_BRIDGE_RUNTIME_ROOT',
+            'AGENT_BRIDGE_ROOT'
+        )) {
+        $environmentValue = [Environment]::GetEnvironmentVariable(
+            $environmentName,
+            'Process'
+        )
+        if (-not [string]::IsNullOrWhiteSpace($environmentValue)) {
+            return ([string]$environmentValue).Trim()
+        }
+    }
+    return $DefaultRoot
+}
+
 function Format-AgentBridgeIdentityDisplay {
     [CmdletBinding()]
     param(
@@ -943,9 +975,10 @@ function Assert-AgentBridgeActiveClaimRawAuthorityFields {
         foreach ($scopePart in ([string]$scopeEntry).Split(',')) {
             $scope = $scopePart.Trim()
             if ([string]::IsNullOrWhiteSpace($scope)) {
-                throw (
+                throw ((
                     "claim field 'write_scope' is malformed: {0}: " +
-                    "write_scope entries must be non-empty paths" -f
+                    "write_scope entries must be non-empty paths"
+                ) -f
                     $ClaimPath
                 )
             }
@@ -1138,16 +1171,46 @@ function Ensure-AgentBridgePlainDirectory {
     )
 
     if (-not (Test-Path -LiteralPath $LiteralPath)) {
-        try {
-            [void](New-Item `
-                -ItemType Directory `
-                -Path $LiteralPath `
-                -ErrorAction Stop)
-        } catch {
-            if (-not (Test-Path -LiteralPath $LiteralPath)) {
-                throw
-            }
+        $fullPath = [System.IO.Path]::GetFullPath($LiteralPath)
+        $parentPath = [System.IO.Path]::GetDirectoryName($fullPath)
+        if ([string]::IsNullOrWhiteSpace($parentPath)) {
+            throw "$Context parent path is unavailable: $LiteralPath"
         }
+        Assert-AgentBridgePlainDirectory `
+            -LiteralPath $parentPath `
+            -Context "$Context parent"
+        $parentPin = $null
+        try {
+            $parentPin = Enter-AgentBridgeParentDirectoryPin `
+                -ChildPath $fullPath `
+                -Context "$Context creation"
+            Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+            if (-not (Test-Path -LiteralPath $fullPath)) {
+                try {
+                    [void](New-Item `
+                        -ItemType Directory `
+                        -Path $fullPath `
+                        -ErrorAction Stop)
+                } catch {
+                    $createError = $_.Exception
+                    Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+                    # Another cooperating writer may have won CreateNew.
+                    # Suppress only that benign collision; the plain-directory
+                    # gate below still rejects a file, junction, or reparse
+                    # object created by a non-cooperating process.
+                    if (-not (Test-Path -LiteralPath $fullPath)) {
+                        throw $createError
+                    }
+                }
+            }
+            Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+            Assert-AgentBridgePlainDirectory `
+                -LiteralPath $fullPath `
+                -Context $Context
+        } finally {
+            Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
+        }
+        return
     }
     Assert-AgentBridgePlainDirectory `
         -LiteralPath $LiteralPath `
@@ -1200,20 +1263,32 @@ function Enter-AgentBridgeMutationLock {
             -LiteralPath $lockPath `
             -Context 'claim mutation lock'
     }
-    $stream = [System.IO.File]::Open(
-        $lockPath,
-        [System.IO.FileMode]::OpenOrCreate,
-        [System.IO.FileAccess]::ReadWrite,
-        [System.IO.FileShare]::ReadWrite
-    )
+    $parentPin = $null
+    $stream = $null
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     try {
+        $parentPin = Enter-AgentBridgeParentDirectoryPin `
+            -ChildPath $lockPath `
+            -Context 'claim mutation lock'
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        $stream = [System.IO.File]::Open(
+            $lockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::ReadWrite
+        )
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $parentPin `
+            -ChildHandle $stream.SafeFileHandle
         Assert-AgentBridgeRegularUnlinkedFile `
             -LiteralPath $lockPath `
             -Context 'claim mutation lock'
         while ($true) {
+            $locked = $false
             try {
                 $stream.Lock(0, 1)
+                $locked = $true
                 Assert-AgentBridgeExclusiveHandleIdentity `
                     -Stream $stream `
                     -Context 'claim mutation lock'
@@ -1228,8 +1303,18 @@ function Enter-AgentBridgeMutationLock {
                     -Context 'work queue directory'
                 Assert-AgentBridgeExistingQueueDirectories `
                     -WorkQueueDir $workQueueDir
-                return $stream
+                Assert-AgentBridgeChildHandleParentPin `
+                    -Pin $parentPin `
+                    -ChildHandle $stream.SafeFileHandle
+                Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+                return [pscustomobject]@{
+                    stream = $stream
+                    parent_pin = $parentPin
+                }
             } catch [System.IO.IOException] {
+                if ($locked) {
+                    try { $stream.Unlock(0, 1) } catch {}
+                }
                 if ([DateTime]::UtcNow -ge $deadline) {
                     throw "timed out acquiring claim mutation lock: $lockPath"
                 }
@@ -1237,7 +1322,10 @@ function Enter-AgentBridgeMutationLock {
             }
         }
     } catch {
-        $stream.Dispose()
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
         throw
     }
 }
@@ -1245,14 +1333,28 @@ function Enter-AgentBridgeMutationLock {
 function Exit-AgentBridgeMutationLock {
     [CmdletBinding()]
     param(
-        [AllowNull()] [System.IO.FileStream] $Lock
+        [AllowNull()] $Lock
     )
 
     if ($null -eq $Lock) { return }
+    $stream = if ($Lock -is [System.IO.FileStream]) {
+        $Lock
+    } else {
+        $Lock.stream
+    }
+    $parentPin = if ($Lock -is [System.IO.FileStream]) {
+        $null
+    } else {
+        $Lock.parent_pin
+    }
     try {
-        $Lock.Unlock(0, 1)
+        $stream.Unlock(0, 1)
     } finally {
-        $Lock.Dispose()
+        try {
+            $stream.Dispose()
+        } finally {
+            Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
+        }
     }
 }
 
@@ -1353,8 +1455,10 @@ function Assert-AgentBridgeRegularUnlinkedFile {
     }
     if ($null -ne $linkTypeProperty.Value) {
         throw (
-            "$Context must not be a hard link or reparse link: {0} " +
-            "(LinkType={1})" -f
+            (
+                "$Context must not be a hard link or reparse link: {0} " +
+                "(LinkType={1})"
+            ) -f
             $LiteralPath,
             [string]$linkTypeProperty.Value
         )
@@ -1364,6 +1468,190 @@ function Assert-AgentBridgeRegularUnlinkedFile {
             [System.IO.FileAttributes]::ReparsePoint) -ne 0
     ) {
         throw "$Context must not be a reparse point: $LiteralPath"
+    }
+}
+
+function Restore-AgentBridgeAppendLength {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [long] $OriginalLength,
+        [string] $Context = 'bridge append target'
+    )
+
+    $Stream.SetLength($OriginalLength)
+    $Stream.Flush($true)
+    if ([long]$Stream.Length -ne $OriginalLength) {
+        throw (
+            "$Context rollback length mismatched: expected " +
+            "$OriginalLength; actual $($Stream.Length)"
+        )
+    }
+}
+
+function Add-AgentBridgeBytesToRegularUnlinkedFile {
+    <#
+    .SYNOPSIS
+        Append trusted bytes without following a linked bridge file.
+
+    .DESCRIPTION
+        The direct parent is pinned without delete sharing and the opened child
+        handle must resolve inside that exact directory generation before any
+        byte is written. The original length is recorded; any write or
+        post-write identity failure truncates and durably flushes the same open
+        inode before the error is surfaced, so a raced hard-link alias is not
+        left with a committed append. Callers may retry IOException failures
+        for ordinary writer contention.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $LiteralPath,
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [string] $Context = 'bridge append target'
+    )
+
+    $parent = [System.IO.Path]::GetDirectoryName(
+        [System.IO.Path]::GetFullPath($LiteralPath)
+    )
+    Assert-AgentBridgePlainDirectory `
+        -LiteralPath $parent `
+        -Context "$Context parent"
+    if (Test-Path -LiteralPath $LiteralPath) {
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $LiteralPath `
+            -Context $Context
+    }
+
+    $parentPin = $null
+    $stream = $null
+    $originalLength = [long]-1
+    $mutationStarted = $false
+    $appendCommitted = $false
+    $finalizationFailures = @()
+    try {
+        $parentPin = Enter-AgentBridgeParentDirectoryPin `
+            -ChildPath $LiteralPath `
+            -Context $Context
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        $stream = [System.IO.File]::Open(
+            $LiteralPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::Read
+        )
+        # APPEND V2 MARKER: bind opened child to pinned parent before write.
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $parentPin `
+            -ChildHandle $stream.SafeFileHandle
+        Assert-AgentBridgeExclusiveHandleIdentity `
+            -Stream $stream `
+            -Context $Context
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $LiteralPath `
+            -Context $Context
+        Assert-AgentBridgePlainDirectory `
+            -LiteralPath $parent `
+            -Context "$Context parent"
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        $originalLength = [long]$stream.Length
+        [void]$stream.Seek(0, [System.IO.SeekOrigin]::End)
+        $mutationStarted = $true
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
+        # APPEND V2 MARKER: no failure after this point may retain the append.
+        Assert-AgentBridgeExclusiveHandleIdentity `
+            -Stream $stream `
+            -Context $Context
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $LiteralPath `
+            -Context $Context
+        Assert-AgentBridgePlainDirectory `
+            -LiteralPath $parent `
+            -Context "$Context parent"
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $parentPin `
+            -ChildHandle $stream.SafeFileHandle
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        # This is the canonical commit boundary. Resource-finalization errors
+        # after every durable write and identity gate has passed must never be
+        # surfaced as an ordinary append failure: a caller retry would append
+        # the same logical record a second time.
+        $appendCommitted = $true
+    } catch {
+        $appendError = $_.Exception
+        if (
+            $mutationStarted -and
+            $null -ne $stream -and
+            $originalLength -ge 0
+        ) {
+            try {
+                Restore-AgentBridgeAppendLength `
+                    -Stream $stream `
+                    -OriginalLength $originalLength `
+                    -Context $Context
+            } catch {
+                $rollbackError = $_.Exception
+                $ambiguousMessage = (
+                    "{0} append failed and rollback failed; append " +
+                    "outcome is ambiguous (append_error={1}; " +
+                    "rollback_error={2})"
+                ) -f
+                    $Context,
+                    $appendError.Message,
+                    $rollbackError.Message
+                $ambiguousError = [System.IO.IOException]::new(
+                    $ambiguousMessage,
+                    $appendError
+                )
+                $ambiguousError.Data['AgentBridgeAppendAmbiguous'] = $true
+                throw $ambiguousError
+            }
+            $rolledBackMessage = (
+                "{0} append was rejected and durably rolled back to " +
+                "length {1}: {2}"
+            ) -f
+                $Context,
+                $originalLength,
+                $appendError.Message
+            $rolledBackError = [System.IO.IOException]::new(
+                $rolledBackMessage,
+                $appendError
+            )
+            $rolledBackError.Data['AgentBridgeAppendRolledBack'] = $true
+            throw $rolledBackError
+        }
+        throw $appendError
+    } finally {
+        if ($null -ne $stream) {
+            try {
+                $stream.Dispose()
+            } catch {
+                $finalizationFailures += $_.Exception
+            }
+        }
+        try {
+            Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
+        } catch {
+            $finalizationFailures += $_.Exception
+        }
+        if ($finalizationFailures.Count -gt 0) {
+            $finalizationMessages = @(
+                $finalizationFailures | ForEach-Object { $_.Message }
+            ) -join '; '
+            if ($appendCommitted) {
+                $finalizationWarning = (
+                    "{0} canonical append committed and verified, but " +
+                    "resource finalization reported: {1}; treating the " +
+                    "append as committed without retry or spool"
+                ) -f $Context, $finalizationMessages
+            } else {
+                $finalizationWarning = (
+                    "{0} resource finalization also reported: {1}"
+                ) -f $Context, $finalizationMessages
+            }
+            Write-AgentBridgeNonThrowingWarning -Message $finalizationWarning
+        }
     }
 }
 
@@ -1452,7 +1740,7 @@ function Get-AgentBridgeExclusiveRawFileSnapshot {
 }
 
 function Initialize-AgentBridgeExactDeleteType {
-    if ($null -ne ('AgentBridgeExactFileDeleteV2' -as [type])) {
+    if ($null -ne ('AgentBridgeExactFileDeleteV3' -as [type])) {
         return
     }
 
@@ -1462,9 +1750,10 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-public static class AgentBridgeExactFileDeleteV2
+public static class AgentBridgeExactFileDeleteV3
 {
     public sealed class Result
     {
@@ -1479,6 +1768,13 @@ public static class AgentBridgeExactFileDeleteV2
         public uint NumberOfLinks { get; set; }
         public bool IsDirectory { get; set; }
         public bool IsReparsePoint { get; set; }
+    }
+
+    public sealed class DirectoryPinResult
+    {
+        public bool Succeeded { get; set; }
+        public string Error { get; set; }
+        public SafeFileHandle Handle { get; set; }
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1534,9 +1830,20 @@ public static class AgentBridgeExactFileDeleteV2
         ref FILE_DISPOSITION_INFO information,
         uint informationSize);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle file,
+        StringBuilder filePath,
+        uint filePathLength,
+        uint flags);
+
     private const uint GENERIC_READ = 0x80000000;
     private const uint DELETE = 0x00010000;
+    private const uint FILE_READ_ATTRIBUTES = 0x00000080;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
     private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
     private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
     private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
     private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
@@ -1552,6 +1859,228 @@ public static class AgentBridgeExactFileDeleteV2
         int code = Marshal.GetLastWin32Error();
         return operation + " failed (win32=" + code + "): " +
             new Win32Exception(code).Message;
+    }
+
+    private static SafeFileHandle OpenPinnedDirectoryHandle(string path)
+    {
+        return CreateFile(
+            path,
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            IntPtr.Zero);
+    }
+
+    private static bool SameFileIdentity(
+        BY_HANDLE_FILE_INFORMATION left,
+        BY_HANDLE_FILE_INFORMATION right)
+    {
+        return left.VolumeSerialNumber == right.VolumeSerialNumber &&
+            left.FileIndexHigh == right.FileIndexHigh &&
+            left.FileIndexLow == right.FileIndexLow;
+    }
+
+    private static Result ValidatePlainDirectoryHandle(
+        SafeFileHandle handle,
+        string operation)
+    {
+        if (handle == null || handle.IsInvalid || handle.IsClosed)
+            return Failure(operation + " handle is unavailable");
+        BY_HANDLE_FILE_INFORMATION information;
+        if (!GetFileInformationByHandle(handle, out information))
+            return Failure(Win32Error(operation + " metadata read"));
+        if ((information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+            return Failure(operation + " target is not a directory");
+        if ((information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            return Failure(operation + " target is a reparse point");
+        return new Result { Succeeded = true, Error = String.Empty };
+    }
+
+    public static DirectoryPinResult PinPlainDirectory(string path)
+    {
+        SafeFileHandle handle = OpenPinnedDirectoryHandle(path);
+        if (handle == null || handle.IsInvalid)
+        {
+            if (handle != null) handle.Dispose();
+            return new DirectoryPinResult {
+                Succeeded = false,
+                Error = Win32Error("parent directory pin open"),
+                Handle = null
+            };
+        }
+        Result validation = ValidatePlainDirectoryHandle(
+            handle,
+            "parent directory pin");
+        if (!validation.Succeeded)
+        {
+            handle.Dispose();
+            return new DirectoryPinResult {
+                Succeeded = false,
+                Error = validation.Error,
+                Handle = null
+            };
+        }
+        Result pathValidation = ValidateDirectoryLexicalPath(path, handle);
+        if (!pathValidation.Succeeded)
+        {
+            handle.Dispose();
+            return new DirectoryPinResult {
+                Succeeded = false,
+                Error = pathValidation.Error,
+                Handle = null
+            };
+        }
+        return new DirectoryPinResult {
+            Succeeded = true,
+            Error = String.Empty,
+            Handle = handle
+        };
+    }
+
+    public static Result ValidatePinnedDirectory(
+        string path,
+        SafeFileHandle pinnedHandle)
+    {
+        Result pinnedValidation = ValidatePlainDirectoryHandle(
+            pinnedHandle,
+            "pinned parent directory");
+        if (!pinnedValidation.Succeeded) return pinnedValidation;
+
+        SafeFileHandle currentHandle = OpenPinnedDirectoryHandle(path);
+        if (currentHandle == null || currentHandle.IsInvalid)
+        {
+            if (currentHandle != null) currentHandle.Dispose();
+            return Failure(Win32Error("pinned parent path re-open"));
+        }
+        try
+        {
+            Result currentValidation = ValidatePlainDirectoryHandle(
+                currentHandle,
+                "current parent directory");
+            if (!currentValidation.Succeeded) return currentValidation;
+            Result pinnedPathValidation = ValidateDirectoryLexicalPath(
+                path,
+                pinnedHandle);
+            if (!pinnedPathValidation.Succeeded)
+                return pinnedPathValidation;
+            Result currentPathValidation = ValidateDirectoryLexicalPath(
+                path,
+                currentHandle);
+            if (!currentPathValidation.Succeeded)
+                return currentPathValidation;
+            BY_HANDLE_FILE_INFORMATION pinnedInformation;
+            BY_HANDLE_FILE_INFORMATION currentInformation;
+            if (!GetFileInformationByHandle(
+                    pinnedHandle,
+                    out pinnedInformation))
+                return Failure(Win32Error("pinned parent identity read"));
+            if (!GetFileInformationByHandle(
+                    currentHandle,
+                    out currentInformation))
+                return Failure(Win32Error("current parent identity read"));
+            if (!SameFileIdentity(pinnedInformation, currentInformation))
+                return Failure("parent directory generation changed");
+            return new Result { Succeeded = true, Error = String.Empty };
+        }
+        finally
+        {
+            currentHandle.Dispose();
+        }
+    }
+
+    private static string FinalPath(SafeFileHandle handle)
+    {
+        StringBuilder buffer = new StringBuilder(32768);
+        uint length = GetFinalPathNameByHandle(
+            handle,
+            buffer,
+            (uint)buffer.Capacity,
+            0);
+        if (length == 0)
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "final handle path read failed");
+        if (length >= buffer.Capacity)
+            throw new IOException("final handle path exceeded safe buffer");
+        return buffer.ToString();
+    }
+
+    private static string TrimDirectoryPath(string path)
+    {
+        string root = Path.GetPathRoot(path);
+        if (String.Equals(path, root, StringComparison.OrdinalIgnoreCase))
+            return path;
+        return path.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+    }
+
+    private static string NormalizeFinalPath(string path)
+    {
+        string normalized = path;
+        if (normalized.StartsWith(
+                @"\\?\UNC\",
+                StringComparison.OrdinalIgnoreCase))
+            normalized = @"\\" + normalized.Substring(8);
+        else if (normalized.StartsWith(
+                @"\\?\",
+                StringComparison.OrdinalIgnoreCase))
+            normalized = normalized.Substring(4);
+        return TrimDirectoryPath(Path.GetFullPath(normalized));
+    }
+
+    private static Result ValidateDirectoryLexicalPath(
+        string expectedPath,
+        SafeFileHandle directoryHandle)
+    {
+        try
+        {
+            string expected = TrimDirectoryPath(
+                Path.GetFullPath(expectedPath));
+            string actual = NormalizeFinalPath(FinalPath(directoryHandle));
+            if (!String.Equals(
+                    expected,
+                    actual,
+                    StringComparison.OrdinalIgnoreCase))
+                return Failure(
+                    "parent directory resolved through a different " +
+                    "filesystem path (expected=" + expected +
+                    "; actual=" + actual + ")");
+            return new Result { Succeeded = true, Error = String.Empty };
+        }
+        catch (Exception exception)
+        {
+            return Failure(
+                exception.GetType().Name + ": " + exception.Message);
+        }
+    }
+
+    public static Result ValidateChildInPinnedDirectory(
+        SafeFileHandle childHandle,
+        SafeFileHandle pinnedDirectoryHandle)
+    {
+        try
+        {
+            string pinnedPath = NormalizeFinalPath(
+                FinalPath(pinnedDirectoryHandle));
+            string childPath = NormalizeFinalPath(FinalPath(childHandle));
+            string childParent = TrimDirectoryPath(
+                Path.GetDirectoryName(childPath));
+            if (!String.Equals(
+                    childParent,
+                    pinnedPath,
+                    StringComparison.OrdinalIgnoreCase))
+                return Failure(
+                    "child handle resolved outside pinned parent directory");
+            return new Result { Succeeded = true, Error = String.Empty };
+        }
+        catch (Exception exception)
+        {
+            return Failure(
+                exception.GetType().Name + ": " + exception.Message);
+        }
     }
 
     public static LinkIdentityResult GetLinkIdentity(SafeFileHandle handle)
@@ -1578,7 +2107,8 @@ public static class AgentBridgeExactFileDeleteV2
     public static Result DeleteIfMatches(
         string path,
         string expectedSha256,
-        long expectedLength)
+        long expectedLength,
+        SafeFileHandle pinnedParentHandle)
     {
         SafeFileHandle handle = CreateFile(
             path,
@@ -1596,6 +2126,13 @@ public static class AgentBridgeExactFileDeleteV2
 
         try
         {
+            Result parentValidation = ValidateChildInPinnedDirectory(
+                handle,
+                pinnedParentHandle);
+            if (!parentValidation.Succeeded)
+                return Failure(
+                    "exact-delete parent binding failed: " +
+                    parentValidation.Error);
             BY_HANDLE_FILE_INFORMATION before;
             if (!GetFileInformationByHandle(handle, out before))
                 return Failure(Win32Error("initial handle metadata read"));
@@ -1646,6 +2183,14 @@ public static class AgentBridgeExactFileDeleteV2
                 if (finalLength != expectedLength)
                     return Failure("exact-delete target length changed");
 
+                parentValidation = ValidateChildInPinnedDirectory(
+                    handle,
+                    pinnedParentHandle);
+                if (!parentValidation.Succeeded)
+                    return Failure(
+                        "exact-delete parent binding changed: " +
+                        parentValidation.Error);
+
                 FILE_DISPOSITION_INFO disposition =
                     new FILE_DISPOSITION_INFO { DeleteFile = true };
                 if (!SetFileInformationByHandle(
@@ -1670,6 +2215,322 @@ public static class AgentBridgeExactFileDeleteV2
 '@
 }
 
+function Initialize-AgentBridgeHeldFileType {
+    if ($null -ne ('AgentBridgeHeldFileV1' -as [type])) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class AgentBridgeHeldFileV1
+{
+    public sealed class OpenResult
+    {
+        public bool Succeeded { get; set; }
+        public bool Collision { get; set; }
+        public string Error { get; set; }
+        public SafeFileHandle Handle { get; set; }
+    }
+
+    public sealed class RenameResult
+    {
+        public bool Succeeded { get; set; }
+        public string Error { get; set; }
+        public string FinalPath { get; set; }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle file,
+        int informationClass,
+        IntPtr information,
+        uint informationSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FlushFileBuffers(SafeFileHandle file);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle file,
+        StringBuilder filePath,
+        uint filePathLength,
+        uint flags);
+
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint DELETE = 0x00010000;
+    private const uint CREATE_NEW = 1;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    private const int FILE_RENAME_INFO_CLASS = 3;
+
+    private static string Win32Error(string operation, int code)
+    {
+        return operation + " failed (win32=" + code + "): " +
+            new Win32Exception(code).Message;
+    }
+
+    private static string FinalPath(SafeFileHandle handle)
+    {
+        StringBuilder buffer = new StringBuilder(32768);
+        uint length = GetFinalPathNameByHandle(
+            handle,
+            buffer,
+            (uint)buffer.Capacity,
+            0);
+        if (length == 0)
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "held final path read failed");
+        if (length >= buffer.Capacity)
+            throw new IOException("held final path exceeded safe buffer");
+        string path = buffer.ToString();
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            path = @"\\" + path.Substring(8);
+        else if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            path = path.Substring(4);
+        return Path.GetFullPath(path).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+    }
+
+    public static OpenResult CreateNewRenameCapable(string path)
+    {
+        SafeFileHandle handle = CreateFile(
+            path,
+            GENERIC_READ | GENERIC_WRITE | DELETE,
+            0,
+            IntPtr.Zero,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            IntPtr.Zero);
+        if (handle == null || handle.IsInvalid)
+        {
+            int code = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            return new OpenResult {
+                Succeeded = false,
+                Collision = code == 80 || code == 183,
+                Error = Win32Error("held create-new", code),
+                Handle = null
+            };
+        }
+        return new OpenResult {
+            Succeeded = true,
+            Collision = false,
+            Error = String.Empty,
+            Handle = handle
+        };
+    }
+
+    public static RenameResult RenameInPinnedDirectory(
+        SafeFileHandle fileHandle,
+        SafeFileHandle pinnedParentHandle,
+        string destinationPath)
+    {
+        if (fileHandle == null || fileHandle.IsInvalid || fileHandle.IsClosed)
+            return new RenameResult {
+                Succeeded = false,
+                Error = "held file handle is unavailable"
+            };
+        if (pinnedParentHandle == null ||
+            pinnedParentHandle.IsInvalid ||
+            pinnedParentHandle.IsClosed)
+            return new RenameResult {
+                Succeeded = false,
+                Error = "pinned parent handle is unavailable"
+            };
+        if (String.IsNullOrWhiteSpace(destinationPath) ||
+            !Path.IsPathRooted(destinationPath))
+            return new RenameResult {
+                Succeeded = false,
+                Error = "rollback retention destination must be absolute",
+                FinalPath = String.Empty
+            };
+
+        string expectedPath = Path.GetFullPath(destinationPath).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        byte[] nameBytes = Encoding.Unicode.GetBytes(expectedPath);
+        int rootOffset = IntPtr.Size;
+        int lengthOffset = rootOffset + IntPtr.Size;
+        int nameOffset = lengthOffset + sizeof(uint);
+        int bufferSize = checked(nameOffset + nameBytes.Length + sizeof(char));
+        IntPtr buffer = Marshal.AllocHGlobal(bufferSize);
+        try
+        {
+            for (int index = 0; index < bufferSize; index++)
+                Marshal.WriteByte(buffer, index, 0);
+            Marshal.WriteByte(buffer, 0, 0);
+            Marshal.WriteIntPtr(
+                buffer,
+                rootOffset,
+                IntPtr.Zero);
+            Marshal.WriteInt32(buffer, lengthOffset, nameBytes.Length);
+            Marshal.Copy(nameBytes, 0, IntPtr.Add(buffer, nameOffset), nameBytes.Length);
+            if (!SetFileInformationByHandle(
+                    fileHandle,
+                    FILE_RENAME_INFO_CLASS,
+                    buffer,
+                    (uint)bufferSize))
+            {
+                int code = Marshal.GetLastWin32Error();
+                return new RenameResult {
+                    Succeeded = false,
+                    Error = Win32Error("held rollback rename", code),
+                    FinalPath = String.Empty
+                };
+            }
+            if (!FlushFileBuffers(fileHandle))
+            {
+                int code = Marshal.GetLastWin32Error();
+                return new RenameResult {
+                    Succeeded = false,
+                    Error = Win32Error("held rollback rename flush", code),
+                    FinalPath = String.Empty
+                };
+            }
+            string actualPath = FinalPath(fileHandle);
+            if (!String.Equals(
+                    actualPath,
+                    expectedPath,
+                    StringComparison.OrdinalIgnoreCase))
+                return new RenameResult {
+                    Succeeded = false,
+                    Error = "held rollback rename final path mismatched; " +
+                        "expected=" + expectedPath + "; actual=" + actualPath,
+                    FinalPath = actualPath
+                };
+            return new RenameResult {
+                Succeeded = true,
+                Error = String.Empty,
+                FinalPath = actualPath
+            };
+        }
+        catch (Exception exception)
+        {
+            return new RenameResult {
+                Succeeded = false,
+                Error = exception.GetType().Name + ": " + exception.Message,
+                FinalPath = String.Empty
+            };
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+}
+'@
+}
+
+
+function Enter-AgentBridgeParentDirectoryPin {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ChildPath,
+        [string] $Context = 'bridge child publication'
+    )
+
+    Initialize-AgentBridgeExactDeleteType
+    $fullChildPath = [System.IO.Path]::GetFullPath($ChildPath)
+    $parentPath = [System.IO.Path]::GetDirectoryName($fullChildPath)
+    if ([string]::IsNullOrWhiteSpace($parentPath)) {
+        throw "$Context parent path is unavailable: $ChildPath"
+    }
+    $pinResult = [AgentBridgeExactFileDeleteV3]::PinPlainDirectory(
+        $parentPath
+    )
+    if (-not [bool]$pinResult.Succeeded) {
+        throw "$Context parent pin failed: $parentPath`: $($pinResult.Error)"
+    }
+    $pin = [pscustomobject]@{
+        child_path = $fullChildPath
+        parent_path = $parentPath
+        handle = $pinResult.Handle
+        context = $Context
+    }
+    try {
+        Assert-AgentBridgeParentDirectoryPin -Pin $pin
+    } catch {
+        $pin.handle.Dispose()
+        throw
+    }
+    return $pin
+}
+
+function Assert-AgentBridgeParentDirectoryPin {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Pin
+    )
+
+    $validation = [AgentBridgeExactFileDeleteV3]::ValidatePinnedDirectory(
+        [string]$Pin.parent_path,
+        $Pin.handle
+    )
+    if (-not [bool]$validation.Succeeded) {
+        throw (
+            "{0} parent generation validation failed: {1}: {2}" -f
+            [string]$Pin.context,
+            [string]$Pin.parent_path,
+            [string]$validation.Error
+        )
+    }
+}
+
+function Assert-AgentBridgeChildHandleParentPin {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Pin,
+        [Parameter(Mandatory)] [Microsoft.Win32.SafeHandles.SafeFileHandle] $ChildHandle
+    )
+
+    $validation = (
+        [AgentBridgeExactFileDeleteV3]::ValidateChildInPinnedDirectory(
+            $ChildHandle,
+            $Pin.handle
+        )
+    )
+    if (-not [bool]$validation.Succeeded) {
+        throw (
+            "{0} child parent validation failed: {1}" -f
+            [string]$Pin.context,
+            [string]$validation.Error
+        )
+    }
+}
+
+function Exit-AgentBridgeParentDirectoryPin {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] $Pin
+    )
+
+    if ($null -eq $Pin) { return }
+    if ($null -ne $Pin.handle) {
+        $Pin.handle.Dispose()
+    }
+}
+
 function Remove-AgentBridgeExactFile {
     [CmdletBinding()]
     param(
@@ -1680,21 +2541,23 @@ function Remove-AgentBridgeExactFile {
     )
 
     if (
-        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}\z' -or
         $ExpectedLength -lt 0
     ) {
         throw "$Context has an invalid expected identity: $LiteralPath"
     }
-    Initialize-AgentBridgeExactDeleteType
-    # CAS V2 EXACT DELETE MARKER: delete verified object by open handle.
-    $result = [AgentBridgeExactFileDeleteV2]::DeleteIfMatches(
-        $LiteralPath,
-        $ExpectedSha256,
-        $ExpectedLength
+
+    # A default-stream handle, byte hash, file ID, and change time still do
+    # not make deletion safe on NTFS. Another process can add an alternate
+    # data stream while the default stream is open without sharing; that ADS
+    # can arrive after the final metadata check and would then be destroyed by
+    # a handle delete. Bridge recovery artifacts are deliberately retained
+    # instead. This wrapper remains fail-closed so no caller can accidentally
+    # reintroduce pathname cleanup under a misleading "exact" identity check.
+    throw (
+        "$Context retained $LiteralPath`: destructive cleanup is disabled " +
+        "because NTFS alternate-stream ownership cannot be bound atomically"
     )
-    if (-not [bool]$result.Succeeded) {
-        throw "$Context retained $LiteralPath`: $($result.Error)"
-    }
 }
 
 function Assert-AgentBridgeExclusiveHandleIdentity {
@@ -1705,7 +2568,7 @@ function Assert-AgentBridgeExclusiveHandleIdentity {
     )
 
     Initialize-AgentBridgeExactDeleteType
-    $identity = [AgentBridgeExactFileDeleteV2]::GetLinkIdentity(
+    $identity = [AgentBridgeExactFileDeleteV3]::GetLinkIdentity(
         $Stream.SafeFileHandle
     )
     if (-not [bool]$identity.Succeeded) {
@@ -1735,7 +2598,7 @@ function Assert-AgentBridgeExpectedRegularFileSnapshot {
     )
 
     if (
-        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}\z' -or
         $ExpectedLength -lt 0
     ) {
         throw "$Context has an invalid expected snapshot identity: $LiteralPath"
@@ -1796,7 +2659,7 @@ function Assert-AgentBridgeTrustedBytesIdentity {
     )
 
     if (
-        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}\z' -or
         $ExpectedLength -lt 0
     ) {
         throw "$Context has an invalid expected snapshot identity"
@@ -1835,7 +2698,8 @@ function Invoke-AgentBridgeTrustedBytesCreateNew {
         [Parameter(Mandatory)] [byte[]] $PublishBytes,
         [Parameter(Mandatory)] [string] $ExpectedSha256,
         [Parameter(Mandatory)] [long] $ExpectedLength,
-        [string] $Context = 'claim canonical publication'
+        [string] $Context = 'claim canonical publication',
+        [switch] $KeepOpenForRollback
     )
 
     try {
@@ -1850,44 +2714,123 @@ function Invoke-AgentBridgeTrustedBytesCreateNew {
             created = $false
             collision = $false
             error = $_.Exception
+            held_lease = $null
         }
     }
 
+    $parentPin = $null
     $stream = $null
     try {
-        # CAS V2 DIRECT MARKER: create canonical path.
-        $stream = [System.IO.File]::Open(
-            $DestinationPath,
-            [System.IO.FileMode]::CreateNew,
-            [System.IO.FileAccess]::ReadWrite,
-            [System.IO.FileShare]::None
-        )
-    } catch {
-        $openError = $_.Exception
-        return [pscustomobject]@{
-            succeeded = $false
-            created = $false
-            collision = [bool](
-                Test-AgentBridgeDestinationCollisionException `
-                    -Exception $openError
-            )
-            error = $openError
-        }
-    }
-
-    $writeError = $null
-    try {
-        # CAS V2 DIRECT MARKER: write trusted canonical bytes.
-        $stream.Write($PublishBytes, 0, $PublishBytes.Length)
-        # CAS V2 DIRECT MARKER: durably flush canonical bytes.
-        $stream.Flush($true)
-    } catch {
-        $writeError = $_.Exception
-    }
-
-    $verificationError = $null
-    if ($null -eq $writeError) {
         try {
+            $parentPin = Enter-AgentBridgeParentDirectoryPin `
+                -ChildPath $DestinationPath `
+                -Context $Context
+            Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+        } catch {
+            return [pscustomobject]@{
+                succeeded = $false
+                created = $false
+                collision = $false
+                error = $_.Exception
+                held_lease = $null
+            }
+        }
+
+        try {
+        # CAS V2 DIRECT MARKER: create canonical path.
+            if ($KeepOpenForRollback) {
+                Initialize-AgentBridgeHeldFileType
+                $nativeOpen = (
+                    [AgentBridgeHeldFileV1]::CreateNewRenameCapable(
+                        $DestinationPath
+                    )
+                )
+                if (-not [bool]$nativeOpen.Succeeded) {
+                    return [pscustomobject]@{
+                        succeeded = $false
+                        created = $false
+                        collision = [bool]$nativeOpen.Collision
+                        error = [System.IO.IOException]::new(
+                            [string]$nativeOpen.Error
+                        )
+                        held_lease = $null
+                    }
+                }
+                try {
+                    $stream = [System.IO.FileStream]::new(
+                        $nativeOpen.Handle,
+                        [System.IO.FileAccess]::ReadWrite
+                    )
+                    $nativeOpen.Handle = $null
+                } catch {
+                    $streamCreateError = $_.Exception
+                    $heldLease = [pscustomobject]@{
+                        stream = $null
+                        handle = $nativeOpen.Handle
+                        parent_pin = $parentPin
+                        canonical_path = [System.IO.Path]::GetFullPath(
+                            $DestinationPath
+                        )
+                        retained_path = $null
+                    }
+                    $nativeOpen.Handle = $null
+                    $parentPin = $null
+                    return [pscustomobject]@{
+                        succeeded = $false
+                        created = $true
+                        collision = $false
+                        error = $streamCreateError
+                        held_lease = $heldLease
+                    }
+                }
+            } else {
+                $stream = [System.IO.File]::Open(
+                    $DestinationPath,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::ReadWrite,
+                    [System.IO.FileShare]::None
+                )
+            }
+        } catch {
+            $openError = $_.Exception
+            return [pscustomobject]@{
+                succeeded = $false
+                created = $false
+                collision = [bool](
+                    Test-AgentBridgeDestinationCollisionException `
+                        -Exception $openError
+                )
+                error = $openError
+                held_lease = $null
+            }
+        }
+
+        $writeError = $null
+        try {
+            # Bind both the parent generation and opened child handle before
+            # the first trusted byte is written.
+            Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+            Assert-AgentBridgeChildHandleParentPin `
+                -Pin $parentPin `
+                -ChildHandle $stream.SafeFileHandle
+            Assert-AgentBridgeRegularUnlinkedFile `
+                -LiteralPath $DestinationPath `
+                -Context $Context
+            Assert-AgentBridgeExclusiveHandleIdentity `
+                -Stream $stream `
+                -Context $Context
+            Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+            # CAS V2 DIRECT MARKER: write trusted canonical bytes.
+            $stream.Write($PublishBytes, 0, $PublishBytes.Length)
+            # CAS V2 DIRECT MARKER: durably flush canonical bytes.
+            $stream.Flush($true)
+        } catch {
+            $writeError = $_.Exception
+        }
+
+        $verificationError = $null
+        if ($null -eq $writeError) {
+            try {
             # Verify the persisted bytes through the still-exclusive handle.
             # The canonical pathname cannot be replaced while this handle is
             # open without delete sharing.
@@ -1924,26 +2867,96 @@ function Invoke-AgentBridgeTrustedBytesCreateNew {
             Assert-AgentBridgeRegularUnlinkedFile `
                 -LiteralPath $DestinationPath `
                 -Context $Context
-        } catch {
-            $verificationError = $_.Exception
+            Assert-AgentBridgeChildHandleParentPin `
+                -Pin $parentPin `
+                -ChildHandle $stream.SafeFileHandle
+            Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+            } catch {
+                $verificationError = $_.Exception
+            }
         }
-    }
 
-    $closeError = $null
-    try {
+        if (
+            $KeepOpenForRollback -and
+            $null -eq $writeError -and
+            $null -eq $verificationError
+        ) {
+            # Transfer both handles to the caller. Keeping the rename-capable
+            # child and its exact parent generation continuously open prevents
+            # replacement until commit close or handle-bound rollback rename.
+            $heldLease = [pscustomobject]@{
+                stream = $stream
+                handle = $null
+                parent_pin = $parentPin
+                canonical_path = [System.IO.Path]::GetFullPath(
+                    $DestinationPath
+                )
+                retained_path = $null
+            }
+            $stream = $null
+            $parentPin = $null
+            return [pscustomobject]@{
+                succeeded = $true
+                created = $true
+                collision = $false
+                error = $null
+                held_lease = $heldLease
+            }
+        }
+
+        if (
+            $KeepOpenForRollback -and
+            ($null -ne $writeError -or $null -ne $verificationError)
+        ) {
+            $innerError = if ($null -ne $writeError) {
+                $writeError
+            } else {
+                $verificationError
+            }
+            $failureMessage = if ($null -ne $writeError) {
+                "$Context write or flush failed: $($writeError.Message)"
+            } else {
+                "$Context exclusive verification failed: " +
+                    $verificationError.Message
+            }
+            $heldLease = [pscustomobject]@{
+                stream = $stream
+                handle = $null
+                parent_pin = $parentPin
+                canonical_path = [System.IO.Path]::GetFullPath(
+                    $DestinationPath
+                )
+                retained_path = $null
+            }
+            $stream = $null
+            $parentPin = $null
+            return [pscustomobject]@{
+                succeeded = $false
+                created = $true
+                collision = $false
+                error = [System.IO.IOException]::new(
+                    $failureMessage,
+                    $innerError
+                )
+                held_lease = $heldLease
+            }
+        }
+
+        $closeError = $null
+        try {
         # CAS V2 DIRECT MARKER: close canonical handle.
         $stream.Dispose()
-    } catch {
-        $closeError = $_.Exception
-        try { $stream.Dispose() } catch {}
-    }
-    $stream = $null
+        } catch {
+            $closeError = $_.Exception
+            try { $stream.Dispose() } catch {}
+        }
+        $stream = $null
 
-    if (
-        $null -ne $writeError -or
-        $null -ne $verificationError -or
-        $null -ne $closeError
-    ) {
+        if (
+            $null -ne $writeError -or
+            $null -ne $verificationError -or
+            $null -ne $closeError
+        ) {
         $failureMessage = if ($null -ne $writeError) {
             "$Context write or flush failed: $($writeError.Message)"
         } elseif ($null -ne $verificationError) {
@@ -1965,22 +2978,140 @@ function Invoke-AgentBridgeTrustedBytesCreateNew {
         } else {
             $closeError
         }
+            return [pscustomobject]@{
+                succeeded = $false
+                created = $true
+                collision = $false
+                error = [System.IO.IOException]::new(
+                    $failureMessage,
+                    $innerError
+                )
+                held_lease = $null
+            }
+        }
+
         return [pscustomobject]@{
-            succeeded = $false
+            succeeded = $true
             created = $true
             collision = $false
-            error = [System.IO.IOException]::new(
-                $failureMessage,
-                $innerError
-            )
+            error = $null
+            held_lease = $null
         }
+    } finally {
+        if ($null -ne $stream) {
+            try { $stream.Dispose() } catch {}
+        }
+        Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
+    }
+}
+
+function Move-AgentBridgeHeldFileToRollbackRetention {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Lease,
+        [Parameter(Mandatory)] [string] $RetentionPath,
+        [string] $Context = 'held bridge rollback archive'
+    )
+
+    $childHandle = if ($null -ne $Lease.stream) {
+        $Lease.stream.SafeFileHandle
+    } else {
+        $Lease.handle
+    }
+    if ($null -eq $childHandle -or $null -eq $Lease.parent_pin) {
+        throw "$Context lease is unavailable"
+    }
+    $fullRetentionPath = [System.IO.Path]::GetFullPath($RetentionPath)
+    $retentionParent = [System.IO.Path]::GetDirectoryName(
+        $fullRetentionPath
+    )
+    if (-not [string]::Equals(
+            $retentionParent,
+            [string]$Lease.parent_pin.parent_path,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "$Context destination is outside the pinned parent"
+    }
+    $leafName = [System.IO.Path]::GetFileName($fullRetentionPath)
+    if ([string]::IsNullOrWhiteSpace($leafName)) {
+        throw "$Context destination leaf is unavailable"
     }
 
-    return [pscustomobject]@{
-        succeeded = $true
-        created = $true
-        collision = $false
-        error = $null
+    Assert-AgentBridgeParentDirectoryPin -Pin $Lease.parent_pin
+    Assert-AgentBridgeChildHandleParentPin `
+        -Pin $Lease.parent_pin `
+        -ChildHandle $childHandle
+    Initialize-AgentBridgeHeldFileType
+    # HELD ROLLBACK V1 MARKER: rename the continuously owned inode itself.
+    $renameResult = [AgentBridgeHeldFileV1]::RenameInPinnedDirectory(
+        $childHandle,
+        $Lease.parent_pin.handle,
+        $fullRetentionPath
+    )
+    if (-not [bool]$renameResult.Succeeded) {
+        throw "$Context rename failed: $($renameResult.Error)"
+    }
+    if (-not [string]::Equals(
+            [string]$renameResult.FinalPath,
+            $fullRetentionPath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw (
+            "$Context rename final path mismatched: expected " +
+            "$fullRetentionPath; actual $($renameResult.FinalPath)"
+        )
+    }
+    Assert-AgentBridgeChildHandleParentPin `
+        -Pin $Lease.parent_pin `
+        -ChildHandle $childHandle
+    Assert-AgentBridgeParentDirectoryPin -Pin $Lease.parent_pin
+    $Lease.retained_path = $fullRetentionPath
+}
+
+function Close-AgentBridgeHeldFileLease {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] $Lease,
+        [string] $Context = 'held bridge file'
+    )
+
+    if ($null -eq $Lease) { return }
+    $closeErrors = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $Lease.stream) {
+        try {
+            $Lease.stream.Dispose()
+        } catch {
+            [void]$closeErrors.Add(
+                "child handle close failed: $($_.Exception.Message)"
+            )
+        } finally {
+            $Lease.stream = $null
+        }
+    }
+    if ($null -ne $Lease.handle) {
+        try {
+            $Lease.handle.Dispose()
+        } catch {
+            [void]$closeErrors.Add(
+                "native child handle close failed: $($_.Exception.Message)"
+            )
+        } finally {
+            $Lease.handle = $null
+        }
+    }
+    if ($null -ne $Lease.parent_pin) {
+        try {
+            Exit-AgentBridgeParentDirectoryPin -Pin $Lease.parent_pin
+        } catch {
+            [void]$closeErrors.Add(
+                "parent pin close failed: $($_.Exception.Message)"
+            )
+        } finally {
+            $Lease.parent_pin = $null
+        }
+    }
+    if ($closeErrors.Count -gt 0) {
+        throw "$Context release failed: $($closeErrors -join '; ')"
     }
 }
 
@@ -2051,7 +3182,13 @@ function Publish-AgentBridgeFileFromSnapshot {
     $quarantinePath = New-AgentBridgeCasArtifactPath `
         -BasePath $SourcePath `
         -Label 'cas-quarantine'
+    $sourceParentPin = Enter-AgentBridgeParentDirectoryPin `
+        -ChildPath $SourcePath `
+        -Context 'claim source quarantine'
+    try {
+    Assert-AgentBridgeParentDirectoryPin -Pin $sourceParentPin
     [System.IO.File]::Move($SourcePath, $quarantinePath)
+    Assert-AgentBridgeParentDirectoryPin -Pin $sourceParentPin
     try {
         $quarantineSnapshot = Get-AgentBridgeExclusiveRawFileCapture `
             -LiteralPath $quarantinePath `
@@ -2187,6 +3324,9 @@ function Publish-AgentBridgeFileFromSnapshot {
         )
     }
     throw $publishFailure
+    } finally {
+        Exit-AgentBridgeParentDirectoryPin -Pin $sourceParentPin
+    }
 }
 
 function Update-AgentBridgeFileFromBytes {
@@ -2437,9 +3577,10 @@ function Assert-AgentBridgePreferredClaimPath {
         return $preferredPath
     }
     if (-not (Test-Path -LiteralPath $preferredPath -PathType Leaf)) {
-        throw (
+        throw ((
             "claim filename collision at preferred path for task_id " +
-            "'{0}': non-file entry {1}" -f $TaskId, $preferredPath
+            "'{0}': non-file entry {1}"
+        ) -f $TaskId, $preferredPath
         )
     }
 
@@ -2449,9 +3590,10 @@ function Assert-AgentBridgePreferredClaimPath {
                 -LiteralPath $preferredPath
         )
     } catch {
-        throw (
+        throw ((
             "claim filename collision at preferred path for task_id " +
-            "'{0}': unreadable record {1}" -f $TaskId, $preferredPath
+            "'{0}': unreadable record {1}"
+        ) -f $TaskId, $preferredPath
         )
     }
     $preferredTaskProperty = if (
@@ -2478,9 +3620,10 @@ function Assert-AgentBridgePreferredClaimPath {
         } else {
             '<missing-or-nonstring>'
         }
-        throw (
+        throw ((
             "claim filename collision at preferred path for task_id " +
-            "'{0}': stored task_id {1} in {2}" -f
+            "'{0}': stored task_id {1} in {2}"
+        ) -f
             $TaskId,
             $storedTaskId,
             $preferredPath

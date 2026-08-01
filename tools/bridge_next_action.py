@@ -159,6 +159,7 @@ EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
 PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
 TERMINAL_RECEIPT_AGENT_KEY = "terminal-receipt"
+ACK_LIKE_STATUS_TOKENS = frozenset({"ack", *KNOWN_ACK_STATUSES})
 
 
 class BridgeNextActionError(ValueError):
@@ -1151,7 +1152,7 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
 
 
 def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
-    if _event_status(event) in KNOWN_ACK_STATUSES:
+    if _is_ack_like_status(_event_status(event)):
         return False
     if _event_type(event) == "done":
         return not _is_nonterminal_done_status(_event_status(event))
@@ -1501,10 +1502,7 @@ def _is_substantive_rco_pass_block_response(event: Mapping[str, Any]) -> bool:
         _event_status(event)
     ):
         return False
-    status_tokens = _status_tokens(_event_status(event))
-    if status_tokens.intersection(KNOWN_ACK_STATUSES) or {"wake", "ack"}.issubset(
-        status_tokens
-    ):
+    if _is_ack_like_status(_event_status(event)):
         return False
     if _event_type(event) == "finding":
         return True
@@ -1562,7 +1560,7 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
     event_type = _event_type(event)
     status = _event_status(event)
-    if status in KNOWN_ACK_STATUSES:
+    if _is_ack_like_status(status):
         return False
     if event_type == "done":
         return not _is_nonterminal_done_status(status)
@@ -1616,6 +1614,12 @@ def _is_response_only_status(status: str) -> bool:
 
 def _status_tokens(status: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+
+
+def _is_ack_like_status(status: str) -> bool:
+    """Return whether a status is a receipt rather than a substantive answer."""
+
+    return bool(_status_tokens(status).intersection(ACK_LIKE_STATUS_TOKENS))
 
 
 def _status_negates_answer(status: str) -> bool:

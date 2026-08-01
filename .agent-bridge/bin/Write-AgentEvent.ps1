@@ -102,11 +102,8 @@ if ($hasCanonicalStaleSweepCaller) {
         throw 'internal system stale_lease release requires an archived claim proof'
     }
 
-    $proofBridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-        [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-    } else {
-        Split-Path -Parent $PSScriptRoot
-    }
+    $proofBridgeRoot = Resolve-AgentBridgeRoot `
+        -DefaultRoot (Split-Path -Parent $PSScriptRoot)
     $internalStaleLeaseMutationLock = Enter-AgentBridgeMutationLock `
         -BridgeRoot $proofBridgeRoot
     $proofDoneDir = [System.IO.Path]::GetFullPath(
@@ -418,7 +415,7 @@ function Assert-BridgeAgentTargets {
     }
     $allowedNonAgentTargets = @('github/main')
     foreach ($target in $targetList) {
-        if (($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') -and ($allowedNonAgentTargets -cnotcontains $target)) {
+        if (($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}\z') -and ($allowedNonAgentTargets -cnotcontains $target)) {
             throw "to contains invalid bridge agent id: $target"
         }
     }
@@ -457,23 +454,23 @@ Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
 Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 
-if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}\z') {
     throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
-if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}\z') {
     throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
 }
-if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z') {
     throw "agent_uuid must be a UUID"
 }
 if ($AgentUuid) {
     $AgentUuid = $AgentUuid.ToLowerInvariant()
 }
-if ($SessionId -and $SessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+if ($SessionId -and $SessionId -notmatch '^[A-Za-z0-9._:-]{1,128}\z') {
     throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
 foreach ($capability in @($Capabilities)) {
-    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}\z') {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
@@ -489,8 +486,8 @@ $rcoPassTaskBindingFields = @('canonical_task_id', 'branch', 'headRefName', 'hea
 $grokPrWorktreeStrictEpochUtc = '2026-06-04T08:32:00Z'
 $grokRequiredFreshnessShaFields = @('remote_main_sha', 'local_origin_main_sha', 'worktree_head')
 $grokOptionalFreshnessShaFields = @('pr_head_sha', 'reviewed_head_sha', 'target_head_sha')
-$fullGitShaPattern = '^[0-9a-f]{40}$'
-$bridgeTaskBindingPattern = '^[A-Za-z0-9._/-]{1,180}$'
+$fullGitShaPattern = '^[0-9a-f]{40}\z'
+$bridgeTaskBindingPattern = '^[A-Za-z0-9._/-]{1,180}\z'
 # Keep this guard in lock-step with waggledance/core/bridge_event_schema.py.
 # It must run before any bridge file I/O so invalid events fail closed.
 $requiresTaskId = (
@@ -782,7 +779,7 @@ function Assert-AgentUuidMatchesProfile {
         return
     }
     $expectedUuidText = [string]$expectedUuid
-    if ($expectedUuidText -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    if ($expectedUuidText -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z') {
         throw "bridge agent profile agent_uuid must be a UUID for agent: $Agent"
     }
     if (-not $AgentUuid) {
@@ -813,7 +810,7 @@ function Assert-AgentUuidMatchesIdentityRegistry {
         return
     }
     $expectedUuidText = [string]$expectedUuid
-    if ($expectedUuidText -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+    if ($expectedUuidText -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z') {
         throw "bridge identity registry agent_uuid must be a UUID for agent: $Agent"
     }
     if (-not $AgentUuid) {
@@ -826,24 +823,32 @@ function Assert-AgentUuidMatchesIdentityRegistry {
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
-$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-} else {
-    Split-Path -Parent $PSScriptRoot
-}
+$bridgeRoot = Resolve-AgentBridgeRoot `
+    -DefaultRoot (Split-Path -Parent $PSScriptRoot)
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Assert-AgentUuidMatchesIdentityRegistry -RepoRoot $repoRoot
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $bridgeRoot `
+    -Context 'bridge root'
+$agentsDir = Join-Path $bridgeRoot 'agents'
+if (Test-Path -LiteralPath $agentsDir) {
+    Assert-AgentBridgePlainDirectory `
+        -LiteralPath $agentsDir `
+        -Context 'bridge agent profile directory'
+}
 Assert-AgentUuidMatchesProfile -BridgeRoot $bridgeRoot
-if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
-    [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
-}
 $sharedDir = Join-Path $bridgeRoot 'shared'
-$outboxDir = Join-Path (Join-Path $bridgeRoot 'outbox') $Agent
-foreach ($dir in @($sharedDir, $outboxDir)) {
-    if (-not (Test-Path -LiteralPath $dir)) {
-        [void](New-Item -ItemType Directory -Path $dir -Force)
-    }
-}
+$outboxRoot = Join-Path $bridgeRoot 'outbox'
+$outboxDir = Join-Path $outboxRoot $Agent
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $sharedDir `
+    -Context 'bridge shared event directory'
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $outboxRoot `
+    -Context 'bridge outbox directory'
+Ensure-AgentBridgePlainDirectory `
+    -LiteralPath $outboxDir `
+    -Context 'bridge agent outbox directory'
 
 $event = [ordered]@{
     ts_utc      = (Get-Date).ToUniversalTime().ToString('o')
@@ -976,13 +981,97 @@ if (Test-OpenOperatorBridgeFollowNudgeDuplicate -Path $eventsPath -Candidate $ev
 
 $line = (($event | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine)
 
-function Add-LineWithRetry {
-    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Line)
-    $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent)) {
-        [void](New-Item -ItemType Directory -Path $parent -Force)
+function Exit-AgentBridgePostCommitMutationLock {
+    <#
+    Release the internal stale-claim lock after the canonical event append.
+
+    Every resource is finalized independently. Failures are warning-only
+    because the shared event is already durably committed and reporting a
+    top-level failure would invite an external retry of the same event. The
+    ordinary Exit-AgentBridgeMutationLock function remains strict everywhere
+    before that commit boundary.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()] $Lock)
+
+    if ($null -eq $Lock) { return }
+    $stream = $null
+    $parentPin = $null
+    $lockFinalizationFailures = @()
+    if ($Lock -is [System.IO.FileStream]) {
+        $stream = $Lock
+    } else {
+        try {
+            $stream = $Lock.stream
+        } catch {
+            $lockFinalizationFailures += $_.Exception
+        }
+        try {
+            $parentPin = $Lock.parent_pin
+        } catch {
+            $lockFinalizationFailures += $_.Exception
+        }
     }
+
+    if ($null -ne $stream) {
+        try {
+            $stream.Unlock(0, 1)
+        } catch {
+            $lockFinalizationFailures += $_.Exception
+        }
+        try {
+            $stream.Dispose()
+        } catch {
+            $lockFinalizationFailures += $_.Exception
+        }
+    }
+    try {
+        Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
+    } catch {
+        $lockFinalizationFailures += $_.Exception
+    }
+
+    if ($lockFinalizationFailures.Count -gt 0) {
+        $lockFinalizationMessages = @(
+            $lockFinalizationFailures | ForEach-Object { $_.Message }
+        ) -join '; '
+        $lockFinalizationWarning = (
+            "canonical stale-release event committed, but mutation-lock " +
+            "finalization reported: {0}; continuing without event retry"
+        ) -f $lockFinalizationMessages
+        Write-AgentBridgeNonThrowingWarning -Message $lockFinalizationWarning
+    }
+}
+
+function Add-LineWithRetry {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Line,
+        [switch] $NoSpool
+    )
+    $parent = Split-Path -Parent $Path
     $encoding = New-Object System.Text.UTF8Encoding($false)
+    $lineBytes = [byte[]]$encoding.GetBytes($Line)
+    $appendFailure = $null
+    $suppressRetryAndSpool = $false
+    $canonicalCommitted = $false
+    $mutexFinalizationFailures = @()
+
+    # Reject deterministic path-boundary failures before entering the
+    # contention retry loop. The append helper repeats these checks against
+    # the open handle so a race cannot turn a preflight into write authority.
+    try {
+        Assert-AgentBridgePlainDirectory `
+            -LiteralPath $parent `
+            -Context 'bridge event append directory'
+        if (Test-Path -LiteralPath $Path) {
+            Assert-AgentBridgeRegularUnlinkedFile `
+                -LiteralPath $Path `
+                -Context 'bridge event append target'
+        }
+    } catch {
+        $appendFailure = $_.Exception
+    }
 
     # Contention hardening (bridge audit 2026-07-02): serialize appends across
     # processes with a named mutex so the boot-burst / multi-agent case stops
@@ -993,6 +1082,9 @@ function Add-LineWithRetry {
     $mutex = $null
     $acquired = $false
     try {
+        if ($null -ne $appendFailure) {
+            throw $appendFailure
+        }
         try {
             $mutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeAppendV1')
             try { $acquired = $mutex.WaitOne(10000) }
@@ -1001,17 +1093,81 @@ function Add-LineWithRetry {
 
         for ($i = 0; $i -lt 40; $i++) {
             try {
-                [System.IO.File]::AppendAllText($Path, $Line, $encoding)
-                return
+                Add-AgentBridgeBytesToRegularUnlinkedFile `
+                    -LiteralPath $Path `
+                    -Bytes $lineBytes `
+                    -Context 'bridge event append target'
+                $canonicalCommitted = $true
+                break
             } catch {
+                $appendFailure = $_.Exception
+                $suppressRetryAndSpool = [bool](
+                    $appendFailure.Data['AgentBridgeAppendRolledBack'] -or
+                    $appendFailure.Data['AgentBridgeAppendAmbiguous']
+                )
+                if ($suppressRetryAndSpool) {
+                    break
+                }
                 Start-Sleep -Milliseconds (25 + ($i * 10))
             }
         }
+    } catch {
+        $appendFailure = $_.Exception
+        $suppressRetryAndSpool = [bool](
+            $appendFailure.Data['AgentBridgeAppendRolledBack'] -or
+            $appendFailure.Data['AgentBridgeAppendAmbiguous']
+        )
     } finally {
         if ($null -ne $mutex) {
-            if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }
-            $mutex.Dispose()
+            if ($acquired) {
+                try {
+                    $mutex.ReleaseMutex()
+                } catch {
+                    $mutexFinalizationFailures += $_.Exception
+                }
+            }
+            try {
+                $mutex.Dispose()
+            } catch {
+                $mutexFinalizationFailures += $_.Exception
+            }
         }
+    }
+
+    if ($canonicalCommitted) {
+        if ($mutexFinalizationFailures.Count -gt 0) {
+            $mutexFinalizationMessages = @(
+                $mutexFinalizationFailures | ForEach-Object { $_.Message }
+            ) -join '; '
+            $mutexFinalizationWarning = (
+                "canonical bridge event append committed, but append-mutex " +
+                "finalization reported: {0}; continuing without retry or spool"
+            ) -f $mutexFinalizationMessages
+            Write-AgentBridgeNonThrowingWarning -Message $mutexFinalizationWarning
+        }
+        return
+    }
+
+    # A helper-reported rollback means the canonical inode is restored and
+    # replay/spooling would manufacture a second commit signal. An ambiguous
+    # rollback must likewise stop without creating a misleading replay file.
+    if ($suppressRetryAndSpool) {
+        throw $appendFailure
+    }
+
+    # A failed per-agent outbox append is a degraded mirror after the shared
+    # canonical event has committed. Spooling it beneath outbox/ would create
+    # an orphan replay candidate (the replayer only consumes <bridge>/spool)
+    # and could later duplicate the canonical event. Let the caller report a
+    # warning and continue the last-event projection without any spool file.
+    if ($NoSpool) {
+        throw ((
+            "could not append bridge mirror after retries without spool: " +
+            "{0} (append error: {1})"
+        ) -f
+            $Path,
+            $appendFailure.Message
+        )
     }
 
     # Durability (bridge audit 2026-07-02): the event used to be LOST when the
@@ -1021,48 +1177,339 @@ function Add-LineWithRetry {
     # loudly so the caller knows the shared log missed it.
     $spoolDir = Join-Path (Split-Path -Parent $parent) 'spool'
     try {
-        if (-not (Test-Path -LiteralPath $spoolDir)) {
-            [void](New-Item -ItemType Directory -Path $spoolDir -Force)
-        }
+        Ensure-AgentBridgePlainDirectory `
+            -LiteralPath $spoolDir `
+            -Context 'bridge failed-append spool directory'
         $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff')
-        $spoolPath = Join-Path $spoolDir ("failed-append-{0}-{1}-{2}.jsonl" -f $Agent, $stamp, $PID)
-        [System.IO.File]::WriteAllText($spoolPath, $Line, $encoding)
-        throw "could not append bridge event after retries: $Path (event spooled to $spoolPath)"
-    } catch [System.Management.Automation.RuntimeException] {
-        throw
+        $spoolPath = Join-Path $spoolDir (
+            "failed-append-{0}-{1}-{2}-{3}.jsonl" -f
+            $Agent,
+            $stamp,
+            $PID,
+            [guid]::NewGuid().ToString('N')
+        )
+        $spoolSha256 = Get-AgentBridgeSha256Hex -Bytes $lineBytes
+        $spoolResult = Invoke-AgentBridgeTrustedBytesCreateNew `
+            -DestinationPath $spoolPath `
+            -PublishBytes $lineBytes `
+            -ExpectedSha256 $spoolSha256 `
+            -ExpectedLength ([long]$lineBytes.Length) `
+            -Context 'failed bridge append spool event'
+        if (-not [bool]$spoolResult.succeeded) {
+            throw $spoolResult.error
+        }
     } catch {
-        throw "could not append bridge event after retries: $Path (spool also failed: $_)"
+        throw (
+            (
+                "could not append bridge event after retries: {0} " +
+                "(append error: {1}; spool also failed: {2})"
+            ) -f
+                $Path,
+                $appendFailure.Message,
+                $_.Exception.Message
+        )
+    }
+    throw (
+        (
+            "could not append bridge event after retries: {0} " +
+            "(append error: {1}; event spooled to {2})"
+        ) -f
+            $Path,
+            $appendFailure.Message,
+            $spoolPath
+    )
+}
+
+function Set-AgentBridgeLastCacheInPlace {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes,
+        [Parameter(Mandatory)] [string] $ExpectedSha256,
+        [Parameter(Mandatory)] [long] $ExpectedLength,
+        [Parameter(Mandatory)] $ParentPin
+    )
+
+    $maxCacheBytes = [long](1MB)
+    if (
+        $ExpectedLength -lt 0 -or
+        $ExpectedLength -gt $maxCacheBytes
+    ) {
+        throw (
+            "bridge last-event update exceeds the safe cache bound " +
+            "($ExpectedLength > $maxCacheBytes bytes)"
+        )
+    }
+    Assert-AgentBridgeTrustedBytesIdentity `
+        -Bytes $Bytes `
+        -ExpectedSha256 $ExpectedSha256 `
+        -ExpectedLength $ExpectedLength `
+        -Context 'bridge last-event in-place input'
+
+    $stream = $null
+    $originalBytes = $null
+    $originalSha256 = $null
+    $mutationStarted = $false
+    try {
+        Assert-AgentBridgeParentDirectoryPin -Pin $ParentPin
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $Path `
+            -Context 'bridge last-event file'
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        Assert-AgentBridgeParentDirectoryPin -Pin $ParentPin
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $ParentPin `
+            -ChildHandle $stream.SafeFileHandle
+        Assert-AgentBridgeExclusiveHandleIdentity `
+            -Stream $stream `
+            -Context 'bridge last-event file'
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $Path `
+            -Context 'bridge last-event file'
+        if ([long]$stream.Length -gt $maxCacheBytes) {
+            throw (
+                "bridge last-event file exceeds the safe cache bound " +
+                "($($stream.Length) > $maxCacheBytes bytes)"
+            )
+        }
+
+        $originalLength = [int]$stream.Length
+        $originalBytes = [byte[]]::new($originalLength)
+        [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+        $offset = 0
+        while ($offset -lt $originalLength) {
+            $read = $stream.Read(
+                $originalBytes,
+                $offset,
+                $originalLength - $offset
+            )
+            if ($read -le 0) {
+                throw 'bridge last-event file ended during original capture'
+            }
+            $offset += $read
+        }
+        $originalSha256 = Get-AgentBridgeSha256Hex -Bytes $originalBytes
+
+        # LAST CACHE V3 MARKER: update only the already-open default stream.
+        # NTFS alternate streams, if any, remain attached and untouched.
+        [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+        $mutationStarted = $true
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.SetLength($ExpectedLength)
+        $stream.Flush($true)
+
+        if ([long]$stream.Length -ne $ExpectedLength) {
+            throw (
+                "bridge last-event update length changed: expected " +
+                "$ExpectedLength; actual $($stream.Length)"
+            )
+        }
+        [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+        $verifiedBytes = [byte[]]::new([int]$ExpectedLength)
+        $offset = 0
+        while ($offset -lt $verifiedBytes.Length) {
+            $read = $stream.Read(
+                $verifiedBytes,
+                $offset,
+                $verifiedBytes.Length - $offset
+            )
+            if ($read -le 0) {
+                throw 'bridge last-event file ended during update verification'
+            }
+            $offset += $read
+        }
+        Assert-AgentBridgeTrustedBytesIdentity `
+            -Bytes $verifiedBytes `
+            -ExpectedSha256 $ExpectedSha256 `
+            -ExpectedLength $ExpectedLength `
+            -Context 'bridge last-event in-place update'
+        Assert-AgentBridgeExclusiveHandleIdentity `
+            -Stream $stream `
+            -Context 'bridge last-event file'
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $Path `
+            -Context 'bridge last-event file'
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $ParentPin `
+            -ChildHandle $stream.SafeFileHandle
+        Assert-AgentBridgeParentDirectoryPin -Pin $ParentPin
+    } catch {
+        $updateError = $_.Exception
+        if (
+            $mutationStarted -and
+            $null -ne $stream -and
+            $null -ne $originalBytes
+        ) {
+            try {
+                # Restore the same open inode. No pathname move, replacement,
+                # or delete is used, and every alternate stream is preserved.
+                [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+                $stream.Write($originalBytes, 0, $originalBytes.Length)
+                $stream.SetLength([long]$originalBytes.Length)
+                $stream.Flush($true)
+                if ([long]$stream.Length -ne [long]$originalBytes.Length) {
+                    throw 'bridge last-event rollback length mismatched'
+                }
+                [void]$stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+                $restoredBytes = [byte[]]::new($originalBytes.Length)
+                $offset = 0
+                while ($offset -lt $restoredBytes.Length) {
+                    $read = $stream.Read(
+                        $restoredBytes,
+                        $offset,
+                        $restoredBytes.Length - $offset
+                    )
+                    if ($read -le 0) {
+                        throw (
+                            'bridge last-event file ended during rollback ' +
+                            'verification'
+                        )
+                    }
+                    $offset += $read
+                }
+                Assert-AgentBridgeTrustedBytesIdentity `
+                    -Bytes $restoredBytes `
+                    -ExpectedSha256 $originalSha256 `
+                    -ExpectedLength ([long]$originalBytes.Length) `
+                    -Context 'bridge last-event rollback'
+                Assert-AgentBridgeExclusiveHandleIdentity `
+                    -Stream $stream `
+                    -Context 'bridge last-event rollback file'
+                Assert-AgentBridgeChildHandleParentPin `
+                    -Pin $ParentPin `
+                    -ChildHandle $stream.SafeFileHandle
+                Assert-AgentBridgeParentDirectoryPin -Pin $ParentPin
+            } catch {
+                $rollbackError = $_.Exception
+                $ambiguous = [System.IO.IOException]::new(
+                    ((
+                        "bridge last-event in-place update and rollback " +
+                        "failed; cache outcome is ambiguous " +
+                        "(update_error={0}; rollback_error={1})"
+                    ) -f
+                        $updateError.Message,
+                        $rollbackError.Message
+                    ),
+                    $updateError
+                )
+                $ambiguous.Data['AgentBridgeLastCacheAmbiguous'] = $true
+                throw $ambiguous
+            }
+            $rolledBack = [System.IO.IOException]::new(
+                ((
+                    "bridge last-event in-place update was rejected and " +
+                    "durably rolled back: {0}"
+                ) -f $updateError.Message
+                ),
+                $updateError
+            )
+            $rolledBack.Data['AgentBridgeLastCacheRolledBack'] = $true
+            throw $rolledBack
+        }
+        throw $updateError
+    } finally {
+        if ($null -ne $stream) {
+            try { $stream.Dispose() } catch {}
+        }
     }
 }
 
 function Write-JsonAtomic {
-    # Internal review fix A7/S4 (2026-05-09, simplified 2026-05-09):
-    # Earlier File.Move + File.Replace dance failed reliably under
-    # write contention with the WARNING surfacing on every event.
-    # Move-Item -Force on Windows uses MoveFileEx with
-    # MOVEFILE_REPLACE_EXISTING which is atomic on NTFS same-volume
-    # and handles both the create and the replace path in one call.
-    # Set-Content was the original problem (truncate-then-write was
-    # non-atomic); Move-Item over a written-in-full temp keeps the
-    # "reader sees old or new, never torn" property.
+    # LAST CACHE V3: missing caches are created from trusted in-memory bytes;
+    # existing caches are updated through one bound handle with same-handle
+    # rollback. No pathname is moved, replaced, or deleted.
     param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Json)
     $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent)) {
-        [void](New-Item -ItemType Directory -Path $parent -Force)
-    }
-    $tmp = "$Path.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
     $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($tmp, $Json, $encoding)
-    for ($i = 0; $i -lt 20; $i++) {
+    $jsonBytes = [byte[]]$encoding.GetBytes($Json)
+    $maxCacheBytes = [long](1MB)
+    if ([long]$jsonBytes.Length -gt $maxCacheBytes) {
+        throw (
+            "bridge last-event JSON exceeds the safe cache bound " +
+            "($($jsonBytes.Length) > $maxCacheBytes bytes)"
+        )
+    }
+    $jsonSha256 = Get-AgentBridgeSha256Hex -Bytes $jsonBytes
+    $mutex = $null
+    $acquired = $false
+    $parentPin = $null
+    try {
         try {
-            Move-Item -LiteralPath $tmp -Destination $Path -Force -ErrorAction Stop
-            return
+            $mutex = New-Object System.Threading.Mutex(
+                $false,
+                'Global\WaggleDanceBridgeLastEventV2'
+            )
+            try { $acquired = $mutex.WaitOne(10000) }
+            catch [System.Threading.AbandonedMutexException] {
+                $acquired = $true
+            }
         } catch {
-            Start-Sleep -Milliseconds (25 + ($i * 10))
+            throw "could not acquire last-event serialization: $($_.Exception.Message)"
+        }
+        if (-not $acquired) {
+            throw "timed out acquiring last-event serialization"
+        }
+
+        Assert-AgentBridgePlainDirectory `
+            -LiteralPath $parent `
+            -Context 'bridge last-event directory'
+        try {
+            $parentPin = Enter-AgentBridgeParentDirectoryPin `
+                -ChildPath $Path `
+                -Context 'bridge last-event publication'
+        } catch {
+            $integrityError = [System.IO.IOException]::new(
+                "bridge last-event parent integrity failed: $($_.Exception.Message)",
+                $_.Exception
+            )
+            $integrityError.Data['AgentBridgeLastCacheUntrusted'] = $true
+            throw $integrityError
+        }
+        Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
+
+        if (-not (Test-Path -LiteralPath $Path)) {
+            $createResult = Invoke-AgentBridgeTrustedBytesCreateNew `
+                -DestinationPath $Path `
+                -PublishBytes $jsonBytes `
+                -ExpectedSha256 $jsonSha256 `
+                -ExpectedLength ([long]$jsonBytes.Length) `
+                -Context 'bridge last-event initial publication'
+            if (-not [bool]$createResult.succeeded) {
+                if ([bool]$createResult.collision) {
+                    $collisionError = [System.IO.IOException]::new(
+                        "bridge last-event initial publication collided"
+                    )
+                    $collisionError.Data['AgentBridgeLastCacheUntrusted'] = $true
+                    throw $collisionError
+                }
+                throw $createResult.error
+            }
+            $null = Assert-AgentBridgeExpectedRegularFileSnapshot `
+                -LiteralPath $Path `
+                -ExpectedSha256 $jsonSha256 `
+                -ExpectedLength ([long]$jsonBytes.Length) `
+                -Context 'bridge last-event file'
+            return
+        }
+
+        Set-AgentBridgeLastCacheInPlace `
+            -Path $Path `
+            -Bytes $jsonBytes `
+            -ExpectedSha256 $jsonSha256 `
+            -ExpectedLength ([long]$jsonBytes.Length) `
+            -ParentPin $parentPin
+    } finally {
+        Exit-AgentBridgeParentDirectoryPin -Pin $parentPin
+        if ($null -ne $mutex) {
+            if ($acquired) { try { $mutex.ReleaseMutex() } catch {} }
+            $mutex.Dispose()
         }
     }
-    try { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } catch {}
-    throw "could not atomically replace last-event file: $Path"
 }
 
 $dateName = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') + '.jsonl'
@@ -1077,18 +1524,20 @@ Add-LineWithRetry -Path $eventsPath -Line $line
 if ($null -ne $internalStaleLeaseMutationLock) {
     $completedStaleLeaseMutationLock = $internalStaleLeaseMutationLock
     $internalStaleLeaseMutationLock = $null
-    Exit-AgentBridgeMutationLock -Lock $completedStaleLeaseMutationLock
+    Exit-AgentBridgePostCommitMutationLock `
+        -Lock $completedStaleLeaseMutationLock
 }
 try {
-    Add-LineWithRetry -Path $outboxPath -Line $line
+    Add-LineWithRetry -Path $outboxPath -Line $line -NoSpool
 } catch {
     # The shared events.jsonl append above is the canonical commit point.
     # Treat a later per-agent outbox failure as a degraded mirror instead of
     # reporting the already-committed event as failed (which would invite a
     # retry and duplicate the canonical record).
-    $outboxWarning = (
+    $outboxWarning = ((
         "canonical event committed but per-agent outbox append failed {0}: " +
-        "{1}" -f
+        "{1}"
+    ) -f
         $outboxPath,
         $_.Exception.Message
     )

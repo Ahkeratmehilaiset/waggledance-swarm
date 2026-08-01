@@ -37,13 +37,8 @@ if (
     throw 'OpenRequestMaxAgeHours must be positive'
 }
 
-$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-} elseif ($env:AGENT_BRIDGE_ROOT) {
-    [string]$env:AGENT_BRIDGE_ROOT
-} else {
-    Split-Path -Parent $PSScriptRoot
-}
+$bridgeRoot = Resolve-AgentBridgeRoot `
+    -DefaultRoot (Split-Path -Parent $PSScriptRoot)
 
 $repoRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot '..\..')

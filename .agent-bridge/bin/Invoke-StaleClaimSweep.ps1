@@ -87,11 +87,8 @@ if ($PSBoundParameters.ContainsKey('StaleSeconds')) {
 }
 
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT.
-$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-} else {
-    Split-Path -Parent $PSScriptRoot
-}
+$bridgeRoot = Resolve-AgentBridgeRoot `
+    -DefaultRoot (Split-Path -Parent $PSScriptRoot)
 Ensure-AgentBridgePlainDirectory `
     -LiteralPath $bridgeRoot `
     -Context 'bridge root'
@@ -223,10 +220,67 @@ function Invoke-BridgeStaleBatchRollback {
         [System.Collections.Generic.List[string]] $Failures
     )
 
-    # Restore every removed source before deleting any archive. Each archive
-    # is deleted only after its own active source is verified retained or
-    # restored. If rollback is interrupted or restore fails, the visible
-    # archive and exact-byte recovery backup are retained.
+    # First detach every canonical archive that this batch still owns through
+    # its continuously held create-new handle. The rename preserves the whole
+    # inode (including late ADS/hard links) under an ignored evidence name. A
+    # source is restored only after its canonical archive is detached.
+    for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
+        $plan = $Plans[$index]
+        $requiresArchiveDetach = [bool](
+            [bool]$plan.archive_published -or [bool]$plan.archive_created
+        )
+        $plan.archive_rollback_detached = -not $requiresArchiveDetach
+        if (-not $requiresArchiveDetach) { continue }
+        if ($null -eq $plan.archive_held_lease) {
+            [void]$Failures.Add(((
+                "archive rollback authority handle is missing for {0}; " +
+                "canonical archive retained"
+            ) -f [string]$plan.done_path
+            ))
+            continue
+        }
+
+        $retentionLabel = if ([bool]$plan.archive_published) {
+            'rollback-retained'
+        } else {
+            'failed-retained'
+        }
+        $retentionPath = New-AgentBridgeCasArtifactPath `
+            -BasePath ([string]$plan.done_path) `
+            -Label $retentionLabel
+        try {
+            Move-AgentBridgeHeldFileToRollbackRetention `
+                -Lease $plan.archive_held_lease `
+                -RetentionPath $retentionPath `
+                -Context 'stale archive rollback retention'
+            $plan.archive_rollback_retained_path = $retentionPath
+            $plan.archive_rollback_detached = $true
+            $plan.archive_published = $false
+            $plan.archive_created = $false
+        } catch {
+            [void]$Failures.Add(((
+                "archive rollback rename failed for {0}; canonical archive " +
+                "retained and source restore suppressed: {1}"
+            ) -f
+                [string]$plan.done_path,
+                $_.Exception.Message
+            ))
+        } finally {
+            try {
+                Close-AgentBridgeHeldFileLease `
+                    -Lease $plan.archive_held_lease `
+                    -Context 'stale archive rollback lease'
+            } catch {
+                [void]$Failures.Add((
+                    "archive rollback lease close failed for {0}: {1}" -f
+                    [string]$plan.done_path,
+                    $_.Exception.Message
+                ))
+            }
+            $plan.archive_held_lease = $null
+        }
+    }
+
     for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
         $plan = $Plans[$index]
         $plan.rollback_source_verified = $false
@@ -234,6 +288,15 @@ function Invoke-BridgeStaleBatchRollback {
             # Commit cannot start before every trusted byte backup is ready.
             # Therefore this plan's active source was never removed by this
             # batch and no rollback publication is authorized.
+            continue
+        }
+
+        if (-not [bool]$plan.archive_rollback_detached) {
+            [void]$Failures.Add(((
+                "active source restore suppressed for {0}; its canonical " +
+                "archive could not be detached"
+            ) -f $plan.file.FullName
+            ))
             continue
         }
 
@@ -248,9 +311,10 @@ function Invoke-BridgeStaleBatchRollback {
                 $plan.rollback_source_verified = $true
             } catch {
                 [void]$Failures.Add(
-                    (
+                    ((
                         "active source ownership hash mismatched {0}; " +
-                        "trusted recovery bytes and artifacts retained: {1}" -f
+                        "trusted recovery bytes and artifacts retained: {1}"
+                    ) -f
                         $plan.file.FullName,
                         $_.Exception.Message
                     )
@@ -286,9 +350,10 @@ function Invoke-BridgeStaleBatchRollback {
             # STALE V2 MARKER: restored source verified before recovery retention.
         } else {
             [void]$Failures.Add(
-                (
+                ((
                     "source restore from captured trusted bytes failed {0}: " +
-                    "{1}; recovery artifacts retained" -f
+                    "{1}; recovery artifacts retained"
+                ) -f
                     $plan.file.FullName,
                     $restoreResult.error.Message
                 )
@@ -296,86 +361,8 @@ function Invoke-BridgeStaleBatchRollback {
         }
     }
 
-    for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
-        $plan = $Plans[$index]
-        if (-not [bool]$plan.archive_published) { continue }
-        if (-not (Test-Path -LiteralPath $plan.done_path)) {
-            $plan.archive_published = $false
-            continue
-        }
-        if (-not [bool]$plan.rollback_source_verified) {
-            $backupState = if (
-                Test-Path `
-                    -LiteralPath $plan.source_backup_path `
-                    -PathType Leaf
-            ) {
-                'retained'
-            } else {
-                'missing'
-            }
-            [void]$Failures.Add(
-                (
-                    "archive rollback retained {0} because active source " +
-                    "identity was not verified; source={1}; " +
-                    "recovery backup={2}:{3}" -f
-                    [string]$plan.done_path,
-                    $plan.file.FullName,
-                    $backupState,
-                    [string]$plan.source_backup_path
-                )
-            )
-            continue
-        }
-        try {
-            # STALE V2 MARKER: exact-handle archive rollback cleanup.
-            Remove-AgentBridgeExactFile `
-                -LiteralPath ([string]$plan.done_path) `
-                -ExpectedSha256 ([string]$plan.archive_sha256) `
-                -ExpectedLength ([long]$plan.archive_length) `
-                -Context 'archive rollback cleanup'
-            $plan.archive_published = $false
-        } catch {
-            [void]$Failures.Add(
-                (
-                    "archive rollback retained {0} because batch ownership " +
-                    "could not be deleted by verified open handle: {1}" -f
-                    [string]$plan.done_path,
-                    $_.Exception.Message
-                )
-            )
-        }
-    }
-
-    for ($index = $Plans.Count - 1; $index -ge 0; $index--) {
-        $plan = $Plans[$index]
-        # Rollback deliberately retains source quarantine and source backup.
-        # A boolean produced by an earlier source check must never authorize
-        # deleting the last exact recovery generation after a later active-path
-        # replacement. Committed batches use exact-handle cleanup below.
-        if (Test-Path -LiteralPath $plan.archive_temp_path) {
-            try {
-                if ([bool]$plan.archive_temp_consumed) {
-                    throw (
-                        "path reappeared after the batch archive temp was " +
-                        "moved; retained unowned artifact"
-                    )
-                }
-                Remove-AgentBridgeExactFile `
-                    -LiteralPath ([string]$plan.archive_temp_path) `
-                    -ExpectedSha256 ([string]$plan.archive_sha256) `
-                    -ExpectedLength ([long]$plan.archive_length) `
-                    -Context 'archive temp rollback cleanup'
-            } catch {
-                [void]$Failures.Add(
-                    (
-                        "archive temp cleanup failed {0}: {1}" -f
-                        [string]$plan.archive_temp_path,
-                        $_.Exception.Message
-                    )
-                )
-            }
-        }
-    }
+    # Rollback deliberately retains source quarantine, source backup, archive
+    # preparation temp, and each renamed archive inode as recovery evidence.
 
     # Never remove DoneDir by pathname during rollback. An emptiness check
     # cannot bind the directory generation through a later Remove-Item, so a
@@ -469,9 +456,11 @@ for ($leftIndex = 0; $leftIndex -lt $parsedClaims.Count; $leftIndex++) {
             [string]$parsedClaims[$leftIndex].task_id -ceq
             [string]$parsedClaims[$rightIndex].task_id
         ) {
+            $duplicateTaskDisplay = Format-AgentBridgeIdentityDisplay `
+                -Value ([string]$parsedClaims[$leftIndex].task_id)
             throw (
                 "duplicate active claim records for exact task_id '{0}': {1}, {2}" -f
-                [string]$parsedClaims[$leftIndex].task_id,
+                $duplicateTaskDisplay,
                 $parsedClaims[$leftIndex].file.FullName,
                 $parsedClaims[$rightIndex].file.FullName
             )
@@ -747,7 +736,6 @@ foreach ($plan in $stalePlans) {
         archive_sha256 = $archiveSha256
         archive_length = $archiveLength
         archive_temp_path = $archiveTempPath
-        archive_temp_consumed = $false
         source_backup_path = $sourceBackupPath
         source_snapshot_bytes = [byte[]]$plan.source_snapshot_bytes
         source_backup_sha256 = [string]$plan.source_snapshot_sha256
@@ -764,6 +752,10 @@ foreach ($plan in $stalePlans) {
         source_quarantine_capture_completed = $false
         source_quarantine_verified = $false
         archive_published = $false
+        archive_created = $false
+        archive_held_lease = $null
+        archive_rollback_detached = $false
+        archive_rollback_retained_path = $null
         source_removed = $false
         rollback_source_verified = $false
     }
@@ -832,37 +824,71 @@ if ($preparedPlans.Count -gt 0) {
 
     try {
         foreach ($plan in $preparedPlans) {
-            # File.Move has create-new destination semantics on Windows
-            # PowerShell 5.1 and PowerShell 7.
-            [System.IO.File]::Move(
-                [string]$plan.archive_temp_path,
-                [string]$plan.done_path
-            )
-            $plan.archive_temp_consumed = $true
+            # The preparation temp proves that every archive can be persisted
+            # before the batch starts. It is evidence only: publication below
+            # uses the trusted in-memory bytes, and cleanup retains the temp.
+            # Deleting it cannot be made atomic against a late NTFS ADS add.
+
+            # Publish only the trusted in-memory bytes directly to the
+            # canonical done path. The helper verifies the create-new handle,
+            # byte identity, reparse state, and single-link identity before
+            # the active source is quarantined. Rollback remains bound to the
+            # same expected archive hash and length.
+            # STALE V3 MARKER: publish trusted archive bytes directly.
+            $archivePublishResult = Invoke-AgentBridgeTrustedBytesCreateNew `
+                -DestinationPath ([string]$plan.done_path) `
+                -PublishBytes ([byte[]]$plan.archive_bytes) `
+                -ExpectedSha256 ([string]$plan.archive_sha256) `
+                -ExpectedLength ([long]$plan.archive_length) `
+                -Context 'published stale claim archive' `
+                -KeepOpenForRollback
+            $plan.archive_held_lease = $archivePublishResult.held_lease
+            $plan.archive_created = [bool]$archivePublishResult.created
+            if (-not [bool]$archivePublishResult.succeeded) {
+                throw (
+                    "stale claim archive publication failed {0}: {1}" -f
+                    [string]$plan.done_path,
+                    $archivePublishResult.error.Message
+                )
+            }
             $plan.archive_published = $true
+            # STALE V4 MARKER: pin source parent before quarantine move.
+            $sourceParentPin = Enter-AgentBridgeParentDirectoryPin `
+                -ChildPath ([string]$plan.file.FullName) `
+                -Context 'stale claim source quarantine'
+            try {
+                Assert-AgentBridgeParentDirectoryPin -Pin $sourceParentPin
             [System.IO.File]::Move(
                 [string]$plan.file.FullName,
                 [string]$plan.source_quarantine_path
             )
-            $plan.source_removed = $true
-            # A successful Move revokes the eligibility snapshot's automatic
-            # restore authority. Only a complete same-handle Q capture may
-            # authorize any later rollback publication.
-            $plan.rollback_source_restore_allowed = $false
-            $plan.rollback_source_generation = 'post-move-capture-unavailable'
-            try {
-                $quarantineSnapshot = `
-                    Get-AgentBridgeExclusiveRawFileCapture `
-                        -LiteralPath `
-                            ([string]$plan.source_quarantine_path) `
-                        -Context 'stale claim quarantined source'
-            } catch {
-                throw (
-                    "stale claim post-Move quarantine capture failed {0}; " +
-                    "eligibility restore suppressed: {1}" -f
-                    [string]$plan.source_quarantine_path,
-                    $_.Exception.Message
-                )
+                Assert-AgentBridgeParentDirectoryPin -Pin $sourceParentPin
+                $plan.source_removed = $true
+                # A successful Move revokes the eligibility snapshot's
+                # automatic restore authority. Only a complete same-handle Q
+                # capture may authorize any later rollback publication.
+                $plan.rollback_source_restore_allowed = $false
+                $plan.rollback_source_generation = `
+                    'post-move-capture-unavailable'
+                try {
+                    $quarantineSnapshot = `
+                        Get-AgentBridgeExclusiveRawFileCapture `
+                            -LiteralPath `
+                                ([string]$plan.source_quarantine_path) `
+                            -Context 'stale claim quarantined source'
+                    Assert-AgentBridgeParentDirectoryPin `
+                        -Pin $sourceParentPin
+                } catch {
+                    throw ((
+                        "stale claim post-Move quarantine capture failed " +
+                        "{0}; eligibility restore suppressed: {1}"
+                    ) -f
+                        [string]$plan.source_quarantine_path,
+                        $_.Exception.Message
+                    )
+                }
+            } finally {
+                Exit-AgentBridgeParentDirectoryPin -Pin $sourceParentPin
             }
             $quarantineSha256 = [string]$quarantineSnapshot.sha256
             $quarantineLength = [long]$quarantineSnapshot.length
@@ -913,9 +939,10 @@ if ($preparedPlans.Count -gt 0) {
                             'captured fresh active source bytes restored'
                         )
                     } catch {
-                        $restoreDetail = (
+                        $restoreDetail = ((
                             "foreign active source restore failed {0} from " +
-                            "{1}: {2}" -f
+                            "{1}: {2}"
+                        ) -f
                             $plan.file.FullName,
                             [string]$plan.source_quarantine_path,
                             $_.Exception.Message
@@ -936,9 +963,10 @@ if ($preparedPlans.Count -gt 0) {
                             $restoreDetail
                     )
                 }
-                throw (
+                throw ((
                     "quarantined active source identity rejected {0} after " +
-                    "complete capture: {1}; {2}" -f
+                    "complete capture: {1}; {2}"
+                ) -f
                     [string]$plan.source_quarantine_path,
                     $quarantineSnapshot.identity_error.Message,
                     $restoreDetail
@@ -963,7 +991,31 @@ if ($preparedPlans.Count -gt 0) {
         )
     }
 
-    $cleanupFailures = New-Object System.Collections.Generic.List[string]
+    $retentionNotices = New-Object System.Collections.Generic.List[string]
+    $leaseCloseFailures = New-Object System.Collections.Generic.List[string]
+    foreach ($plan in $preparedPlans) {
+        if ($null -eq $plan.archive_held_lease) { continue }
+        try {
+            Close-AgentBridgeHeldFileLease `
+                -Lease $plan.archive_held_lease `
+                -Context 'committed stale archive lease'
+        } catch {
+            [void]$leaseCloseFailures.Add((
+                "archive lease close failed {0}: {1}" -f
+                [string]$plan.done_path,
+                $_.Exception.Message
+            ))
+        } finally {
+            $plan.archive_held_lease = $null
+        }
+    }
+    if ($leaseCloseFailures.Count -gt 0) {
+        throw ((
+            "stale claim batch archive lease close failed after source " +
+            "quarantine; canonical archives and recovery evidence retained; " +
+            "release events suppressed: {0}"
+        ) -f ($leaseCloseFailures -join ' | '))
+    }
     foreach ($plan in $preparedPlans) {
         foreach ($cleanupEntry in @(
                 [pscustomobject]@{
@@ -982,77 +1034,27 @@ if ($preparedPlans.Count -gt 0) {
             if (-not (Test-Path -LiteralPath $cleanupEntry.path)) {
                 continue
             }
-            try {
-                if ([string]$cleanupEntry.label -ceq 'archive temp') {
-                    if ([bool]$plan.archive_temp_consumed) {
-                        throw (
-                            "path reappeared after the batch archive temp " +
-                            "was moved; retained unowned artifact"
-                        )
-                    }
-                    Remove-AgentBridgeExactFile `
-                        -LiteralPath ([string]$cleanupEntry.path) `
-                        -ExpectedSha256 ([string]$plan.archive_sha256) `
-                        -ExpectedLength ([long]$plan.archive_length) `
-                        -Context 'committed archive temp cleanup'
-                } elseif (
-                    [string]$cleanupEntry.label -ceq 'source backup'
-                ) {
-                    if (
-                        Test-Path `
-                            -LiteralPath $plan.source_quarantine_path
-                    ) {
-                        throw (
-                            "source quarantine cleanup is incomplete; " +
-                            "retained recovery backup"
-                        )
-                    }
-                    if (-not [bool]$plan.source_backup_prepared) {
-                        throw 'exact backup identity was not prepared'
-                    }
-                    # STALE V2 MARKER: exact-handle committed backup cleanup.
-                    Remove-AgentBridgeExactFile `
-                        -LiteralPath ([string]$cleanupEntry.path) `
-                        -ExpectedSha256 `
-                            ([string]$plan.source_backup_sha256) `
-                        -ExpectedLength `
-                            ([long]$plan.source_backup_length) `
-                        -Context 'committed source backup cleanup'
-                } elseif (
-                    [string]$cleanupEntry.label -ceq 'source quarantine'
-                ) {
-                    if (-not [bool]$plan.source_quarantine_verified) {
-                        throw 'batch ownership was not verified'
-                    }
-                    # STALE V2 MARKER: exact-handle committed quarantine cleanup.
-                    Remove-AgentBridgeExactFile `
-                        -LiteralPath ([string]$cleanupEntry.path) `
-                        -ExpectedSha256 `
-                            ([string]$plan.source_backup_sha256) `
-                        -ExpectedLength `
-                            ([long]$plan.source_backup_length) `
-                        -Context 'committed source quarantine cleanup'
-                }
-            } catch {
-                [void]$cleanupFailures.Add(
-                    (
-                        "{0} cleanup failed {1}: {2}" -f
-                        [string]$cleanupEntry.label,
-                        [string]$cleanupEntry.path,
-                        $_.Exception.Message
-                    )
+            # These unique artifacts are ignored by bridge readers. Keep them
+            # as evidence instead of deleting a pathname whose ownership can
+            # be changed by a late NTFS alternate-stream add.
+            [void]$retentionNotices.Add(
+                (
+                    "{0} retained by no-delete safety policy {1}" -f
+                    [string]$cleanupEntry.label,
+                    [string]$cleanupEntry.path
                 )
-            }
+            )
         }
     }
     $committedPlans = @($preparedPlans)
-    if ($cleanupFailures.Count -gt 0) {
+    if ($retentionNotices.Count -gt 0) {
         Write-Warning `
-            -Message (
-                "stale claim batch committed but ancillary cleanup failed; " +
-                "required events and results will continue; " +
-                "cleanup failures: {0}; state: {1}" -f
-                ($cleanupFailures -join ' | '),
+            -Message ((
+                "stale claim batch committed; recovery artifacts " +
+                "intentionally retained by no-delete policy: {0}; " +
+                "state: {1}"
+            ) -f
+                ($retentionNotices -join ' | '),
                 (Get-BridgeStaleBatchState -Plans $preparedPlans)
             ) `
             -WarningAction Continue

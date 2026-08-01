@@ -119,15 +119,35 @@ $leaseRefreshRequested = (
     $type -in @('liveness','heartbeat') -and
     $status -eq 'active'
 )
+
+function Test-BridgeCurrentOwnerClaim {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Claim,
+        [Parameter(Mandatory)] $CurrentOwner,
+        [Parameter(Mandatory)] [string] $CurrentAgent
+    )
+
+    $claimAgentProperty = Get-AgentBridgeExactProperty `
+        -InputObject $Claim `
+        -Name 'agent'
+    return (
+        $null -ne $claimAgentProperty -and
+        $claimAgentProperty.Value -is [string] -and
+        [string]$claimAgentProperty.Value -ceq $CurrentAgent -and
+        (Test-AgentBridgeStoredClaimOwnerComplete -Claim $Claim) -and
+        (Test-AgentBridgeClaimOwner `
+            -Claim $Claim `
+            -OwnerContext $CurrentOwner)
+    )
+}
+
 if ($leaseRefreshRequested) {
     # Resolve runtime root the same way other bridge scripts do
     # (R13 AGENT_BRIDGE_RUNTIME_ROOT support). Inlined here to
     # keep Send-Liveness self-contained.
-    $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-        [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-    } else {
-        Split-Path -Parent $PSScriptRoot
-    }
+    $bridgeRoot = Resolve-AgentBridgeRoot `
+        -DefaultRoot (Split-Path -Parent $PSScriptRoot)
     $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
     $claimMutationLock = $null
     try {
@@ -148,9 +168,10 @@ if ($leaseRefreshRequested) {
                 $obj = ConvertFrom-AgentBridgeJson `
                     -Json ([string]$claimSnapshot.text)
             } catch {
-                throw (
+                throw ((
                     "unreadable active claim blocks lease refresh: " +
-                    "{0}: {1}" -f
+                    "{0}: {1}"
+                ) -f
                     $file.FullName,
                     $_.Exception.Message
                 )
@@ -169,18 +190,29 @@ if ($leaseRefreshRequested) {
             if (
                 $null -eq $claimTaskProperty -or
                 $claimTaskProperty.Value -isnot [string]
-            ) { continue }
+            ) {
+                if (Test-BridgeCurrentOwnerClaim `
+                        -Claim $obj `
+                        -CurrentOwner $ownerContext `
+                        -CurrentAgent $Agent) {
+                    [void]$operationFailures.Add(
+                        "owned active claim has missing or non-string " +
+                        "task_id; lease refresh skipped: $($file.FullName)"
+                    )
+                }
+                continue
+            }
             $claimTaskId = [string]$claimTaskProperty.Value
-            if ([string]::IsNullOrEmpty($claimTaskId)) { continue }
-            try {
-                Assert-AgentBridgeTaskId -TaskId $claimTaskId
-            } catch {
-                Write-Warning (
-                    "invalid active claim task_id skipped during lease " +
-                    "refresh: {0}: {1}" -f
-                    $file.FullName,
-                    $_.Exception.Message
-                )
+            if ([string]::IsNullOrEmpty($claimTaskId)) {
+                if (Test-BridgeCurrentOwnerClaim `
+                        -Claim $obj `
+                        -CurrentOwner $ownerContext `
+                        -CurrentAgent $Agent) {
+                    [void]$operationFailures.Add(
+                        "owned active claim has empty task_id; lease " +
+                        "refresh skipped: $($file.FullName)"
+                    )
+                }
                 continue
             }
             if (-not $claimGroups.ContainsKey($claimTaskId)) {
@@ -201,24 +233,56 @@ if ($leaseRefreshRequested) {
             )
         }
 
+        # The refresh is a batch mutation. Any duplicate exact logical task
+        # makes the whole captured queue ambiguous, including duplicates for
+        # another agent or for a task this heartbeat would not otherwise
+        # touch. Complete this preflight before the first claim write.
+        $duplicateFailures = New-Object System.Collections.Generic.List[string]
+        foreach ($claimTaskId in @($claimGroups.Keys)) {
+            $entries = $claimGroups[$claimTaskId]
+            if ($entries.Count -le 1) { continue }
+            $duplicatePaths = @(
+                $entries | ForEach-Object { $_.file.FullName }
+            )
+            $claimTaskDisplay = Format-AgentBridgeIdentityDisplay `
+                -Value $claimTaskId
+            [void]$duplicateFailures.Add((
+                "duplicate active claim records for exact task_id " +
+                "'$claimTaskDisplay': " +
+                ($duplicatePaths -join ', ')
+            ))
+        }
+        if ($duplicateFailures.Count -gt 0) {
+            throw ($duplicateFailures -join '; ')
+        }
+
         $eligibleEntries = New-Object System.Collections.Generic.List[object]
         foreach ($claimTaskId in @($claimGroups.Keys)) {
             $entries = $claimGroups[$claimTaskId]
-            if ($entries.Count -ne 1) {
-                $duplicatePaths = @(
-                    $entries | ForEach-Object { $_.file.FullName }
-                )
-                Write-Warning (
-                    "duplicate active claim records for exact task_id '{0}'; lease refresh skipped: {1}" -f
-                    $claimTaskId,
-                    ($duplicatePaths -join ', ')
-                )
-                continue
-            }
-
             $entry = $entries[0]
             $file = $entry.file
             $obj = $entry.claim
+            try {
+                Assert-AgentBridgeTaskId -TaskId $claimTaskId
+            } catch {
+                Write-Warning ((
+                    "invalid active claim task_id skipped during lease " +
+                    "refresh: {0}: {1}"
+                ) -f
+                    $file.FullName,
+                    $_.Exception.Message
+                )
+                if (Test-BridgeCurrentOwnerClaim `
+                        -Claim $obj `
+                        -CurrentOwner $ownerContext `
+                        -CurrentAgent $Agent) {
+                    [void]$operationFailures.Add(
+                        "owned active claim has invalid task_id; lease " +
+                        "refresh skipped: $($file.FullName)"
+                    )
+                }
+                continue
+            }
             $claimAgentProperty = Get-AgentBridgeExactProperty `
                 -InputObject $obj `
                 -Name 'agent'

@@ -1352,7 +1352,17 @@ def test_done_with_domain_status_closes_incoming_request() -> None:
     assert report["stale_incoming_count"] == 0
 
 
-@pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ack",
+        "acknowledged",
+        "received",
+        "seen",
+        "wake_ack",
+        "file_received",
+    ],
+)
 def test_ack_message_statuses_do_not_close_incoming_request(status: str) -> None:
     events = [
         {

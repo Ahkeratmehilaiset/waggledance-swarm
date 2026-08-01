@@ -123,23 +123,23 @@ foreach ($scopeValue in @($WriteScope)) {
 }
 $WriteScope = @($normalizedWriteScope)
 $sessionId = [string]$env:AGENT_BRIDGE_SESSION_ID
-if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}\z') {
     throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
-if ($sessionId -and $sessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+if ($sessionId -and $sessionId -notmatch '^[A-Za-z0-9._:-]{1,128}\z') {
     throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
-if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+if ($Role -and $Role -cnotmatch '^[a-z][a-z0-9_-]{1,32}\z') {
     throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
 }
-if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z') {
     throw "agent_uuid must be a UUID"
 }
 if ($AgentUuid) {
     $AgentUuid = $AgentUuid.ToLowerInvariant()
 }
 foreach ($capability in @($Capabilities)) {
-    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+    if ($capability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}\z') {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
@@ -174,11 +174,8 @@ $ownerContext = Get-AgentBridgeClaimOwnerContext
 # the agents on first-run / typo / new-root paths. We create the
 # directory if missing (first-run bootstrap) and fail loudly on
 # malformed paths via -ErrorAction Stop.
-$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-} else {
-    Split-Path -Parent $PSScriptRoot
-}
+$bridgeRoot = Resolve-AgentBridgeRoot `
+    -DefaultRoot (Split-Path -Parent $PSScriptRoot)
 
 Ensure-AgentBridgePlainDirectory `
     -LiteralPath $bridgeRoot `
@@ -299,6 +296,9 @@ function Get-StrictActiveClaimSnapshot {
     }
 
     $snapshot = @()
+    $taskPaths = [System.Collections.Generic.Dictionary[string,string]]::new(
+        [System.StringComparer]::Ordinal
+    )
     foreach ($entry in $claimEntries) {
         $claimPath = [string]$entry.FullName
         if (-not (Test-Path -LiteralPath $claimPath -PathType Leaf)) {
@@ -350,13 +350,25 @@ function Get-StrictActiveClaimSnapshot {
             )
         }
 
+        $storedTaskId = [string]$taskIdProperty.Value
+        if ($taskPaths.ContainsKey($storedTaskId)) {
+            $storedTaskIdDisplay = Format-AgentBridgeIdentityDisplay `
+                -Value $storedTaskId
+            throw (
+                "duplicate active claim records for exact task_id " +
+                "'$storedTaskIdDisplay': " +
+                "$($taskPaths[$storedTaskId]), $claimPath"
+            )
+        }
+        $taskPaths.Add($storedTaskId, $claimPath)
+
         # Do not validate/sanitize the stored task_id against the public input
         # grammar here. Invalid-but-readable identities remain exact strings
         # and stay in place for explicit operator recovery.
         $snapshot += [pscustomobject]@{
             file = $entry
             claim = $claimRecord
-            task_id = [string]$taskIdProperty.Value
+            task_id = $storedTaskId
             snapshot_bytes = [byte[]]$claimSnapshot.bytes
             snapshot_sha256 = [string]$claimSnapshot.sha256
             snapshot_length = [long]$claimSnapshot.length
@@ -391,7 +403,12 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
     try {
         & $sweepScript -Quiet | Out-Null
     } catch {
-        Write-Warning ("stale-claim sweep before claim acquisition failed: {0}" -f $_.Exception.Message)
+        Stop-BridgeClaim `
+            -Message (
+                "stale-claim sweep before claim acquisition failed: {0}" -f
+                $_.Exception.Message
+            ) `
+            -Code 3
     }
 }
 
@@ -427,9 +444,10 @@ try {
         [string]$preferredEntries[0].task_id -cne $TaskId
     ) {
         Stop-BridgeClaim `
-            -Message (
+            -Message ((
                 "claim filename collision at preferred path for task_id " +
-                "'{0}': stored task_id '{1}' in {2}" -f
+                "'{0}': stored task_id '{1}' in {2}"
+            ) -f
                 $TaskId,
                 [string]$preferredEntries[0].task_id,
                 $preferredClaimPath
@@ -520,9 +538,10 @@ foreach ($entry in $parsedClaims) {
                 '<missing-or-nonstring>'
             }
             Stop-BridgeClaim `
-                -Message (
+                -Message ((
                     "write-scope conflict with active claim {0} by {1}: " +
-                    "stored mode is missing, non-string, or invalid" -f
+                    "stored mode is missing, non-string, or invalid"
+                ) -f
                     $entry.task_id,
                     $existingAgentDisplay
                 ) `

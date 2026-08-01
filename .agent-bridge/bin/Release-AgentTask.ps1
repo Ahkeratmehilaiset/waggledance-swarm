@@ -42,7 +42,7 @@ if (-not $RunId) {
         ''
     }
 }
-if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+if ($RunId -and $RunId -notmatch '^[A-Za-z0-9._:-]{1,128}\z') {
     throw "run_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
 $eventRole = [string]$env:AGENT_BRIDGE_ROLE
@@ -53,18 +53,18 @@ $eventCapabilities = @(
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ }
 )
-if ($eventRole -and $eventRole -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+if ($eventRole -and $eventRole -cnotmatch '^[a-z][a-z0-9_-]{1,32}\z') {
     throw "role must match ^[a-z][a-z0-9_-]{1,32}$"
 }
-if ($eventAgentUuid -and $eventAgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+if ($eventAgentUuid -and $eventAgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z') {
     throw "agent_uuid must be a UUID"
 }
 if ($eventSessionId -and
-    $eventSessionId -notmatch '^[A-Za-z0-9._:-]{1,128}$') {
+    $eventSessionId -notmatch '^[A-Za-z0-9._:-]{1,128}\z') {
     throw "session_id must match ^[A-Za-z0-9._:-]{1,128}$"
 }
 foreach ($eventCapability in $eventCapabilities) {
-    if ($eventCapability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}$') {
+    if ($eventCapability -cnotmatch '^[a-z][a-z0-9_.:-]{1,64}\z') {
         throw "capability must match ^[a-z][a-z0-9_.:-]{1,64}$"
     }
 }
@@ -95,11 +95,8 @@ try {
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT.
 # A release is mutation-only: a missing runtime means there cannot be an
 # active claim, so refuse without creating a new bridge tree.
-$bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
-    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
-} else {
-    Split-Path -Parent $PSScriptRoot
-}
+$bridgeRoot = Resolve-AgentBridgeRoot `
+    -DefaultRoot (Split-Path -Parent $PSScriptRoot)
 if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     Stop-BridgeRelease -Message ("no active claim found for task: {0}" -f $TaskId) -Code 2
 }
@@ -120,19 +117,37 @@ try {
     Stop-BridgeRelease -Message ([string]$_.Exception.Message) -Code 3
 }
 
-$taskMatches = @()
-foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
-        -ErrorAction SilentlyContinue)) {
+$claimFiles = try {
+    @(
+        Get-ChildItem -Path $claimsDir -Filter '*.json' -File -Force `
+            -ErrorAction Stop |
+            Sort-Object FullName
+    )
+} catch {
+    Stop-BridgeRelease `
+        -Message (
+            "cannot enumerate active claim records under {0}: {1}" -f
+            $claimsDir,
+            $_.Exception.Message
+        ) `
+        -Code 3
+}
+$parsedClaims = @()
+$taskPaths = [System.Collections.Generic.Dictionary[string,string]]::new(
+    [System.StringComparer]::Ordinal
+)
+foreach ($file in $claimFiles) {
+    $claimPath = [System.IO.Path]::GetFullPath([string]$file.FullName)
     try {
         $candidateSnapshot = Read-AgentBridgeStrictUtf8JsonSnapshot `
-            -LiteralPath $file.FullName
+            -LiteralPath $claimPath
         $candidate = ConvertFrom-AgentBridgeJson `
             -Json ([string]$candidateSnapshot.text)
     } catch {
         Stop-BridgeRelease `
             -Message (
                 "malformed active claim JSON {0}: {1}" -f
-                $file.FullName,
+                $claimPath,
                 $_.Exception.Message
             ) `
             -Code 3
@@ -150,17 +165,39 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     if (
         $null -ne $candidateTaskProperty -and
         $candidateTaskProperty.Value -is [string] -and
-        [string]$candidateTaskProperty.Value -ceq $TaskId
+        -not [string]::IsNullOrEmpty(
+            [string]$candidateTaskProperty.Value
+        )
     ) {
-        $taskMatches += [pscustomobject]@{
+        $candidateTaskId = [string]$candidateTaskProperty.Value
+        if ($taskPaths.ContainsKey($candidateTaskId)) {
+            $candidateTaskDisplay = Format-AgentBridgeIdentityDisplay `
+                -Value $candidateTaskId
+            Stop-BridgeRelease `
+                -Message ((
+                    "duplicate active claim records for exact task_id " +
+                    "'{0}': {1}, {2}"
+                ) -f
+                    $candidateTaskDisplay,
+                    $taskPaths[$candidateTaskId],
+                    $claimPath) `
+                -Code 3
+        }
+        $taskPaths.Add($candidateTaskId, $claimPath)
+        $parsedClaims += [pscustomobject]@{
             file = $file
             claim = $candidate
+            task_id = $candidateTaskId
             snapshot_bytes = [byte[]]$candidateSnapshot.bytes
             snapshot_sha256 = [string]$candidateSnapshot.sha256
             snapshot_length = [long]$candidateSnapshot.length
         }
     }
 }
+$taskMatches = @(
+    $parsedClaims |
+        Where-Object { [string]$_.task_id -ceq $TaskId }
+)
 if ($taskMatches.Count -eq 0) {
     Stop-BridgeRelease -Message ("no active claim found for task: {0}" -f $TaskId) -Code 2
 }

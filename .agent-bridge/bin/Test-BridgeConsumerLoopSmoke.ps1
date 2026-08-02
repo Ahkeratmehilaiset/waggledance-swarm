@@ -20,10 +20,14 @@ $runtimeRoot = Join-Path $tmpRoot '.agent-bridge'
 $worktree = Join-Path $tmpRoot 'codex-tools-1-worktree'
 $wakePath = Join-Path $runtimeRoot 'wake_codex-tools-1'
 $fakeCodex = Join-Path $tmpRoot 'fake-codex.ps1'
-$slowCodex = Join-Path $tmpRoot 'slow-codex.ps1'
-$slowChildPid = Join-Path $tmpRoot 'slow-child.pid'
-$promptCapture = Join-Path $tmpRoot 'consumer-prompt.txt'
-$identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
+    $slowCodex = Join-Path $tmpRoot 'slow-codex.ps1'
+    $slowChildPid = Join-Path $tmpRoot 'slow-child.pid'
+    $promptCapture = Join-Path $tmpRoot 'consumer-prompt.txt'
+    $argumentsCapture = Join-Path $tmpRoot 'consumer-arguments.json'
+    $invokeSpecCountCapture = Join-Path $tmpRoot 'consumer-invoke-spec-count.txt'
+    $transportEnvironmentCapture = Join-Path $tmpRoot 'consumer-transport-environment.txt'
+    $initialHeartbeatCapture = Join-Path $tmpRoot 'consumer-initial-heartbeat.txt'
+    $identityIsolation = Join-Path $PSScriptRoot 'BridgeSmokeIdentityIsolation.ps1'
 . $identityIsolation
 $identitySnapshot = Enter-BridgeSmokeIdentityIsolation
 
@@ -36,25 +40,70 @@ $ErrorActionPreference = 'Stop'
 $root = [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
 $agent = [string]$env:AGENT_BRIDGE_AGENT
 $promptPath = [string]$env:BRIDGE_CONSUMER_PROMPT_PATH
+$argumentsPath = [string]$env:BRIDGE_CONSUMER_ARGUMENTS_PATH
+$invokeSpecCountPath = [string]$env:BRIDGE_CONSUMER_INVOKE_SPEC_COUNT_PATH
+$transportEnvironmentPath = [string]$env:BRIDGE_CONSUMER_TRANSPORT_ENVIRONMENT_PATH
+$consumerLogDir = [string]$env:BRIDGE_CONSUMER_TEST_LOG_DIR
+$claimScript = [string]$env:BRIDGE_CONSUMER_CLAIM_SCRIPT
+$initialHeartbeatPath = [string]$env:BRIDGE_CONSUMER_INITIAL_HEARTBEAT_PATH
 $promptText = (@($input) -join [Environment]::NewLine)
 if (-not $root) { throw 'missing AGENT_BRIDGE_RUNTIME_ROOT' }
 if (-not $agent) { throw 'missing AGENT_BRIDGE_AGENT' }
+if (-not $consumerLogDir) { throw 'missing BRIDGE_CONSUMER_TEST_LOG_DIR' }
+if (-not $claimScript) { throw 'missing BRIDGE_CONSUMER_CLAIM_SCRIPT' }
+if (-not $initialHeartbeatPath) { throw 'missing BRIDGE_CONSUMER_INITIAL_HEARTBEAT_PATH' }
 if ($promptPath) {
     [System.IO.File]::WriteAllText($promptPath, $promptText)
 }
-$claims = Join-Path $root 'work_queue\claims'
-[void](New-Item -ItemType Directory -Path $claims -Force -ErrorAction Stop)
-$claimPath = Join-Path $claims 'consumer-heartbeat-smoke.json'
-$claim = [ordered]@{
-    task_id = 'consumer-heartbeat-smoke'
-    agent = $agent
-    claimed_at_utc = (Get-Date).ToUniversalTime().ToString('o')
-    last_heartbeat_utc = '2000-01-01T00:00:00Z'
-    lease_seconds = 300
-    mode = 'write'
-    write_scope = @('smoke')
+if ($argumentsPath) {
+    [System.IO.File]::WriteAllText(
+        $argumentsPath,
+        (@($args) | ConvertTo-Json -Depth 8 -Compress)
+    )
 }
-$claim | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $claimPath -Encoding UTF8
+if ($invokeSpecCountPath) {
+    $invokeSpecCount = @(
+        Get-ChildItem `
+            -LiteralPath $consumerLogDir `
+            -Filter '*.invoke.json' `
+            -File `
+            -ErrorAction SilentlyContinue
+    ).Count
+    [System.IO.File]::WriteAllText($invokeSpecCountPath, [string]$invokeSpecCount)
+}
+if ($transportEnvironmentPath) {
+    $transportEnvironment = @(
+        [string]$env:BRIDGE_CONSUMER_SPEC
+        [string]$env:BRIDGE_CONSUMER_SPEC_B64
+    ) -join ''
+    [System.IO.File]::WriteAllText(
+        $transportEnvironmentPath,
+        $transportEnvironment
+    )
+}
+& $claimScript `
+    -Agent $agent `
+    -TaskId 'consumer-heartbeat-smoke' `
+    -Summary 'consumer heartbeat smoke' `
+    -Mode write `
+    -WriteScope @('smoke') `
+    -LeaseSeconds 300 | Out-Null
+$claimsDir = Join-Path $root 'work_queue\claims'
+$matchingClaims = @(
+    Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File -ErrorAction Stop |
+        ForEach-Object {
+            Get-Content -Raw -LiteralPath $_.FullName -Encoding UTF8 |
+                ConvertFrom-Json -ErrorAction Stop
+        } |
+        Where-Object { [string]$_.task_id -eq 'consumer-heartbeat-smoke' }
+)
+if (@($matchingClaims).Count -ne 1) {
+    throw 'expected one owner-bound consumer heartbeat claim after claiming'
+}
+[System.IO.File]::WriteAllText(
+    $initialHeartbeatPath,
+    [string]$matchingClaims[0].last_heartbeat_utc
+)
 Start-Sleep -Milliseconds 2200
 exit 0
 '@ | Set-Content -LiteralPath $fakeCodex -Encoding UTF8
@@ -69,6 +118,13 @@ exit 0
 '@ | Set-Content -LiteralPath $slowCodex -Encoding UTF8
     $env:BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH = $slowChildPid
     $env:BRIDGE_CONSUMER_PROMPT_PATH = $promptCapture
+    $env:BRIDGE_CONSUMER_ARGUMENTS_PATH = $argumentsCapture
+    $env:BRIDGE_CONSUMER_INVOKE_SPEC_COUNT_PATH = $invokeSpecCountCapture
+    $env:BRIDGE_CONSUMER_TRANSPORT_ENVIRONMENT_PATH = $transportEnvironmentCapture
+    $env:BRIDGE_CONSUMER_TEST_LOG_DIR = Join-Path $worktree '.codex-audit\bridge-consumer'
+    $env:BRIDGE_CONSUMER_CLAIM_SCRIPT = Join-Path $PSScriptRoot 'Claim-AgentTask.ps1'
+    $env:BRIDGE_CONSUMER_INITIAL_HEARTBEAT_PATH = $initialHeartbeatCapture
+    $unicodeModel = "m$([char]0x00F8)del-$([char]0x96EA)"
 
     $script = Join-Path $PSScriptRoot 'Start-AgentBridgeConsumerLoop.ps1'
     $result = @(& $script `
@@ -126,6 +182,7 @@ exit 0
         -RuntimeRoot $runtimeRoot `
         -Worktree $worktree `
         -CodexCommand $fakeCodex `
+        -Model $unicodeModel `
         -HeartbeatIntervalSeconds 1 `
         -HeartbeatMaxIdleWithoutClaimIterations 5 `
         -MaxIterations 1 `
@@ -150,10 +207,74 @@ exit 0
     Assert-True `
         -Condition (-not $capturedPrompt.Contains('--agent codex-lead-1')) `
         -Message 'tools prompt must not infer the lead lane'
+    Assert-True `
+        -Condition ((Get-Content -Raw -LiteralPath $invokeSpecCountCapture -Encoding UTF8) -eq '0') `
+        -Message 'consumer exposed a writable *.invoke.json while the child was running'
+    $transportEnvironmentText = [string](
+        Get-Content -Raw -LiteralPath $transportEnvironmentCapture -Encoding UTF8
+    )
+    Assert-True `
+        -Condition ([string]::IsNullOrEmpty($transportEnvironmentText)) `
+        -Message 'consumer transport environment leaked into the Codex command'
+    $capturedArgumentsPayload = (
+        Get-Content -Raw -LiteralPath $argumentsCapture -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+    )
+    $capturedArguments = @($capturedArgumentsPayload)
+    if ($capturedArguments.Count -eq 1 -and
+        $capturedArguments[0] -is [System.Array]) {
+        $capturedArguments = @(
+            $capturedArguments[0] | ForEach-Object { $_ }
+        )
+    }
+    Assert-True `
+        -Condition (@($capturedArguments) -contains $unicodeModel) `
+        -Message (
+            "UTF-8/base64 transport did not preserve the Unicode model argument; " +
+            "expected=$unicodeModel actual=$(@($capturedArguments) -join '|')"
+        )
 
-    $claimPath = Join-Path $runtimeRoot 'work_queue\claims\consumer-heartbeat-smoke.json'
-    $claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    Assert-True ([string]$claim.last_heartbeat_utc -ne '2000-01-01T00:00:00Z') 'heartbeat did not refresh claim lease during codex tick'
+    $claimsDir = Join-Path $runtimeRoot 'work_queue\claims'
+    $matchingClaims = @(
+        Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File -ErrorAction Stop |
+            ForEach-Object {
+                Get-Content -Raw -LiteralPath $_.FullName -Encoding UTF8 |
+                    ConvertFrom-Json -ErrorAction Stop
+            } |
+            Where-Object { [string]$_.task_id -eq 'consumer-heartbeat-smoke' }
+    )
+    Assert-True (@($matchingClaims).Count -eq 1) 'expected one owner-bound consumer heartbeat claim'
+    $claim = $matchingClaims[0]
+    $initialHeartbeatText = Get-Content -Raw -LiteralPath $initialHeartbeatCapture -Encoding UTF8
+    $finalHeartbeatText = [string]$claim.last_heartbeat_utc
+    $dateStyles = (
+        [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    )
+    $initialHeartbeat = [DateTimeOffset]::MinValue
+    $finalHeartbeat = [DateTimeOffset]::MinValue
+    Assert-True `
+        -Condition ([DateTimeOffset]::TryParse(
+            $initialHeartbeatText,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            $dateStyles,
+            [ref]$initialHeartbeat
+        )) `
+        -Message "initial claim heartbeat is not a valid timestamp: $initialHeartbeatText"
+    Assert-True `
+        -Condition ([DateTimeOffset]::TryParse(
+            $finalHeartbeatText,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            $dateStyles,
+            [ref]$finalHeartbeat
+        )) `
+        -Message "final claim heartbeat is not a valid timestamp: $finalHeartbeatText"
+    Assert-True `
+        -Condition ($finalHeartbeat -gt $initialHeartbeat) `
+        -Message (
+            'heartbeat did not advance claim lease during codex tick; ' +
+            "initial=$initialHeartbeatText final=$finalHeartbeatText"
+        )
     $eventsPath = Join-Path $runtimeRoot 'shared\events.jsonl'
     $events = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
     Assert-True (@($events | Where-Object { $_.status -eq 'consumer_tick_started' }).Count -ge 1) 'tick start status event missing'
@@ -188,6 +309,12 @@ exit 0
     Exit-BridgeSmokeIdentityIsolation -Snapshot $identitySnapshot
     Remove-Item Env:\BRIDGE_CONSUMER_SLOW_CHILD_PID_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:\BRIDGE_CONSUMER_PROMPT_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_ARGUMENTS_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_INVOKE_SPEC_COUNT_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_TRANSPORT_ENVIRONMENT_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_TEST_LOG_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_CLAIM_SCRIPT -ErrorAction SilentlyContinue
+    Remove-Item Env:\BRIDGE_CONSUMER_INITIAL_HEARTBEAT_PATH -ErrorAction SilentlyContinue
     $tmpFull = [System.IO.Path]::GetFullPath($tmpRoot)
     $auditFull = [System.IO.Path]::GetFullPath($auditRoot)
     if ($tmpFull.StartsWith($auditFull, [System.StringComparison]::OrdinalIgnoreCase) -and

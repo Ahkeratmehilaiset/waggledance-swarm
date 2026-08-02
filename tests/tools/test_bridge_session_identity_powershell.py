@@ -29,6 +29,7 @@ from waggledance.core.work_queue import (
 ROOT = Path(__file__).resolve().parents[2]
 BRIDGE_BIN = ROOT / ".agent-bridge" / "bin"
 BOUND_AGENT = "codex-tools-1"
+BOUND_AGENT_UUID = "7a8af68d-20bc-4598-9953-23c5dd98b102"
 OTHER_AGENT = "codex-lead-1"
 
 
@@ -3657,6 +3658,213 @@ def test_unbound_consumer_does_not_adopt_stale_identity_metadata(
     assert identity["role"] == ""
     assert identity["agent_uuid"] == ""
     assert identity["capabilities"] == ""
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_consumer_uses_unicode_safe_environment_spec_without_invoke_file(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    unicode_root = tmp_path / "consumer-transport-ø-雪"
+    runtime_root = unicode_root / "bridge-runtime"
+    worktree = unicode_root / "worktree-λ"
+    log_dir = unicode_root / "logs-Ж"
+    worktree.mkdir(parents=True)
+    log_dir.mkdir()
+    capture_path = unicode_root / "transport.json"
+    fake_codex = unicode_root / "fake-codex.ps1"
+    fake_codex.write_text(
+        """\
+$ErrorActionPreference = 'Stop'
+$logDir = [string]$env:BRIDGE_TEST_CONSUMER_LOG_DIR
+$capturePath = [string]$env:BRIDGE_TEST_CONSUMER_CAPTURE
+$payload = [ordered]@{
+    invoke_count = @(
+        Get-ChildItem -LiteralPath $logDir -Filter '*.invoke.json' -File
+    ).Count
+    legacy_spec = [string]$env:BRIDGE_CONSUMER_SPEC
+    base64_spec = [string]$env:BRIDGE_CONSUMER_SPEC_B64
+    arguments = @($args)
+}
+[System.IO.File]::WriteAllText(
+    $capturePath,
+    ($payload | ConvertTo-Json -Depth 8 -Compress)
+)
+exit 0
+""",
+        encoding="utf-8-sig",
+    )
+    model = "mødel-雪"
+
+    completed = _run_script(
+        runtime_root,
+        "Start-AgentBridgeConsumerLoop.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-AgentUuid",
+        BOUND_AGENT_UUID,
+        "-RuntimeRoot",
+        str(runtime_root),
+        "-Worktree",
+        str(worktree),
+        "-LogDir",
+        str(log_dir),
+        "-CodexCommand",
+        str(fake_codex),
+        "-Model",
+        model,
+        "-Prompt",
+        "prompt-λ",
+        "-SkipHeartbeatDuringCodex",
+        "-DurationMinutes",
+        "0",
+        "-MaxIterations",
+        "1",
+        "-PollSeconds",
+        "0",
+        extra_env={
+            "BRIDGE_TEST_CONSUMER_LOG_DIR": str(log_dir),
+            "BRIDGE_TEST_CONSUMER_CAPTURE": str(capture_path),
+            # A stale parent value must neither be trusted nor reach Codex.
+            "BRIDGE_CONSUMER_SPEC": "attacker-controlled-path",
+        },
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, _normalized_powershell_output(completed)
+    transport = json.loads(capture_path.read_text(encoding="utf-8-sig"))
+    assert transport["invoke_count"] == 0
+    assert transport["legacy_spec"] == ""
+    assert transport["base64_spec"] == ""
+    arguments = transport["arguments"]
+    assert arguments[arguments.index("-C") + 1] == str(worktree)
+    assert arguments[arguments.index("--model") + 1] == model
+    assert len(list(log_dir.glob("*.log"))) == 1
+    assert not list(log_dir.glob("*.invoke.json"))
+    source = (BRIDGE_BIN / "Start-AgentBridgeConsumerLoop.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert ".invoke.json" not in source
+    assert "BRIDGE_CONSUMER_SPEC_B64" in source
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_consumer_environment_transport_preserves_nonzero_exit_code(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    worktree = tmp_path / "worktree"
+    log_dir = tmp_path / "logs"
+    worktree.mkdir()
+    log_dir.mkdir()
+    fake_codex = tmp_path / "exit-37.ps1"
+    fake_codex.write_text("exit 37\n", encoding="utf-8-sig")
+
+    completed = _run_script(
+        runtime_root,
+        "Start-AgentBridgeConsumerLoop.ps1",
+        "-Agent",
+        BOUND_AGENT,
+        "-AgentUuid",
+        BOUND_AGENT_UUID,
+        "-RuntimeRoot",
+        str(runtime_root),
+        "-Worktree",
+        str(worktree),
+        "-LogDir",
+        str(log_dir),
+        "-CodexCommand",
+        str(fake_codex),
+        "-SkipHeartbeatDuringCodex",
+        "-DurationMinutes",
+        "0",
+        "-MaxIterations",
+        "1",
+        "-PollSeconds",
+        "0",
+        powershell=powershell,
+    )
+
+    assert completed.returncode == 0, _normalized_powershell_output(completed)
+    events_path = runtime_root / "shared" / "events.jsonl"
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip()
+    ]
+    finished = [
+        event
+        for event in events
+        if event.get("status") == "consumer_tick_failed"
+    ]
+    assert len(finished) == 1
+    assert finished[0]["payload"]["exit_code"] == 37
+    assert finished[0]["payload"]["codex_timed_out"] is False
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_consumer_repeated_tick_coordinates_use_distinct_log_leaves(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    runtime_root = tmp_path / "bridge-runtime"
+    worktree = tmp_path / "worktree"
+    log_dir = tmp_path / "logs"
+    worktree.mkdir()
+    log_dir.mkdir()
+    wrapper = tmp_path / "consumer-log-wrapper.ps1"
+    wrapper.write_text(
+        """\
+$ErrorActionPreference = 'Stop'
+function global:Get-Date {
+    return [datetime]'2026-08-01T00:00:00Z'
+}
+$consumer = [string]$env:BRIDGE_TEST_CONSUMER_SCRIPT
+$common = @{
+    Agent = [string]$env:AGENT_BRIDGE_AGENT
+    RuntimeRoot = [string]$env:BRIDGE_TEST_RUNTIME_ROOT
+    Worktree = [string]$env:BRIDGE_TEST_WORKTREE
+    LogDir = [string]$env:BRIDGE_TEST_LOG_DIR
+    DurationMinutes = 0
+    MaxIterations = 1
+    PollSeconds = 0
+    DryRun = $true
+    SkipHeartbeatDuringCodex = $true
+}
+$first = @(& $consumer @common)
+$second = @(& $consumer @common)
+[ordered]@{
+    first = [string]$first[0].log_path
+    second = [string]$second[0].log_path
+} | ConvertTo-Json -Compress
+""",
+        encoding="utf-8-sig",
+    )
+
+    completed = _run_script(
+        runtime_root,
+        wrapper.name,
+        script_root=tmp_path,
+        powershell=powershell,
+        extra_env={
+            "BRIDGE_TEST_CONSUMER_SCRIPT": str(
+                BRIDGE_BIN / "Start-AgentBridgeConsumerLoop.ps1"
+            ),
+            "BRIDGE_TEST_RUNTIME_ROOT": str(runtime_root),
+            "BRIDGE_TEST_WORKTREE": str(worktree),
+            "BRIDGE_TEST_LOG_DIR": str(log_dir),
+        },
+    )
+
+    assert completed.returncode == 0, _normalized_powershell_output(completed)
+    paths = json.loads(completed.stdout)
+    assert paths["first"] != paths["second"]
+    leaf_pattern = re.compile(
+        rf"^{BOUND_AGENT}-001-20260801T000000000Z-p\d+-[0-9a-f]{{32}}\.log$"
+    )
+    assert leaf_pattern.fullmatch(Path(paths["first"]).name)
+    assert leaf_pattern.fullmatch(Path(paths["second"]).name)
 
 
 @pytest.mark.parametrize(

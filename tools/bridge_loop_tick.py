@@ -39,7 +39,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -70,6 +69,7 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
 )
 from tools.operator_decision_pack import scan_inbox  # noqa: E402
 from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
+from waggledance.core.bridge_event_writer import write_bridge_event  # noqa: E402
 from waggledance.core.work_queue import list_claims, resolve_bridge_root  # noqa: E402
 
 # Adaptive wakeup bands (seconds). Sub-300 only when there is actionable
@@ -528,41 +528,7 @@ def emit_peer_activation_event(
         event_spec=event_spec,
         now_utc=now_utc,
     )
-    shared_dir = bridge_root / "shared"
-    outbox_dir = bridge_root / "outbox" / agent
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    outbox_dir.mkdir(parents=True, exist_ok=True)
-
-    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
-    events_path = shared_dir / "events.jsonl"
-    outbox_path = outbox_dir / f"{now_utc.astimezone(timezone.utc):%Y-%m-%d}.jsonl"
-    last_path = shared_dir / f"last_{agent}.json"
-    _append_line_with_retry(events_path, line)
-    _append_line_with_retry(outbox_path, line)
-    try:
-        _write_json_atomic(last_path, json.dumps(event, indent=2))
-    except OSError:
-        # last_<agent>.json is a convenience cache; events.jsonl is canonical.
-        pass
-    return events_path
-
-
-def _append_line_with_retry(path: Path, line: str) -> None:
-    for attempt in range(40):
-        try:
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line)
-            return
-        except OSError:
-            if attempt == 39:
-                raise
-            time.sleep(0.025 + (attempt * 0.01))
-
-
-def _write_json_atomic(path: Path, payload: str) -> None:
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
+    return write_bridge_event(bridge_root=bridge_root, event=event).events_path
 
 
 def my_unmerged_rco_passes(

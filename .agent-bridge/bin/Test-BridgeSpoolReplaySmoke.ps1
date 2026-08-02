@@ -74,7 +74,87 @@ try {
         (-not (Test-Path -LiteralPath $dupSpool))
     ) -Detail "before=$before after=$after out=$out"
 
-    # 6. Spool line missing core fields (no agent) is skipped and kept
+    # 6. A semantic duplicate repeated inside one spool file appends once.
+    $inlineDupFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-inline-20260702T113000000-10.jsonl'
+    $inlineDupOne = '{"ts_utc":"2026-07-02T11:30:00Z","agent":"fable-5","type":"message","task_id":"spool-inline-duplicate","status":"info","message":"once"}'
+    $inlineDupTwo = '{"ts_utc":"2026-07-02T11:30:01Z","agent":"fable-5","type":"message","task_id":"spool-inline-duplicate","status":"info","message":"once"}'
+    Set-Content `
+        -LiteralPath $inlineDupFile `
+        -Value ($inlineDupOne + [Environment]::NewLine + $inlineDupTwo) `
+        -Encoding UTF8 `
+        -NoNewline
+    $out = & $replayScript -BridgeRoot $tempRoot
+    $inlineRows = @(
+        Get-Content -LiteralPath $eventsPath -Encoding UTF8 |
+            Where-Object { $_ -match '"task_id":"spool-inline-duplicate"' }
+    )
+    Add-Check -Name 'same-file semantic duplicate appends once' -Passed (
+        ($out -match 'replayed=1 deduped=1 failed=0') -and
+        ($inlineRows.Count -eq 1) -and
+        (-not (Test-Path -LiteralPath $inlineDupFile))
+    ) -Detail "rows=$($inlineRows.Count) out=$out"
+
+    # 7. An existing archive leaf is never overwritten. The canonical append
+    #    remains committed, while the exact held source stays for a later
+    #    dedupe/archive retry.
+    $collisionFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-collision-20260702T114000000-11.jsonl'
+    $collisionEvent = '{"ts_utc":"2026-07-02T11:40:00Z","agent":"fable-5","type":"message","task_id":"spool-archive-collision","status":"info","message":"retain-evidence"}'
+    Set-Content -LiteralPath $collisionFile -Value $collisionEvent -Encoding UTF8 -NoNewline
+    $archiveRoot = Join-Path (Join-Path $tempRoot 'spool') 'replayed'
+    [void](New-Item -ItemType Directory -Path $archiveRoot -Force)
+    $collisionDestination = Join-Path $archiveRoot (Split-Path -Leaf $collisionFile)
+    Set-Content -LiteralPath $collisionDestination -Value 'archive-sentinel' -Encoding UTF8 -NoNewline
+    Set-Content -LiteralPath $collisionDestination -Stream 'proof' -Value 'preserve-stream' -NoNewline
+    $out = & $replayScript -BridgeRoot $tempRoot 3>$null
+    $collisionRows = @(
+        Get-Content -LiteralPath $eventsPath -Encoding UTF8 |
+            Where-Object { $_ -match '"task_id":"spool-archive-collision"' }
+    )
+    $collisionSentinel = Get-Content -LiteralPath $collisionDestination -Raw -Encoding UTF8
+    $collisionStream = Get-Content -LiteralPath $collisionDestination -Stream 'proof' -Raw
+    Add-Check -Name 'archive collision preserves both generations' -Passed (
+        ($out -match 'failed=1') -and
+        (Test-Path -LiteralPath $collisionFile) -and
+        ($collisionSentinel -eq 'archive-sentinel') -and
+        ($collisionStream -eq 'preserve-stream') -and
+        ($collisionRows.Count -eq 1)
+    ) -Detail "rows=$($collisionRows.Count) out=$out"
+
+    $out = & $replayScript -BridgeRoot $tempRoot 3>$null
+    $collisionRows = @(
+        Get-Content -LiteralPath $eventsPath -Encoding UTF8 |
+            Where-Object { $_ -match '"task_id":"spool-archive-collision"' }
+    )
+    Add-Check -Name 'archive collision retry does not duplicate canonical row' -Passed (
+        ($out -match 'deduped=1') -and
+        ($out -match 'failed=1') -and
+        ($collisionRows.Count -eq 1) -and
+        (Test-Path -LiteralPath $collisionFile)
+    ) -Detail "rows=$($collisionRows.Count) out=$out"
+    Remove-Item -LiteralPath $collisionFile -Force
+    Remove-Item -LiteralPath $collisionDestination -Force
+
+    # 8. A successful archive renames the same held NTFS generation, including
+    #    its alternate data streams.
+    $adsFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-ads-20260702T115000000-12.jsonl'
+    $adsEvent = '{"ts_utc":"2026-07-02T11:50:00Z","agent":"fable-5","type":"message","task_id":"spool-held-ads","status":"info","message":"same-generation"}'
+    Set-Content -LiteralPath $adsFile -Value $adsEvent -Encoding UTF8 -NoNewline
+    Set-Content -LiteralPath $adsFile -Stream 'proof' -Value 'held-stream' -NoNewline
+    $out = & $replayScript -BridgeRoot $tempRoot
+    $adsDestination = Join-Path $archiveRoot (Split-Path -Leaf $adsFile)
+    $adsStream = if (Test-Path -LiteralPath $adsDestination) {
+        Get-Content -LiteralPath $adsDestination -Stream 'proof' -Raw
+    } else {
+        ''
+    }
+    Add-Check -Name 'held-handle archive preserves alternate stream' -Passed (
+        ($out -match 'replayed=1') -and
+        (-not (Test-Path -LiteralPath $adsFile)) -and
+        (Test-Path -LiteralPath $adsDestination) -and
+        ($adsStream -eq 'held-stream')
+    ) -Detail "stream=$adsStream out=$out"
+
+    # 9. Spool line missing core fields (no agent) is skipped and kept
     $noAgent = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-x-20260702T120000000-5.jsonl'
     Set-Content -LiteralPath $noAgent -Value '{"ts_utc":"2026-07-02T12:00:00Z","type":"message","task_id":"t","status":"info"}' -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot 3>$null
@@ -83,7 +163,7 @@ try {
     )
     Remove-Item -LiteralPath $noAgent -Force
 
-    # 7. Concurrent replay guard exits without consuming spool files.
+    # 10. Concurrent replay guard exits without consuming spool files.
     $guardFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-guard-20260702T130000000-6.jsonl'
     Set-Content -LiteralPath $guardFile -Value $event -Encoding UTF8 -NoNewline
     $guardMutex = $null
@@ -107,7 +187,7 @@ try {
     }
     Remove-Item -LiteralPath $guardFile -Force -ErrorAction SilentlyContinue
 
-    # 8. DryRun neither appends nor archives
+    # 11. DryRun neither appends nor archives
     Set-Content -LiteralPath $spoolFile -Value $event -Encoding UTF8 -NoNewline
     $out = & $replayScript -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (

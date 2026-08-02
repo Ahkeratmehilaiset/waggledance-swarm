@@ -268,30 +268,60 @@ function Invoke-CodexTick {
     $exitCode = $null
     $errorText = ''
     $process = $null
-    $specPath = "$LogPath.invoke.json"
     $wrapperStdout = ''
     $wrapperStderr = ''
 
     try {
-        $encoding = New-Object System.Text.UTF8Encoding($false)
         $spec = [ordered]@{
             command = $Command
             arguments = @($Arguments)
             log_path = $LogPath
         }
-        [System.IO.File]::WriteAllText($specPath, ($spec | ConvertTo-Json -Depth 8), $encoding)
+        $specJson = $spec | ConvertTo-Json -Depth 8 -Compress
+        $specBase64 = [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes($specJson)
+        )
 
         $wrapperCommand = @'
 $ErrorActionPreference = 'Stop'
-$specPath = [Environment]::GetEnvironmentVariable('BRIDGE_CONSUMER_SPEC', 'Process')
-if (-not $specPath) { throw 'missing BRIDGE_CONSUMER_SPEC' }
-$spec = Get-Content -Raw -LiteralPath $specPath -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+$specBase64 = [Environment]::GetEnvironmentVariable(
+    'BRIDGE_CONSUMER_SPEC_B64',
+    'Process'
+)
+if ([string]::IsNullOrWhiteSpace($specBase64)) {
+    throw 'missing BRIDGE_CONSUMER_SPEC_B64'
+}
+try {
+    $specBytes = [Convert]::FromBase64String($specBase64)
+    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    $specJson = $strictUtf8.GetString($specBytes)
+    $spec = $specJson | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    throw "invalid BRIDGE_CONSUMER_SPEC_B64: $($_.Exception.Message)"
+} finally {
+    [Environment]::SetEnvironmentVariable(
+        'BRIDGE_CONSUMER_SPEC_B64',
+        $null,
+        'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'BRIDGE_CONSUMER_SPEC',
+        $null,
+        'Process'
+    )
+}
 $command = [string]$spec.command
+$logPath = [string]$spec.log_path
+if ([string]::IsNullOrWhiteSpace($command)) {
+    throw 'consumer invocation command must not be blank'
+}
+if ([string]::IsNullOrWhiteSpace($logPath)) {
+    throw 'consumer invocation log_path must not be blank'
+}
 $arguments = @()
 if ($null -ne $spec.arguments) {
     $arguments = @($spec.arguments) | ForEach-Object { [string]$_ }
 }
-$logPath = [string]$spec.log_path
 $prompt = [Console]::In.ReadToEnd()
 $prompt | & $command @arguments *> $logPath
 if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
@@ -309,9 +339,30 @@ exit 1
         $startInfo.RedirectStandardError = $true
         $startInfo.CreateNoWindow = $true
         $startInfo.WorkingDirectory = (Get-Location).Path
-        $startInfo.EnvironmentVariables['BRIDGE_CONSUMER_SPEC'] = $specPath
+        [void]$startInfo.EnvironmentVariables.Remove('BRIDGE_CONSUMER_SPEC')
+        [void]$startInfo.EnvironmentVariables.Remove('BRIDGE_CONSUMER_SPEC_B64')
+        $startInfo.EnvironmentVariables['BRIDGE_CONSUMER_SPEC_B64'] = $specBase64
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            $environmentBlockCharacters = 1
+            foreach ($environmentKey in $startInfo.EnvironmentVariables.Keys) {
+                $environmentValue = [string]$startInfo.EnvironmentVariables[$environmentKey]
+                $environmentBlockCharacters += (
+                    ([string]$environmentKey).Length +
+                    1 +
+                    $environmentValue.Length +
+                    1
+                )
+            }
+            if ($environmentBlockCharacters -gt 32767) {
+                throw (
+                    'consumer invocation environment block is too large: ' +
+                    "$environmentBlockCharacters characters (limit 32767)"
+                )
+            }
+        }
 
         $process = [System.Diagnostics.Process]::Start($startInfo)
+        [void]$startInfo.EnvironmentVariables.Remove('BRIDGE_CONSUMER_SPEC_B64')
         $process.StandardInput.Write($PromptText)
         $process.StandardInput.Close()
 
@@ -348,7 +399,6 @@ exit 1
         if ($null -ne $process) {
             $process.Dispose()
         }
-        Remove-Item -LiteralPath $specPath -Force -ErrorAction SilentlyContinue
     }
 
     [pscustomobject]@{
@@ -579,8 +629,16 @@ while ($true) {
     }
 
     $shouldRun = (-not $WakeOnly) -or $wakeConsumed
-    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-    $logPath = Join-Path $logFull ("{0}-{1:000}-{2}.log" -f $Agent, $iteration, $stamp)
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+    $logNonce = [guid]::NewGuid().ToString('N')
+    $logPath = Join-Path $logFull (
+        "{0}-{1:000}-{2}-p{3}-{4}.log" -f
+            $Agent,
+            $iteration,
+            $stamp,
+            $PID,
+            $logNonce
+    )
     $exitCode = $null
     $errorText = ''
     $timedOut = $false

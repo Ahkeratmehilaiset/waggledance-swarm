@@ -388,7 +388,7 @@ function Resolve-BridgeMetadataString {
 function Resolve-BridgeCapabilities {
     param([string[]] $Explicit)
     $source = @($Explicit)
-    if ($source.Count -eq 0) {
+    if (@($source).Count -eq 0) {
         $value = [Environment]::GetEnvironmentVariable('AGENT_BRIDGE_CAPABILITIES', 'Process')
         if ($value) { $source = @([string]$value) }
     }
@@ -1077,8 +1077,9 @@ function Add-LineWithRetry {
     # processes with a named mutex so the boot-burst / multi-agent case stops
     # exhausting the retry loop. AbandonedMutexException means a holder died
     # while owning the mutex - ownership transfers to us, so treat as
-    # acquired. A WaitOne timeout falls back to the unserialized retry loop
-    # below (never deadlock the bridge on a hung holder).
+    # acquired. Creation failures and timeouts fail closed: every PowerShell
+    # and Python writer must honor this one cross-runtime serialization
+    # boundary, so bypassing it would reintroduce dedup/append races.
     $mutex = $null
     $acquired = $false
     try {
@@ -1086,10 +1087,28 @@ function Add-LineWithRetry {
             throw $appendFailure
         }
         try {
-            $mutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeAppendV1')
-            try { $acquired = $mutex.WaitOne(10000) }
-            catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-        } catch { $mutex = $null }
+            $mutex = New-Object System.Threading.Mutex(
+                $false,
+                'Global\WaggleDanceBridgeAppendV1'
+            )
+        } catch {
+            throw [System.IO.IOException]::new(
+                (
+                    'could not create canonical bridge append mutex: {0}'
+                ) -f $_.Exception.Message,
+                $_.Exception
+            )
+        }
+        try {
+            $acquired = $mutex.WaitOne(10000)
+        } catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw [System.TimeoutException]::new(
+                'timed out acquiring Global\WaggleDanceBridgeAppendV1'
+            )
+        }
 
         for ($i = 0; $i -lt 40; $i++) {
             try {

@@ -296,6 +296,46 @@ def test_writer_rejects_hardlinked_canonical_event_file(
 
 
 @pytest.mark.parametrize("powershell", POWERSHELLS)
+def test_writer_rejects_unterminated_canonical_tail_without_mutation_or_projection(
+    tmp_path: Path,
+    powershell: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    shared = runtime_root / "shared"
+    shared.mkdir(parents=True)
+    events_path = shared / "events.jsonl"
+    original = b'{"sentinel":"must-not-change"}'
+    events_path.write_bytes(original)
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "status",
+        "-Status",
+        "audit",
+        "-Message",
+        "unterminated canonical tail must fail closed",
+        powershell=powershell,
+    )
+
+    combined = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert "could not append bridge event after retries" in combined
+    assert events_path.read_bytes() == original
+    assert not list((runtime_root / "outbox").rglob("*.jsonl"))
+    assert not (shared / "last_codex.json").exists()
+    spool_files = list((runtime_root / "spool").glob("*.jsonl"))
+    assert len(spool_files) == 1
+    assert "unterminated canonical tail must fail closed" in spool_files[0].read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("powershell", POWERSHELLS)
 def test_writer_rejects_junction_failed_append_spool(
     tmp_path: Path,
     powershell: str,

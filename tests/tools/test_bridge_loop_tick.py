@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import waggledance.core.bridge_event_writer as event_writer
 from tools.bridge_loop_tick import (
     MERGE_DRIVER_COMMAND,
     WAKEUP_ACT_NOW,
@@ -31,6 +32,7 @@ from tools.bridge_loop_tick import (
     peer_activation_recommendation,
     peer_has_active_pr_producing_claim,
 )
+from waggledance.core.bridge_event_writer import BridgeEventProjectionWarning
 from waggledance.core.work_queue import claim_task
 
 NOW = datetime(2026, 5, 22, 14, 0, 0, tzinfo=timezone.utc)
@@ -990,6 +992,36 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
         json.loads((tmp_path / "shared" / "last_codex.json").read_text())["task_id"]
         == event["task_id"]
     )
+
+
+def test_emit_peer_activation_last_projection_failure_is_nonfatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [_heartbeat("claude", "2026-05-22T13:55:00Z")]
+    rec = peer_activation_recommendation(
+        agent="codex",
+        events=events,
+        claims=[],
+        open_packs=[],
+        now_utc=NOW,
+    )
+
+    def fail_last(path: Path, event: object) -> None:
+        raise PermissionError(f"simulated last projection failure at {path}")
+
+    monkeypatch.setattr(event_writer, "_write_last_agent_projection", fail_last)
+    with pytest.warns(BridgeEventProjectionWarning, match="last-agent projection"):
+        events_path = emit_peer_activation_event(
+            bridge_root=tmp_path,
+            agent="codex",
+            event_spec=rec["bridge_event"],
+            now_utc=NOW,
+        )
+
+    assert len(events_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert (tmp_path / "outbox" / "codex" / "2026-05-22.jsonl").exists()
+    assert not (tmp_path / "shared" / "last_codex.json").exists()
 
 
 def test_peer_activation_event_is_handoff_only_without_authority():

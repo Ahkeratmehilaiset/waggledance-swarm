@@ -15,6 +15,8 @@ from tools.idle_check import _is_substantive_agent_message
 from tools.idle_protocol_activate import ActivationError, activate_idle_protocol
 from tools.verify_magma_receipt import verify_manifest
 from waggledance.core.bridge_event_schema import validate_event
+import waggledance.core.bridge_event_writer as event_writer
+from waggledance.core.bridge_event_writer import BridgeEventProjectionWarning
 from waggledance.core.magma.canonical import sha256_digest
 
 
@@ -529,39 +531,33 @@ def test_bridge_event_schema_is_validated_before_append(tmp_path: Path) -> None:
     assert not (bridge_root / "shared" / "events.jsonl").exists()
 
 
-def test_outbox_append_failure_does_not_write_shared_event(
+def test_outbox_projection_failure_keeps_canonical_event_and_runs_last_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_append = activator._append_line_with_retry
+    def fail_outbox(path: Path, payload: bytes) -> None:
+        raise PermissionError(f"simulated outbox failure at {path}")
 
-    def fail_outbox(path: Path, line: str) -> None:
-        if "outbox" in path.parts:
-            raise PermissionError("simulated outbox failure")
-        original_append(path, line)
+    monkeypatch.setattr(event_writer, "_append_projection", fail_outbox)
 
-    monkeypatch.setattr(activator, "_append_line_with_retry", fail_outbox)
-
-    with pytest.raises(PermissionError):
-        _activate(tmp_path, _proposal(), emit=True)
+    with pytest.warns(BridgeEventProjectionWarning, match="outbox projection"):
+        report = _activate(tmp_path, _proposal(), emit=True)
 
     bridge_root = tmp_path / "bridge"
-    assert not (bridge_root / "shared" / "events.jsonl").exists()
-    assert not (bridge_root / "shared" / "last_codex.json").exists()
+    assert report["emitted"] is True
+    assert (bridge_root / "shared" / "events.jsonl").exists()
+    assert (bridge_root / "shared" / "last_codex.json").exists()
+    assert not (bridge_root / "outbox" / "codex" / "2026-05-17.jsonl").exists()
 
 
-def test_shared_append_failure_rolls_back_outbox_and_last_file(
+def test_canonical_append_failure_never_starts_projections(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_append = activator._append_line_with_retry
+    def fail_shared(path: Path, payload: bytes) -> tuple[str, ...]:
+        raise PermissionError(f"simulated shared failure at {path}")
 
-    def fail_shared(path: Path, line: str) -> None:
-        if path.name == "events.jsonl":
-            raise PermissionError("simulated shared failure")
-        original_append(path, line)
-
-    monkeypatch.setattr(activator, "_append_line_with_retry", fail_shared)
+    monkeypatch.setattr(event_writer, "_append_canonical", fail_shared)
 
     with pytest.raises(PermissionError):
         _activate(tmp_path, _proposal(), emit=True)

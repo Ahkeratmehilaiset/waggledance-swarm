@@ -2,27 +2,32 @@
 """Tests for tools/close_bridge_rco_request.py."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "close_bridge_rco_request.py"
 
 sys.path.insert(0, str(ROOT))
 
+import waggledance.core.bridge_event_writer as event_writer  # noqa: E402
 from tools.close_bridge_rco_request import (  # noqa: E402
     CloseRcoError,
     close_bridge_rco_request,
     _read_events,
 )
 from tools.idle_check import evaluate_idle_state  # noqa: E402
+from waggledance.core.bridge_event_writer import (  # noqa: E402
+    BridgeEventProjectionWarning,
+)
 
 
 def _seed_bridge(tmp_path: Path, events: list[dict]) -> Path:
@@ -269,6 +274,117 @@ def test_refuses_when_rco_already_closed(tmp_path: Path) -> None:
             emit=True,
         )
     assert excinfo.value.decision == "no_open_rco"
+
+
+def test_concurrent_close_rechecks_under_append_mutex_and_emits_exactly_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-race", "2026-05-20T18:00:00Z")],
+    )
+    import tools.close_bridge_rco_request as closer
+
+    original_read = closer._read_events
+    first_read_barrier = threading.Barrier(2)
+    thread_state = threading.local()
+
+    def synchronize_first_read(events_path: Path) -> list[dict[str, object]]:
+        events = original_read(events_path)
+        calls = int(getattr(thread_state, "calls", 0)) + 1
+        thread_state.calls = calls
+        if calls == 1:
+            first_read_barrier.wait(timeout=5)
+        return events
+
+    monkeypatch.setattr(closer, "_read_events", synchronize_first_read)
+
+    def close_once() -> dict[str, object]:
+        return close_bridge_rco_request(
+            task_id="task-race",
+            pr_number=404,
+            from_agent="codex",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=True,
+        )
+
+    successes: list[dict[str, object]] = []
+    failures: list[CloseRcoError] = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(close_once) for _ in range(2)]
+        for future in futures:
+            try:
+                successes.append(future.result(timeout=10))
+            except CloseRcoError as exc:
+                failures.append(exc)
+
+    assert [result["decision"] for result in successes] == ["closed"]
+    assert [error.decision for error in failures] == ["no_open_rco"]
+    close_events = [
+        event
+        for event in _read_events(bridge_root / "shared" / "events.jsonl")
+        if event.get("task_id") == "task-race"
+        and event.get("status") == "rco_closed_postmerge"
+    ]
+    assert len(close_events) == 1
+
+
+def test_close_event_is_schema_validated_before_mutation(tmp_path: Path) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-schema", "2026-05-20T18:00:00Z")],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    before = events_path.read_bytes()
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="task-schema",
+            pr_number=405,
+            from_agent="Mallory",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=True,
+        )
+
+    assert excinfo.value.decision == "invalid_close_event"
+    assert events_path.read_bytes() == before
+    assert not (bridge_root / "outbox").exists()
+
+
+def test_close_reports_projection_warning_without_failing_committed_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-projection", "2026-05-20T18:00:00Z")],
+    )
+
+    def fail_outbox(path: Path, payload: bytes) -> None:
+        raise PermissionError(f"simulated outbox failure at {path}")
+
+    monkeypatch.setattr(event_writer, "_append_projection", fail_outbox)
+    with pytest.warns(BridgeEventProjectionWarning, match="outbox projection"):
+        result = close_bridge_rco_request(
+            task_id="task-projection",
+            pr_number=406,
+            from_agent="codex",
+            bridge_root=bridge_root,
+            now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+            emit=True,
+        )
+
+    assert result["decision"] == "closed"
+    assert len(result["projection_warnings"]) == 1
+    close_events = [
+        event
+        for event in _read_events(bridge_root / "shared" / "events.jsonl")
+        if event.get("status") == "rco_closed_postmerge"
+    ]
+    assert len(close_events) == 1
 
 
 def test_empty_task_id_rejected(tmp_path: Path) -> None:

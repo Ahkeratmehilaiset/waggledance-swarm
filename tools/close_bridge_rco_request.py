@@ -42,13 +42,14 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
+from waggledance.core.bridge_event_writer import write_bridge_event  # noqa: E402
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -207,6 +208,13 @@ def close_bridge_rco_request(
         note=note,
         now_utc=now_utc,
     )
+    try:
+        validate_event(event)
+    except Exception as exc:
+        raise CloseRcoError(
+            f"close event failed schema validation: {exc}",
+            "invalid_close_event",
+        ) from exc
 
     report: dict[str, Any] = {
         "ok": True,
@@ -219,10 +227,28 @@ def close_bridge_rco_request(
         "open_rco_opened_at_utc": open_state["opened_at_utc"],
     }
     if emit:
-        _append_event_with_retry(events_path, event)
+        def require_still_open(locked_events_path: Path) -> None:
+            locked_state = _open_rco_for(_read_events(locked_events_path), task_id)
+            if not locked_state["has_open_rco"]:
+                raise CloseRcoError(
+                    (
+                        "no open rco_requested handoff found for task_id "
+                        f"'{task_id}' in {locked_events_path}"
+                    ),
+                    "no_open_rco",
+                    exit_code=3,
+                )
+
+        write_result = write_bridge_event(
+            bridge_root=bridge_root,
+            event=event,
+            precommit=require_still_open,
+        )
         report["emitted"] = True
         report["decision"] = "closed"
-        report["events_path"] = str(events_path)
+        report["events_path"] = str(write_result.events_path)
+        if write_result.warnings:
+            report["projection_warnings"] = list(write_result.warnings)
     return report
 
 
@@ -334,20 +360,6 @@ def _read_events(events_path: Path) -> list[dict[str, Any]]:
             )
         events.append(event)
     return events
-
-
-def _append_event_with_retry(events_path: Path, event: Mapping[str, Any]) -> None:
-    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
-    events_path.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(40):
-        try:
-            with events_path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line)
-            return
-        except OSError:
-            if attempt == 39:
-                raise
-            time.sleep(0.025 + (attempt * 0.01))
 
 
 def _parse_utc(value: str) -> datetime:

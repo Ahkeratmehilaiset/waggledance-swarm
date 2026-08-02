@@ -9,14 +9,12 @@ one bridge event only when ``--emit`` is passed.
 from __future__ import annotations
 
 import argparse
-from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
 import sys
-import time
 from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +32,7 @@ from waggledance.core.idle_protocol import (
     validate_idle_proposal,
 )
 from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN, validate_event
+from waggledance.core.bridge_event_writer import write_bridge_event
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
@@ -825,74 +824,7 @@ def _reason_codes_for_idle_event(
 
 
 def _append_bridge_event(bridge_root: Path, event: Mapping[str, Any]) -> Path:
-    shared_dir = bridge_root / "shared"
-    outbox_dir = bridge_root / "outbox" / str(event["agent"])
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    outbox_dir.mkdir(parents=True, exist_ok=True)
-
-    line = json.dumps(event, separators=(",", ":"), sort_keys=False) + "\n"
-    events_path = shared_dir / "events.jsonl"
-    outbox_path = outbox_dir / (_date_name(str(event["ts_utc"])))
-    last_path = shared_dir / f"last_{event['agent']}.json"
-    old_last = last_path.read_text(encoding="utf-8") if last_path.exists() else None
-    outbox_written = False
-    last_written = False
-    try:
-        _append_line_with_retry(outbox_path, line)
-        outbox_written = True
-        _write_json_atomic(last_path, json.dumps(event, indent=2))
-        last_written = True
-        _append_line_with_retry(events_path, line)
-    except Exception:
-        if last_written:
-            _restore_last_file(last_path, old_last)
-        if outbox_written:
-            _remove_trailing_line_if_exact(outbox_path, line)
-        raise
-    return events_path
-
-
-def _append_line_with_retry(path: Path, line: str) -> None:
-    for attempt in range(40):
-        try:
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line)
-            return
-        except OSError:
-            if attempt == 39:
-                raise
-            time.sleep(0.025 + (attempt * 0.01))
-
-
-def _write_json_atomic(path: Path, payload: str) -> None:
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.time_ns()}")
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
-
-
-def _restore_last_file(path: Path, previous: str | None) -> None:
-    with suppress(OSError):
-        if previous is None:
-            if path.exists():
-                path.unlink()
-            return
-        _write_json_atomic(path, previous)
-
-
-def _remove_trailing_line_if_exact(path: Path, line: str) -> None:
-    with suppress(OSError):
-        text = path.read_text(encoding="utf-8")
-        if not text.endswith(line):
-            return
-        remaining = text[: -len(line)]
-        if remaining:
-            path.write_text(remaining, encoding="utf-8")
-        else:
-            path.unlink()
-
-
-def _date_name(ts_utc: str) -> str:
-    return ts_utc[:10] + ".jsonl"
+    return write_bridge_event(bridge_root=bridge_root, event=event).events_path
 
 
 def _parse_utc(value: str) -> datetime:

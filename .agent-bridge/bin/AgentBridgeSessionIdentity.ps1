@@ -1555,6 +1555,12 @@ function Add-AgentBridgeBytesToRegularUnlinkedFile {
             -Context "$Context parent"
         Assert-AgentBridgeParentDirectoryPin -Pin $parentPin
         $originalLength = [long]$stream.Length
+        if ($originalLength -gt 0) {
+            [void]$stream.Seek(-1, [System.IO.SeekOrigin]::End)
+            if ($stream.ReadByte() -ne 10) {
+                throw "$Context does not end with LF"
+            }
+        }
         [void]$stream.Seek(0, [System.IO.SeekOrigin]::End)
         $mutationStarted = $true
         $stream.Write($Bytes, 0, $Bytes.Length)
@@ -1839,6 +1845,7 @@ public static class AgentBridgeExactFileDeleteV3
 
     private const uint GENERIC_READ = 0x80000000;
     private const uint DELETE = 0x00010000;
+    private const uint FILE_TRAVERSE = 0x00000020;
     private const uint FILE_READ_ATTRIBUTES = 0x00000080;
     private const uint FILE_SHARE_READ = 0x00000001;
     private const uint FILE_SHARE_WRITE = 0x00000002;
@@ -1865,7 +1872,7 @@ public static class AgentBridgeExactFileDeleteV3
     {
         return CreateFile(
             path,
-            FILE_READ_ATTRIBUTES,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             IntPtr.Zero,
             OPEN_EXISTING,
@@ -2440,6 +2447,491 @@ public static class AgentBridgeHeldFileV1
     }
 }
 '@
+}
+
+
+function Initialize-AgentBridgeHeldReplayFileType {
+    if ($null -ne ('AgentBridgeHeldReplayFileV2' -as [type])) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class AgentBridgeHeldReplayFileV2
+{
+    public sealed class OpenResult
+    {
+        public bool Succeeded { get; set; }
+        public bool NotFound { get; set; }
+        public string Error { get; set; }
+        public SafeFileHandle Handle { get; set; }
+    }
+
+    public sealed class RenameResult
+    {
+        public bool Succeeded { get; set; }
+        public bool Applied { get; set; }
+        public bool Collision { get; set; }
+        public string Error { get; set; }
+        public string FinalPath { get; set; }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_STATUS_BLOCK
+    {
+        public IntPtr Status;
+        public UIntPtr Information;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtSetInformationFile(
+        SafeFileHandle file,
+        out IO_STATUS_BLOCK ioStatusBlock,
+        IntPtr fileInformation,
+        uint length,
+        int fileInformationClass);
+
+    [DllImport("ntdll.dll")]
+    private static extern uint RtlNtStatusToDosError(int status);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle file,
+        StringBuilder filePath,
+        uint filePathLength,
+        uint flags);
+
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint DELETE = 0x00010000;
+    private const uint FILE_TRAVERSE = 0x00000020;
+    private const uint FILE_READ_ATTRIBUTES = 0x00000080;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    private const int FILE_RENAME_INFORMATION_CLASS = 10;
+
+    private static string Win32Error(string operation, int code)
+    {
+        return operation + " failed (win32=" + code + "): " +
+            new Win32Exception(code).Message;
+    }
+
+    private static string FinalPath(SafeFileHandle handle)
+    {
+        StringBuilder buffer = new StringBuilder(32768);
+        uint length = GetFinalPathNameByHandle(
+            handle,
+            buffer,
+            (uint)buffer.Capacity,
+            0);
+        if (length == 0)
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "held final path read failed");
+        if (length >= buffer.Capacity)
+            throw new IOException("held final path exceeded safe buffer");
+        string path = buffer.ToString();
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            path = @"\\" + path.Substring(8);
+        else if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+            path = path.Substring(4);
+        return Path.GetFullPath(path).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+    }
+
+    public static OpenResult OpenExistingRenameCapable(string path)
+    {
+        SafeFileHandle handle = CreateFile(
+            path,
+            GENERIC_READ | DELETE,
+            0,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            IntPtr.Zero);
+        if (handle == null || handle.IsInvalid)
+        {
+            int code = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            return new OpenResult {
+                Succeeded = false,
+                NotFound = code == 2 || code == 3,
+                Error = Win32Error("held replay open-existing", code),
+                Handle = null
+            };
+        }
+        return new OpenResult {
+            Succeeded = true,
+            NotFound = false,
+            Error = String.Empty,
+            Handle = handle
+        };
+    }
+
+    public static RenameResult RenameIntoPinnedDirectory(
+        SafeFileHandle fileHandle,
+        SafeFileHandle pinnedDestinationHandle,
+        string destinationLeaf,
+        string expectedDestinationPath)
+    {
+        if (fileHandle == null || fileHandle.IsInvalid || fileHandle.IsClosed)
+            return new RenameResult {
+                Succeeded = false,
+                Error = "held replay file handle is unavailable"
+            };
+        if (pinnedDestinationHandle == null ||
+            pinnedDestinationHandle.IsInvalid ||
+            pinnedDestinationHandle.IsClosed)
+            return new RenameResult {
+                Succeeded = false,
+                Error = "pinned replay destination handle is unavailable"
+            };
+        if (String.IsNullOrWhiteSpace(destinationLeaf) ||
+            Path.IsPathRooted(destinationLeaf) ||
+            destinationLeaf.IndexOf(Path.DirectorySeparatorChar) >= 0 ||
+            destinationLeaf.IndexOf(Path.AltDirectorySeparatorChar) >= 0 ||
+            destinationLeaf.IndexOf(':') >= 0 ||
+            !String.Equals(
+                Path.GetFileName(destinationLeaf),
+                destinationLeaf,
+                StringComparison.Ordinal) ||
+            destinationLeaf == "." ||
+            destinationLeaf == "..")
+            return new RenameResult {
+                Succeeded = false,
+                Error = "replay destination must be one leaf name",
+                FinalPath = String.Empty
+            };
+        if (String.IsNullOrWhiteSpace(expectedDestinationPath) ||
+            !Path.IsPathRooted(expectedDestinationPath))
+            return new RenameResult {
+                Succeeded = false,
+                Error = "replay destination path must be absolute",
+                FinalPath = String.Empty
+            };
+
+        string expectedPath = Path.GetFullPath(expectedDestinationPath).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        string expectedParent = Path.GetDirectoryName(expectedPath);
+        string pinnedParent;
+        try
+        {
+            pinnedParent = FinalPath(pinnedDestinationHandle);
+        }
+        catch (Exception exception)
+        {
+            return new RenameResult {
+                Succeeded = false,
+                Error = exception.GetType().Name + ": " + exception.Message,
+                FinalPath = String.Empty
+            };
+        }
+        if (!String.Equals(
+                pinnedParent,
+                expectedParent,
+                StringComparison.OrdinalIgnoreCase))
+            return new RenameResult {
+                Succeeded = false,
+                Error = "pinned replay destination path mismatched; expected=" +
+                    expectedParent + "; actual=" + pinnedParent,
+                FinalPath = String.Empty
+            };
+        if (!String.Equals(
+                Path.GetFileName(expectedPath),
+                destinationLeaf,
+                StringComparison.Ordinal))
+            return new RenameResult {
+                Succeeded = false,
+                Error = "replay destination leaf does not match expected path",
+                FinalPath = String.Empty
+            };
+
+        byte[] nameBytes = Encoding.Unicode.GetBytes(destinationLeaf);
+        int rootOffset = IntPtr.Size;
+        int lengthOffset = rootOffset + IntPtr.Size;
+        int nameOffset = lengthOffset + sizeof(uint);
+        int bufferSize = checked(nameOffset + nameBytes.Length + sizeof(char));
+        IntPtr buffer = Marshal.AllocHGlobal(bufferSize);
+        bool applied = false;
+        bool destinationHandleAddRef = false;
+        try
+        {
+            pinnedDestinationHandle.DangerousAddRef(
+                ref destinationHandleAddRef);
+            for (int index = 0; index < bufferSize; index++)
+                Marshal.WriteByte(buffer, index, 0);
+            Marshal.WriteByte(buffer, 0, 0);
+            Marshal.WriteIntPtr(
+                buffer,
+                rootOffset,
+                pinnedDestinationHandle.DangerousGetHandle());
+            Marshal.WriteInt32(buffer, lengthOffset, nameBytes.Length);
+            Marshal.Copy(
+                nameBytes,
+                0,
+                IntPtr.Add(buffer, nameOffset),
+                nameBytes.Length);
+            IO_STATUS_BLOCK ioStatusBlock;
+            int status = NtSetInformationFile(
+                fileHandle,
+                out ioStatusBlock,
+                buffer,
+                (uint)bufferSize,
+                FILE_RENAME_INFORMATION_CLASS);
+            if (status < 0)
+            {
+                int code = unchecked((int)RtlNtStatusToDosError(status));
+                return new RenameResult {
+                    Succeeded = false,
+                    Applied = false,
+                    Collision = code == 80 || code == 183,
+                    Error = Win32Error("held replay archive rename", code),
+                    FinalPath = String.Empty
+                };
+            }
+            applied = true;
+            return new RenameResult {
+                Succeeded = true,
+                Applied = true,
+                Collision = false,
+                Error = String.Empty,
+                FinalPath = expectedPath
+            };
+        }
+        catch (Exception exception)
+        {
+            return new RenameResult {
+                Succeeded = false,
+                Applied = applied,
+                Collision = false,
+                Error = exception.GetType().Name + ": " + exception.Message,
+                FinalPath = String.Empty
+            };
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            if (destinationHandleAddRef)
+                pinnedDestinationHandle.DangerousRelease();
+        }
+    }
+}
+'@
+}
+
+
+function Open-AgentBridgeHeldReplayFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $LiteralPath,
+        [string] $Context = 'bridge spool replay source'
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($LiteralPath)
+    $sourcePin = $null
+    $stream = $null
+    $nativeHandle = $null
+    try {
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $fullPath `
+            -Context $Context
+        $sourcePin = Enter-AgentBridgeParentDirectoryPin `
+            -ChildPath $fullPath `
+            -Context $Context
+        Assert-AgentBridgeParentDirectoryPin -Pin $sourcePin
+        Initialize-AgentBridgeHeldReplayFileType
+        $openResult = (
+            [AgentBridgeHeldReplayFileV2]::OpenExistingRenameCapable(
+                $fullPath
+            )
+        )
+        if (-not [bool]$openResult.Succeeded) {
+            $openError = [System.IO.IOException]::new(
+                [string]$openResult.Error
+            )
+            $openError.Data['AgentBridgeReplaySourceNotFound'] = (
+                [bool]$openResult.NotFound
+            )
+            throw $openError
+        }
+        $nativeHandle = $openResult.Handle
+        $openResult.Handle = $null
+        $stream = [System.IO.FileStream]::new(
+            $nativeHandle,
+            [System.IO.FileAccess]::Read
+        )
+        $nativeHandle = $null
+        Assert-AgentBridgeParentDirectoryPin -Pin $sourcePin
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $sourcePin `
+            -ChildHandle $stream.SafeFileHandle
+        Assert-AgentBridgeExclusiveHandleIdentity `
+            -Stream $stream `
+            -Context $Context
+        Assert-AgentBridgeRegularUnlinkedFile `
+            -LiteralPath $fullPath `
+            -Context $Context
+        Assert-AgentBridgeParentDirectoryPin -Pin $sourcePin
+        return [pscustomobject]@{
+            stream = $stream
+            source_parent_pin = $sourcePin
+            destination_parent_pin = $null
+            source_path = $fullPath
+            archived_path = ''
+        }
+    } catch {
+        if ($null -ne $stream) {
+            try { $stream.Dispose() } catch {}
+        } elseif ($null -ne $nativeHandle) {
+            try { $nativeHandle.Dispose() } catch {}
+        }
+        try {
+            Exit-AgentBridgeParentDirectoryPin -Pin $sourcePin
+        } catch {}
+        throw
+    }
+}
+
+
+function Move-AgentBridgeHeldReplayFileToPinnedDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Lease,
+        [Parameter(Mandatory)] [string] $DestinationPath,
+        [string] $Context = 'bridge spool replay archive'
+    )
+
+    if (
+        $null -eq $Lease.stream -or
+        $null -eq $Lease.source_parent_pin
+    ) {
+        throw "$Context held source lease is unavailable"
+    }
+    if ($null -ne $Lease.destination_parent_pin) {
+        throw "$Context held source was already moved"
+    }
+    $fullDestination = [System.IO.Path]::GetFullPath($DestinationPath)
+    $destinationLeaf = [System.IO.Path]::GetFileName($fullDestination)
+    if ([string]::IsNullOrWhiteSpace($destinationLeaf)) {
+        throw "$Context destination leaf is unavailable"
+    }
+
+    $destinationPin = $null
+    $renameSucceeded = $false
+    try {
+        $destinationPin = Enter-AgentBridgeParentDirectoryPin `
+            -ChildPath $fullDestination `
+            -Context $Context
+        Assert-AgentBridgeParentDirectoryPin -Pin $Lease.source_parent_pin
+        Assert-AgentBridgeParentDirectoryPin -Pin $destinationPin
+        Assert-AgentBridgeChildHandleParentPin `
+            -Pin $Lease.source_parent_pin `
+            -ChildHandle $Lease.stream.SafeFileHandle
+        Assert-AgentBridgeExclusiveHandleIdentity `
+            -Stream $Lease.stream `
+            -Context $Context
+        Initialize-AgentBridgeHeldReplayFileType
+        $renameResult = (
+            [AgentBridgeHeldReplayFileV2]::RenameIntoPinnedDirectory(
+                $Lease.stream.SafeFileHandle,
+                $destinationPin.handle,
+                $destinationLeaf,
+                $fullDestination
+            )
+        )
+        if ([bool]$renameResult.Applied) {
+            $renameSucceeded = $true
+            $Lease.destination_parent_pin = $destinationPin
+            $destinationPin = $null
+            $Lease.archived_path = [string]$renameResult.FinalPath
+        }
+        if (-not [bool]$renameResult.Succeeded) {
+            $renameError = [System.IO.IOException]::new(
+                "$Context rename failed: $($renameResult.Error)"
+            )
+            $renameError.Data['AgentBridgeReplayArchiveCollision'] = (
+                [bool]$renameResult.Collision
+            )
+            $renameError.Data['AgentBridgeReplayArchiveApplied'] = (
+                [bool]$renameResult.Applied
+            )
+            throw $renameError
+        }
+        return $Lease.archived_path
+    } finally {
+        if ($null -ne $destinationPin) {
+            try {
+                Exit-AgentBridgeParentDirectoryPin -Pin $destinationPin
+            } catch {
+                if (-not $renameSucceeded) {
+                    Write-AgentBridgeNonThrowingWarning -Message (
+                        "$Context destination pin finalization reported: " +
+                        $_.Exception.Message
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+function Close-AgentBridgeHeldReplayFile {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] $Lease,
+        [string] $Context = 'bridge spool replay source'
+    )
+
+    if ($null -eq $Lease) { return }
+    $failures = @()
+    if ($null -ne $Lease.stream) {
+        try { $Lease.stream.Dispose() } catch { $failures += $_.Exception }
+        $Lease.stream = $null
+    }
+    if ($null -ne $Lease.destination_parent_pin) {
+        try {
+            Exit-AgentBridgeParentDirectoryPin `
+                -Pin $Lease.destination_parent_pin
+        } catch {
+            $failures += $_.Exception
+        }
+        $Lease.destination_parent_pin = $null
+    }
+    if ($null -ne $Lease.source_parent_pin) {
+        try {
+            Exit-AgentBridgeParentDirectoryPin -Pin $Lease.source_parent_pin
+        } catch {
+            $failures += $_.Exception
+        }
+        $Lease.source_parent_pin = $null
+    }
+    if (@($failures).Count -gt 0) {
+        Write-AgentBridgeNonThrowingWarning -Message (
+            "$Context finalization reported: " +
+            ((@($failures) | ForEach-Object { $_.Message }) -join '; ')
+        )
+    }
 }
 
 

@@ -8,6 +8,7 @@ shadow state before the observed numeric value is used to resolve it.
 
 from __future__ import annotations
 
+import copy
 import hmac
 import json
 import math
@@ -34,8 +35,13 @@ from waggledance.core.learning.understanding_contracts import (
     UnderstandingDisposition,
     UnderstandingDispositionV1,
     build_observation_commitment,
+    derive_source_key,
+    derive_target_key,
 )
 from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
+
+
+STATE_UPDATE_ALPHA_V1 = 0.1
 
 
 class UnderstandingLoopError(RuntimeError):
@@ -83,6 +89,11 @@ class UnderstandingPolicyV1:
     delta_window_seconds: int = 600
     proposal_ttl_seconds: int = 900
     max_source_buckets: int = 1024
+    max_targets: int = 256
+    max_seen_sequences: int = 4096
+    max_pending_tickets: int = 512
+    max_completed_outcomes: int = 4096
+    max_quarantined_sources: int = 256
 
     def __post_init__(self) -> None:
         for name in ("allowed_source", "entity_namespace", "metric", "unit"):
@@ -106,6 +117,11 @@ class UnderstandingPolicyV1:
             "delta_window_seconds",
             "proposal_ttl_seconds",
             "max_source_buckets",
+            "max_targets",
+            "max_seen_sequences",
+            "max_pending_tickets",
+            "max_completed_outcomes",
+            "max_quarantined_sources",
         ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
@@ -116,6 +132,10 @@ class UnderstandingPolicyV1:
             raise UnderstandingContractError("global burst cannot be below rate")
         if self.delta_min_samples < 5:
             raise UnderstandingContractError("delta_min_samples cannot be below five")
+        if self.max_quarantined_sources < self.max_targets:
+            raise UnderstandingContractError(
+                "max_quarantined_sources cannot be below max_targets"
+            )
 
 
 @dataclass(frozen=True)
@@ -171,8 +191,16 @@ class UnderstandingOutcomeV1:
 @dataclass(frozen=True)
 class _IssuedTicketV1:
     ticket: PredictionTicketV1
+    ticket_fingerprint: str
     header: Optional[dict[str, Any]]
     resolution_at_utc: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _CompletedTicketV1:
+    ticket: PredictionTicketV1
+    ticket_fingerprint: str
+    outcome: UnderstandingOutcomeV1
 
 
 @dataclass(frozen=True)
@@ -281,7 +309,9 @@ class InMemoryUnderstandingEventSink:
                 else "sha256:" + "0" * 64
             )
             seq = len(self._events) + 1
-            for event_kind, payload in events:
+            for item in canonical_batch["events"]:
+                event_kind = item["event_kind"]
+                payload = item["payload"]
                 event = self._build_event(
                     event_kind, payload, seq=seq, prev_hash=prev_hash
                 )
@@ -313,6 +343,7 @@ class UnderstandingLoop:
         hmac_key_provider: Optional[Callable[[str], tuple[bytes, str, str]]] = None,
         predictor_artifact_digest: Optional[str] = None,
         predictor_config_digest: Optional[str] = None,
+        recover_from_verified_ledger: bool = False,
     ) -> None:
         if type(cell) is not HexCellAddressV1:
             raise UnderstandingLoopError("cell must be HexCellAddressV1")
@@ -320,10 +351,14 @@ class UnderstandingLoop:
             event_sink, "append_batch"
         ):
             raise UnderstandingLoopError("event sink lacks atomic append API")
-        self.cell = cell
+        if type(recover_from_verified_ledger) is not bool:
+            raise UnderstandingLoopError(
+                "recover_from_verified_ledger must be an exact bool"
+            )
+        self.cell = copy.deepcopy(cell)
         self.event_sink = event_sink
         self.predictor = predictor or LastValuePredictor()
-        self.policy = policy or UnderstandingPolicyV1()
+        self.policy = copy.deepcopy(policy or UnderstandingPolicyV1())
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._hmac_key_provider = hmac_key_provider
         self._predictor_artifact_digest = predictor_artifact_digest or sha256_digest(
@@ -336,9 +371,11 @@ class UnderstandingLoop:
         self._ingest_seq = 0
         self._states: dict[str, PredictionStateV1] = {}
         self._seen_sequences: dict[tuple[str, int], str] = {}
+        self._source_high_watermarks: dict[str, int] = {}
         self._quarantined_sources: set[str] = set()
+        self._quarantine_saturated = False
         self._issued_tickets: dict[str, _IssuedTicketV1] = {}
-        self._completed_outcomes: dict[str, UnderstandingOutcomeV1] = {}
+        self._completed_outcomes: dict[str, _CompletedTicketV1] = {}
         self._source_buckets: dict[str, tuple[float, float]] = {}
         now_timestamp = self._trusted_timestamp()
         self._global_bucket = (float(self.policy.global_burst), now_timestamp)
@@ -356,10 +393,150 @@ class UnderstandingLoop:
             "privacy_blocked": 0,
             "sampled_out": 0,
             "dropped_budget": 0,
+            "audit_suppressed": 0,
             "resolved": 0,
+            "state_update_applied": 0,
             "append_failure": 0,
             "commitment_mismatch": 0,
         }
+        if recover_from_verified_ledger:
+            self._recover_from_verified_ledger()
+
+    def _recover_from_verified_ledger(self) -> None:
+        """Hydrate local shadow state after verified semantic ledger replay.
+
+        Predictions whose secret reveal context died with the prior process are
+        deterministically expired before hydration.  This never recreates an
+        issued ticket and never grants routing, action, builder, or hive
+        authority.
+        """
+
+        from waggledance.core.magma.understanding_ledger import UnderstandingLedger
+        from waggledance.core.magma.understanding_projection import (
+            reduce_understanding_ledger_restart_checkpoint,
+        )
+
+        if type(self.event_sink) is not UnderstandingLedger:
+            raise UnderstandingLoopError(
+                "verified restart recovery requires UnderstandingLedger"
+            )
+        checkpoint = reduce_understanding_ledger_restart_checkpoint(
+            self.event_sink
+        )
+        self._validate_restart_checkpoint(checkpoint)
+        if checkpoint.pending_tickets:
+            if any(
+                pending.reveal_verified
+                for pending in checkpoint.pending_tickets.values()
+            ):
+                raise UnderstandingLoopError(
+                    "revealed pending prediction cannot be safely recovered"
+                )
+            recorded_at = self._iso_utc(self._clock())
+            events: list[tuple[str, Mapping[str, Any]]] = []
+            for ticket_id in sorted(checkpoint.pending_tickets):
+                pending = checkpoint.pending_tickets[ticket_id]
+                disposition = UnderstandingDispositionV1(
+                    observation_commitment_digest=(
+                        pending.observation_commitment_digest
+                    ),
+                    prediction_digest=pending.prediction_digest,
+                    disposition=UnderstandingDisposition.EXPIRED,
+                    residual=None,
+                    reason_codes=("restart_lost_reveal_context",),
+                    recorded_at_utc=recorded_at,
+                )
+                events.append(
+                    (
+                        "disposition_recorded",
+                        {
+                            "ticket_id": pending.ticket_id,
+                            **disposition.to_mapping(),
+                            "runtime_authority_applied": False,
+                            "routing_influence_applied": False,
+                        },
+                    )
+                )
+            reconciliation_digest = sha256_digest(
+                {
+                    "domain": "wd.understanding_restart_reconciliation.v1",
+                    "cell": self.cell.to_mapping(),
+                    "prior_ledger_head": checkpoint.ledger_head,
+                    "pending_ticket_ids": sorted(checkpoint.pending_tickets),
+                }
+            )
+            self._append_batch_checked(
+                tuple(events),
+                idempotency_key=f"restart-reconcile:{reconciliation_digest[7:]}",
+            )
+            checkpoint = reduce_understanding_ledger_restart_checkpoint(
+                self.event_sink
+            )
+            self._validate_restart_checkpoint(checkpoint)
+            if checkpoint.pending_tickets:
+                raise UnderstandingLoopError(
+                    "restart reconciliation left pending predictions"
+                )
+        self._hydrate_restart_checkpoint(checkpoint)
+
+    def _validate_restart_checkpoint(self, checkpoint: Any) -> None:
+        expected_cell_key = (self.cell.cell_id, self.cell.incarnation_id)
+        foreign_cells = set(checkpoint.cell_ingest_high_watermarks) - {
+            expected_cell_key
+        }
+        if foreign_cells:
+            raise UnderstandingLoopError(
+                "ledger contains a foreign cell incarnation"
+            )
+        expected_ingest = checkpoint.cell_ingest_high_watermarks.get(
+            expected_cell_key,
+            0,
+        )
+        if checkpoint.max_ingest_seq != expected_ingest:
+            raise UnderstandingLoopError(
+                "ledger ingest high-watermark differs from current cell"
+            )
+        if len(checkpoint.numeric_states) > self.policy.max_targets:
+            raise UnderstandingLoopError(
+                "replayed state exceeds configured target capacity"
+            )
+        if (
+            len(checkpoint.source_high_watermarks)
+            > self.policy.max_source_buckets
+        ):
+            raise UnderstandingLoopError(
+                "replayed sources exceed configured source capacity"
+            )
+        if len(checkpoint.pending_tickets) > self.policy.max_pending_tickets:
+            raise UnderstandingLoopError(
+                "replayed pending tickets exceed configured capacity"
+            )
+        expected_cell = self.cell.to_mapping()
+        for pending in checkpoint.pending_tickets.values():
+            if dict(pending.cell) != expected_cell:
+                raise UnderstandingLoopError(
+                    "pending prediction belongs to another cell fence"
+                )
+
+    def _hydrate_restart_checkpoint(self, checkpoint: Any) -> None:
+        self._ingest_seq = checkpoint.max_ingest_seq
+        self._states = {
+            target_key: PredictionStateV1(
+                target_key=state.target_key,
+                generation=state.generation,
+                state_digest=state.state_digest,
+                expected_value=state.expected_value,
+                sample_count=state.sample_count,
+            )
+            for target_key, state in checkpoint.numeric_states.items()
+        }
+        seen_items = sorted(checkpoint.source_sequence_registry.items())
+        if len(seen_items) > self.policy.max_seen_sequences:
+            seen_items = seen_items[-self.policy.max_seen_sequences :]
+        self._seen_sequences = dict(seen_items)
+        self._source_high_watermarks = dict(
+            checkpoint.source_high_watermarks
+        )
 
     @staticmethod
     def _iso_utc(value: datetime) -> str:
@@ -397,6 +574,57 @@ class UnderstandingLoop:
             return False
         return True
 
+    @staticmethod
+    def _stable_id(prefix: str, payload: Mapping[str, Any]) -> str:
+        digest = sha256_digest(
+            {"domain": f"wd.understanding_id.{prefix}.v1", **dict(payload)}
+        )
+        return f"{prefix}-{digest.removeprefix('sha256:')}"
+
+    @staticmethod
+    def _ticket_fingerprint(ticket: PredictionTicketV1) -> str:
+        if (
+            type(ticket) is not PredictionTicketV1
+            or type(ticket.ticket_id) is not str
+            or type(ticket.target_key) is not str
+            or type(ticket.source_key) is not str
+            or type(ticket.source_seq) is not int
+            or type(ticket.observation_commitment) is not ObservationCommitmentV1
+            or (
+                ticket.prediction is not None
+                and type(ticket.prediction) is not PredictionCommitmentV1
+            )
+            or type(ticket.prior_state) is not PredictionStateV1
+            or (
+                ticket.terminal_disposition is not None
+                and type(ticket.terminal_disposition) is not UnderstandingDisposition
+            )
+            or type(ticket.terminal_reason) is not str
+        ):
+            raise UnderstandingLoopError("prediction ticket shape refused")
+        mapping = {
+            "ticket_id": ticket.ticket_id,
+            "target_key": ticket.target_key,
+            "source_key": ticket.source_key,
+            "source_seq": ticket.source_seq,
+            "observation_commitment": ticket.observation_commitment.to_mapping(),
+            "prediction": (
+                ticket.prediction.to_mapping()
+                if ticket.prediction is not None
+                else None
+            ),
+            "prior_state": ticket.prior_state.to_mapping(),
+            "terminal_disposition": (
+                ticket.terminal_disposition.value
+                if ticket.terminal_disposition is not None
+                else None
+            ),
+            "terminal_reason": ticket.terminal_reason,
+        }
+        return sha256_digest(
+            {"domain": "wd.prediction_ticket.fingerprint.v1", **mapping}
+        )
+
     def _append_batch_checked(
         self,
         events: Sequence[tuple[str, Mapping[str, Any]]],
@@ -430,15 +658,59 @@ class UnderstandingLoop:
             or ticket.ticket_id in self._completed_outcomes
         ):
             raise UnderstandingLoopError("prediction ticket collision")
+        if len(self._issued_tickets) >= self.policy.max_pending_tickets:
+            raise UnderstandingLoopError("pending prediction capacity exhausted")
         sanitized_header = None
         if header is not None:
             sanitized_header = json.loads(
                 canonical_json_bytes(dict(header)).decode("utf-8")
             )
         self._issued_tickets[ticket.ticket_id] = _IssuedTicketV1(
-            ticket=ticket,
+            ticket=copy.deepcopy(ticket),
+            ticket_fingerprint=self._ticket_fingerprint(ticket),
             header=sanitized_header,
         )
+        return ticket
+
+    def _remember_completed(
+        self,
+        ticket: PredictionTicketV1,
+        outcome: UnderstandingOutcomeV1,
+    ) -> None:
+        fingerprint = self._ticket_fingerprint(ticket)
+        prior = self._completed_outcomes.get(ticket.ticket_id)
+        if prior is not None:
+            if (
+                not hmac.compare_digest(prior.ticket_fingerprint, fingerprint)
+                or prior.outcome != outcome
+            ):
+                raise UnderstandingLoopError("completed ticket collision")
+            return
+        self._completed_outcomes[ticket.ticket_id] = _CompletedTicketV1(
+            ticket=copy.deepcopy(ticket),
+            ticket_fingerprint=fingerprint,
+            outcome=copy.deepcopy(outcome),
+        )
+        while len(self._completed_outcomes) > self.policy.max_completed_outcomes:
+            oldest = next(iter(self._completed_outcomes))
+            del self._completed_outcomes[oldest]
+
+    def _cache_terminal_ticket(
+        self,
+        ticket: PredictionTicketV1,
+    ) -> PredictionTicketV1:
+        if ticket.terminal_disposition is None:
+            raise UnderstandingLoopError("terminal ticket lacks disposition")
+        outcome = UnderstandingOutcomeV1(
+            ticket_id=ticket.ticket_id,
+            disposition=ticket.terminal_disposition,
+            disposition_record=None,
+            local_update=None,
+            curiosity_item=None,
+            knowledge_delta=None,
+            capability_gap=None,
+        )
+        self._remember_completed(ticket, outcome)
         return ticket
 
     def _empty_state(self, target_key: str) -> PredictionStateV1:
@@ -510,7 +782,13 @@ class UnderstandingLoop:
             observation_id = (
                 observation_id_raw
                 if observation_id_raw is not None
-                else f"obs-{self.cell.cell_id}-{ingest_seq}"
+                else self._stable_id(
+                    "obs",
+                    {
+                        "cell": self.cell.to_mapping(),
+                        "ingest_seq": ingest_seq,
+                    },
+                )
             )
             source = observation.get("source", "sensor")
             entity_id = observation.get("entity_id", "")
@@ -578,7 +856,7 @@ class UnderstandingLoop:
 
         if privacy in (PrivacyClass.PRIVATE, PrivacyClass.RESTRICTED):
             if self._hmac_key_provider is None:
-                return self._terminal_ticket(
+                return self._terminal_observation_with_budget(
                     envelope=envelope,
                     commitment=self._header_only_commitment(envelope),
                     disposition=UnderstandingDisposition.PRIVACY_BLOCKED,
@@ -591,7 +869,7 @@ class UnderstandingLoop:
                 key_id=key_id,
                 key_epoch=key_epoch,
             )
-            return self._terminal_ticket(
+            return self._terminal_observation_with_budget(
                 envelope=envelope,
                 commitment=commitment,
                 disposition=UnderstandingDisposition.PRIVACY_BLOCKED,
@@ -604,6 +882,31 @@ class UnderstandingLoop:
             commitment,
             source_content_digest=source_content_digest,
         )
+
+    def _terminal_observation_with_budget(
+        self,
+        *,
+        envelope: ObservationEnvelopeV1,
+        commitment: ObservationCommitmentV1,
+        disposition: UnderstandingDisposition,
+        reason: str,
+    ) -> PredictionTicketV1:
+        target_key = derive_target_key(envelope.entity_id, envelope.metric)
+        source_key = derive_source_key(
+            envelope.source, envelope.entity_id, envelope.metric
+        )
+        with self._lock:
+            state = copy.deepcopy(self._current_state(target_key))
+            if not self._budget_available(source_key):
+                return self._suppressed_budget_ticket(
+                    envelope.header_mapping(), commitment, state
+                )
+            return self._terminal_ticket(
+                envelope=envelope,
+                commitment=commitment,
+                disposition=disposition,
+                reason=reason,
+            )
 
     def _header_only_commitment(self, envelope: ObservationEnvelopeV1) -> ObservationCommitmentV1:
         nonce = secrets.token_hex(16)
@@ -628,14 +931,15 @@ class UnderstandingLoop:
         reason: str,
     ) -> PredictionTicketV1:
         with self._lock:
-            target_key = f"{envelope.entity_id}.{envelope.metric}"
-            state = self._current_state(target_key)
+            target_key = derive_target_key(envelope.entity_id, envelope.metric)
+            state = copy.deepcopy(self._current_state(target_key))
             ticket_id = sha256_digest(
                 {
                     "domain": "wd.prediction_ticket.terminal.v1",
                     "commitment": commitment.commitment_digest,
                     "disposition": disposition.value,
-                    "ingest_seq": envelope.ingest_seq,
+                    "reason": reason,
+                    "observation_header": envelope.header_mapping(),
                 }
             )
             payload = {
@@ -668,7 +972,7 @@ class UnderstandingLoop:
                 terminal_disposition=disposition,
                 terminal_reason=reason,
             )
-            return self._issue_ticket(ticket, header=None)
+            return self._cache_terminal_ticket(ticket)
 
     def _admission_reason(self, header: Mapping[str, Any]) -> Optional[str]:
         if header.get("source") != self.policy.allowed_source:
@@ -750,6 +1054,8 @@ class UnderstandingLoop:
         observation_commitment: ObservationCommitmentV1,
     ) -> PredictionTicketV1:
         """Prepare an externally committed public numeric observation."""
+        with self._lock:
+            self._counters["received"] += 1
         return self._prepare_numeric(
             header,
             observation_commitment,
@@ -842,12 +1148,50 @@ class UnderstandingLoop:
         if not self._event_digest_valid(source_content_digest):
             raise UnderstandingLoopError("source content digest refused")
         self._validate_commitment_domain(snapshot, observation_commitment)
-        target_key = f"{snapshot['entity_id']}.{snapshot['metric']}"
-        source_key = f"{snapshot['source']}:{snapshot['entity_id']}:{snapshot['metric']}"
+        target_key = derive_target_key(snapshot["entity_id"], snapshot["metric"])
+        source_key = derive_source_key(
+            snapshot["source"], snapshot["entity_id"], snapshot["metric"]
+        )
         source_seq = snapshot["source_seq"]
 
         with self._lock:
-            state = self._current_state(target_key)
+            state = copy.deepcopy(self._current_state(target_key))
+            sequence_key = (source_key, source_seq)
+            prior_commitment = self._seen_sequences.get(sequence_key)
+            sequence_reuse = False
+            if prior_commitment is not None:
+                if prior_commitment == source_content_digest:
+                    self._counters["duplicate"] += 1
+                    ticket = self._ticket_without_event(
+                        snapshot,
+                        observation_commitment,
+                        state,
+                        UnderstandingDisposition.DUPLICATE,
+                        "duplicate_source_sequence",
+                    )
+                    return self._cache_terminal_ticket(ticket)
+                sequence_reuse = True
+                if source_key not in self._quarantined_sources:
+                    if (
+                        len(self._quarantined_sources)
+                        >= self.policy.max_quarantined_sources
+                    ):
+                        self._quarantine_saturated = True
+                    else:
+                        self._quarantined_sources.add(source_key)
+            high_watermark = self._source_high_watermarks.get(source_key)
+            is_late = high_watermark is not None and source_seq <= high_watermark
+
+            # The token gate precedes every durable terminal/prediction event.
+            # Known sequence reuse is still detected and quarantined first so
+            # a full audit bucket cannot turn a conflict into a clean retry.
+            if not self._budget_available(source_key):
+                return self._suppressed_budget_ticket(
+                    snapshot,
+                    observation_commitment,
+                    state,
+                )
+
             reason = self._admission_reason(snapshot)
             if reason is not None:
                 disposition = (
@@ -862,50 +1206,70 @@ class UnderstandingLoop:
                     disposition,
                     reason,
                 )
+            if self._quarantine_saturated:
+                return self._terminal_from_header(
+                    snapshot,
+                    observation_commitment,
+                    state,
+                    UnderstandingDisposition.CONTRADICTORY,
+                    "quarantine_capacity_fail_closed",
+                )
             if source_key in self._quarantined_sources:
                 return self._terminal_from_header(
                     snapshot,
                     observation_commitment,
                     state,
                     UnderstandingDisposition.CONTRADICTORY,
-                    "source_quarantined",
+                    (
+                        "source_sequence_reuse"
+                        if sequence_reuse
+                        else "source_quarantined"
+                    ),
                 )
-            sequence_key = (source_key, source_seq)
-            prior_commitment = self._seen_sequences.get(sequence_key)
-            if prior_commitment is not None:
-                if prior_commitment == source_content_digest:
-                    self._counters["duplicate"] += 1
-                    ticket = self._ticket_without_event(
-                        snapshot,
-                        observation_commitment,
-                        state,
-                        UnderstandingDisposition.DUPLICATE,
-                        "duplicate_source_sequence",
-                    )
-                    return self._issue_ticket(ticket, header=None)
-                self._quarantined_sources.add(source_key)
+            if is_late:
                 return self._terminal_from_header(
                     snapshot,
                     observation_commitment,
                     state,
-                    UnderstandingDisposition.CONTRADICTORY,
-                    "source_sequence_reuse",
+                    UnderstandingDisposition.EXPIRED,
+                    "late_or_evicted_source_sequence",
                 )
-            if not self._budget_available(source_key):
+            active_targets = set(self._states)
+            active_targets.update(
+                issued.ticket.target_key
+                for issued in self._issued_tickets.values()
+                if issued.ticket.prediction is not None
+            )
+            if (
+                target_key not in active_targets
+                and len(active_targets) >= self.policy.max_targets
+            ):
+                self._counters["sampled_out"] += 1
+                return self._terminal_from_header(
+                    snapshot,
+                    observation_commitment,
+                    state,
+                    UnderstandingDisposition.SAMPLED_OUT,
+                    "target_capacity_exhausted",
+                    increment_counter=False,
+                )
+            if len(self._issued_tickets) >= self.policy.max_pending_tickets:
                 self._counters["dropped_budget"] += 1
                 return self._terminal_from_header(
                     snapshot,
                     observation_commitment,
                     state,
                     UnderstandingDisposition.DROPPED_BUDGET,
-                    "rate_budget_exhausted",
+                    "pending_prediction_capacity_exhausted",
                     increment_counter=False,
                 )
-
             predictor_header = json.loads(
                 canonical_json_bytes(snapshot).decode("utf-8")
             )
-            predicted = self.predictor.predict(predictor_header, state)
+            predicted = self.predictor.predict(
+                predictor_header,
+                copy.deepcopy(state),
+            )
             if predicted is not None:
                 if type(predicted) not in (int, float) or isinstance(predicted, bool) or not math.isfinite(float(predicted)):
                     raise UnderstandingLoopError("predictor returned non-finite value")
@@ -938,10 +1302,15 @@ class UnderstandingLoop:
                     "target_key": target_key,
                     "source_key": source_key,
                     "source_seq": source_seq,
+                    "source_content_digest": source_content_digest,
                     "cell": self.cell.to_mapping(),
                     "observation_header": snapshot,
                     "prediction": prediction.to_mapping(),
                     "prediction_digest": prediction.prediction_digest,
+                    "residual_abs_threshold": float(
+                        self.policy.residual_abs_threshold
+                    ),
+                    "state_update_alpha": STATE_UPDATE_ALPHA_V1,
                     "runtime_authority_applied": False,
                     "routing_influence_applied": False,
                 }
@@ -950,6 +1319,10 @@ class UnderstandingLoop:
                 idempotency_key=f"prediction:{ticket_id}",
             )
             self._seen_sequences[sequence_key] = source_content_digest
+            self._source_high_watermarks[source_key] = source_seq
+            while len(self._seen_sequences) > self.policy.max_seen_sequences:
+                oldest = next(iter(self._seen_sequences))
+                del self._seen_sequences[oldest]
             self._counters["accepted"] += 1
             ticket = PredictionTicketV1(
                 ticket_id=ticket_id,
@@ -970,13 +1343,18 @@ class UnderstandingLoop:
         disposition: UnderstandingDisposition,
         reason: str,
     ) -> PredictionTicketV1:
-        source_key = f"{header['source']}:{header['entity_id']}:{header['metric']}"
+        source_key = derive_source_key(
+            header["source"], header["entity_id"], header["metric"]
+        )
         ticket_id = sha256_digest(
             {
                 "domain": "wd.prediction_ticket.noop.v1",
                 "commitment": commitment.commitment_digest,
                 "disposition": disposition.value,
-                "source_seq": header["source_seq"],
+                "reason": reason,
+                "observation_header": dict(header),
+                "target_key": state.target_key,
+                "source_key": source_key,
             }
         )
         return PredictionTicketV1(
@@ -1022,7 +1400,32 @@ class UnderstandingLoop:
                 UnderstandingDisposition.SAMPLED_OUT: "sampled_out",
             }.get(disposition, "invalid")
             self._counters[counter] += 1
-        return self._issue_ticket(ticket, header=None)
+        return self._cache_terminal_ticket(ticket)
+
+    def _suppressed_budget_ticket(
+        self,
+        header: Mapping[str, Any],
+        commitment: ObservationCommitmentV1,
+        state: PredictionStateV1,
+    ) -> PredictionTicketV1:
+        """Return an in-memory terminal outcome without amplifying the ledger.
+
+        Once the ingress token buckets are empty, writing one durable drop row
+        per hostile input would itself be an unbounded write primitive.  The
+        aggregate counters remain visible, while the per-item audit is
+        deliberately suppressed until trusted time replenishes the budget.
+        """
+
+        self._counters["dropped_budget"] += 1
+        self._counters["audit_suppressed"] += 1
+        ticket = self._ticket_without_event(
+            header,
+            commitment,
+            state,
+            UnderstandingDisposition.DROPPED_BUDGET,
+            "rate_budget_exhausted_audit_suppressed",
+        )
+        return self._cache_terminal_ticket(ticket)
 
     def complete_numeric(
         self,
@@ -1035,12 +1438,23 @@ class UnderstandingLoop:
             raise UnderstandingLoopError("revealed value must be finite")
         actual = float(value)
         with self._lock:
+            supplied_fingerprint = self._ticket_fingerprint(ticket)
             completed = self._completed_outcomes.get(ticket.ticket_id)
             if completed is not None:
-                return completed
+                if not hmac.compare_digest(
+                    completed.ticket_fingerprint, supplied_fingerprint
+                ):
+                    raise UnderstandingLoopError("unissued_prediction_ticket")
+                return copy.deepcopy(completed.outcome)
             issued = self._issued_tickets.get(ticket.ticket_id)
-            if issued is None or issued.ticket != ticket:
+            if issued is None or not hmac.compare_digest(
+                issued.ticket_fingerprint, supplied_fingerprint
+            ):
                 raise UnderstandingLoopError("unissued_prediction_ticket")
+            # From this point on use only the detached, issue-time snapshot.
+            # The caller may retain and even mutate its own frozen-dataclass
+            # object concurrently; it cannot change this resolution.
+            ticket = copy.deepcopy(issued.ticket)
             if ticket.terminal_disposition is not None:
                 outcome = UnderstandingOutcomeV1(
                     ticket_id=ticket.ticket_id,
@@ -1052,13 +1466,14 @@ class UnderstandingLoop:
                     capability_gap=None,
                 )
                 self._issued_tickets.pop(ticket.ticket_id)
-                self._completed_outcomes[ticket.ticket_id] = outcome
+                self._remember_completed(ticket, outcome)
                 return outcome
             if ticket.prediction is None or issued.header is None:
                 raise UnderstandingLoopError("prediction ticket lacks commitment")
             if issued.resolution_at_utc is None:
                 issued = _IssuedTicketV1(
                     ticket=issued.ticket,
+                    ticket_fingerprint=issued.ticket_fingerprint,
                     header=issued.header,
                     resolution_at_utc=self._iso_utc(self._clock()),
                 )
@@ -1127,7 +1542,8 @@ class UnderstandingLoop:
 
             next_count = current.sample_count + 1
             next_expected = actual if current.expected_value is None else (
-                current.expected_value * 0.9 + actual * 0.1
+                current.expected_value * (1.0 - STATE_UPDATE_ALPHA_V1)
+                + actual * STATE_UPDATE_ALPHA_V1
             )
             next_core = {
                 "domain": "wd.understanding_state.v1",
@@ -1145,7 +1561,13 @@ class UnderstandingLoop:
                 sample_count=next_count,
             )
             update = LocalProvisionalUpdateV1(
-                update_id=f"update-{self.cell.cell_id}-{ticket.prediction.ingest_seq}",
+                update_id=self._stable_id(
+                    "update",
+                    {
+                        "cell_id": self.cell.cell_id,
+                        "ingest_seq": ticket.prediction.ingest_seq,
+                    },
+                ),
                 cell_id=self.cell.cell_id,
                 prediction_digest=ticket.prediction.prediction_digest,
                 prior_state_digest=current.state_digest,
@@ -1169,7 +1591,13 @@ class UnderstandingLoop:
             gap = None
             if delta is not None and delta.claim_kind is KnowledgeClaimKind.CAPABILITY_GAP:
                 gap = CapabilityGapCandidateV1(
-                    gap_id=f"gap-{self.cell.cell_id}-{ticket.prediction.ingest_seq}",
+                    gap_id=self._stable_id(
+                        "gap",
+                        {
+                            "cell_id": self.cell.cell_id,
+                            "ingest_seq": ticket.prediction.ingest_seq,
+                        },
+                    ),
                     proposer_cell_id=self.cell.cell_id,
                     evidence_refs=delta.evidence_refs,
                     created_at_utc=now_text,
@@ -1271,8 +1699,9 @@ class UnderstandingLoop:
                         delta_plan.evidence_set_digest
                     )
             self._issued_tickets.pop(ticket.ticket_id)
-            self._completed_outcomes[ticket.ticket_id] = outcome
+            self._remember_completed(ticket, outcome)
             self._counters["resolved"] += 1
+            self._counters["state_update_applied"] += 1
             return outcome
 
     def _verify_reveal(
@@ -1357,7 +1786,8 @@ class UnderstandingLoop:
             capability_gap=None,
         )
         self._issued_tickets.pop(ticket.ticket_id)
-        self._completed_outcomes[ticket.ticket_id] = outcome
+        self._remember_completed(ticket, outcome)
+        self._counters["resolved"] += 1
         return outcome
 
     def _plan_curiosity(
@@ -1379,7 +1809,13 @@ class UnderstandingLoop:
             return None
         assert ticket.prediction is not None
         item = CuriosityItemV1(
-            curiosity_id=f"curiosity-{self.cell.cell_id}-{ticket.prediction.ingest_seq}",
+            curiosity_id=self._stable_id(
+                "curiosity",
+                {
+                    "cell_id": self.cell.cell_id,
+                    "ingest_seq": ticket.prediction.ingest_seq,
+                },
+            ),
             cell_id=self.cell.cell_id,
             action=CuriosityAction.DETERMINISTIC_REPLAY,
             evidence_refs=(
@@ -1451,7 +1887,13 @@ class UnderstandingLoop:
             else PrivacyClass.SYNTHETIC
         )
         delta = KnowledgeDeltaV1(
-            proposal_id=f"delta-{self.cell.cell_id}-{ticket.prediction.ingest_seq}",
+            proposal_id=self._stable_id(
+                "delta",
+                {
+                    "cell_id": self.cell.cell_id,
+                    "ingest_seq": ticket.prediction.ingest_seq,
+                },
+            ),
             proposer_cell_id=self.cell.cell_id,
             claim_kind=KnowledgeClaimKind.MODEL_UPDATE,
             aggregate_digest=aggregate,
@@ -1482,20 +1924,45 @@ class UnderstandingLoop:
                     "dropped_budget",
                 )
             )
+            pending_predictions = len(self._issued_tickets)
+            unresolved = max(
+                self._counters["accepted"] - self._counters["resolved"],
+                0,
+            )
             return {
                 **self._counters,
                 "accounted": accounted,
                 "counter_conservation_ok": accounted == self._counters["received"],
+                "unresolved": unresolved,
+                "resolution_conservation_ok": (
+                    self._counters["accepted"]
+                    == self._counters["resolved"]
+                    + pending_predictions
+                    and unresolved == pending_predictions
+                ),
                 "state_count": len(self._states),
                 "curiosity_count": len(self._curiosity),
                 "quarantined_source_count": len(self._quarantined_sources),
+                "seen_sequence_count": len(self._seen_sequences),
+                "source_high_watermark_count": len(self._source_high_watermarks),
+                "pending_ticket_count": pending_predictions,
+                "completed_outcome_count": len(self._completed_outcomes),
+                "source_bucket_count": len(self._source_buckets),
                 "runtime_authority_applied": False,
                 "routing_influence_applied": False,
+                "quarantine_fail_closed": self._quarantine_saturated,
             }
 
     def get_state(self, target_key: str) -> PredictionStateV1:
         with self._lock:
-            return self._current_state(target_key)
+            return copy.deepcopy(self._current_state(target_key))
+
+    def close(self) -> None:
+        """Close a durable sink when it exposes an idempotent close method."""
+
+        close = getattr(self.event_sink, "close", None)
+        if callable(close):
+            close()
 
 
 __all__ = [
@@ -1504,6 +1971,7 @@ __all__ = [
     "NumericPredictor",
     "PredictionStateV1",
     "PredictionTicketV1",
+    "STATE_UPDATE_ALPHA_V1",
     "UnderstandingEventSink",
     "UnderstandingLoop",
     "UnderstandingLoopError",

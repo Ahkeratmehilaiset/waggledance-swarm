@@ -20,6 +20,8 @@ from waggledance.core.learning.understanding_contracts import (
     PrivacyClass,
     UnderstandingContractError,
     build_observation_commitment,
+    derive_source_key,
+    derive_target_key,
 )
 from waggledance.core.magma.canonical import sha256_digest
 
@@ -66,6 +68,7 @@ def _profile(*, model: str = "model-family-a", evidence: str = "trace-a") -> Ind
     return IndependenceProfileV1(
         reviewer_cell_id="reviewer-a",
         identity_incarnation="reviewer-a-inc-1",
+        genesis_root_digest=sha256_digest({"genesis": "root-a"}),
         verifier_code_family="verifier-family-a",
         model_provider_lineage=model,
         prompt_policy_lineage="policy-a",
@@ -237,6 +240,7 @@ def test_different_sha_does_not_create_method_independence() -> None:
 
     assert first.profile_digest != clone.profile_digest
     assert first.method_group_digest == clone.method_group_digest
+    assert first.lineage_group_digest == clone.lineage_group_digest
     assert first.evidence_group_digest != clone.evidence_group_digest
 
 
@@ -256,3 +260,16 @@ def test_dance_signal_binds_exact_proposal_and_ttl() -> None:
     assert signal.signal_digest != changed.signal_digest
     with pytest.raises(UnderstandingContractError, match="expiry"):
         DanceSignalV1(**{**signal.__dict__, "expires_at_utc": NOW})
+
+
+def test_derived_state_namespaces_are_bounded_and_delimiter_unambiguous() -> None:
+    assert derive_target_key("a.b", "c") != derive_target_key("a", "b.c")
+    assert derive_source_key("a:b", "c", "d") != derive_source_key(
+        "a", "b:c", "d"
+    )
+    long_entity = "x" * 253
+    target = derive_target_key(long_entity, "temperature")
+    source = derive_source_key("mqtt", long_entity, "temperature")
+    assert len(target) <= 256
+    assert len(source) <= 256
+    assert target == derive_target_key(long_entity, "temperature")

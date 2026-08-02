@@ -103,6 +103,43 @@ def _require_token(value: object, label: str) -> str:
     return value
 
 
+def derive_target_key(entity_id: str, metric: str) -> str:
+    """Return a stable bounded key for one observed entity/metric pair.
+
+    The key is always content-addressed.  Human-readable delimiter joins are
+    ambiguous (``a.b`` + ``c`` collides with ``a`` + ``b.c``) even when they
+    fit the wire limit, so V1 never uses them as state identity.
+    """
+
+    entity = _require_token(entity_id, "entity_id")
+    metric_name = _require_token(metric, "metric")
+    digest = sha256_digest(
+        {
+            "domain": "wd.understanding_target_key.v1",
+            "entity_id": entity,
+            "metric": metric_name,
+        }
+    )
+    return f"target-{digest.removeprefix('sha256:')}"
+
+
+def derive_source_key(source: str, entity_id: str, metric: str) -> str:
+    """Return the stable bounded source/target sequence namespace."""
+
+    source_name = _require_token(source, "source")
+    entity = _require_token(entity_id, "entity_id")
+    metric_name = _require_token(metric, "metric")
+    digest = sha256_digest(
+        {
+            "domain": "wd.understanding_source_key.v1",
+            "source": source_name,
+            "entity_id": entity,
+            "metric": metric_name,
+        }
+    )
+    return f"source-{digest.removeprefix('sha256:')}"
+
+
 def _require_digest(value: object, label: str, *, hmac_ok: bool = False) -> str:
     valid = type(value) is str and bool(_SHA256.fullmatch(value))
     if hmac_ok:
@@ -630,6 +667,7 @@ class CapabilityGapCandidateV1:
 class IndependenceProfileV1:
     reviewer_cell_id: str
     identity_incarnation: str
+    genesis_root_digest: str
     verifier_code_family: str
     model_provider_lineage: str
     prompt_policy_lineage: str
@@ -650,6 +688,7 @@ class IndependenceProfileV1:
             (self.physical_failure_domain, "physical_failure_domain"),
         ):
             _require_token(value, label)
+        _require_digest(self.genesis_root_digest, "genesis_root_digest")
         if self.schema_version != INDEPENDENCE_SCHEMA:
             raise UnderstandingContractError("independence schema_version refused")
 
@@ -675,6 +714,15 @@ class IndependenceProfileV1:
         )
 
     @property
+    def lineage_group_digest(self) -> str:
+        return sha256_digest(
+            {
+                "domain": "wd.independence.genesis_lineage_group.v1",
+                "genesis_root_digest": self.genesis_root_digest,
+            }
+        )
+
+    @property
     def profile_digest(self) -> str:
         return sha256_digest(
             {
@@ -682,6 +730,7 @@ class IndependenceProfileV1:
                 "schema_version": self.schema_version,
                 "reviewer_cell_id": self.reviewer_cell_id,
                 "identity_incarnation": self.identity_incarnation,
+                "lineage_group_digest": self.lineage_group_digest,
                 "method_group_digest": self.method_group_digest,
                 "evidence_group_digest": self.evidence_group_digest,
                 "physical_failure_domain": self.physical_failure_domain,
@@ -724,6 +773,8 @@ class DanceSignalV1:
             "reviewer_profile_digest": self.reviewer.profile_digest,
             "reviewer_cell_id": self.reviewer.reviewer_cell_id,
             "reviewer_identity_incarnation": self.reviewer.identity_incarnation,
+            "genesis_root_digest": self.reviewer.genesis_root_digest,
+            "lineage_group_digest": self.reviewer.lineage_group_digest,
             "method_group_digest": self.reviewer.method_group_digest,
             "evidence_group_digest": self.reviewer.evidence_group_digest,
             "physical_failure_domain": self.reviewer.physical_failure_domain,
@@ -759,4 +810,6 @@ __all__ = [
     "UnderstandingDisposition",
     "UnderstandingDispositionV1",
     "build_observation_commitment",
+    "derive_source_key",
+    "derive_target_key",
 ]

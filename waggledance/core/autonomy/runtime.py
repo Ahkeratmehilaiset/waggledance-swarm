@@ -378,6 +378,12 @@ class AutonomyRuntime:
             store = getattr(self, store_name, None)
             if store:
                 self._persist_safe(f"close.{store_name}", store.close)
+        if self.understanding_loop is not None and hasattr(
+            self.understanding_loop, "close"
+        ):
+            self._persist_safe(
+                "close.understanding_loop", self.understanding_loop.close
+            )
         _ASYNC_POOL.shutdown(wait=False)
         log.info("AutonomyRuntime stopped")
 

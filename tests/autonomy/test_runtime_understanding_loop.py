@@ -62,6 +62,9 @@ class RecordingLoop:
             "routing_influence_applied": False,
         }
 
+    def close(self) -> None:
+        self.trace.append("close")
+
 
 def _runtime(trace: list[str], loop=None) -> AutonomyRuntime:
     runtime = object.__new__(AutonomyRuntime)
@@ -196,3 +199,16 @@ def test_constructor_accepts_optional_loop_without_enabling_other_authority() ->
     assert stats["runtime_authority_applied"] is False
     assert stats["routing_influence_applied"] is False
     assert runtime._understanding_ingest_lock is not None
+
+
+def test_stop_closes_the_optional_understanding_loop() -> None:
+    trace: list[str] = []
+    loop = RecordingLoop(trace)
+    runtime = _runtime(trace, loop)
+    runtime.resource_kernel = None
+    runtime.world_model.save = lambda: trace.append("world-save")
+    runtime._started = True
+
+    runtime.stop()
+
+    assert trace == ["world-save", "close"]

@@ -348,7 +348,7 @@ def test_receipt_serialization_rejects_mutated_authority() -> None:
     receipt = _evaluate(proposal_auth, ring, supports, registry, keys)
     object.__setattr__(receipt, "hive_commit_applied", True)
 
-    with pytest.raises(WDPContractError, match="hive commit"):
+    with pytest.raises(WDPContractError, match="collective commit"):
         receipt.to_mapping()
 
 
@@ -868,7 +868,7 @@ def test_shadow_receipt_rejects_authority_or_incoherent_approval() -> None:
         "distinct_lineage_group_digests": (),
         "distinct_physical_failure_domains": (),
     }
-    with pytest.raises(WDPContractError, match="hive commit"):
+    with pytest.raises(WDPContractError, match="collective commit"):
         WDPShadowReceiptV1(**data, hive_commit_applied=True)
     with pytest.raises(WDPContractError, match="support pair"):
         WDPShadowReceiptV1(

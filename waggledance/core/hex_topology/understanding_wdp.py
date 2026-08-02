@@ -550,7 +550,7 @@ class WDPShadowReceiptV1:
             raise WDPContractError("decision must be WDPDecision")
         _parse_utc(self.evaluated_at_utc, "evaluated_at_utc")
         if self.hive_commit_applied is not False:
-            raise WDPContractError("shadow receipt cannot apply a hive commit")
+            raise WDPContractError("shadow receipt cannot apply a collective commit")
         if self.runtime_authority_applied is not False:
             raise WDPContractError("shadow receipt cannot apply runtime authority")
         if self.routing_influence_applied is not False:
@@ -574,7 +574,7 @@ class WDPShadowReceiptV1:
 
     def to_mapping(self) -> dict[str, object]:
         if self.hive_commit_applied is not False:
-            raise WDPContractError("shadow receipt cannot apply a hive commit")
+            raise WDPContractError("shadow receipt cannot apply a collective commit")
         if self.runtime_authority_applied is not False:
             raise WDPContractError(
                 "shadow receipt cannot apply runtime authority"

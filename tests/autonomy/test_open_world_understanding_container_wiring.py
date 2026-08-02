@@ -15,6 +15,7 @@ from waggledance.bootstrap.container import (
 )
 from waggledance.core.learning.understanding_loop import (
     InMemoryUnderstandingEventSink,
+    PLAINTEXT_REVEAL_RETENTION_POLICY_V1,
     UnderstandingLoop,
     UnderstandingLoopError,
 )
@@ -28,6 +29,14 @@ def _settings(config: dict | None = None) -> WaggleSettings:
         else {}
     )
     return WaggleSettings(profile="TEST", _extras=extras)
+
+
+def _shadow_config(**overrides) -> dict:
+    return {
+        "mode": "shadow",
+        "reveal_retention_policy": PLAINTEXT_REVEAL_RETENTION_POLICY_V1,
+        **overrides,
+    }
 
 
 def _observation(source_seq: int, value: float) -> dict:
@@ -50,6 +59,7 @@ def test_shipped_configuration_keeps_open_world_understanding_off() -> None:
     document = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
 
     assert document["open_world_understanding"]["mode"] == "off"
+    assert "reveal_retention_policy" not in document["open_world_understanding"]
 
 
 def test_settings_loader_and_builder_keep_shipped_configuration_off() -> None:
@@ -114,7 +124,7 @@ def test_relative_ledger_path_cannot_escape_project_root(
 
 def test_explicit_shadow_stub_uses_only_an_ephemeral_sink() -> None:
     loop = _build_open_world_understanding_loop(
-        _settings({"mode": "shadow"}),
+        _settings(_shadow_config()),
         stub=True,
     )
 
@@ -127,7 +137,7 @@ def test_explicit_shadow_stub_uses_only_an_ephemeral_sink() -> None:
 def test_explicit_nonstub_shadow_uses_durable_restart_replay(tmp_path) -> None:
     ledger_path = tmp_path / "understanding.db"
     settings = _settings(
-        {"mode": "shadow", "ledger_path": str(ledger_path)}
+        _shadow_config(ledger_path=str(ledger_path))
     )
     first = _build_open_world_understanding_loop(settings, stub=False)
     assert type(first.event_sink) is UnderstandingLedger
@@ -148,11 +158,10 @@ def test_durable_restart_rejects_incompatible_learning_domain(tmp_path) -> None:
     ledger_path = tmp_path / "understanding-domain.db"
     first = _build_open_world_understanding_loop(
         _settings(
-            {
-                "mode": "shadow",
-                "ledger_path": str(ledger_path),
-                "unit": "Cel",
-            }
+            _shadow_config(
+                ledger_path=str(ledger_path),
+                unit="Cel",
+            )
         ),
         stub=False,
     )
@@ -166,11 +175,10 @@ def test_durable_restart_rejects_incompatible_learning_domain(tmp_path) -> None:
     ):
         _build_open_world_understanding_loop(
             _settings(
-                {
-                    "mode": "shadow",
-                    "ledger_path": str(ledger_path),
-                    "unit": "K",
-                }
+                _shadow_config(
+                    ledger_path=str(ledger_path),
+                    unit="K",
+                )
             ),
             stub=False,
         )
@@ -198,12 +206,48 @@ def test_invalid_shadow_policy_fails_before_ledger_construction(tmp_path) -> Non
     with pytest.raises(ValueError, match="max_targets"):
         _build_open_world_understanding_loop(
             _settings(
+                _shadow_config(
+                    ledger_path=str(ledger_path),
+                    max_targets=True,
+                )
+            ),
+            stub=False,
+        )
+
+    assert not ledger_path.exists()
+
+
+@pytest.mark.parametrize(
+    "retention_policy",
+    (None, "", "ttl", "redact", "encrypt", True),
+)
+def test_shadow_requires_literal_plaintext_retention_acknowledgement(
+    tmp_path,
+    retention_policy,
+) -> None:
+    ledger_path = tmp_path / "retention-policy-refused.db"
+
+    with pytest.raises(ValueError, match="reveal_retention_policy must be literal"):
+        _build_open_world_understanding_loop(
+            _settings(
                 {
                     "mode": "shadow",
                     "ledger_path": str(ledger_path),
-                    "max_targets": True,
+                    "reveal_retention_policy": retention_policy,
                 }
             ),
+            stub=False,
+        )
+
+    assert not ledger_path.exists()
+
+
+def test_changing_only_shipped_mode_to_shadow_fails_before_ledger(tmp_path) -> None:
+    ledger_path = tmp_path / "missing-retention-acknowledgement.db"
+
+    with pytest.raises(ValueError, match="reveal_retention_policy must be literal"):
+        _build_open_world_understanding_loop(
+            _settings({"mode": "shadow", "ledger_path": str(ledger_path)}),
             stub=False,
         )
 
@@ -213,7 +257,7 @@ def test_invalid_shadow_policy_fails_before_ledger_construction(tmp_path) -> Non
 def test_container_passes_only_explicit_shadow_loop_to_runtime() -> None:
     off_runtime = Container(settings=_settings(), stub=True).autonomy_service._runtime
     shadow_runtime = Container(
-        settings=_settings({"mode": "shadow"}),
+        settings=_settings(_shadow_config()),
         stub=True,
     ).autonomy_service._runtime
 

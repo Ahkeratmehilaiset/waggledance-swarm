@@ -93,6 +93,49 @@ summaries but excludes revealed values, nonces, prediction values, residuals,
 and learned numeric values. Nested projection records are deeply frozen and
 all authority fields serialize as literal `false`.
 
+### Plaintext retention truth
+
+The raw-free public projection is not an at-rest redaction claim. V1 retains
+plaintext numeric reveal material plus reconstructive residual and numeric
+state fields indefinitely in the local SQLite database; the same material may
+also remain in WAL pages until SQLite checkpoints them. Full semantic replay
+can therefore reopen the commitment and independently verify the state
+transition. Removing only `observation_revealed.value` would be cosmetic: the
+same value can be reconstructed from the prediction plus residual and from
+adjacent EWMA states.
+
+Entering literal `shadow` therefore also requires the exact configuration
+acknowledgement
+`retain_plaintext_local_for_full_semantic_replay_v1`. Missing, misspelled,
+`ttl`, `redact`, or `encrypt` claims fail before ledger construction. The
+policy is included in the complete learning-policy commitment, so a ledger
+created under another policy cannot silently inherit the state.
+
+The shipped OFF configuration intentionally contains only a commented example
+of that literal. Changing only `mode` to `shadow` therefore fails closed; an
+operator must add the acknowledgement in the activation configuration. The
+lower-level loop/policy constructors retain a fixed V1 schema default for
+tests and the acceptance harness, but they are not an activation boundary or
+an authority path. Production construction goes through the container gate.
+
+`UnderstandingLoop.retention_truth()` first requires a successful semantic
+replay, computes the raw-free status from the resulting public projection, and
+then exposes only aggregate facts: raw reveal count, the oldest matched
+resolution timestamp and age, timestamp coverage, whether the sink is the
+durable verified local ledger, the literal policy, and hard-false
+deletion/encryption and authority flags. It distinguishes the V1 schema's
+retention contract from whether reveal material is actually present. It never
+returns a value, residual, nonce, state, or ledger path.
+
+This is an honest risk acknowledgement, not bounded retention and not an exit
+gate closure. Irreversible erasure is incompatible with replaying the erased
+prefix from genesis. A future V2 must use an approved library AEAD, an audited
+segment-key provider with durable destruction receipts, authenticated
+checkpoint anchoring, and an explicit `redacted prefix + full replay after
+checkpoint` coverage mode. Home-grown encryption, hash/HMAC “redaction” of
+low-entropy values, SQLite row deletion/rehashing, or unauthenticated
+checkpoints are refused designs.
+
 A separate process-local restart reducer may contain numeric state. It has no
 serializer, digest, network, routing, action, promotion, or authority API.
 After verified replay it restores numeric states, sequence high-watermarks,
@@ -120,6 +163,16 @@ refused. Absolute operator-configured paths remain explicit. A malformed
 `open_world_understanding` YAML scalar/list fails closed instead of silently
 behaving as OFF. If later container construction fails after the loop exists,
 the loop and SQLite handle are closed before the original error is re-raised.
+
+The local regression suite also kills a separately spawned ledger process at
+two deterministic barriers: after both event rows and the batch receipt are
+staged but before SQLite executes `COMMIT`, and after `COMMIT` returns in the
+worker but before a modeled application result is delivered. At those exact
+boundaries, reopen demonstrates pre-commit rollback, post-commit persistence,
+verified-chain and receipt integrity, exact idempotent retry after a modeled
+lost result, and refusal of mismatched reuse. It does not kill SQLite during
+WAL-frame writing, sync, checkpoint, or partial I/O, and it does not simulate
+sudden power loss or storage-controller lies.
 
 ## The bee protocol as code
 
@@ -315,17 +368,23 @@ solver registry.
 ## Fresh Grok advisory
 
 The operator-requested provider-default Grok CLI review was run without a
-model pin and with read/search-only tools. The durable runtime guide reported
-`grok-4.5` as the observed provider default; that observation is evidence only.
+model pin and with read/search-only tools. Historical model labels are not a
+runtime pin or current identity claim.
 
-The CLI could inspect the pushed C2 commit but reported that it could not read
-the local uncommitted C3 tree. It therefore correctly classified ledger, WDP,
-and recovery as unverified at review time. Its main recommendations were to
-avoid claim/code drift, keep caches and retention bounded, prove restart by
-pure replay, enforce lineage rather than support counts, retain STOP as an
-absolute veto, and represent large solver populations as families/templates
-plus configuration. Those recommendations shaped C3. They are not a vote,
-promotion, or authority grant, and Grok did not review the final C3 commit.
+An early review could inspect only pushed C2 and correctly left the then-local
+C3 unverified. A later provider-default exact-head advisory inspected pushed
+head `3f443301` and classified it as a strong, honest fail-closed shadow
+skeleton rather than a live hive. It highlighted plaintext reveal retention,
+external Genesis/registry pinning, cross-host asymmetric trust, live recovery,
+calibration/Goodhart metrics, and solver-family scaling as the main remaining
+risks. The retention-truth gate and process-crash drill in the V1.1
+continuation address disclosure and crash evidence, not encryption, live
+recovery, or activation.
+
+A separate Grok-scout V12 review recommends paired incumbent-versus-candidate
+causal lift on held-out cases before solver promotion. That is the next small
+solver-growth proof; it is not wired into this learner and grants no promotion
+authority. All Grok outputs remain advisory rather than votes or gates.
 
 ## Two-week sprint ledger
 
@@ -334,8 +393,9 @@ promotion, or authority grant, and Grok did not review the final C3 commit.
 | C1 | frozen contracts, privacy, lineage, hard-false authority | pushed |
 | C2 | bounded two-phase loop, secret nonce, atomic runtime seam | pushed |
 | C3 | durable ledger, replay/restart, authenticated WDP/recovery | pushed |
-| C4 | default-OFF wiring, semantic-domain guard, docs, executable harness | implemented; local selector gate green |
-| Gate | exact pushed-head RCO1/RCO2/Fable review and CI | pending |
+| C4 | default-OFF wiring, semantic-domain guard, docs, executable harness | pushed at `3f443301` |
+| C5 | accounting closure, plaintext-retention truth, WAL process-crash drill | implementation checkpoint |
+| Gate | exact pushed-head reviews and CI | RCO1/RCO2/Tools green at C4; Fable and CI pending |
 
 Parallel lane intent:
 
@@ -357,10 +417,11 @@ python tools/run_open_world_understanding_v1.py --json
 It uses only disposable synthetic state and checks prediction privacy,
 value-independent pre-reveal identity, salted opaque metadata, nonce
 freshness, restart hydration and one-time pending expiry, tamper rejection,
-raw-free projection, semantic-domain binding, authenticated STOP, shared-key
-quorum refusal, revision bounds, stale-fence recovery refusal, fenced rebuild
-planning, direct object state, raw ledger events, and literal-false authority
-flags. Its JSON is aggregate evidence, not a claim-safe or activation artifact.
+raw-free projection, semantic-domain binding, explicit plaintext-retention
+truth, authenticated STOP, shared-key quorum refusal, revision bounds,
+stale-fence recovery refusal, fenced rebuild planning, direct object state,
+raw ledger events, and literal-false authority flags. Its JSON is aggregate
+evidence, not a claim-safe or activation artifact.
 The `external_writes_applied: false` gate means no product or external-system
 write was performed; the harness necessarily writes its disposable local
 SQLite database and, when requested, the explicit local `--out` report.
@@ -372,11 +433,13 @@ synthetic live adapter is considered, require:
 
 - exact pushed head and green CI;
 - independent harness and dual RCO review;
-- explicit retention/redaction policy for reveal events;
+- explicit plaintext-retention truth contract (present), plus an approved
+  bounded/encrypted V2 retention and checkpoint policy before wider use;
 - ledger rotation/archive design without breaking replay;
 - metrics for audit gaps, pending expiry, quarantine, budget drops,
   calibration, and STOP/challenge outcomes;
-- restart and corruption drills on the deployment filesystem;
+- process-crash/reopen drill (present), plus deployment-filesystem and
+  power-loss/corruption drills;
 - no private/restricted raw-value path;
 - proof that every authority flag remains false.
 

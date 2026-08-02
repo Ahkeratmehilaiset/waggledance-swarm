@@ -102,12 +102,24 @@ def _build_open_world_understanding_loop(settings, *, stub: bool):
     )
     from waggledance.core.learning.understanding_loop import (
         InMemoryUnderstandingEventSink,
+        PLAINTEXT_REVEAL_RETENTION_POLICY_V1,
         UnderstandingLoop,
         UnderstandingPolicyV1,
     )
 
+    reveal_retention_policy = settings.get(
+        "open_world_understanding.reveal_retention_policy",
+        None,
+    )
+    if reveal_retention_policy != PLAINTEXT_REVEAL_RETENTION_POLICY_V1:
+        raise ValueError(
+            "open_world_understanding.reveal_retention_policy must be literal "
+            f"'{PLAINTEXT_REVEAL_RETENTION_POLICY_V1}' in shadow mode"
+        )
+
     defaults = UnderstandingPolicyV1()
     policy = UnderstandingPolicyV1(
+        reveal_retention_policy=reveal_retention_policy,
         allowed_source=settings.get(
             "open_world_understanding.allowed_source",
             defaults.allowed_source,

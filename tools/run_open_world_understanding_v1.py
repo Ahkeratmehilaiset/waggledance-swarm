@@ -58,6 +58,7 @@ from waggledance.core.learning.understanding_contracts import (  # noqa: E402
 )
 from waggledance.core.learning.understanding_loop import (  # noqa: E402
     InMemoryUnderstandingEventSink,
+    PLAINTEXT_REVEAL_RETENTION_POLICY_V1,
     UnderstandingLoop,
     UnderstandingLoopError,
 )
@@ -110,6 +111,7 @@ CHECK_NAMES: tuple[str, ...] = (
     "ledger_tamper_is_rejected",
     "public_projection_is_raw_free",
     "learning_domain_is_persisted",
+    "plaintext_retention_truth_is_explicit",
     "authenticated_stop_survives_forged_conflict",
     "shared_key_material_cannot_form_wdp_quorum",
     "revision_depth_is_bounded",
@@ -451,6 +453,7 @@ def _exercise_learning(scratch_dir: Path) -> tuple[dict[str, bool], dict[str, in
         )
         final_outcome = fourth.complete_numeric(final_ticket, 5.0)
         fourth_stats = fourth.stats()
+        retention_truth = fourth.retention_truth()
 
         projection = project_understanding_ledger(fourth_ledger)
         projection_mapping = projection.to_mapping()
@@ -491,6 +494,44 @@ def _exercise_learning(scratch_dir: Path) -> tuple[dict[str, bool], dict[str, in
         _require(
             checks["learning_domain_is_persisted"],
             "prediction events lack the semantic learning-domain commitment",
+        )
+        forbidden_retention_keys = {
+            "value",
+            "predicted_value",
+            "expected_value",
+            "residual",
+            "commitment_nonce",
+        }
+        checks["plaintext_retention_truth_is_explicit"] = (
+            retention_truth["reveal_retention_policy"]
+            == PLAINTEXT_REVEAL_RETENTION_POLICY_V1
+            and retention_truth["raw_reveal_event_count"] == 2
+            and retention_truth["oldest_reveal_recorded_at_utc"] is not None
+            and retention_truth["oldest_reveal_age_seconds"] is not None
+            and retention_truth["timestamp_coverage_complete"] is True
+            and retention_truth["semantic_replay_verified"] is True
+            and retention_truth["durable_verified_local_ledger"] is True
+            and retention_truth[
+                "plaintext_reconstructive_fields_retained_by_v1_contract"
+            ]
+            is True
+            and retention_truth[
+                "plaintext_reconstructive_reveal_material_present"
+            ]
+            is True
+            and retention_truth["full_semantic_replay_requires_plaintext"] is True
+            and retention_truth["retention_deletion_supported"] is False
+            and retention_truth["retention_encryption_supported"] is False
+            and retention_truth["public_projection_raw_free"] is True
+            and retention_truth["runtime_authority_applied"] is False
+            and retention_truth["routing_influence_applied"] is False
+            and not (forbidden_retention_keys & _walk_keys(retention_truth))
+            and SYNTHETIC_SECRET_MARKER
+            not in json.dumps(retention_truth, sort_keys=True)
+        )
+        _require(
+            checks["plaintext_retention_truth_is_explicit"],
+            "V1 plaintext retention was hidden or overstated",
         )
     finally:
         fourth_ledger.close()
@@ -601,12 +642,16 @@ def _exercise_learning(scratch_dir: Path) -> tuple[dict[str, bool], dict[str, in
         {
             "ledger_event_count": len(events),
             "projection_ticket_count": len(projection_mapping["tickets"]),
+            "raw_reveal_event_count": int(
+                retention_truth["raw_reveal_event_count"]
+            ),
         },
         {
             "projection": projection_mapping,
             "events": events,
             "outcomes": (first_outcome, final_outcome),
             "stats": fourth_stats,
+            "retention_truth": retention_truth,
         },
     )
 
@@ -1052,6 +1097,7 @@ def build_acceptance_report(
     events = learning_evidence["events"]
     outcomes = learning_evidence["outcomes"]
     stats = learning_evidence["stats"]
+    retention_truth = learning_evidence["retention_truth"]
     wdp_mapping = wdp_receipt.to_mapping()
     recovery_mapping = recovery_plan.to_mapping()
     projection_authority = frozenset(
@@ -1088,6 +1134,7 @@ def build_acceptance_report(
                 projection,
                 events,
                 stats,
+                retention_truth,
                 wdp_mapping,
                 recovery_mapping,
             )

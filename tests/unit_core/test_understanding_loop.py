@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -12,11 +13,13 @@ import waggledance.core.magma.understanding_projection as understanding_projecti
 from waggledance.core.learning.understanding_contracts import (
     HexCellAddressV1,
     PrivacyClass,
+    UnderstandingContractError,
     UnderstandingDisposition,
     derive_target_key,
 )
 from waggledance.core.learning.understanding_loop import (
     InMemoryUnderstandingEventSink,
+    PLAINTEXT_REVEAL_RETENTION_POLICY_V1,
     UnderstandingLoop,
     UnderstandingLoopError,
     UnderstandingPolicyV1,
@@ -824,6 +827,173 @@ def test_external_prepare_numeric_counts_received_and_uses_unique_terminal_ids()
     first = direct.prepare_numeric(first_header, seed_ticket.observation_commitment)
     second = direct.prepare_numeric(second_header, seed_ticket.observation_commitment)
     assert first.ticket_id != second.ticket_id
+
+
+def test_external_prepare_numeric_classifies_pre_admission_failures_once() -> None:
+    seed_sink = InMemoryUnderstandingEventSink()
+    seed_loop = _loop(sink=seed_sink)
+    seed_ticket = seed_loop.prepare_observation(_obs(1, 10.0))
+    header = seed_sink.events[0]["payload"]["observation_header"]
+
+    direct = _loop()
+    with pytest.raises(UnderstandingLoopError, match="header shape"):
+        direct.prepare_numeric({}, seed_ticket.observation_commitment)
+    with pytest.raises(UnderstandingLoopError, match="commitment refused"):
+        direct.prepare_numeric(header, object())  # type: ignore[arg-type]
+
+    stats = direct.stats()
+    assert stats["received"] == 2
+    assert stats["invalid"] == 2
+    assert stats["accounted"] == 2
+    assert stats["counter_conservation_ok"] is True
+
+
+def test_external_prepare_numeric_does_not_misclassify_predictor_failure() -> None:
+    class RaisingPredictor:
+        def predict(self, header, prior_state):
+            raise UnderstandingLoopError("forced predictor failure")
+
+    seed_sink = InMemoryUnderstandingEventSink()
+    seed_loop = _loop(sink=seed_sink)
+    seed_ticket = seed_loop.prepare_observation(_obs(1, 10.0))
+    header = seed_sink.events[0]["payload"]["observation_header"]
+    direct = _loop(predictor=RaisingPredictor())
+
+    with pytest.raises(UnderstandingLoopError, match="forced predictor"):
+        direct.prepare_numeric(header, seed_ticket.observation_commitment)
+
+    assert direct.stats()["received"] == 1
+    assert direct.stats()["invalid"] == 0
+
+
+@pytest.mark.parametrize(
+    "policy",
+    (None, "", "ttl", "redact", "encrypt", "PLAINTEXT"),
+)
+def test_reveal_retention_policy_refuses_unimplemented_claims(policy) -> None:
+    with pytest.raises(UnderstandingContractError, match="plaintext local retention"):
+        UnderstandingPolicyV1(reveal_retention_policy=policy)
+
+
+def test_retention_truth_is_aggregate_explicit_and_raw_free() -> None:
+    clock = FakeClock()
+    loop = _loop(clock=clock)
+    ticket = loop.prepare_observation(_obs(1, 10.0))
+    loop.complete_numeric(ticket, 10.0)
+    clock.advance(120)
+
+    audit = loop.retention_truth()
+    serialized = json.dumps(audit, sort_keys=True)
+
+    assert audit["reveal_retention_policy"] == (
+        PLAINTEXT_REVEAL_RETENTION_POLICY_V1
+    )
+    assert audit["raw_reveal_event_count"] == 1
+    assert audit["oldest_reveal_recorded_at_utc"] == "2026-08-02T12:00:00Z"
+    assert audit["oldest_reveal_age_seconds"] == 120.0
+    assert audit["timestamp_coverage_complete"] is True
+    assert audit["semantic_replay_verified"] is True
+    assert audit["durable_verified_local_ledger"] is False
+    assert audit["plaintext_reconstructive_fields_retained_by_v1_contract"] is True
+    assert audit["plaintext_reconstructive_reveal_material_present"] is True
+    assert audit["full_semantic_replay_requires_plaintext"] is True
+    assert audit["retention_deletion_supported"] is False
+    assert audit["retention_encryption_supported"] is False
+    assert audit["public_projection_raw_free"] is True
+    assert audit["runtime_authority_applied"] is False
+    assert audit["routing_influence_applied"] is False
+    assert loop.stats()["public_projection_raw_free_by_v1_contract"] is True
+    assert "public_projection_raw_free" not in loop.stats()
+    assert '"value"' not in serialized
+    assert '"residual"' not in serialized
+    assert '"commitment_nonce"' not in serialized
+
+
+def test_retention_truth_fails_closed_on_semantically_orphaned_reveal() -> None:
+    source_sink = InMemoryUnderstandingEventSink()
+    source = _loop(sink=source_sink)
+    ticket = source.prepare_observation(_obs(1, 10.0))
+    source.complete_numeric(ticket, 10.0)
+    orphan_events = tuple(
+        (event["event_kind"], event["payload"])
+        for event in source_sink.events
+        if event["event_kind"] in {"observation_revealed", "disposition_recorded"}
+    )
+    orphan_sink = InMemoryUnderstandingEventSink()
+    orphan_sink.append_batch(orphan_events, idempotency_key="orphan-reveal")
+
+    with pytest.raises(UnderstandingLoopError, match="semantic replay refused"):
+        _loop(sink=orphan_sink).retention_truth()
+
+
+def test_retention_truth_computes_negative_projection_raw_free_flag(
+    monkeypatch,
+) -> None:
+    loop = _loop()
+    ticket = loop.prepare_observation(_obs(1, 10.0))
+    loop.complete_numeric(ticket, 10.0)
+    replay = understanding_projection_module.replay_understanding_projection
+
+    class ProjectionWithForbiddenKey:
+        def __init__(self, events) -> None:
+            self._projection = replay(events)
+
+        def to_mapping(self) -> dict:
+            return {**self._projection.to_mapping(), "value": 10.0}
+
+    monkeypatch.setattr(
+        understanding_projection_module,
+        "replay_understanding_projection",
+        ProjectionWithForbiddenKey,
+    )
+
+    assert loop.retention_truth()["public_projection_raw_free"] is False
+
+
+def test_retention_truth_uses_verified_durable_restart_view(tmp_path) -> None:
+    clock = FakeClock()
+    path = tmp_path / "retention-truth.db"
+    first = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=UnderstandingLedger(path),
+        clock=clock,
+    )
+    ticket = first.prepare_observation(_obs(1, 10.0))
+    first.complete_numeric(ticket, 10.0)
+    first.close()
+
+    second = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=UnderstandingLedger(path),
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    audit = second.retention_truth()
+
+    assert audit["semantic_replay_verified"] is True
+    assert audit["durable_verified_local_ledger"] is True
+    assert audit["raw_reveal_event_count"] == 1
+    assert audit["public_projection_raw_free"] is True
+    second.close()
+
+
+def test_retention_policy_literal_is_bound_into_learning_policy_digest() -> None:
+    sink = InMemoryUnderstandingEventSink()
+    loop = _loop(sink=sink)
+    loop.prepare_observation(_obs(1, 10.0))
+    policy_mapping = dict(loop.policy.__dict__)
+    expected_digest = sha256_digest(
+        {"domain": "wd.understanding_policy.v1", "policy": policy_mapping}
+    )
+    legacy_mapping = dict(policy_mapping)
+    del legacy_mapping["reveal_retention_policy"]
+    legacy_digest = sha256_digest(
+        {"domain": "wd.understanding_policy.v1", "policy": legacy_mapping}
+    )
+
+    persisted_digest = sink.events[0]["payload"]["learning_policy_digest"]
+    assert persisted_digest == expected_digest
+    assert persisted_digest != legacy_digest
 
 
 def test_in_memory_batch_persists_the_same_snapshot_it_digests() -> None:

@@ -32,6 +32,7 @@ def test_acceptance_report_passes_every_named_invariant(tmp_path) -> None:
     assert report["measurements"] == {
         "ledger_event_count": 11,
         "projection_ticket_count": 3,
+        "raw_reveal_event_count": 2,
         "ring_cell_count": 7,
         "accepted_revision_signal_count": 3,
         "rejected_revision_signal_count": 2,

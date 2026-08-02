@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -65,6 +67,39 @@ def _terminal_payload(tag: str = "one") -> dict[str, object]:
         "runtime_authority_applied": False,
         "routing_influence_applied": False,
     }
+
+
+def _wal_kill_worker(
+    db_path: str,
+    expected_head: str,
+    idempotency_key: str,
+    events,
+    crash_phase: str,
+    ready,
+) -> None:
+    """Spawn-safe worker used only by the process-crash regression test."""
+
+    ledger = UnderstandingLedger(db_path)
+    try:
+        if crash_phase == "before_commit":
+            def pause_before_commit(statement: str) -> None:
+                if statement.strip().upper() == "COMMIT":
+                    ready.set()
+                    while True:
+                        time.sleep(1)
+
+            ledger._conn.set_trace_callback(pause_before_commit)
+        ledger.append_batch_if_head(
+            events,
+            idempotency_key=idempotency_key,
+            expected_head=expected_head,
+        )
+        if crash_phase == "after_commit":
+            ready.set()
+            while True:
+                time.sleep(1)
+    finally:
+        ledger.close()
 
 
 def test_sqlite_configuration_and_loop_sink_round_trip(tmp_path) -> None:
@@ -443,3 +478,104 @@ def test_strict_types_and_closed_ledger_fail_closed(tmp_path) -> None:
     ledger.close()
     with pytest.raises(UnderstandingLedgerError, match="closed"):
         ledger.append_event(DISPOSITION_RECORDED, _terminal_payload())
+
+
+@pytest.mark.parametrize("crash_phase", ("before_commit", "after_commit"))
+def test_wal_kill_reopen_is_atomic_and_idempotent(tmp_path, crash_phase) -> None:
+    """Verify rollback/lost-result recovery at two process-kill boundaries."""
+
+    path = (tmp_path / f"wal-kill-{crash_phase}.db").resolve()
+    with UnderstandingLedger(path) as baseline:
+        baseline.append_event(
+            DISPOSITION_RECORDED,
+            _terminal_payload("baseline"),
+        )
+        baseline_head = baseline.head
+
+    candidate_events = (
+        (DISPOSITION_RECORDED, _terminal_payload(f"{crash_phase}-one")),
+        (DISPOSITION_RECORDED, _terminal_payload(f"{crash_phase}-two")),
+    )
+    idempotency_key = f"wal-kill-reopen-{crash_phase}"
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(
+        target=_wal_kill_worker,
+        args=(
+            str(path),
+            baseline_head,
+            idempotency_key,
+            candidate_events,
+            crash_phase,
+            ready,
+        ),
+    )
+    process.start()
+    try:
+        deadline = time.monotonic() + 20
+        while (
+            not ready.is_set()
+            and process.is_alive()
+            and time.monotonic() < deadline
+        ):
+            process.join(timeout=0.05)
+        assert ready.is_set(), (
+            "crash worker did not reach its barrier: "
+            f"alive={process.is_alive()} exitcode={process.exitcode}"
+        )
+        if hasattr(process, "kill"):
+            process.kill()
+        else:  # pragma: no cover - Python 3.11 has kill on supported platforms.
+            process.terminate()
+        process.join(timeout=20)
+        assert not process.is_alive(), "crash worker did not terminate"
+        assert process.exitcode not in (None, 0)
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=20)
+        if not process.is_alive():
+            process.close()
+
+    with UnderstandingLedger(path) as reopened:
+        assert reopened._conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        events_after_crash = reopened.read_verified_events()
+        receipt_count = reopened._conn.execute(
+            "SELECT COUNT(*) FROM understanding_batches "
+            "WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()[0]
+
+        if crash_phase == "before_commit":
+            assert len(events_after_crash) == 1
+            assert reopened.head == baseline_head
+            assert receipt_count == 0
+        else:
+            assert len(events_after_crash) == 3
+            assert reopened.head != baseline_head
+            assert receipt_count == 1
+
+        persisted_hashes = reopened.append_batch_if_head(
+            candidate_events,
+            idempotency_key=idempotency_key,
+            expected_head=baseline_head,
+        )
+        assert len(reopened.read_verified_events()) == 3
+        assert persisted_hashes == tuple(
+            event["event_hash"] for event in reopened.events[1:]
+        )
+        assert reopened._conn.execute(
+            "SELECT COUNT(*) FROM understanding_batches "
+            "WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()[0] == 1
+
+        with pytest.raises(
+            UnderstandingLedgerError,
+            match="idempotency_key payload mismatch",
+        ):
+            reopened.append_batch_if_head(
+                ((DISPOSITION_RECORDED, _terminal_payload("mismatch")),),
+                idempotency_key=idempotency_key,
+                expected_head=baseline_head,
+            )

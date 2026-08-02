@@ -43,6 +43,9 @@ from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 
 
 STATE_UPDATE_ALPHA_V1 = 0.1
+PLAINTEXT_REVEAL_RETENTION_POLICY_V1 = (
+    "retain_plaintext_local_for_full_semantic_replay_v1"
+)
 
 
 class UnderstandingLoopError(RuntimeError):
@@ -77,6 +80,7 @@ class NumericPredictor(Protocol):
 
 @dataclass(frozen=True)
 class UnderstandingPolicyV1:
+    reveal_retention_policy: str = PLAINTEXT_REVEAL_RETENTION_POLICY_V1
     allowed_source: str = "mqtt"
     entity_namespace: str = "wd.synthetic"
     metric: str = "temperature"
@@ -102,6 +106,11 @@ class UnderstandingPolicyV1:
     max_quarantined_sources: int = 256
 
     def __post_init__(self) -> None:
+        if self.reveal_retention_policy != PLAINTEXT_REVEAL_RETENTION_POLICY_V1:
+            raise UnderstandingContractError(
+                "reveal_retention_policy must explicitly acknowledge V1 "
+                "plaintext local retention"
+            )
         for name in ("allowed_source", "entity_namespace", "metric", "unit"):
             value = getattr(self, name)
             if type(value) is not str or not value:
@@ -1233,12 +1242,25 @@ class UnderstandingLoop:
         """Prepare an externally committed public numeric observation."""
         with self._lock:
             self._counters["received"] += 1
-        return self._prepare_numeric(
-            header,
-            observation_commitment,
-            source_sequence_identity_digest=(
+        try:
+            if type(observation_commitment) is not ObservationCommitmentV1:
+                raise UnderstandingLoopError("observation commitment refused")
+            source_sequence_identity_digest = (
                 observation_commitment.commitment_digest
-            ),
+            )
+            snapshot = self._validated_numeric_prepare_input(
+                header,
+                observation_commitment,
+                source_sequence_identity_digest=source_sequence_identity_digest,
+            )
+        except UnderstandingLoopError:
+            with self._lock:
+                self._counters["invalid"] += 1
+            raise
+        return self._prepare_numeric_validated(
+            snapshot,
+            observation_commitment,
+            source_sequence_identity_digest=source_sequence_identity_digest,
         )
 
     def _validated_header(self, header: Mapping[str, Any]) -> dict[str, Any]:
@@ -1321,12 +1343,39 @@ class UnderstandingLoop:
         *,
         source_sequence_identity_digest: str,
     ) -> PredictionTicketV1:
+        snapshot = self._validated_numeric_prepare_input(
+            header,
+            observation_commitment,
+            source_sequence_identity_digest=source_sequence_identity_digest,
+        )
+        return self._prepare_numeric_validated(
+            snapshot,
+            observation_commitment,
+            source_sequence_identity_digest=source_sequence_identity_digest,
+        )
+
+    def _validated_numeric_prepare_input(
+        self,
+        header: Mapping[str, Any],
+        observation_commitment: ObservationCommitmentV1,
+        *,
+        source_sequence_identity_digest: str,
+    ) -> dict[str, Any]:
         snapshot = self._validated_header(header)
         if type(observation_commitment) is not ObservationCommitmentV1:
             raise UnderstandingLoopError("observation commitment refused")
         if not self._event_digest_valid(source_sequence_identity_digest):
             raise UnderstandingLoopError("source sequence identity digest refused")
         self._validate_commitment_domain(snapshot, observation_commitment)
+        return snapshot
+
+    def _prepare_numeric_validated(
+        self,
+        snapshot: Mapping[str, Any],
+        observation_commitment: ObservationCommitmentV1,
+        *,
+        source_sequence_identity_digest: str,
+    ) -> PredictionTicketV1:
         target_key = derive_target_key(snapshot["entity_id"], snapshot["metric"])
         source_key = derive_source_key(
             snapshot["source"], snapshot["entity_id"], snapshot["metric"]
@@ -2187,6 +2236,155 @@ class UnderstandingLoop:
                 "runtime_authority_applied": False,
                 "routing_influence_applied": False,
                 "quarantine_fail_closed": self._quarantine_saturated,
+                "reveal_retention_policy": self.policy.reveal_retention_policy,
+                "plaintext_reconstructive_fields_retained_by_v1_contract": True,
+                "full_semantic_replay_requires_plaintext": True,
+                "retention_deletion_supported": False,
+                "retention_encryption_supported": False,
+                "public_projection_raw_free_by_v1_contract": True,
+            }
+
+    def retention_truth(self) -> dict[str, Any]:
+        """Return aggregate V1 retention facts without exporting raw values.
+
+        V1 keeps the complete reconstructive closure in the local append-only
+        ledger so semantic replay can verify commitments and state updates.
+        This read-only audit makes that limitation explicit; it does not
+        delete, redact, encrypt, rotate, or export ledger content.
+        """
+
+        from waggledance.core.magma.understanding_ledger import (
+            UnderstandingLedger,
+            UnderstandingLedgerCorruptionError,
+        )
+        from waggledance.core.magma.understanding_projection import (
+            UnderstandingProjectionError,
+            replay_understanding_projection,
+        )
+
+        with self._lock:
+            try:
+                events = tuple(self.event_sink.events)
+            except (AttributeError, TypeError) as exc:
+                raise UnderstandingLoopError(
+                    "event sink lacks verified retention audit view"
+                ) from exc
+
+            try:
+                projection = replay_understanding_projection(events)
+            except (
+                TypeError,
+                ValueError,
+                UnderstandingLedgerCorruptionError,
+                UnderstandingProjectionError,
+            ) as exc:
+                raise UnderstandingLoopError(
+                    "retention audit semantic replay refused"
+                ) from exc
+
+            forbidden_projection_keys = frozenset(
+                {
+                    "value",
+                    "predicted_value",
+                    "expected_value",
+                    "residual",
+                    "commitment_nonce",
+                    "privacy_domain",
+                    "observation_header",
+                }
+            )
+
+            def contains_forbidden_projection_key(value: Any) -> bool:
+                if isinstance(value, Mapping):
+                    return any(
+                        type(key) is not str
+                        or key in forbidden_projection_keys
+                        or contains_forbidden_projection_key(item)
+                        for key, item in value.items()
+                    )
+                if isinstance(value, (list, tuple)):
+                    return any(
+                        contains_forbidden_projection_key(item)
+                        for item in value
+                    )
+                return False
+
+            public_projection_raw_free = not contains_forbidden_projection_key(
+                projection.to_mapping()
+            )
+
+            reveal_ticket_ids: list[str] = []
+            resolution_times: dict[str, datetime] = {}
+            for event in events:
+                if type(event) is not dict or type(event.get("payload")) is not dict:
+                    raise UnderstandingLoopError(
+                        "retention audit encountered malformed event"
+                    )
+                kind = event.get("event_kind")
+                payload = event["payload"]
+                if kind == "observation_revealed":
+                    ticket_id = payload.get("ticket_id")
+                    if type(ticket_id) is not str or ticket_id in reveal_ticket_ids:
+                        raise UnderstandingLoopError(
+                            "retention audit encountered duplicate reveal"
+                        )
+                    reveal_ticket_ids.append(ticket_id)
+                elif kind == "disposition_recorded" and payload.get(
+                    "recorded_at_utc"
+                ) is not None:
+                    ticket_id = payload.get("ticket_id")
+                    if type(ticket_id) is not str:
+                        raise UnderstandingLoopError(
+                            "retention audit encountered malformed disposition"
+                        )
+                    resolution_times[ticket_id] = self._parse_utc(
+                        payload["recorded_at_utc"]
+                    )
+
+            reveal_times = [
+                resolution_times[ticket_id]
+                for ticket_id in reveal_ticket_ids
+                if ticket_id in resolution_times
+            ]
+            timestamp_coverage_complete = len(reveal_times) == len(
+                reveal_ticket_ids
+            )
+            oldest = min(reveal_times) if reveal_times else None
+            now = datetime.fromtimestamp(
+                self._trusted_timestamp(),
+                tz=timezone.utc,
+            )
+            if oldest is not None and oldest > now:
+                raise UnderstandingLoopError(
+                    "retention audit timestamp is in the future"
+                )
+            oldest_text = self._iso_utc(oldest) if oldest is not None else None
+            oldest_age = (
+                max(0.0, (now - oldest).total_seconds())
+                if oldest is not None
+                else None
+            )
+            return {
+                "schema_version": "wd.understanding_retention_truth.v1",
+                "reveal_retention_policy": self.policy.reveal_retention_policy,
+                "raw_reveal_event_count": len(reveal_ticket_ids),
+                "oldest_reveal_recorded_at_utc": oldest_text,
+                "oldest_reveal_age_seconds": oldest_age,
+                "timestamp_coverage_complete": timestamp_coverage_complete,
+                "semantic_replay_verified": True,
+                "durable_verified_local_ledger": (
+                    type(self.event_sink) is UnderstandingLedger
+                ),
+                "plaintext_reconstructive_fields_retained_by_v1_contract": True,
+                "plaintext_reconstructive_reveal_material_present": bool(
+                    reveal_ticket_ids
+                ),
+                "full_semantic_replay_requires_plaintext": True,
+                "retention_deletion_supported": False,
+                "retention_encryption_supported": False,
+                "public_projection_raw_free": public_projection_raw_free,
+                "runtime_authority_applied": False,
+                "routing_influence_applied": False,
             }
 
     def get_state(self, target_key: str) -> PredictionStateV1:
@@ -2205,6 +2403,7 @@ __all__ = [
     "InMemoryUnderstandingEventSink",
     "LastValuePredictor",
     "NumericPredictor",
+    "PLAINTEXT_REVEAL_RETENTION_POLICY_V1",
     "PredictionStateV1",
     "PredictionTicketV1",
     "STATE_UPDATE_ALPHA_V1",

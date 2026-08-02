@@ -322,6 +322,11 @@ runtime:
 # no routing, action, builder, promotion, Dream, or hive-commit authority.
 open_world_understanding:
   mode: "off"
+  # V1 full semantic replay retains plaintext numeric reveal material and
+  # reconstructive residual/state fields indefinitely in the local ledger.
+  # Shadow activation must add the following acknowledgement explicitly; it
+  # is not deletion or encryption support:
+  # reveal_retention_policy: retain_plaintext_local_for_full_semantic_replay_v1
   ledger_path: data/runtime/open_world_understanding_v1.db
   cell_id: understanding-temperature
   incarnation_id: open-world-v1

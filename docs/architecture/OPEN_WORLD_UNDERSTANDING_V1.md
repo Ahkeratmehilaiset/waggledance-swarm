@@ -382,9 +382,49 @@ continuation address disclosure and crash evidence, not encryption, live
 recovery, or activation.
 
 A separate Grok-scout V12 review recommends paired incumbent-versus-candidate
-causal lift on held-out cases before solver promotion. That is the next small
-solver-growth proof; it is not wired into this learner and grants no promotion
-authority. All Grok outputs remain advisory rather than votes or gates.
+lift on held-out cases before solver promotion. C6 now provides the first
+bounded evidence contract for that recommendation in
+`waggledance/core/learning/understanding_paired_evaluator.py`:
+
+- the evaluator is default-OFF and has no container, runtime, registry, ledger,
+  routing, BuilderHost, or promotion wiring;
+- one immutable plan commits to distinct candidate/incumbent artifacts, a
+  solver family plus hex cell/subdivision address, a pinned registry snapshot,
+  an asserted sealed holdout, selection and arm-order policies,
+  arm-independent-oracle assertions, runner/toolchain/environment/resource
+  policy, and one candidate attempt for that supplied campaign;
+- the evaluator recomputes the plan's manifest digest from each submitted
+  `(case commitment, declared-unit commitment)` pair, so post-plan membership
+  substitution is inconclusive rather than a positive result;
+- shadow evaluation accepts at most 4096 pre-scored pairs, requires at least 20
+  unique case and caller-declared unit commitments, preserves solver
+  timeout/error outcomes in the denominator, and makes missing, mutated,
+  mis-bound, or duplicated pairs inconclusive. Unit-commitment uniqueness does
+  not establish statistical independence or an effective sample size;
+- a positive leakage-audit assertion and its digest are required for a positive
+  delta label, but this accountant does not execute or authenticate that audit;
+- the deterministic receipt contains only artifact/evidence digests and
+  aggregate pass/failure/reported-delta counts. It requires externally asserted
+  HMAC-form case and evidence commitments, but validates only their shape; it
+  does not prove MAC authenticity or key custody;
+- positive, zero, and negative reported pass deltas are distinguished, but the
+  receipt hard-codes runtime/routing/promotion/registry/builder/external writes
+  false and also records receipt origin, same-input execution, leakage,
+  artifact-to-family/cell binding, statistical-unit independence, and
+  cross-campaign multiplicity as not independently verified.
+
+This proves only deterministic aggregate accounting for submitted, pre-scored
+rows whose opaque case/unit manifest matches the supplied plan. It does not
+prove that the rows were actually held out. Digest commitments do not
+authenticate receipt origin or independently prove temporal sealing, oracle
+independence, same-input execution, leakage isolation, or single-attempt
+selection. Attempt index/budget `1` has no cross-campaign memory and therefore
+cannot prevent repeated trials or candidate search. Those controls still need
+an isolated, authenticated runner and externally pinned evidence. This module
+is not a runner and neither invokes nor supersedes `run_shadow_evaluation` or
+`compute_counterfactual_delta`; it is intentionally not wired into the existing
+fail-open counterfactual summary or `AutoPromotionEngine`. All Grok outputs
+remain advisory rather than votes or gates.
 
 ## Two-week sprint ledger
 
@@ -394,8 +434,9 @@ authority. All Grok outputs remain advisory rather than votes or gates.
 | C2 | bounded two-phase loop, secret nonce, atomic runtime seam | pushed |
 | C3 | durable ledger, replay/restart, authenticated WDP/recovery | pushed |
 | C4 | default-OFF wiring, semantic-domain guard, docs, executable harness | pushed at `3f443301` |
-| C5 | accounting closure, plaintext-retention truth, WAL process-crash drill | implementation checkpoint |
-| Gate | exact pushed-head reviews and CI | RCO1/RCO2/Tools green at C4; Fable and CI pending |
+| C5 | accounting closure, plaintext-retention truth, WAL process-crash drill | pushed at `61fc99b`; CI text repair at `07c498e` |
+| C6 | default-OFF, raw-free paired solver-lift evidence contract | implementation checkpoint; no runtime wiring |
+| Gate | exact pushed-head reviews and CI | C5 exact-head CI and Tools green; C6 pending |
 
 Parallel lane intent:
 

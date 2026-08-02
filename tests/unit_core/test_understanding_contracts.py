@@ -90,13 +90,24 @@ def test_prediction_header_never_contains_actual_value() -> None:
     assert b"123.456" not in __import__("json").dumps(header).encode("utf-8")
 
 
-def test_public_commitment_is_deterministic_and_keyless() -> None:
-    first = build_observation_commitment(_observation())
-    second = build_observation_commitment(_observation())
+def test_public_commitment_is_nonce_bound_and_keyless() -> None:
+    first = build_observation_commitment(_observation(), nonce="0" * 32)
+    same = build_observation_commitment(_observation(), nonce="0" * 32)
+    second = build_observation_commitment(_observation(), nonce="1" * 32)
 
-    assert first == second
+    assert first == same
+    assert first.commitment_digest != second.commitment_digest
     assert first.scheme == "sha256"
-    assert first.key_id == first.nonce == first.key_epoch == ""
+    assert first.nonce == "0" * 32
+    assert first.key_id == first.key_epoch == ""
+
+
+def test_public_default_nonce_prevents_low_entropy_commitment_correlation() -> None:
+    first = build_observation_commitment(_observation(value=0.0))
+    second = build_observation_commitment(_observation(value=0.0))
+
+    assert first.nonce != second.nonce
+    assert first.commitment_digest != second.commitment_digest
 
 
 def test_private_commitment_requires_key_and_hides_raw_value() -> None:
@@ -196,8 +207,11 @@ def test_local_update_and_capability_gap_cannot_smuggle_authority() -> None:
         applied_at_utc=NOW,
     )
     assert update.reversible is True
+    assert update.update_digest.startswith("sha256:")
     with pytest.raises(UnderstandingContractError, match="runtime authority"):
         LocalProvisionalUpdateV1(**{**update.__dict__, "runtime_authority_applied": True})
+    object.__setattr__(update, "runtime_authority_applied", True)
+    assert update.to_mapping()["runtime_authority_applied"] is False
 
     gap = CapabilityGapCandidateV1(
         gap_id="gap-1",

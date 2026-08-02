@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import threading
 import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional
@@ -131,9 +132,18 @@ class AutonomyRuntime:
         enable_persistence: bool = True,
         enable_hex_canary_mirror: bool = False,
         runtime_receipt_sink: Optional[Callable[[dict[str, Any]], Any]] = None,
+        understanding_loop: Optional[Any] = None,
     ):
         self.profile = profile
         self.runtime_receipt_sink = runtime_receipt_sink
+        self.understanding_loop = understanding_loop
+        self._understanding_ingest_lock = (
+            threading.RLock() if understanding_loop is not None else None
+        )
+        self._understanding_prepare_failure_total = 0
+        self._understanding_complete_failure_total = 0
+        self._understanding_last_failure_stage: Optional[str] = None
+        self._understanding_last_failure_type: Optional[str] = None
         self._runtime_receipt_handle_query_total = 0
         self._runtime_receipt_solver_trace_present_total = 0
         self._runtime_receipt_sink_not_configured_total = 0
@@ -1614,6 +1624,26 @@ class AutonomyRuntime:
         Updates baselines and registers/updates entity and metric nodes
         in the graph so Dream Mode has real-world data to simulate against.
         """
+        if self._understanding_ingest_lock is None:
+            return self._ingest_sensor_observation(observation)
+        with self._understanding_ingest_lock:
+            return self._ingest_sensor_observation(observation)
+
+    def _record_understanding_failure(self, stage: str, exc: Exception) -> None:
+        if stage == "prepare":
+            self._understanding_prepare_failure_total += 1
+        else:
+            self._understanding_complete_failure_total += 1
+        self._understanding_last_failure_stage = stage
+        self._understanding_last_failure_type = type(exc).__name__
+        log.warning(
+            "Understanding shadow %s failed (%s); legacy ingestion continued",
+            stage,
+            type(exc).__name__,
+        )
+
+    def _ingest_sensor_observation(self, observation: Dict[str, Any]):
+        """Run legacy ingestion with an optional, non-authoritative shadow hook."""
         entity_id = observation.get("entity_id", "")
         metric = observation.get("metric", "")
         value = observation.get("value")
@@ -1622,6 +1652,17 @@ class AutonomyRuntime:
 
         if not entity_id or value is None:
             return
+
+        prediction_ticket = None
+        if self.understanding_loop is not None:
+            try:
+                prediction_ticket = self.understanding_loop.prepare_observation(
+                    observation
+                )
+                if prediction_ticket is None:
+                    raise TypeError("understanding loop returned no prediction ticket")
+            except Exception as exc:  # shadow failure must not block legacy ingest
+                self._record_understanding_failure("prepare", exc)
 
         # Update baseline in world model
         self.world_model.update_baseline(
@@ -1645,6 +1686,38 @@ class AutonomyRuntime:
                 latest_value=float(value),
                 source=source,
             )
+
+        if prediction_ticket is not None:
+            try:
+                self.understanding_loop.complete_numeric(
+                    prediction_ticket, float(value)
+                )
+            except Exception as exc:  # shadow failure must not block legacy ingest
+                self._record_understanding_failure("complete", exc)
+
+    def understanding_shadow_stats(self) -> dict[str, Any]:
+        """Return visible shadow gaps without granting runtime authority."""
+        result: dict[str, Any] = {
+            "enabled": self.understanding_loop is not None,
+            "prepare_failure_total": self._understanding_prepare_failure_total,
+            "complete_failure_total": self._understanding_complete_failure_total,
+            "audit_gap_total": (
+                self._understanding_prepare_failure_total
+                + self._understanding_complete_failure_total
+            ),
+            "last_failure_stage": self._understanding_last_failure_stage,
+            "last_failure_type": self._understanding_last_failure_type,
+            "runtime_authority_applied": False,
+            "routing_influence_applied": False,
+        }
+        if self.understanding_loop is not None and hasattr(
+            self.understanding_loop, "stats"
+        ):
+            try:
+                result["loop"] = self.understanding_loop.stats()
+            except Exception as exc:  # stats are observational, never authoritative
+                result["loop_stats_error_type"] = type(exc).__name__
+        return result
 
     # ── Graph health ──────────────────────────────────────
 
@@ -1722,4 +1795,6 @@ class AutonomyRuntime:
             s["prediction_ledger"] = self.prediction_ledger.stats()
         if self.capability_confidence:
             s["capability_confidence"] = self.capability_confidence.stats()
+        if self.understanding_loop is not None:
+            s["understanding_shadow"] = self.understanding_shadow_stats()
         return s

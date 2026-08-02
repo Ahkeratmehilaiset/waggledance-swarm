@@ -276,7 +276,11 @@ class ObservationCommitmentV1:
             raise UnderstandingContractError("commitment scheme refused")
         _require_token(self.privacy_domain, "privacy_domain")
         if self.scheme == "sha256":
-            if self.nonce or self.key_id or self.key_epoch:
+            if type(self.nonce) is not str or not _NONCE.fullmatch(self.nonce):
+                raise UnderstandingContractError(
+                    "public commitment requires a secret-until-reveal nonce"
+                )
+            if self.key_id or self.key_epoch:
                 raise UnderstandingContractError("public commitment cannot carry key metadata")
             if not _SHA256.fullmatch(self.commitment_digest):
                 raise UnderstandingContractError("public commitment digest scheme mismatch")
@@ -325,12 +329,16 @@ def build_observation_commitment(
         "observation": envelope.commitment_payload(),
     }
     if envelope.privacy_class in (PrivacyClass.SYNTHETIC, PrivacyClass.PUBLIC):
-        if hmac_key is not None or key_id or key_epoch or nonce is not None:
+        if hmac_key is not None or key_id or key_epoch:
             raise UnderstandingContractError("public commitment refuses key material")
+        actual_nonce = secrets.token_hex(16) if nonce is None else nonce
+        if type(actual_nonce) is not str or not _NONCE.fullmatch(actual_nonce):
+            raise UnderstandingContractError("nonce must be 16-byte lowercase hex")
         return ObservationCommitmentV1(
-            commitment_digest=sha256_digest(core),
+            commitment_digest=sha256_digest({**core, "nonce": actual_nonce}),
             scheme="sha256",
             privacy_domain=domain,
+            nonce=actual_nonce,
         )
 
     if type(hmac_key) is not bytes or len(hmac_key) < 32:
@@ -481,6 +489,26 @@ class LocalProvisionalUpdateV1:
             raise UnderstandingContractError("local update cannot apply runtime authority")
         if self.routing_influence_applied is not False:
             raise UnderstandingContractError("local update cannot influence routing")
+
+    def to_mapping(self) -> dict[str, object]:
+        """Serialize authority fields as constants across the audit boundary."""
+        return {
+            "update_id": self.update_id,
+            "cell_id": self.cell_id,
+            "prediction_digest": self.prediction_digest,
+            "prior_state_digest": self.prior_state_digest,
+            "new_state_digest": self.new_state_digest,
+            "applied_at_utc": self.applied_at_utc,
+            "reversible": True,
+            "runtime_authority_applied": False,
+            "routing_influence_applied": False,
+        }
+
+    @property
+    def update_digest(self) -> str:
+        return sha256_digest(
+            {"domain": "wd.local_provisional_update.digest.v1", **self.to_mapping()}
+        )
 
 
 @dataclass(frozen=True)

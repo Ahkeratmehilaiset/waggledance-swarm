@@ -316,6 +316,42 @@ runtime:
   compatibility_mode: false
   shadow_mode: true
   canary_enabled: true
+# Open-World Understanding V1 is a source-only shadow side channel. Literal
+# "off" returns before ledger construction and is the shipped default. Setting
+# mode to "shadow" records local prediction-before-reveal evidence, but grants
+# no routing, action, builder, promotion, Dream, or hive-commit authority.
+open_world_understanding:
+  mode: "off"
+  ledger_path: data/runtime/open_world_understanding_v1.db
+  cell_id: understanding-temperature
+  incarnation_id: open-world-v1
+  q: 0
+  r: 0
+  generation: 1
+  fence: 1
+  allowed_source: mqtt
+  entity_namespace: wd.synthetic
+  metric: temperature
+  unit: Cel
+  min_value: -80.0
+  max_value: 150.0
+  residual_abs_threshold: 2.0
+  per_source_rate: 10
+  per_source_burst: 20
+  global_rate: 100
+  global_burst: 200
+  curiosity_top_k: 32
+  curiosity_per_minute: 3
+  delta_min_samples: 5
+  delta_window_seconds: 600
+  proposal_ttl_seconds: 900
+  prediction_ttl_seconds: 300
+  max_source_buckets: 1024
+  max_targets: 256
+  max_seen_sequences: 4096
+  max_pending_tickets: 512
+  max_completed_outcomes: 4096
+  max_quarantined_sources: 256
 runtime_receipts:
   enabled: false
   out_dir: data/runtime/runtime_summary_receipts

@@ -17,6 +17,7 @@ from waggledance.core.magma.understanding_ledger import (
     UnderstandingLedger,
     UnderstandingLedgerCorruptionError,
     UnderstandingLedgerError,
+    UnderstandingLedgerHeadConflictError,
     UnderstandingLedgerHeadV1,
     UnderstandingLedgerOverflowError,
     validate_understanding_event_payload,
@@ -88,7 +89,9 @@ def test_sqlite_configuration_and_loop_sink_round_trip(tmp_path) -> None:
         ]
         assert events[0]["prev_event_hash"] == GENESIS_EVENT_HASH
         assert events[-1]["event_hash"] == ledger.head
-        assert events[0]["payload"]["source_content_digest"].startswith("sha256:")
+        assert events[0]["payload"]["source_sequence_identity_digest"].startswith(
+            "sha256:"
+        )
         assert events[0]["payload"]["residual_abs_threshold"] == 2.0
         assert events[0]["payload"]["state_update_alpha"] == 0.1
 
@@ -121,6 +124,45 @@ def test_append_batch_is_atomic_and_idempotent(tmp_path) -> None:
                 idempotency_key="must-rollback",
             )
         assert ledger.event_count == 1
+
+
+def test_compare_and_append_refuses_stale_head_without_writing(tmp_path) -> None:
+    with UnderstandingLedger(tmp_path / "head-cas.db") as ledger:
+        expected_head = ledger.head
+        winning = ((DISPOSITION_RECORDED, _terminal_payload("winner")),)
+        losing = ((DISPOSITION_RECORDED, _terminal_payload("loser")),)
+
+        ledger.append_batch(winning, idempotency_key="winning-batch")
+        winner_head = ledger.head
+        with pytest.raises(
+            UnderstandingLedgerHeadConflictError,
+            match="head changed",
+        ):
+            ledger.append_batch_if_head(
+                losing,
+                idempotency_key="losing-batch",
+                expected_head=expected_head,
+            )
+
+        assert ledger.event_count == 1
+        assert ledger.head == winner_head
+        assert ledger._conn.execute(
+            "SELECT COUNT(*) FROM understanding_batches "
+            "WHERE idempotency_key='losing-batch'"
+        ).fetchone()[0] == 0
+
+        receipt = ledger.append_batch_if_head(
+            losing,
+            idempotency_key="losing-batch",
+            expected_head=winner_head,
+        )
+        retry = ledger.append_batch_if_head(
+            losing,
+            idempotency_key="losing-batch",
+            expected_head=winner_head,
+        )
+        assert retry == receipt
+        assert ledger.event_count == 2
 
 
 def test_append_event_appends_each_call_while_batches_are_idempotent(tmp_path) -> None:
@@ -193,7 +235,16 @@ def test_payload_allowlist_rejects_authority_extra_and_raw_header_value(tmp_path
     [
         ("state_update_alpha", 0.2, "exactly 0.1"),
         ("residual_abs_threshold", 0.0, "must be positive"),
-        ("source_content_digest", "hmac-sha256:" + "a" * 64, "canonical digest"),
+        (
+            "source_sequence_identity_digest",
+            "hmac-sha256:" + "a" * 64,
+            "canonical digest",
+        ),
+        (
+            "learning_domain_digest",
+            sha256_digest({"different": "domain"}),
+            "learning_domain_digest mismatch",
+        ),
     ],
 )
 def test_prediction_replay_parameters_are_exactly_validated(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -10,6 +11,7 @@ from waggledance.core.learning.understanding_contracts import (
     KnowledgeClaimKind,
     KnowledgeDeltaV1,
     PrivacyClass,
+    derive_learning_domain_digest,
 )
 from waggledance.core.learning.understanding_loop import UnderstandingLoop
 from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
@@ -21,6 +23,7 @@ from waggledance.core.magma.understanding_ledger import (
     OBSERVATION_REVEALED,
     PREDICTION_COMMITTED,
     UnderstandingLedger,
+    UnderstandingLedgerCorruptionError,
     build_understanding_event,
 )
 from waggledance.core.magma.understanding_projection import (
@@ -99,6 +102,7 @@ def _retarget_prediction(
     source_seq=None,
     ingest_seq=None,
     incarnation_id=None,
+    committed_at_utc=None,
 ):
     result = copy.deepcopy(payload)
     if source_seq is not None:
@@ -110,6 +114,24 @@ def _retarget_prediction(
     if incarnation_id is not None:
         result["cell"]["incarnation_id"] = incarnation_id
         result["observation_header"]["cell"]["incarnation_id"] = incarnation_id
+    if committed_at_utc is not None:
+        result["prediction"]["committed_at_utc"] = committed_at_utc
+    result["learning_domain_digest"] = derive_learning_domain_digest(
+        cell=result["cell"],
+        source=result["observation_header"]["source"],
+        metric=result["observation_header"]["metric"],
+        unit=result["observation_header"]["unit"],
+        learning_policy_digest=result["learning_policy_digest"],
+        predictor_artifact_digest=result["prediction"][
+            "predictor_artifact_digest"
+        ],
+        predictor_config_digest=result["prediction"][
+            "predictor_config_digest"
+        ],
+        residual_abs_threshold=result["residual_abs_threshold"],
+        prediction_ttl_seconds=result["prediction_ttl_seconds"],
+        state_update_alpha=result["state_update_alpha"],
+    )
     result["prediction_digest"] = sha256_digest(
         {
             "domain": "wd.prediction_commitment.digest.v1",
@@ -187,6 +209,30 @@ def _extend_chain(events, pairs):
     return result
 
 
+def _expiry_payload(
+    prediction_payload: dict[str, object],
+    *,
+    recorded_at_utc: str,
+    reason: str,
+) -> dict[str, object]:
+    prediction = prediction_payload["prediction"]
+    assert isinstance(prediction, dict)
+    return {
+        "schema_version": "wd.understanding_disposition.v1",
+        "ticket_id": prediction_payload["ticket_id"],
+        "observation_commitment_digest": prediction[
+            "observation_commitment_digest"
+        ],
+        "prediction_digest": prediction_payload["prediction_digest"],
+        "disposition": "expired",
+        "residual": None,
+        "reason_codes": [reason],
+        "recorded_at_utc": recorded_at_utc,
+        "runtime_authority_applied": False,
+        "routing_influence_applied": False,
+    }
+
+
 def test_replay_matches_durable_head_and_excludes_all_observation_values(tmp_path) -> None:
     ledger = _resolved_ledger(tmp_path)
     try:
@@ -232,6 +278,61 @@ def test_crash_after_prediction_is_visible_as_pending_without_state_update(tmp_p
         assert projection.local_states == ()
 
 
+def test_replay_enforces_prediction_deadline_and_restart_timestamp(tmp_path) -> None:
+    with UnderstandingLedger(tmp_path / "temporal-replay.db") as ledger:
+        loop = UnderstandingLoop(cell=_cell(), event_sink=ledger, clock=lambda: NOW)
+        loop.prepare_observation(_observation())
+        prediction_event = ledger.events[0]
+    payload = prediction_event["payload"]
+
+    exact_deadline = _extend_chain(
+        [prediction_event],
+        [
+            (
+                DISPOSITION_RECORDED,
+                _expiry_payload(
+                    payload,
+                    recorded_at_utc="2026-08-02T13:05:00Z",
+                    reason="prediction_ttl_exceeded",
+                ),
+            )
+        ],
+    )
+    with pytest.raises(UnderstandingProjectionError, match="deadline"):
+        replay_understanding_projection(exact_deadline)
+
+    after_deadline = _extend_chain(
+        [prediction_event],
+        [
+            (
+                DISPOSITION_RECORDED,
+                _expiry_payload(
+                    payload,
+                    recorded_at_utc="2026-08-02T13:05:00.000001Z",
+                    reason="prediction_ttl_exceeded",
+                ),
+            )
+        ],
+    )
+    assert replay_understanding_projection(after_deadline).pending_ticket_count == 0
+
+    before_commit = _extend_chain(
+        [prediction_event],
+        [
+            (
+                DISPOSITION_RECORDED,
+                _expiry_payload(
+                    payload,
+                    recorded_at_utc="2026-08-02T12:59:59Z",
+                    reason="restart_lost_reveal_context",
+                ),
+            )
+        ],
+    )
+    with pytest.raises(UnderstandingProjectionError, match="predates"):
+        replay_understanding_projection(before_commit)
+
+
 def test_restart_checkpoint_contains_exact_local_state_but_has_no_serializer(
     tmp_path,
 ) -> None:
@@ -252,7 +353,12 @@ def test_restart_checkpoint_contains_exact_local_state_but_has_no_serializer(
     ] == 2
     assert checkpoint.pending_tickets[pending_id].prior_expected_value == 10.0
     assert checkpoint.pending_tickets[pending_id].predicted_value == 10.0
+    assert checkpoint.pending_tickets[pending_id].committed_at_utc == (
+        "2026-08-02T13:00:00Z"
+    )
+    assert checkpoint.pending_tickets[pending_id].prediction_ttl_seconds == 300
     assert checkpoint.pending_tickets[pending_id].revealed_value is None
+    assert checkpoint.trusted_time_watermark_utc == "2026-08-02T13:00:00Z"
     assert not hasattr(checkpoint, "to_mapping")
     with pytest.raises(TypeError):
         checkpoint.source_high_watermarks["forged"] = 99
@@ -425,6 +531,29 @@ def test_semantic_replay_refuses_digest_consistent_wrong_ewma_state(tmp_path) ->
         replay_understanding_projection(forged)
 
 
+def test_semantic_replay_binds_local_update_time_to_disposition(tmp_path) -> None:
+    ledger = _resolved_ledger(tmp_path)
+    try:
+        original = ledger.events
+    finally:
+        ledger.close()
+    update_payload = copy.deepcopy(original[3]["payload"])
+    update_payload["update"]["applied_at_utc"] = "2030-01-01T00:00:00Z"
+    update_payload["update_digest"] = sha256_digest(
+        {
+            "domain": "wd.local_provisional_update.digest.v1",
+            **update_payload["update"],
+        }
+    )
+    forged = _extend_chain(
+        original[:3],
+        [(LOCAL_PROVISIONAL_UPDATE, update_payload)],
+    )
+
+    with pytest.raises(UnderstandingProjectionError, match="update time"):
+        replay_understanding_projection(forged)
+
+
 @pytest.mark.parametrize(
     ("source_seq", "message"),
     [(1, "already accepted"), (0, "strictly monotonic")],
@@ -443,7 +572,7 @@ def test_replay_refuses_reused_or_nonmonotonic_source_sequence(
         replay_understanding_projection(forged)
 
 
-def test_ingest_sequence_is_monotonic_per_cell_incarnation_and_can_reset_on_new_one(
+def test_ingest_sequence_is_monotonic_and_cell_rebuild_requires_new_ledger(
     tmp_path,
 ) -> None:
     events = _one_resolved_then_pending_events(tmp_path)
@@ -457,11 +586,29 @@ def test_ingest_sequence_is_monotonic_per_cell_incarnation_and_can_reset_on_new_
     rebuilt_cell = _retarget_prediction(
         events[-1]["payload"], ingest_seq=1, incarnation_id="inc-rebuilt"
     )
-    allowed = _extend_chain(
+    rebuilt = _extend_chain(
         events[:4], [(PREDICTION_COMMITTED, rebuilt_cell)]
     )
-    projection = replay_understanding_projection(allowed)
-    assert projection.pending_ticket_count == 1
+    with pytest.raises(
+        UnderstandingProjectionError,
+        match="changes the ledger learning domain",
+    ):
+        replay_understanding_projection(rebuilt)
+
+
+def test_replay_refuses_prediction_that_moves_trusted_time_backwards(tmp_path) -> None:
+    events = _one_resolved_then_pending_events(tmp_path)
+    backwards = _retarget_prediction(
+        events[-1]["payload"],
+        committed_at_utc="2026-08-02T12:59:59Z",
+    )
+    forged = _extend_chain(
+        events[:4],
+        [(PREDICTION_COMMITTED, backwards)],
+    )
+
+    with pytest.raises(UnderstandingProjectionError, match="time backwards"):
+        replay_understanding_projection(forged)
 
 
 def test_projection_mapping_is_detached_from_internal_result(tmp_path) -> None:
@@ -475,14 +622,26 @@ def test_projection_mapping_is_detached_from_internal_result(tmp_path) -> None:
         with pytest.raises(TypeError):
             projection.tickets[0]["lifecycle"] = "forged"
         object.__setattr__(projection, "runtime_authority_applied", True)
-        assert projection.to_mapping()["runtime_authority_applied"] is False
+        with pytest.raises(
+            UnderstandingProjectionError,
+            match="cannot apply runtime authority",
+        ):
+            projection.to_mapping()
+        object.__setattr__(projection, "runtime_authority_applied", False)
 
         forged_authority = dict(projection.tickets[0])
         forged_authority["runtime_authority_applied"] = True
+        with pytest.raises(
+            UnderstandingProjectionError,
+            match="must be literal false",
+        ):
+            replace(projection, tickets=(forged_authority,))
         object.__setattr__(projection, "tickets", (forged_authority,))
-        assert projection.to_mapping()["tickets"][0][
-            "runtime_authority_applied"
-        ] is False
+        with pytest.raises(
+            UnderstandingProjectionError,
+            match="must be literal false",
+        ):
+            projection.to_mapping()
 
         smuggled = dict(forged_authority)
         smuggled["raw_value"] = 37.125
@@ -491,3 +650,37 @@ def test_projection_mapping_is_detached_from_internal_result(tmp_path) -> None:
             projection.to_mapping()
     finally:
         ledger.close()
+
+
+def test_replay_refuses_hash_consistent_raw_authority_true_event() -> None:
+    valid = _extend_chain(
+        [],
+        [(KNOWLEDGE_DELTA_PROPOSED, _delta_payload())],
+    )[0]
+    forged = copy.deepcopy(valid)
+    forged["payload"]["delta"]["runtime_authority_applied"] = True
+    forged["payload"]["proposal_digest"] = sha256_digest(
+        {
+            "domain": "wd.knowledge_delta.digest.v1",
+            **forged["payload"]["delta"],
+        }
+    )
+    core = {
+        key: forged[key]
+        for key in (
+            "schema_version",
+            "seq",
+            "event_kind",
+            "payload",
+            "prev_event_hash",
+        )
+    }
+    forged["event_hash"] = sha256_digest(
+        {"domain": "wd.understanding_event.digest.v1", **core}
+    )
+
+    with pytest.raises(
+        UnderstandingLedgerCorruptionError,
+        match="delta runtime authority must be exactly false",
+    ):
+        replay_understanding_projection([forged])

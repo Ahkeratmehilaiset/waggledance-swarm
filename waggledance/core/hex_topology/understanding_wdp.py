@@ -573,6 +573,14 @@ class WDPShadowReceiptV1:
         return self.decision is WDPDecision.APPROVED_SHADOW
 
     def to_mapping(self) -> dict[str, object]:
+        if self.hive_commit_applied is not False:
+            raise WDPContractError("shadow receipt cannot apply a hive commit")
+        if self.runtime_authority_applied is not False:
+            raise WDPContractError(
+                "shadow receipt cannot apply runtime authority"
+            )
+        if self.routing_influence_applied is not False:
+            raise WDPContractError("shadow receipt cannot influence routing")
         return {
             "schema_version": self.schema_version,
             "proposal_digest": self.proposal_digest,

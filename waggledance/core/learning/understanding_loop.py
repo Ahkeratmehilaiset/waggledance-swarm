@@ -35,6 +35,7 @@ from waggledance.core.learning.understanding_contracts import (
     UnderstandingDisposition,
     UnderstandingDispositionV1,
     build_observation_commitment,
+    derive_learning_domain_digest,
     derive_source_key,
     derive_target_key,
 )
@@ -46,6 +47,10 @@ STATE_UPDATE_ALPHA_V1 = 0.1
 
 class UnderstandingLoopError(RuntimeError):
     """The shadow loop could not preserve its ordering or audit invariant."""
+
+
+class UnderstandingLoopHeadConflictError(UnderstandingLoopError):
+    """A durable writer advanced beyond this loop's verified head anchor."""
 
 
 class UnderstandingEventSink(Protocol):
@@ -88,6 +93,7 @@ class UnderstandingPolicyV1:
     delta_min_samples: int = 5
     delta_window_seconds: int = 600
     proposal_ttl_seconds: int = 900
+    prediction_ttl_seconds: int = 300
     max_source_buckets: int = 1024
     max_targets: int = 256
     max_seen_sequences: int = 4096
@@ -116,6 +122,7 @@ class UnderstandingPolicyV1:
             "delta_min_samples",
             "delta_window_seconds",
             "proposal_ttl_seconds",
+            "prediction_ttl_seconds",
             "max_source_buckets",
             "max_targets",
             "max_seen_sequences",
@@ -194,6 +201,7 @@ class _IssuedTicketV1:
     ticket_fingerprint: str
     header: Optional[dict[str, Any]]
     resolution_at_utc: Optional[str] = None
+    resolution_ledger_head: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -355,17 +363,47 @@ class UnderstandingLoop:
             raise UnderstandingLoopError(
                 "recover_from_verified_ledger must be an exact bool"
             )
+        if (
+            predictor is not None
+            and type(predictor) is not LastValuePredictor
+            and (
+                predictor_artifact_digest is None
+                or predictor_config_digest is None
+            )
+        ):
+            raise UnderstandingLoopError(
+                "custom predictor requires explicit artifact and config digests"
+            )
         self.cell = copy.deepcopy(cell)
         self.event_sink = event_sink
         self.predictor = predictor or LastValuePredictor()
         self.policy = copy.deepcopy(policy or UnderstandingPolicyV1())
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._trusted_clock_watermark: Optional[float] = None
         self._hmac_key_provider = hmac_key_provider
         self._predictor_artifact_digest = predictor_artifact_digest or sha256_digest(
             {"predictor": "last_value", "schema_version": "v1"}
         )
         self._predictor_config_digest = predictor_config_digest or sha256_digest(
             {"policy": self.policy.__dict__}
+        )
+        self._learning_policy_digest = sha256_digest(
+            {
+                "domain": "wd.understanding_policy.v1",
+                "policy": self.policy.__dict__,
+            }
+        )
+        self._learning_domain_digest = derive_learning_domain_digest(
+            cell=self.cell.to_mapping(),
+            source=self.policy.allowed_source,
+            metric=self.policy.metric,
+            unit=self.policy.unit,
+            learning_policy_digest=self._learning_policy_digest,
+            predictor_artifact_digest=self._predictor_artifact_digest,
+            predictor_config_digest=self._predictor_config_digest,
+            residual_abs_threshold=float(self.policy.residual_abs_threshold),
+            prediction_ttl_seconds=self.policy.prediction_ttl_seconds,
+            state_update_alpha=STATE_UPDATE_ALPHA_V1,
         )
         self._lock = threading.RLock()
         self._ingest_seq = 0
@@ -374,8 +412,10 @@ class UnderstandingLoop:
         self._source_high_watermarks: dict[str, int] = {}
         self._quarantined_sources: set[str] = set()
         self._quarantine_saturated = False
+        self._event_head_anchor: Optional[str] = None
         self._issued_tickets: dict[str, _IssuedTicketV1] = {}
         self._completed_outcomes: dict[str, _CompletedTicketV1] = {}
+        self._resolution_head_conflicts: dict[str, int] = {}
         self._source_buckets: dict[str, tuple[float, float]] = {}
         now_timestamp = self._trusted_timestamp()
         self._global_bucket = (float(self.policy.global_burst), now_timestamp)
@@ -411,7 +451,10 @@ class UnderstandingLoop:
         authority.
         """
 
-        from waggledance.core.magma.understanding_ledger import UnderstandingLedger
+        from waggledance.core.magma.understanding_ledger import (
+            UnderstandingLedger,
+            UnderstandingLedgerHeadConflictError,
+        )
         from waggledance.core.magma.understanding_projection import (
             reduce_understanding_ledger_restart_checkpoint,
         )
@@ -420,11 +463,24 @@ class UnderstandingLoop:
             raise UnderstandingLoopError(
                 "verified restart recovery requires UnderstandingLedger"
             )
-        checkpoint = reduce_understanding_ledger_restart_checkpoint(
-            self.event_sink
-        )
-        self._validate_restart_checkpoint(checkpoint)
-        if checkpoint.pending_tickets:
+        for _attempt in range(8):
+            checkpoint = reduce_understanding_ledger_restart_checkpoint(
+                self.event_sink
+            )
+            self._validate_restart_checkpoint(checkpoint)
+            self._adopt_trusted_watermark(
+                checkpoint.trusted_time_watermark_utc
+            )
+            if not checkpoint.pending_tickets:
+                confirmed_head = self.event_sink.head_record().event_hash
+                if not hmac.compare_digest(
+                    confirmed_head,
+                    checkpoint.ledger_head,
+                ):
+                    continue
+                self._event_head_anchor = checkpoint.ledger_head
+                self._hydrate_restart_checkpoint(checkpoint)
+                return
             if any(
                 pending.reveal_verified
                 for pending in checkpoint.pending_tickets.values()
@@ -432,10 +488,21 @@ class UnderstandingLoop:
                 raise UnderstandingLoopError(
                     "revealed pending prediction cannot be safely recovered"
                 )
-            recorded_at = self._iso_utc(self._clock())
+            recorded_at = self._iso_utc(
+                datetime.fromtimestamp(
+                    self._trusted_timestamp(),
+                    tz=timezone.utc,
+                )
+            )
             events: list[tuple[str, Mapping[str, Any]]] = []
             for ticket_id in sorted(checkpoint.pending_tickets):
                 pending = checkpoint.pending_tickets[ticket_id]
+                if self._parse_utc(recorded_at) < self._parse_utc(
+                    pending.committed_at_utc
+                ):
+                    raise UnderstandingLoopError(
+                        "restart clock predates pending prediction"
+                    )
                 disposition = UnderstandingDispositionV1(
                     observation_commitment_digest=(
                         pending.observation_commitment_digest
@@ -463,23 +530,49 @@ class UnderstandingLoop:
                     "cell": self.cell.to_mapping(),
                     "prior_ledger_head": checkpoint.ledger_head,
                     "pending_ticket_ids": sorted(checkpoint.pending_tickets),
+                    "recorded_at_utc": recorded_at,
                 }
             )
-            self._append_batch_checked(
-                tuple(events),
-                idempotency_key=f"restart-reconcile:{reconciliation_digest[7:]}",
-            )
-            checkpoint = reduce_understanding_ledger_restart_checkpoint(
-                self.event_sink
-            )
-            self._validate_restart_checkpoint(checkpoint)
-            if checkpoint.pending_tickets:
-                raise UnderstandingLoopError(
-                    "restart reconciliation left pending predictions"
+            try:
+                digests = self.event_sink.append_batch_if_head(
+                    tuple(events),
+                    idempotency_key=(
+                        f"restart-reconcile:{reconciliation_digest[7:]}"
+                    ),
+                    expected_head=checkpoint.ledger_head,
                 )
-        self._hydrate_restart_checkpoint(checkpoint)
+            except UnderstandingLedgerHeadConflictError:
+                continue
+            except Exception:
+                self._counters["append_failure"] += 1
+                raise
+            if (
+                type(digests) is not tuple
+                or len(digests) != len(events)
+                or not all(
+                    self._event_digest_valid(digest) for digest in digests
+                )
+            ):
+                self._counters["append_failure"] += 1
+                raise UnderstandingLoopError(
+                    "event sink returned invalid batch receipt"
+                )
+            self._event_head_anchor = digests[-1]
+        raise UnderstandingLoopError(
+            "restart reconciliation could not acquire a stable ledger head"
+        )
 
     def _validate_restart_checkpoint(self, checkpoint: Any) -> None:
+        if (
+            checkpoint.learning_domain_digest is not None
+            and not hmac.compare_digest(
+                checkpoint.learning_domain_digest,
+                self._learning_domain_digest,
+            )
+        ):
+            raise UnderstandingLoopError(
+                "ledger learning domain differs from configured policy"
+            )
         expected_cell_key = (self.cell.cell_id, self.cell.incarnation_id)
         foreign_cells = set(checkpoint.cell_ingest_high_watermarks) - {
             expected_cell_key
@@ -518,7 +611,17 @@ class UnderstandingLoop:
                     "pending prediction belongs to another cell fence"
                 )
 
+    def _adopt_trusted_watermark(self, recorded_at_utc: Optional[str]) -> None:
+        if recorded_at_utc is not None:
+            persisted_watermark = self._parse_utc(recorded_at_utc).timestamp()
+            if (
+                self._trusted_clock_watermark is None
+                or persisted_watermark > self._trusted_clock_watermark
+            ):
+                self._trusted_clock_watermark = persisted_watermark
+
     def _hydrate_restart_checkpoint(self, checkpoint: Any) -> None:
+        self._adopt_trusted_watermark(checkpoint.trusted_time_watermark_utc)
         self._ingest_seq = checkpoint.max_ingest_seq
         self._states = {
             target_key: PredictionStateV1(
@@ -562,6 +665,12 @@ class UnderstandingLoop:
         timestamp = now.astimezone(timezone.utc).timestamp()
         if not math.isfinite(timestamp):
             raise UnderstandingLoopError("clock returned non-finite instant")
+        if (
+            self._trusted_clock_watermark is not None
+            and timestamp < self._trusted_clock_watermark
+        ):
+            raise UnderstandingLoopError("trusted clock moved backwards")
+        self._trusted_clock_watermark = timestamp
         return timestamp
 
     @staticmethod
@@ -631,10 +740,29 @@ class UnderstandingLoop:
         *,
         idempotency_key: str,
     ) -> tuple[str, ...]:
+        from waggledance.core.magma.understanding_ledger import (
+            UnderstandingLedger,
+            UnderstandingLedgerHeadConflictError,
+        )
+
         try:
-            digests = self.event_sink.append_batch(
-                events, idempotency_key=idempotency_key
-            )
+            if (
+                type(self.event_sink) is UnderstandingLedger
+                and self._event_head_anchor is not None
+            ):
+                digests = self.event_sink.append_batch_if_head(
+                    events,
+                    idempotency_key=idempotency_key,
+                    expected_head=self._event_head_anchor,
+                )
+            else:
+                digests = self.event_sink.append_batch(
+                    events, idempotency_key=idempotency_key
+                )
+        except UnderstandingLedgerHeadConflictError as exc:
+            raise UnderstandingLoopHeadConflictError(
+                "durable ledger advanced beyond this loop's verified head"
+            ) from exc
         except Exception:
             self._counters["append_failure"] += 1
             raise
@@ -645,6 +773,7 @@ class UnderstandingLoop:
         ):
             self._counters["append_failure"] += 1
             raise UnderstandingLoopError("event sink returned invalid batch receipt")
+        self._event_head_anchor = digests[-1]
         return digests
 
     def _issue_ticket(
@@ -694,6 +823,37 @@ class UnderstandingLoop:
         while len(self._completed_outcomes) > self.policy.max_completed_outcomes:
             oldest = next(iter(self._completed_outcomes))
             del self._completed_outcomes[oldest]
+
+    def _expire_stale_predictions(self, now: datetime) -> None:
+        """Bound pending lifetime before admitting another prediction."""
+
+        for ticket_id in sorted(tuple(self._issued_tickets)):
+            issued = self._issued_tickets.get(ticket_id)
+            if issued is None or issued.ticket.prediction is None:
+                continue
+            committed = self._parse_utc(
+                issued.ticket.prediction.committed_at_utc
+            )
+            age_seconds = (now - committed).total_seconds()
+            if age_seconds < 0:
+                raise UnderstandingLoopError(
+                    "trusted clock moved before prediction commitment"
+                )
+            if age_seconds <= self.policy.prediction_ttl_seconds:
+                continue
+            expiring = _IssuedTicketV1(
+                ticket=issued.ticket,
+                ticket_fingerprint=issued.ticket_fingerprint,
+                header=issued.header,
+                resolution_at_utc=self._iso_utc(now),
+                resolution_ledger_head=self._event_head_anchor,
+            )
+            self._issued_tickets[ticket_id] = expiring
+            self._resolve_without_update(
+                expiring,
+                UnderstandingDisposition.EXPIRED,
+                "prediction_ttl_exceeded",
+            )
 
     def _cache_terminal_ticket(
         self,
@@ -761,7 +921,10 @@ class UnderstandingLoop:
                 ):
                     raise ValueError("timestamp")
                 when = (
-                    self._clock()
+                    datetime.fromtimestamp(
+                        self._trusted_timestamp(),
+                        tz=timezone.utc,
+                    )
                     if timestamp is None
                     else datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
                 )
@@ -775,7 +938,18 @@ class UnderstandingLoop:
             metadata = observation.get("metadata", {})
             if type(metadata) is not dict:
                 raise ValueError("metadata")
-            metadata_digest = sha256_digest({"metadata": metadata})
+            # Metadata is opaque in V1.  A stable unsalted digest would let a
+            # ledger observer dictionary-attack low-entropy metadata before
+            # (and even after) the numeric reveal.  The salt is intentionally
+            # never persisted or revealed; the observation commitment binds
+            # this opaque digest rather than the raw metadata.
+            metadata_digest = sha256_digest(
+                {
+                    "domain": "wd.observation.metadata_commitment.v1",
+                    "metadata": metadata,
+                    "nonce": secrets.token_hex(16),
+                }
+            )
             observation_id_raw = observation.get("observation_id")
             if observation_id_raw is not None and type(observation_id_raw) is not str:
                 raise ValueError("observation_id")
@@ -826,9 +1000,14 @@ class UnderstandingLoop:
                 privacy_class=privacy,
                 metadata_digest=metadata_digest,
             )
-            source_content_digest = sha256_digest(
+            # This identity intentionally excludes both the raw value and the
+            # salted opaque metadata digest.  Reuse with the same source
+            # sequence and public header is suppressed as a duplicate even if
+            # a caller supplies different private material; it cannot update
+            # state.  Changes to public header fields still trigger quarantine.
+            source_sequence_identity_digest = sha256_digest(
                 {
-                    "domain": "wd.source_observation.content.v1",
+                    "domain": "wd.source_observation.header_identity.v1",
                     "observation_id": (
                         observation_id_raw if observation_id_raw is not None else None
                     ),
@@ -837,7 +1016,6 @@ class UnderstandingLoop:
                     "entity_id": envelope.entity_id,
                     "metric": envelope.metric,
                     "unit": envelope.unit,
-                    "value": envelope.value,
                     "observed_at_utc": (
                         envelope.observed_at_utc
                         if observation.get("observed_at_utc") is not None
@@ -846,7 +1024,6 @@ class UnderstandingLoop:
                     ),
                     "quality": envelope.quality,
                     "privacy_class": envelope.privacy_class.value,
-                    "metadata_digest": envelope.metadata_digest,
                 }
             )
         except (TypeError, ValueError, UnderstandingContractError) as exc:
@@ -880,7 +1057,7 @@ class UnderstandingLoop:
         return self._prepare_numeric(
             envelope.header_mapping(),
             commitment,
-            source_content_digest=source_content_digest,
+            source_sequence_identity_digest=source_sequence_identity_digest,
         )
 
     def _terminal_observation_with_budget(
@@ -1059,7 +1236,9 @@ class UnderstandingLoop:
         return self._prepare_numeric(
             header,
             observation_commitment,
-            source_content_digest=observation_commitment.commitment_digest,
+            source_sequence_identity_digest=(
+                observation_commitment.commitment_digest
+            ),
         )
 
     def _validated_header(self, header: Mapping[str, Any]) -> dict[str, Any]:
@@ -1140,13 +1319,13 @@ class UnderstandingLoop:
         header: Mapping[str, Any],
         observation_commitment: ObservationCommitmentV1,
         *,
-        source_content_digest: str,
+        source_sequence_identity_digest: str,
     ) -> PredictionTicketV1:
         snapshot = self._validated_header(header)
         if type(observation_commitment) is not ObservationCommitmentV1:
             raise UnderstandingLoopError("observation commitment refused")
-        if not self._event_digest_valid(source_content_digest):
-            raise UnderstandingLoopError("source content digest refused")
+        if not self._event_digest_valid(source_sequence_identity_digest):
+            raise UnderstandingLoopError("source sequence identity digest refused")
         self._validate_commitment_domain(snapshot, observation_commitment)
         target_key = derive_target_key(snapshot["entity_id"], snapshot["metric"])
         source_key = derive_source_key(
@@ -1155,12 +1334,17 @@ class UnderstandingLoop:
         source_seq = snapshot["source_seq"]
 
         with self._lock:
+            now = datetime.fromtimestamp(
+                self._trusted_timestamp(),
+                tz=timezone.utc,
+            )
+            self._expire_stale_predictions(now)
             state = copy.deepcopy(self._current_state(target_key))
             sequence_key = (source_key, source_seq)
             prior_commitment = self._seen_sequences.get(sequence_key)
             sequence_reuse = False
             if prior_commitment is not None:
-                if prior_commitment == source_content_digest:
+                if prior_commitment == source_sequence_identity_digest:
                     self._counters["duplicate"] += 1
                     ticket = self._ticket_without_event(
                         snapshot,
@@ -1277,7 +1461,12 @@ class UnderstandingLoop:
                 status = PredictionStatus.PREDICTED
             else:
                 status = PredictionStatus.COLD_START
-            committed_at = self._iso_utc(self._clock())
+            committed_at = self._iso_utc(
+                datetime.fromtimestamp(
+                    self._trusted_timestamp(),
+                    tz=timezone.utc,
+                )
+            )
             prediction = PredictionCommitmentV1(
                 observation_commitment_digest=observation_commitment.commitment_digest,
                 ingest_seq=snapshot["ingest_seq"],
@@ -1302,13 +1491,20 @@ class UnderstandingLoop:
                     "target_key": target_key,
                     "source_key": source_key,
                     "source_seq": source_seq,
-                    "source_content_digest": source_content_digest,
+                    "source_sequence_identity_digest": (
+                        source_sequence_identity_digest
+                    ),
                     "cell": self.cell.to_mapping(),
                     "observation_header": snapshot,
                     "prediction": prediction.to_mapping(),
                     "prediction_digest": prediction.prediction_digest,
+                    "learning_policy_digest": self._learning_policy_digest,
+                    "learning_domain_digest": self._learning_domain_digest,
                     "residual_abs_threshold": float(
                         self.policy.residual_abs_threshold
+                    ),
+                    "prediction_ttl_seconds": (
+                        self.policy.prediction_ttl_seconds
                     ),
                     "state_update_alpha": STATE_UPDATE_ALPHA_V1,
                     "runtime_authority_applied": False,
@@ -1318,7 +1514,7 @@ class UnderstandingLoop:
                 (("prediction_committed", prediction_payload),),
                 idempotency_key=f"prediction:{ticket_id}",
             )
-            self._seen_sequences[sequence_key] = source_content_digest
+            self._seen_sequences[sequence_key] = source_sequence_identity_digest
             self._source_high_watermarks[source_key] = source_seq
             while len(self._seen_sequences) > self.policy.max_seen_sequences:
                 oldest = next(iter(self._seen_sequences))
@@ -1470,14 +1666,54 @@ class UnderstandingLoop:
                 return outcome
             if ticket.prediction is None or issued.header is None:
                 raise UnderstandingLoopError("prediction ticket lacks commitment")
-            if issued.resolution_at_utc is None:
+            if (
+                issued.resolution_at_utc is not None
+                and issued.resolution_ledger_head != self._event_head_anchor
+            ):
                 issued = _IssuedTicketV1(
                     ticket=issued.ticket,
                     ticket_fingerprint=issued.ticket_fingerprint,
                     header=issued.header,
-                    resolution_at_utc=self._iso_utc(self._clock()),
                 )
                 self._issued_tickets[ticket.ticket_id] = issued
+            if issued.resolution_at_utc is None:
+                candidate_resolution = self._iso_utc(
+                    datetime.fromtimestamp(
+                        self._trusted_timestamp(),
+                        tz=timezone.utc,
+                    )
+                )
+                committed_at = self._parse_utc(
+                    ticket.prediction.committed_at_utc
+                )
+                if self._parse_utc(candidate_resolution) < committed_at:
+                    raise UnderstandingLoopError(
+                        "trusted clock moved before prediction commitment"
+                    )
+                candidate = _IssuedTicketV1(
+                    ticket=issued.ticket,
+                    ticket_fingerprint=issued.ticket_fingerprint,
+                    header=issued.header,
+                    resolution_at_utc=candidate_resolution,
+                    resolution_ledger_head=self._event_head_anchor,
+                )
+                issued = candidate
+            resolved_at = self._parse_utc(issued.resolution_at_utc)
+            committed_at = self._parse_utc(
+                ticket.prediction.committed_at_utc
+            )
+            age_seconds = (resolved_at - committed_at).total_seconds()
+            if age_seconds < 0:
+                raise UnderstandingLoopError(
+                    "trusted clock moved before prediction commitment"
+                )
+            self._issued_tickets[ticket.ticket_id] = issued
+            if age_seconds > self.policy.prediction_ttl_seconds:
+                return self._resolve_without_update(
+                    issued,
+                    UnderstandingDisposition.EXPIRED,
+                    "prediction_ttl_exceeded",
+                )
             current = self._current_state(ticket.target_key)
             if (
                 current.generation != ticket.prior_state.generation
@@ -1975,6 +2211,7 @@ __all__ = [
     "UnderstandingEventSink",
     "UnderstandingLoop",
     "UnderstandingLoopError",
+    "UnderstandingLoopHeadConflictError",
     "UnderstandingOutcomeV1",
     "UnderstandingPolicyV1",
 ]

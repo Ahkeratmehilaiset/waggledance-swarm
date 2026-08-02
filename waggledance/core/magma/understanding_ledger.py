@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from waggledance.core.learning.understanding_contracts import (
+    derive_learning_domain_digest,
     derive_source_key,
     derive_target_key,
 )
@@ -160,6 +161,10 @@ class UnderstandingLedgerCorruptionError(RuntimeError):
 
 class UnderstandingLedgerOverflowError(UnderstandingLedgerError):
     """The fixed-width V1 SQLite sequence space has been exhausted."""
+
+
+class UnderstandingLedgerHeadConflictError(UnderstandingLedgerError):
+    """A compare-and-append caller observed a different durable ledger head."""
 
 
 @dataclass(frozen=True)
@@ -405,8 +410,11 @@ def _validate_prediction_committed(payload: object) -> None:
             "observation_header",
             "prediction",
             "prediction_digest",
-            "source_content_digest",
+            "learning_policy_digest",
+            "learning_domain_digest",
+            "source_sequence_identity_digest",
             "residual_abs_threshold",
+            "prediction_ttl_seconds",
             "state_update_alpha",
             "runtime_authority_applied",
             "routing_influence_applied",
@@ -423,12 +431,26 @@ def _validate_prediction_committed(payload: object) -> None:
     prediction_digest = _require_digest(
         record["prediction_digest"], "prediction_digest"
     )
-    _require_digest(record["source_content_digest"], "source_content_digest")
+    learning_policy_digest = _require_digest(
+        record["learning_policy_digest"], "learning_policy_digest"
+    )
+    learning_domain_digest = _require_digest(
+        record["learning_domain_digest"], "learning_domain_digest"
+    )
+    _require_digest(
+        record["source_sequence_identity_digest"],
+        "source_sequence_identity_digest",
+    )
     residual_abs_threshold = _require_finite(
         record["residual_abs_threshold"], "residual_abs_threshold"
     )
     if residual_abs_threshold <= 0:
         raise UnderstandingLedgerError("residual_abs_threshold must be positive")
+    prediction_ttl_seconds = _require_int(
+        record["prediction_ttl_seconds"],
+        "prediction_ttl_seconds",
+        minimum=1,
+    )
     if type(record["state_update_alpha"]) is not float or record[
         "state_update_alpha"
     ] != 0.1:
@@ -440,6 +462,23 @@ def _validate_prediction_committed(payload: object) -> None:
         raise UnderstandingLedgerError("prediction_digest mismatch")
     if dict(cell) != dict(header["cell"]):
         raise UnderstandingLedgerError("cell/header cell mismatch")
+    expected_learning_domain_digest = derive_learning_domain_digest(
+        cell=cell,
+        source=header["source"],
+        metric=header["metric"],
+        unit=header["unit"],
+        learning_policy_digest=learning_policy_digest,
+        predictor_artifact_digest=prediction["predictor_artifact_digest"],
+        predictor_config_digest=prediction["predictor_config_digest"],
+        residual_abs_threshold=residual_abs_threshold,
+        prediction_ttl_seconds=prediction_ttl_seconds,
+        state_update_alpha=record["state_update_alpha"],
+    )
+    if not hmac.compare_digest(
+        learning_domain_digest,
+        expected_learning_domain_digest,
+    ):
+        raise UnderstandingLedgerError("learning_domain_digest mismatch")
     if record["source_seq"] != header["source_seq"]:
         raise UnderstandingLedgerError("source sequence mismatch")
     if prediction["ingest_seq"] != header["ingest_seq"]:
@@ -1254,6 +1293,7 @@ class UnderstandingLedger:
         *,
         idempotency_key: Optional[str],
         batch_digest: str,
+        expected_head: Optional[str] = None,
     ) -> tuple[str, ...]:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1264,6 +1304,13 @@ class UnderstandingLedger:
                     self._conn.execute("COMMIT")
                     return prior
             head = self._current_head_locked()
+            if expected_head is not None and not hmac.compare_digest(
+                head.event_hash,
+                expected_head,
+            ):
+                raise UnderstandingLedgerHeadConflictError(
+                    "understanding ledger head changed before append"
+                )
             if head.event_count > _MAX_SEQUENCE - len(events):
                 raise UnderstandingLedgerOverflowError(
                     "understanding event sequence space exhausted"
@@ -1348,6 +1395,32 @@ class UnderstandingLedger:
                 batch_digest=batch_digest,
             )
 
+    def append_batch_if_head(
+        self,
+        events: Sequence[tuple[str, Mapping[str, Any]]],
+        *,
+        idempotency_key: str,
+        expected_head: str,
+    ) -> tuple[str, ...]:
+        """Atomically append only when the durable head still matches.
+
+        An exact idempotent retry returns its prior receipt before comparing
+        heads, covering the case where a successful caller lost the response.
+        """
+
+        key = _require_token(idempotency_key, "idempotency_key")
+        head = _require_digest(expected_head, "expected_head")
+        validated = self._canonical_batch(events)
+        batch_digest = self._batch_digest(validated)
+        with self._lock:
+            self._ensure_open()
+            return self._append_validated_locked(
+                validated,
+                idempotency_key=key,
+                batch_digest=batch_digest,
+                expected_head=head,
+            )
+
     @property
     def events(self) -> tuple[dict[str, Any], ...]:
         """Verified compatibility view matching ``InMemoryUnderstandingEventSink``."""
@@ -1389,6 +1462,7 @@ __all__ = [
     "UnderstandingLedger",
     "UnderstandingLedgerCorruptionError",
     "UnderstandingLedgerError",
+    "UnderstandingLedgerHeadConflictError",
     "UnderstandingLedgerHeadV1",
     "UnderstandingLedgerOverflowError",
     "build_understanding_event",

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import shutil
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from functools import cached_property
 from itertools import count
@@ -23,6 +24,7 @@ DEFAULT_RUNTIME_RECEIPT_OUT_DIR = "data/runtime/runtime_summary_receipts"
 DEFAULT_CHAT_SERVED_RECEIPT_OUT_DIR = "data/runtime/chat_served_receipts"
 DEFAULT_V313_SOLVER_RECEIPT_MAX_BUNDLES = 1000
 _V313_SOLVER_RECEIPT_BUNDLE_DIR_RE = re.compile(r"^\d{8}T\d{12}Z-\d{6}$")
+_OPEN_WORLD_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _public_runtime_receipt_verifier_errors(errors) -> list[str]:
@@ -49,6 +51,191 @@ def _settings_positive_int(settings, key: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _resolve_open_world_ledger_path(value) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError(
+            "open_world_understanding.ledger_path must be a non-empty path"
+        )
+    configured = Path(value)
+    if configured.is_absolute():
+        return configured.resolve()
+
+    project_root = _OPEN_WORLD_PROJECT_ROOT.resolve()
+    resolved = (project_root / configured).resolve()
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError(
+            "relative open_world_understanding.ledger_path must stay inside "
+            "the project root"
+        ) from exc
+    return resolved
+
+
+def _build_open_world_understanding_loop(settings, *, stub: bool):
+    """Build the explicitly opted-in Open-World V1 shadow side channel.
+
+    Literal ``off`` returns before importing or constructing any ledger, so
+    the default path creates no file and changes no runtime behavior.  Literal
+    ``shadow`` is the only other accepted mode; unknown values fail closed.
+    """
+
+    missing_section = object()
+    section = settings.get("open_world_understanding", missing_section)
+    if section is not missing_section and not isinstance(section, Mapping):
+        raise ValueError(
+            "open_world_understanding must be a configuration mapping"
+        )
+
+    mode = settings.get("open_world_understanding.mode", "off")
+    if mode == "off":
+        return None
+    if mode != "shadow":
+        raise ValueError(
+            "open_world_understanding.mode must be literal 'off' or 'shadow'"
+        )
+
+    from waggledance.core.learning.understanding_contracts import (
+        HexCellAddressV1,
+    )
+    from waggledance.core.learning.understanding_loop import (
+        InMemoryUnderstandingEventSink,
+        UnderstandingLoop,
+        UnderstandingPolicyV1,
+    )
+
+    defaults = UnderstandingPolicyV1()
+    policy = UnderstandingPolicyV1(
+        allowed_source=settings.get(
+            "open_world_understanding.allowed_source",
+            defaults.allowed_source,
+        ),
+        entity_namespace=settings.get(
+            "open_world_understanding.entity_namespace",
+            defaults.entity_namespace,
+        ),
+        metric=settings.get(
+            "open_world_understanding.metric",
+            defaults.metric,
+        ),
+        unit=settings.get("open_world_understanding.unit", defaults.unit),
+        min_value=settings.get(
+            "open_world_understanding.min_value",
+            defaults.min_value,
+        ),
+        max_value=settings.get(
+            "open_world_understanding.max_value",
+            defaults.max_value,
+        ),
+        residual_abs_threshold=settings.get(
+            "open_world_understanding.residual_abs_threshold",
+            defaults.residual_abs_threshold,
+        ),
+        per_source_rate=settings.get(
+            "open_world_understanding.per_source_rate",
+            defaults.per_source_rate,
+        ),
+        per_source_burst=settings.get(
+            "open_world_understanding.per_source_burst",
+            defaults.per_source_burst,
+        ),
+        global_rate=settings.get(
+            "open_world_understanding.global_rate",
+            defaults.global_rate,
+        ),
+        global_burst=settings.get(
+            "open_world_understanding.global_burst",
+            defaults.global_burst,
+        ),
+        curiosity_top_k=settings.get(
+            "open_world_understanding.curiosity_top_k",
+            defaults.curiosity_top_k,
+        ),
+        curiosity_per_minute=settings.get(
+            "open_world_understanding.curiosity_per_minute",
+            defaults.curiosity_per_minute,
+        ),
+        delta_min_samples=settings.get(
+            "open_world_understanding.delta_min_samples",
+            defaults.delta_min_samples,
+        ),
+        delta_window_seconds=settings.get(
+            "open_world_understanding.delta_window_seconds",
+            defaults.delta_window_seconds,
+        ),
+        proposal_ttl_seconds=settings.get(
+            "open_world_understanding.proposal_ttl_seconds",
+            defaults.proposal_ttl_seconds,
+        ),
+        prediction_ttl_seconds=settings.get(
+            "open_world_understanding.prediction_ttl_seconds",
+            defaults.prediction_ttl_seconds,
+        ),
+        max_source_buckets=settings.get(
+            "open_world_understanding.max_source_buckets",
+            defaults.max_source_buckets,
+        ),
+        max_targets=settings.get(
+            "open_world_understanding.max_targets",
+            defaults.max_targets,
+        ),
+        max_seen_sequences=settings.get(
+            "open_world_understanding.max_seen_sequences",
+            defaults.max_seen_sequences,
+        ),
+        max_pending_tickets=settings.get(
+            "open_world_understanding.max_pending_tickets",
+            defaults.max_pending_tickets,
+        ),
+        max_completed_outcomes=settings.get(
+            "open_world_understanding.max_completed_outcomes",
+            defaults.max_completed_outcomes,
+        ),
+        max_quarantined_sources=settings.get(
+            "open_world_understanding.max_quarantined_sources",
+            defaults.max_quarantined_sources,
+        ),
+    )
+    cell = HexCellAddressV1(
+        cell_id=settings.get(
+            "open_world_understanding.cell_id",
+            "understanding-temperature",
+        ),
+        q=settings.get("open_world_understanding.q", 0),
+        r=settings.get("open_world_understanding.r", 0),
+        incarnation_id=settings.get(
+            "open_world_understanding.incarnation_id",
+            "open-world-v1",
+        ),
+        generation=settings.get("open_world_understanding.generation", 1),
+        fence=settings.get("open_world_understanding.fence", 1),
+    )
+    if stub:
+        return UnderstandingLoop(
+            cell=cell,
+            event_sink=InMemoryUnderstandingEventSink(),
+            policy=policy,
+        )
+
+    from waggledance.core.magma.understanding_ledger import UnderstandingLedger
+
+    ledger_path = settings.get(
+        "open_world_understanding.ledger_path",
+        "data/runtime/open_world_understanding_v1.db",
+    )
+    ledger = UnderstandingLedger(_resolve_open_world_ledger_path(ledger_path))
+    try:
+        return UnderstandingLoop(
+            cell=cell,
+            event_sink=ledger,
+            policy=policy,
+            recover_from_verified_ledger=True,
+        )
+    except BaseException:
+        ledger.close()
+        raise
 
 
 def _prune_v313_solver_receipt_bundles(root: Path, max_bundles: int) -> None:
@@ -872,29 +1059,45 @@ class Container:
         )
         resource_kernel.resource_guard = self.resource_guard
 
-        runtime = AutonomyRuntime(
-            profile=profile,
-            resource_kernel=resource_kernel,
-            runtime_receipt_sink=self.runtime_receipt_sink,
+        understanding_loop = _build_open_world_understanding_loop(
+            self._settings,
+            stub=self._stub,
         )
-        lifecycle = AutonomyLifecycle(
-            primary=self._settings.runtime_primary,
-            compatibility_mode=self._settings.compatibility_mode,
-            profile=profile,
-        )
-        compatibility = CompatibilityLayer(
-            runtime=runtime,
-            compatibility_mode=self._settings.compatibility_mode,
-        )
+        try:
+            runtime = AutonomyRuntime(
+                profile=profile,
+                resource_kernel=resource_kernel,
+                runtime_receipt_sink=self.runtime_receipt_sink,
+                understanding_loop=understanding_loop,
+            )
+            lifecycle = AutonomyLifecycle(
+                primary=self._settings.runtime_primary,
+                compatibility_mode=self._settings.compatibility_mode,
+                profile=profile,
+            )
+            compatibility = CompatibilityLayer(
+                runtime=runtime,
+                compatibility_mode=self._settings.compatibility_mode,
+            )
 
-        return AutonomyService(
-            runtime=runtime,
-            lifecycle=lifecycle,
-            resource_kernel=resource_kernel,
-            compatibility=compatibility,
-            profile=profile,
-            night_pipeline=self.night_pipeline,
-        )
+            return AutonomyService(
+                runtime=runtime,
+                lifecycle=lifecycle,
+                resource_kernel=resource_kernel,
+                compatibility=compatibility,
+                profile=profile,
+                night_pipeline=self.night_pipeline,
+            )
+        except BaseException:
+            if understanding_loop is not None:
+                try:
+                    understanding_loop.close()
+                except BaseException:
+                    log.exception(
+                        "Failed to close Open-World understanding loop after "
+                        "container construction failure"
+                    )
+            raise
 
     @cached_property
     def faiss_registry(self):

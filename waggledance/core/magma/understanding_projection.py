@@ -22,7 +22,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -57,6 +57,7 @@ _FORECAST_REASONS = {
 _NON_FORECAST_RESOLUTIONS = {
     ("expired", ("stale_prior_generation",)),
     ("expired", ("restart_lost_reveal_context",)),
+    ("expired", ("prediction_ttl_exceeded",)),
     ("contradictory", ("observation_commitment_mismatch",)),
     ("schema_invalid", ("value_out_of_policy_range",)),
 }
@@ -199,9 +200,15 @@ def _allowlisted_records(
             key: _deep_thaw(record[key]) for key in sorted(allowed_keys)
         }
         for key in forced_false:
-            serialized[key] = False
+            if serialized[key] is not False:
+                raise UnderstandingProjectionError(
+                    f"{label}[{index}].{key} must be literal false"
+                )
         for key in forced_true:
-            serialized[key] = True
+            if serialized[key] is not True:
+                raise UnderstandingProjectionError(
+                    f"{label}[{index}].{key} must be literal true"
+                )
         result.append(serialized)
     return result
 
@@ -225,7 +232,7 @@ class PendingPredictionCheckpointV1:
     target_key: str
     source_key: str
     source_seq: int
-    source_content_digest: str
+    source_sequence_identity_digest: str
     cell: Mapping[str, Any]
     ingest_seq: int
     observation_header: Mapping[str, Any]
@@ -237,6 +244,8 @@ class PendingPredictionCheckpointV1:
     prior_state_digest: str
     prior_expected_value: Optional[float]
     residual_abs_threshold: float
+    committed_at_utc: str
+    prediction_ttl_seconds: int
     state_update_alpha: float
     reveal_verified: bool
     revealed_value: Optional[float]
@@ -255,6 +264,8 @@ class UnderstandingRestartCheckpointV1:
 
     event_count: int
     ledger_head: str
+    learning_domain_digest: Optional[str]
+    trusted_time_watermark_utc: Optional[str]
     max_ingest_seq: int
     numeric_states: Mapping[str, NumericStateCheckpointV1]
     cell_ingest_high_watermarks: Mapping[tuple[str, str], int]
@@ -333,6 +344,39 @@ class UnderstandingProjectionV1:
                 raise UnderstandingProjectionError(
                     f"{field} fields differ from the projection allowlist"
                 )
+            forced_false = {
+                "tickets": frozenset(
+                    {"runtime_authority_applied", "routing_influence_applied"}
+                ),
+                "local_states": frozenset(
+                    {"runtime_authority_applied", "routing_influence_applied"}
+                ),
+                "curiosity_items": frozenset(
+                    {"network_invoked", "llm_invoked", "builder_invoked"}
+                ),
+                "knowledge_deltas": frozenset(
+                    {
+                        "runtime_authority_applied",
+                        "routing_influence_applied",
+                        "hive_commit_applied",
+                    }
+                ),
+                "retractions": frozenset(
+                    {"runtime_authority_applied", "routing_influence_applied"}
+                ),
+            }[field]
+            forced_true = (
+                frozenset({"reversible"})
+                if field == "local_states"
+                else frozenset()
+            )
+            _allowlisted_records(
+                frozen,
+                allowed_keys,
+                field,
+                forced_false=forced_false,
+                forced_true=forced_true,
+            )
             object.__setattr__(self, field, frozen)
 
     @property
@@ -349,6 +393,19 @@ class UnderstandingProjectionV1:
 
     def to_mapping(self) -> dict[str, Any]:
         """Return only the exact public projection fields and false authority."""
+
+        if self.runtime_authority_applied is not False:
+            raise UnderstandingProjectionError(
+                "projection cannot apply runtime authority"
+            )
+        if self.routing_influence_applied is not False:
+            raise UnderstandingProjectionError(
+                "projection cannot influence routing"
+            )
+        if self.hive_commit_applied is not False:
+            raise UnderstandingProjectionError(
+                "projection cannot commit hive knowledge"
+            )
 
         return _canonical_copy(
             {
@@ -448,6 +505,10 @@ def _expected_forecast(
     return disposition, residual, _FORECAST_REASONS[disposition]
 
 
+def _parse_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value[:-1] + "+00:00")
+
+
 def _reduce_verified_events(
     verified: Sequence[Mapping[str, Any]],
 ) -> _ReplayArtifacts:
@@ -464,6 +525,8 @@ def _reduce_verified_events(
     source_registry: dict[tuple[str, int], str] = {}
     source_high_watermarks: dict[str, int] = {}
     cell_ingest_high_watermarks: dict[tuple[str, str], int] = {}
+    learning_domain_digest: Optional[str] = None
+    trusted_time_watermark: Optional[datetime] = None
     max_ingest_seq = 0
 
     for event in verified:
@@ -473,6 +536,14 @@ def _reduce_verified_events(
         event_counts[kind] = event_counts.get(kind, 0) + 1
 
         if kind == PREDICTION_COMMITTED:
+            event_learning_domain_digest = payload["learning_domain_digest"]
+            if learning_domain_digest is None:
+                learning_domain_digest = event_learning_domain_digest
+            elif not hmac.compare_digest(
+                learning_domain_digest,
+                event_learning_domain_digest,
+            ):
+                _fail(seq, "prediction changes the ledger learning domain")
             ticket_id = payload["ticket_id"]
             if ticket_id in tickets:
                 _fail(seq, "ticket_id already exists")
@@ -487,6 +558,13 @@ def _reduce_verified_events(
                 _fail(seq, "source sequence is not strictly monotonic")
 
             prediction = payload["prediction"]
+            committed_at = _parse_utc(prediction["committed_at_utc"])
+            if (
+                trusted_time_watermark is not None
+                and committed_at < trusted_time_watermark
+            ):
+                _fail(seq, "prediction committed_at moves trusted time backwards")
+            trusted_time_watermark = committed_at
             ingest_seq = prediction["ingest_seq"]
             cell = payload["cell"]
             cell_key = (
@@ -519,7 +597,9 @@ def _reduce_verified_events(
                     _fail(seq, "prediction does not bind current projected state")
                 prior_expected = current["expected_value"]
 
-            source_registry[sequence_key] = payload["source_content_digest"]
+            source_registry[sequence_key] = payload[
+                "source_sequence_identity_digest"
+            ]
             source_high_watermarks[source_key] = source_seq
             cell_ingest_high_watermarks[cell_key] = ingest_seq
             max_ingest_seq = max(max_ingest_seq, ingest_seq)
@@ -549,16 +629,23 @@ def _reduce_verified_events(
             contexts[ticket_id] = {
                 "cell": _canonical_copy(cell),
                 "header": _canonical_copy(payload["observation_header"]),
-                "source_content_digest": payload["source_content_digest"],
+                "source_sequence_identity_digest": payload[
+                    "source_sequence_identity_digest"
+                ],
                 "ingest_seq": ingest_seq,
                 "predicted_value": prediction["predicted_value"],
                 "prior_expected_value": prior_expected,
                 "threshold": payload["residual_abs_threshold"],
+                "committed_at": committed_at,
+                "prediction_ttl_seconds": payload[
+                    "prediction_ttl_seconds"
+                ],
                 "alpha": payload["state_update_alpha"],
                 "actual": _UNREVEALED,
                 "commitment_nonce": None,
                 "privacy_domain": None,
                 "forecast_resolved": False,
+                "resolved_at": None,
             }
 
         elif kind == OBSERVATION_REVEALED:
@@ -644,6 +731,27 @@ def _reduce_verified_events(
                     _fail(seq, "disposition observation commitment mismatch")
                 context = contexts[ticket_id]
                 reasons = tuple(payload["reason_codes"])
+                recorded_at = _parse_utc(payload["recorded_at_utc"])
+                committed_at = context["committed_at"]
+                if recorded_at < committed_at:
+                    _fail(seq, "disposition predates prediction commitment")
+                if (
+                    trusted_time_watermark is not None
+                    and recorded_at < trusted_time_watermark
+                ):
+                    _fail(seq, "disposition moves trusted time backwards")
+                if (
+                    payload["disposition"] == "expired"
+                    and reasons == ("prediction_ttl_exceeded",)
+                    and recorded_at
+                    <= committed_at
+                    + timedelta(
+                        seconds=context["prediction_ttl_seconds"]
+                    )
+                ):
+                    _fail(seq, "TTL expiry does not exceed prediction deadline")
+                trusted_time_watermark = recorded_at
+                context["resolved_at"] = recorded_at
                 actual = context["actual"]
                 non_forecast = (payload["disposition"], reasons)
                 if non_forecast in _NON_FORECAST_RESOLUTIONS:
@@ -675,6 +783,13 @@ def _reduce_verified_events(
 
         elif kind == CURIOSITY_ENQUEUED:
             item = payload["curiosity"]
+            created_at = _parse_utc(item["created_at_utc"])
+            if (
+                trusted_time_watermark is not None
+                and created_at < trusted_time_watermark
+            ):
+                _fail(seq, "curiosity moves trusted time backwards")
+            trusted_time_watermark = created_at
             curiosity_id = item["curiosity_id"]
             if curiosity_id in curiosity:
                 _fail(seq, "curiosity_id already exists")
@@ -695,6 +810,13 @@ def _reduce_verified_events(
         elif kind == KNOWLEDGE_DELTA_PROPOSED:
             digest = payload["proposal_digest"]
             delta = payload["delta"]
+            created_at = _parse_utc(delta["created_at_utc"])
+            if (
+                trusted_time_watermark is not None
+                and created_at < trusted_time_watermark
+            ):
+                _fail(seq, "knowledge delta moves trusted time backwards")
+            trusted_time_watermark = created_at
             if digest in proposals or delta["proposal_id"] in proposal_ids:
                 _fail(seq, "knowledge delta identity already exists")
             proposal_ids.add(delta["proposal_id"])
@@ -732,6 +854,18 @@ def _reduce_verified_events(
                 _fail(seq, "local update lacks a verified reveal")
             update = payload["update"]
             state = payload["next_state"]
+            applied_at = _parse_utc(update["applied_at_utc"])
+            if (
+                context["resolved_at"] is None
+                or applied_at != context["resolved_at"]
+            ):
+                _fail(seq, "local update time differs from disposition")
+            if (
+                trusted_time_watermark is not None
+                and applied_at < trusted_time_watermark
+            ):
+                _fail(seq, "local update moves trusted time backwards")
+            trusted_time_watermark = applied_at
             if update["prediction_digest"] != ticket["prediction_digest"]:
                 _fail(seq, "local update prediction digest mismatch")
             if update["cell_id"] != ticket["cell_id"]:
@@ -795,11 +929,17 @@ def _reduce_verified_events(
             retracted_at = datetime.fromisoformat(
                 payload["retracted_at_utc"][:-1] + "+00:00"
             )
+            if (
+                trusted_time_watermark is not None
+                and retracted_at < trusted_time_watermark
+            ):
+                _fail(seq, "retraction moves trusted time backwards")
             proposed_at = datetime.fromisoformat(
                 proposal["created_at_utc"][:-1] + "+00:00"
             )
             if retracted_at < proposed_at:
                 _fail(seq, "retraction predates proposal")
+            trusted_time_watermark = retracted_at
             retraction = {
                 "retraction_id": retraction_id,
                 "proposal_digest": digest,
@@ -860,7 +1000,9 @@ def _reduce_verified_events(
             target_key=ticket["target_key"],
             source_key=ticket["source_key"],
             source_seq=ticket["source_seq"],
-            source_content_digest=context["source_content_digest"],
+            source_sequence_identity_digest=context[
+                "source_sequence_identity_digest"
+            ],
             cell=_deep_freeze(context["cell"]),
             ingest_seq=context["ingest_seq"],
             observation_header=_deep_freeze(context["header"]),
@@ -874,6 +1016,10 @@ def _reduce_verified_events(
             prior_state_digest=ticket["prior_state_digest"],
             prior_expected_value=context["prior_expected_value"],
             residual_abs_threshold=context["threshold"],
+            committed_at_utc=context["committed_at"].isoformat().replace(
+                "+00:00", "Z"
+            ),
+            prediction_ttl_seconds=context["prediction_ttl_seconds"],
             state_update_alpha=context["alpha"],
             reveal_verified=actual is not _UNREVEALED,
             revealed_value=None if actual is _UNREVEALED else actual,
@@ -883,6 +1029,12 @@ def _reduce_verified_events(
     checkpoint = UnderstandingRestartCheckpointV1(
         event_count=len(verified),
         ledger_head=head,
+        learning_domain_digest=learning_domain_digest,
+        trusted_time_watermark_utc=(
+            None
+            if trusted_time_watermark is None
+            else trusted_time_watermark.isoformat().replace("+00:00", "Z")
+        ),
         max_ingest_seq=max_ingest_seq,
         numeric_states=checkpoint_states,
         cell_ingest_high_watermarks=MappingProxyType(

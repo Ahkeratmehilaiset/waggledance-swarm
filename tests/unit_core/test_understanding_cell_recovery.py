@@ -428,6 +428,20 @@ def test_rebuild_advances_above_all_authenticated_observations_and_has_no_author
     assert rebuilt.to_mapping()["router_authority"] is False
 
 
+def test_rebuild_serialization_rejects_mutated_authority() -> None:
+    registry, keys = _trust()
+    rebuilt = plan_cell_recovery(
+        _evidence(registry, keys),
+        trust_registry=registry,
+        key_resolver=_resolver(keys),
+        new_incarnation_id="incarnation-8",
+    )
+    object.__setattr__(rebuilt, "builder_authority", True)
+
+    with pytest.raises(CellRecoveryError, match="cannot grant authority"):
+        rebuilt.to_mapping()
+
+
 def test_witness_digest_preserves_replica_to_failure_domain_pairing() -> None:
     first_registry, first_keys = _trust(
         domains={

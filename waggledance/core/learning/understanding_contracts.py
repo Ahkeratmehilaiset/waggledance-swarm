@@ -25,7 +25,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Mapping, Optional
 
 from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 
@@ -138,6 +138,45 @@ def derive_source_key(source: str, entity_id: str, metric: str) -> str:
         }
     )
     return f"source-{digest.removeprefix('sha256:')}"
+
+
+def derive_learning_domain_digest(
+    *,
+    cell: Mapping[str, object],
+    source: str,
+    metric: str,
+    unit: str,
+    learning_policy_digest: str,
+    predictor_artifact_digest: str,
+    predictor_config_digest: str,
+    residual_abs_threshold: float,
+    prediction_ttl_seconds: int,
+    state_update_alpha: float,
+) -> str:
+    """Bind one ledger to an exact cell, modality, predictor, and updater.
+
+    ``learning_policy_digest`` is an opaque commitment to the complete local
+    policy, including the allowed entity namespace and numeric bounds.  The
+    remaining fields are repeated explicitly so ledger validation can reject
+    a digest copied onto another cell or observation modality.
+    """
+
+    return sha256_digest(
+        {
+            "domain": "wd.understanding_learning_domain.v1",
+            "cell": dict(cell),
+            "source": source,
+            "metric": metric,
+            "unit": unit,
+            "learning_policy_digest": learning_policy_digest,
+            "predictor_artifact_digest": predictor_artifact_digest,
+            "predictor_config_digest": predictor_config_digest,
+            "residual_abs_threshold": residual_abs_threshold,
+            "prediction_ttl_seconds": prediction_ttl_seconds,
+            "state_update_algorithm": "wd.last_value_ewma.v1",
+            "state_update_alpha": state_update_alpha,
+        }
+    )
 
 
 def _require_digest(value: object, label: str, *, hmac_ok: bool = False) -> str:
@@ -529,6 +568,18 @@ class LocalProvisionalUpdateV1:
 
     def to_mapping(self) -> dict[str, object]:
         """Serialize authority fields as constants across the audit boundary."""
+        if self.reversible is not True:
+            raise UnderstandingContractError(
+                "local update must remain reversible"
+            )
+        if self.runtime_authority_applied is not False:
+            raise UnderstandingContractError(
+                "local update cannot apply runtime authority"
+            )
+        if self.routing_influence_applied is not False:
+            raise UnderstandingContractError(
+                "local update cannot influence routing"
+            )
         return {
             "update_id": self.update_id,
             "cell_id": self.cell_id,
@@ -625,6 +676,14 @@ class KnowledgeDeltaV1:
             raise UnderstandingContractError("knowledge delta schema_version refused")
 
     def to_mapping(self) -> dict[str, object]:
+        if self.runtime_authority_applied is not False:
+            raise UnderstandingContractError(
+                "knowledge delta cannot apply runtime authority"
+            )
+        if self.routing_influence_applied is not False:
+            raise UnderstandingContractError(
+                "knowledge delta cannot influence routing"
+            )
         return {
             "schema_version": self.schema_version,
             "proposal_id": self.proposal_id,
@@ -810,6 +869,7 @@ __all__ = [
     "UnderstandingDisposition",
     "UnderstandingDispositionV1",
     "build_observation_commitment",
+    "derive_learning_domain_digest",
     "derive_source_key",
     "derive_target_key",
 ]

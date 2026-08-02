@@ -999,6 +999,12 @@ class RebuiltCellManifestV1:
         )
 
     def core_mapping(self) -> dict[str, object]:
+        if (
+            self.router_authority is not False
+            or self.action_authority is not False
+            or self.builder_authority is not False
+        ):
+            raise CellRecoveryError("recovery manifests cannot grant authority")
         return {
             "schema_version": self.schema_version,
             "trust_registry_digest": self.trust_registry_digest,

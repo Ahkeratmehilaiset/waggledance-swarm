@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import waggledance.core.magma.understanding_projection as understanding_projection_module
+
 from waggledance.core.learning.understanding_contracts import (
     HexCellAddressV1,
     PrivacyClass,
@@ -20,8 +22,10 @@ from waggledance.core.learning.understanding_loop import (
     UnderstandingPolicyV1,
 )
 from waggledance.core.magma.understanding_ledger import UnderstandingLedger
+from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.understanding_projection import (
     project_understanding_ledger,
+    replay_understanding_projection,
 )
 
 
@@ -92,12 +96,25 @@ def _obs(seq: int, value: float, *, privacy: str = "synthetic", entity: str = "w
 
 
 def _loop(*, sink=None, predictor=None, clock=None, policy=None) -> UnderstandingLoop:
+    predictor_identity = (
+        {
+            "predictor_artifact_digest": sha256_digest(
+                {"test_predictor": type(predictor).__name__}
+            ),
+            "predictor_config_digest": sha256_digest(
+                {"test_predictor_config": "v1"}
+            ),
+        }
+        if predictor is not None
+        else {}
+    )
     return UnderstandingLoop(
         cell=_cell(),
         event_sink=sink or InMemoryUnderstandingEventSink(),
         predictor=predictor,
         clock=clock,
         policy=policy,
+        **predictor_identity,
     )
 
 
@@ -137,18 +154,23 @@ def test_second_prediction_uses_only_prior_shadow_state() -> None:
     assert predictor.calls[1][1].expected_value == 10.0
 
 
-def test_duplicate_is_idempotent_and_conflicting_reuse_quarantines_source() -> None:
+def test_value_only_reuse_is_suppressed_and_header_reuse_quarantines_source() -> None:
     loop = _loop()
     first = loop.prepare_observation(_obs(1, 10.0))
     loop.complete_numeric(first, 10.0)
 
     duplicate = loop.prepare_observation(_obs(1, 10.0))
     duplicate_outcome = loop.complete_numeric(duplicate, 10.0)
-    conflict = loop.prepare_observation(_obs(1, 11.0))
+    value_only_reuse = loop.prepare_observation(_obs(1, 11.0))
+    value_only_outcome = loop.complete_numeric(value_only_reuse, 11.0)
+    conflicting_observation = _obs(1, 11.0)
+    conflicting_observation["quality"] = 0.8
+    conflict = loop.prepare_observation(conflicting_observation)
     conflict_outcome = loop.complete_numeric(conflict, 11.0)
     later = loop.prepare_observation(_obs(2, 12.0))
 
     assert duplicate_outcome.disposition is UnderstandingDisposition.DUPLICATE
+    assert value_only_outcome.disposition is UnderstandingDisposition.DUPLICATE
     assert conflict_outcome.disposition is UnderstandingDisposition.CONTRADICTORY
     assert later.terminal_reason == "source_quarantined"
     assert loop.get_state(_target()).sample_count == 1
@@ -480,13 +502,271 @@ def test_sequence_reuse_quarantines_before_pending_capacity_check() -> None:
     loop = _loop(policy=UnderstandingPolicyV1(max_pending_tickets=1))
     loop.prepare_observation(_obs(1, 10.0))
 
-    conflict = loop.prepare_observation(_obs(1, 11.0))
+    conflicting_observation = _obs(1, 11.0)
+    conflicting_observation["quality"] = 0.8
+    conflict = loop.prepare_observation(conflicting_observation)
     conflict_outcome = loop.complete_numeric(conflict, 11.0)
     later = loop.prepare_observation(_obs(2, 12.0))
 
     assert conflict_outcome.disposition is UnderstandingDisposition.CONTRADICTORY
     assert conflict.terminal_reason == "source_sequence_reuse"
     assert later.terminal_reason == "source_quarantined"
+
+
+def test_pre_reveal_source_identity_is_independent_of_low_entropy_value() -> None:
+    first_sink = InMemoryUnderstandingEventSink()
+    second_sink = InMemoryUnderstandingEventSink()
+    first = _loop(sink=first_sink)
+    second = _loop(sink=second_sink)
+
+    first_ticket = first.prepare_observation(_obs(1, 0.0))
+    second_ticket = second.prepare_observation(_obs(1, 1.0))
+
+    first_payload = first_sink.events[0]["payload"]
+    second_payload = second_sink.events[0]["payload"]
+    assert first_payload["source_sequence_identity_digest"] == second_payload[
+        "source_sequence_identity_digest"
+    ]
+    assert (
+        first_ticket.observation_commitment.commitment_digest
+        != second_ticket.observation_commitment.commitment_digest
+    )
+    assert first_payload["observation_header"]["metadata_digest"] != (
+        second_payload["observation_header"]["metadata_digest"]
+    )
+
+
+def test_custom_predictor_requires_explicit_identity_digests() -> None:
+    with pytest.raises(
+        UnderstandingLoopError,
+        match="custom predictor requires explicit artifact and config digests",
+    ):
+        UnderstandingLoop(
+            cell=_cell(),
+            event_sink=InMemoryUnderstandingEventSink(),
+            predictor=CapturingPredictor(),
+        )
+
+
+def test_prediction_ttl_expires_before_reveal_and_replays_exactly() -> None:
+    clock = FakeClock()
+    sink = InMemoryUnderstandingEventSink()
+    loop = _loop(
+        sink=sink,
+        clock=clock,
+        policy=UnderstandingPolicyV1(prediction_ttl_seconds=1),
+    )
+    ticket = loop.prepare_observation(_obs(1, 10.0))
+    clock.advance(2)
+
+    outcome = loop.complete_numeric(ticket, 10.0)
+
+    assert outcome.disposition is UnderstandingDisposition.EXPIRED
+    assert outcome.disposition_record.reason_codes == (
+        "prediction_ttl_exceeded",
+    )
+    assert "observation_revealed" not in [
+        event["event_kind"] for event in sink.events
+    ]
+    replayed = replay_understanding_projection(sink.events)
+    assert replayed.pending_ticket_count == 0
+
+
+def test_prediction_ttl_exact_boundary_updates_and_epsilon_expires() -> None:
+    boundary_clock = FakeClock()
+    boundary = _loop(
+        clock=boundary_clock,
+        policy=UnderstandingPolicyV1(prediction_ttl_seconds=1),
+    )
+    boundary_ticket = boundary.prepare_observation(_obs(1, 10.0))
+    boundary_clock.advance(1)
+
+    boundary_outcome = boundary.complete_numeric(boundary_ticket, 10.0)
+
+    assert boundary_outcome.disposition is UnderstandingDisposition.COLD_START
+    assert boundary_outcome.local_update is not None
+    assert boundary.get_state(_target()).sample_count == 1
+
+    expired_clock = FakeClock()
+    expired_sink = InMemoryUnderstandingEventSink()
+    expired = _loop(
+        sink=expired_sink,
+        clock=expired_clock,
+        policy=UnderstandingPolicyV1(prediction_ttl_seconds=1),
+    )
+    expired_ticket = expired.prepare_observation(_obs(1, 10.0))
+    expired_clock.now += timedelta(seconds=1, microseconds=1)
+
+    first = expired.complete_numeric(expired_ticket, 10.0)
+    event_count = len(expired_sink.events)
+    second = expired.complete_numeric(expired_ticket, 10.0)
+
+    assert first == second
+    assert first.disposition is UnderstandingDisposition.EXPIRED
+    assert first.disposition_record.reason_codes == (
+        "prediction_ttl_exceeded",
+    )
+    assert len(expired_sink.events) == event_count
+    assert [event["event_kind"] for event in expired_sink.events] == [
+        "prediction_committed",
+        "disposition_recorded",
+    ]
+    assert expired.get_state(_target()).sample_count == 0
+
+
+def test_resolution_clock_rollback_does_not_poison_pending_ticket() -> None:
+    clock = FakeClock()
+    sink = InMemoryUnderstandingEventSink()
+    loop = _loop(
+        sink=sink,
+        clock=clock,
+        policy=UnderstandingPolicyV1(prediction_ttl_seconds=10),
+    )
+    ticket = loop.prepare_observation(_obs(1, 10.0))
+    before = tuple(sink.events)
+    clock.now -= timedelta(microseconds=1)
+
+    with pytest.raises(UnderstandingLoopError, match="trusted clock moved"):
+        loop.complete_numeric(ticket, 10.0)
+
+    assert sink.events == before
+    assert loop.stats()["pending_ticket_count"] == 1
+    assert loop.get_state(_target()).sample_count == 0
+
+    clock.now += timedelta(microseconds=2)
+    recovered = loop.complete_numeric(ticket, 10.0)
+    assert recovered.disposition is UnderstandingDisposition.COLD_START
+    assert loop.get_state(_target()).sample_count == 1
+
+
+def test_failed_resolution_refreshes_time_after_same_loop_head_advances(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    clock = FakeClock()
+    ledger = UnderstandingLedger(tmp_path / "resolution-time-retry.db")
+    loop = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=ledger,
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    first = loop.prepare_observation(_obs(1, 10.0))
+    append_if_head = ledger.append_batch_if_head
+    fail_once = True
+
+    def failing_resolution(events, *, idempotency_key, expected_head):
+        nonlocal fail_once
+        if fail_once and any(kind == "observation_revealed" for kind, _ in events):
+            fail_once = False
+            raise OSError("injected pre-commit resolution failure")
+        return append_if_head(
+            events,
+            idempotency_key=idempotency_key,
+            expected_head=expected_head,
+        )
+
+    monkeypatch.setattr(ledger, "append_batch_if_head", failing_resolution)
+    try:
+        with pytest.raises(OSError, match="pre-commit"):
+            loop.complete_numeric(first, 10.0)
+        clock.advance(1)
+        second = loop.prepare_observation(_obs(2, 11.0))
+
+        recovered = loop.complete_numeric(first, 10.0)
+        stale = loop.complete_numeric(second, 11.0)
+        projection = project_understanding_ledger(ledger)
+
+        assert recovered.disposition is UnderstandingDisposition.COLD_START
+        assert recovered.disposition_record.recorded_at_utc == (
+            "2026-08-02T12:00:01Z"
+        )
+        assert stale.disposition is UnderstandingDisposition.EXPIRED
+        assert stale.disposition_record.reason_codes == (
+            "stale_prior_generation",
+        )
+        assert projection.pending_ticket_count == 0
+        assert projection.local_states[0]["generation"] == 1
+    finally:
+        loop.close()
+
+
+def test_clock_cannot_move_behind_a_resolved_event_for_new_prediction() -> None:
+    clock = FakeClock()
+    sink = InMemoryUnderstandingEventSink()
+    loop = _loop(sink=sink, clock=clock)
+    first = loop.prepare_observation(_obs(1, 10.0))
+    loop.complete_numeric(first, 10.0)
+    event_count = len(sink.events)
+    clock.now -= timedelta(microseconds=1)
+
+    with pytest.raises(UnderstandingLoopError, match="trusted clock moved"):
+        loop.prepare_observation(_obs(2, 11.0))
+
+    assert len(sink.events) == event_count
+    assert loop.get_state(_target()).sample_count == 1
+
+
+def test_new_ingress_expires_stale_pending_ticket_before_capacity_gate() -> None:
+    clock = FakeClock()
+    loop = _loop(
+        clock=clock,
+        policy=UnderstandingPolicyV1(
+            max_pending_tickets=1,
+            prediction_ttl_seconds=1,
+        ),
+    )
+    stale = loop.prepare_observation(_obs(1, 10.0))
+    clock.advance(2)
+
+    current = loop.prepare_observation(_obs(2, 11.0))
+    stale_outcome = loop.complete_numeric(stale, 10.0)
+
+    assert current.prediction is not None
+    assert current.terminal_disposition is None
+    assert stale_outcome.disposition is UnderstandingDisposition.EXPIRED
+    assert loop.stats()["pending_ticket_count"] == 1
+
+
+def test_capacity_sweep_expires_every_stale_ticket_before_replacement() -> None:
+    clock = FakeClock()
+    sink = InMemoryUnderstandingEventSink()
+    loop = _loop(
+        sink=sink,
+        clock=clock,
+        policy=UnderstandingPolicyV1(
+            max_pending_tickets=2,
+            prediction_ttl_seconds=1,
+        ),
+    )
+    stale = (
+        loop.prepare_observation(_obs(1, 10.0)),
+        loop.prepare_observation(_obs(2, 11.0)),
+    )
+    clock.now += timedelta(seconds=1, microseconds=1)
+
+    replacement = loop.prepare_observation(_obs(3, 12.0))
+
+    assert replacement.prediction is not None
+    assert loop.stats()["pending_ticket_count"] == 1
+    dispositions = [
+        event["payload"]
+        for event in sink.events
+        if event["event_kind"] == "disposition_recorded"
+    ]
+    assert {
+        payload["ticket_id"] for payload in dispositions
+    } == {ticket.ticket_id for ticket in stale}
+    assert all(
+        payload["reason_codes"] == ["prediction_ttl_exceeded"]
+        for payload in dispositions
+    )
+    assert not any(
+        event["event_kind"] in {"observation_revealed", "local_provisional_update"}
+        and event["payload"].get("ticket_id")
+        in {ticket.ticket_id for ticket in stale}
+        for event in sink.events
+    )
 
 
 def test_quarantine_capacity_cannot_be_lower_than_target_capacity() -> None:
@@ -623,6 +903,219 @@ def test_restart_expires_prediction_that_lost_secret_reveal_context(
     restarted.complete_numeric(replacement, 11.0)
     assert restarted.get_state(_target()).sample_count == 1
     restarted.close()
+
+
+def test_restart_reconciliation_retries_when_live_completion_wins_head_cas(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "understanding-restart-race.db"
+    clock = FakeClock()
+    live_ledger = UnderstandingLedger(path)
+    live = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=live_ledger,
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    ticket = live.prepare_observation(_obs(1, 10.0))
+    restart_ledger = UnderstandingLedger(path)
+    append_if_head = restart_ledger.append_batch_if_head
+    raced = False
+
+    def racing_append(events, *, idempotency_key, expected_head):
+        nonlocal raced
+        if not raced:
+            raced = True
+            live.complete_numeric(ticket, 10.0)
+        return append_if_head(
+            events,
+            idempotency_key=idempotency_key,
+            expected_head=expected_head,
+        )
+
+    monkeypatch.setattr(restart_ledger, "append_batch_if_head", racing_append)
+    restarted = None
+    try:
+        restarted = UnderstandingLoop(
+            cell=_cell(),
+            event_sink=restart_ledger,
+            clock=clock,
+            recover_from_verified_ledger=True,
+        )
+        projection = project_understanding_ledger(restart_ledger)
+        ticket_dispositions = [
+            event["payload"]
+            for event in restart_ledger.events
+            if event["event_kind"] == "disposition_recorded"
+            and event["payload"]["ticket_id"] == ticket.ticket_id
+        ]
+
+        assert raced is True
+        assert len(ticket_dispositions) == 1
+        assert ticket_dispositions[0]["reason_codes"] == [
+            "no_prior_shadow_state"
+        ]
+        assert projection.pending_ticket_count == 0
+        assert restarted.get_state(_target()).sample_count == 1
+    finally:
+        if restarted is not None:
+            restarted.close()
+        else:
+            restart_ledger.close()
+        live.close()
+
+
+def test_no_pending_restart_snapshot_replays_again_when_live_head_wins(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "understanding-restart-no-pending-race.db"
+    clock = FakeClock()
+    live_ledger = UnderstandingLedger(path)
+    live = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=live_ledger,
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    first = live.prepare_observation(_obs(1, 10.0))
+    live.complete_numeric(first, 10.0)
+    restart_ledger = UnderstandingLedger(path)
+    original_reduce = (
+        understanding_projection_module.reduce_understanding_ledger_restart_checkpoint
+    )
+    raced = False
+
+    def racing_reduce(ledger, *, expected_head=None):
+        nonlocal raced
+        checkpoint = original_reduce(ledger, expected_head=expected_head)
+        if not raced:
+            raced = True
+            second = live.prepare_observation(_obs(2, 11.0))
+            live.complete_numeric(second, 11.0)
+        return checkpoint
+
+    monkeypatch.setattr(
+        understanding_projection_module,
+        "reduce_understanding_ledger_restart_checkpoint",
+        racing_reduce,
+    )
+    restarted = None
+    try:
+        restarted = UnderstandingLoop(
+            cell=_cell(),
+            event_sink=restart_ledger,
+            clock=clock,
+            recover_from_verified_ledger=True,
+        )
+        third = restarted.prepare_observation(_obs(3, 12.0))
+        restarted.complete_numeric(third, 12.0)
+
+        assert raced is True
+        assert third.prediction is not None
+        assert third.prediction.ingest_seq == 3
+        assert third.prior_state.generation == 2
+        projection = project_understanding_ledger(restart_ledger)
+        assert projection.pending_ticket_count == 0
+        assert projection.local_states[0]["generation"] == 3
+    finally:
+        if restarted is not None:
+            restarted.close()
+        else:
+            restart_ledger.close()
+        live.close()
+
+
+def test_recovered_loop_refuses_to_write_after_external_head_advance(
+    tmp_path,
+) -> None:
+    path = tmp_path / "understanding-post-recovery-head-race.db"
+    clock = FakeClock()
+    ledger = UnderstandingLedger(path)
+    recovered = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=ledger,
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    competitor = UnderstandingLedger(path)
+    try:
+        competitor.append_event(
+            "disposition_recorded",
+            {
+                "ticket_id": sha256_digest({"competitor": "ticket"}),
+                "observation_commitment_digest": sha256_digest(
+                    {"competitor": "observation"}
+                ),
+                "prediction_digest": None,
+                "disposition": "privacy_blocked",
+                "reason_codes": ["external_competitor_probe"],
+                "runtime_authority_applied": False,
+                "routing_influence_applied": False,
+            },
+        )
+        winning_count = competitor.event_count
+
+        with pytest.raises(
+            UnderstandingLoopError,
+            match="durable ledger advanced",
+        ):
+            recovered.prepare_observation(_obs(1, 10.0))
+
+        assert competitor.event_count == winning_count
+        assert project_understanding_ledger(competitor).event_count == winning_count
+    finally:
+        competitor.close()
+        recovered.close()
+
+
+def test_restart_clock_rollback_fails_before_expiry_append_and_can_recover(
+    tmp_path,
+) -> None:
+    path = tmp_path / "understanding-restart-clock.db"
+    clock = FakeClock()
+    first = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=UnderstandingLedger(path),
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    first.prepare_observation(_obs(1, 10.0))
+    first.close()
+    clock.now -= timedelta(microseconds=1)
+
+    rolled_back_ledger = UnderstandingLedger(path)
+    try:
+        with pytest.raises(UnderstandingLoopError, match="trusted clock moved"):
+            UnderstandingLoop(
+                cell=_cell(),
+                event_sink=rolled_back_ledger,
+                clock=clock,
+                recover_from_verified_ledger=True,
+            )
+        assert rolled_back_ledger.event_count == 1
+        assert project_understanding_ledger(
+            rolled_back_ledger
+        ).pending_ticket_count == 1
+    finally:
+        rolled_back_ledger.close()
+
+    clock.now += timedelta(microseconds=1)
+    recovered_ledger = UnderstandingLedger(path)
+    recovered = UnderstandingLoop(
+        cell=_cell(),
+        event_sink=recovered_ledger,
+        clock=clock,
+        recover_from_verified_ledger=True,
+    )
+    try:
+        assert recovered_ledger.event_count == 2
+        assert project_understanding_ledger(
+            recovered_ledger
+        ).pending_ticket_count == 0
+    finally:
+        recovered.close()
 
 
 def test_restart_refuses_impossible_partial_reveal_lifecycle(tmp_path) -> None:

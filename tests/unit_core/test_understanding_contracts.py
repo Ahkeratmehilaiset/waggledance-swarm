@@ -198,6 +198,9 @@ def test_knowledge_delta_requires_five_unique_public_evidence_refs() -> None:
         KnowledgeDeltaV1(**{**delta.__dict__, "evidence_refs": refs[:4]})
     with pytest.raises(UnderstandingContractError, match="private knowledge"):
         KnowledgeDeltaV1(**{**delta.__dict__, "privacy_class": PrivacyClass.PRIVATE})
+    object.__setattr__(delta, "runtime_authority_applied", True)
+    with pytest.raises(UnderstandingContractError, match="runtime authority"):
+        delta.to_mapping()
 
 
 def test_local_update_and_capability_gap_cannot_smuggle_authority() -> None:
@@ -214,7 +217,8 @@ def test_local_update_and_capability_gap_cannot_smuggle_authority() -> None:
     with pytest.raises(UnderstandingContractError, match="runtime authority"):
         LocalProvisionalUpdateV1(**{**update.__dict__, "runtime_authority_applied": True})
     object.__setattr__(update, "runtime_authority_applied", True)
-    assert update.to_mapping()["runtime_authority_applied"] is False
+    with pytest.raises(UnderstandingContractError, match="runtime authority"):
+        update.to_mapping()
 
     gap = CapabilityGapCandidateV1(
         gap_id="gap-1",

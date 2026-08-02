@@ -342,6 +342,16 @@ def test_two_authenticated_independent_neighbors_approve_deterministically() -> 
     assert receipt.routing_influence_applied is False
 
 
+def test_receipt_serialization_rejects_mutated_authority() -> None:
+    ring, proposal, proposal_auth, registry, keys, facts = _context()
+    supports = _independent_supports(proposal, ring, registry, keys, facts)
+    receipt = _evaluate(proposal_auth, ring, supports, registry, keys)
+    object.__setattr__(receipt, "hive_commit_applied", True)
+
+    with pytest.raises(WDPContractError, match="hive commit"):
+        receipt.to_mapping()
+
+
 def test_one_key_cannot_forge_a_second_independent_witness() -> None:
     ring, proposal, proposal_auth, registry, keys, facts = _context()
     legitimate = _signal(

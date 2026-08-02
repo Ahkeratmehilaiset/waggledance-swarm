@@ -108,8 +108,11 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         "claude-rco-2",
         "fable-5",
     }
+    assert lanes["codex-lead-1"]["branch"] == (
+        "codex-lead-1/claim-owner-gate-scope-parity-20260731"
+    )
     assert lanes["codex-lead-1"]["head"] == (
-        "69926c874779aef2859c09cbe80d9c81127c2986"
+        "a575382e5e45ce19facab5fb62c41dd5fa701f31"
     )
     assert lanes["claude-rco-1"]["head"] == (
         "5524acaa94f853168bdf79e656c5f083db1b10fc"

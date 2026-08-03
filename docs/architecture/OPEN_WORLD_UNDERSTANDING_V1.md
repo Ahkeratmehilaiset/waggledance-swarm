@@ -704,7 +704,10 @@ observations only. A genuine external pin still requires an independently
 configured trust root, signature and signer authorization, freshness,
 revocation, and anti-replay. The next safe accounting slice is supplied
 attempt-history equality; no C8a/C7 or generated-code execution wiring follows
-from C8c.
+from C8c. A separate Tools exact-head review was requested twice for
+implementation SHA `1cd645c0`; both bridge consumer ticks timed out without a
+review result. Those timeouts are neither approval nor rejection and are not
+counted as review evidence.
 
 ## Two-week sprint ledger
 
@@ -719,7 +722,7 @@ from C8c.
 | C7 | closed declarative paired runner feeding C6 | pushed at `fc4474b`; local full suite and exact-head CI green |
 | C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
 | C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | pushed at `32f85305`; 94 focused and 209 compatibility tests green; exact-head Tests `30821832356` and WaggleDance CI `30821835324` green |
-| C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | implemented in this commit; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tools review and CI pending |
+| C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
 | Gate | exact pushed-head reviews and CI | implementation evidence green; any later ledger-only closure still requires its own exact-head review/CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:

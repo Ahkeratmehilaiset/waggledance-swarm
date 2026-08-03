@@ -765,10 +765,22 @@ mint a new local attempt.
 
 A fresh provider-default Grok analysis and the local contract, bounds,
 semantic, and adversarial reviews are design advice only. They are not votes,
-runtime gates, trust anchors, or authority grants. The local implementation,
-adversarial tests, and API/claim rechecks now exist without a remaining local
-review blocker. The pushed implementation checkpoint and its exact-head CI
-remain pending.
+runtime gates, trust anchors, or authority grants. The implementation was
+pushed at `a4ef2bbe`; 80 focused and 329 compatibility tests passed locally.
+The selector-requested local full suite timed out after 30 minutes without a
+result and is not counted as pass or failure evidence. Local API and claim
+rechecks found no blocker. A separate Tools exact-head read-only review passed
+with 80 focused and its 267-test compatibility selection. Exact implementation
+HEAD Tests `30836217801` and WaggleDance CI `30836219973` completed
+successfully. None of these results grants runtime or action authority.
+
+A post-implementation provider-default Grok review accepted C8d only as this
+narrow pure accountant. It selected a standalone default-OFF supplied
+reservation candidate-transition accountant as the next safe prerequisite:
+such a slice may report only whether a local compare-and-reserve precondition
+would hold in supplied state. A durable atomic reservation store, BuilderHost
+wiring, and dead-cell owner handoff remain separate later authority and storage
+boundaries.
 
 ## Two-week sprint ledger
 
@@ -784,8 +796,8 @@ remain pending.
 | C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
 | C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | pushed at `32f85305`; 94 focused and 209 compatibility tests green; exact-head Tests `30821832356` and WaggleDance CI `30821835324` green |
 | C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
-| C8d | standalone default-OFF supplied declared-attempt snapshot accountant | 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API and claim reviews found no blocker; pushed-head and CI evidence pending |
-| Gate | exact pushed-head reviews and CI | implementation evidence green; any later ledger-only closure still requires its own exact-head review/CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
+| C8d | standalone default-OFF supplied declared-attempt snapshot accountant | pushed at `a4ef2bbe`; 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API/claim reviews and Tools exact-head review found no blocker; exact-head Tests `30836217801` and WaggleDance CI `30836219973` green |
+| Gate | exact pushed-head reviews and CI | C8d implementation evidence green; this ledger-only closure still requires its own exact-head CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:
 

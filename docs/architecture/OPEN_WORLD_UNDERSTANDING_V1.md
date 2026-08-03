@@ -426,6 +426,19 @@ is not a runner and neither invokes nor supersedes `run_shadow_evaluation` or
 fail-open counterfactual summary or `AutoPromotionEngine`. All Grok outputs
 remain advisory rather than votes or gates.
 
+A fresh provider-default advisory then inspected exact pushed C7 head
+`fc4474b00fe898379ea8ef7679ef04ea488f8417` without a model pin. It ranked a
+pure, non-executing capability contract ahead of either a subprocess executor
+or free-form generated-code execution on the current Windows CI substrate and
+returned `NARROW`: do not claim a sandbox before its controls can be exercised.
+Separate API and security review lanes narrowed the implementable extension one
+step further: a fixed controller-selected worker in the local trusted computing
+base (TCB) may parse, compile, and package bounded
+source while the candidate remains inert. This is useful only if it is named a
+static preflight and every sandbox, safety, correctness, and promotion claim
+stays false. The Grok result and the other reviews are advisory; none is a vote
+or authorization.
+
 ### C7 closed paired execution
 
 C7 adds the next isolated step in
@@ -520,6 +533,94 @@ fresh process or container, immutable mounts, no network by default, hard CPU,
 memory, process and wall-clock enforcement, secret isolation, signed artifacts,
 and a verifier outside the candidate process. C7 grants none of that authority.
 
+### C8a inert coding-candidate preflight
+
+C8a adds
+`waggledance/core/learning/understanding_coding_candidate_builder.py` and the
+private standalone worker
+`waggledance/core/learning/_understanding_coding_candidate_worker.py`. The API
+is default-OFF. In `STATIC_SHADOW` it accepts one post-generation source pack.
+One call accepts one source pack. C8a cannot prove that a new family primitive
+is needed, deduplicate across campaigns, prevent one call per solver instance,
+or demonstrate 50,000-solver scale. Those remain explicit false receipt facts.
+The intended later integration places an external gap-and-deduplication gate in
+front of this expensive path. The scalable target remains reviewed family
+implementation × declarative configuration × many registered descriptors;
+C8a creates no descriptors and does not establish that BuilderHost can avoid
+hand-writing 50,000 source trees.
+
+The private request contains exact source bytes plus digest-bound provenance
+and a local cell binding. It has no caller-supplied command, executable,
+working directory, path, environment, mount, callback, provider, expected
+output, commitment key, or executor seam. Before launch the controller:
+
+- snapshots and revalidates every raw plan, policy, source-pack, and cell-binding
+  field, then rechecks the source manifest and policy digest;
+- recomputes the supplied `CellIdentityV1` and `GenesisLineageV1` entry and
+  requires both to name the same content-addressed cell;
+- recomputes a binding over that identity, the logical fenced
+  `HexCellAddressV1`, subdivision address, and supplied registry-snapshot
+  digest;
+- rehashes the one private worker and the on-disk CPython executable selected by
+  the current interpreter path before launch, then matches both to the plan.
+
+These are same-invocation byte and relation checks. A lineage entry does not
+prove registry closure or ancestry, a supplied registry digest is not an
+external pin, and associating a logical hex address with a content-addressed
+identity does not independently attest the relationship. Different hashes do
+not establish distinct Genesis origins, organizations, methods, evidence
+sources, operators, or physical failure domains.
+
+The launcher selects an absolute interpreter and worker itself, applies fixed
+`-I -S -E -B` flags, creates and removes a local disposable current directory,
+passes source to the worker only through size-bounded canonical JSON on stdin,
+supplies a minimal environment, disables the shell, incrementally caps stdout
+and stderr, and enforces and reaps a direct-child wall timeout on every
+post-launch path. The controller-selected local-TCB worker rechecks canonical
+protocol shape, absolute policy ceilings, the policy digest, fixed
+interface/AST/packaging digests, source bounds, and the source-manifest digest.
+It bounds lines, tokens, AST nodes, AST depth, literals, and integer digits,
+requires the fixed `solve(payload)` and `test_*()` interfaces, then uses
+`ast.parse` and `compile(..., dont_inherit=True, optimize=0)`. It carries but
+does not independently authenticate the plan, cell, worker, or interpreter
+digests. It never imports the candidate, evaluates its statements, executes its
+tests, or emits source or compiler details.
+
+After a successful static compatibility screen the controller separately
+reconstructs a canonical in-memory package containing only `solver.py`,
+`test_solver.py`, and their manifest. It contains source, not bytecode, and is
+not persisted or registered. Worker-reported source, manifest, and package
+digests must match the controller's reconstruction. A rejection, crash,
+timeout, output flood, malformed protocol, or digest mismatch returns no
+artifact. The aggregate receipt contains bounded status, counts, and digests;
+it omits source, stdout, stderr, exceptions, paths, environment, PID,
+timestamps, hostnames, and randomness.
+
+The worker process contains parser/compiler crashes and stalls outside the
+controller process. It does **not** confine generated-code execution: the
+candidate never executes. C8a therefore hard-codes false for OS sandbox,
+generated-code process isolation, filesystem/network/environment/secret
+isolation, CPU/memory/disk quotas, process-tree termination, code safety,
+behavioral correctness, lift, independent verification, independently verified
+Genesis origin, echo-chamber absence, Genesis external pinning, family
+novelty/deduplication, cross-campaign single-attempt enforcement, mass
+custom-code generation, C7 execution, BuilderHost/provider invocation,
+MAGMA/hive writes, routing, registration, promotion, runtime, and
+product/external-system write authority. This last false fact does not deny the
+explicit local temporary-directory creation and removal described above.
+The application Dockerfile, a worktree, the older `TemplateCompiler` AST
+screen, and `ClaudeCodeBuilder` are not accepted as sandbox evidence.
+
+C8a does not submit artifacts to C7. Current C7 accepts exactly six reviewed
+declarative families and rejects the C8a package format because it has no
+supported declarative `kind`. A later isolated runner must use a
+pinned dedicated OCI image, no network, immutable/read-only mounts, a numeric
+non-root user, dropped capabilities, no-new-privileges/seccomp, secret
+separation, hard CPU/RSS/PID/disk/output limits, full container-tree cleanup,
+and an outside verifier. The current 2026-08-03 host probe found no Docker,
+Podman, or `bwrap`, so absence must fail closed; native Python is not a fallback
+sandbox.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -530,8 +631,9 @@ and a verifier outside the candidate process. C7 grants none of that authority.
 | C4 | default-OFF wiring, semantic-domain guard, docs, executable harness | pushed at `3f443301` |
 | C5 | accounting closure, plaintext-retention truth, WAL process-crash drill | pushed at `61fc99b`; CI text repair at `07c498e` |
 | C6 | default-OFF, raw-free paired solver-lift evidence contract | pushed at `48694a9`; local/full CI and Tools exact-head review green |
-| C7 | closed declarative paired runner feeding C6 | implementation checkpoint; default-OFF, no runtime wiring |
-| Gate | exact pushed-head reviews and CI | C6 green; C7 pending |
+| C7 | closed declarative paired runner feeding C6 | pushed at `fc4474b`; local full suite and exact-head CI green |
+| C8a | inert static coding-candidate compile/package preflight | implementation checkpoint; default-OFF, candidate never executes, no sandbox/runtime authority |
+| Gate | exact pushed-head reviews and CI | C7 green; C8a pending |
 
 Parallel lane intent:
 

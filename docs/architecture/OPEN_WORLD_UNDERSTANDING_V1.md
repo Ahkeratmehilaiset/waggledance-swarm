@@ -915,6 +915,78 @@ it made no source edit and granted no authority. Exact-head GitHub Tests
 RCO/Fable retrospective checks remain deferred by operator decision until
 their weekly usage limits reset.
 
+### C8f pure successor-snapshot transition relation accountant
+
+C8f adds
+`waggledance/core/learning/understanding_attempt_reservation_successor.py`.
+It is default-OFF and composes the public C8e evaluator exactly once. One
+`STATIC_SHADOW` call receives one exact immutable caller-supplied reservation
+snapshot, the existing separate keyword-only expected digest, and the existing
+separate keyword-only transition proposal. C8f passes the same snapshot bytes
+to C8e. It attempts successor derivation only when C8e reports that the exact
+precondition relation holds. A C8e refusal leaves the C8f successor relation
+unevaluated; a non-holding C8e precondition produces no successor.
+
+The pure transition table is deliberately small:
+
+| Holding C8e precondition | Locally derived successor relation |
+|---|---|
+| `OPEN_IF_ABSENT` | insert one canonically sorted `reserved` row |
+| `COMMIT_IF_RESERVED` | replace the exact matching row state with `committed` |
+| `ABORT_IF_RESERVED` | replace the exact matching row state with `aborted` |
+
+Each positive transition derives a new `state_evidence_digest` from a fixed
+domain, the base snapshot digest, proposal digest, reservation id, transition,
+and target state. Incidental policy bounds are intentionally excluded, so the
+same base snapshot and proposal produce the same successor commitments under
+different admissible bounds. The successor is canonicalized and then
+revalidated through C8e's public snapshot-digest API. C8f does not import a C8e
+private parser. Opening at the configured record limit or producing bytes over
+the configured byte limit returns a bounded no-successor outcome even if the
+source precondition itself held.
+
+The public C8f receipt is raw-free. It carries the validated raw-free C8e
+receipt plus the successor snapshot digest, ordered record digests, record and
+byte counts, target state, and derived evidence digest only on a positive
+relation. It never returns successor bytes. Those digest-only commitments are
+intentionally publicly remintable: without the omitted base and successor rows,
+a receipt consumer cannot independently prove the row content behind the
+commitments. Receipt origin authentication therefore remains literal false.
+This is an audit/accounting relation, not an authenticated state-transfer
+artifact.
+
+Two parallel C8f calls over the same empty supplied snapshot and open proposal
+can both return the same successor digest. That agreement is determinism, not
+exclusion. No store head is consulted; no lock, lease, revision, fence,
+linearization point, revalidation under a transaction, compare-and-swap,
+write, append, or persistence occurs. The TOCTOU window remains open. Every
+durability, currentness, authenticity, ABA, concurrency-safety, cross-cell or
+global single-attempt, BuilderHost, generated-code, sandbox, MAGMA, registry,
+routing, promotion, recovery, handoff, runtime, 50,000-scale, and echo-chamber
+claim remains literal false. C8f invokes C8e but does not invoke C8a-C8d or C7.
+
+The truthful hex contribution is one repeatable deterministic state-transition
+relation that a later shard-local writer could implement. C8f does not make a
+cell a writer, replicate its state, rebuild a dead cell, or authorize another
+cell to take ownership. Reservation identity still uses only the supplied
+scope digest plus exact capability fingerprint. Independence axes such as
+Genesis, method group, evidence root, provider, and failure domain remain
+orthogonal; equal successor digests do not establish epistemic diversity or
+remove an echo chamber.
+
+The local gate passed 40 focused C8f tests and a 133-test C8e+C8f compatibility
+run. Compilation, pyflakes, and diff checks also passed. Tests cover all three
+transitions, expected-mismatch dominance, terminal and binding failures,
+canonical ordering, fixed-domain evidence reconstruction, policy invariance,
+configured and 2,048-row resource overflow, parallel identical successors,
+nested C8e validation, public remintability, hard-false claims, and forbidden
+I/O/runtime seams. The fail-safe affected-test selector requests the full suite
+because this architecture document changed. It is not run locally while free
+C-drive space remains below the explicit 100 MiB safety threshold; exact-head
+independent review and GitHub CI remain pending. Durable apply, authenticated
+scope, revision/fencing, BuilderHost, sandbox execution, recovery handoff, and
+activation remain `HOLD`.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -931,8 +1003,8 @@ their weekly usage limits reset.
 | C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
 | C8d | standalone default-OFF supplied declared-attempt snapshot accountant | pushed at `a4ef2bbe`; 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API/claim reviews and Tools exact-head review found no blocker; exact-head Tests `30836217801` and WaggleDance CI `30836219973` green |
 | C8e | standalone default-OFF supplied reservation-state CAS-precondition relation accountant | pushed at `02ed94e6`; 93 focused and 422 compatibility tests passed; selector-requested full suite stopped at 29% by the 100 MiB disk guard with exit `-1`, no result, and is not counted; Tools exact-head review PASS; exact-head Tests `30843741995` and WaggleDance CI `30843744657` green; durable store/apply, BuilderHost, handoff, and activation remain `HOLD` |
-| C8f candidate | standalone default-OFF pure successor-snapshot transition relation accountant | provider-default Grok recommends this as the next smallest safe prerequisite; not yet implemented or authorized; durable apply, authenticated scope, revision/fencing, BuilderHost, sandbox execution, handoff, and activation remain `HOLD` |
-| Gate | exact pushed-head reviews and CI | C8d implementation and ledger-only closure evidence green; C8e local evidence, Tools exact-head PASS, Tests `30843741995`, and WaggleDance CI `30843744657` green; RCO/Fable retrospective reviews pending by operator decision due usage limits; no activation authority |
+| C8f | standalone default-OFF pure successor-snapshot transition relation accountant | implementation locally green: 40 focused and 133 C8e+C8f compatibility tests passed; exact pushed-head review/CI pending; durable apply, authenticated scope, revision/fencing, BuilderHost, sandbox execution, handoff, and activation remain `HOLD` |
+| Gate | exact pushed-head reviews and CI | C8d implementation and ledger-only closure evidence green; C8e local evidence, Tools exact-head PASS, Tests `30843741995`, and WaggleDance CI `30843744657` green; C8f local evidence green with exact pushed-head review/CI pending; RCO/Fable retrospective reviews pending by operator decision due usage limits; no activation authority |
 
 Parallel lane intent:
 

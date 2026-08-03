@@ -4808,6 +4808,11 @@ def build_runtime_receipt_metrics_smoke(root: Path | str = ROOT) -> dict:
         registry.register(capability)
         runtime = AutonomyRuntime(
             capability_registry=registry,
+            # This is a measurement-only smoke.  Persistence and MAGMA are
+            # independent runtime seams; disabling only persistence still
+            # constructs the real AuditProjector and EventLogAdapter, which
+            # write fixture events into the caller's data directory.
+            enable_magma=False,
             enable_persistence=False,
             runtime_receipt_sink=runtime_receipt_sink,
         )

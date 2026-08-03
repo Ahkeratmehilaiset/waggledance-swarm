@@ -44,7 +44,9 @@ def _entry_path(manifest_path: Path, field: str) -> Path:
 
 def test_runtime_receipt_emission_proof_writes_verified_sanitized_bundle(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     out_dir = tmp_path / "proof"
 
     report = build_runtime_receipt_emission_proof(
@@ -88,6 +90,8 @@ def test_runtime_receipt_emission_proof_writes_verified_sanitized_bundle(
     assert "private runtime query" not in emitted_text
     assert "context secret" not in emitted_text
     assert "DO_NOT_LEAK" not in emitted_text
+    assert not (tmp_path / "data" / "audit_log.db").exists()
+    assert not (tmp_path / "data" / "learning_ledger.jsonl").exists()
 
 
 def test_runtime_receipt_emission_proof_refuses_existing_output_dir(

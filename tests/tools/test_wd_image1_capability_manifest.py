@@ -587,7 +587,11 @@ def test_deterministic_solver_trace_proof_is_privacy_safe() -> None:
     assert proof["external_writes_applied"] is False
 
 
-def test_runtime_receipt_metrics_smoke_preserves_default_off_boundary() -> None:
+def test_runtime_receipt_metrics_smoke_preserves_default_off_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
     smoke = build_runtime_receipt_metrics_smoke(ROOT)
 
     assert smoke["ok"] is True
@@ -609,6 +613,8 @@ def test_runtime_receipt_metrics_smoke_preserves_default_off_boundary() -> None:
     assert smoke["default_runtime_receipt_emission_changed"] is False
     assert smoke["runtime_authority_changed"] is False
     assert smoke["payloads_exported_by_metrics"] is False
+    assert not (tmp_path / "data" / "audit_log.db").exists()
+    assert not (tmp_path / "data" / "learning_ledger.jsonl").exists()
 
 
 def test_runtime_receipt_settings_sink_smoke_preserves_default_off_boundary() -> None:

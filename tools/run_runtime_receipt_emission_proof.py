@@ -275,6 +275,10 @@ def _build_fixture_runtime(*, runtime_receipt_sink) -> AutonomyRuntime:
     registry.register_executor("solve.fixture", _Executor())
     runtime = AutonomyRuntime(
         capability_registry=registry,
+        # The proof exercises the explicit receipt sink only. Persistence and
+        # MAGMA are independent seams, so both must be disabled to avoid
+        # writing fixture audit/learning events into the caller's data path.
+        enable_magma=False,
         enable_persistence=False,
         runtime_receipt_sink=runtime_receipt_sink,
     )

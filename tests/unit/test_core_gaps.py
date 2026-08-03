@@ -29,14 +29,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 class TestDiskGuard(unittest.TestCase):
     """Tests for core/disk_guard.py."""
 
-    def test_check_disk_space_ok(self):
+    @patch("core.disk_guard.shutil.disk_usage")
+    def test_check_disk_space_ok(self, mock_usage):
         """Normal disk returns status=ok with positive free_mb."""
         from core.disk_guard import check_disk_space
+        mock_usage.return_value = MagicMock(
+            free=1024 * 1024 * 1024,
+            total=500 * 1024**3,
+        )
         result = check_disk_space(".")
         self.assertEqual(result["status"], "ok")
         self.assertGreater(result["free_mb"], 0)
         self.assertGreater(result["free_gb"], 0)
         self.assertGreater(result["total_gb"], 0)
+        mock_usage.assert_called_once_with(".")
 
     def test_check_disk_space_with_label(self):
         """Label parameter doesn't break the function."""

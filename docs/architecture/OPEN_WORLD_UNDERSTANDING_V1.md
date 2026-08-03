@@ -632,8 +632,8 @@ sandbox.
 | C5 | accounting closure, plaintext-retention truth, WAL process-crash drill | pushed at `61fc99b`; CI text repair at `07c498e` |
 | C6 | default-OFF, raw-free paired solver-lift evidence contract | pushed at `48694a9`; local/full CI and Tools exact-head review green |
 | C7 | closed declarative paired runner feeding C6 | pushed at `fc4474b`; local full suite and exact-head CI green |
-| C8a | inert static coding-candidate compile/package preflight | implementation checkpoint; default-OFF, candidate never executes, no sandbox/runtime authority |
-| Gate | exact pushed-head reviews and CI | C7 green; C8a pending |
+| C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
+| Gate | exact pushed-head reviews and CI | local reviews and exact-head CI green; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:
 

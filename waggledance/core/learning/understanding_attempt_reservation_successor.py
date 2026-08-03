@@ -645,6 +645,42 @@ def _derive_state_evidence_digest(
     )
 
 
+def _expected_successor_snapshot_byte_count(
+    source_receipt: AttemptReservationCasReceiptV1,
+) -> int:
+    proposal = source_receipt.proposal
+    target_state = _target_state(proposal.transition)
+    if proposal.transition is AttemptReservationTransition.OPEN_IF_ABSENT:
+        inserted_row = {
+            "reservation_id": proposal.reservation_id,
+            "declared_capability_fingerprint": (
+                proposal.declared_capability_fingerprint
+            ),
+            "state": target_state.value,
+            "cell_binding_digest": proposal.cell_binding_digest,
+            "campaign_id_digest": proposal.campaign_id_digest,
+            "intent_digest": proposal.intent_digest,
+            "state_evidence_digest": _derive_state_evidence_digest(
+                source_receipt,
+                target_state,
+            ),
+        }
+        inserted_row_byte_count = len(canonical_json_bytes(inserted_row))
+        separator_byte_count = (
+            1 if source_receipt.reservation_record_count > 0 else 0
+        )
+        return (
+            source_receipt.reservation_state_snapshot_byte_count
+            + inserted_row_byte_count
+            + separator_byte_count
+        )
+    return (
+        source_receipt.reservation_state_snapshot_byte_count
+        + len(target_state.value)
+        - len(AttemptReservationState.RESERVED.value)
+    )
+
+
 def _derive_request_digest(
     *,
     policy_digest: str,
@@ -1108,6 +1144,23 @@ def _validate_receipt(receipt: AttemptReservationSuccessorReceiptV1) -> None:
             raise AttemptReservationSuccessorContractError(
                 "successor record-limit refusal relation mismatch"
             )
+        if (
+            receipt.reason_code
+            is AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED
+            and (
+                (
+                    source.proposal.transition
+                    is AttemptReservationTransition.OPEN_IF_ABSENT
+                    and source.reservation_record_count
+                    >= receipt.max_reservation_records
+                )
+                or _expected_successor_snapshot_byte_count(source)
+                <= receipt.max_snapshot_bytes
+            )
+        ):
+            raise AttemptReservationSuccessorContractError(
+                "successor byte-limit refusal relation mismatch"
+            )
     else:
         transition = source.proposal.transition
         target_state = _target_state(transition)
@@ -1185,6 +1238,13 @@ def _validate_receipt(receipt: AttemptReservationSuccessorReceiptV1) -> None:
         ):
             raise AttemptReservationSuccessorContractError(
                 "successor snapshot byte count refused"
+            )
+        if (
+            receipt.successor_reservation_state_snapshot_byte_count
+            != _expected_successor_snapshot_byte_count(source)
+        ):
+            raise AttemptReservationSuccessorContractError(
+                "successor snapshot byte count relation mismatch"
             )
         if (
             receipt.successor_reservation_state_snapshot_digest

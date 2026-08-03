@@ -957,6 +957,108 @@ def test_resealed_record_limit_refusal_requires_full_open_transition(
         )
 
 
+@pytest.mark.parametrize(
+    "transition,reservations,extra",
+    (
+        (AttemptReservationTransition.OPEN_IF_ABSENT, [], {}),
+        (
+            AttemptReservationTransition.OPEN_IF_ABSENT,
+            [_reservation("existing")],
+            {
+                "fingerprint": _digest("capability-new"),
+                "cell_binding_digest": _digest("cell-new"),
+                "campaign_id_digest": _digest("campaign-new"),
+                "intent_digest": _digest("intent-new"),
+            },
+        ),
+        (
+            AttemptReservationTransition.COMMIT_IF_RESERVED,
+            [_reservation()],
+            {},
+        ),
+        (
+            AttemptReservationTransition.ABORT_IF_RESERVED,
+            [_reservation()],
+            {},
+        ),
+    ),
+)
+def test_resealed_byte_limit_refusal_requires_exact_successor_overflow(
+    transition: AttemptReservationTransition,
+    reservations: list[dict[str, str]],
+    extra: dict[str, str],
+) -> None:
+    receipt = _evaluate(
+        transition,
+        reservations=reservations,
+        **extra,
+    )
+    assert receipt.source_precondition_relation_holds is True
+    assert receipt.successor_snapshot_relation_holds is True
+    assert receipt.successor_reservation_state_snapshot_byte_count is not None
+    assert (
+        receipt.successor_reservation_state_snapshot_byte_count
+        <= receipt.max_snapshot_bytes
+    )
+    with pytest.raises(AttemptReservationSuccessorContractError):
+        _reseal(
+            receipt,
+            successor_snapshot_relation_holds=False,
+            target_reservation_state=None,
+            derived_state_evidence_digest=None,
+            successor_reservation_state_snapshot_digest=None,
+            successor_reservation_record_count=None,
+            successor_reservation_state_snapshot_byte_count=None,
+            successor_reservation_record_digests=None,
+            disposition=(
+                AttemptReservationSuccessorDisposition.SUCCESSOR_RESOURCE_BOUNDS_REFUSED
+            ),
+            reason_code=(
+                AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED
+            ),
+        )
+
+
+def test_positive_receipt_byte_count_is_exactly_bound_to_transition() -> None:
+    receipt = _evaluate(
+        AttemptReservationTransition.OPEN_IF_ABSENT,
+        reservations=[_reservation("existing")],
+        fingerprint=_digest("capability-new"),
+        cell_binding_digest=_digest("cell-new"),
+        campaign_id_digest=_digest("campaign-new"),
+        intent_digest=_digest("intent-new"),
+    )
+    assert receipt.successor_reservation_state_snapshot_byte_count is not None
+    with pytest.raises(AttemptReservationSuccessorContractError):
+        _reseal(
+            receipt,
+            successor_reservation_state_snapshot_byte_count=(
+                receipt.successor_reservation_state_snapshot_byte_count + 1
+            ),
+        )
+
+
+def test_commit_can_truthfully_hit_exact_successor_byte_limit() -> None:
+    scope = _digest("reservation-scope")
+    reservations = [_reservation(scope=scope)]
+    base = _snapshot_bytes(reservations, scope=scope)
+    receipt = _evaluate(
+        AttemptReservationTransition.COMMIT_IF_RESERVED,
+        reservations=reservations,
+        scope=scope,
+        policy=_policy(max_snapshot_bytes=len(base)),
+    )
+    assert receipt.source_precondition_relation_holds is True
+    assert receipt.successor_derivation_performed is True
+    assert receipt.successor_snapshot_relation_holds is False
+    assert receipt.disposition is (
+        AttemptReservationSuccessorDisposition.SUCCESSOR_RESOURCE_BOUNDS_REFUSED
+    )
+    assert receipt.reason_code is (
+        AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED
+    )
+
+
 def test_absolute_2048_row_open_overflow_has_no_successor() -> None:
     scope = _digest("reservation-scope")
     rows = [_reservation(f"row-{index}", scope=scope) for index in range(2_048)]

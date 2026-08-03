@@ -14,7 +14,7 @@ Failure Cases → SolverCandidateLab.analyze_failures()
                     ↓
               CandidateRegistry (isolated, in-memory)
                     ↓
-              TemplateCompiler (AST-validated)
+              TemplateCompiler (fixed inert skeleton + static AST policy)
                     ↓
               Structured Candidate Specs (review only)
 ```
@@ -38,13 +38,36 @@ Structured spec with:
 - `confidence`: 0.0-0.8 based on cluster size
 - `state`: proposed → compiled → ready_for_canary (or failed_validation / rejected)
 
+`COMPILED` has a deliberately narrow meaning: bounded candidate metadata was
+accepted and the fixed, inert Python skeleton passed static syntax/policy and
+exact-shape checks. It does **not** mean the candidate has an implementation,
+is behaviorally correct, is safe to execute, has passed a sandbox, or is
+eligible for registry, canary, promotion, or routing. State transitions in this
+in-memory registry do not grant any of those authorities.
+
 ### TemplateCompiler
-Converts candidate specs into bounded deterministic solver templates:
-- **AST validation mandatory**: All generated code passes Python AST validation
-- **Strict allowlist**: No imports, no filesystem/network/process side effects
-- **Forbidden**: exec, eval, compile, open, __import__, getattr, setattr, delattr, globals, locals, breakpoint, system, popen, remove, rmdir, unlink, write, read
-- **Forbidden AST nodes**: Import, ImportFrom, Global, Nonlocal, Async*, Yield*
-- **Allowed builtins**: abs, round, min, max, sum, len, int, float, str, bool, list, dict, tuple, set, range, enumerate, zip, sorted, reversed, map, filter, any, all, isinstance
+Converts candidate specs into one bounded, inert solver skeleton:
+
+- Candidate ID, domain, rationale, rules, and other caller-controlled metadata
+  remain data on `SolverCandidate`; none of their bytes are interpolated into
+  Python source.
+- Candidate strings, list shapes/counts, confidence, source length, and AST
+  node count are bounded before `COMPILED` can be assigned.
+- The emitted source must match the byte-exact and AST-exact inert v1 shape. It
+  contains one fixed `solve_candidate` function that returns an empty dict and
+  contains no calls, attributes, subscripts, imports, classes, or candidate
+  logic.
+- The public static AST checker rejects imports, classes, async/yield/global
+  constructs, attributes, dunder names, and every computed call target. Direct
+  calls are accepted only when their name is in the explicit builtin allowlist.
+- The Candidate Lab never imports, evaluates, compiles with Python's
+  `compile()`, or executes the emitted source.
+
+The static checker is defense in depth for a non-executed artifact. Passing it
+is not proof that arbitrary Python is side-effect-free; Python operations can
+invoke user-defined behavior. A real coding sandbox still requires an external
+isolated execution backend, resource/network/filesystem policy, and independent
+verification. Candidate Lab supplies none of those.
 
 ### CandidateRegistry
 In-memory registry with JSON serialization:
@@ -66,7 +89,12 @@ In-memory registry with JSON serialization:
 ## Safety Guarantees
 
 1. Candidates NEVER auto-load into production routing
-2. All generated content is AST-validated
-3. No imports, no side effects, no arbitrary code execution
+2. Candidate-controlled metadata is not emitted as executable Python source
+3. The emitted inert skeleton is statically validated and never executed here
 4. Registry is isolated from production solver folders
-5. All candidate generation is auditable via registry
+5. All candidate generation is reviewable through the in-memory registry
+
+These guarantees do not claim a runtime sandbox, side-effect freedom after
+external execution, solver correctness, provenance, signing, persistence,
+BuilderHost integration, automatic code generation, canary eligibility,
+promotion, or activation.

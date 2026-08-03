@@ -1,17 +1,19 @@
-"""Solver Candidate Lab — safe generation of solver candidate artifacts.
+"""Solver Candidate Lab — generation of inert solver candidate artifacts.
 
 Analyzes failure cases, route misses, and LLM-heavy clusters to propose
 structured solver candidate specs. Candidates go to an isolated store,
 NEVER to production routing.
 
-Candidates are structured specs (not arbitrary Python), compiled via
-TemplateCompiler with strict AST validation and allowlisted operations.
+Candidates are structured specs (not arbitrary Python). TemplateCompiler emits
+a fixed, inert Python skeleton with static AST-policy validation. The lab never
+executes that source and does not provide sandbox or promotion evidence.
 """
 
 import ast
 import hashlib
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -65,18 +67,19 @@ class SolverCandidate:
 # ── Template Compiler ────────────────────────────────────────────
 
 
-# Strict allowlist for template operations
-_ALLOWED_IMPORTS = frozenset()  # No imports allowed in templates
+# Calls accepted by the public static AST-policy checker. The generated inert
+# template contains no calls at all; this set exists for callers that validate
+# separately authored, non-executed source.
 _ALLOWED_BUILTINS = frozenset({
     "abs", "round", "min", "max", "sum", "len", "int", "float", "str",
     "bool", "list", "dict", "tuple", "set", "range", "enumerate", "zip",
     "sorted", "reversed", "map", "filter", "any", "all", "isinstance",
-    "True", "False", "None",
 })
 
 _FORBIDDEN_AST_NODES = (
     ast.Import,
     ast.ImportFrom,
+    ast.ClassDef,
     ast.Global,
     ast.Nonlocal,
     ast.AsyncFunctionDef,
@@ -87,6 +90,35 @@ _FORBIDDEN_AST_NODES = (
     ast.YieldFrom,
 )
 
+_MAX_STATIC_SOURCE_CHARS = 65_536
+_MAX_STATIC_AST_NODES = 2_048
+_CANDIDATE_TEXT_LIMITS = {
+    "candidate_id": 256,
+    "domain": 128,
+    "rationale": 4_096,
+}
+_CANDIDATE_LIST_LIMITS = {
+    "source_cases": (64, 256),
+    "expected_inputs": (64, 1_024),
+    "expected_outputs": (64, 1_024),
+    "proposed_rules": (64, 2_048),
+}
+_INERT_TEMPLATE_SOURCE = '''"""Auto-generated inert solver candidate template.
+
+Candidate metadata remains in the SolverCandidate record.
+This source has not been approved for execution.
+"""
+
+def solve_candidate(inputs: dict) -> dict:
+    """Return an empty result pending implementation and verification."""
+    result = {}
+    return result'''
+_INERT_TEMPLATE_AST_DUMP = ast.dump(
+    ast.parse(_INERT_TEMPLATE_SOURCE),
+    annotate_fields=True,
+    include_attributes=False,
+)
+
 
 class TemplateCompileError(Exception):
     """Raised when template compilation fails validation."""
@@ -94,81 +126,187 @@ class TemplateCompileError(Exception):
 
 
 class TemplateCompiler:
-    """Compiles structured candidate specs into bounded deterministic solver templates.
+    """Compile a candidate into a bounded, non-executed template artifact.
 
     Rules:
-    - No imports outside allowlist (currently: none)
-    - No filesystem/network/process side effects
-    - AST validation mandatory
-    - Only basic math/logic operations
+    - Candidate-controlled bytes never enter the generated Python source
+    - The generated source must match one fixed inert shape
+    - The public AST checker allows calls only to explicitly listed builtins
+    - The lab never executes or promotes the generated source
     """
 
     @staticmethod
     def validate_ast(source: str) -> List[str]:
-        """Validate Python source via AST. Returns list of errors."""
+        """Apply a bounded static AST policy. Returns a list of errors.
+
+        Passing this policy is not sandbox, execution-safety, or behavioral
+        evidence. Template compilation additionally requires the exact inert
+        source shape below.
+        """
+        if type(source) is not str:
+            return ["Source must be an exact str"]
+        if len(source) > _MAX_STATIC_SOURCE_CHARS:
+            return [
+                "Source exceeds static validation limit "
+                f"({_MAX_STATIC_SOURCE_CHARS} characters)"
+            ]
+
         errors = []
         try:
             tree = ast.parse(source)
-        except SyntaxError as e:
+        except (SyntaxError, ValueError, TypeError) as e:
             return [f"Syntax error: {e}"]
 
-        for node in ast.walk(tree):
+        nodes = list(ast.walk(tree))
+        if len(nodes) > _MAX_STATIC_AST_NODES:
+            return [
+                "AST exceeds static validation limit "
+                f"({_MAX_STATIC_AST_NODES} nodes)"
+            ]
+
+        for node in nodes:
             # Check forbidden node types
             if isinstance(node, _FORBIDDEN_AST_NODES):
                 errors.append(f"Forbidden construct: {type(node).__name__} at line {getattr(node, 'lineno', '?')}")
 
-            # Check for attribute access to dangerous names
+            # Attribute access is outside the static template policy. Even a
+            # read may invoke user-defined descriptor behavior if later run.
             if isinstance(node, ast.Attribute):
-                attr = node.attr
-                if attr.startswith("_") and attr != "__init__":
-                    errors.append(f"Private attribute access: .{attr} at line {node.lineno}")
+                errors.append(
+                    f"Attribute access is not allowlisted: .{node.attr} "
+                    f"at line {node.lineno}"
+                )
 
-            # Check for dangerous function calls
+            if isinstance(node, ast.Name) and node.id.startswith("__"):
+                errors.append(
+                    f"Dunder name is not allowlisted: {node.id} "
+                    f"at line {node.lineno}"
+                )
+
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name.startswith("__"):
+                    errors.append(
+                        f"Dunder function name is not allowlisted: {node.name} "
+                        f"at line {node.lineno}"
+                    )
+
+            if isinstance(node, ast.arg) and node.arg.startswith("__"):
+                errors.append(
+                    f"Dunder argument name is not allowlisted: {node.arg} "
+                    f"at line {getattr(node, 'lineno', '?')}"
+                )
+
+            # Calls fail closed: only direct names in the allowlist pass.
+            # Attribute, subscript, lambda, and other computed callees do not.
             if isinstance(node, ast.Call):
                 func = node.func
                 if isinstance(func, ast.Name):
-                    if func.id in ("exec", "eval", "compile", "open", "__import__",
-                                   "getattr", "setattr", "delattr", "globals", "locals",
-                                   "breakpoint", "exit", "quit"):
-                        errors.append(f"Forbidden call: {func.id}() at line {node.lineno}")
-                elif isinstance(func, ast.Attribute):
-                    if func.attr in ("system", "popen", "exec", "eval", "remove",
-                                     "rmdir", "unlink", "write", "read"):
-                        errors.append(f"Forbidden method: .{func.attr}() at line {node.lineno}")
+                    if func.id not in _ALLOWED_BUILTINS:
+                        errors.append(
+                            f"Call is not allowlisted: {func.id}() "
+                            f"at line {node.lineno}"
+                        )
+                else:
+                    errors.append(
+                        "Computed call target is not allowlisted: "
+                        f"{type(func).__name__} at line {node.lineno}"
+                    )
 
         return errors
 
     @staticmethod
     def compile_template(candidate: SolverCandidate) -> str:
-        """Convert a structured candidate spec into a safe solver template.
+        """Convert a structured candidate spec into a fixed inert template.
 
         Returns the compiled template source as a string.
         Raises TemplateCompileError on validation failure.
+
+        Candidate metadata remains in ``candidate`` and is deliberately not
+        interpolated into Python. ``COMPILED`` therefore means only that this
+        static skeleton passed input, syntax, and exact-shape validation.
         """
-        # Build a deterministic function from the rules
-        lines = [
-            f'"""Auto-generated solver template: {candidate.domain}',
-            f'Candidate: {candidate.candidate_id}',
-            f'Rationale: {candidate.rationale}',
-            '"""',
-            '',
-            f'def solve_{candidate.domain}(inputs: dict) -> dict:',
-            f'    """Solver for {candidate.domain} domain."""',
-            '    result = {}',
-        ]
+        candidate_errors = _validate_candidate(candidate)
+        if candidate_errors:
+            raise TemplateCompileError(
+                "Candidate validation failed: " + "; ".join(candidate_errors)
+            )
 
-        for i, rule in enumerate(candidate.proposed_rules):
-            lines.append(f'    # Rule {i+1}: {rule}')
+        source = _INERT_TEMPLATE_SOURCE
 
-        lines.append('    return result')
-        source = '\n'.join(lines)
-
-        # Validate via AST
         errors = TemplateCompiler.validate_ast(source)
+        errors.extend(_validate_inert_template_shape(source))
         if errors:
             raise TemplateCompileError(f"Template validation failed: {'; '.join(errors)}")
 
         return source
+
+
+def _validate_inert_template_shape(source: str) -> List[str]:
+    """Require the byte-exact source and AST captured at module load."""
+    if source != _INERT_TEMPLATE_SOURCE:
+        return ["Generated template does not match fixed inert v1 source"]
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError) as exc:
+        return [f"Generated template shape parse failed: {exc}"]
+    if ast.dump(
+        tree,
+        annotate_fields=True,
+        include_attributes=False,
+    ) != _INERT_TEMPLATE_AST_DUMP:
+        return ["Generated template AST does not match fixed inert v1 shape"]
+    return []
+
+
+def _validate_candidate(candidate: Any) -> List[str]:
+    """Validate and bound candidate data before assigning COMPILED state."""
+    if type(candidate) is not SolverCandidate:
+        return ["candidate must be an exact SolverCandidate"]
+
+    errors: List[str] = []
+    for field_name, max_chars in _CANDIDATE_TEXT_LIMITS.items():
+        value = getattr(candidate, field_name)
+        if type(value) is not str:
+            errors.append(f"{field_name} must be an exact str")
+            continue
+        if field_name in {"candidate_id", "domain"} and not value:
+            errors.append(f"{field_name} must be non-empty")
+        if len(value) > max_chars:
+            errors.append(f"{field_name} exceeds {max_chars} characters")
+        if _contains_control_character(value):
+            errors.append(f"{field_name} contains a control character")
+
+    for field_name, (max_items, max_chars) in _CANDIDATE_LIST_LIMITS.items():
+        values = getattr(candidate, field_name)
+        if type(values) is not list:
+            errors.append(f"{field_name} must be an exact list")
+            continue
+        if len(values) > max_items:
+            errors.append(f"{field_name} exceeds {max_items} items")
+        for index, value in enumerate(values):
+            if type(value) is not str:
+                errors.append(f"{field_name}[{index}] must be an exact str")
+                continue
+            if len(value) > max_chars:
+                errors.append(
+                    f"{field_name}[{index}] exceeds {max_chars} characters"
+                )
+            if _contains_control_character(value):
+                errors.append(
+                    f"{field_name}[{index}] contains a control character"
+                )
+
+    confidence = candidate.confidence
+    if type(confidence) not in (int, float):
+        errors.append("confidence must be an exact int or float")
+    elif not math.isfinite(float(confidence)) or not 0.0 <= confidence <= 1.0:
+        errors.append("confidence must be finite and between 0.0 and 1.0")
+
+    return errors
+
+
+def _contains_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 # ── Candidate Registry ───────────────────────────────────────────

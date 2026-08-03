@@ -1,5 +1,6 @@
 """Tests for SolverCandidateLab — P2 of v3.5.0."""
 
+import ast
 import json
 from unittest.mock import MagicMock
 
@@ -31,35 +32,37 @@ class TestASTRejection:
 
     def test_rejects_exec(self):
         errors = TemplateCompiler.validate_ast("exec('print(1)')")
-        assert any("Forbidden call: exec()" in e for e in errors)
+        assert any("Call is not allowlisted: exec()" in e for e in errors)
 
     def test_rejects_eval(self):
         errors = TemplateCompiler.validate_ast("eval('1+1')")
-        assert any("Forbidden call: eval()" in e for e in errors)
+        assert any("Call is not allowlisted: eval()" in e for e in errors)
 
     def test_rejects_open(self):
         errors = TemplateCompiler.validate_ast("open('/etc/passwd')")
-        assert any("Forbidden call: open()" in e for e in errors)
+        assert any("Call is not allowlisted: open()" in e for e in errors)
 
     def test_rejects_dunder_import(self):
         errors = TemplateCompiler.validate_ast("__import__('os')")
-        assert any("Forbidden call: __import__()" in e for e in errors)
+        assert any("Call is not allowlisted: __import__()" in e for e in errors)
+        assert any("Dunder name is not allowlisted: __import__" in e for e in errors)
 
     def test_rejects_getattr(self):
         errors = TemplateCompiler.validate_ast("getattr(obj, 'x')")
-        assert any("Forbidden call: getattr()" in e for e in errors)
+        assert any("Call is not allowlisted: getattr()" in e for e in errors)
 
     def test_rejects_private_attr(self):
         errors = TemplateCompiler.validate_ast("x._secret")
-        assert any("Private attribute access: ._secret" in e for e in errors)
+        assert any("Attribute access is not allowlisted: ._secret" in e for e in errors)
 
     def test_rejects_system_method(self):
         errors = TemplateCompiler.validate_ast("os.system('ls')")
-        assert any("Forbidden method: .system()" in e for e in errors)
+        assert any("Attribute access is not allowlisted: .system" in e for e in errors)
+        assert any("Computed call target is not allowlisted: Attribute" in e for e in errors)
 
     def test_rejects_popen(self):
         errors = TemplateCompiler.validate_ast("os.popen('ls')")
-        assert any("Forbidden method: .popen()" in e for e in errors)
+        assert any("Attribute access is not allowlisted: .popen" in e for e in errors)
 
     def test_rejects_global(self):
         source = "def f():\n    global x\n    x = 1"
@@ -85,11 +88,37 @@ class TestASTRejection:
         errors = TemplateCompiler.validate_ast(source)
         assert errors == []
 
-    def test_allows_init_dunder(self):
+    def test_rejects_classes_and_dunder_functions(self):
         source = "class Foo:\n    def __init__(self):\n        self.x = 1"
         errors = TemplateCompiler.validate_ast(source)
-        # __init__ is explicitly allowed
-        assert not any("Private attribute" in e for e in errors)
+        assert any("Forbidden construct: ClassDef" in e for e in errors)
+        assert any("Dunder function name is not allowlisted: __init__" in e for e in errors)
+        assert any("Attribute access is not allowlisted: .x" in e for e in errors)
+
+    @pytest.mark.parametrize("call", ["dangerous_side_effect()", "print(1)", "vars()", "input()"])
+    def test_rejects_every_unknown_name_call(self, call):
+        errors = TemplateCompiler.validate_ast(call)
+        assert any("Call is not allowlisted" in error for error in errors)
+
+    def test_rejects_unknown_attribute_call(self):
+        errors = TemplateCompiler.validate_ast("client.send_secret()")
+        assert any("Attribute access is not allowlisted" in error for error in errors)
+        assert any("Computed call target is not allowlisted" in error for error in errors)
+
+    def test_rejects_subscript_call_target(self):
+        source = '__builtins__["__import__"]("os").getcwd()'
+        errors = TemplateCompiler.validate_ast(source)
+        assert any("Computed call target is not allowlisted: Subscript" in e for e in errors)
+        assert any("Dunder name is not allowlisted: __builtins__" in e for e in errors)
+
+    def test_rejects_non_name_call_target(self):
+        errors = TemplateCompiler.validate_ast("(lambda: 1)()")
+        assert any("Computed call target is not allowlisted: Lambda" in e for e in errors)
+
+    def test_rejects_non_string_and_oversized_source(self):
+        assert TemplateCompiler.validate_ast(b"x = 1") == ["Source must be an exact str"]
+        errors = TemplateCompiler.validate_ast("x" * 65_537)
+        assert any("Source exceeds static validation limit" in error for error in errors)
 
 
 # ── Template Compile Tests ───────────────────────────────────────
@@ -112,29 +141,103 @@ class TestTemplateCompile:
     def test_compile_valid_candidate(self):
         candidate = self._make_candidate()
         template = TemplateCompiler.compile_template(candidate)
-        assert "def solve_math(inputs: dict)" in template
-        assert "Rule 1: Handle math queries" in template
+        assert "def solve_candidate(inputs: dict)" in template
         assert "return result" in template
 
-    def test_compile_includes_docstring(self):
+    def test_compile_keeps_candidate_metadata_out_of_source(self):
         candidate = self._make_candidate()
         template = TemplateCompiler.compile_template(candidate)
-        assert "Auto-generated solver template: math" in template
-        assert "cand_test_abc123" in template
+        assert "Auto-generated inert solver candidate template" in template
+        assert candidate.domain not in template
+        assert candidate.candidate_id not in template
+        assert candidate.rationale not in template
+        assert candidate.proposed_rules[0] not in template
 
-    def test_compile_multiple_rules(self):
+    def test_compile_multiple_rules_remain_external_data(self):
         rules = ["Rule A", "Rule B", "Rule C"]
         candidate = self._make_candidate(rules=rules)
         template = TemplateCompiler.compile_template(candidate)
-        assert "Rule 1: Rule A" in template
-        assert "Rule 2: Rule B" in template
-        assert "Rule 3: Rule C" in template
+        assert all(rule not in template for rule in rules)
+        assert candidate.proposed_rules == rules
 
     def test_compiled_template_passes_ast(self):
         candidate = self._make_candidate()
         template = TemplateCompiler.compile_template(candidate)
         errors = TemplateCompiler.validate_ast(template)
         assert errors == []
+
+    def test_compiled_template_has_exact_inert_ast_shape(self):
+        template = TemplateCompiler.compile_template(self._make_candidate())
+        tree = ast.parse(template)
+
+        assert len(tree.body) == 2
+        assert isinstance(tree.body[0], ast.Expr)
+        function = tree.body[1]
+        assert isinstance(function, ast.FunctionDef)
+        assert function.name == "solve_candidate"
+        assert [argument.arg for argument in function.args.args] == ["inputs"]
+        assert [type(statement) for statement in function.body] == [
+            ast.Expr,
+            ast.Assign,
+            ast.Return,
+        ]
+        assert not any(
+            isinstance(node, (ast.Call, ast.Attribute, ast.Subscript, ast.ClassDef))
+            for node in ast.walk(tree)
+        )
+
+    @pytest.mark.parametrize("field", ["candidate_id", "domain", "rationale"])
+    def test_compile_rejects_control_characters_in_scalar_metadata(self, field):
+        candidate = self._make_candidate()
+        setattr(candidate, field, 'safe"""\ndangerous_side_effect()\n"""')
+
+        with pytest.raises(TemplateCompileError, match="control character"):
+            TemplateCompiler.compile_template(candidate)
+
+    def test_compile_rejects_rule_newline_injection(self):
+        candidate = self._make_candidate(
+            rules=["comment\n    dangerous_side_effect()\n    # suffix"]
+        )
+
+        with pytest.raises(TemplateCompileError, match="control character"):
+            TemplateCompiler.compile_template(candidate)
+
+    def test_code_like_metadata_without_controls_remains_inert_data(self):
+        candidate = self._make_candidate()
+        candidate.rationale = '__builtins__["__import__"]("os")'
+
+        template = TemplateCompiler.compile_template(candidate)
+
+        assert "__builtins__" not in template
+        assert not any(isinstance(node, ast.Call) for node in ast.walk(ast.parse(template)))
+
+    def test_compile_rejects_unbounded_or_wrong_shaped_candidate_data(self):
+        candidate = self._make_candidate()
+        candidate.rationale = "x" * 4_097
+        with pytest.raises(TemplateCompileError, match="rationale exceeds"):
+            TemplateCompiler.compile_template(candidate)
+
+        candidate = self._make_candidate()
+        candidate.proposed_rules = ["rule"] * 65
+        with pytest.raises(TemplateCompileError, match="proposed_rules exceeds"):
+            TemplateCompiler.compile_template(candidate)
+
+        candidate = self._make_candidate()
+        candidate.proposed_rules = ("rule",)
+        with pytest.raises(TemplateCompileError, match="exact list"):
+            TemplateCompiler.compile_template(candidate)
+
+        candidate = self._make_candidate()
+        candidate.confidence = True
+        with pytest.raises(TemplateCompileError, match="exact int or float"):
+            TemplateCompiler.compile_template(candidate)
+
+    def test_compile_is_inert_and_does_not_write_runtime_state(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        TemplateCompiler.compile_template(self._make_candidate())
+
+        assert not (tmp_path / "data").exists()
 
 
 # ── Candidate Registry Tests ─────────────────────────────────────
@@ -324,7 +427,25 @@ class TestSolverCandidateLab:
         assert len(compiled) > 0
         for c in compiled:
             assert c.compiled_template is not None
-            assert "def solve_" in c.compiled_template
+            assert "def solve_candidate" in c.compiled_template
+
+    def test_analyze_failures_rejects_intent_source_injection(self):
+        intent = (
+            "x(inputs: dict) -> dict:\n"
+            "    dangerous_side_effect()\n"
+            "    # suffix"
+        )
+        cases = self._make_cases(intent=intent, n=2)
+
+        candidates = SolverCandidateLab().analyze_failures(
+            cases,
+            min_cluster_size=2,
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0].state == CandidateState.FAILED_VALIDATION
+        assert candidates[0].compiled_template is None
+        assert any("control character" in error for error in candidates[0].validation_errors)
 
     def test_empty_cases_no_candidates(self):
         lab = SolverCandidateLab()

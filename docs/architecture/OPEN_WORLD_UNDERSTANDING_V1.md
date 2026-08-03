@@ -652,6 +652,60 @@ found no implementation or adversarial-test-path blocker and requested the
 evidence wording and ledger correction recorded here. These reviews are
 advisory only, not votes, gates, or authority grants.
 
+### C8c supplied expected-digest relation accountant
+
+C8c is a default-OFF, pure equality accountant over one raw-free C8b receipt
+and one separately supplied expected-digest object. The expected object is a
+keyword-only input rather than a field inside the request. In `STATIC_SHADOW`
+mode C8c revalidates and defensively copies the complete C8b receipt and the
+expected object, then compares family-snapshot digest to expected
+family-snapshot digest and registry-snapshot digest to expected
+registry-snapshot digest. It has no plan or attempt budget because it schedules
+nothing and grants no action.
+
+The public result is only `EXPECTED_DIGEST_RELATION_HOLDS`,
+`EXPECTED_DIGEST_RELATION_MISMATCH`, or `REFUSED`. A presented C8b
+`REFUSED` disposition dominates and produces `SOURCE_C8B_RECEIPT_REFUSED`
+with both equality fields absent. Every non-refused result preserves the
+complete source C8b receipt, so its exact-match or no-match disposition remains
+separate from the C8c equality relation. A C8b no-match plus a C8c equality
+result is still neither novelty nor permission to generate.
+
+The word `pin` in the module and schema names denotes only the supplied
+expected-digest bundle and its domain-separated content digest. It does **not**
+mean that an external trust anchor exists. A caller can construct a
+self-consistent C8b receipt and matching expectations without providing raw
+snapshot bytes; C8c can truthfully report local equality in that case. The
+receipt therefore fixes `snapshot_externally_pinned`, pin provenance and origin
+authentication, C8b receipt-origin authentication, catalog authenticity,
+freshness, completeness, and independent registry identity to false. It also
+fixes snapshot-byte rehashing, signatures, HMAC, semantic equivalence,
+deduplication, novelty, reuse/build eligibility, prior-attempt enforcement,
+generation, execution, sandbox, Genesis/hex/echo-chamber, 50,000-scale, writes,
+routing, promotion, and runtime authority to false. A caller-supplied HMAC key
+was deliberately omitted because it would add secret handling while proving
+only possession of another caller-supplied value.
+
+The C8c receipt nests both raw-free inputs and reconstructs the relation-policy,
+policy, expected-object, source C8b receipt, request, equality/disposition, hard
+claim, and outer-receipt digest relations. It invokes C8b receipt validation but
+does not invoke the C8b snapshot evaluator, read raw snapshot bytes, or perform
+filesystem, network, subprocess, registry, MAGMA, or external-system I/O.
+Default OFF creates a fresh policy per call and returns before inspecting the
+request or expected object.
+
+A fresh provider-default Grok advisory ranked this detached expected-digest
+seam ahead of attempt history, a knowledge-delta extension, and any C8b-to-C8a
+adapter. Read-only contract, adversarial, API, and security reviews converged on
+the same narrow claim boundary; the first API review found and caused fixes for
+ambiguous C8b invocation wording and a mutable default-policy object. Their
+current-byte rechecks found no remaining local blocker. These are advisory
+observations only. A genuine external pin still requires an independently
+configured trust root, signature and signer authorization, freshness,
+revocation, and anti-replay. The next safe accounting slice is supplied
+attempt-history equality; no C8a/C7 or generated-code execution wiring follows
+from C8c.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -665,6 +719,7 @@ advisory only, not votes, gates, or authority grants.
 | C7 | closed declarative paired runner feeding C6 | pushed at `fc4474b`; local full suite and exact-head CI green |
 | C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
 | C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | pushed at `32f85305`; 94 focused and 209 compatibility tests green; exact-head Tests `30821832356` and WaggleDance CI `30821835324` green |
+| C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | implemented in this commit; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tools review and CI pending |
 | Gate | exact pushed-head reviews and CI | implementation evidence green; any later ledger-only closure still requires its own exact-head review/CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:

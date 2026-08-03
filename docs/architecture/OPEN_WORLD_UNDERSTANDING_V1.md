@@ -645,9 +645,12 @@ ledger/storage, routing, promotion, runtime, execution, or sandbox wiring. It
 uses only the existing pure canonical hashing helper, neither imports nor
 executes candidate code, and grants no write or activation authority. All
 Genesis, hex, echo-chamber, and 50,000-solver claims remain false. A fresh
-provider-default Grok advisory returned `NARROW`, and the local review lanes
-reached the same narrow evidence-only consensus; both are advisory only, not
-votes, gates, or authority grants.
+provider-default Grok advisory returned `NARROW`. Three separate read-only
+in-process API, security, and claim reviews later found no implementation
+blocker. A separate Tools review of implementation SHA `32f85305` likewise
+found no implementation or adversarial-test-path blocker and requested the
+evidence wording and ledger correction recorded here. These reviews are
+advisory only, not votes, gates, or authority grants.
 
 ## Two-week sprint ledger
 
@@ -661,8 +664,8 @@ votes, gates, or authority grants.
 | C6 | default-OFF, raw-free paired solver-lift evidence contract | pushed at `48694a9`; local/full CI and Tools exact-head review green |
 | C7 | closed declarative paired runner feeding C6 | pushed at `fc4474b`; local full suite and exact-head CI green |
 | C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
-| C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | implementation checkpoint; pending until pushed; no SHA or green CI claimed |
-| Gate | exact pushed-head reviews and CI | local reviews and exact-head CI green; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
+| C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | pushed at `32f85305`; 94 focused and 209 compatibility tests green; exact-head Tests `30821832356` and WaggleDance CI `30821835324` green |
+| Gate | exact pushed-head reviews and CI | implementation evidence green; any later ledger-only closure still requires its own exact-head review/CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:
 

@@ -621,6 +621,34 @@ and an outside verifier. The current 2026-08-03 host probe found no Docker,
 Podman, or `bwrap`, so absence must fail closed; native Python is not a fallback
 sandbox.
 
+### C8b supplied-snapshot capability accountant
+
+C8b is a default-OFF, pure accountant over one caller-supplied snapshot of
+declared capabilities. In its enabled evidence-only mode it applies bounded,
+exact equality and returns exactly one disposition: `REFUSED`,
+`EXACT_DECLARED_CAPABILITY_MATCH_IN_SUPPLIED_SNAPSHOT`, or
+`NO_EXACT_DECLARED_CAPABILITY_MATCH_IN_SUPPLIED_SNAPSHOT`. An exact match means
+only that the compared declarations are equal inside that supplied snapshot.
+It does not prove reuse, novelty, semantic equivalence, or deduplication, and
+there is not yet any prior-attempt or cross-campaign deduplication state.
+Its matching-policy digest commits to the closed family vocabulary,
+canonical/sorted snapshot rules, duplicate refusal, and ambiguous-match
+refusal. The receipt reconstructs its bounded policy, raw-free campaign-digest
+plan, and request relations, then checks count-derived canonical byte, node,
+and depth feasibility before accepting its outer content digest.
+That public digest is not origin authentication: snapshot counts, a matched
+entry digest, and caller-supplied gap evidence remain unauthenticated
+observations, stated explicitly by `receipt_origin_authenticated=false`.
+
+C8b has no C8a, C7, BuilderHost, provider, storage, registry, MAGMA
+ledger/storage, routing, promotion, runtime, execution, or sandbox wiring. It
+uses only the existing pure canonical hashing helper, neither imports nor
+executes candidate code, and grants no write or activation authority. All
+Genesis, hex, echo-chamber, and 50,000-solver claims remain false. A fresh
+provider-default Grok advisory returned `NARROW`, and the local review lanes
+reached the same narrow evidence-only consensus; both are advisory only, not
+votes, gates, or authority grants.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -633,6 +661,7 @@ sandbox.
 | C6 | default-OFF, raw-free paired solver-lift evidence contract | pushed at `48694a9`; local/full CI and Tools exact-head review green |
 | C7 | closed declarative paired runner feeding C6 | pushed at `fc4474b`; local full suite and exact-head CI green |
 | C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
+| C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | implementation checkpoint; pending until pushed; no SHA or green CI claimed |
 | Gate | exact pushed-head reviews and CI | local reviews and exact-head CI green; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:

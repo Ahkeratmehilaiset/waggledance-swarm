@@ -954,15 +954,25 @@ length. A byte-limit refusal is valid only when this derived count exceeds the
 configured limit and a full open has not already taken deterministic
 record-limit precedence.
 
+Successor JSON depth and node count are exact from the successor record count:
+an empty snapshot has depth two and four nodes, while every non-empty
+reservation snapshot has depth four and `4 + 8 * record_count` nodes. C8f uses
+the deterministic resource precedence `record`, then `byte`, then `depth`, then
+`node`. A source snapshot that fits a restrictive depth or node policy but
+whose open successor would not fit now returns an explicit bounded
+no-successor relation instead of leaking a predictable contract error.
+
 The public C8f receipt is raw-free. It carries the validated raw-free C8e
 receipt plus the successor snapshot digest, ordered record digests, record and
 byte counts, target state, and derived evidence digest only on a positive
-relation. It never returns successor bytes. Those digest-only commitments are
-intentionally publicly remintable: without the omitted base and successor rows,
-a receipt consumer cannot independently prove the row content behind the
-commitments. Receipt origin authentication therefore remains literal false.
-This is an audit/accounting relation, not an authenticated state-transfer
-artifact.
+relation. It never returns successor bytes. The proposal, target state, and
+derived evidence reconstruct the transitioned row, so its exact record digest
+must occur exactly once and the successor byte count is fixed. Digest
+commitments for other untouched omitted rows remain intentionally publicly
+remintable: without those base rows, a receipt consumer cannot independently
+prove their content. Receipt origin authentication therefore remains literal
+false. This is an audit/accounting relation, not an authenticated
+state-transfer artifact.
 
 Two parallel C8f calls over the same empty supplied snapshot and open proposal
 can both return the same successor digest. That agreement is determinism, not
@@ -983,7 +993,7 @@ Genesis, method group, evidence root, provider, and failure domain remain
 orthogonal; equal successor digests do not establish epistemic diversity or
 remove an echo chamber.
 
-The local gate passed 49 focused C8f tests and a 142-test C8e+C8f compatibility
+The local gate passed 57 focused C8f tests and a 150-test C8e+C8f compatibility
 run. Compilation, pyflakes, and diff checks also passed. Tests cover all three
 transitions, expected-mismatch dominance, terminal and binding failures,
 canonical ordering, fixed-domain evidence reconstruction, policy invariance,
@@ -1004,8 +1014,15 @@ binds positive receipts to it, rejects impossible byte-limit refusals, and
 keeps record-limit precedence for a full open. Empty and non-empty open,
 commit, abort, forged positive byte-count, and truthful commit-overflow
 regressions cover the boundary. A new exact-head independent review remains
-required. Durable apply, authenticated scope, revision/fencing, BuilderHost,
-sandbox execution, recovery handoff, and activation remain `HOLD`.
+required. A subsequent local read-only audit found two more blockers: arbitrary
+record commitments could omit the fully reconstructable transitioned row, and
+restrictive depth/node policies turned predictable open-successor overflow into
+a contract error. Positive receipts now require the exact target-row digest
+once, while explicit depth/node resource outcomes and precedence regressions
+cover the bounded path. Untouched omitted rows retain only the documented
+remintability. Durable apply, authenticated scope, revision/fencing,
+BuilderHost, sandbox execution, recovery handoff, and activation remain
+`HOLD`.
 
 ## Two-week sprint ledger
 
@@ -1023,7 +1040,7 @@ sandbox execution, recovery handoff, and activation remain `HOLD`.
 | C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
 | C8d | standalone default-OFF supplied declared-attempt snapshot accountant | pushed at `a4ef2bbe`; 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API/claim reviews and Tools exact-head review found no blocker; exact-head Tests `30836217801` and WaggleDance CI `30836219973` green |
 | C8e | standalone default-OFF supplied reservation-state CAS-precondition relation accountant | pushed at `02ed94e6`; 93 focused and 422 compatibility tests passed; selector-requested full suite stopped at 29% by the 100 MiB disk guard with exit `-1`, no result, and is not counted; Tools exact-head review PASS; exact-head Tests `30843741995` and WaggleDance CI `30843744657` green; durable store/apply, BuilderHost, handoff, and activation remain `HOLD` |
-| C8f | standalone default-OFF pure successor-snapshot transition relation accountant | implementation locally green after Tools record-limit and Grok byte-limit blocker fixes: 49 focused and 142 C8e+C8f compatibility tests passed; new exact pushed-head review/CI pending; durable apply, authenticated scope, revision/fencing, BuilderHost, sandbox execution, handoff, and activation remain `HOLD` |
+| C8f | standalone default-OFF pure successor-snapshot transition relation accountant | implementation locally green after record, byte, target-row, and JSON-resource blocker fixes: 57 focused and 150 C8e+C8f compatibility tests passed; new exact pushed-head review/CI pending; durable apply, authenticated scope, revision/fencing, BuilderHost, sandbox execution, handoff, and activation remain `HOLD` |
 | Gate | exact pushed-head reviews and CI | C8d implementation and ledger-only closure evidence green; C8e local evidence, Tools exact-head PASS, Tests `30843741995`, and WaggleDance CI `30843744657` green; C8f local evidence green with exact pushed-head review/CI pending; RCO/Fable retrospective reviews pending by operator decision due usage limits; no activation authority |
 
 Parallel lane intent:

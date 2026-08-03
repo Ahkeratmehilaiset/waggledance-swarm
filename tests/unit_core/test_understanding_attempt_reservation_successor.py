@@ -327,6 +327,8 @@ def test_public_schemas_enums_and_accounting_digest_are_exact() -> None:
         "abort_aborted_successor_derived",
         "successor_record_limit_exceeded",
         "successor_byte_limit_exceeded",
+        "successor_json_depth_limit_exceeded",
+        "successor_json_node_limit_exceeded",
     }
     combined = " ".join(item.value for item in AttemptReservationSuccessorDisposition)
     for forbidden in ("applied", "written", "durable", "authorized", "cas_succeeded"):
@@ -1059,6 +1061,117 @@ def test_commit_can_truthfully_hit_exact_successor_byte_limit() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "policy,reason",
+    (
+        (
+            _policy(max_json_depth=2),
+            AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_DEPTH_LIMIT_EXCEEDED,
+        ),
+        (
+            _policy(max_json_nodes=4),
+            AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_NODE_LIMIT_EXCEEDED,
+        ),
+    ),
+)
+def test_open_reports_json_successor_resource_limits_without_contract_error(
+    policy: AttemptReservationSuccessorPolicyV1,
+    reason: AttemptReservationSuccessorReasonCode,
+) -> None:
+    receipt = _evaluate(
+        AttemptReservationTransition.OPEN_IF_ABSENT,
+        reservations=[],
+        policy=policy,
+    )
+    assert receipt.source_precondition_relation_holds is True
+    assert receipt.successor_derivation_performed is True
+    assert receipt.successor_snapshot_relation_holds is False
+    assert receipt.disposition is (
+        AttemptReservationSuccessorDisposition.SUCCESSOR_RESOURCE_BOUNDS_REFUSED
+    )
+    assert receipt.reason_code is reason
+    assert receipt.target_reservation_state is None
+    assert receipt.derived_state_evidence_digest is None
+    assert receipt.successor_reservation_state_snapshot_digest is None
+    assert receipt.successor_reservation_record_count is None
+    assert receipt.successor_reservation_state_snapshot_byte_count is None
+    assert receipt.successor_reservation_record_digests is None
+
+
+def test_successor_resource_limit_precedence_is_record_byte_depth_node() -> None:
+    scope = _digest("reservation-scope")
+    empty = _snapshot_bytes([], scope=scope)
+    record_first = _evaluate(
+        AttemptReservationTransition.OPEN_IF_ABSENT,
+        reservations=[],
+        scope=scope,
+        policy=_policy(
+            max_reservation_records=0,
+            max_snapshot_bytes=len(empty),
+            max_json_depth=2,
+            max_json_nodes=4,
+        ),
+    )
+    assert record_first.reason_code is (
+        AttemptReservationSuccessorReasonCode.SUCCESSOR_RECORD_LIMIT_EXCEEDED
+    )
+
+    byte_first = _evaluate(
+        AttemptReservationTransition.OPEN_IF_ABSENT,
+        reservations=[],
+        scope=scope,
+        policy=_policy(
+            max_snapshot_bytes=len(empty),
+            max_json_depth=2,
+            max_json_nodes=4,
+        ),
+    )
+    assert byte_first.reason_code is (
+        AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED
+    )
+
+    depth_first = _evaluate(
+        AttemptReservationTransition.OPEN_IF_ABSENT,
+        reservations=[],
+        scope=scope,
+        policy=_policy(max_json_depth=2, max_json_nodes=4),
+    )
+    assert depth_first.reason_code is (
+        AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_DEPTH_LIMIT_EXCEEDED
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_DEPTH_LIMIT_EXCEEDED,
+        AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_NODE_LIMIT_EXCEEDED,
+    ),
+)
+def test_resealed_json_limit_refusal_requires_exact_derived_overflow(
+    reason: AttemptReservationSuccessorReasonCode,
+) -> None:
+    receipt = _evaluate(
+        AttemptReservationTransition.OPEN_IF_ABSENT,
+        reservations=[],
+    )
+    with pytest.raises(AttemptReservationSuccessorContractError):
+        _reseal(
+            receipt,
+            successor_snapshot_relation_holds=False,
+            target_reservation_state=None,
+            derived_state_evidence_digest=None,
+            successor_reservation_state_snapshot_digest=None,
+            successor_reservation_record_count=None,
+            successor_reservation_state_snapshot_byte_count=None,
+            successor_reservation_record_digests=None,
+            disposition=(
+                AttemptReservationSuccessorDisposition.SUCCESSOR_RESOURCE_BOUNDS_REFUSED
+            ),
+            reason_code=reason,
+        )
+
+
 def test_absolute_2048_row_open_overflow_has_no_successor() -> None:
     scope = _digest("reservation-scope")
     rows = [_reservation(f"row-{index}", scope=scope) for index in range(2_048)]
@@ -1335,6 +1448,41 @@ def test_raw_free_successor_record_commitments_are_publicly_remintable() -> None
     assert reminted.atomic_compare_and_swap_applied is False
     assert reminted.reservation_written is False
     assert reminted.runtime_authority_requested is False
+
+
+@pytest.mark.parametrize(
+    "transition,reservations",
+    (
+        (AttemptReservationTransition.OPEN_IF_ABSENT, []),
+        (
+            AttemptReservationTransition.COMMIT_IF_RESERVED,
+            [_reservation()],
+        ),
+        (
+            AttemptReservationTransition.ABORT_IF_RESERVED,
+            [_reservation()],
+        ),
+    ),
+)
+def test_resealed_receipt_must_preserve_exact_transitioned_record_digest(
+    transition: AttemptReservationTransition,
+    reservations: list[dict[str, str]],
+) -> None:
+    receipt = _evaluate(transition, reservations=reservations)
+    record_digests = receipt.successor_reservation_record_digests
+    assert record_digests is not None and len(record_digests) == 1
+    forged_records = (_digest("forged-transitioned-record"),)
+    with pytest.raises(AttemptReservationSuccessorContractError):
+        _reseal(
+            receipt,
+            successor_reservation_record_digests=forged_records,
+            successor_reservation_state_snapshot_digest=(
+                _snapshot_digest_from_record_digests(
+                    scope=receipt.reservation_scope_digest,
+                    record_digests=forged_records,
+                )
+            ),
+        )
 
 
 def test_resealed_successor_record_digest_tuple_rejects_duplicates_and_overflow() -> None:

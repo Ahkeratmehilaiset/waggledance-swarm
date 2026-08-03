@@ -92,6 +92,12 @@ class AttemptReservationSuccessorReasonCode(str, Enum):
     ABORT_ABORTED_SUCCESSOR_DERIVED = "abort_aborted_successor_derived"
     SUCCESSOR_RECORD_LIMIT_EXCEEDED = "successor_record_limit_exceeded"
     SUCCESSOR_BYTE_LIMIT_EXCEEDED = "successor_byte_limit_exceeded"
+    SUCCESSOR_JSON_DEPTH_LIMIT_EXCEEDED = (
+        "successor_json_depth_limit_exceeded"
+    )
+    SUCCESSOR_JSON_NODE_LIMIT_EXCEEDED = (
+        "successor_json_node_limit_exceeded"
+    )
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -645,26 +651,71 @@ def _derive_state_evidence_digest(
     )
 
 
+def _target_record_mapping(
+    source_receipt: AttemptReservationCasReceiptV1,
+) -> dict[str, str]:
+    proposal = source_receipt.proposal
+    target_state = _target_state(proposal.transition)
+    return {
+        "reservation_id": proposal.reservation_id,
+        "declared_capability_fingerprint": (
+            proposal.declared_capability_fingerprint
+        ),
+        "state": target_state.value,
+        "cell_binding_digest": proposal.cell_binding_digest,
+        "campaign_id_digest": proposal.campaign_id_digest,
+        "intent_digest": proposal.intent_digest,
+        "state_evidence_digest": _derive_state_evidence_digest(
+            source_receipt,
+            target_state,
+        ),
+    }
+
+
+def _derive_target_record_digest(
+    source_receipt: AttemptReservationCasReceiptV1,
+) -> str:
+    return sha256_digest(
+        {
+            "domain": (
+                "wd.understanding.supplied_attempt_reservation_"
+                "state_record.digest.v1"
+            ),
+            **_target_record_mapping(source_receipt),
+        }
+    )
+
+
+def _expected_successor_record_count(
+    source_receipt: AttemptReservationCasReceiptV1,
+) -> int:
+    return source_receipt.reservation_record_count + (
+        1
+        if source_receipt.proposal.transition
+        is AttemptReservationTransition.OPEN_IF_ABSENT
+        else 0
+    )
+
+
+def _expected_successor_json_depth(
+    source_receipt: AttemptReservationCasReceiptV1,
+) -> int:
+    return 4 if _expected_successor_record_count(source_receipt) > 0 else 2
+
+
+def _expected_successor_json_node_count(
+    source_receipt: AttemptReservationCasReceiptV1,
+) -> int:
+    return 4 + (8 * _expected_successor_record_count(source_receipt))
+
+
 def _expected_successor_snapshot_byte_count(
     source_receipt: AttemptReservationCasReceiptV1,
 ) -> int:
     proposal = source_receipt.proposal
     target_state = _target_state(proposal.transition)
     if proposal.transition is AttemptReservationTransition.OPEN_IF_ABSENT:
-        inserted_row = {
-            "reservation_id": proposal.reservation_id,
-            "declared_capability_fingerprint": (
-                proposal.declared_capability_fingerprint
-            ),
-            "state": target_state.value,
-            "cell_binding_digest": proposal.cell_binding_digest,
-            "campaign_id_digest": proposal.campaign_id_digest,
-            "intent_digest": proposal.intent_digest,
-            "state_evidence_digest": _derive_state_evidence_digest(
-                source_receipt,
-                target_state,
-            ),
-        }
+        inserted_row = _target_record_mapping(source_receipt)
         inserted_row_byte_count = len(canonical_json_bytes(inserted_row))
         separator_byte_count = (
             1 if source_receipt.reservation_record_count > 0 else 0
@@ -899,6 +950,19 @@ def _derive_successor_facts(
             None,
             AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED,
         )
+    if _expected_successor_json_depth(source_receipt) > policy.max_json_depth:
+        return (
+            None,
+            AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_DEPTH_LIMIT_EXCEEDED,
+        )
+    if (
+        _expected_successor_json_node_count(source_receipt)
+        > policy.max_json_nodes
+    ):
+        return (
+            None,
+            AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_NODE_LIMIT_EXCEEDED,
+        )
 
     successor_validation_refused = False
     validated_digest: str | None = None
@@ -927,6 +991,10 @@ def _derive_successor_facts(
         )
         for row in rows
     )
+    if record_digests.count(_derive_target_record_digest(source_receipt)) != 1:
+        raise AttemptReservationSuccessorContractError(
+            "derived successor target record relation mismatch"
+        )
     if validated_digest != _derive_snapshot_digest(
         reservation_scope_digest=source_receipt.reservation_scope_digest,
         reservation_record_digests=record_digests,
@@ -1117,49 +1185,50 @@ def _validate_receipt(receipt: AttemptReservationSuccessorReceiptV1) -> None:
         receipt.disposition
         is AttemptReservationSuccessorDisposition.SUCCESSOR_RESOURCE_BOUNDS_REFUSED
     ):
+        record_limit_exceeded = (
+            source.proposal.transition
+            is AttemptReservationTransition.OPEN_IF_ABSENT
+            and source.reservation_record_count
+            >= receipt.max_reservation_records
+        )
+        byte_limit_exceeded = (
+            _expected_successor_snapshot_byte_count(source)
+            > receipt.max_snapshot_bytes
+        )
+        depth_limit_exceeded = (
+            _expected_successor_json_depth(source) > receipt.max_json_depth
+        )
+        node_limit_exceeded = (
+            _expected_successor_json_node_count(source)
+            > receipt.max_json_nodes
+        )
+        if record_limit_exceeded:
+            expected_resource_reason = (
+                AttemptReservationSuccessorReasonCode.SUCCESSOR_RECORD_LIMIT_EXCEEDED
+            )
+        elif byte_limit_exceeded:
+            expected_resource_reason = (
+                AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED
+            )
+        elif depth_limit_exceeded:
+            expected_resource_reason = (
+                AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_DEPTH_LIMIT_EXCEEDED
+            )
+        elif node_limit_exceeded:
+            expected_resource_reason = (
+                AttemptReservationSuccessorReasonCode.SUCCESSOR_JSON_NODE_LIMIT_EXCEEDED
+            )
+        else:
+            expected_resource_reason = None
         if (
             source_relation is not True
             or not receipt.successor_derivation_performed
             or receipt.successor_snapshot_relation_holds is not False
             or any(value is not None for value in successor_fields)
-            or receipt.reason_code
-            not in {
-                AttemptReservationSuccessorReasonCode.SUCCESSOR_RECORD_LIMIT_EXCEEDED,
-                AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED,
-            }
+            or receipt.reason_code is not expected_resource_reason
         ):
             raise AttemptReservationSuccessorContractError(
                 "bounded successor outcome mismatch"
-            )
-        if (
-            receipt.reason_code
-            is AttemptReservationSuccessorReasonCode.SUCCESSOR_RECORD_LIMIT_EXCEEDED
-            and (
-                source.proposal.transition
-                is not AttemptReservationTransition.OPEN_IF_ABSENT
-                or source.reservation_record_count
-                < receipt.max_reservation_records
-            )
-        ):
-            raise AttemptReservationSuccessorContractError(
-                "successor record-limit refusal relation mismatch"
-            )
-        if (
-            receipt.reason_code
-            is AttemptReservationSuccessorReasonCode.SUCCESSOR_BYTE_LIMIT_EXCEEDED
-            and (
-                (
-                    source.proposal.transition
-                    is AttemptReservationTransition.OPEN_IF_ABSENT
-                    and source.reservation_record_count
-                    >= receipt.max_reservation_records
-                )
-                or _expected_successor_snapshot_byte_count(source)
-                <= receipt.max_snapshot_bytes
-            )
-        ):
-            raise AttemptReservationSuccessorContractError(
-                "successor byte-limit refusal relation mismatch"
             )
     else:
         transition = source.proposal.transition
@@ -1212,6 +1281,12 @@ def _validate_receipt(receipt: AttemptReservationSuccessorReceiptV1) -> None:
             raise AttemptReservationSuccessorContractError(
                 "duplicate successor record digest refused"
             )
+        if receipt.successor_reservation_record_digests.count(
+            _derive_target_record_digest(source)
+        ) != 1:
+            raise AttemptReservationSuccessorContractError(
+                "successor target record digest relation mismatch"
+            )
         if (
             type(receipt.successor_reservation_record_count) is not int
             or receipt.successor_reservation_record_count
@@ -1220,14 +1295,18 @@ def _validate_receipt(receipt: AttemptReservationSuccessorReceiptV1) -> None:
             raise AttemptReservationSuccessorContractError(
                 "successor reservation record count mismatch"
             )
-        expected_count = source.reservation_record_count + (
-            1
-            if transition is AttemptReservationTransition.OPEN_IF_ABSENT
-            else 0
-        )
+        expected_count = _expected_successor_record_count(source)
         if receipt.successor_reservation_record_count != expected_count:
             raise AttemptReservationSuccessorContractError(
                 "successor transition record count mismatch"
+            )
+        if (
+            _expected_successor_json_depth(source) > receipt.max_json_depth
+            or _expected_successor_json_node_count(source)
+            > receipt.max_json_nodes
+        ):
+            raise AttemptReservationSuccessorContractError(
+                "successor JSON resource relation mismatch"
             )
         if (
             type(receipt.successor_reservation_state_snapshot_byte_count)

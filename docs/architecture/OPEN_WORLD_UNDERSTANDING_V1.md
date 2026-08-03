@@ -782,6 +782,122 @@ would hold in supplied state. A durable atomic reservation store, BuilderHost
 wiring, and dead-cell owner handoff remain separate later authority and storage
 boundaries.
 
+### C8e supplied reservation-state CAS-precondition relation accountant
+
+C8e is a standalone, default-OFF, pure relation accountant over one bounded
+canonical caller-supplied reservation-state snapshot. The input is shaped like
+current state solely so an exact capability key can be checked against one
+finite object. C8e does not verify that the object is current, durable,
+complete, authentic, globally unique, or related to any earlier object. Its
+only exact root fields are `schema_version`, `reservation_scope_digest`, and
+`reservations`. Each reservation row has exactly seven fields:
+`reservation_id`, `declared_capability_fingerprint`, `state`,
+`cell_binding_digest`, `campaign_id_digest`, `intent_digest`, and
+`state_evidence_digest`. There is deliberately no `snapshot_id`, event journal,
+sequence, predecessor, timestamp, lease, revision, or chronology claim.
+
+The canonical row order is capability fingerprint, reservation identifier,
+campaign, cell binding, intent, state, and evidence digest. Reservation
+identifiers and exact capability fingerprints are each unique within the
+supplied object. Evidence-digest duplicates are intentionally allowed because
+evidence is a non-key audit commitment, not reservation identity. The bounded
+parser accepts at most 2,048 rows and 2 MiB of canonical UTF-8 JSON, with
+maximum nesting depth 6 and maximum node count 32,768. These are parser and
+resource bounds only; they do not establish a 2,048- or 50,000-solver operating
+capacity.
+
+The stable reservation identifier is derived only from the caller-supplied
+`reservation_scope_digest` and exact `declared_capability_fingerprint` under a
+fixed domain separator. Campaign, cell, intent, state, and evidence are not
+identifier inputs, so changing any of them cannot mint another reservation key
+for the same exact capability inside the same supplied scope. This deliberately
+excludes campaign even though the provider-default Grok design sketch proposed
+a campaign-inclusive identifier: campaign inclusion would permit
+across-campaign key evasion inside one scope. The scope remains unauthenticated
+and caller selectable, so this choice proves no global or cross-scope
+enforcement. Changing a cell binding is audit-visible metadata, not a handoff,
+owner-fence transfer, or dead-cell recovery operation.
+
+The expected object and transition proposal are separate keyword-only inputs,
+and both require exact types and exact field sets. Evaluation is two-phase.
+The request, expected object, and proposal first pass syntactic validation,
+while the snapshot passes bounded canonical structural validation. An expected
+snapshot-digest mismatch then dominates: it returns `REFUSED` before any row
+identity or proposal identity is derived, before a subject lookup, and before
+binding or state checks. Only when that caller-supplied equality holds are all
+row identities and the proposal identity derived. A row or proposal whose
+claimed reservation identifier does not equal the stable derived identifier is
+malformed contract input and raises `AttemptReservationCasContractError`; it is
+not a negative transition result. A derived identifier that resolves to a row
+for another capability is `REFUSED`. `COMMIT_IF_RESERVED` and
+`ABORT_IF_RESERVED` additionally require the proposal's exact capability,
+cell, campaign, and intent bindings to match the reserved row before its state
+can support a candidate precondition.
+
+The complete supplied-state relation is:
+
+| Proposal | Supplied row | Exact required bindings | Local result |
+|---|---|---|---|
+| `OPEN_IF_ABSENT` | absent | derived identifier holds | candidate open precondition holds |
+| `OPEN_IF_ABSENT` | `RESERVED` | capability key already present | candidate open precondition does not hold |
+| `OPEN_IF_ABSENT` | `COMMITTED` or `ABORTED` | capability key already present | candidate open precondition does not hold |
+| `COMMIT_IF_RESERVED` | absent | n/a | candidate commit precondition does not hold |
+| `COMMIT_IF_RESERVED` | `RESERVED` | capability, cell, campaign, and intent all equal | candidate commit precondition holds |
+| `ABORT_IF_RESERVED` | absent | n/a | candidate abort precondition does not hold |
+| `ABORT_IF_RESERVED` | `RESERVED` | capability, cell, campaign, and intent all equal | candidate abort precondition holds |
+| `COMMIT_IF_RESERVED` or `ABORT_IF_RESERVED` | any bound row | a required binding differs | refused before state acceptance |
+| `COMMIT_IF_RESERVED` or `ABORT_IF_RESERVED` | `COMMITTED` or `ABORTED` after binding checks | all required bindings equal | terminal conflict |
+
+`COMMITTED` and `ABORTED` are terminal in this local relation. An open proposal
+cannot reopen either state, and commit or abort cannot transform one terminal
+state into another. This is not lease expiry, retry policy, or proof that a
+durable implementation has burned the key.
+
+A positive C8e result means only that a candidate transition precondition holds
+in the exact caller-supplied bytes evaluated by that call. It is not a
+reservation and it is not a successful compare-and-swap. In particular, two
+parallel evaluators can both report that the local open precondition holds
+against the same supplied empty snapshot. Both reports can coexist; neither
+excludes the other, orders the other, or reserves anything. C8e has no lock,
+linearization point, revalidation under a store transaction, atomic write, or
+successor snapshot. Applying a transition remains outside this contract.
+
+The public receipt is raw-free and therefore intentionally remintable within
+its structural bounds. For a declared zero-row snapshot, its validator
+rederives the unique empty-snapshot digest from the schema and supplied scope
+and forbids any matched-row or observed-state claim. For a non-empty declared
+count, however, the receipt omits the supplied rows, so its validator cannot
+independently rederive the reported lookup, binding, or candidate-precondition
+result. A caller can still reseal a structurally plausible non-empty semantic
+outcome. Internal receipt digest consistency proves neither origin nor truth of
+the omitted input. Every
+durability, CAS, store, apply, currentness, freshness, ABA protection, history,
+chronology, origin authentication, authorization, handoff, build, generation,
+runtime, MAGMA, registry, sandbox, routing, promotion, 50,000-scale, and
+echo-chamber claim remains literal false. C8e neither consumes nor grants any
+such authority.
+
+A fresh provider-default Grok analysis recommended building this bounded pure
+precondition relation while holding the durable store and BuilderHost path.
+Local contract, boundary, and adversarial red-team reviews independently
+converged on the supplied reservation-state shape, stable capability key,
+explicit TOCTOU counterexample, terminal no-reopen rule, and hard-false
+authority boundary.
+Those reviews are advisory rather than votes, currentness proofs, or activation
+gates. C8e locks only this narrow contract. A durable reservation store and
+atomic apply path, authenticated scope, ABA-safe revision/fencing, BuilderHost
+wiring, dead-cell handoff, and any generated-code execution remain `HOLD`
+without separate implementation scope and authority.
+
+The local implementation gate passed 93 focused tests and a 422-test C8a-C8e
+and C7 compatibility selection. Python compilation, pyflakes, and diff checks
+also passed. The fail-safe selector requested the full suite because this
+architecture document changed. That local full-suite attempt reached 29%
+without a reported failure before the explicit disk guard stopped its owned
+process tree below the 100 MiB free-space threshold; exit `-1` is no test
+result and is counted as neither pass nor failure. The exact pushed commit,
+independent review, and CI evidence remain pending.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -797,7 +913,8 @@ boundaries.
 | C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | pushed at `32f85305`; 94 focused and 209 compatibility tests green; exact-head Tests `30821832356` and WaggleDance CI `30821835324` green |
 | C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
 | C8d | standalone default-OFF supplied declared-attempt snapshot accountant | pushed at `a4ef2bbe`; 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API/claim reviews and Tools exact-head review found no blocker; exact-head Tests `30836217801` and WaggleDance CI `30836219973` green |
-| Gate | exact pushed-head reviews and CI | C8d implementation evidence green; this ledger-only closure still requires its own exact-head CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
+| C8e | standalone default-OFF supplied reservation-state CAS-precondition relation accountant | implementation locally green: 93 focused and 422 compatibility tests passed; selector-requested full suite stopped at 29% by the 100 MiB disk guard with exit `-1`, no result, and is not counted; exact pushed-head review/CI pending; durable store/apply, BuilderHost, handoff, and activation remain `HOLD` |
+| Gate | exact pushed-head reviews and CI | C8d implementation evidence green; ledger-only closure exact-head Tests `30837666534` and WaggleDance CI `30837668712` green; C8e local evidence green with exact pushed-head review/CI pending; RCO/Fable retrospective reviews pending by operator decision due usage limits; no activation authority |
 
 Parallel lane intent:
 

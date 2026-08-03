@@ -1095,6 +1095,19 @@ def _validate_receipt(receipt: AttemptReservationSuccessorReceiptV1) -> None:
             raise AttemptReservationSuccessorContractError(
                 "bounded successor outcome mismatch"
             )
+        if (
+            receipt.reason_code
+            is AttemptReservationSuccessorReasonCode.SUCCESSOR_RECORD_LIMIT_EXCEEDED
+            and (
+                source.proposal.transition
+                is not AttemptReservationTransition.OPEN_IF_ABSENT
+                or source.reservation_record_count
+                < receipt.max_reservation_records
+            )
+        ):
+            raise AttemptReservationSuccessorContractError(
+                "successor record-limit refusal relation mismatch"
+            )
     else:
         transition = source.proposal.transition
         target_state = _target_state(transition)

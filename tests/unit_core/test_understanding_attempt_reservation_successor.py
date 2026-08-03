@@ -906,6 +906,57 @@ def test_configured_record_and_byte_successor_bounds_refuse_without_output() -> 
     assert byte_limited.successor_reservation_record_digests is None
 
 
+@pytest.mark.parametrize(
+    "transition,reservations,max_records",
+    (
+        (
+            AttemptReservationTransition.COMMIT_IF_RESERVED,
+            [_reservation()],
+            10,
+        ),
+        (
+            AttemptReservationTransition.ABORT_IF_RESERVED,
+            [_reservation()],
+            10,
+        ),
+        (
+            AttemptReservationTransition.OPEN_IF_ABSENT,
+            [],
+            1,
+        ),
+    ),
+)
+def test_resealed_record_limit_refusal_requires_full_open_transition(
+    transition: AttemptReservationTransition,
+    reservations: list[dict[str, str]],
+    max_records: int,
+) -> None:
+    receipt = _evaluate(
+        transition,
+        reservations=reservations,
+        policy=_policy(max_reservation_records=max_records),
+    )
+    assert receipt.source_precondition_relation_holds is True
+    assert receipt.successor_snapshot_relation_holds is True
+    with pytest.raises(AttemptReservationSuccessorContractError):
+        _reseal(
+            receipt,
+            successor_snapshot_relation_holds=False,
+            target_reservation_state=None,
+            derived_state_evidence_digest=None,
+            successor_reservation_state_snapshot_digest=None,
+            successor_reservation_record_count=None,
+            successor_reservation_state_snapshot_byte_count=None,
+            successor_reservation_record_digests=None,
+            disposition=(
+                AttemptReservationSuccessorDisposition.SUCCESSOR_RESOURCE_BOUNDS_REFUSED
+            ),
+            reason_code=(
+                AttemptReservationSuccessorReasonCode.SUCCESSOR_RECORD_LIMIT_EXCEEDED
+            ),
+        )
+
+
 def test_absolute_2048_row_open_overflow_has_no_successor() -> None:
     scope = _digest("reservation-scope")
     rows = [_reservation(f"row-{index}", scope=scope) for index in range(2_048)]

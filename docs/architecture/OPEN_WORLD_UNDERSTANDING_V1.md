@@ -709,6 +709,67 @@ implementation SHA `1cd645c0`; both bridge consumer ticks timed out without a
 review result. Those timeouts are neither approval nor rejection and are not
 counted as review evidence.
 
+### C8d supplied declared-attempt snapshot accountant
+
+C8d is a standalone, default-OFF, pure accountant over one bounded canonical
+caller-supplied declared-attempt snapshot. Its only matching subject is the
+exact `declared_capability_fingerprint`; campaign, cell-binding, evidence, and
+record digests are audit metadata rather than additional identity predicates.
+The request does not carry an expected value. Instead, a separate keyword-only
+caller-supplied expected object supplies the snapshot digest to compare. C8d
+does not consume or invoke C8b, C8c, C8a, or C7, and it does not infer a
+generation intent, attempt outcome, state transition, or chronology.
+
+In the enabled static-shadow mode, the accountant defensively copies the raw
+snapshot bytes and expected object, then validates every supplied field under
+finite entry, canonical-byte, nesting-depth, and node bounds. Canonical
+ordering and refusal of structurally duplicate record identifiers or evidence
+digests make the supplied object unambiguous to parse; they are
+input-validation rules, not proof of global attempt deduplication. The
+expected-digest comparison happens before any subject scan. A mismatch
+dominates, returns `REFUSED`, and exposes neither a subject-match count nor a
+selected record digest.
+
+When the supplied expected digest holds, zero exact subject matches reports
+only that no equal fingerprint occurs in this snapshot. One exact match reports
+only that one equal fingerprint occurs in this snapshot and may identify that
+canonical record. More than one exact subject match is ambiguous and returns
+`REFUSED`; C8d never selects, merges, ranks, or treats the entries as a retry
+history. In particular, zero matches is not novelty, build eligibility,
+generation permission, retry permission, or evidence that no attempt exists
+elsewhere.
+
+Both the snapshot and its expected digest remain caller supplied. A caller can
+self-mint a consistent pair, replay a stale pair, omit records, or present a
+fork. Because the public receipt is raw-free, its validator cannot rederive
+the reported count or selected-record digest from omitted rows; a caller can
+also remint those internally consistent receipt fields. They remain
+non-authoritative because receipt origin and every action-authority claim are
+hard-false. Consequently, C8d proves no origin authentication, external pin,
+completeness, freshness, anti-replay, anti-rollback, chronology, attempt
+occurrence, outcome, semantic capability equivalence, deduplication, durable
+reservation, or cross-campaign/cross-cell single-attempt enforcement. It has no
+sandbox, generated-code, BuilderHost/provider, storage, registry, MAGMA,
+routing, promotion, runtime, execution, external-system write, or activation
+authority.
+
+The truthful hex relationship at C8d is limited to a repeatable pure contract
+whose exact capability key could later support a shard-local index. C8d does
+not itself distribute work, bind a durable cell, recover a dead cell, send ring
+messages, subdivide a cell, perform atomic compare-and-swap, demonstrate
+50,000-solver scale, or prevent echo chambers. Those properties require a
+later authenticated durable attempt journal, a Merkle-backed or equivalently
+verifiable sharded index, and an atomic per-capability compare-and-reserve
+operation. Cell recovery must resume the same durable reservation rather than
+mint a new local attempt.
+
+A fresh provider-default Grok analysis and the local contract, bounds,
+semantic, and adversarial reviews are design advice only. They are not votes,
+runtime gates, trust anchors, or authority grants. The local implementation,
+adversarial tests, and API/claim rechecks now exist without a remaining local
+review blocker. The pushed implementation checkpoint and its exact-head CI
+remain pending.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -723,6 +784,7 @@ counted as review evidence.
 | C8a | inert static coding-candidate compile/package preflight | pushed at `7f6a16dd`; local full suite and exact-head CI green |
 | C8b | default-OFF pure supplied-snapshot exact declared-capability accountant | pushed at `32f85305`; 94 focused and 209 compatibility tests green; exact-head Tests `30821832356` and WaggleDance CI `30821835324` green |
 | C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
+| C8d | standalone default-OFF supplied declared-attempt snapshot accountant | 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API and claim reviews found no blocker; pushed-head and CI evidence pending |
 | Gate | exact pushed-head reviews and CI | implementation evidence green; any later ledger-only closure still requires its own exact-head review/CI; RCO/Fable retrospective reviews pending by operator decision; no activation authority |
 
 Parallel lane intent:

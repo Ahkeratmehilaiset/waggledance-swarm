@@ -895,8 +895,9 @@ It recommended one additional pure prerequisite before any durable writer:
 a standalone default-OFF successor-snapshot transition relation accountant.
 That possible C8f would deterministically account for the canonical successor
 snapshot implied by one locally holding C8e precondition while still proving
-no write, exclusion, currentness, or atomicity. It is not implemented or
-authorized by C8e. Durable apply, authenticated scope, revision/fencing,
+no write, exclusion, currentness, or atomicity. C8f was not implemented or
+authorized by C8e; it was subsequently implemented under a separate bounded
+claim. Durable apply, authenticated scope, revision/fencing,
 BuilderHost, sandbox execution, and recovery handoff remain later `HOLD`
 boundaries. The Grok result is advisory only and grants no review, merge,
 release, runtime, or activation authority.
@@ -985,13 +986,24 @@ routing, promotion, recovery, handoff, runtime, 50,000-scale, and echo-chamber
 claim remains literal false. C8f invokes C8e but does not invoke C8a-C8d or C7.
 
 The truthful hex contribution is one repeatable deterministic state-transition
-relation that a later shard-local writer could implement. C8f does not make a
-cell a writer, replicate its state, rebuild a dead cell, or authorize another
-cell to take ownership. Reservation identity still uses only the supplied
-scope digest plus exact capability fingerprint. Independence axes such as
-Genesis, method group, evidence root, provider, and failure domain remain
-orthogonal; equal successor digests do not establish epistemic diversity or
-remove an echo chamber.
+relation that is contract-compatible with a possible later shard-local writer;
+this is neither roadmap approval nor inherited write authority. C8f does not
+make a cell a writer, replicate its state, rebuild a dead cell, or authorize
+another cell to take ownership. Reservation identity still uses only the
+supplied scope digest plus exact capability fingerprint. Independence axes
+such as Genesis, method group, evidence root, provider, and failure domain
+remain orthogonal; equal successor digests do not establish epistemic
+diversity or remove an echo chamber.
+
+C8f closes only a deterministic pure successor relation over caller-supplied
+bytes. Review and CI do not authenticate the scope or state, create a
+linearization point, apply a successor, or authorize C8g. No C8g deliverable is
+yet implemented or authorized. A future writer must revalidate raw canonical
+inputs -- not trust the raw-free and partly remintable C8f receipt -- inside an
+authenticated, revision/fence- and ABA-safe transaction with explicit
+persistence authority. Durable store/apply, BuilderHost, sandbox execution,
+dead-cell handoff, runtime activation, 50,000-scale, and echo-chamber claims
+remain `HOLD`.
 
 The local gate passed 57 focused C8f tests and a 150-test C8e+C8f compatibility
 run. Compilation, pyflakes, and diff checks also passed. Tests cover all three
@@ -999,10 +1011,11 @@ transitions, expected-mismatch dominance, terminal and binding failures,
 canonical ordering, fixed-domain evidence reconstruction, policy invariance,
 configured and 2,048-row resource overflow, parallel identical successors,
 nested C8e validation, public remintability, hard-false claims, and forbidden
-I/O/runtime seams. The fail-safe affected-test selector requests the full suite
-because this architecture document changed. It is not run locally while free
-C-drive space remains below the explicit 100 MiB safety threshold; exact-head
-independent review and GitHub CI remain pending. The first Tools review of
+I/O/runtime seams. The fail-safe affected-test selector requested the full
+suite because this architecture document changed. It was not rerun locally:
+the available C-drive headroom could not accommodate the previously observed
+full-suite footprint while preserving the explicit 100 MiB safety guard. CI is
+the authoritative full-suite gate. The first Tools review of
 implementation HEAD `372caf15` found that a publicly resealed receipt could
 claim an impossible record-limit refusal for commit, abort, or a below-limit
 open. The validator now binds that reason only to `OPEN_IF_ABSENT` at a full
@@ -1013,16 +1026,23 @@ The validator now derives the exact successor byte count for every transition,
 binds positive receipts to it, rejects impossible byte-limit refusals, and
 keeps record-limit precedence for a full open. Empty and non-empty open,
 commit, abort, forged positive byte-count, and truthful commit-overflow
-regressions cover the boundary. A new exact-head independent review remains
-required. A subsequent local read-only audit found two more blockers: arbitrary
+regressions cover the boundary. A subsequent local read-only audit found two
+more blockers: arbitrary
 record commitments could omit the fully reconstructable transitioned row, and
 restrictive depth/node policies turned predictable open-successor overflow into
 a contract error. Positive receipts now require the exact target-row digest
 once, while explicit depth/node resource outcomes and precedence regressions
 cover the bounded path. Untouched omitted rows retain only the documented
-remintability. Durable apply, authenticated scope, revision/fencing,
-BuilderHost, sandbox execution, recovery handoff, and activation remain
-`HOLD`.
+remintability. A final local read-only adversarial audit and Tools independently
+returned `PASS` for exact clean, pushed, upstream-equal implementation HEAD
+`1da4cf8a42a3e6500de215608fd916cf59ced34d`. Tools reran all 57 focused C8f
+tests, checked the diff and in-memory compilation, and rechecked all four prior
+receipt/resource blocker classes without source edits or a local full suite.
+Exact-head GitHub Tests `30850479245` and WaggleDance CI `30850479353`
+completed successfully, including Python 3.11, 3.12, and 3.13. None of those
+results grants authority. Durable apply, authenticated scope,
+revision/fencing, BuilderHost, sandbox execution, recovery handoff, and
+activation remain `HOLD`.
 
 ## Two-week sprint ledger
 
@@ -1040,8 +1060,8 @@ BuilderHost, sandbox execution, recovery handoff, and activation remain
 | C8c | default-OFF supplied expected-digest relation accountant over one C8b receipt | pushed at `1cd645c0`; 40 focused and 249 compatibility tests green; selector-requested local full suite timed out at 20 minutes without a result and is not counted; exact-head Tests `30828459556` and WaggleDance CI `30828462072` green; Tools review unavailable after two consumer timeouts |
 | C8d | standalone default-OFF supplied declared-attempt snapshot accountant | pushed at `a4ef2bbe`; 80 focused and 329 compatibility tests green; selector-requested local full suite timed out after 30 minutes without a result and is not counted; local API/claim reviews and Tools exact-head review found no blocker; exact-head Tests `30836217801` and WaggleDance CI `30836219973` green |
 | C8e | standalone default-OFF supplied reservation-state CAS-precondition relation accountant | pushed at `02ed94e6`; 93 focused and 422 compatibility tests passed; selector-requested full suite stopped at 29% by the 100 MiB disk guard with exit `-1`, no result, and is not counted; Tools exact-head review PASS; exact-head Tests `30843741995` and WaggleDance CI `30843744657` green; durable store/apply, BuilderHost, handoff, and activation remain `HOLD` |
-| C8f | standalone default-OFF pure successor-snapshot transition relation accountant | implementation locally green after record, byte, target-row, and JSON-resource blocker fixes: 57 focused and 150 C8e+C8f compatibility tests passed; new exact pushed-head review/CI pending; durable apply, authenticated scope, revision/fencing, BuilderHost, sandbox execution, handoff, and activation remain `HOLD` |
-| Gate | exact pushed-head reviews and CI | C8d implementation and ledger-only closure evidence green; C8e local evidence, Tools exact-head PASS, Tests `30843741995`, and WaggleDance CI `30843744657` green; C8f local evidence green with exact pushed-head review/CI pending; RCO/Fable retrospective reviews pending by operator decision due usage limits; no activation authority |
+| C8f | standalone default-OFF pure successor-snapshot transition relation accountant | pushed at `1da4cf8a`; 57 focused and 150 C8e+C8f compatibility tests passed after record, byte, target-row, and JSON-resource blocker fixes; final local adversarial audit and Tools exact-head review PASS; exact-head Tests `30850479245` and WaggleDance CI `30850479353` green; durable apply, authenticated scope, revision/fencing, BuilderHost, sandbox execution, handoff, and activation remain `HOLD` |
+| Gate | exact pushed-head reviews and CI | C8d implementation and ledger-only closure evidence green; C8e local evidence, Tools exact-head PASS, Tests `30843741995`, and WaggleDance CI `30843744657` green; C8f implementation-head local evidence, Tools exact-head PASS, Tests `30850479245`, and WaggleDance CI `30850479353` green; this evidence-only C8f closure head still requires its own exact-head CI before claim release; RCO/Fable retrospective reviews pending by operator decision due usage limits; no activation authority |
 
 Parallel lane intent:
 

@@ -426,6 +426,100 @@ is not a runner and neither invokes nor supersedes `run_shadow_evaluation` or
 fail-open counterfactual summary or `AutoPromotionEngine`. All Grok outputs
 remain advisory rather than votes or gates.
 
+### C7 closed paired execution
+
+C7 adds the next isolated step in
+`waggledance/core/learning/understanding_paired_runner.py`. It turns one
+precommitted C6 plan and a private canonical-JSON case pack into C6
+observations, then immediately returns an aggregate C7 receipt containing the
+aggregate C6 receipt. It remains default-OFF and has no container, settings,
+ledger, registry, router, BuilderHost, Dream, promotion, or runtime wiring.
+
+The V1 execution boundary is deliberately narrow:
+
+- only the six existing low-risk declarative families implemented by
+  `autonomy_growth.solver_executor.execute_artifact` are accepted; arbitrary
+  Python, generated source, callbacks, subprocesses, tools, and LLM calls are
+  outside this runner;
+- artifacts, configs, inputs, expected values, and declared-unit payloads must
+  be byte-canonical strict JSON. Per-object byte, JSON depth, node,
+  collection-size, total-corpus, repeated artifact-decode work, projected
+  output-byte-work, and 20--4096 case bounds are checked before the first arm
+  executes. A family-specific preflight
+  also validates the exact numeric/list/object/operator/method shapes consumed
+  by each interpreter, preventing a bounded string from masquerading as a very
+  large coefficient or column sequence. The returned output-size limit is
+  necessarily checked immediately after each arm returns;
+- candidate and incumbent must have the same supported family kind. The
+  runner domain-hashes the detached artifacts and configs and checks those
+  digests, the family digest, materialized case/unit/expected commitments,
+  selection manifest, pair manifest, holdout-pack commitment, exact arm-order
+  assignment, holdout-access contract, oracle contract, and resource-policy
+  digest against the plan before execution;
+- HMAC case leaves bind the campaign, declared-unit commitment, and actual
+  canonical input. The pack also binds precommitted expected-value leaves and
+  the deterministic assignment. This detects a wrong key or post-plan payload,
+  label, unit, or membership substitution inside this invocation. It does not
+  authenticate key custody, prove that the material was temporally sealed, or
+  authenticate the receipt's external origin;
+- cases are sorted by their pre-outcome case commitments. Candidate-first and
+  incumbent-first alternate by sorted rank, yielding 10/10 for 20 cases and
+  11/10 for 21. This is deterministic counterbalancing, not random assignment,
+  an unbiased experiment, or proof that order effects are absent;
+- each arm receives a freshly decoded artifact and input graph from the same
+  canonical input bytes. Both arm calls terminate before expected-output
+  comparison, and the expected value is never an executor argument. Each output
+  is canonicalized and committed immediately. The runner checks post-return
+  input and artifact state, but cannot detect mutation that was restored before
+  return;
+- exact canonical-JSON equality produces PASS/FAIL. When pair integrity remains
+  complete, any ordinary exception, including `TimeoutError`, produces ERROR
+  and the other arm still runs. If post-return argument state differs, both
+  outcomes become NOT_SCORED instead. C7 has no interrupting process boundary,
+  so it never emits or claims an enforced timeout;
+- a post-return argument mismatch makes the pair incomplete. C6 then remains
+  inconclusive rather than treating the row as lift evidence.
+
+The public C7 receipt contains only aggregate counts and digests. It exports no
+case/unit/pair leaves, raw inputs, expected values, solver outputs, HMAC key,
+exception details, paths, timestamps, random values, or UUIDs. Its constructor
+rechecks count, policy, C6-root, literal-fact, and authority relationships.
+Receipt digests provide deterministic integrity only; receipt-origin
+authentication remains false.
+
+This runner can truthfully report that two fresh argument graphs came from the
+same canonical bytes at its API boundary, that the precommitted expected output
+was omitted from the closed executor arguments, and that its commitments
+matched the supplied plan.
+It cannot prove solver determinism outside this invocation, actual held-outness,
+candidate-development leakage isolation, oracle organizational independence,
+statistical-unit independence, effective sample size, cross-campaign
+multiplicity control, significance, or a causal effect. C6 therefore continues
+to serialize all of its independent-verification fields as false even when C7
+created the observations. C7 also does not externally pin or independently
+verify the supplied plan, registry snapshot, runner source identity,
+toolchain/environment, or the semantic relationship between the committed
+cell/subdivision addresses and the artifacts. Replacing those assertions makes
+a different self-consistent plan; it does not create externally authenticated
+evidence.
+
+The request has no execution-callback field and C7 selects only the closed
+executor API. Python module bindings and the runner artifact are not externally
+authenticated, however, so the receipt does not claim that executor effects
+were independently verified. Its top-level authority fields say that routing,
+promotion, BuilderHost, registry writes, external writes, and runtime authority
+were not *requested by this runner*. The nested C6
+`external_writes_applied: false` fact remains scoped to C6's pure aggregate
+accountant, not an independent attestation of the surrounding Python process.
+
+C7 is not the coding sandbox described above. It is a bounded in-process
+interpreter for reviewed templates, which is the efficient path for large
+numbers of solver instances: one reviewed family implementation can serve many
+hex-addressed configurations. A future free-form family builder still needs a
+fresh process or container, immutable mounts, no network by default, hard CPU,
+memory, process and wall-clock enforcement, secret isolation, signed artifacts,
+and a verifier outside the candidate process. C7 grants none of that authority.
+
 ## Two-week sprint ledger
 
 | Slice | Deliverable | Status |
@@ -435,8 +529,9 @@ remain advisory rather than votes or gates.
 | C3 | durable ledger, replay/restart, authenticated WDP/recovery | pushed |
 | C4 | default-OFF wiring, semantic-domain guard, docs, executable harness | pushed at `3f443301` |
 | C5 | accounting closure, plaintext-retention truth, WAL process-crash drill | pushed at `61fc99b`; CI text repair at `07c498e` |
-| C6 | default-OFF, raw-free paired solver-lift evidence contract | implementation checkpoint; no runtime wiring |
-| Gate | exact pushed-head reviews and CI | C5 exact-head CI and Tools green; C6 pending |
+| C6 | default-OFF, raw-free paired solver-lift evidence contract | pushed at `48694a9`; local/full CI and Tools exact-head review green |
+| C7 | closed declarative paired runner feeding C6 | implementation checkpoint; default-OFF, no runtime wiring |
+| Gate | exact pushed-head reviews and CI | C6 green; C7 pending |
 
 Parallel lane intent:
 

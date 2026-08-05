@@ -23,8 +23,15 @@ from waggledance.core.capabilities.activation_snapshot import (
     build_activation_scope,
     build_activation_snapshot_bundle,
     canonicalize_activation_snapshot_publication,
+    project_activation_snapshot_for_mirror,
+)
+from waggledance.core.capabilities.activation_provider import (
+    ControlPlaneActivationProvider,
 )
 from waggledance.core.cell_identity import build_cell_identity
+from waggledance.core.magma.activation_snapshot_artifact_store import (
+    ActivationSnapshotArtifactStore,
+)
 from waggledance.core.storage.control_plane import (
     ActivationSnapshotCASConflict,
     ControlPlaneDB,
@@ -203,6 +210,38 @@ def test_bootstrap_read_and_restart_preserve_exact_current_pointer(
         ) is None
     finally:
         restarted.close()
+
+
+def test_artifact_store_control_plane_and_mirror_provider_round_trip(
+    db: ControlPlaneDB, tmp_path: Path
+) -> None:
+    identity = _identity("provider-cell")
+    deployment = _digest("provider-deployment")
+    publication = _publication(
+        identity=identity,
+        deployment_scope_digest=deployment,
+    )
+    store = ActivationSnapshotArtifactStore(tmp_path / "activation-artifacts")
+    artifact = store.append(
+        publication.canonical_bundle,
+        cell_identity=identity,
+        expected_deployment_scope_digest=deployment,
+        **publication.current_bindings,
+    )
+    pointer = _append(db, publication)
+    assert artifact.bundle_digest == pointer.bundle_digest
+
+    provider = ControlPlaneActivationProvider(
+        control_plane=db,
+        artifact_reader=store.read,
+        deployment_scope_digest=deployment,
+        cell_identity=identity,
+    )
+    assert provider() == project_activation_snapshot_for_mirror(
+        publication.bundle,
+        cell_identity=identity,
+        expected_deployment_scope_digest=deployment,
+    )
 
 
 def test_cells_with_identical_heads_have_independent_scoped_chains(

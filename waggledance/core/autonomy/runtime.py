@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import queue
+import threading
 import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional
@@ -57,6 +59,50 @@ import concurrent.futures
 _ASYNC_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="autonomy-async",
 )
+
+
+class _BoundedActivationMirrorDispatcher:
+    """One process-wide daemon lane for non-authoritative mirror callbacks."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue(maxsize=256)
+        self._worker = threading.Thread(
+            target=self._run,
+            name="activation-mirror",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def submit(self, callback: Callable[[], None]) -> Optional[threading.Event]:
+        completed = threading.Event()
+        try:
+            self._queue.put_nowait((callback, completed))
+        except queue.Full:
+            return None
+        return completed
+
+    def _run(self) -> None:
+        while True:
+            callback, completed = self._queue.get()
+            try:
+                callback()
+            except BaseException:  # keep the isolated daemon lane alive
+                log.debug("activation mirror background task failed; ignored")
+            finally:
+                completed.set()
+                self._queue.task_done()
+
+
+_ACTIVATION_MIRROR_DISPATCHER: Optional[_BoundedActivationMirrorDispatcher] = None
+_ACTIVATION_MIRROR_DISPATCHER_LOCK = threading.Lock()
+
+
+def _activation_mirror_dispatcher() -> _BoundedActivationMirrorDispatcher:
+    global _ACTIVATION_MIRROR_DISPATCHER
+    with _ACTIVATION_MIRROR_DISPATCHER_LOCK:
+        if _ACTIVATION_MIRROR_DISPATCHER is None:
+            _ACTIVATION_MIRROR_DISPATCHER = _BoundedActivationMirrorDispatcher()
+        return _ACTIVATION_MIRROR_DISPATCHER
 
 
 def _run_maybe_async(result):
@@ -131,6 +177,8 @@ class AutonomyRuntime:
         enable_persistence: bool = True,
         enable_hex_canary_mirror: bool = False,
         runtime_receipt_sink: Optional[Callable[[dict[str, Any]], Any]] = None,
+        enable_activation_mirror: bool = False,
+        activation_snapshot_provider: Optional[Callable[[], object]] = None,
     ):
         self.profile = profile
         self.runtime_receipt_sink = runtime_receipt_sink
@@ -210,6 +258,19 @@ class AutonomyRuntime:
         self._canary_mirror_enabled = enable_hex_canary_mirror is True
         self._canary_comparisons: deque = deque(maxlen=256)
         self._canary_mirror_failures = 0
+        # Activation mirror: opt-in and strictly observational.  The provider
+        # is deliberately injected rather than synthesized from mutable
+        # runtime labels; a future production provider must return one atomic,
+        # authenticated current-head snapshot.
+        self._activation_mirror_enabled = enable_activation_mirror is True
+        self._activation_snapshot_provider = activation_snapshot_provider
+        self._activation_mirror_records: deque = deque(maxlen=256)
+        self._activation_mirror_provider_failures = 0
+        self._activation_mirror_verification_failures = 0
+        self._activation_mirror_queue_drops = 0
+        self._activation_mirror_dispatch_failures = 0
+        self._activation_mirror_lock = threading.Lock()
+        self._activation_mirror_last_completion: Optional[threading.Event] = None
         self._graph_health_logged = False
         self._executor_count = 0
         try:
@@ -449,6 +510,112 @@ class AutonomyRuntime:
             "enabled": self._canary_mirror_enabled,
             "mirror_failure_count": self._canary_mirror_failures,
             "report": summarize_canary_mirror(list(self._canary_comparisons)),
+        }
+
+    def _activation_mirror_safe(self, capability_id: str) -> None:
+        """Resolve and validate one off-path activation observation.
+
+        This method runs only on the bounded daemon lane after the production
+        response has been finalized.  The record itself is fail-closed:
+        malformed or stale snapshots never report a valid active match.
+        """
+
+        provider = self._activation_snapshot_provider
+        if not callable(provider):
+            with self._activation_mirror_lock:
+                self._activation_mirror_provider_failures += 1
+            return
+        try:
+            snapshot = provider()
+        except BaseException:  # background-only advisory isolation boundary
+            with self._activation_mirror_lock:
+                self._activation_mirror_provider_failures += 1
+            # Do not place provider exception text in logs or mirror artifacts;
+            # it may contain snapshot payloads or deployment details.
+            log.debug("activation snapshot provider failed; ignored")
+            return
+
+        try:
+            from waggledance.core.capabilities.activation_mirror import (
+                build_activation_mirror_record,
+            )
+
+            record = build_activation_mirror_record(
+                capability_id=capability_id,
+                snapshot=snapshot,
+            )
+            with self._activation_mirror_lock:
+                if record.get("selection_valid") is not True:
+                    self._activation_mirror_verification_failures += 1
+                self._activation_mirror_records.append(record)
+        except BaseException:  # background-only advisory isolation boundary
+            with self._activation_mirror_lock:
+                self._activation_mirror_verification_failures += 1
+            log.debug("activation mirror verification failed; ignored")
+
+    def _schedule_activation_mirror(self, capability_id: str) -> None:
+        """Enqueue a frozen identifier without waiting for provider work."""
+
+        try:
+            completion = _activation_mirror_dispatcher().submit(
+                lambda: self._activation_mirror_safe(capability_id)
+            )
+        except Exception:  # mirror dispatch must never replace the response
+            with self._activation_mirror_lock:
+                self._activation_mirror_dispatch_failures += 1
+            return
+        with self._activation_mirror_lock:
+            if completion is None:
+                self._activation_mirror_queue_drops += 1
+            else:
+                self._activation_mirror_last_completion = completion
+
+    def _return_with_activation_mirror(
+        self, response: Dict[str, Any], capability_id: str
+    ) -> Dict[str, Any]:
+        """Enqueue only after ``response`` and its production outcome exist."""
+
+        if self._activation_mirror_enabled:
+            try:
+                self._schedule_activation_mirror(capability_id)
+            except Exception:  # defense in depth for the observational lane
+                with self._activation_mirror_lock:
+                    self._activation_mirror_dispatch_failures += 1
+        return response
+
+    def wait_for_activation_mirror(self, timeout: float = 1.0) -> bool:
+        """Wait for the latest queued observation (diagnostics/tests only)."""
+
+        if (
+            type(timeout) not in (int, float)
+            or not 0 <= float(timeout) <= 60.0
+        ):
+            return False
+        with self._activation_mirror_lock:
+            completion = self._activation_mirror_last_completion
+        return True if completion is None else completion.wait(float(timeout))
+
+    def activation_mirror_snapshot(self) -> dict[str, Any]:
+        """Return the bounded, digest-bound advisory mirror aggregate."""
+
+        from waggledance.core.capabilities.activation_mirror import (
+            summarize_activation_mirror,
+        )
+
+        with self._activation_mirror_lock:
+            records = list(self._activation_mirror_records)
+            provider_failures = self._activation_mirror_provider_failures
+            verification_failures = self._activation_mirror_verification_failures
+            queue_drops = self._activation_mirror_queue_drops
+            dispatch_failures = self._activation_mirror_dispatch_failures
+        return {
+            "enabled": self._activation_mirror_enabled,
+            "provider_configured": callable(self._activation_snapshot_provider),
+            "provider_failure_count": provider_failures,
+            "verification_failure_count": verification_failures,
+            "queue_drop_count": queue_drops,
+            "dispatch_failure_count": dispatch_failures,
+            "report": summarize_activation_mirror(records),
         }
 
     def _record_query_runtime_receipt(
@@ -794,6 +961,22 @@ class AutonomyRuntime:
         if fallback_used:
             self._deterministic_route_fallback_total += 1
 
+        # Freeze the activation mirror identifier before any observational
+        # lane runs.  The provider receives only this immutable string and is
+        # not scheduled until the production response is fully constructed.
+        if (
+            route_result.autonomy_consult is not None
+            and route_result.autonomy_served
+        ):
+            mirror_solver_name = route_result.autonomy_consult.solver_name or "served"
+            activation_mirror_capability_id = (
+                f"autonomy_consult:{mirror_solver_name}"
+            )
+        elif selected_caps:
+            activation_mirror_capability_id = selected_caps[0].capability_id
+        else:
+            activation_mirror_capability_id = "none"
+
         # MAGMA: record capability selection
         if self.audit and AuditEntry is not None:
             cap_ids = [c.capability_id for c in route_result.selection.selected]
@@ -828,7 +1011,7 @@ class AutonomyRuntime:
             and route_result.autonomy_served
         ):
             consult = route_result.autonomy_consult
-            return {
+            response = {
                 "intent": intent,
                 "quality_path": "autonomy_consult",
                 "response": consult.output,
@@ -844,6 +1027,9 @@ class AutonomyRuntime:
                 ),
                 "elapsed_ms": round((time.time() - t0) * 1000, 2),
             }
+            return self._return_with_activation_mirror(
+                response, activation_mirror_capability_id
+            )
 
         # 4. Create action for first selected capability
         if not route_result.selection.selected:
@@ -864,7 +1050,9 @@ class AutonomyRuntime:
             response["low_risk_autonomy_hint_kind"] = context.get(
                 "low_risk_autonomy_hint_kind"
             )
-            return response
+            return self._return_with_activation_mirror(
+                response, activation_mirror_capability_id
+            )
 
         primary_cap = route_result.selection.selected[0]
         action = Action(
@@ -1086,7 +1274,9 @@ class AutonomyRuntime:
         )
         if runtime_receipt is not None:
             result["runtime_receipt"] = runtime_receipt
-        return result
+        return self._return_with_activation_mirror(
+            result, activation_mirror_capability_id
+        )
 
     # ── Mission path ──────────────────────────────────────
 

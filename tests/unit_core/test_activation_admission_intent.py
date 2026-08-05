@@ -36,7 +36,7 @@ def _kwargs(**overrides):
         "proposed_previous_bundle_digest": _digest("bundle:current"),
         "proposed_previous_activation_head_digest": _digest("head:current"),
         "trust_registry_head_digest": _digest("trust-head"),
-        "attestation_log_head_digest": _digest("log-head"),
+        "attestation_log_base_head_digest": _digest("log-base-head"),
         "consensus_policy_digest": _digest("consensus-policy"),
         "required_independent_support": 3,
     }
@@ -69,8 +69,8 @@ def _external(intent: dict) -> dict:
         "expected_trust_registry_head_digest": intent[
             "trust_registry_head_digest"
         ],
-        "expected_attestation_log_head_digest": intent[
-            "attestation_log_head_digest"
+        "expected_attestation_log_base_head_digest": intent[
+            "attestation_log_base_head_digest"
         ],
         "expected_consensus_policy_digest": intent["consensus_policy_digest"],
         "expected_required_independent_support": intent[
@@ -100,7 +100,9 @@ def test_build_is_deterministic_and_exports_exact_evidence_bindings() -> None:
             "activation_head_digest"
         ],
         "trust_registry_head_digest": first["trust_registry_head_digest"],
-        "attestation_log_head_digest": first["attestation_log_head_digest"],
+        "attestation_log_base_head_digest": first[
+            "attestation_log_base_head_digest"
+        ],
         "consensus_policy_digest": first["consensus_policy_digest"],
     }
     assert first["observation_only"] is True
@@ -119,7 +121,7 @@ def test_build_is_deterministic_and_exports_exact_evidence_bindings() -> None:
         "proposed_bundle_digest",
         "proposed_activation_head_digest",
         "trust_registry_head_digest",
-        "attestation_log_head_digest",
+        "attestation_log_base_head_digest",
         "consensus_policy_digest",
     ],
 )
@@ -264,8 +266,8 @@ def test_exact_dict_keysets_and_digest_spelling_are_required() -> None:
             "stale_trust_registry_head_digest",
         ),
         (
-            "expected_attestation_log_head_digest",
-            "stale_attestation_log_head_digest",
+            "expected_attestation_log_base_head_digest",
+            "stale_attestation_log_base_head_digest",
         ),
         (
             "expected_consensus_policy_digest",

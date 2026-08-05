@@ -6,6 +6,11 @@ one exact current pointer, one exact proposed successor, the Genesis-derived
 activation scope, and the external policy/trust/log heads under which the
 review takes place.  It performs no I/O, authenticates none of those external
 heads, grants no authority, and never applies the proposed transition.
+
+``attestation_log_base_head_digest`` is the collection window's starting
+head.  It is intentionally not the unknown future head that will contain the
+resulting attestations; a later gate must verify a direct append transition
+from this base and bind that final committed head in its own receipt.
 """
 
 from __future__ import annotations
@@ -53,7 +58,7 @@ INTENT_CORE_KEYS = frozenset(
         "expected_current_pointer",
         "proposed_pointer",
         "trust_registry_head_digest",
-        "attestation_log_head_digest",
+        "attestation_log_base_head_digest",
         "consensus_policy_digest",
         "required_independent_support",
         *_NON_AUTHORITY_FLAGS,
@@ -201,9 +206,9 @@ def _normalize_core(value: object) -> dict[str, object]:
         "trust_registry_head_digest": _digest(
             core["trust_registry_head_digest"], "trust_registry_head_digest"
         ),
-        "attestation_log_head_digest": _digest(
-            core["attestation_log_head_digest"],
-            "attestation_log_head_digest",
+        "attestation_log_base_head_digest": _digest(
+            core["attestation_log_base_head_digest"],
+            "attestation_log_base_head_digest",
         ),
         "consensus_policy_digest": _digest(
             core["consensus_policy_digest"], "consensus_policy_digest"
@@ -284,7 +289,7 @@ def build_activation_admission_intent(
     proposed_previous_bundle_digest: str,
     proposed_previous_activation_head_digest: str,
     trust_registry_head_digest: str,
-    attestation_log_head_digest: str,
+    attestation_log_base_head_digest: str,
     consensus_policy_digest: str,
     required_independent_support: int,
 ) -> dict[str, object]:
@@ -312,7 +317,9 @@ def build_activation_admission_intent(
                 ),
             },
             "trust_registry_head_digest": trust_registry_head_digest,
-            "attestation_log_head_digest": attestation_log_head_digest,
+            "attestation_log_base_head_digest": (
+                attestation_log_base_head_digest
+            ),
             "consensus_policy_digest": consensus_policy_digest,
             "required_independent_support": required_independent_support,
             **_NON_AUTHORITY_FLAGS,
@@ -379,7 +386,7 @@ def verify_activation_admission_intent_bindings(
     expected_proposed_activation_head_digest: str,
     expected_proposed_store_revision: int,
     expected_trust_registry_head_digest: str,
-    expected_attestation_log_head_digest: str,
+    expected_attestation_log_base_head_digest: str,
     expected_consensus_policy_digest: str,
     expected_required_independent_support: int,
 ) -> tuple[bool, Optional[str]]:
@@ -399,9 +406,9 @@ def verify_activation_admission_intent_bindings(
                 expected_trust_registry_head_digest,
                 "expected_trust_registry_head_digest",
             ),
-            "attestation_log_head_digest": _digest(
-                expected_attestation_log_head_digest,
-                "expected_attestation_log_head_digest",
+            "attestation_log_base_head_digest": _digest(
+                expected_attestation_log_base_head_digest,
+                "expected_attestation_log_base_head_digest",
             ),
             "consensus_policy_digest": _digest(
                 expected_consensus_policy_digest,
@@ -476,7 +483,9 @@ def evidence_bindings_from_activation_admission_intent(
         "candidate_digest": intent["candidate_digest"],
         "activation_head_digest": intent["activation_head_digest"],
         "trust_registry_head_digest": intent["trust_registry_head_digest"],
-        "attestation_log_head_digest": intent["attestation_log_head_digest"],
+        "attestation_log_base_head_digest": intent[
+            "attestation_log_base_head_digest"
+        ],
         "consensus_policy_digest": intent["consensus_policy_digest"],
     }  # type: ignore[return-value]
 

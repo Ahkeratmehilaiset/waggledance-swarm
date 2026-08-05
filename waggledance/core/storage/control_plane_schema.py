@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-SCHEMA_VERSION: int = 4
+SCHEMA_VERSION: int = 5
 
 INITIAL_SCHEMA_SQL: List[str] = [
     """
@@ -556,6 +556,328 @@ PHASE13_CAPABILITY_LOOKUP_SCHEMA_SQL: List[str] = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Schema v5 — scoped activation snapshot pointers
+# --------------------------------------------------------------------------
+# The control plane stores only immutable, content-addressed pointer metadata.
+# Full activation bundles and their audit history remain in MAGMA.  A current
+# pointer is the greatest ``store_revision`` for one verified deployment/cell
+# scope; no mutable "current" row is needed.
+SCOPED_ACTIVATION_SNAPSHOT_SCHEMA_SQL: List[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS activation_scopes (
+        activation_scope_digest  TEXT PRIMARY KEY,
+        deployment_scope_digest  TEXT NOT NULL,
+        cell_id                  TEXT NOT NULL,
+        created_at               TEXT NOT NULL,
+        UNIQUE (deployment_scope_digest, cell_id),
+        CHECK (
+            typeof(activation_scope_digest) = 'text'
+            AND length(activation_scope_digest) = 71
+            AND substr(activation_scope_digest, 1, 7) = 'sha256:'
+            AND substr(activation_scope_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(deployment_scope_digest) = 'text'
+            AND length(deployment_scope_digest) = 71
+            AND substr(deployment_scope_digest, 1, 7) = 'sha256:'
+            AND substr(deployment_scope_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(cell_id) = 'text'
+            AND length(cell_id) = 71
+            AND substr(cell_id, 1, 7) = 'sha256:'
+            AND substr(cell_id, 8) NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS activation_scope_tombstones (
+        activation_scope_digest  TEXT PRIMARY KEY
+            REFERENCES activation_scopes(activation_scope_digest)
+            ON DELETE RESTRICT,
+        reason_digest            TEXT NOT NULL,
+        retired_at               TEXT NOT NULL,
+        CHECK (
+            typeof(activation_scope_digest) = 'text'
+            AND length(activation_scope_digest) = 71
+            AND substr(activation_scope_digest, 1, 7) = 'sha256:'
+            AND substr(activation_scope_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(reason_digest) = 'text'
+            AND length(reason_digest) = 71
+            AND substr(reason_digest, 1, 7) = 'sha256:'
+            AND substr(reason_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS activation_snapshot_pointers (
+        id                               INTEGER PRIMARY KEY AUTOINCREMENT,
+        activation_scope_digest          TEXT NOT NULL
+            REFERENCES activation_scopes(activation_scope_digest)
+            ON DELETE RESTRICT,
+        bundle_digest                    TEXT NOT NULL UNIQUE,
+        store_revision                   INTEGER NOT NULL,
+        previous_bundle_digest           TEXT NOT NULL,
+        activation_head_digest           TEXT NOT NULL,
+        previous_activation_head_digest  TEXT NOT NULL,
+        expression_context_digest        TEXT NOT NULL,
+        expected_profile_head_digest     TEXT NOT NULL,
+        expected_policy_head_digest      TEXT NOT NULL,
+        expected_resource_head_digest    TEXT NOT NULL,
+        expected_domain_head_digest      TEXT NOT NULL,
+        expected_environment_head_digest TEXT NOT NULL,
+        charter_ceiling_digest           TEXT NOT NULL,
+        expressed_ceiling_digest         TEXT NOT NULL,
+        created_at                       TEXT NOT NULL,
+        UNIQUE (activation_scope_digest, store_revision),
+        UNIQUE (activation_scope_digest, activation_head_digest),
+        CHECK (
+            typeof(store_revision) = 'integer'
+            AND store_revision BETWEEN 0 AND 9223372036854775807
+        ),
+        CHECK (
+            typeof(activation_scope_digest) = 'text'
+            AND length(activation_scope_digest) = 71
+            AND substr(activation_scope_digest, 1, 7) = 'sha256:'
+            AND substr(activation_scope_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(bundle_digest) = 'text'
+            AND length(bundle_digest) = 71
+            AND substr(bundle_digest, 1, 7) = 'sha256:'
+            AND substr(bundle_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(previous_bundle_digest) = 'text'
+            AND length(previous_bundle_digest) = 71
+            AND substr(previous_bundle_digest, 1, 7) = 'sha256:'
+            AND substr(previous_bundle_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(activation_head_digest) = 'text'
+            AND length(activation_head_digest) = 71
+            AND substr(activation_head_digest, 1, 7) = 'sha256:'
+            AND substr(activation_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(previous_activation_head_digest) = 'text'
+            AND length(previous_activation_head_digest) = 71
+            AND substr(previous_activation_head_digest, 1, 7) = 'sha256:'
+            AND substr(previous_activation_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expression_context_digest) = 'text'
+            AND length(expression_context_digest) = 71
+            AND substr(expression_context_digest, 1, 7) = 'sha256:'
+            AND substr(expression_context_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_profile_head_digest) = 'text'
+            AND length(expected_profile_head_digest) = 71
+            AND substr(expected_profile_head_digest, 1, 7) = 'sha256:'
+            AND substr(expected_profile_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_policy_head_digest) = 'text'
+            AND length(expected_policy_head_digest) = 71
+            AND substr(expected_policy_head_digest, 1, 7) = 'sha256:'
+            AND substr(expected_policy_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_resource_head_digest) = 'text'
+            AND length(expected_resource_head_digest) = 71
+            AND substr(expected_resource_head_digest, 1, 7) = 'sha256:'
+            AND substr(expected_resource_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_domain_head_digest) = 'text'
+            AND length(expected_domain_head_digest) = 71
+            AND substr(expected_domain_head_digest, 1, 7) = 'sha256:'
+            AND substr(expected_domain_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_environment_head_digest) = 'text'
+            AND length(expected_environment_head_digest) = 71
+            AND substr(expected_environment_head_digest, 1, 7) = 'sha256:'
+            AND substr(expected_environment_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(charter_ceiling_digest) = 'text'
+            AND length(charter_ceiling_digest) = 71
+            AND substr(charter_ceiling_digest, 1, 7) = 'sha256:'
+            AND substr(charter_ceiling_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expressed_ceiling_digest) = 'text'
+            AND length(expressed_ceiling_digest) = 71
+            AND substr(expressed_ceiling_digest, 1, 7) = 'sha256:'
+            AND substr(expressed_ceiling_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_scopes_refuse_collision
+    BEFORE INSERT ON activation_scopes
+    WHEN EXISTS (
+        SELECT 1
+        FROM activation_scopes
+        WHERE activation_scope_digest = NEW.activation_scope_digest
+           OR (
+               deployment_scope_digest = NEW.deployment_scope_digest
+               AND cell_id = NEW.cell_id
+           )
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_scopes immutable key collision');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS
+        trg_activation_scope_tombstones_refuse_collision
+    BEFORE INSERT ON activation_scope_tombstones
+    WHEN EXISTS (
+        SELECT 1
+        FROM activation_scope_tombstones
+        WHERE activation_scope_digest = NEW.activation_scope_digest
+    )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'activation_scope_tombstones immutable key collision'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS
+        trg_activation_snapshot_pointers_refuse_collision
+    BEFORE INSERT ON activation_snapshot_pointers
+    WHEN EXISTS (
+        SELECT 1
+        FROM activation_snapshot_pointers
+        WHERE id = NEW.id
+           OR bundle_digest = NEW.bundle_digest
+           OR (
+               activation_scope_digest = NEW.activation_scope_digest
+               AND store_revision = NEW.store_revision
+           )
+           OR (
+               activation_scope_digest = NEW.activation_scope_digest
+               AND activation_head_digest = NEW.activation_head_digest
+           )
+    )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'activation_snapshot_pointers immutable key collision'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_scopes_refuse_update
+    BEFORE UPDATE ON activation_scopes
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_scopes rows are immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_scopes_refuse_delete
+    BEFORE DELETE ON activation_scopes
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_scopes rows are immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_scope_tombstones_refuse_update
+    BEFORE UPDATE ON activation_scope_tombstones
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_scope_tombstones rows are immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_scope_tombstones_refuse_delete
+    BEFORE DELETE ON activation_scope_tombstones
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_scope_tombstones rows are immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_snapshot_pointers_refuse_update
+    BEFORE UPDATE ON activation_snapshot_pointers
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_snapshot_pointers rows are immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_snapshot_pointers_refuse_delete
+    BEFORE DELETE ON activation_snapshot_pointers
+    BEGIN
+        SELECT RAISE(ABORT, 'activation_snapshot_pointers rows are immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_activation_snapshot_pointers_validate_insert
+    BEFORE INSERT ON activation_snapshot_pointers
+    BEGIN
+        SELECT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM activation_scope_tombstones
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            )
+            THEN RAISE(ABORT, 'activation scope is retired')
+        END;
+
+        SELECT CASE
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM activation_snapshot_pointers
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            ) AND (
+                NEW.store_revision <> 0
+                OR NEW.previous_bundle_digest <>
+                    'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+                OR NEW.previous_activation_head_digest <>
+                    'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            )
+            THEN RAISE(ABORT, 'activation snapshot genesis mismatch')
+
+            WHEN EXISTS (
+                SELECT 1
+                FROM activation_snapshot_pointers
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            ) AND (
+                NEW.store_revision <> (
+                    SELECT store_revision + 1
+                    FROM activation_snapshot_pointers
+                    WHERE activation_scope_digest = NEW.activation_scope_digest
+                    ORDER BY store_revision DESC
+                    LIMIT 1
+                )
+                OR NEW.previous_bundle_digest <> (
+                    SELECT bundle_digest
+                    FROM activation_snapshot_pointers
+                    WHERE activation_scope_digest = NEW.activation_scope_digest
+                    ORDER BY store_revision DESC
+                    LIMIT 1
+                )
+                OR NEW.previous_activation_head_digest <> (
+                    SELECT activation_head_digest
+                    FROM activation_snapshot_pointers
+                    WHERE activation_scope_digest = NEW.activation_scope_digest
+                    ORDER BY store_revision DESC
+                    LIMIT 1
+                )
+            )
+            THEN RAISE(ABORT, 'activation snapshot chain mismatch')
+        END;
+    END
+    """,
+]
+
+
 # Forward-only migrations indexed by target schema version.
 # Migration N is applied when current schema_version < N. Each migration
 # is a list of SQL statements applied in a single transaction.
@@ -564,6 +886,7 @@ MIGRATIONS: Dict[int, List[str]] = {
     2: PHASE11_AUTOGROWTH_SCHEMA_SQL,
     3: PHASE12_AUTOGROWTH_INTAKE_SCHEMA_SQL,
     4: PHASE13_CAPABILITY_LOOKUP_SCHEMA_SQL,
+    5: SCOPED_ACTIVATION_SNAPSHOT_SCHEMA_SQL,
 }
 
 
@@ -602,4 +925,8 @@ def all_table_names() -> List[str]:
         "growth_events",
         # schema v4 — Phase 13 capability-aware solver lookup
         "solver_capability_features",
+        # schema v5 — immutable scoped activation snapshot pointers
+        "activation_scopes",
+        "activation_scope_tombstones",
+        "activation_snapshot_pointers",
     ]

@@ -49,6 +49,9 @@ from waggledance.core.autonomy_growth.solver_dispatcher import (  # noqa: E402
 from waggledance.core.storage.control_plane import (  # noqa: E402
     ControlPlaneDB,
 )
+from waggledance.core.storage.control_plane_schema import (  # noqa: E402
+    SCHEMA_VERSION as CONTROL_PLANE_SCHEMA_VERSION,
+)
 
 
 ORIGINAL_FAMILY_FEATURES: dict[str, dict[str, Any]] = {
@@ -732,8 +735,9 @@ def test_no_parallel_event_table_runtime_gap_signals_only(temp_cp):
         kind=PHASE18E_RUNTIME_GAP_EVENT_KIND,
     )
     assert cnt == 12
-    # And no new SQL table was added — schema_version unchanged.
-    assert temp_cp.schema_version() == 4
+    # Phase 18F does not apply a private migration: the instance remains at
+    # the repository's canonical control-plane schema version.
+    assert temp_cp.schema_version() == CONTROL_PLANE_SCHEMA_VERSION
 
 
 def test_schema_meta_holds_cursor_only(temp_cp):

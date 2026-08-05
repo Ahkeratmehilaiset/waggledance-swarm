@@ -29,6 +29,7 @@ Design rules:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -37,6 +38,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, List, Mapping, Optional, Sequence
 
+from waggledance.core.capabilities.activation_snapshot import (
+    ActivationSnapshotContractError,
+    build_activation_scope,
+    canonicalize_activation_snapshot_publication,
+)
+
 from .control_plane_schema import MIGRATIONS, SCHEMA_VERSION, all_table_names
 
 
@@ -44,8 +51,36 @@ class ControlPlaneError(RuntimeError):
     """Raised for unrecoverable control-plane errors (RULE 14: fail-loud)."""
 
 
+class ActivationSnapshotCASConflict(ControlPlaneError):
+    """A scoped activation append lost or violated its structural CAS."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+MAX_ACTIVATION_SNAPSHOT_BUNDLE_BYTES = 64 * 1024 * 1024
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _activation_digest(value: object, label: str) -> str:
+    if type(value) is not str or not _SHA256_DIGEST.fullmatch(value):
+        raise ControlPlaneError(
+            f"{label} must be a sha256:<64 lowercase hex> digest"
+        )
+    return value
+
+
+def _activation_revision(value: object, label: str) -> int:
+    if type(value) is not int or not 0 <= value <= (1 << 63) - 1:
+        raise ControlPlaneError(
+            f"{label} must be an exact integer within SQLite int64 range"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -177,6 +212,40 @@ class RuntimePathBinding:
     is_active: bool
     bound_at: str
     rebound_at: Optional[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationSnapshotPointerRecord:
+    """One immutable member of a scope-local current-pointer chain."""
+
+    id: int
+    activation_scope_digest: str
+    deployment_scope_digest: str
+    cell_id: str
+    bundle_digest: str
+    store_revision: int
+    previous_bundle_digest: str
+    activation_head_digest: str
+    previous_activation_head_digest: str
+    expression_context_digest: str
+    expected_profile_head_digest: str
+    expected_policy_head_digest: str
+    expected_resource_head_digest: str
+    expected_domain_head_digest: str
+    expected_environment_head_digest: str
+    charter_ceiling_digest: str
+    expressed_ceiling_digest: str
+    scope_status: str
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationScopeTombstoneRecord:
+    """Irreversible fail-closed retirement of one activation scope."""
+
+    activation_scope_digest: str
+    reason_digest: str
+    retired_at: str
 
 
 # -- schema v4 — Phase 13 capability-aware solver lookup -----------
@@ -485,6 +554,11 @@ class ControlPlaneDB:
     ) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        # Defense in depth for immutable v5 rows.  The schema's BEFORE INSERT
+        # collision guards protect even external connections where this pragma
+        # is absent; enabling it here also makes REPLACE's implicit deletes
+        # invoke DELETE triggers on every ControlPlaneDB-owned connection.
+        conn.execute("PRAGMA recursive_triggers = ON")
         if query_only:
             conn.execute("PRAGMA query_only = ON")
         return conn
@@ -1874,6 +1948,508 @@ class ControlPlaneDB:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_runtime_gap_signal(r) for r in rows]
 
+    # -- schema v5: scoped immutable activation pointer chain ---------
+
+    @staticmethod
+    def _activation_scope_from_source(
+        *, deployment_scope_digest: str, cell_identity: object
+    ) -> dict[str, str]:
+        try:
+            return build_activation_scope(
+                deployment_scope_digest=deployment_scope_digest,
+                cell_identity=cell_identity,
+            )
+        except ActivationSnapshotContractError as exc:
+            raise ControlPlaneError(
+                f"activation scope verification failed: {exc.reason}"
+            ) from exc
+
+    @staticmethod
+    def _decode_activation_publication(
+        canonical_bundle: bytes,
+        *,
+        cell_identity: object,
+        expected_deployment_scope_digest: str,
+        expected_profile_head_digest: str,
+        expected_policy_head_digest: str,
+        expected_resource_head_digest: str,
+        expected_domain_head_digest: str,
+        expected_environment_head_digest: str,
+        expected_charter_ceiling_digest: str,
+        expected_expressed_ceiling_digest: str,
+    ) -> dict:
+        """Decode immutable bytes and re-run publication verification.
+
+        The expected heads must come from the caller's authenticated current
+        control/charter view.  This layer proves exact rebinding but neither
+        authenticates those supplied values nor grants write authority.
+        """
+
+        if type(canonical_bundle) is not bytes:
+            raise ControlPlaneError(
+                "canonical_bundle must be exact immutable bytes"
+            )
+        if not canonical_bundle or (
+            len(canonical_bundle) > MAX_ACTIVATION_SNAPSHOT_BUNDLE_BYTES
+        ):
+            raise ControlPlaneError(
+                "canonical_bundle is empty or exceeds the 64 MiB bound"
+            )
+        try:
+            decoded = json.loads(canonical_bundle)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ControlPlaneError("canonical_bundle is not strict JSON") from exc
+        try:
+            verified_bytes = canonicalize_activation_snapshot_publication(
+                decoded,
+                cell_identity=cell_identity,
+                expected_deployment_scope_digest=(
+                    expected_deployment_scope_digest
+                ),
+                expected_profile_head_digest=expected_profile_head_digest,
+                expected_policy_head_digest=expected_policy_head_digest,
+                expected_resource_head_digest=expected_resource_head_digest,
+                expected_domain_head_digest=expected_domain_head_digest,
+                expected_environment_head_digest=(
+                    expected_environment_head_digest
+                ),
+                expected_charter_ceiling_digest=(
+                    expected_charter_ceiling_digest
+                ),
+                expected_expressed_ceiling_digest=(
+                    expected_expressed_ceiling_digest
+                ),
+            )
+        except ActivationSnapshotContractError as exc:
+            raise ControlPlaneError(
+                f"activation publication verification failed: {exc.reason}"
+            ) from exc
+        if verified_bytes != canonical_bundle:
+            raise ControlPlaneError(
+                "canonical_bundle bytes are not the verified canonical form"
+            )
+        # Decode the immutable verifier return, never a caller-owned aggregate.
+        return json.loads(verified_bytes)
+
+    def _select_current_activation_pointer_inplace(
+        self, activation_scope_digest: str
+    ) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT
+                p.*,
+                s.deployment_scope_digest,
+                s.cell_id,
+                CASE WHEN t.activation_scope_digest IS NULL
+                     THEN 'active' ELSE 'retired' END AS scope_status
+            FROM activation_scopes AS s
+            LEFT JOIN activation_scope_tombstones AS t
+              ON t.activation_scope_digest = s.activation_scope_digest
+            LEFT JOIN activation_snapshot_pointers AS p
+              ON p.id = (
+                  SELECT p2.id
+                  FROM activation_snapshot_pointers AS p2
+                  WHERE p2.activation_scope_digest = s.activation_scope_digest
+                  ORDER BY p2.store_revision DESC, p2.id DESC
+                  LIMIT 1
+              )
+            WHERE s.activation_scope_digest = ?
+            """,
+            (activation_scope_digest,),
+        ).fetchone()
+
+    def _select_activation_pointer_by_id_inplace(
+        self, pointer_id: int
+    ) -> sqlite3.Row:
+        row = self._conn.execute(
+            """
+            SELECT
+                p.*,
+                s.deployment_scope_digest,
+                s.cell_id,
+                CASE WHEN t.activation_scope_digest IS NULL
+                     THEN 'active' ELSE 'retired' END AS scope_status
+            FROM activation_snapshot_pointers AS p
+            JOIN activation_scopes AS s
+              ON s.activation_scope_digest = p.activation_scope_digest
+            LEFT JOIN activation_scope_tombstones AS t
+              ON t.activation_scope_digest = p.activation_scope_digest
+            WHERE p.id = ?
+            """,
+            (pointer_id,),
+        ).fetchone()
+        if row is None:
+            raise ControlPlaneError("inserted activation pointer disappeared")
+        return row
+
+    def get_current_activation_snapshot_pointer(
+        self,
+        *,
+        deployment_scope_digest: str,
+        cell_identity: object,
+    ) -> Optional[ActivationSnapshotPointerRecord]:
+        """Read one complete pointer with a single SQLite statement snapshot.
+
+        A retired scope is returned with ``scope_status='retired'`` rather
+        than being silently hidden.  Runtime consumers must fail closed on
+        anything other than ``active`` and resolve the full bundle from MAGMA.
+        """
+
+        scope = self._activation_scope_from_source(
+            deployment_scope_digest=deployment_scope_digest,
+            cell_identity=cell_identity,
+        )
+        conn = self._read_conn()
+        sql = """
+            SELECT
+                p.*,
+                s.deployment_scope_digest,
+                s.cell_id,
+                CASE WHEN t.activation_scope_digest IS NULL
+                     THEN 'active' ELSE 'retired' END AS scope_status
+            FROM activation_scopes AS s
+            LEFT JOIN activation_scope_tombstones AS t
+              ON t.activation_scope_digest = s.activation_scope_digest
+            LEFT JOIN activation_snapshot_pointers AS p
+              ON p.id = (
+                  SELECT p2.id
+                  FROM activation_snapshot_pointers AS p2
+                  WHERE p2.activation_scope_digest = s.activation_scope_digest
+                  ORDER BY p2.store_revision DESC, p2.id DESC
+                  LIMIT 1
+              )
+            WHERE s.activation_scope_digest = ?
+        """
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    sql, (scope["activation_scope_digest"],)
+                ).fetchone()
+        else:
+            row = conn.execute(
+                sql, (scope["activation_scope_digest"],)
+            ).fetchone()
+        if row is None:
+            return None
+        if (
+            row["deployment_scope_digest"]
+            != scope["deployment_scope_digest"]
+            or row["cell_id"] != scope["cell_id"]
+        ):
+            raise ControlPlaneError(
+                "activation scope registry binding is corrupt"
+            )
+        if row["id"] is None:
+            return None
+        return self._row_to_activation_snapshot_pointer(row)
+
+    @staticmethod
+    def _expected_activation_cas_tuple(
+        *,
+        expected_current_bundle_digest: Optional[str],
+        expected_current_activation_head_digest: Optional[str],
+        expected_current_store_revision: Optional[int],
+    ) -> Optional[tuple[str, str, int]]:
+        supplied = (
+            expected_current_bundle_digest,
+            expected_current_activation_head_digest,
+            expected_current_store_revision,
+        )
+        if all(value is None for value in supplied):
+            return None
+        if any(value is None for value in supplied):
+            raise ActivationSnapshotCASConflict(
+                "partial_expected_current",
+                "expected current bundle, head and revision are all-or-none",
+            )
+        return (
+            _activation_digest(
+                expected_current_bundle_digest,
+                "expected_current_bundle_digest",
+            ),
+            _activation_digest(
+                expected_current_activation_head_digest,
+                "expected_current_activation_head_digest",
+            ),
+            _activation_revision(
+                expected_current_store_revision,
+                "expected_current_store_revision",
+            ),
+        )
+
+    def append_activation_snapshot_pointer_cas(
+        self,
+        *,
+        canonical_bundle: bytes,
+        cell_identity: object,
+        expected_deployment_scope_digest: str,
+        expected_current_bundle_digest: Optional[str],
+        expected_current_activation_head_digest: Optional[str],
+        expected_current_store_revision: Optional[int],
+        expected_profile_head_digest: str,
+        expected_policy_head_digest: str,
+        expected_resource_head_digest: str,
+        expected_domain_head_digest: str,
+        expected_environment_head_digest: str,
+        expected_charter_ceiling_digest: str,
+        expected_expressed_ceiling_digest: str,
+    ) -> ActivationSnapshotPointerRecord:
+        """Append a verified pointer under a scope-local structural CAS.
+
+        The canonical bundle remains a MAGMA artifact; the control plane stores
+        only its digest and current projection.  Callers must append and
+        authenticate that artifact first.  This method authenticates no
+        principal and grants no runtime authority.
+
+        Nesting inside ``transaction()`` is refused because the existing
+        nested helper has no SAVEPOINT rollback semantics.
+        """
+
+        bundle = self._decode_activation_publication(
+            canonical_bundle,
+            cell_identity=cell_identity,
+            expected_deployment_scope_digest=(
+                expected_deployment_scope_digest
+            ),
+            expected_profile_head_digest=expected_profile_head_digest,
+            expected_policy_head_digest=expected_policy_head_digest,
+            expected_resource_head_digest=expected_resource_head_digest,
+            expected_domain_head_digest=expected_domain_head_digest,
+            expected_environment_head_digest=expected_environment_head_digest,
+            expected_charter_ceiling_digest=expected_charter_ceiling_digest,
+            expected_expressed_ceiling_digest=expected_expressed_ceiling_digest,
+        )
+        expected = self._expected_activation_cas_tuple(
+            expected_current_bundle_digest=expected_current_bundle_digest,
+            expected_current_activation_head_digest=(
+                expected_current_activation_head_digest
+            ),
+            expected_current_store_revision=expected_current_store_revision,
+        )
+        scope = bundle["activation_scope"]
+        revision = int(bundle["store_revision"])
+        head = bundle["head"]
+        now = _utcnow()
+
+        try:
+            with self._lock:
+                if self._in_transaction:
+                    raise ControlPlaneError(
+                        "activation pointer CAS cannot nest in transaction()"
+                    )
+                with self.transaction():
+                    current = self._select_current_activation_pointer_inplace(
+                        scope["activation_scope_digest"]
+                    )
+                    if current is None:
+                        if revision != 0 or expected is not None:
+                            raise ActivationSnapshotCASConflict(
+                                "bootstrap_precondition",
+                                "new activation scope requires revision zero "
+                                "and an empty expected-current tuple",
+                            )
+                        self._conn.execute(
+                            """
+                            INSERT INTO activation_scopes(
+                                activation_scope_digest,
+                                deployment_scope_digest,
+                                cell_id,
+                                created_at
+                            ) VALUES (?, ?, ?, ?)
+                            """,
+                            (
+                                scope["activation_scope_digest"],
+                                scope["deployment_scope_digest"],
+                                scope["cell_id"],
+                                now,
+                            ),
+                        )
+                    else:
+                        if (
+                            current["deployment_scope_digest"]
+                            != scope["deployment_scope_digest"]
+                            or current["cell_id"] != scope["cell_id"]
+                        ):
+                            raise ControlPlaneError(
+                                "activation scope registry binding is corrupt"
+                            )
+                        if current["scope_status"] != "active":
+                            raise ActivationSnapshotCASConflict(
+                                "scope_retired",
+                                "retired activation scope cannot advance",
+                            )
+                        if current["id"] is None:
+                            if revision != 0 or expected is not None:
+                                raise ActivationSnapshotCASConflict(
+                                    "bootstrap_precondition",
+                                    "empty activation scope requires revision "
+                                    "zero and no expected current tuple",
+                                )
+                        else:
+                            if expected is None:
+                                raise ActivationSnapshotCASConflict(
+                                    "already_initialized",
+                                    "activation scope already has a current pointer",
+                                )
+                            actual = (
+                                str(current["bundle_digest"]),
+                                str(current["activation_head_digest"]),
+                                int(current["store_revision"]),
+                            )
+                            if actual != expected:
+                                raise ActivationSnapshotCASConflict(
+                                    "stale_current_snapshot",
+                                    "expected current activation pointer is stale",
+                                )
+                            if revision != actual[2] + 1:
+                                raise ActivationSnapshotCASConflict(
+                                    "revision_step",
+                                    "activation store revision must advance by one",
+                                )
+                            if bundle["previous_bundle_digest"] != actual[0]:
+                                raise ActivationSnapshotCASConflict(
+                                    "previous_bundle_binding",
+                                    "bundle predecessor is not the current bundle",
+                                )
+                            if head["previous_head_digest"] != actual[1]:
+                                raise ActivationSnapshotCASConflict(
+                                    "previous_head_binding",
+                                    "activation predecessor is not current head",
+                                )
+
+                    cursor = self._conn.execute(
+                        """
+                        INSERT INTO activation_snapshot_pointers(
+                            activation_scope_digest,
+                            bundle_digest,
+                            store_revision,
+                            previous_bundle_digest,
+                            activation_head_digest,
+                            previous_activation_head_digest,
+                            expression_context_digest,
+                            expected_profile_head_digest,
+                            expected_policy_head_digest,
+                            expected_resource_head_digest,
+                            expected_domain_head_digest,
+                            expected_environment_head_digest,
+                            charter_ceiling_digest,
+                            expressed_ceiling_digest,
+                            created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            scope["activation_scope_digest"],
+                            bundle["bundle_digest"],
+                            revision,
+                            bundle["previous_bundle_digest"],
+                            head["head_digest"],
+                            head["previous_head_digest"],
+                            head["expression_context_digest"],
+                            bundle["expected_profile_head_digest"],
+                            bundle["expected_policy_head_digest"],
+                            bundle["expected_resource_head_digest"],
+                            bundle["expected_domain_head_digest"],
+                            bundle["expected_environment_head_digest"],
+                            bundle["charter_ceiling"]["ceiling_digest"],
+                            bundle["expressed_ceiling"]["ceiling_digest"],
+                            now,
+                        ),
+                    )
+                    row = self._select_activation_pointer_by_id_inplace(
+                        int(cursor.lastrowid)
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise ControlPlaneError(
+                f"activation pointer CAS insert failed: {exc}"
+            ) from exc
+        return self._row_to_activation_snapshot_pointer(row)
+
+    def retire_activation_scope_cas(
+        self,
+        *,
+        deployment_scope_digest: str,
+        cell_identity: object,
+        expected_current_bundle_digest: str,
+        expected_current_activation_head_digest: str,
+        expected_current_store_revision: int,
+        reason_digest: str,
+    ) -> ActivationScopeTombstoneRecord:
+        """Irreversibly tombstone a scope under its exact current pointer.
+
+        This is structural persistence only.  Separate authenticated
+        retirement authority is required before invocation.
+        """
+
+        scope = self._activation_scope_from_source(
+            deployment_scope_digest=deployment_scope_digest,
+            cell_identity=cell_identity,
+        )
+        expected = self._expected_activation_cas_tuple(
+            expected_current_bundle_digest=expected_current_bundle_digest,
+            expected_current_activation_head_digest=(
+                expected_current_activation_head_digest
+            ),
+            expected_current_store_revision=expected_current_store_revision,
+        )
+        if expected is None:  # defensive: parameters are non-optional
+            raise ControlPlaneError("retirement requires an expected pointer")
+        reason = _activation_digest(reason_digest, "reason_digest")
+        retired_at = _utcnow()
+
+        try:
+            with self._lock:
+                if self._in_transaction:
+                    raise ControlPlaneError(
+                        "activation scope retirement cannot nest in transaction()"
+                    )
+                with self.transaction():
+                    current = self._select_current_activation_pointer_inplace(
+                        scope["activation_scope_digest"]
+                    )
+                    if current is None or current["id"] is None:
+                        raise ActivationSnapshotCASConflict(
+                            "scope_missing",
+                            "activation scope has no current pointer",
+                        )
+                    if current["scope_status"] != "active":
+                        raise ActivationSnapshotCASConflict(
+                            "scope_retired",
+                            "activation scope is already retired",
+                        )
+                    actual = (
+                        str(current["bundle_digest"]),
+                        str(current["activation_head_digest"]),
+                        int(current["store_revision"]),
+                    )
+                    if actual != expected:
+                        raise ActivationSnapshotCASConflict(
+                            "stale_current_snapshot",
+                            "expected current activation pointer is stale",
+                        )
+                    self._conn.execute(
+                        """
+                        INSERT INTO activation_scope_tombstones(
+                            activation_scope_digest,
+                            reason_digest,
+                            retired_at
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (
+                            scope["activation_scope_digest"],
+                            reason,
+                            retired_at,
+                        ),
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise ControlPlaneError(
+                f"activation scope retirement failed: {exc}"
+            ) from exc
+        return ActivationScopeTombstoneRecord(
+            activation_scope_digest=scope["activation_scope_digest"],
+            reason_digest=reason,
+            retired_at=retired_at,
+        )
+
     # -- schema_meta key/value helpers (general; used by Phase 18F)----
 
     def get_meta(self, key: str) -> Optional[str]:
@@ -2630,6 +3206,42 @@ class ControlPlaneDB:
             invariant_failed=row["invariant_failed"],
             rollback_reason=row["rollback_reason"],
             evidence=row["evidence"],
+            created_at=str(row["created_at"]),
+        )
+
+    # -- v5 row converter ----------------------------------------------
+
+    @staticmethod
+    def _row_to_activation_snapshot_pointer(
+        row: sqlite3.Row,
+    ) -> ActivationSnapshotPointerRecord:
+        return ActivationSnapshotPointerRecord(
+            id=int(row["id"]),
+            activation_scope_digest=str(row["activation_scope_digest"]),
+            deployment_scope_digest=str(row["deployment_scope_digest"]),
+            cell_id=str(row["cell_id"]),
+            bundle_digest=str(row["bundle_digest"]),
+            store_revision=int(row["store_revision"]),
+            previous_bundle_digest=str(row["previous_bundle_digest"]),
+            activation_head_digest=str(row["activation_head_digest"]),
+            previous_activation_head_digest=str(
+                row["previous_activation_head_digest"]
+            ),
+            expression_context_digest=str(row["expression_context_digest"]),
+            expected_profile_head_digest=str(
+                row["expected_profile_head_digest"]
+            ),
+            expected_policy_head_digest=str(row["expected_policy_head_digest"]),
+            expected_resource_head_digest=str(
+                row["expected_resource_head_digest"]
+            ),
+            expected_domain_head_digest=str(row["expected_domain_head_digest"]),
+            expected_environment_head_digest=str(
+                row["expected_environment_head_digest"]
+            ),
+            charter_ceiling_digest=str(row["charter_ceiling_digest"]),
+            expressed_ceiling_digest=str(row["expressed_ceiling_digest"]),
+            scope_status=str(row["scope_status"]),
             created_at=str(row["created_at"]),
         )
 

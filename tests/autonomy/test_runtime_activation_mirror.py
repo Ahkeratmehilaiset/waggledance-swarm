@@ -321,6 +321,7 @@ def test_full_background_queue_drops_observation_not_production(monkeypatch) -> 
     result = runtime.handle_query("queue saturation")
     snapshot = runtime.activation_mirror_snapshot()
     assert result["executed"] is True
+    assert runtime.wait_for_activation_mirror(0.01) is False
     assert snapshot["queue_drop_count"] == 1
     assert snapshot["report"]["sample_count"] == 0
 
@@ -342,7 +343,75 @@ def test_dispatcher_exception_cannot_replace_completed_response(monkeypatch) -> 
     result = runtime.handle_query("dispatch failure isolation")
     snapshot = runtime.activation_mirror_snapshot()
     assert result["executed"] is True
+    assert runtime.wait_for_activation_mirror(0.01) is False
     assert snapshot["dispatch_failure_count"] == 1
     assert snapshot["queue_drop_count"] == 0
     assert snapshot["report"]["sample_count"] == 0
     assert "MUST_NOT_LEAK" not in repr(snapshot)
+
+
+def test_concurrent_submissions_track_actual_latest_enqueued_event(
+    monkeypatch,
+) -> None:
+    import waggledance.core.autonomy.runtime as runtime_module
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    returned_events = [threading.Event(), threading.Event()]
+    enqueue_order = []
+    call_lock = threading.Lock()
+    call_count = 0
+
+    class _CoordinatedDispatcher:
+        @staticmethod
+        def submit(_callback):
+            nonlocal call_count
+            with call_lock:
+                call_index = call_count
+                call_count += 1
+            if call_index == 0:
+                first_entered.set()
+                assert release_first.wait(2.0) is True
+            enqueue_order.append(returned_events[call_index])
+            return returned_events[call_index]
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_activation_mirror_dispatcher",
+        lambda: _CoordinatedDispatcher(),
+    )
+    runtime, _ = _runtime(enabled=True, provider=_activation_snapshot)
+    first = threading.Thread(
+        target=runtime._schedule_activation_mirror,
+        args=("detect.fixture",),
+    )
+    second = threading.Thread(
+        target=runtime._schedule_activation_mirror,
+        args=("detect.fixture",),
+    )
+    first.start()
+    assert first_entered.wait(1.0) is True
+    second.start()
+    wait_results = []
+    waiter_done = threading.Event()
+
+    def wait_while_submit_is_pending():
+        wait_results.append(runtime.wait_for_activation_mirror(0.01))
+        waiter_done.set()
+
+    waiter = threading.Thread(target=wait_while_submit_is_pending)
+    waiter.start()
+    assert waiter_done.wait(0.05) is False
+    release_first.set()
+    first.join(2.0)
+    second.join(2.0)
+    waiter.join(2.0)
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert waiter.is_alive() is False
+    assert wait_results == [False]
+    assert len(enqueue_order) == 2
+    assert runtime._activation_mirror_last_completion is enqueue_order[-1]
+    assert runtime.wait_for_activation_mirror(0.01) is False
+    enqueue_order[-1].set()
+    assert runtime.wait_for_activation_mirror(0.1) is True

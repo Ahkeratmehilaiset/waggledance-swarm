@@ -23,6 +23,7 @@ import queue
 import threading
 import time
 from collections import deque
+from itertools import islice
 from typing import Any, Callable, Dict, List, Optional
 
 from waggledance.core.actions.action_bus import SafeActionBus
@@ -52,6 +53,94 @@ except ImportError:
     AuditEntry = None
 
 log = logging.getLogger("waggledance.autonomy.runtime")
+
+_OBSERVER_RESPONSE_MAX_DEPTH = 32
+_OBSERVER_RESPONSE_MAX_NODES = 8192
+
+
+class _ObserverResponseDetachError(ValueError):
+    """A response cannot be inertly detached for same-process observers."""
+
+
+def _detach_observer_response(value: object) -> object:
+    """Copy one bounded exact-built-in tree without invoking user hooks."""
+
+    nodes = 0
+    ancestors: set[int] = set()
+
+    def detach(item: object, depth: int) -> object:
+        nonlocal nodes
+        nodes += 1
+        if nodes > _OBSERVER_RESPONSE_MAX_NODES:
+            raise _ObserverResponseDetachError("response node bound exceeded")
+        if depth > _OBSERVER_RESPONSE_MAX_DEPTH:
+            raise _ObserverResponseDetachError("response depth bound exceeded")
+        item_type = type(item)
+        if item is None or item_type in (bool, int, float, str, bytes):
+            return item
+        if item_type not in (dict, list, tuple):
+            raise _ObserverResponseDetachError("unsupported response value")
+        identity = id(item)
+        if identity in ancestors:
+            raise _ObserverResponseDetachError("cyclic response refused")
+        ancestors.add(identity)
+        try:
+            if item_type is dict:
+                length = dict.__len__(item)
+                remaining_pairs = (
+                    _OBSERVER_RESPONSE_MAX_NODES - nodes
+                ) // 2
+                if length > remaining_pairs:
+                    raise _ObserverResponseDetachError(
+                        "response node bound exceeded"
+                    )
+                try:
+                    pairs = tuple(
+                        islice(dict.items(item), remaining_pairs + 1)
+                    )
+                except RuntimeError:
+                    raise _ObserverResponseDetachError(
+                        "response changed during detachment"
+                    ) from None
+                if len(pairs) > remaining_pairs:
+                    raise _ObserverResponseDetachError(
+                        "response node bound exceeded"
+                    )
+                if dict.__len__(item) != length or len(pairs) != length:
+                    raise _ObserverResponseDetachError(
+                        "response changed during detachment"
+                    )
+                detached: dict[str, object] = {}
+                for key, nested in pairs:
+                    if type(key) is not str:
+                        raise _ObserverResponseDetachError(
+                            "response key must be an exact string"
+                        )
+                    detached[key] = detach(nested, depth + 1)
+                return detached
+            length = len(item)
+            if nodes + length > _OBSERVER_RESPONSE_MAX_NODES:
+                raise _ObserverResponseDetachError(
+                    "response node bound exceeded"
+                )
+            try:
+                copied = [
+                    detach(item[index], depth + 1)
+                    for index in range(length)
+                ]
+            except IndexError:
+                raise _ObserverResponseDetachError(
+                    "response changed during detachment"
+                ) from None
+            if len(item) != length:
+                raise _ObserverResponseDetachError(
+                    "response changed during detachment"
+                )
+            return copied if item_type is list else tuple(copied)
+        finally:
+            ancestors.remove(identity)
+
+    return detach(value, 0)
 
 
 import concurrent.futures
@@ -179,6 +268,14 @@ class AutonomyRuntime:
         runtime_receipt_sink: Optional[Callable[[dict[str, Any]], Any]] = None,
         enable_activation_mirror: bool = False,
         activation_snapshot_provider: Optional[Callable[[], object]] = None,
+        enable_attested_consensus_shadow: bool = False,
+        attested_consensus_material_provider: Optional[
+            Callable[[], object]
+        ] = None,
+        attested_consensus_expectation_provider: Optional[
+            Callable[[], object]
+        ] = None,
+        attested_consensus_key_lookup: Optional[Callable[..., object]] = None,
     ):
         self.profile = profile
         self.runtime_receipt_sink = runtime_receipt_sink
@@ -269,8 +366,45 @@ class AutonomyRuntime:
         self._activation_mirror_verification_failures = 0
         self._activation_mirror_queue_drops = 0
         self._activation_mirror_dispatch_failures = 0
+        self._activation_mirror_response_detachment_failures = 0
         self._activation_mirror_lock = threading.Lock()
+        self._activation_mirror_dispatch_order_lock = threading.Lock()
+        self._activation_mirror_submission_attempted = False
+        self._activation_mirror_last_submission_accepted = False
         self._activation_mirror_last_completion: Optional[threading.Event] = None
+        # Attested-consensus shadow: also opt-in, off-path, and advisory only.
+        # Materials, independently pinned expectations, and key lookup are
+        # separate trust seams.  The callbacks execute in this process and
+        # therefore must be trusted, side-effect-free adapters; the data fence
+        # below is not a Python code-isolation boundary.  No runtime label or
+        # production response is used to synthesize their returned data.
+        self._attested_consensus_shadow_enabled = (
+            enable_attested_consensus_shadow is True
+        )
+        self._attested_consensus_material_provider = (
+            attested_consensus_material_provider
+        )
+        self._attested_consensus_expectation_provider = (
+            attested_consensus_expectation_provider
+        )
+        self._attested_consensus_key_lookup = attested_consensus_key_lookup
+        self._attested_consensus_shadow_receipts: deque = deque(maxlen=256)
+        self._attested_consensus_material_provider_failures = 0
+        self._attested_consensus_expectation_provider_failures = 0
+        self._attested_consensus_key_lookup_configuration_failures = 0
+        self._attested_consensus_expectation_drifts = 0
+        self._attested_consensus_evaluation_failures = 0
+        self._attested_consensus_evaluation_successes = 0
+        self._attested_consensus_queue_drops = 0
+        self._attested_consensus_dispatch_failures = 0
+        self._attested_consensus_response_detachment_failures = 0
+        self._attested_consensus_shadow_lock = threading.Lock()
+        self._attested_consensus_dispatch_order_lock = threading.Lock()
+        self._attested_consensus_submission_attempted = False
+        self._attested_consensus_last_submission_accepted = False
+        self._attested_consensus_shadow_last_completion: Optional[
+            threading.Event
+        ] = None
         self._graph_health_logged = False
         self._executor_count = 0
         try:
@@ -556,32 +690,73 @@ class AutonomyRuntime:
     def _schedule_activation_mirror(self, capability_id: str) -> None:
         """Enqueue a frozen identifier without waiting for provider work."""
 
-        try:
-            completion = _activation_mirror_dispatcher().submit(
-                lambda: self._activation_mirror_safe(capability_id)
-            )
-        except Exception:  # mirror dispatch must never replace the response
+        with self._activation_mirror_dispatch_order_lock:
+            try:
+                completion = _activation_mirror_dispatcher().submit(
+                    lambda: self._activation_mirror_safe(capability_id)
+                )
+            except Exception:  # never replace the production response
+                with self._activation_mirror_lock:
+                    self._activation_mirror_submission_attempted = True
+                    self._activation_mirror_last_submission_accepted = False
+                    self._activation_mirror_last_completion = None
+                    self._activation_mirror_dispatch_failures += 1
+                return
             with self._activation_mirror_lock:
-                self._activation_mirror_dispatch_failures += 1
-            return
-        with self._activation_mirror_lock:
-            if completion is None:
-                self._activation_mirror_queue_drops += 1
-            else:
+                self._activation_mirror_submission_attempted = True
+                self._activation_mirror_last_submission_accepted = (
+                    completion is not None
+                )
                 self._activation_mirror_last_completion = completion
+                if completion is None:
+                    self._activation_mirror_queue_drops += 1
 
-    def _return_with_activation_mirror(
-        self, response: Dict[str, Any], capability_id: str
+    def _return_with_shadow_observers(
+        self, response: Dict[str, Any], capability_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Enqueue only after ``response`` and its production outcome exist."""
+        """Enqueue applicable observers after a production outcome exists."""
 
-        if self._activation_mirror_enabled:
+        activation_requested = (
+            self._activation_mirror_enabled and capability_id is not None
+        )
+        consensus_requested = self._attested_consensus_shadow_enabled
+        if not activation_requested and not consensus_requested:
+            return response
+        try:
+            detached_response = _detach_observer_response(response)
+        except Exception:
+            # Never start same-process callbacks while returning aliased
+            # production state.  The exact-built-in copier invokes no payload
+            # hooks; concurrent mutation/allocation failures are counted and
+            # the original response remains authoritative.
+            if activation_requested:
+                with self._activation_mirror_lock:
+                    self._activation_mirror_response_detachment_failures += 1
+                    self._activation_mirror_submission_attempted = True
+                    self._activation_mirror_last_submission_accepted = False
+                    self._activation_mirror_last_completion = None
+            if consensus_requested:
+                with self._attested_consensus_shadow_lock:
+                    self._attested_consensus_response_detachment_failures += 1
+                    self._attested_consensus_submission_attempted = True
+                    self._attested_consensus_last_submission_accepted = False
+                    self._attested_consensus_shadow_last_completion = None
+            log.debug("shadow observer response detachment failed; skipped")
+            return response
+
+        if activation_requested:
             try:
                 self._schedule_activation_mirror(capability_id)
             except Exception:  # defense in depth for the observational lane
                 with self._activation_mirror_lock:
                     self._activation_mirror_dispatch_failures += 1
-        return response
+        if consensus_requested:
+            try:
+                self._schedule_attested_consensus_shadow()
+            except Exception:
+                with self._attested_consensus_shadow_lock:
+                    self._attested_consensus_dispatch_failures += 1
+        return detached_response
 
     def wait_for_activation_mirror(self, timeout: float = 1.0) -> bool:
         """Wait for the latest queued observation (diagnostics/tests only)."""
@@ -591,9 +766,16 @@ class AutonomyRuntime:
             or not 0 <= float(timeout) <= 60.0
         ):
             return False
-        with self._activation_mirror_lock:
-            completion = self._activation_mirror_last_completion
-        return True if completion is None else completion.wait(float(timeout))
+        with self._activation_mirror_dispatch_order_lock:
+            with self._activation_mirror_lock:
+                attempted = self._activation_mirror_submission_attempted
+                accepted = self._activation_mirror_last_submission_accepted
+                completion = self._activation_mirror_last_completion
+        if not attempted:
+            return True
+        if not accepted or completion is None:
+            return False
+        return completion.wait(float(timeout))
 
     def activation_mirror_snapshot(self) -> dict[str, Any]:
         """Return the bounded, digest-bound advisory mirror aggregate."""
@@ -608,6 +790,9 @@ class AutonomyRuntime:
             verification_failures = self._activation_mirror_verification_failures
             queue_drops = self._activation_mirror_queue_drops
             dispatch_failures = self._activation_mirror_dispatch_failures
+            detachment_failures = (
+                self._activation_mirror_response_detachment_failures
+            )
         return {
             "enabled": self._activation_mirror_enabled,
             "provider_configured": callable(self._activation_snapshot_provider),
@@ -615,7 +800,187 @@ class AutonomyRuntime:
             "verification_failure_count": verification_failures,
             "queue_drop_count": queue_drops,
             "dispatch_failure_count": dispatch_failures,
+            "response_detachment_failure_count": detachment_failures,
             "report": summarize_activation_mirror(records),
+        }
+
+    def _attested_consensus_shadow_safe(self) -> None:
+        """Evaluate one data-fenced observation outside the hot path.
+
+        Injected callables are trusted same-process code.  Pre/post expectation
+        reads fence their returned data; they cannot sandbox callback effects.
+        """
+
+        material_provider = self._attested_consensus_material_provider
+        expectation_provider = self._attested_consensus_expectation_provider
+        key_lookup = self._attested_consensus_key_lookup
+        if not callable(material_provider):
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_material_provider_failures += 1
+            return
+        if not callable(expectation_provider):
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_expectation_provider_failures += 1
+            return
+        if not callable(key_lookup):
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_key_lookup_configuration_failures += 1
+            return
+
+        from waggledance.core.orchestration.attested_consensus_shadow import (
+            AttestedConsensusShadowError,
+            evaluate_attested_consensus_shadow_request,
+            parse_attested_consensus_shadow_expectations,
+        )
+
+        try:
+            expected_before = parse_attested_consensus_shadow_expectations(
+                expectation_provider()
+            )
+        except BaseException:
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_expectation_provider_failures += 1
+            log.debug("attested consensus expectation provider failed; ignored")
+            return
+        try:
+            materials = material_provider()
+        except BaseException:
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_material_provider_failures += 1
+            log.debug("attested consensus material provider failed; ignored")
+            return
+        try:
+            receipt = evaluate_attested_consensus_shadow_request(
+                materials,
+                expected_bindings=expected_before,
+                trusted_key_lookup=key_lookup,
+            )
+        except AttestedConsensusShadowError:
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_evaluation_failures += 1
+            log.debug("attested consensus shadow evaluation failed; ignored")
+            return
+        except BaseException:
+            # A bug or hostile callable still cannot replace production output.
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_evaluation_failures += 1
+            log.debug("attested consensus shadow boundary failed; ignored")
+            return
+        try:
+            expected_after = parse_attested_consensus_shadow_expectations(
+                expectation_provider()
+            )
+        except BaseException:
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_expectation_provider_failures += 1
+            log.debug("attested consensus expectation recheck failed; ignored")
+            return
+        if expected_after != expected_before:
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_expectation_drifts += 1
+            return
+
+        with self._attested_consensus_shadow_lock:
+            self._attested_consensus_shadow_receipts.append(receipt)
+            self._attested_consensus_evaluation_successes += 1
+
+    def _schedule_attested_consensus_shadow(self) -> None:
+        """Enqueue one provider snapshot without delaying production."""
+
+        with self._attested_consensus_dispatch_order_lock:
+            try:
+                completion = _activation_mirror_dispatcher().submit(
+                    self._attested_consensus_shadow_safe
+                )
+            except Exception:
+                with self._attested_consensus_shadow_lock:
+                    self._attested_consensus_submission_attempted = True
+                    self._attested_consensus_last_submission_accepted = False
+                    self._attested_consensus_shadow_last_completion = None
+                    self._attested_consensus_dispatch_failures += 1
+                return
+            with self._attested_consensus_shadow_lock:
+                self._attested_consensus_submission_attempted = True
+                self._attested_consensus_last_submission_accepted = (
+                    completion is not None
+                )
+                self._attested_consensus_shadow_last_completion = completion
+                if completion is None:
+                    self._attested_consensus_queue_drops += 1
+
+    def wait_for_attested_consensus_shadow(self, timeout: float = 1.0) -> bool:
+        """Wait for the latest shadow evaluation (diagnostics/tests only)."""
+
+        if (
+            type(timeout) not in (int, float)
+            or not 0 <= float(timeout) <= 60.0
+        ):
+            return False
+        with self._attested_consensus_dispatch_order_lock:
+            with self._attested_consensus_shadow_lock:
+                attempted = self._attested_consensus_submission_attempted
+                accepted = self._attested_consensus_last_submission_accepted
+                completion = self._attested_consensus_shadow_last_completion
+        if not attempted:
+            return True
+        if not accepted or completion is None:
+            return False
+        return completion.wait(float(timeout))
+
+    def attested_consensus_shadow_snapshot(self) -> dict[str, Any]:
+        """Return sanitized counters and a content-addressed receipt report."""
+
+        from waggledance.core.orchestration.attested_consensus_shadow import (
+            summarize_attested_consensus_shadow,
+        )
+
+        with self._attested_consensus_shadow_lock:
+            receipts = list(self._attested_consensus_shadow_receipts)
+            material_failures = (
+                self._attested_consensus_material_provider_failures
+            )
+            expectation_failures = (
+                self._attested_consensus_expectation_provider_failures
+            )
+            key_lookup_failures = (
+                self._attested_consensus_key_lookup_configuration_failures
+            )
+            expectation_drifts = self._attested_consensus_expectation_drifts
+            evaluation_failures = self._attested_consensus_evaluation_failures
+            evaluation_successes = self._attested_consensus_evaluation_successes
+            queue_drops = self._attested_consensus_queue_drops
+            dispatch_failures = self._attested_consensus_dispatch_failures
+            detachment_failures = (
+                self._attested_consensus_response_detachment_failures
+            )
+        return {
+            "enabled": self._attested_consensus_shadow_enabled,
+            "material_provider_configured": callable(
+                self._attested_consensus_material_provider
+            ),
+            "expectation_provider_configured": callable(
+                self._attested_consensus_expectation_provider
+            ),
+            "trusted_key_lookup_configured": callable(
+                self._attested_consensus_key_lookup
+            ),
+            "material_provider_failure_count": material_failures,
+            "expectation_provider_failure_count": expectation_failures,
+            "key_lookup_configuration_failure_count": key_lookup_failures,
+            "expectation_drift_count": expectation_drifts,
+            "evaluation_failure_count": evaluation_failures,
+            "evaluation_success_count": evaluation_successes,
+            "queue_drop_count": queue_drops,
+            "dispatch_failure_count": dispatch_failures,
+            "response_detachment_failure_count": detachment_failures,
+            "activation_performed": False,
+            "current_response_routing_influence_applied": False,
+            "current_production_decision_unchanged": True,
+            "authority_granted": False,
+            "provider_execution_boundary": "trusted_same_process",
+            "provider_side_effect_isolation_enforced": False,
+            "future_query_isolation_guaranteed": False,
+            "report": summarize_attested_consensus_shadow(receipts),
         }
 
     def _record_query_runtime_receipt(
@@ -870,20 +1235,22 @@ class AutonomyRuntime:
             from waggledance.core.autonomy.resource_kernel import AdmissionDecision
             admission = self.admission_control.check(work_type="query")
             if admission.decision == AdmissionDecision.REJECT:
-                return {
+                response = {
                     "intent": "unknown",
                     "error": f"Rejected: {admission.reason}",
                     "deferred": False,
                     "elapsed_ms": round((time.time() - t0) * 1000, 2),
                 }
+                return self._return_with_shadow_observers(response)
             elif admission.decision == AdmissionDecision.DEFER:
-                return {
+                response = {
                     "intent": "unknown",
                     "error": f"Deferred: {admission.reason}",
                     "deferred": True,
                     "wait_ms": admission.wait_ms,
                     "elapsed_ms": round((time.time() - t0) * 1000, 2),
                 }
+                return self._return_with_shadow_observers(response)
 
         # ResourceGuard — OOM protection
         if self.resource_guard:
@@ -1027,7 +1394,7 @@ class AutonomyRuntime:
                 ),
                 "elapsed_ms": round((time.time() - t0) * 1000, 2),
             }
-            return self._return_with_activation_mirror(
+            return self._return_with_shadow_observers(
                 response, activation_mirror_capability_id
             )
 
@@ -1050,7 +1417,7 @@ class AutonomyRuntime:
             response["low_risk_autonomy_hint_kind"] = context.get(
                 "low_risk_autonomy_hint_kind"
             )
-            return self._return_with_activation_mirror(
+            return self._return_with_shadow_observers(
                 response, activation_mirror_capability_id
             )
 
@@ -1274,7 +1641,7 @@ class AutonomyRuntime:
         )
         if runtime_receipt is not None:
             result["runtime_receipt"] = runtime_receipt
-        return self._return_with_activation_mirror(
+        return self._return_with_shadow_observers(
             result, activation_mirror_capability_id
         )
 

@@ -32,8 +32,11 @@ def test_policy_is_deterministic_exact_and_authority_free() -> None:
     assert first.consensus_evaluation_schema == EVALUATION_SCHEMA
     assert first.attestation_scheme == ATTESTATION_SCHEME
     assert first.require_direct_log_append is True
+    assert first.require_empty_target_at_base is True
     assert first.require_complete_committed_source_set is True
     assert first.require_trusted_provenance is True
+    assert first.require_signer_identity_correlation is True
+    assert first.require_reviewer_scope_correlation is True
     assert first.stop_latched_blocks is True
     assert first.veto_latched_blocks is True
     assert first.observer_only is True
@@ -41,6 +44,7 @@ def test_policy_is_deterministic_exact_and_authority_free() -> None:
     assert first.authority_granted is False
     assert first.activation_performed is False
     assert first.routing_influence_applied is False
+    assert P.parse_consensus_admission_policy(first) == first.to_mapping()
     assert P.verify_consensus_admission_policy(first.to_mapping()) == (True, None)
 
 
@@ -59,11 +63,26 @@ def test_policy_digest_binds_threshold_and_every_bound() -> None:
     [
         ("require_direct_log_append", False, "require_direct_log_append"),
         (
+            "require_empty_target_at_base",
+            False,
+            "require_empty_target_at_base",
+        ),
+        (
             "require_complete_committed_source_set",
             False,
             "require_complete_committed_source_set",
         ),
         ("require_trusted_provenance", False, "require_trusted_provenance"),
+        (
+            "require_signer_identity_correlation",
+            False,
+            "require_signer_identity_correlation",
+        ),
+        (
+            "require_reviewer_scope_correlation",
+            False,
+            "require_reviewer_scope_correlation",
+        ),
         ("stop_latched_blocks", False, "stop_latched_blocks"),
         ("veto_latched_blocks", False, "veto_latched_blocks"),
         ("observer_only", False, "observer_only"),

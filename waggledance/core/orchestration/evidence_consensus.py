@@ -190,6 +190,8 @@ def _wire_dict(value: object, *, exact_key_count: int) -> Optional[dict]:
         # refusal without copying the oversized input.
         return {}
     snapshot = value.copy()
+    if dict.__len__(snapshot) > exact_key_count:
+        return {}
     if any(type(key) is not str for key in snapshot):
         return None
     return snapshot
@@ -207,7 +209,10 @@ def _wire_list(value: object, *, maximum: int) -> Optional[list]:
         return None
     if list.__len__(value) > maximum:
         return None
-    return value.copy()
+    snapshot = value[: maximum + 1]
+    if list.__len__(snapshot) > maximum:
+        return None
+    return snapshot
 
 
 def _require_digest(value: object, label: str) -> str:
@@ -647,8 +652,10 @@ def evaluate_inhibitory_consensus(
         invalid_reasons.add("evidence:not_sequence")
         evidence_input = []
     else:
-        # Inspect the exact built-in's O(1) length before copying it.
-        actual_evidence_count = list.__len__(evidence_records)
+        # A bounded slice prevents concurrent growth from expanding the owned
+        # aggregate beyond the protocol ceiling during the boundary copy.
+        evidence_snapshot = evidence_records[: MAX_EVIDENCE_RECORDS + 1]
+        actual_evidence_count = list.__len__(evidence_snapshot)
         submitted_evidence_count = min(
             actual_evidence_count, MAX_EVIDENCE_RECORDS + 1
         )
@@ -657,7 +664,7 @@ def evaluate_inhibitory_consensus(
             invalid_reasons.add("evidence:count_exceeded")
             evidence_input = []
         else:
-            evidence_input = evidence_records.copy()
+            evidence_input = evidence_snapshot
 
     evidence_by_digest: dict[str, dict[str, str]] = {}
     for raw_evidence in evidence_input:
@@ -680,15 +687,15 @@ def evaluate_inhibitory_consensus(
         invalid_reasons.add("ballot:not_sequence")
         ballot_input = []
     else:
-        # Inspect the exact built-in's O(1) length before copying it.
-        actual_ballot_count = list.__len__(ballots)
+        ballot_snapshot = ballots[: MAX_BALLOTS + 1]
+        actual_ballot_count = list.__len__(ballot_snapshot)
         submitted_ballot_count = min(actual_ballot_count, MAX_BALLOTS + 1)
         if actual_ballot_count > MAX_BALLOTS:
             invalid_item_count += 1
             invalid_reasons.add("ballot:count_exceeded")
             ballot_input = []
         else:
-            ballot_input = ballots.copy()
+            ballot_input = ballot_snapshot
 
     ballot_by_digest: dict[str, dict[str, object]] = {}
     for raw_ballot in ballot_input:
@@ -936,6 +943,16 @@ def _parse_consensus_evaluation_structure(value: object) -> dict[str, object]:
     for ballot_type, count in counts.items():
         if count != len(group_lists[f"{ballot_type}_group_digests"]):
             raise EvidenceConsensusError(f"{ballot_type} group count mismatch")
+    if counts["stop"] > 0 and not stop_evidence:
+        raise EvidenceConsensusError("stop group lacks retained stop evidence")
+    if counts["veto"] > 0 and not veto_evidence:
+        raise EvidenceConsensusError("veto group lacks retained veto evidence")
+    if veto_evidence and counts["veto"] == 0:
+        raise EvidenceConsensusError("retained veto evidence lacks a veto group")
+    if stop_evidence and counts["stop"] + counts["veto"] == 0:
+        raise EvidenceConsensusError(
+            "retained stop evidence lacks a stop-or-veto group"
+        )
     all_group_digests = [
         digest for values in group_lists.values() for digest in values
     ]
@@ -1021,6 +1038,24 @@ def _parse_consensus_evaluation_structure(value: object) -> dict[str, object]:
     return evaluation
 
 
+def parse_consensus_evaluation_structure(value: object) -> dict[str, object]:
+    """Return a private, structurally verified aggregate snapshot.
+
+    This proves only internal consistency and content addressing.  It does not
+    authenticate or prove the existence of source evidence; callers that have
+    the sources must still use :func:`verify_consensus_evaluation`.
+    """
+
+    try:
+        return _parse_consensus_evaluation_structure(value)
+    except EvidenceConsensusError:
+        raise
+    except (TypeError, ValueError):
+        raise EvidenceConsensusError(
+            "evaluation contains a non-canonical value"
+        ) from None
+
+
 def verify_consensus_evaluation(
     value: object,
     *,
@@ -1041,7 +1076,7 @@ def verify_consensus_evaluation(
     """
 
     try:
-        parsed = _parse_consensus_evaluation_structure(value)
+        parsed = parse_consensus_evaluation_structure(value)
         recomputed = evaluate_inhibitory_consensus(
             query_digest=query_digest,
             decision_digest=decision_digest,

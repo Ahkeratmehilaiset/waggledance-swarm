@@ -34,8 +34,11 @@ CONSENSUS_ADMISSION_POLICY_DIGEST_DOMAIN = (
 
 _SAFETY_LAWS = {
     "require_direct_log_append": True,
+    "require_empty_target_at_base": True,
     "require_complete_committed_source_set": True,
     "require_trusted_provenance": True,
+    "require_signer_identity_correlation": True,
+    "require_reviewer_scope_correlation": True,
     "stop_latched_blocks": True,
     "veto_latched_blocks": True,
 }
@@ -193,8 +196,11 @@ class ConsensusAdmissionPolicyV1:
     consensus_evaluation_schema: str = EVALUATION_SCHEMA
     attestation_scheme: str = ATTESTATION_SCHEME
     require_direct_log_append: bool = True
+    require_empty_target_at_base: bool = True
     require_complete_committed_source_set: bool = True
     require_trusted_provenance: bool = True
+    require_signer_identity_correlation: bool = True
+    require_reviewer_scope_correlation: bool = True
     stop_latched_blocks: bool = True
     veto_latched_blocks: bool = True
     observer_only: bool = True
@@ -219,10 +225,17 @@ class ConsensusAdmissionPolicyV1:
             "maximum_ballots": self.maximum_ballots,
             "maximum_attestations": self.maximum_attestations,
             "require_direct_log_append": self.require_direct_log_append,
+            "require_empty_target_at_base": self.require_empty_target_at_base,
             "require_complete_committed_source_set": (
                 self.require_complete_committed_source_set
             ),
             "require_trusted_provenance": self.require_trusted_provenance,
+            "require_signer_identity_correlation": (
+                self.require_signer_identity_correlation
+            ),
+            "require_reviewer_scope_correlation": (
+                self.require_reviewer_scope_correlation
+            ),
             "stop_latched_blocks": self.stop_latched_blocks,
             "veto_latched_blocks": self.veto_latched_blocks,
             "observer_only": self.observer_only,
@@ -273,6 +286,14 @@ def build_consensus_admission_policy(
 def parse_consensus_admission_policy(value: object) -> dict[str, object]:
     """Strictly parse and privately copy an exact v1 policy mapping."""
 
+    if type(value) is ConsensusAdmissionPolicyV1:
+        try:
+            value = value.to_mapping()
+        except AttributeError:
+            _refuse(
+                "policy_malformed_instance",
+                "policy instance is missing a required field",
+            )
     policy = _exact_dict(value, CONSENSUS_ADMISSION_POLICY_KEYS)
     core = _normalize_policy_core(
         {key: policy[key] for key in CONSENSUS_ADMISSION_POLICY_CORE_KEYS}

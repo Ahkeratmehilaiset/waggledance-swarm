@@ -13,6 +13,7 @@ from waggledance.core.orchestration.evidence_consensus import (
     build_evidence_diversity,
     build_inhibitory_ballot,
     evaluate_inhibitory_consensus,
+    parse_consensus_evaluation_structure,
     verify_consensus_evaluation,
     verify_evidence_diversity,
     verify_inhibitory_ballot,
@@ -350,6 +351,37 @@ def test_evaluation_cannot_self_certify_without_exact_source_sets() -> None:
         False,
         "evaluation does not match recomputed source evidence",
     )
+
+
+def test_structural_parser_returns_private_lists_and_typed_refusals() -> None:
+    first = _evidence("private-a")
+    second = _evidence("private-b")
+    result = _evaluate(
+        [first, second],
+        [_ballot("support", first), _ballot("support", second)],
+        required=2,
+    )
+    parsed = parse_consensus_evaluation_structure(result)
+    result["support_group_digests"].clear()
+    assert len(parsed["support_group_digests"]) == 2
+
+    malformed = dict(parsed)
+    malformed["submitted_evidence_count"] = float("nan")
+    with pytest.raises(EvidenceConsensusError, match="exact int"):
+        parse_consensus_evaluation_structure(malformed)
+
+
+def test_retained_stop_may_be_promoted_into_a_correlated_veto_group() -> None:
+    stopper = _evidence("structural-stop", shared_model="shared-inhibitor")
+    vetoer = _evidence("structural-veto", shared_model="shared-inhibitor")
+    result = _evaluate(
+        [stopper, vetoer],
+        [_ballot("stop", stopper), _ballot("veto", vetoer)],
+    )
+    assert result["independent_stop_count"] == 0
+    assert result["independent_veto_count"] == 1
+    assert result["stop_evidence_digests"] == [stopper["evidence_digest"]]
+    assert parse_consensus_evaluation_structure(result) == result
 
 
 def test_wire_lists_are_json_exact_and_groups_are_disjoint() -> None:

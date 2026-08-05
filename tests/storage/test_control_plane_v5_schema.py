@@ -141,14 +141,16 @@ def _create_v4_database(path: Path) -> None:
         conn.close()
 
 
-def test_v4_to_v5_migration_preserves_rows_and_starts_empty(tmp_path: Path) -> None:
+def test_v4_to_current_migration_preserves_v5_rows_and_starts_empty(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "v4.sqlite"
     _create_v4_database(path)
 
     db = ControlPlaneDB(path)
     try:
-        assert SCHEMA_VERSION == 5
-        assert db.schema_version() == 5
+        assert SCHEMA_VERSION >= 5
+        assert db.schema_version() == SCHEMA_VERSION
         assert db.get_solver_family("preserved-family") is not None
         assert db.get_solver("preserved-solver") is not None
         for table in (

@@ -14,9 +14,10 @@ The :class:`ControlPlaneDB` is a thin SQLite wrapper. It owns:
 
 Design rules:
 
-* The control plane is **not** an audit log. It records *current state*
-  (with ``created_at`` / ``updated_at`` columns) but does not promise a
-  permanent change history. MAGMA owns history.
+* The control plane is **not** the evidence/audit payload log. Most tables
+  record current state, while the scoped activation and expectation tables
+  retain only immutable control-metadata chains. MAGMA owns durable evidence,
+  provenance, and audit payload history.
 * All write methods return the inserted/updated record so callers can
   observe the assigned id and timestamps.
 * All read methods return dataclasses, not raw rows.
@@ -43,6 +44,13 @@ from waggledance.core.capabilities.activation_snapshot import (
     build_activation_scope,
     canonicalize_activation_snapshot_publication,
 )
+from waggledance.core.orchestration.attested_consensus_expectation import (
+    INITIAL_PREVIOUS_EXPECTATION_HEAD_DIGEST,
+    AttestedConsensusExpectationError,
+    canonicalize_attested_consensus_expectation,
+    verify_attested_consensus_expectation_bindings,
+    verify_attested_consensus_expectation_transition,
+)
 
 from .control_plane_schema import MIGRATIONS, SCHEMA_VERSION, all_table_names
 
@@ -59,7 +67,16 @@ class ActivationSnapshotCASConflict(ControlPlaneError):
         self.reason = reason
 
 
+class AttestedConsensusExpectationCASConflict(ControlPlaneError):
+    """A scope-local expectation-pin append lost or violated its CAS."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 MAX_ACTIVATION_SNAPSHOT_BUNDLE_BYTES = 64 * 1024 * 1024
+MAX_ATTESTED_CONSENSUS_EXPECTATION_BYTES = 64 * 1024
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -246,6 +263,37 @@ class ActivationScopeTombstoneRecord:
     activation_scope_digest: str
     reason_digest: str
     retired_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class AttestedConsensusExpectationRecord:
+    """One immutable pin plus its atomically observed activation pointer."""
+
+    id: int
+    activation_scope_digest: str
+    deployment_scope_digest: str
+    cell_id: str
+    generation: int
+    previous_expectation_head_digest: str
+    expectation_head_digest: str
+    admission_challenge_digest: str
+    expected_consensus_policy_digest: str
+    expected_query_digest: str
+    expected_current_bundle_digest: str
+    expected_current_activation_head_digest: str
+    expected_current_store_revision: int
+    expected_proposed_bundle_digest: str
+    expected_proposed_activation_head_digest: str
+    expected_proposed_store_revision: int
+    expected_trust_registry_head_digest: str
+    expected_attestation_log_base_head_digest: str
+    expected_attestation_log_closed_head_digest: str
+    canonical_expectation: bytes
+    current_activation_bundle_digest: str
+    current_activation_head_digest: str
+    current_activation_store_revision: int
+    scope_status: str
+    created_at: str
 
 
 # -- schema v4 — Phase 13 capability-aware solver lookup -----------
@@ -2450,6 +2498,509 @@ class ControlPlaneDB:
             retired_at=retired_at,
         )
 
+    # -- schema v6: immutable attested-consensus expectation chain ---
+
+    @staticmethod
+    def _decode_attested_consensus_expectation(
+        canonical_expectation: bytes,
+    ) -> dict[str, object]:
+        if type(canonical_expectation) is not bytes:
+            raise ControlPlaneError(
+                "canonical_expectation must be exact immutable bytes"
+            )
+        if not canonical_expectation or (
+            len(canonical_expectation)
+            > MAX_ATTESTED_CONSENSUS_EXPECTATION_BYTES
+        ):
+            raise ControlPlaneError(
+                "canonical_expectation is empty or exceeds the 64 KiB bound"
+            )
+        try:
+            decoded = json.loads(canonical_expectation)
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+            RecursionError,
+        ) as exc:
+            raise ControlPlaneError(
+                "canonical_expectation is not strict JSON"
+            ) from exc
+        try:
+            verified_bytes = canonicalize_attested_consensus_expectation(
+                decoded
+            )
+        except AttestedConsensusExpectationError as exc:
+            raise ControlPlaneError(
+                "attested consensus expectation verification failed: "
+                f"{exc.reason}"
+            ) from exc
+        if verified_bytes != canonical_expectation:
+            raise ControlPlaneError(
+                "canonical_expectation bytes are not the verified "
+                "canonical form"
+            )
+        # Re-decode verifier-produced immutable bytes, never caller-owned data.
+        return json.loads(verified_bytes)
+
+    @staticmethod
+    def _attested_consensus_expectation_projection(
+        pin: Mapping[str, object],
+    ) -> dict[str, object]:
+        bindings = pin["expected_bindings"]
+        if type(bindings) is not dict:  # defensive after contract verification
+            raise ControlPlaneError("verified expectation bindings disappeared")
+        return {
+            "activation_scope_digest": bindings[
+                "expected_activation_scope_digest"
+            ],
+            "generation": pin["generation"],
+            "previous_expectation_head_digest": pin[
+                "previous_expectation_head_digest"
+            ],
+            "expectation_head_digest": pin["expectation_head_digest"],
+            "admission_challenge_digest": pin[
+                "admission_challenge_digest"
+            ],
+            "expected_consensus_policy_digest": bindings[
+                "expected_consensus_policy_digest"
+            ],
+            "expected_query_digest": bindings["expected_query_digest"],
+            "expected_current_bundle_digest": bindings[
+                "expected_current_bundle_digest"
+            ],
+            "expected_current_activation_head_digest": bindings[
+                "expected_current_activation_head_digest"
+            ],
+            "expected_current_store_revision": bindings[
+                "expected_current_store_revision"
+            ],
+            "expected_proposed_bundle_digest": bindings[
+                "expected_proposed_bundle_digest"
+            ],
+            "expected_proposed_activation_head_digest": bindings[
+                "expected_proposed_activation_head_digest"
+            ],
+            "expected_proposed_store_revision": bindings[
+                "expected_proposed_store_revision"
+            ],
+            "expected_trust_registry_head_digest": bindings[
+                "expected_trust_registry_head_digest"
+            ],
+            "expected_attestation_log_base_head_digest": bindings[
+                "expected_attestation_log_base_head_digest"
+            ],
+            "expected_attestation_log_closed_head_digest": bindings[
+                "expected_attestation_log_closed_head_digest"
+            ],
+        }
+
+    @classmethod
+    def _verified_attested_consensus_expectation_row(
+        cls, row: sqlite3.Row
+    ) -> dict[str, object]:
+        canonical = row["canonical_expectation"]
+        if type(canonical) is not bytes:
+            raise ControlPlaneError(
+                "stored attested consensus expectation is not exact bytes"
+            )
+        pin = cls._decode_attested_consensus_expectation(canonical)
+        expected = cls._attested_consensus_expectation_projection(pin)
+        for field_name, expected_value in expected.items():
+            actual_value = row[field_name]
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise ControlPlaneError(
+                    "stored attested consensus expectation projection "
+                    f"mismatch: {field_name}"
+                )
+        return pin
+
+    @staticmethod
+    def _expected_attested_consensus_expectation_cas_tuple(
+        *,
+        expected_current_expectation_head_digest: Optional[str],
+        expected_current_expectation_generation: Optional[int],
+    ) -> Optional[tuple[str, int]]:
+        supplied = (
+            expected_current_expectation_head_digest,
+            expected_current_expectation_generation,
+        )
+        if all(value is None for value in supplied):
+            return None
+        if any(value is None for value in supplied):
+            raise AttestedConsensusExpectationCASConflict(
+                "partial_expected_current_expectation",
+                "expected current expectation head and generation are "
+                "all-or-none",
+            )
+        return (
+            _activation_digest(
+                expected_current_expectation_head_digest,
+                "expected_current_expectation_head_digest",
+            ),
+            _activation_revision(
+                expected_current_expectation_generation,
+                "expected_current_expectation_generation",
+            ),
+        )
+
+    @staticmethod
+    def _current_attested_consensus_expectation_sql() -> str:
+        return """
+            SELECT
+                e.id AS expectation_id,
+                e.activation_scope_digest,
+                e.generation,
+                e.previous_expectation_head_digest,
+                e.expectation_head_digest,
+                e.admission_challenge_digest,
+                e.expected_consensus_policy_digest,
+                e.expected_query_digest,
+                e.expected_current_bundle_digest,
+                e.expected_current_activation_head_digest,
+                e.expected_current_store_revision,
+                e.expected_proposed_bundle_digest,
+                e.expected_proposed_activation_head_digest,
+                e.expected_proposed_store_revision,
+                e.expected_trust_registry_head_digest,
+                e.expected_attestation_log_base_head_digest,
+                e.expected_attestation_log_closed_head_digest,
+                e.canonical_expectation,
+                e.created_at,
+                s.deployment_scope_digest,
+                s.cell_id,
+                CASE WHEN t.activation_scope_digest IS NULL
+                     THEN 'active' ELSE 'retired' END AS scope_status,
+                p.id AS current_activation_pointer_id,
+                p.bundle_digest AS current_activation_bundle_digest,
+                p.activation_head_digest AS current_activation_head_digest,
+                p.store_revision AS current_activation_store_revision
+            FROM activation_scopes AS s
+            LEFT JOIN activation_scope_tombstones AS t
+              ON t.activation_scope_digest = s.activation_scope_digest
+            LEFT JOIN attested_consensus_expectations AS e
+              ON e.id = (
+                  SELECT e2.id
+                  FROM attested_consensus_expectations AS e2
+                  WHERE e2.activation_scope_digest =
+                      s.activation_scope_digest
+                  ORDER BY e2.generation DESC, e2.id DESC
+                  LIMIT 1
+              )
+            LEFT JOIN activation_snapshot_pointers AS p
+              ON p.id = (
+                  SELECT p2.id
+                  FROM activation_snapshot_pointers AS p2
+                  WHERE p2.activation_scope_digest =
+                      s.activation_scope_digest
+                  ORDER BY p2.store_revision DESC, p2.id DESC
+                  LIMIT 1
+              )
+            WHERE s.activation_scope_digest = ?
+        """
+
+    def _select_current_attested_consensus_expectation_inplace(
+        self, activation_scope_digest: str
+    ) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            self._current_attested_consensus_expectation_sql(),
+            (activation_scope_digest,),
+        ).fetchone()
+
+    def _select_attested_consensus_expectation_by_id_inplace(
+        self, expectation_id: int
+    ) -> sqlite3.Row:
+        row = self._conn.execute(
+            self._current_attested_consensus_expectation_sql().replace(
+                "WHERE s.activation_scope_digest = ?",
+                "WHERE e.id = ?",
+            ),
+            (expectation_id,),
+        ).fetchone()
+        if row is None or row["expectation_id"] is None:
+            raise ControlPlaneError(
+                "inserted attested consensus expectation disappeared"
+            )
+        return row
+
+    def get_current_attested_consensus_expectation(
+        self,
+        *,
+        deployment_scope_digest: str,
+        cell_identity: object,
+    ) -> Optional[AttestedConsensusExpectationRecord]:
+        """Read the latest pin and current activation in one SQLite snapshot."""
+
+        scope = self._activation_scope_from_source(
+            deployment_scope_digest=deployment_scope_digest,
+            cell_identity=cell_identity,
+        )
+        conn = self._read_conn()
+        sql = self._current_attested_consensus_expectation_sql()
+        if self._in_transaction:
+            with self._lock:
+                row = conn.execute(
+                    sql, (scope["activation_scope_digest"],)
+                ).fetchone()
+        else:
+            row = conn.execute(
+                sql, (scope["activation_scope_digest"],)
+            ).fetchone()
+        if row is None:
+            return None
+        if (
+            row["deployment_scope_digest"]
+            != scope["deployment_scope_digest"]
+            or row["cell_id"] != scope["cell_id"]
+        ):
+            raise ControlPlaneError(
+                "attested consensus expectation scope binding is corrupt"
+            )
+        if row["expectation_id"] is None:
+            return None
+        if row["current_activation_pointer_id"] is None:
+            raise ControlPlaneError(
+                "attested consensus expectation activation pointer is missing"
+            )
+        self._verified_attested_consensus_expectation_row(row)
+        return self._row_to_attested_consensus_expectation(row)
+
+    def append_attested_consensus_expectation_cas(
+        self,
+        *,
+        canonical_expectation: bytes,
+        activation_admission_intent: object,
+        expected_attestation_log_closed_head_digest: str,
+        cell_identity: object,
+        expected_deployment_scope_digest: str,
+        expected_current_expectation_head_digest: Optional[str],
+        expected_current_expectation_generation: Optional[int],
+    ) -> AttestedConsensusExpectationRecord:
+        """Append one source-bound advisory pin under a scope-local CAS.
+
+        This operation persists no evidence payload, authenticates no writer,
+        grants no authority, and never applies the proposed activation.
+        """
+
+        pin = self._decode_attested_consensus_expectation(
+            canonical_expectation
+        )
+        bindings_ok, bindings_reason = (
+            verify_attested_consensus_expectation_bindings(
+                pin,
+                activation_admission_intent=activation_admission_intent,
+                expected_attestation_log_closed_head_digest=(
+                    expected_attestation_log_closed_head_digest
+                ),
+            )
+        )
+        if not bindings_ok:
+            raise AttestedConsensusExpectationCASConflict(
+                bindings_reason or "source_binding",
+                "attested consensus expectation source binding failed",
+            )
+        projection = self._attested_consensus_expectation_projection(pin)
+        scope = self._activation_scope_from_source(
+            deployment_scope_digest=expected_deployment_scope_digest,
+            cell_identity=cell_identity,
+        )
+        if (
+            projection["activation_scope_digest"]
+            != scope["activation_scope_digest"]
+        ):
+            raise AttestedConsensusExpectationCASConflict(
+                "activation_scope_binding",
+                "expectation pin is bound to a foreign activation scope",
+            )
+        expected = self._expected_attested_consensus_expectation_cas_tuple(
+            expected_current_expectation_head_digest=(
+                expected_current_expectation_head_digest
+            ),
+            expected_current_expectation_generation=(
+                expected_current_expectation_generation
+            ),
+        )
+        now = _utcnow()
+
+        try:
+            with self._lock:
+                if self._in_transaction:
+                    raise ControlPlaneError(
+                        "attested consensus expectation CAS cannot nest in "
+                        "transaction()"
+                    )
+                with self.transaction():
+                    current = (
+                        self._select_current_attested_consensus_expectation_inplace(
+                            scope["activation_scope_digest"]
+                        )
+                    )
+                    if (
+                        current is None
+                        or current["current_activation_pointer_id"] is None
+                    ):
+                        raise AttestedConsensusExpectationCASConflict(
+                            "current_activation_snapshot_missing",
+                            "activation scope has no current snapshot",
+                        )
+                    if (
+                        current["deployment_scope_digest"]
+                        != scope["deployment_scope_digest"]
+                        or current["cell_id"] != scope["cell_id"]
+                    ):
+                        raise ControlPlaneError(
+                            "attested consensus expectation scope registry "
+                            "binding is corrupt"
+                        )
+                    if current["scope_status"] != "active":
+                        raise AttestedConsensusExpectationCASConflict(
+                            "scope_retired",
+                            "retired activation scope cannot accept a pin",
+                        )
+
+                    actual_activation = (
+                        current["current_activation_bundle_digest"],
+                        current["current_activation_head_digest"],
+                        current["current_activation_store_revision"],
+                    )
+                    expected_activation = (
+                        projection["expected_current_bundle_digest"],
+                        projection[
+                            "expected_current_activation_head_digest"
+                        ],
+                        projection["expected_current_store_revision"],
+                    )
+                    if any(
+                        type(actual_value) is not type(expected_value)
+                        or actual_value != expected_value
+                        for actual_value, expected_value in zip(
+                            actual_activation, expected_activation
+                        )
+                    ):
+                        raise AttestedConsensusExpectationCASConflict(
+                            "stale_current_activation_snapshot",
+                            "expectation pin does not bind the current "
+                            "activation snapshot",
+                        )
+
+                    if current["expectation_id"] is None:
+                        if (
+                            expected is not None
+                            or projection["generation"] != 0
+                            or projection[
+                                "previous_expectation_head_digest"
+                            ]
+                            != INITIAL_PREVIOUS_EXPECTATION_HEAD_DIGEST
+                        ):
+                            raise AttestedConsensusExpectationCASConflict(
+                                "bootstrap_precondition",
+                                "empty expectation scope requires generation "
+                                "zero and no expected current pin",
+                            )
+                    else:
+                        current_pin = (
+                            self._verified_attested_consensus_expectation_row(
+                                current
+                            )
+                        )
+                        if expected is None:
+                            raise AttestedConsensusExpectationCASConflict(
+                                "already_initialized",
+                                "expectation scope already has a current pin",
+                            )
+                        actual_expectation = (
+                            current["expectation_head_digest"],
+                            current["generation"],
+                        )
+                        if any(
+                            type(actual_value) is not type(expected_value)
+                            or actual_value != expected_value
+                            for actual_value, expected_value in zip(
+                                actual_expectation, expected
+                            )
+                        ):
+                            raise AttestedConsensusExpectationCASConflict(
+                                "stale_current_expectation",
+                                "expected current expectation pin is stale",
+                            )
+                        transition_ok, transition_reason = (
+                            verify_attested_consensus_expectation_transition(
+                                current_pin,
+                                pin,
+                                expected_current_expectation_head_digest=(
+                                    expected[0]
+                                ),
+                            )
+                        )
+                        if not transition_ok:
+                            raise AttestedConsensusExpectationCASConflict(
+                                transition_reason or "transition",
+                                "attested consensus expectation transition "
+                                "failed",
+                            )
+
+                    replay = self._conn.execute(
+                        """
+                        SELECT 1
+                        FROM attested_consensus_expectations
+                        WHERE activation_scope_digest = ?
+                          AND admission_challenge_digest = ?
+                        LIMIT 1
+                        """,
+                        (
+                            scope["activation_scope_digest"],
+                            projection["admission_challenge_digest"],
+                        ),
+                    ).fetchone()
+                    if replay is not None:
+                        raise AttestedConsensusExpectationCASConflict(
+                            "admission_challenge_replay",
+                            "admission challenge already exists in scope "
+                            "history",
+                        )
+
+                    columns = (
+                        "activation_scope_digest",
+                        "generation",
+                        "previous_expectation_head_digest",
+                        "expectation_head_digest",
+                        "admission_challenge_digest",
+                        "expected_consensus_policy_digest",
+                        "expected_query_digest",
+                        "expected_current_bundle_digest",
+                        "expected_current_activation_head_digest",
+                        "expected_current_store_revision",
+                        "expected_proposed_bundle_digest",
+                        "expected_proposed_activation_head_digest",
+                        "expected_proposed_store_revision",
+                        "expected_trust_registry_head_digest",
+                        "expected_attestation_log_base_head_digest",
+                        "expected_attestation_log_closed_head_digest",
+                    )
+                    values = tuple(projection[column] for column in columns)
+                    cursor = self._conn.execute(
+                        "INSERT INTO attested_consensus_expectations("
+                        + ", ".join(columns)
+                        + ", canonical_expectation, created_at) VALUES ("
+                        + ", ".join("?" for _ in range(len(columns) + 2))
+                        + ")",
+                        (*values, canonical_expectation, now),
+                    )
+                    row = (
+                        self._select_attested_consensus_expectation_by_id_inplace(
+                            int(cursor.lastrowid)
+                        )
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise ControlPlaneError(
+                f"attested consensus expectation CAS insert failed: {exc}"
+            ) from exc
+        self._verified_attested_consensus_expectation_row(row)
+        return self._row_to_attested_consensus_expectation(row)
+
     # -- schema_meta key/value helpers (general; used by Phase 18F)----
 
     def get_meta(self, key: str) -> Optional[str]:
@@ -3206,6 +3757,75 @@ class ControlPlaneDB:
             invariant_failed=row["invariant_failed"],
             rollback_reason=row["rollback_reason"],
             evidence=row["evidence"],
+            created_at=str(row["created_at"]),
+        )
+
+    # -- v6 row converter ----------------------------------------------
+
+    @staticmethod
+    def _row_to_attested_consensus_expectation(
+        row: sqlite3.Row,
+    ) -> AttestedConsensusExpectationRecord:
+        canonical = row["canonical_expectation"]
+        if type(canonical) is not bytes:
+            raise ControlPlaneError(
+                "stored attested consensus expectation is not exact bytes"
+            )
+        return AttestedConsensusExpectationRecord(
+            id=int(row["expectation_id"]),
+            activation_scope_digest=str(row["activation_scope_digest"]),
+            deployment_scope_digest=str(row["deployment_scope_digest"]),
+            cell_id=str(row["cell_id"]),
+            generation=int(row["generation"]),
+            previous_expectation_head_digest=str(
+                row["previous_expectation_head_digest"]
+            ),
+            expectation_head_digest=str(row["expectation_head_digest"]),
+            admission_challenge_digest=str(
+                row["admission_challenge_digest"]
+            ),
+            expected_consensus_policy_digest=str(
+                row["expected_consensus_policy_digest"]
+            ),
+            expected_query_digest=str(row["expected_query_digest"]),
+            expected_current_bundle_digest=str(
+                row["expected_current_bundle_digest"]
+            ),
+            expected_current_activation_head_digest=str(
+                row["expected_current_activation_head_digest"]
+            ),
+            expected_current_store_revision=int(
+                row["expected_current_store_revision"]
+            ),
+            expected_proposed_bundle_digest=str(
+                row["expected_proposed_bundle_digest"]
+            ),
+            expected_proposed_activation_head_digest=str(
+                row["expected_proposed_activation_head_digest"]
+            ),
+            expected_proposed_store_revision=int(
+                row["expected_proposed_store_revision"]
+            ),
+            expected_trust_registry_head_digest=str(
+                row["expected_trust_registry_head_digest"]
+            ),
+            expected_attestation_log_base_head_digest=str(
+                row["expected_attestation_log_base_head_digest"]
+            ),
+            expected_attestation_log_closed_head_digest=str(
+                row["expected_attestation_log_closed_head_digest"]
+            ),
+            canonical_expectation=canonical,
+            current_activation_bundle_digest=str(
+                row["current_activation_bundle_digest"]
+            ),
+            current_activation_head_digest=str(
+                row["current_activation_head_digest"]
+            ),
+            current_activation_store_revision=int(
+                row["current_activation_store_revision"]
+            ),
+            scope_status=str(row["scope_status"]),
             created_at=str(row["created_at"]),
         )
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-SCHEMA_VERSION: int = 5
+SCHEMA_VERSION: int = 6
 
 INITIAL_SCHEMA_SQL: List[str] = [
     """
@@ -878,6 +878,361 @@ SCOPED_ACTIVATION_SNAPSHOT_SCHEMA_SQL: List[str] = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Schema v6 — immutable, scope-local attested-consensus expectation pins
+# --------------------------------------------------------------------------
+# Each row embeds the exact canonical pin consumed by the off-path runtime
+# observer.  The extracted chain fields let SQLite enforce a strict append
+# order and, critically, reject a challenge reused anywhere in one scope's
+# history (including non-adjacent A -> B -> A replay).  Application code still
+# re-verifies the canonical bytes and independently binds them to the source
+# admission intent, closed attestation-log head, cell scope, and current
+# activation pointer before insertion.
+ATTESTED_CONSENSUS_EXPECTATION_SCHEMA_SQL: List[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS attested_consensus_expectations (
+        id                                   INTEGER PRIMARY KEY,
+        activation_scope_digest              TEXT NOT NULL
+            REFERENCES activation_scopes(activation_scope_digest)
+            ON DELETE RESTRICT,
+        generation                           INTEGER NOT NULL,
+        previous_expectation_head_digest     TEXT NOT NULL,
+        expectation_head_digest              TEXT NOT NULL UNIQUE,
+        admission_challenge_digest           TEXT NOT NULL,
+        expected_consensus_policy_digest     TEXT NOT NULL,
+        expected_query_digest                TEXT NOT NULL,
+        expected_current_bundle_digest       TEXT NOT NULL,
+        expected_current_activation_head_digest TEXT NOT NULL,
+        expected_current_store_revision      INTEGER NOT NULL,
+        expected_proposed_bundle_digest      TEXT NOT NULL,
+        expected_proposed_activation_head_digest TEXT NOT NULL,
+        expected_proposed_store_revision     INTEGER NOT NULL,
+        expected_trust_registry_head_digest  TEXT NOT NULL,
+        expected_attestation_log_base_head_digest TEXT NOT NULL,
+        expected_attestation_log_closed_head_digest TEXT NOT NULL,
+        canonical_expectation                BLOB NOT NULL,
+        created_at                           TEXT NOT NULL,
+        UNIQUE (activation_scope_digest, generation),
+        UNIQUE (activation_scope_digest, admission_challenge_digest),
+        CHECK (typeof(id) = 'integer' AND id > 0),
+        CHECK (
+            typeof(generation) = 'integer'
+            AND generation BETWEEN 0 AND 9223372036854775807
+        ),
+        CHECK (
+            typeof(expected_current_store_revision) = 'integer'
+            AND expected_current_store_revision
+                BETWEEN 0 AND 9223372036854775806
+        ),
+        CHECK (
+            typeof(expected_proposed_store_revision) = 'integer'
+            AND expected_proposed_store_revision
+                BETWEEN 0 AND 9223372036854775807
+            AND expected_proposed_store_revision =
+                expected_current_store_revision + 1
+        ),
+        CHECK (
+            (
+                generation = 0
+                AND previous_expectation_head_digest =
+                    'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            ) OR (
+                generation > 0
+                AND previous_expectation_head_digest <>
+                    'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            )
+        ),
+        CHECK (expectation_head_digest <> previous_expectation_head_digest),
+        CHECK (
+            expected_proposed_bundle_digest <>
+                expected_current_bundle_digest
+        ),
+        CHECK (
+            expected_proposed_activation_head_digest <>
+                expected_current_activation_head_digest
+        ),
+        CHECK (
+            expected_attestation_log_closed_head_digest <>
+                expected_attestation_log_base_head_digest
+        ),
+        CHECK (
+            typeof(canonical_expectation) = 'blob'
+            AND length(canonical_expectation) BETWEEN 1 AND 65536
+        ),
+        CHECK (
+            typeof(activation_scope_digest) = 'text'
+            AND length(activation_scope_digest) = 71
+            AND substr(activation_scope_digest, 1, 7) = 'sha256:'
+            AND substr(activation_scope_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(previous_expectation_head_digest) = 'text'
+            AND length(previous_expectation_head_digest) = 71
+            AND substr(previous_expectation_head_digest, 1, 7) = 'sha256:'
+            AND substr(previous_expectation_head_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expectation_head_digest) = 'text'
+            AND length(expectation_head_digest) = 71
+            AND substr(expectation_head_digest, 1, 7) = 'sha256:'
+            AND substr(expectation_head_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(admission_challenge_digest) = 'text'
+            AND length(admission_challenge_digest) = 71
+            AND substr(admission_challenge_digest, 1, 7) = 'sha256:'
+            AND substr(admission_challenge_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_consensus_policy_digest) = 'text'
+            AND length(expected_consensus_policy_digest) = 71
+            AND substr(expected_consensus_policy_digest, 1, 7) = 'sha256:'
+            AND substr(expected_consensus_policy_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_query_digest) = 'text'
+            AND length(expected_query_digest) = 71
+            AND substr(expected_query_digest, 1, 7) = 'sha256:'
+            AND substr(expected_query_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_current_bundle_digest) = 'text'
+            AND length(expected_current_bundle_digest) = 71
+            AND substr(expected_current_bundle_digest, 1, 7) = 'sha256:'
+            AND substr(expected_current_bundle_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_current_activation_head_digest) = 'text'
+            AND length(expected_current_activation_head_digest) = 71
+            AND substr(expected_current_activation_head_digest, 1, 7) =
+                'sha256:'
+            AND substr(expected_current_activation_head_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_proposed_bundle_digest) = 'text'
+            AND length(expected_proposed_bundle_digest) = 71
+            AND substr(expected_proposed_bundle_digest, 1, 7) = 'sha256:'
+            AND substr(expected_proposed_bundle_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_proposed_activation_head_digest) = 'text'
+            AND length(expected_proposed_activation_head_digest) = 71
+            AND substr(expected_proposed_activation_head_digest, 1, 7) =
+                'sha256:'
+            AND substr(expected_proposed_activation_head_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_trust_registry_head_digest) = 'text'
+            AND length(expected_trust_registry_head_digest) = 71
+            AND substr(expected_trust_registry_head_digest, 1, 7) = 'sha256:'
+            AND substr(expected_trust_registry_head_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_attestation_log_base_head_digest) = 'text'
+            AND length(expected_attestation_log_base_head_digest) = 71
+            AND substr(expected_attestation_log_base_head_digest, 1, 7) =
+                'sha256:'
+            AND substr(expected_attestation_log_base_head_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        ),
+        CHECK (
+            typeof(expected_attestation_log_closed_head_digest) = 'text'
+            AND length(expected_attestation_log_closed_head_digest) = 71
+            AND substr(expected_attestation_log_closed_head_digest, 1, 7) =
+                'sha256:'
+            AND substr(expected_attestation_log_closed_head_digest, 8)
+                NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS
+        trg_attested_consensus_expectations_refuse_collision
+    BEFORE INSERT ON attested_consensus_expectations
+    WHEN EXISTS (
+        SELECT 1
+        FROM attested_consensus_expectations
+        WHERE id = NEW.id
+           OR expectation_head_digest = NEW.expectation_head_digest
+           OR (
+               activation_scope_digest = NEW.activation_scope_digest
+               AND generation = NEW.generation
+           )
+           OR (
+               activation_scope_digest = NEW.activation_scope_digest
+               AND admission_challenge_digest =
+                   NEW.admission_challenge_digest
+           )
+    )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'attested consensus expectation immutable key collision'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS
+        trg_attested_consensus_expectations_refuse_update
+    BEFORE UPDATE ON attested_consensus_expectations
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'attested consensus expectation rows are immutable'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS
+        trg_attested_consensus_expectations_refuse_delete
+    BEFORE DELETE ON attested_consensus_expectations
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'attested consensus expectation rows are immutable'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS
+        trg_attested_consensus_expectations_validate_insert
+    BEFORE INSERT ON attested_consensus_expectations
+    BEGIN
+        SELECT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM attested_consensus_expectations
+                WHERE id = NEW.id
+                   OR expectation_head_digest =
+                       NEW.expectation_head_digest
+                   OR (
+                       activation_scope_digest =
+                           NEW.activation_scope_digest
+                       AND generation = NEW.generation
+                   )
+                   OR (
+                       activation_scope_digest =
+                           NEW.activation_scope_digest
+                       AND admission_challenge_digest =
+                           NEW.admission_challenge_digest
+                   )
+            )
+            THEN RAISE(
+                ABORT,
+                'attested consensus expectation immutable key collision'
+            )
+        END;
+
+        SELECT CASE
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM activation_scopes
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            )
+            THEN RAISE(
+                ABORT,
+                'attested consensus expectation activation scope missing'
+            )
+        END;
+
+        SELECT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM activation_scope_tombstones
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            )
+            THEN RAISE(ABORT, 'activation scope is retired')
+        END;
+
+        SELECT CASE
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM activation_snapshot_pointers
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            )
+            THEN RAISE(
+                ABORT,
+                'attested consensus expectation requires activation pointer'
+            )
+        END;
+
+        SELECT CASE
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM activation_snapshot_pointers
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+                  AND bundle_digest =
+                      NEW.expected_current_bundle_digest
+                  AND activation_head_digest =
+                      NEW.expected_current_activation_head_digest
+                  AND store_revision =
+                      NEW.expected_current_store_revision
+                  AND store_revision = (
+                      SELECT MAX(store_revision)
+                      FROM activation_snapshot_pointers
+                      WHERE activation_scope_digest =
+                          NEW.activation_scope_digest
+                  )
+            )
+            THEN RAISE(
+                ABORT,
+                'attested consensus expectation current activation mismatch'
+            )
+        END;
+
+        SELECT CASE
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM attested_consensus_expectations
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            ) AND (
+                NEW.generation <> 0
+                OR NEW.previous_expectation_head_digest <>
+                    'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            )
+            THEN RAISE(
+                ABORT,
+                'attested consensus expectation genesis mismatch'
+            )
+
+            WHEN EXISTS (
+                SELECT 1
+                FROM attested_consensus_expectations
+                WHERE activation_scope_digest = NEW.activation_scope_digest
+            ) AND (
+                NEW.generation <> (
+                    SELECT generation + 1
+                    FROM attested_consensus_expectations
+                    WHERE activation_scope_digest = NEW.activation_scope_digest
+                    ORDER BY generation DESC
+                    LIMIT 1
+                )
+                OR NEW.previous_expectation_head_digest <> (
+                    SELECT expectation_head_digest
+                    FROM attested_consensus_expectations
+                    WHERE activation_scope_digest = NEW.activation_scope_digest
+                    ORDER BY generation DESC
+                    LIMIT 1
+                )
+            )
+            THEN RAISE(
+                ABORT,
+                'attested consensus expectation chain mismatch'
+            )
+        END;
+    END
+    """,
+]
+
+
 # Forward-only migrations indexed by target schema version.
 # Migration N is applied when current schema_version < N. Each migration
 # is a list of SQL statements applied in a single transaction.
@@ -887,6 +1242,7 @@ MIGRATIONS: Dict[int, List[str]] = {
     3: PHASE12_AUTOGROWTH_INTAKE_SCHEMA_SQL,
     4: PHASE13_CAPABILITY_LOOKUP_SCHEMA_SQL,
     5: SCOPED_ACTIVATION_SNAPSHOT_SCHEMA_SQL,
+    6: ATTESTED_CONSENSUS_EXPECTATION_SCHEMA_SQL,
 }
 
 
@@ -929,4 +1285,6 @@ def all_table_names() -> List[str]:
         "activation_scopes",
         "activation_scope_tombstones",
         "activation_snapshot_pointers",
+        # schema v6 — immutable scoped consensus-expectation pin chain
+        "attested_consensus_expectations",
     ]

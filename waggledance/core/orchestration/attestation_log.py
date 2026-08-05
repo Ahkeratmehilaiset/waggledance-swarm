@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from waggledance.core.magma.canonical import sha256_digest
+from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 
 ATTESTATION_LOG_ENTRY_SCHEMA = "wd.attestation_log_entry.v1"
 ATTESTATION_LOG_SNAPSHOT_SCHEMA = "wd.attestation_log_snapshot.v1"
@@ -577,6 +577,17 @@ def parse_attestation_log_snapshot(value: object) -> AttestationLogSnapshotV1:
         advisory_only=snapshot["advisory_only"],
         authority_granted=snapshot["authority_granted"],
     )
+
+
+def canonicalize_attestation_log_snapshot(value: object) -> bytes:
+    """Return exact canonical bytes for one fully verified snapshot.
+
+    This is a serialization boundary only.  It authenticates no writer,
+    selects no current head, and grants no admission or runtime authority.
+    """
+
+    parsed = parse_attestation_log_snapshot(value)
+    return canonical_json_bytes(parsed.to_mapping())
 
 
 def verify_attestation_log_snapshot(value: object) -> tuple[bool, Optional[str]]:

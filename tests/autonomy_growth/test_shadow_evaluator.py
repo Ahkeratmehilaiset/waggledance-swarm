@@ -34,10 +34,14 @@ Pinned invariants:
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from waggledance.core.autonomy_growth import shadow_evaluator
 from waggledance.core.autonomy_growth.shadow_evaluator import (
+    ORACLE_BINDING_CANDIDATE_ARTIFACT,
+    ORACLE_BINDING_SOURCE_SPEC,
     ShadowOutcome,
     byte_identity_oracle,
     run_shadow_evaluation,
@@ -114,6 +118,79 @@ def test_run_shadow_evaluation_all_agree_with_correct_oracle():
     assert outcome.disagree_count == 0
     assert outcome.disagreements == []
     assert outcome.agreement_rate == 1.0
+    assert outcome.candidate_artifact_id
+    assert outcome.oracle_binding == ORACLE_BINDING_SOURCE_SPEC
+
+
+def test_precompiled_candidate_is_used_without_recompile(monkeypatch):
+    spec = _scalar_unit_conversion_spec("exact_candidate")
+    compiled = shadow_evaluator.compile_spec(spec)
+
+    def forbidden_recompile(_spec):
+        raise AssertionError("shadow evaluator recompiled an exact candidate")
+
+    monkeypatch.setattr(
+        shadow_evaluator, "compile_spec", forbidden_recompile,
+    )
+    outcome = run_shadow_evaluation(
+        spec,
+        [{"x": 0}, {"x": 100}],
+        _correct_oracle,
+        compiled_candidate=compiled,
+    )
+
+    assert outcome.agreement_rate == 1.0
+    assert outcome.candidate_artifact_id == compiled.artifact_id
+    assert outcome.oracle_binding == ORACLE_BINDING_SOURCE_SPEC
+
+
+def test_source_spec_oracle_exposes_tampered_compiled_candidate():
+    spec = _scalar_unit_conversion_spec("tampered_candidate")
+    compiled = shadow_evaluator.compile_spec(spec)
+    tampered_artifact = dict(compiled.artifact)
+    tampered_artifact["offset"] = 999.0
+    tampered = replace(
+        compiled,
+        artifact=tampered_artifact,
+        artifact_id="art_tampered",
+        canonical_json="tampered",
+    )
+
+    outcome = run_shadow_evaluation(
+        spec,
+        [{"x": 0}],
+        _correct_oracle,
+        compiled_candidate=tampered,
+    )
+
+    assert outcome.candidate_artifact_id == "art_tampered"
+    assert outcome.oracle_binding == ORACLE_BINDING_SOURCE_SPEC
+    assert outcome.agree_count == 0
+    assert outcome.disagreements[0] == {
+        "sample_index": 0,
+        "kind": "mismatch",
+        "actual": 999.0,
+        "expected": 273.15,
+    }
+
+
+def test_precompiled_candidate_identity_mismatch_fails_closed():
+    spec = _scalar_unit_conversion_spec("expected_candidate")
+    other = shadow_evaluator.compile_spec(
+        _scalar_unit_conversion_spec("other_candidate")
+    )
+
+    outcome = run_shadow_evaluation(
+        spec,
+        [{"x": 0}],
+        _correct_oracle,
+        compiled_candidate=other,
+    )
+
+    assert outcome.agree_count == 0
+    assert outcome.disagree_count == 1
+    assert outcome.oracle_binding != ORACLE_BINDING_SOURCE_SPEC
+    assert outcome.disagreements[0]["kind"] == "candidate_binding_error"
 
 
 def test_run_shadow_evaluation_oracle_kind_passes_through():
@@ -331,3 +408,4 @@ def test_byte_identity_oracle_works_end_to_end_with_real_compile():
     )
     assert outcome.agree_count == 3
     assert outcome.oracle_kind == "byte_identity"
+    assert outcome.oracle_binding == ORACLE_BINDING_CANDIDATE_ARTIFACT

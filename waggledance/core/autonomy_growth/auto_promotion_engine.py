@@ -49,9 +49,11 @@ from .counterfactual_replay import (
 from .family_features import extract_features
 from .low_risk_policy import is_low_risk_family
 from .shadow_evaluator import (
+    ORACLE_BINDING_SOURCE_SPEC,
     OracleFn,
     ShadowOutcome,
     ShadowSample,
+    byte_identity_oracle,
     run_shadow_evaluation,
 )
 from .validation_runner import (
@@ -162,6 +164,24 @@ class AutoPromotionEngine:
                 ),
             )
 
+        # A byte-identity re-execution is a useful non-determinism canary, but
+        # it is not independent evidence: it necessarily repeats the
+        # candidate's own semantics. Reject both the known callable and its
+        # declared binding even when one of them is mislabeled.
+        oracle_kind = str(request.oracle_kind).strip().casefold()
+        if (
+            request.oracle is byte_identity_oracle
+            or oracle_kind in {"byte_identity", "candidate_artifact"}
+        ):
+            return self._reject_pre_solver(
+                family_kind,
+                "I6_shadow_oracle_not_independent",
+                error=(
+                    "auto-promotion requires a source-spec-bound independent "
+                    "oracle; byte identity is advisory only"
+                ),
+            )
+
         # I4: deterministic compile twice → same canonical_json
         try:
             compiled1 = compile_spec(spec)
@@ -189,7 +209,18 @@ class AutoPromotionEngine:
         shadow = run_shadow_evaluation(
             spec, request.shadow_samples, request.oracle,
             oracle_kind=request.oracle_kind,
+            compiled_candidate=compiled1,
         )
+        if shadow.candidate_artifact_id != compiled1.artifact_id:
+            return self._reject_with_validation_shadow(
+                family_kind, validation, shadow,
+                "I6_shadow_candidate_binding",
+            )
+        if shadow.oracle_binding != ORACLE_BINDING_SOURCE_SPEC:
+            return self._reject_with_validation_shadow(
+                family_kind, validation, shadow,
+                "I6_shadow_oracle_binding",
+            )
         if shadow.sample_count < policy.min_shadow_samples:
             return self._reject_with_validation_shadow(
                 family_kind, validation, shadow,
@@ -498,7 +529,13 @@ class AutoPromotionEngine:
                     oracle_kind=shadow.oracle_kind,
                     status="completed",
                     evidence=json.dumps(
-                        {"disagreements": list(shadow.disagreements)[:5]}
+                        {
+                            "candidate_artifact_id": (
+                                shadow.candidate_artifact_id
+                            ),
+                            "oracle_binding": shadow.oracle_binding,
+                            "disagreements": list(shadow.disagreements)[:5],
+                        }
                     ),
                 )
                 decision = self._cp.record_promotion_decision(
@@ -779,6 +816,8 @@ def _shadow_summary(shadow: ShadowOutcome | None) -> dict[str, Any] | None:
         "disagree_count": shadow.disagree_count,
         "agreement_rate": shadow.agreement_rate,
         "oracle_kind": shadow.oracle_kind,
+        "candidate_artifact_id": shadow.candidate_artifact_id,
+        "oracle_binding": shadow.oracle_binding,
     }
 
 

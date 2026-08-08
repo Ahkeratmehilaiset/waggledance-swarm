@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
+
+from waggledance.core.autonomy_growth import auto_promotion_engine
 
 from waggledance.core.autonomy_growth.auto_promotion_engine import (
     ADVERSARIAL_CORPUS_MIN_CASES,
@@ -18,6 +21,11 @@ from waggledance.core.autonomy_growth.auto_promotion_engine import (
 from waggledance.core.autonomy_growth.counterfactual_replay import (
     A3_LABEL_INSUFFICIENT,
     A3_LABEL_RUNTIME_MEASURED,
+)
+from waggledance.core.autonomy_growth.shadow_evaluator import (
+    ORACLE_BINDING_SOURCE_SPEC,
+    ShadowOutcome,
+    byte_identity_oracle,
 )
 from waggledance.core.autonomy_growth.solver_dispatcher import (
     DispatchQuery,
@@ -168,6 +176,10 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
     assert outcome.validation is not None and outcome.validation.all_passed
     assert outcome.shadow is not None
     assert outcome.shadow.agreement_rate == 1.0
+    assert outcome.shadow.candidate_artifact_id == compile_spec(
+        _scalar_unit_conversion_spec()
+    ).artifact_id
+    assert outcome.shadow.oracle_binding == ORACLE_BINDING_SOURCE_SPEC
     assert outcome.promotion_decision_artifact is not None
     assert outcome.promotion_decision_digest == sha256_digest(
         outcome.promotion_decision_artifact
@@ -203,6 +215,109 @@ def test_happy_path_auto_promotes_low_risk_candidate(cp: ControlPlaneDB) -> None
         family_kind="scalar_unit_conversion", inputs={"x": 0.0}
     ))
     assert res.matched and res.output == pytest.approx(273.15)
+
+
+def test_shadow_uses_exact_selected_candidate_and_source_spec_oracle(
+    cp: ControlPlaneDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+    spec = _scalar_unit_conversion_spec("tampered_shadow_candidate")
+    compiled = compile_spec(spec)
+    tampered_artifact = dict(compiled.artifact)
+    tampered_artifact["offset"] = 999.0
+    tampered = replace(
+        compiled,
+        artifact=tampered_artifact,
+        artifact_id="art_tampered",
+        canonical_json="tampered",
+    )
+    monkeypatch.setattr(
+        auto_promotion_engine,
+        "compile_spec",
+        lambda _spec: tampered,
+    )
+
+    outcome = AutoPromotionEngine(cp).evaluate_candidate(PromotionRequest(
+        spec=spec,
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+        require_adversarial_gate=False,
+    ))
+
+    assert outcome.decision == "rejected"
+    assert outcome.invariant_failed == "I7_shadow_agreement_rate_below_min"
+    assert outcome.shadow is not None
+    assert outcome.shadow.candidate_artifact_id == "art_tampered"
+    assert outcome.shadow.oracle_binding == ORACLE_BINDING_SOURCE_SPEC
+    assert outcome.shadow.disagree_count == len(_shadow_samples_simple())
+    assert cp.get_solver("tampered_shadow_candidate") is None
+
+
+@pytest.mark.parametrize(
+    ("oracle", "oracle_kind"),
+    [
+        (byte_identity_oracle, "formula_recompute"),
+        (_scalar_unit_conversion_oracle, "byte_identity"),
+    ],
+)
+def test_byte_identity_oracle_cannot_auto_promote_even_when_mislabeled(
+    cp: ControlPlaneDB,
+    oracle,
+    oracle_kind: str,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+
+    outcome = AutoPromotionEngine(cp).evaluate_candidate(PromotionRequest(
+        spec=_scalar_unit_conversion_spec("byte_identity_refused"),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=oracle,
+        oracle_kind=oracle_kind,
+        require_adversarial_gate=False,
+    ))
+
+    assert outcome.decision == "rejected"
+    assert outcome.invariant_failed == "I6_shadow_oracle_not_independent"
+    assert outcome.shadow is None
+    assert cp.get_solver("byte_identity_refused") is None
+
+
+def test_mismatched_shadow_artifact_binding_blocks_promotion(
+    cp: ControlPlaneDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cp.upsert_family_policy("scalar_unit_conversion", is_low_risk=True)
+
+    def misbound_shadow(*_args, **_kwargs):
+        return ShadowOutcome(
+            sample_count=20,
+            agree_count=20,
+            disagree_count=0,
+            oracle_kind="formula_recompute",
+            candidate_artifact_id="art_different_candidate",
+            oracle_binding=ORACLE_BINDING_SOURCE_SPEC,
+        )
+
+    monkeypatch.setattr(
+        auto_promotion_engine,
+        "run_shadow_evaluation",
+        misbound_shadow,
+    )
+    outcome = AutoPromotionEngine(cp).evaluate_candidate(PromotionRequest(
+        spec=_scalar_unit_conversion_spec("misbound_shadow"),
+        validation_cases=_validation_cases_for_celsius_to_kelvin(),
+        shadow_samples=_shadow_samples_simple(),
+        oracle=_scalar_unit_conversion_oracle,
+        oracle_kind="formula_recompute",
+        require_adversarial_gate=False,
+    ))
+
+    assert outcome.decision == "rejected"
+    assert outcome.invariant_failed == "I6_shadow_candidate_binding"
+    assert cp.get_solver("misbound_shadow") is None
 
 
 def test_auto_promotion_receipt_binding_is_payload_free(

@@ -32,6 +32,10 @@ CODEX_TOOLS_UUID = "7a8af68d-20bc-4598-9953-23c5dd98b102"
 CLAUDE_RCO1_UUID = "2b2f6ff9-06c2-4ec8-b526-f10071ce7103"
 CLAUDE_RCO2_UUID = "76739997-0058-41a2-8514-78ff295537aa"
 FABLE_UUID = "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80"
+WINDOWS_APPEND_V1 = pytest.mark.skipif(
+    os.name != "nt",
+    reason="durable AppendV1 mutation is intentionally Windows-only",
+)
 
 
 def _powershell() -> str:
@@ -162,6 +166,34 @@ def test_task_id_required_events_fail_before_runtime_write(
     assert not runtime_root.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="exercises the non-Windows fence")
+def test_non_windows_append_fails_closed_and_retains_wal(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "message",
+        "-Message",
+        "unsupported platform fence",
+    )
+
+    assert completed.returncode != 0
+    assert "Windows file identity" in completed.stderr
+    assert "refusing an unfenced append" in completed.stderr
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+    assert not list((runtime_root / "spool").glob("*.pending"))
+    spool_files = list((runtime_root / "spool").glob("failed-append-*.jsonl"))
+    assert len(spool_files) == 1
+    line = spool_files[0].read_text(encoding="utf-8").strip()
+    assert json.loads(line)["message"] == "unsupported platform fence"
+    validate_event_line(line)
+
+
 @pytest.mark.parametrize(
     ("event_type", "status"),
     [
@@ -169,6 +201,7 @@ def test_task_id_required_events_fail_before_runtime_write(
         ("status", ""),
     ],
 )
+@WINDOWS_APPEND_V1
 def test_events_without_task_id_requirement_can_write(
     tmp_path: Path,
     event_type: str,
@@ -198,6 +231,7 @@ def test_events_without_task_id_requirement_can_write(
     validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_task_scoped_event_with_task_id_writes_valid_event(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -225,6 +259,7 @@ def test_task_scoped_event_with_task_id_writes_valid_event(tmp_path: Path) -> No
     validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_null_payload_json_writes_empty_object_payload(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -322,6 +357,7 @@ def test_wake_request_requires_to_before_runtime_write(tmp_path: Path) -> None:
     assert not runtime_root.exists()
 
 
+@WINDOWS_APPEND_V1
 def test_operator_bridge_follow_nudge_duplicate_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -359,6 +395,7 @@ def test_operator_bridge_follow_nudge_duplicate_is_idempotent(
     validate_event_line(event_lines[0])
 
 
+@WINDOWS_APPEND_V1
 def test_operator_bridge_follow_nudge_writes_after_target_activity(
     tmp_path: Path,
 ) -> None:
@@ -416,6 +453,7 @@ def test_operator_bridge_follow_nudge_writes_after_target_activity(
     assert events[2]["to"] == "claude-rco-2"
 
 
+@WINDOWS_APPEND_V1
 def test_operator_bridge_follow_nudge_multi_target_writes_after_member_activity(
     tmp_path: Path,
 ) -> None:
@@ -475,6 +513,7 @@ def test_operator_bridge_follow_nudge_multi_target_writes_after_member_activity(
         validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_regex_agent_id_writes_valid_event_and_outbox(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -558,6 +597,7 @@ def test_separator_only_to_agent_ids_fail_before_runtime_write(tmp_path: Path) -
     assert not runtime_root.exists()
 
 
+@WINDOWS_APPEND_V1
 def test_comma_separated_to_agent_ids_write_valid_event(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -585,6 +625,7 @@ def test_comma_separated_to_agent_ids_write_valid_event(tmp_path: Path) -> None:
     validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_github_main_target_ref_writes_valid_event(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -615,6 +656,7 @@ def test_github_main_target_ref_writes_valid_event(tmp_path: Path) -> None:
     validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_role_uuid_capability_metadata_is_optional_and_validated(
     tmp_path: Path,
 ) -> None:
@@ -683,6 +725,7 @@ def test_grok_response_requires_freshness_payload_before_runtime_write(
     assert not runtime_root.exists()
 
 
+@WINDOWS_APPEND_V1
 def test_grok_response_with_freshness_payload_writes_valid_event(
     tmp_path: Path,
 ) -> None:
@@ -717,6 +760,7 @@ def test_grok_response_with_freshness_payload_writes_valid_event(
     validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_rco_pass_accepts_current_style_task_id_only_binding(
     tmp_path: Path,
 ) -> None:
@@ -815,6 +859,7 @@ def test_rco_pass_rejects_old_event_template_task_binding(
     assert not runtime_root.exists()
 
 
+@WINDOWS_APPEND_V1
 def test_rco_pass_accepts_canonical_hyphen_task_binding(
     tmp_path: Path,
 ) -> None:
@@ -850,6 +895,7 @@ def test_rco_pass_accepts_canonical_hyphen_task_binding(
     validate_event_line(line, agent_uuid_by_id={"claude-rco-1": CLAUDE_RCO1_UUID})
 
 
+@WINDOWS_APPEND_V1
 def test_rco_pass_accepts_deterministic_slash_branch_alias(
     tmp_path: Path,
 ) -> None:
@@ -889,6 +935,7 @@ def test_rco_pass_accepts_deterministic_slash_branch_alias(
     validate_event_line(line, agent_uuid_by_id={"claude-rco-1": CLAUDE_RCO1_UUID})
 
 
+@WINDOWS_APPEND_V1
 def test_non_rco_build_consensus_pass_is_unaffected(
     tmp_path: Path,
 ) -> None:
@@ -976,6 +1023,7 @@ def test_grok_response_rejects_self_declared_pr_head_worktree_freshness(
     assert not runtime_root.exists()
 
 
+@WINDOWS_APPEND_V1
 def test_grok_response_accepts_main_worktree_with_pr_head_metadata(
     tmp_path: Path,
 ) -> None:
@@ -1129,6 +1177,7 @@ def test_profile_bound_agent_uuid_mismatch_fails_before_runtime_write(
     assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
+@WINDOWS_APPEND_V1
 def test_profile_bound_agent_uuid_match_writes_and_validates(
     tmp_path: Path,
 ) -> None:
@@ -1204,6 +1253,7 @@ def test_registry_bound_agent_uuid_mismatch_fails_before_runtime_write(
     assert not (runtime_root / "shared" / "events.jsonl").exists()
 
 
+@WINDOWS_APPEND_V1
 def test_registry_bound_agent_uuid_match_writes_without_runtime_profile(
     tmp_path: Path,
 ) -> None:
@@ -1326,6 +1376,7 @@ def test_private_markers_fail_before_runtime_write(
     assert not runtime_root.exists()
 
 
+@WINDOWS_APPEND_V1
 def test_claim_and_release_accept_regex_agent_id(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
@@ -1366,6 +1417,7 @@ def test_claim_and_release_accept_regex_agent_id(tmp_path: Path) -> None:
         validate_event_line(line)
 
 
+@WINDOWS_APPEND_V1
 def test_claim_records_role_uuid_capabilities_and_lease(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"

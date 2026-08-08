@@ -1083,6 +1083,53 @@ $plan = New-CodexSandboxPath `
     POWERSHELL is None or os.name != "nt",
     reason="Windows PowerShell is unavailable",
 )
+def test_tools_consumer_resolves_codex_by_path_directory_before_file_type(
+    tmp_path: Path,
+) -> None:
+    earlier = tmp_path / "earlier"
+    later = tmp_path / "later"
+    earlier.mkdir()
+    later.mkdir()
+    earlier_exe = earlier / "codex.exe"
+    later_cmd = later / "codex.cmd"
+    earlier_exe.touch()
+    later_cmd.touch()
+
+    wrapper_path = REBOOT / "start-wd-tools-consumer.ps1"
+    wrapper_text = wrapper_path.read_text(encoding="utf-8")
+    assert "-ExecutableNames @('codex.exe', 'codex.cmd')" in wrapper_text
+    wrapper = str(wrapper_path).replace("'", "''")
+    path_value = os.pathsep.join((str(earlier), str(later))).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{wrapper}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'tools consumer parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Find-ApplicationInPath'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing Find-ApplicationInPath' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+Find-ApplicationInPath `
+  -PathValue '{path_value}' `
+  -ExecutableNames @('codex.cmd', 'codex.exe')
+"""
+    )
+    assert Path(result.stdout.strip()) == earlier_exe.resolve()
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell is unavailable",
+)
 def test_tools_consumer_sandbox_probe_is_exact_and_fail_closed(
     tmp_path: Path,
 ) -> None:

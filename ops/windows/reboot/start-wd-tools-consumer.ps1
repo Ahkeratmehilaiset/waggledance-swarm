@@ -553,8 +553,8 @@ function Find-ApplicationInPath {
         $PathValue -split [IO.Path]::PathSeparator |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     )
-    foreach ($executableName in $ExecutableNames) {
-        foreach ($entry in $entries) {
+    foreach ($entry in $entries) {
+        foreach ($executableName in $ExecutableNames) {
             $candidate = Join-Path $entry $executableName
             if ([IO.File]::Exists($candidate)) {
                 return [IO.Path]::GetFullPath($candidate)
@@ -954,7 +954,7 @@ catch {
 }
 $codexCommand = Find-ApplicationInPath `
     -PathValue $codexPathPlan.Path `
-    -ExecutableNames @('codex.cmd', 'codex.exe')
+    -ExecutableNames @('codex.exe', 'codex.cmd')
 if ([string]::IsNullOrWhiteSpace($codexCommand)) {
     throw 'Tools process PATH contains no Codex CLI application'
 }

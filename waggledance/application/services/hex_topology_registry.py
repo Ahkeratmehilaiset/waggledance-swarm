@@ -16,6 +16,13 @@ log = logging.getLogger(__name__)
 _WORD_RE = re.compile(r"\w+")
 
 
+def _normalize_selector(selector: str) -> str:
+    normalized = selector.lower().strip()
+    if normalized.startswith("="):
+        return "=" + normalized[1:].strip()
+    return normalized
+
+
 def selector_matches(
     selector: str,
     text: str,
@@ -29,20 +36,29 @@ def selector_matches(
     historically treated every unprefixed selector as a substring may pass
     ``short_selector_exact=False`` without weakening ``=token`` selectors.
     """
-    selector = selector.lower().strip()
-    exact_token = selector.startswith("=")
-    if exact_token:
-        selector = selector[1:].strip()
+    selector = _normalize_selector(selector)
     if not selector or not text:
         return False
-    if exact_token:
-        return selector in (terms if terms is not None else set(_WORD_RE.findall(text)))
-    if len(selector) >= 6 or not short_selector_exact:
-        return selector in text
-    return selector in (terms if terms is not None else set(_WORD_RE.findall(text)))
+    token_match = selector.startswith("=") or (
+        len(selector) < 6 and short_selector_exact
+    )
+    if token_match and terms is None:
+        terms = set(_WORD_RE.findall(text))
+    return _normalized_selector_matches(
+        selector,
+        text,
+        terms or set(),
+        short_selector_exact=short_selector_exact,
+    )
 
 
-def _normalized_selector_matches(selector: str, text: str, terms: set[str]) -> bool:
+def _normalized_selector_matches(
+    selector: str,
+    text: str,
+    terms: set[str],
+    *,
+    short_selector_exact: bool = True,
+) -> bool:
     """`_selector_matches` for selectors already lower().strip()-normalized
     by _build_selector_index — the select_origin_cell hot path, which must
     not re-normalize per query (that per-selector cost was the dominant
@@ -51,7 +67,7 @@ def _normalized_selector_matches(selector: str, text: str, terms: set[str]) -> b
         return False
     if selector.startswith("="):
         return selector[1:] in terms
-    if len(selector) >= 6:
+    if len(selector) >= 6 or not short_selector_exact:
         return selector in text
     return selector in terms
 
@@ -179,7 +195,7 @@ class HexTopologyRegistry:
             cell_id: tuple(
                 norm
                 for s in cell.domain_selectors
-                if (norm := s.lower().strip())
+                if (norm := _normalize_selector(s))
             )
             for cell_id, cell in self._cells.items()
         }
@@ -187,7 +203,7 @@ class HexTopologyRegistry:
             cell_id: tuple(
                 norm
                 for s in cell.tag_selectors
-                if (norm := s.lower().strip())
+                if (norm := _normalize_selector(s))
             )
             for cell_id, cell in self._cells.items()
         }

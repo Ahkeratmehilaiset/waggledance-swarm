@@ -128,15 +128,60 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
 # vocabulary.  They may preempt an already classified intent, so each sequence
 # must describe a high-confidence incident rather than an ambiguous domain
 # word such as "risk", "smoke", or "alarm" on its own.
-_SAFETY_OVERRIDE_TOKEN_SEQUENCES: tuple[tuple[str, ...], ...] = (
-    ("palovaroitin",),
-    ("fire", "alarm"),
-    ("fire", "safety", "alarm"),
+_SMOKE_DETECTION_TOKEN_SEQUENCES: tuple[tuple[str, ...], ...] = (
     ("smoke", "detected"),
     ("smoke", "was", "detected"),
     ("smoke", "has", "been", "detected"),
 )
+_ACTIVE_ALARM_SUFFIXES: tuple[tuple[str, ...], ...] = (
+    ("going", "off"),
+    ("is", "going", "off"),
+    ("was", "going", "off"),
+    ("has", "gone", "off"),
+    ("went", "off"),
+    ("sounding",),
+    ("is", "sounding"),
+    ("ringing",),
+    ("is", "ringing"),
+    ("beeping",),
+    ("is", "beeping"),
+    ("sounded",),
+    ("activated",),
+    ("has", "activated"),
+    ("triggered",),
+    ("has", "triggered"),
+)
+_ALARM_DESCRIPTOR_TOKENS: FrozenSet[str] = frozenset(
+    {"detector", "device", "system"}
+)
+_PALOVAROITIN_ACTIVE_TOKENS: FrozenSet[str] = frozenset(
+    {"hälyttää", "piippaa", "soi", "ulvoo"}
+)
+_NON_INCIDENT_ACTIVITY_TOKENS: FrozenSet[str] = frozenset(
+    {
+        "demo",
+        "demonstration",
+        "drill",
+        "practice",
+        "schedule",
+        "scheduled",
+        "simulated",
+        "simulation",
+        "test",
+        "testing",
+        "training",
+    }
+)
+_NEGATION_TOKENS: FrozenSet[str] = frozenset(
+    {"ei", "eikä", "älä", "never", "no", "not"}
+)
+_NON_NEGATING_NOT_FOLLOWERS: FrozenSet[str] = frozenset({"only"})
+_NEGATION_LOOKBACK = 5
+_MAX_FIRE_ALARM_TOKEN_DISTANCE = 8
+_MAX_PALOVAROITIN_CUE_DISTANCE = 4
+_FIRE_ALARM_CONTEXT_PADDING = 8
 _WORD_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n]+")
 
 
 def _keyword_matches(query: str, keyword: str) -> bool:
@@ -144,15 +189,147 @@ def _keyword_matches(query: str, keyword: str) -> bool:
     return re.search(pattern, query) is not None
 
 
+def _sequence_indexes(
+    tokens: tuple[str, ...],
+    sequence: tuple[str, ...],
+) -> List[int]:
+    return [
+        index
+        for index in range(len(tokens) - len(sequence) + 1)
+        if tokens[index:index + len(sequence)] == sequence
+    ]
+
+
+def _context_tokens(
+    tokens: tuple[str, ...],
+    start: int,
+    end: int,
+) -> tuple[str, ...]:
+    return tokens[
+        max(0, start - _FIRE_ALARM_CONTEXT_PADDING):
+        min(len(tokens), end + _FIRE_ALARM_CONTEXT_PADDING)
+    ]
+
+
+def _has_effective_negation(
+    tokens: tuple[str, ...],
+    start: int,
+    end: int,
+) -> bool:
+    for index in range(max(0, start), min(len(tokens), end)):
+        token = tokens[index]
+        if token not in _NEGATION_TOKENS:
+            continue
+        if (
+            token == "not"
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in _NON_NEGATING_NOT_FOLLOWERS
+        ):
+            continue
+        return True
+    return False
+
+
+def _is_negated(tokens: tuple[str, ...], index: int) -> bool:
+    return _has_effective_negation(
+        tokens,
+        index - _NEGATION_LOOKBACK,
+        index,
+    )
+
+
+def _has_unnegated_non_incident_activity(tokens: tuple[str, ...]) -> bool:
+    return any(
+        token in _NON_INCIDENT_ACTIVITY_TOKENS
+        and not _is_negated(tokens, index)
+        for index, token in enumerate(tokens)
+    )
+
+
+def _has_active_fire_alarm(tokens: tuple[str, ...]) -> bool:
+    """Recognize bounded fire + active-alarm descriptions.
+
+    Fire and alarm need not be adjacent, but they must remain close and the
+    alarm must have an explicit activation cue.  Drill/test vocabulary in the
+    same local window keeps simulated activity on its typed route.
+    """
+    for alarm_index, token in enumerate(tokens):
+        if token != "alarm":
+            continue
+        cue_index = alarm_index + 1
+        if (
+            cue_index < len(tokens)
+            and tokens[cue_index] in _ALARM_DESCRIPTOR_TOKENS
+        ):
+            cue_index += 1
+        suffix_end = None
+        for suffix in _ACTIVE_ALARM_SUFFIXES:
+            suffix_end = cue_index + len(suffix)
+            if tokens[cue_index:suffix_end] == suffix:
+                break
+        else:
+            continue
+
+        # Scan only the fixed local window.  This makes the matcher O(n) even
+        # for adversarial input containing thousands of fire/alarm tokens.
+        fire_start = max(0, alarm_index - _MAX_FIRE_ALARM_TOKEN_DISTANCE)
+        fire_end = min(len(tokens), alarm_index + _MAX_FIRE_ALARM_TOKEN_DISTANCE + 1)
+        for fire_index in range(fire_start, fire_end):
+            if tokens[fire_index] != "fire":
+                continue
+            if tokens[fire_index + 1:fire_index + 2] == ("sale",):
+                continue
+            context = _context_tokens(
+                tokens,
+                min(fire_index, alarm_index),
+                max(fire_index + 1, suffix_end),
+            )
+            if not _has_unnegated_non_incident_activity(context):
+                return True
+    return False
+
+
+def _has_active_palovaroitin(tokens: tuple[str, ...]) -> bool:
+    for alarm_index, token in enumerate(tokens):
+        if token != "palovaroitin":
+            continue
+        cue_end = min(
+            len(tokens),
+            alarm_index + _MAX_PALOVAROITIN_CUE_DISTANCE + 1,
+        )
+        for cue_index in range(alarm_index + 1, cue_end):
+            if tokens[cue_index] not in _PALOVAROITIN_ACTIVE_TOKENS:
+                continue
+            context = tokens[alarm_index:cue_index + 1]
+            if (
+                not _has_effective_negation(
+                    tokens,
+                    alarm_index - 1,
+                    cue_index,
+                )
+                and not _has_unnegated_non_incident_activity(context)
+            ):
+                return True
+    return False
+
+
 def _has_safety_override(query: str) -> bool:
     if not query:
         return False
-    tokens = tuple(_WORD_TOKEN_RE.findall(query.lower()))
-    return any(
-        tokens[index:index + len(sequence)] == sequence
-        for sequence in _SAFETY_OVERRIDE_TOKEN_SEQUENCES
-        for index in range(len(tokens) - len(sequence) + 1)
-    )
+    # Keep anchors within one sentence-like segment so unrelated statements
+    # cannot combine into an incident.  Commas and semicolons deliberately do
+    # not split: natural incident descriptions often use either.
+    for segment in _SENTENCE_BOUNDARY_RE.split(query.lower()):
+        tokens = tuple(_WORD_TOKEN_RE.findall(segment))
+        if not tokens:
+            continue
+        for sequence in _SMOKE_DETECTION_TOKEN_SEQUENCES:
+            for index in _sequence_indexes(tokens, sequence):
+                if not _is_negated(tokens, index):
+                    return True
+        if _has_active_palovaroitin(tokens) or _has_active_fire_alarm(tokens):
+            return True
+    return False
 
 
 @dataclass

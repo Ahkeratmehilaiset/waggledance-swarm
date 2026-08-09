@@ -246,6 +246,32 @@ cells:
         assert reg.select_origin_cell("jokin piippaa", intent="chat") == "hub"
         assert reg.select_origin_cell("xpalovaroitiny piippaa", intent="chat") == "hub"
 
+    def test_exact_selector_normalization_is_shared_by_config_and_public_matcher(
+        self,
+        tmp_path,
+    ):
+        from waggledance.application.services.hex_topology_registry import (
+            HexTopologyRegistry,
+            selector_matches,
+        )
+
+        config = tmp_path / "hex_cells.yaml"
+        config.write_text(
+            """
+cells:
+  - id: safety
+    coord: {q: 0, r: 0}
+    description: Safety branch
+    domain_selectors: [" = palovaroitin "]
+    enabled: true
+""",
+            encoding="utf-8",
+        )
+
+        assert selector_matches(" = palovaroitin ", "palovaroitin piippaa")
+        registry = HexTopologyRegistry(config_path=str(config), agents=[])
+        assert registry.select_origin_cell("palovaroitin piippaa") == "safety"
+
     def test_stats_structure(self):
         from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
         reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])

@@ -128,6 +128,9 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
 # vocabulary.  They may preempt an already classified intent, so each sequence
 # must describe a high-confidence incident rather than an ambiguous domain
 # word such as "risk", "smoke", or "alarm" on its own.
+_INCIDENT_AFFIRMATIVE_MODIFIER_TOKENS: FrozenSet[str] = frozenset(
+    {"definitely", "just", "now", "still"}
+)
 _SMOKE_DETECTION_TOKEN_SEQUENCES: tuple[tuple[str, ...], ...] = (
     ("smoke", "detected"),
     ("smoke", "was", "detected"),
@@ -649,6 +652,37 @@ def _sequence_indexes(
         for index in range(len(tokens) - len(sequence) + 1)
         if tokens[index:index + len(sequence)] == sequence
     ]
+
+
+def _incident_sequence_end(
+    tokens: tuple[str, ...],
+    start: int,
+    sequence: tuple[str, ...],
+) -> Optional[int]:
+    """Return the real end of a bounded incident sequence match.
+
+    Incident phrases may contain one explicitly affirmative modifier before or
+    between their fixed cue tokens.  Keeping this allowlist and skip count
+    narrow prevents negation, uncertainty, or arbitrary prose from turning an
+    approximate match into a safety override.
+    """
+    cursor = start
+    modifier_skipped = False
+    for expected in sequence:
+        if cursor >= len(tokens):
+            return None
+        if tokens[cursor] != expected:
+            if (
+                modifier_skipped
+                or tokens[cursor] not in _INCIDENT_AFFIRMATIVE_MODIFIER_TOKENS
+            ):
+                return None
+            modifier_skipped = True
+            cursor += 1
+            if cursor >= len(tokens) or tokens[cursor] != expected:
+                return None
+        cursor += 1
+    return cursor
 
 
 def _negation_is_affirmative(
@@ -1532,7 +1566,7 @@ def _fire_alarm_pair_crosses_unrelated_clause(
         ):
             cue_index += 1
         if any(
-            tokens[cue_index:cue_index + len(suffix)] == suffix
+            _incident_sequence_end(tokens, cue_index, suffix) is not None
             for suffix in _ACTIVE_ALARM_SUFFIXES
         ):
             return True
@@ -1569,8 +1603,9 @@ def _has_active_fire_alarm(
             cue_index += 1
         suffix_end = None
         for suffix in _ACTIVE_ALARM_SUFFIXES:
-            suffix_end = cue_index + len(suffix)
-            if tokens[cue_index:suffix_end] == suffix:
+            candidate_end = _incident_sequence_end(tokens, cue_index, suffix)
+            if candidate_end is not None:
+                suffix_end = candidate_end
                 break
         else:
             continue
@@ -1673,24 +1708,27 @@ def _has_safety_override(query: str) -> bool:
             correction_tokens = bounded_next_tokens
             if _is_explicit_event_control_clause(bounded_next_tokens):
                 tokens += (";",) + bounded_next_tokens
-        for sequence in _SMOKE_DETECTION_TOKEN_SEQUENCES:
-            for index in _sequence_indexes(tokens, sequence):
+        for index in range(len(tokens)):
+            for sequence in _SMOKE_DETECTION_TOKEN_SEQUENCES:
+                sequence_end = _incident_sequence_end(tokens, index, sequence)
+                if sequence_end is None:
+                    continue
                 if (
                     not _is_negated(tokens, index)
                     and not _is_anchor_negated(tokens, index)
                     and not _is_uncertain(
                         tokens,
                         index,
-                        index + len(sequence),
+                        sequence_end,
                     )
                     and not _has_attached_non_incident_activity(
                         tokens,
                         index,
-                        index + len(sequence),
+                        sequence_end,
                     )
                     and not _postposed_correction_applies(
                         tokens,
-                        index + len(sequence),
+                        sequence_end,
                         correction_tokens,
                         question_segment=question_segment,
                     )

@@ -295,6 +295,53 @@ def test_unmodelled_cancellation_idioms_fail_safe_by_design(intent, query):
     assert assignment.method == "keyword"
 
 
+@pytest.mark.parametrize("intent", _INTENT_BASELINES)
+@pytest.mark.parametrize(
+    "query",
+    (
+        "Smoke was just detected.",
+        "Smoke was definitely detected.",
+        "Smoke has just been detected.",
+        "Smoke definitely has been detected.",
+        "The fire alarm is still going off.",
+        "Fire alarm is now going off.",
+        "The fire alarm definitely is sounding.",
+        "The fire alarm is definitely sounding.",
+        "The fire alarm is still going off, we have a scheduled meeting later.",
+        "Smoke was definitely detected upstairs while the unit test runs downstairs.",
+        "Smoke was definitely detected. It was a software test of the billing API.",
+    ),
+)
+def test_incident_match_allows_one_affirmative_modifier(intent, query):
+    assignment = HexCellTopology().assign_cell(intent, query)
+
+    assert assignment.cell_id == CELL_SAFETY
+    assert assignment.method == "keyword"
+
+
+@pytest.mark.parametrize("intent, expected_cell", _TYPED_INTENT_BASELINES.items())
+@pytest.mark.parametrize(
+    "query",
+    (
+        "Smoke was not detected.",
+        "Smoke was never detected.",
+        "Smoke was maybe detected.",
+        "Smoke was definitely possibly detected.",
+        "Smoke was definitely detected during a scheduled drill.",
+        "The fire alarm is still not going off.",
+        "The fire alarm is maybe going off.",
+        "The fire alarm is still going off during a scheduled drill.",
+        "Smoke was definitely detected? No.",
+        "Is the fire alarm still going off? No.",
+    ),
+)
+def test_incident_modifier_does_not_bypass_controls(intent, expected_cell, query):
+    assignment = HexCellTopology().assign_cell(intent, query)
+
+    assert assignment.cell_id == expected_cell
+    assert assignment.method == "intent"
+
+
 @pytest.mark.parametrize("intent, expected_cell", _TYPED_INTENT_BASELINES.items())
 @pytest.mark.parametrize(
     "query",

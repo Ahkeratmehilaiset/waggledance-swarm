@@ -300,7 +300,7 @@ def _has_active_palovaroitin(tokens: tuple[str, ...]) -> bool:
         for cue_index in range(alarm_index + 1, cue_end):
             if tokens[cue_index] not in _PALOVAROITIN_ACTIVE_TOKENS:
                 continue
-            context = tokens[alarm_index:cue_index + 1]
+            context = _context_tokens(tokens, alarm_index, cue_index + 1)
             if (
                 not _has_effective_negation(
                     tokens,
@@ -325,7 +325,15 @@ def _has_safety_override(query: str) -> bool:
             continue
         for sequence in _SMOKE_DETECTION_TOKEN_SEQUENCES:
             for index in _sequence_indexes(tokens, sequence):
-                if not _is_negated(tokens, index):
+                context = _context_tokens(
+                    tokens,
+                    index,
+                    index + len(sequence),
+                )
+                if (
+                    not _is_negated(tokens, index)
+                    and not _has_unnegated_non_incident_activity(context)
+                ):
                     return True
         if _has_active_palovaroitin(tokens) or _has_active_fire_alarm(tokens):
             return True

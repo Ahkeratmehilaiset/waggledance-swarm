@@ -278,6 +278,23 @@ def test_safety_text_preempts_ordinary_domain_intent(intent, query):
     assert assignment.method == "keyword"
 
 
+@pytest.mark.parametrize("intent", _INTENT_BASELINES)
+@pytest.mark.parametrize(
+    "query",
+    (
+        "Fire alarm going off? No, all clear.",
+        "Smoke detected. Actually, false alarm, never mind.",
+    ),
+)
+def test_unmodelled_cancellation_idioms_fail_safe_by_design(intent, query):
+    # These cancellation idioms are deliberately conservative: until an idiom is
+    # modelled explicitly, an apparent incident remains in the safety cell.
+    assignment = HexCellTopology().assign_cell(intent, query)
+
+    assert assignment.cell_id == CELL_SAFETY
+    assert assignment.method == "keyword"
+
+
 @pytest.mark.parametrize("intent, expected_cell", _TYPED_INTENT_BASELINES.items())
 @pytest.mark.parametrize(
     "query",

@@ -238,6 +238,14 @@ cells:
         cell = reg.select_origin_cell("fire safety alarm security")
         assert cell == "safety_security"
 
+    def test_finnish_smoke_alarm_routes_safety_without_generic_beep_overreach(self):
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+        reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+
+        assert reg.select_origin_cell("palovaroitin piippaa", intent="chat") == "safety_security"
+        assert reg.select_origin_cell("jokin piippaa", intent="chat") == "hub"
+        assert reg.select_origin_cell("xpalovaroitiny piippaa", intent="chat") == "hub"
+
     def test_stats_structure(self):
         from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
         reg = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
@@ -525,6 +533,32 @@ class TestNeighborIdCache:
 
 class TestLocalFirst:
     """Hex mesh local-first — disabled = no effect, high local = no neighbor."""
+
+    def test_exact_selector_semantics_reach_preflight_scoring(self):
+        from waggledance.application.services.hex_health_monitor import HexHealthMonitor
+        from waggledance.application.services.hex_neighbor_assist import HexNeighborAssist
+        from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+
+        registry = HexTopologyRegistry(config_path="configs/hex_cells.yaml", agents=[])
+        service = HexNeighborAssist(
+            topology_registry=registry,
+            health_monitor=HexHealthMonitor(),
+            enabled=True,
+        )
+
+        exact_score = service._preflight_score(
+            "palovaroitin piippaa",
+            "chat",
+            "safety_security",
+        )
+        substring_score = service._preflight_score(
+            "xpalovaroitiny piippaa",
+            "chat",
+            "safety_security",
+        )
+
+        assert exact_score >= 0.3
+        assert substring_score < 0.3
 
     def test_disabled_returns_none(self):
         from waggledance.application.services.hex_neighbor_assist import HexNeighborAssist

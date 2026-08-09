@@ -48,7 +48,7 @@ cells:
   - id: safety_security
     coord: {q: -1, r: 1}
     description: "Safety and security — physical, cyber, fire, child safety"
-    domain_selectors: [safety, security, fire, cyber, guard, alarm, lock]
+    domain_selectors: [safety, security, fire, cyber, guard, alarm, =palovaroitin, lock]
     tag_selectors: [cyber_guard, fire_officer, child_safety, locksmith, yard_guard, safety_officer, shore_guard]
     enabled: true
     neighbor_policy: default

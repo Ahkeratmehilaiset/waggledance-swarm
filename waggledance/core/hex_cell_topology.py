@@ -10,8 +10,9 @@ Cells map queries to local FAISS indices for fast retrieval before
 falling back to global ChromaDB.
 
 Cell assignment rules (deterministic, no ML clustering):
+  - Safety override: high-confidence incident tokens preempt ordinary intents
   - Intent-based: math queries → math cell, thermal → thermal cell, etc.
-  - Keyword fallback: domain keywords checked if intent is "chat"
+  - Keyword fallback: other domain keywords checked for general/unmapped intents
   - Default: general cell for unclassified queries
 
 Neighbor topology (ring-1 adjacency):
@@ -89,7 +90,7 @@ _INTENT_TO_CELL: Dict[str, str] = {
     "chat": CELL_GENERAL,
 }
 
-# ── Keyword-based fallback (checked only when intent="chat") ──
+# ── Keyword routing ──────────────────────────────────────────
 
 _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
     CELL_THERMAL: [
@@ -101,8 +102,9 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
         "electricity", "sähkö", "grid", "solar", "battery",
     ],
     CELL_SAFETY: [
-        "safety", "turvallisuus", "alarm", "hälytys", "fire", "tulipalo",
-        "smoke", "savu", "violation", "risk", "riski", "danger",
+        "safety", "turvallisuus", "alarm", "hälytys", "palovaroitin",
+        "fire", "tulipalo", "smoke", "savu", "violation", "risk", "riski",
+        "danger",
     ],
     CELL_SEASONAL: [
         "season", "vuodenaika", "spring", "kevät", "summer", "kesä",
@@ -122,10 +124,35 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
     ],
 }
 
+# These token sequences are deliberately narrower than the ordinary safety-cell
+# vocabulary.  They may preempt an already classified intent, so each sequence
+# must describe a high-confidence incident rather than an ambiguous domain
+# word such as "risk", "smoke", or "alarm" on its own.
+_SAFETY_OVERRIDE_TOKEN_SEQUENCES: tuple[tuple[str, ...], ...] = (
+    ("palovaroitin",),
+    ("fire", "alarm"),
+    ("fire", "safety", "alarm"),
+    ("smoke", "detected"),
+    ("smoke", "was", "detected"),
+    ("smoke", "has", "been", "detected"),
+)
+_WORD_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
+
 
 def _keyword_matches(query: str, keyword: str) -> bool:
     pattern = rf"(?<!\w){re.escape(keyword.lower())}(?!\w)"
     return re.search(pattern, query) is not None
+
+
+def _has_safety_override(query: str) -> bool:
+    if not query:
+        return False
+    tokens = tuple(_WORD_TOKEN_RE.findall(query.lower()))
+    return any(
+        tokens[index:index + len(sequence)] == sequence
+        for sequence in _SAFETY_OVERRIDE_TOKEN_SEQUENCES
+        for index in range(len(tokens) - len(sequence) + 1)
+    )
 
 
 @dataclass
@@ -169,26 +196,34 @@ class HexCellTopology:
         """Assign a query to a hex cell based on intent and keywords.
 
         Priority:
-          1. Direct intent mapping (from SolverRouter.classify_intent)
-          2. Keyword scan (if intent is "chat" or unmapped)
-          3. Default to CELL_GENERAL
+          1. High-confidence safety incident override
+          2. Direct intent mapping (from SolverRouter.classify_intent)
+          3. Keyword scan (if intent is general or unmapped)
+          4. Default to CELL_GENERAL
         """
         cell_id: Optional[str] = None
         method = "default"
 
-        # 1. Intent mapping
-        if intent in _INTENT_TO_CELL:
+        # 1. High-confidence incidents must not be hidden by an ordinary
+        # inferred intent.  Ambiguous safety-domain words remain part of the
+        # ordinary general-intent keyword scan below.
+        if _has_safety_override(query):
+            cell_id = CELL_SAFETY
+            method = "keyword"
+
+        # 2. Intent mapping
+        elif intent in _INTENT_TO_CELL:
             cell_id = _INTENT_TO_CELL[intent]
             method = "intent"
 
-        # 2. Keyword fallback for chat/general intents
+        # 3. Keyword fallback for general or unmapped intents
         if cell_id is None or cell_id == CELL_GENERAL:
-            kw_cell = self._keyword_scan(query)
-            if kw_cell is not None:
-                cell_id = kw_cell
+            keyword_cell = self._keyword_scan(query)
+            if keyword_cell is not None:
+                cell_id = keyword_cell
                 method = "keyword"
 
-        # 3. Default
+        # 4. Default
         if cell_id is None:
             cell_id = CELL_GENERAL
             method = "default"

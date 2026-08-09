@@ -14,6 +14,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from waggledance.application.services.hex_topology_registry import selector_matches
 from waggledance.core.domain.hex_mesh import (
     HexNeighborRequest,
     HexNeighborResponse,
@@ -250,7 +251,11 @@ class HexNeighborAssist:
         if cell_def:
             query_lower = query.lower()
             for selector in cell_def.domain_selectors:
-                if selector.lower() in query_lower:
+                if selector_matches(
+                    selector,
+                    query_lower,
+                    short_selector_exact=False,
+                ):
                     score += 0.3
                     break
 

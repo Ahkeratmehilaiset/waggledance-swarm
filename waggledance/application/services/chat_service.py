@@ -39,8 +39,8 @@ FI_CHARS = set("äöåÄÖÅ")
 # Audit H42: a single ä/ö/å detector misclassifies diacritic-less
 # Finnish (mobile typing) as English and English with German/Swedish
 # proper nouns ("Möbel", "Schrödinger") as Finnish. Stopword overlap
-# gives a confident vote when either set hits; we fall back to the
-# old diacritic check only on a tie (both stopword counts zero).
+# gives a confident vote when either set hits; unresolved ties fall
+# back to the old diacritic check.
 #
 # Sets are small and deliberately uncontroversial — common function
 # words that appear in almost every natural-language sentence in each
@@ -70,9 +70,17 @@ _EN_STOPWORDS = frozenset({
     "my", "your", "his", "her", "its", "our", "their",
     "do", "does", "did", "have", "has", "had",
     "can", "could", "should", "would", "will", "shall", "may", "might",
-    "tell", "me", "us", "give", "show",
+    "tell", "me", "us", "give", "show", "please", "explain", "translate",
     "today", "yesterday", "tomorrow", "now",
 })
+
+# Bounded query-token sequences can resolve a known high-confidence tie without
+# turning individual domain nouns into broad language votes. They are checked
+# only after stopword scores are equal, so explicit English context still wins.
+_FI_TOKEN_HINT_SEQUENCES = (
+    ("palovaroitin", "piippaa"),
+    ("piippaa", "palovaroitin"),
+)
 
 # Cheap token splitter — unicode-aware via Python 3 default `\w` flags
 # so Finnish letters survive splitting.
@@ -832,23 +840,31 @@ class ChatService:
         - "Möbel sale at IKEA"     (English w/ German noun)    -> fi
         - "paljonko maksaa"        (pure Finnish w/o ä/ö)      -> en
         Now: count tokens overlapping with each language's stopword
-        set. Winner takes the language. On a tie (both 0) we fall
-        back to the diacritic check to preserve the pre-H42 behavior
-        for very short / proper-noun-only queries.
+        set. Winner takes the language. On a tie, a bounded query-token
+        sequence may resolve known high-confidence Finnish content; otherwise we
+        fall back to the diacritic check to preserve the pre-H42 behavior for
+        very short / proper-noun-only queries.
 
         Explicit ``hint != "auto"`` always wins — operator/client
         knows best.
         """
         if hint != "auto":
             return hint
-        tokens = {tok.lower() for tok in _TOKEN_RE.findall(query)}
+        token_sequence = tuple(tok.lower() for tok in _TOKEN_RE.findall(query))
+        tokens = set(token_sequence)
         fi_hits = len(tokens & _FI_STOPWORDS)
         en_hits = len(tokens & _EN_STOPWORDS)
         if fi_hits > en_hits:
             return "fi"
         if en_hits > fi_hits:
             return "en"
-        # Tie: defer to the original diacritic check, then default en.
+        if any(
+            token_sequence[index:index + len(hint_tokens)] == hint_tokens
+            for hint_tokens in _FI_TOKEN_HINT_SEQUENCES
+            for index in range(len(token_sequence) - len(hint_tokens) + 1)
+        ):
+            return "fi"
+        # Unresolved tie: defer to the original diacritic check, then default en.
         if any(c in FI_CHARS for c in query):
             return "fi"
         return "en"

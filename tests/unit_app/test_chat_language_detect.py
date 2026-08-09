@@ -7,9 +7,9 @@ Before this fix, ChatService._detect_language used a single-char
 - English w/ German letters ("Schrödinger", "Möbel") -> fi
 
 The PR-A fix counts tokens against FI/EN stopword sets and picks the
-winner. On a tie (both 0) we fall back to the pre-H42 diacritic
-check to keep behavior compatible for very short or proper-noun-only
-inputs.
+winner. A bounded query-token hint may resolve a known tie; unresolved
+ties fall back to the pre-H42 diacritic check to keep behavior
+compatible for very short or proper-noun-only inputs.
 """
 
 from __future__ import annotations
@@ -90,3 +90,37 @@ class TestDetectLanguageTieFallback:
 
     def test_empty_query_defaults_en(self):
         assert ChatService._detect_language("", "auto") == "en"
+
+
+class TestDetectLanguageBoundedDomainHints:
+    """A bounded Finnish token sequence may break a tie without broad votes."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "palovaroitin piippaa",
+            "PALOVAROITIN—PIIPPAA!",
+            "piippaa palovaroitin",
+            "palovaroitin piippaa kovaa",
+        ],
+    )
+    def test_finnish_smoke_alarm_sequence_breaks_tie(self, query):
+        assert ChatService._detect_language(query, "auto") == "fi"
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "palovaroitin error",
+            "the palovaroitin piippaa",
+            "xpalovaroitiny piippaa",
+            "translate palovaroitin piippaa",
+            "please explain palovaroitin piippaa",
+        ],
+    )
+    def test_partial_or_english_context_does_not_trigger_finnish_hint(self, query):
+        assert ChatService._detect_language(query, "auto") == "en"
+
+    def test_explicit_english_hint_still_wins_for_finnish_pair(self):
+        assert ChatService._detect_language(
+            "palovaroitin piippaa", "en"
+        ) == "en"

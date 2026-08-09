@@ -16,11 +16,28 @@ log = logging.getLogger(__name__)
 _WORD_RE = re.compile(r"\w+")
 
 
-def _selector_matches(selector: str, text: str, terms: set[str] | None = None) -> bool:
+def selector_matches(
+    selector: str,
+    text: str,
+    terms: set[str] | None = None,
+    *,
+    short_selector_exact: bool = True,
+) -> bool:
+    """Match one selector, including ``=token`` and legacy short stems.
+
+    Registry routing keeps short selectors token-exact.  Callers that
+    historically treated every unprefixed selector as a substring may pass
+    ``short_selector_exact=False`` without weakening ``=token`` selectors.
+    """
     selector = selector.lower().strip()
+    exact_token = selector.startswith("=")
+    if exact_token:
+        selector = selector[1:].strip()
     if not selector or not text:
         return False
-    if len(selector) >= 6:
+    if exact_token:
+        return selector in (terms if terms is not None else set(_WORD_RE.findall(text)))
+    if len(selector) >= 6 or not short_selector_exact:
         return selector in text
     return selector in (terms if terms is not None else set(_WORD_RE.findall(text)))
 
@@ -32,6 +49,8 @@ def _normalized_selector_matches(selector: str, text: str, terms: set[str]) -> b
     select_origin_cell cost on a 7-cell config)."""
     if not text:
         return False
+    if selector.startswith("="):
+        return selector[1:] in terms
     if len(selector) >= 6:
         return selector in text
     return selector in terms
@@ -60,8 +79,9 @@ class HexTopologyRegistry:
         # Phase D Priority 2 Candidate 3 (R18 hex scout): selector
         # strings are pre-lowercased at load time so select_origin_cell
         # doesn't pay O(cells × selectors) `.lower()` calls per query.
-        # Stored as plain tuples (not frozensets) because the substring
-        # match `sel in query_lower` requires string semantics.
+        # Stored as plain tuples because long selectors retain substring
+        # semantics; an explicit "=token" selector requests exact-token
+        # matching for terms where substring overreach would be unsafe.
         self._lower_domain_selectors: dict[str, tuple[str, ...]] = {}
         self._lower_tag_selectors: dict[str, tuple[str, ...]] = {}
         self._agents = agents or []
@@ -186,7 +206,7 @@ class HexTopologyRegistry:
                 # are considered.
                 if domain_selectors:
                     agent_domain = getattr(agent, "domain", "").lower()
-                    if any(_selector_matches(s, agent_domain) for s in domain_selectors):
+                    if any(selector_matches(s, agent_domain) for s in domain_selectors):
                         matched.append(agent)
                         continue
                     continue
@@ -200,7 +220,7 @@ class HexTopologyRegistry:
                         continue
                 # Name/ID match as fallback
                 agent_id = getattr(agent, "id", "").lower()
-                if any(_selector_matches(s, agent_id) for s in domain_selectors + tag_selectors):
+                if any(selector_matches(s, agent_id) for s in domain_selectors + tag_selectors):
                     matched.append(agent)
 
             self._cell_agents[cell_id] = matched
@@ -264,7 +284,7 @@ class HexTopologyRegistry:
 
         Uses pre-lowercased selectors built at load time
         (_build_selector_index) so per-query work is just two
-        `.lower()` calls + substring scans — no per-selector
+        `.lower()` calls + bounded selector scans — no per-selector
         `.lower()` allocations.
         """
         if not self._cells:

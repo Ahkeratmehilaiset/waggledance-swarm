@@ -85,11 +85,18 @@ independently:
 |---|---|---|
 | `"talven sähkölasku"` (FI, winter electric bill) | None of the selectors match → falls through to agent-count tiebreaker | `talvi` matches `CELL_SEASONAL`; `sähkö` matches `CELL_ENERGY` |
 | `"frost warning"` | `frost` matches `environment` selector | `frost` matches `CELL_THERMAL` keywords |
-| `"palovaroitin piippaa"` (FI, smoke alarm beeping) | No match in any 7-cell selector | No match in any 8-cell keyword either (gap noted in audit) |
+| `"palovaroitin piippaa"` (FI, smoke alarm beeping) | exact-token selector `=palovaroitin` matches `safety_security` | `palovaroitin` matches `CELL_SAFETY` |
 
 This drift is **acceptable** as long as readers know the two
 topologies route different inputs to different outputs. If a future
-PR unifies the keyword vocab, both should change in lockstep.
+change shares vocabulary, each layer still needs its own test and
+versioned contract; shared words do not make the layers identical.
+
+The current 7-cell and 8-cell counts describe static overlays, not a
+permanent FAISS growth contract. The intended FAISS layer is a fast local
+index over MAGMA evidence and solver artifacts. Solver growth may propose
+hexagonal subdivision, but a versioned topology digest plus shadow/canary
+gates must authorize any index-layout change.
 
 ---
 
@@ -130,5 +137,5 @@ PR unifies the keyword vocab, both should change in lockstep.
 
 ---
 
-**Last updated**: 2026-05-11 by PR-E. Update if either topology's
+**Last updated**: 2026-08-09. Update if either topology's
 cell count, IDs, or adjacency changes.

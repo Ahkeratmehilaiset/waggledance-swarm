@@ -79,6 +79,7 @@ def test_label_blind_hex_router_axis_measures_current_coverage_without_search(
         "query_id",
     ]
     assert result["labels_withheld_during_routing"] is True
+    assert result["router_label_isolation_check_count"] == 44
     assert result["router_label_isolation_enforced"] is True
     assert result["topology_cell_count"] == 8
     assert result["actual_cell_local_faiss_search_evaluated"] is False
@@ -228,11 +229,32 @@ def test_hex_router_classifier_receives_only_query_text(
     assert all(type(query) is str for query in observed)
 
 
+@pytest.mark.parametrize(
+    "forbidden_field",
+    benchmark._ROUTER_FORBIDDEN_INPUTS,
+)
+def test_hex_router_runtime_boundary_rejects_label_bearing_input(
+    forbidden_field: str,
+) -> None:
+    with pytest.raises(
+        benchmark.BenchmarkContractError,
+        match="hex_router_input_keys_mismatch",
+    ):
+        benchmark._route_label_blind_query(
+            {
+                "query": "Will the hive remain safe?",
+                forbidden_field: "forbidden",
+            },
+            benchmark.HexCellTopology(),
+        )
+
+
 def test_no_write_summary_exposes_blocked_hex_router_axis(capsys) -> None:
     exit_code = benchmark.main(["--no-write", "--skip-vector"])
 
     assert exit_code == 0
     summary = json.loads(capsys.readouterr().out)
+    assert summary["schema_version"] == "wd.magma.solver_retrieval_benchmark.v3"
     assert summary["hex_cell_router_axis"]["axis_role"] == "router_coverage_only"
     assert summary["hex_cell_router_axis"]["status"] == "MEASURED_BLOCKED"
     assert summary["hex_cell_router_axis"]["passed"] is False
@@ -251,6 +273,13 @@ def test_no_write_summary_exposes_blocked_hex_router_axis(capsys) -> None:
     assert summary["hex_cell_router_axis"][
         "cell_local_faiss_search_executed_count"
     ] == 0
+    assert summary["hex_cell_router_axis"]["router_input_fields"] == ["query"]
+    assert summary["hex_cell_router_axis"][
+        "router_label_isolation_check_count"
+    ] == 44
+    assert summary["hex_cell_router_axis"][
+        "router_label_isolation_enforced"
+    ] is True
     assert summary["hex_cell_router_axis"]["runtime_authority_granted"] is False
     assert summary["hex_cell_router_axis"][
         "production_promotion_gate_pass"

@@ -64,6 +64,13 @@ _WINDOWS_REPARSE_POINT = getattr(
 _CASE_KEYS = frozenset(
     {"query_id", "stratum", "query", "expected_solver", "expected_cell"}
 )
+_ROUTER_INPUT_KEYS = frozenset({"query"})
+_ROUTER_FORBIDDEN_INPUTS = (
+    "expected_solver",
+    "expected_cell",
+    "stratum",
+    "query_id",
+)
 _CORPUS_KEYS = frozenset(
     {
         "schema_version",
@@ -386,6 +393,25 @@ def load_corpus(
     return corpus, tokenizer, canonical_digest, hashlib.sha256(raw).hexdigest()
 
 
+def _route_label_blind_query(
+    router_input: Mapping[str, Any],
+    topology: HexCellTopology,
+) -> tuple[str, Any, Any]:
+    """Enforce the exact input boundary before invoking string-only routers."""
+    if type(router_input) is not dict:
+        raise BenchmarkContractError("hex_router_input_must_be_object")
+    _exact_keys(router_input, _ROUTER_INPUT_KEYS, "hex_router_input")
+    query = router_input["query"]
+    if type(query) is not str or not query:
+        raise BenchmarkContractError("hex_router_query_must_be_nonempty_string")
+    intent = SolverRouter.classify_intent(query)
+    return (
+        intent,
+        topology.assign_cell(intent, query),
+        topology.assign_cell("chat", query),
+    )
+
+
 def evaluate_label_blind_hex_router(
     cases: Sequence[Mapping[str, str]],
 ) -> dict[str, Any]:
@@ -399,6 +425,7 @@ def evaluate_label_blind_hex_router(
         raise BenchmarkContractError("hex_router_cases_must_be_nonempty")
     topology = HexCellTopology()
     rows: list[dict[str, Any]] = []
+    label_isolation_check_count = 0
     for index, raw_case in enumerate(cases):
         if type(raw_case) is not dict:
             raise BenchmarkContractError(f"hex_router_case_{index}_must_be_object")
@@ -414,10 +441,12 @@ def evaluate_label_blind_hex_router(
             raise BenchmarkContractError(
                 f"hex_router_case_{index}_expected_cell_invalid"
             )
-        query = raw_case["query"]
-        intent = SolverRouter.classify_intent(query)
-        assignment = topology.assign_cell(intent, query)
-        keyword_assignment = topology.assign_cell("chat", query)
+        router_input = {"query": raw_case["query"]}
+        intent, assignment, keyword_assignment = _route_label_blind_query(
+            router_input,
+            topology,
+        )
+        label_isolation_check_count += 1
         selected_cells = sorted(
             {assignment.cell_id, *assignment.neighbors_ring1}
         )
@@ -537,15 +566,13 @@ def evaluate_label_blind_hex_router(
         "measurement_complete": True,
         "routing_policy": "solver_intent_origin_plus_ring1_v1",
         "router_inputs": ["query_text"],
-        "router_input_fields": ["query"],
-        "router_forbidden_inputs": [
-            "expected_solver",
-            "expected_cell",
-            "stratum",
-            "query_id",
-        ],
+        "router_input_fields": sorted(_ROUTER_INPUT_KEYS),
+        "router_forbidden_inputs": list(_ROUTER_FORBIDDEN_INPUTS),
         "labels_withheld_during_routing": True,
-        "router_label_isolation_enforced": True,
+        "router_label_isolation_check_count": label_isolation_check_count,
+        "router_label_isolation_enforced": (
+            label_isolation_check_count == len(cases)
+        ),
         "topology_cell_count": len(ALL_CELLS),
         "actual_cell_local_faiss_search_evaluated": False,
         "cell_local_faiss_search_evaluated": False,
@@ -1249,7 +1276,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             a2_results.append(result)
             gates[profile_name] = differential_gate(a0, result)
         report = {
-            "schema_version": "wd.magma.solver_retrieval_benchmark.v2",
+            "schema_version": "wd.magma.solver_retrieval_benchmark.v3",
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "evidence_scope": "candidate_only_no_runtime_authority",
             "corpus": {
@@ -1297,6 +1324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_audit_report(report, output_path)
             print(output_path.relative_to(ROOT).as_posix())
         print(json.dumps({
+            "schema_version": report["schema_version"],
             "A0": a0["metrics"],
             "A1": a1,
             "gates": gates,
@@ -1307,6 +1335,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "metrics": hex_router_axis["metrics"],
                 "strategy_comparison": hex_router_axis["strategy_comparison"],
                 "comparison_gaps": hex_router_axis["comparison_gaps"],
+                "router_input_fields": hex_router_axis["router_input_fields"],
+                "router_forbidden_inputs": hex_router_axis[
+                    "router_forbidden_inputs"
+                ],
+                "router_label_isolation_check_count": hex_router_axis[
+                    "router_label_isolation_check_count"
+                ],
+                "router_label_isolation_enforced": hex_router_axis[
+                    "router_label_isolation_enforced"
+                ],
                 "actual_cell_local_faiss_search_evaluated": False,
                 "cell_local_faiss_search_executed_count": 0,
                 "runtime_authority_granted": False,

@@ -59,6 +59,205 @@ def test_frozen_corpus_hash_shape_and_projection_binding(
         )
 
 
+def test_label_blind_hex_router_axis_measures_current_coverage_without_search(
+    validated: tuple[dict, benchmark.ContentTokenizer, str],
+) -> None:
+    corpus, _tokenizer, _digest = validated
+
+    result = benchmark.evaluate_label_blind_hex_router(corpus["cases"])
+
+    assert result["status"] == "MEASURED_BLOCKED"
+    assert result["measurement_complete"] is True
+    assert result["axis_role"] == "router_coverage_only"
+    assert result["routing_policy"] == "solver_intent_origin_plus_ring1_v1"
+    assert result["router_inputs"] == ["query_text"]
+    assert result["router_input_fields"] == ["query"]
+    assert result["router_forbidden_inputs"] == [
+        "expected_solver",
+        "expected_cell",
+        "stratum",
+        "query_id",
+    ]
+    assert result["labels_withheld_during_routing"] is True
+    assert result["router_label_isolation_enforced"] is True
+    assert result["topology_cell_count"] == 8
+    assert result["actual_cell_local_faiss_search_evaluated"] is False
+    assert result["cell_local_faiss_search_evaluated"] is False
+    assert result["cell_local_faiss_search_executed_count"] == 0
+    assert result["cell_local_search_latency_evaluated"] is False
+    assert result["passed"] is False
+    assert result["criteria"] == {
+        "all_expected_cells_covered": False,
+        "mean_cells_below_global_search": True,
+        "max_cells_within_origin_ring1_policy": True,
+    }
+    assert result["metrics"] == {
+        "all": {
+            "cases": 44,
+            "expected_cell_hits": 26,
+            "expected_cell_coverage": 0.590909,
+            "selected_cell_count": {"min": 4, "mean": 4.477273, "max": 5},
+        },
+        "anchored_natural": {
+            "cases": 22,
+            "expected_cell_hits": 12,
+            "expected_cell_coverage": 0.545455,
+            "selected_cell_count": {"min": 4, "mean": 4.318182, "max": 5},
+        },
+        "semantic_zero_overlap": {
+            "cases": 22,
+            "expected_cell_hits": 14,
+            "expected_cell_coverage": 0.636364,
+            "selected_cell_count": {"min": 4, "mean": 4.636364, "max": 5},
+        },
+    }
+    assert result["strategy_comparison"]["origin_only"]["metrics"]["all"] == {
+        "cases": 44,
+        "expected_cell_hits": 12,
+        "expected_cell_coverage": 0.272727,
+        "selected_cell_count": {"min": 1, "mean": 1.0, "max": 1},
+    }
+    assert result["strategy_comparison"]["origin_plus_ring1"]["metrics"] == (
+        result["metrics"]
+    )
+    assert result["strategy_comparison"]["intent_keyword_dual_ring1"][
+        "metrics"
+    ] == {
+        "all": {
+            "cases": 44,
+            "expected_cell_hits": 30,
+            "expected_cell_coverage": 0.681818,
+            "selected_cell_count": {"min": 4, "mean": 5.272727, "max": 7},
+        },
+        "anchored_natural": {
+            "cases": 22,
+            "expected_cell_hits": 15,
+            "expected_cell_coverage": 0.681818,
+            "selected_cell_count": {"min": 4, "mean": 5.136364, "max": 7},
+        },
+        "semantic_zero_overlap": {
+            "cases": 22,
+            "expected_cell_hits": 15,
+            "expected_cell_coverage": 0.681818,
+            "selected_cell_count": {"min": 4, "mean": 5.409091, "max": 7},
+        },
+    }
+    assert result["strategy_comparison"]["all_cells_reference"] == {
+        "structural_reference_only": True,
+        "metrics": {
+            "all": {
+                "cases": 44,
+                "expected_cell_hits": 44,
+                "expected_cell_coverage": 1.0,
+                "selected_cell_count": {"min": 8, "mean": 8.0, "max": 8},
+            },
+            "anchored_natural": {
+                "cases": 22,
+                "expected_cell_hits": 22,
+                "expected_cell_coverage": 1.0,
+                "selected_cell_count": {"min": 8, "mean": 8.0, "max": 8},
+            },
+            "semantic_zero_overlap": {
+                "cases": 22,
+                "expected_cell_hits": 22,
+                "expected_cell_coverage": 1.0,
+                "selected_cell_count": {"min": 8, "mean": 8.0, "max": 8},
+            },
+        },
+    }
+    assert result["comparison_gaps"] == [
+        "centroid_top_m_not_evaluated",
+        "faiss_ivf_nprobe_not_evaluated",
+        "all_cell_latency_scaling_threshold_not_evaluated",
+    ]
+    assert result["max_cells_nominated_per_query"] == 5
+    assert result["max_cells_nominated_policy_limit"] == 5
+    assert len(result["per_query"]) == 44
+    assert result["runtime_authority_ready"] is False
+    assert result["runtime_authority_granted"] is False
+    assert result["production_promotion_gate_pass"] is False
+    assert result["fallback_used"] is False
+
+
+def test_hex_router_selection_is_independent_of_expected_labels(
+    validated: tuple[dict, benchmark.ContentTokenizer, str],
+) -> None:
+    corpus, _tokenizer, _digest = validated
+    original_cases = [dict(case) for case in corpus["cases"]]
+    relabeled_cases = [dict(case) for case in original_cases]
+    relabeled_cases[0]["expected_cell"] = "general"
+
+    original = benchmark.evaluate_label_blind_hex_router(original_cases)[
+        "per_query"
+    ][0]
+    relabeled = benchmark.evaluate_label_blind_hex_router(relabeled_cases)[
+        "per_query"
+    ][0]
+
+    routing_fields = (
+        "classified_intent",
+        "origin_cell",
+        "origin_method",
+        "selected_cells",
+        "selected_cell_count",
+    )
+    assert {key: original[key] for key in routing_fields} == {
+        key: relabeled[key] for key in routing_fields
+    }
+
+
+def test_hex_router_classifier_receives_only_query_text(
+    validated: tuple[dict, benchmark.ContentTokenizer, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corpus, _tokenizer, _digest = validated
+    observed: list[str] = []
+    classify = benchmark.SolverRouter.classify_intent
+
+    def recording_classifier(query: str) -> str:
+        observed.append(query)
+        return classify(query)
+
+    monkeypatch.setattr(
+        benchmark.SolverRouter, "classify_intent", recording_classifier
+    )
+
+    benchmark.evaluate_label_blind_hex_router(corpus["cases"])
+
+    assert observed == [case["query"] for case in corpus["cases"]]
+    assert all(type(query) is str for query in observed)
+
+
+def test_no_write_summary_exposes_blocked_hex_router_axis(capsys) -> None:
+    exit_code = benchmark.main(["--no-write", "--skip-vector"])
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["hex_cell_router_axis"]["axis_role"] == "router_coverage_only"
+    assert summary["hex_cell_router_axis"]["status"] == "MEASURED_BLOCKED"
+    assert summary["hex_cell_router_axis"]["passed"] is False
+    assert summary["hex_cell_router_axis"]["metrics"]["all"][
+        "expected_cell_hits"
+    ] == 26
+    assert summary["hex_cell_router_axis"]["strategy_comparison"]["origin_only"][
+        "metrics"
+    ]["all"]["expected_cell_hits"] == 12
+    assert summary["hex_cell_router_axis"]["strategy_comparison"][
+        "all_cells_reference"
+    ]["metrics"]["all"]["expected_cell_hits"] == 44
+    assert summary["hex_cell_router_axis"][
+        "actual_cell_local_faiss_search_evaluated"
+    ] is False
+    assert summary["hex_cell_router_axis"][
+        "cell_local_faiss_search_executed_count"
+    ] == 0
+    assert summary["hex_cell_router_axis"]["runtime_authority_granted"] is False
+    assert summary["hex_cell_router_axis"][
+        "production_promotion_gate_pass"
+    ] is False
+    assert summary["runtime_authority_ready"] is False
+
+
 def test_semantic_corpus_mutation_fails_frozen_hash_before_retrieval(
     projection_documents: list[dict], corpus_value: dict
 ) -> None:

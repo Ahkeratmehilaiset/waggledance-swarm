@@ -44,6 +44,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.magma import vector_projection  # noqa: E402
+from waggledance.core.hex_cell_topology import ALL_CELLS, HexCellTopology  # noqa: E402
+from waggledance.core.reasoning.solver_router import SolverRouter  # noqa: E402
 
 
 CORPUS_SCHEMA = "wd.magma.semantic_eval.v1"
@@ -382,6 +384,192 @@ def load_corpus(
         value, documents, expected_sha256=expected_sha256
     )
     return corpus, tokenizer, canonical_digest, hashlib.sha256(raw).hexdigest()
+
+
+def evaluate_label_blind_hex_router(
+    cases: Sequence[Mapping[str, str]],
+) -> dict[str, Any]:
+    """Measure the existing intent -> origin + ring-1 policy without search.
+
+    Only query text crosses the routing boundary. Expected cell and stratum are
+    read after selection to score the frozen corpus. This axis deliberately
+    does not claim that a cell-local FAISS search or its latency was measured.
+    """
+    if not cases:
+        raise BenchmarkContractError("hex_router_cases_must_be_nonempty")
+    topology = HexCellTopology()
+    rows: list[dict[str, Any]] = []
+    for index, raw_case in enumerate(cases):
+        if type(raw_case) is not dict:
+            raise BenchmarkContractError(f"hex_router_case_{index}_must_be_object")
+        _exact_keys(raw_case, _CASE_KEYS, f"hex_router_case_{index}")
+        if any(
+            type(raw_case[key]) is not str or not raw_case[key]
+            for key in _CASE_KEYS
+        ):
+            raise BenchmarkContractError(f"hex_router_case_{index}_fields_invalid")
+        if raw_case["stratum"] not in _STRATA:
+            raise BenchmarkContractError(f"hex_router_case_{index}_stratum_invalid")
+        if raw_case["expected_cell"] not in ALL_CELLS:
+            raise BenchmarkContractError(
+                f"hex_router_case_{index}_expected_cell_invalid"
+            )
+        query = raw_case["query"]
+        intent = SolverRouter.classify_intent(query)
+        assignment = topology.assign_cell(intent, query)
+        keyword_assignment = topology.assign_cell("chat", query)
+        selected_cells = sorted(
+            {assignment.cell_id, *assignment.neighbors_ring1}
+        )
+        dual_selected_cells = sorted(
+            {
+                *selected_cells,
+                keyword_assignment.cell_id,
+                *keyword_assignment.neighbors_ring1,
+            }
+        )
+        rows.append(
+            {
+                "query_id": raw_case["query_id"],
+                "stratum": raw_case["stratum"],
+                "classified_intent": intent,
+                "origin_cell": assignment.cell_id,
+                "origin_method": assignment.method,
+                "origin_expected_cell_present": (
+                    raw_case["expected_cell"] == assignment.cell_id
+                ),
+                "selected_cells": selected_cells,
+                "selected_cell_count": len(selected_cells),
+                "expected_cell_present": raw_case["expected_cell"] in selected_cells,
+                "keyword_origin_cell": keyword_assignment.cell_id,
+                "intent_keyword_dual_ring1_cells": dual_selected_cells,
+                "intent_keyword_dual_ring1_cell_count": len(dual_selected_cells),
+                "intent_keyword_dual_ring1_expected_cell_present": (
+                    raw_case["expected_cell"] in dual_selected_cells
+                ),
+            }
+        )
+
+    def summarize(
+        selected: Sequence[Mapping[str, Any]],
+        *,
+        hit_key: str,
+        count_key: str,
+    ) -> dict[str, Any]:
+        counts = [int(row[count_key]) for row in selected]
+        hits = sum(row[hit_key] is True for row in selected)
+        return {
+            "cases": len(selected),
+            "expected_cell_hits": hits,
+            "expected_cell_coverage": round(hits / len(selected), 6),
+            "selected_cell_count": {
+                "min": min(counts),
+                "mean": round(sum(counts) / len(counts), 6),
+                "max": max(counts),
+            },
+        }
+
+    def summarize_strategy(hit_key: str, count_key: str) -> dict[str, Any]:
+        return {
+            "all": summarize(rows, hit_key=hit_key, count_key=count_key),
+            **{
+                stratum: summarize(
+                    [row for row in rows if row["stratum"] == stratum],
+                    hit_key=hit_key,
+                    count_key=count_key,
+                )
+                for stratum in sorted(_STRATA)
+            },
+        }
+
+    for row in rows:
+        row["origin_cell_count"] = 1
+        row["all_cells_expected_cell_present"] = True
+        row["all_cells_count"] = len(ALL_CELLS)
+    strategy_comparison = {
+        "origin_only": {
+            "structural_reference_only": False,
+            "metrics": summarize_strategy(
+                "origin_expected_cell_present", "origin_cell_count"
+            ),
+        },
+        "origin_plus_ring1": {
+            "structural_reference_only": False,
+            "metrics": summarize_strategy(
+                "expected_cell_present", "selected_cell_count"
+            ),
+        },
+        "intent_keyword_dual_ring1": {
+            "structural_reference_only": False,
+            "metrics": summarize_strategy(
+                "intent_keyword_dual_ring1_expected_cell_present",
+                "intent_keyword_dual_ring1_cell_count",
+            ),
+        },
+        "all_cells_reference": {
+            "structural_reference_only": True,
+            "metrics": summarize_strategy(
+                "all_cells_expected_cell_present", "all_cells_count"
+            ),
+        },
+    }
+    metrics = strategy_comparison["origin_plus_ring1"]["metrics"]
+    policy_max_cells = max(
+        1 + len(topology.get_neighbors(cell_id, max_ring=1))
+        for cell_id in ALL_CELLS
+    )
+    criteria = {
+        "all_expected_cells_covered": (
+            metrics["all"]["expected_cell_coverage"] == 1.0
+        ),
+        "mean_cells_below_global_search": (
+            metrics["all"]["selected_cell_count"]["mean"] < len(ALL_CELLS)
+        ),
+        "max_cells_within_origin_ring1_policy": (
+            metrics["all"]["selected_cell_count"]["max"] <= policy_max_cells
+        ),
+    }
+    passed = all(criteria.values())
+    return {
+        "axis": "hex_cell_label_blind_router",
+        "axis_role": "router_coverage_only",
+        "status": "MEASURED_PASS" if passed else "MEASURED_BLOCKED",
+        "measurement_complete": True,
+        "routing_policy": "solver_intent_origin_plus_ring1_v1",
+        "router_inputs": ["query_text"],
+        "router_input_fields": ["query"],
+        "router_forbidden_inputs": [
+            "expected_solver",
+            "expected_cell",
+            "stratum",
+            "query_id",
+        ],
+        "labels_withheld_during_routing": True,
+        "router_label_isolation_enforced": True,
+        "topology_cell_count": len(ALL_CELLS),
+        "actual_cell_local_faiss_search_evaluated": False,
+        "cell_local_faiss_search_evaluated": False,
+        "cell_local_faiss_search_executed_count": 0,
+        "cell_local_search_latency_evaluated": False,
+        "passed": passed,
+        "criteria": criteria,
+        "metrics": metrics,
+        "max_cells_nominated_per_query": metrics["all"]["selected_cell_count"][
+            "max"
+        ],
+        "max_cells_nominated_policy_limit": policy_max_cells,
+        "strategy_comparison": strategy_comparison,
+        "comparison_gaps": [
+            "centroid_top_m_not_evaluated",
+            "faiss_ivf_nprobe_not_evaluated",
+            "all_cell_latency_scaling_threshold_not_evaluated",
+        ],
+        "per_query": rows,
+        "runtime_authority_ready": False,
+        "runtime_authority_granted": False,
+        "production_promotion_gate_pass": False,
+        "fallback_used": False,
+    }
 
 
 def normalize_embedding_matrix(
@@ -1022,6 +1210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         corpus, tokenizer, corpus_digest, raw_corpus_digest = load_corpus(
             corpus_path, documents
         )
+        hex_router_axis = evaluate_label_blind_hex_router(corpus["cases"])
         # Only query text crosses into retrieval.  Labels remain in `cases` and
         # are consumed solely by post-ranking evaluation.
         query_texts = [case["query"] for case in corpus["cases"]]
@@ -1060,7 +1249,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             a2_results.append(result)
             gates[profile_name] = differential_gate(a0, result)
         report = {
-            "schema_version": "wd.magma.solver_retrieval_benchmark.v1",
+            "schema_version": "wd.magma.solver_retrieval_benchmark.v2",
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "evidence_scope": "candidate_only_no_runtime_authority",
             "corpus": {
@@ -1079,9 +1268,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "A1": a1,
             "A2": a2_results,
             "differential_gates": gates,
+            "hex_cell_router_axis": hex_router_axis,
             "hex_cell_local_axis": {
                 "status": "NOT_RUN",
-                "reason": "requires_searchable_materialization_and_label_blind_cell_router",
+                "reason": (
+                    "requires_passing_label_blind_router_and_actual_cell_local_search"
+                ),
+                "router_axis_passed": hex_router_axis["passed"],
+                "actual_cell_local_faiss_search_evaluated": False,
+                "cell_local_faiss_search_executed_count": 0,
             },
             "runtime_authority_ready": False,
             "runtime_authority_blockers": [
@@ -1090,6 +1285,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "independent_corpus_adjudication_pending",
                 "off_domain_rejection_not_calibrated",
                 "ollama_embed_response_digest_not_attested",
+                "hex_cell_local_faiss_search_not_run",
+                *(
+                    []
+                    if hex_router_axis["passed"]
+                    else ["hex_cell_router_expected_cell_coverage_below_gate"]
+                ),
             ],
         }
         if output_path is not None:
@@ -1099,6 +1300,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "A0": a0["metrics"],
             "A1": a1,
             "gates": gates,
+            "hex_cell_router_axis": {
+                "axis_role": hex_router_axis["axis_role"],
+                "status": hex_router_axis["status"],
+                "passed": hex_router_axis["passed"],
+                "metrics": hex_router_axis["metrics"],
+                "strategy_comparison": hex_router_axis["strategy_comparison"],
+                "comparison_gaps": hex_router_axis["comparison_gaps"],
+                "actual_cell_local_faiss_search_evaluated": False,
+                "cell_local_faiss_search_executed_count": 0,
+                "runtime_authority_granted": False,
+                "production_promotion_gate_pass": False,
+            },
             "runtime_authority_ready": False,
         }, indent=2, sort_keys=True, allow_nan=False))
         if profiles and any(not gate["passed"] for gate in gates.values()):

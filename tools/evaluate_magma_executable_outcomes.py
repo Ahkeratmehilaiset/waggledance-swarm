@@ -108,11 +108,11 @@ _EXPECTED_INPUTS = {
 }
 
 
-def _suite_identity() -> dict[str, Any]:
+def _suite_identity(minimum_candidate_score: float) -> dict[str, Any]:
     return {
         "schema_version": SUITE_SCHEMA,
         "cases": [asdict(case) for case in FROZEN_CASES],
-        "minimum_candidate_score": DEFAULT_MIN_SCORE,
+        "minimum_candidate_score": minimum_candidate_score,
         "positive_required_explicit_inputs": sorted(_HEATING_REQUIRED_INPUTS),
         "positive_expected_inputs": _EXPECTED_INPUTS,
         "positive_expected_derivation": [
@@ -122,7 +122,11 @@ def _suite_identity() -> dict[str, Any]:
     }
 
 
-FROZEN_SUITE_DIGEST = sha256_digest(_suite_identity())
+def _suite_digest(minimum_candidate_score: float) -> str:
+    return sha256_digest(_suite_identity(minimum_candidate_score))
+
+
+FROZEN_SUITE_DIGEST = _suite_digest(DEFAULT_MIN_SCORE)
 
 
 def _require_finite_score(value: Any) -> float:
@@ -350,7 +354,7 @@ def run_frozen_outcome_gate(
     """Run all frozen cases through the gate-owned deterministic solver."""
     if not callable(retrieve_candidates):
         raise OutcomeGateContractError("candidate retrieval dependency must be callable")
-    _require_finite_score(minimum_score)
+    threshold = _require_finite_score(minimum_score)
     solver = SymbolicSolver()
     cases: list[dict[str, Any]] = []
     executor_call_count = 0
@@ -367,7 +371,7 @@ def run_frozen_outcome_gate(
                     "frozen cases were retrieved through different sessions"
                 )
         admission = evaluate_admission(
-            case.query, normalized, minimum_score=minimum_score
+            case.query, normalized, minimum_score=threshold
         )
         calls_before = executor_call_count
         outcome: dict[str, Any] | None = None
@@ -424,7 +428,8 @@ def run_frozen_outcome_gate(
     return {
         "schema_version": REPORT_SCHEMA,
         "suite_schema_version": SUITE_SCHEMA,
-        "suite_digest": FROZEN_SUITE_DIGEST,
+        "suite_digest": _suite_digest(threshold),
+        "minimum_candidate_score": threshold,
         "suite_role": "development_smoke_not_held_out",
         "case_count": len(cases),
         "positive_case_count": len(positive_rows),

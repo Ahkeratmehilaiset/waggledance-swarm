@@ -47,6 +47,16 @@ def _frozen_retriever(query: str) -> list[dict]:
     return [_candidate("colony_food_reserves", 0.666082)]
 
 
+def _threshold_sensitive_retriever(query: str) -> list[dict]:
+    case_by_query = {case.query: case.case_id for case in gate.FROZEN_CASES}
+    case_id = case_by_query[query]
+    if case_id == "heating_cost_96m2_minus5c_12ckwh":
+        return [_candidate("heating_cost", 0.30)]
+    if case_id == "translate_monthly_heating_bill_spanish":
+        return [_candidate("heating_cost", 0.90)]
+    return [_candidate("colony_food_reserves", 0.90)]
+
+
 def test_frozen_suite_identity_is_stable() -> None:
     assert len(gate.FROZEN_CASES) == 4
     assert gate.FROZEN_SUITE_DIGEST == (
@@ -54,10 +64,36 @@ def test_frozen_suite_identity_is_stable() -> None:
     )
 
 
+def test_suite_digest_binds_actual_minimum_score_and_verdict() -> None:
+    strict = gate.run_frozen_outcome_gate(
+        _threshold_sensitive_retriever,
+        minimum_score=gate.DEFAULT_MIN_SCORE,
+    )
+    loose = gate.run_frozen_outcome_gate(
+        _threshold_sensitive_retriever,
+        minimum_score=0.0,
+    )
+
+    assert strict["frozen_smoke_gate_pass"] is False
+    assert strict["cases"][0]["admission"]["reason"] == (
+        "candidate_below_minimum_score"
+    )
+    assert strict["minimum_candidate_score"] == gate.DEFAULT_MIN_SCORE
+    assert strict["suite_digest"] == gate.FROZEN_SUITE_DIGEST
+    assert loose["frozen_smoke_gate_pass"] is True
+    assert loose["cases"][0]["admission"]["reason"] == (
+        "explicit_heating_contract_satisfied"
+    )
+    assert loose["minimum_candidate_score"] == 0.0
+    assert loose["suite_digest"] != strict["suite_digest"]
+
+
 def test_frozen_gate_executes_exact_positive_and_abstains_on_ood() -> None:
     report = gate.run_frozen_outcome_gate(_frozen_retriever)
 
     assert report["frozen_smoke_gate_pass"] is True
+    assert report["minimum_candidate_score"] == gate.DEFAULT_MIN_SCORE
+    assert report["suite_digest"] == gate.FROZEN_SUITE_DIGEST
     assert report["positive_case_count"] == 1
     assert report["ood_negative_case_count"] == 3
     assert report["executor_call_count"] == 1

@@ -350,6 +350,70 @@ def test_partial_failure_leaves_prior_commit_intact(workspace):
     assert (cell_dir / "commits" / first_commit_id / "manifest.json").exists()
 
 
+def test_missing_per_cell_checkpoint_anchor_fails_without_pointer_advance(workspace):
+    first_event = _projected_event("a")
+    _emit(workspace, first_event[0])
+    first = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert first.cells_applied == 1
+    pointer_path = workspace["vector_root"] / "thermal" / "current.json"
+    original_pointer = pointer_path.read_bytes()
+
+    second_event = _projected_event("b")
+    _emit(workspace, second_event[0])
+    checkpoint = json.loads(workspace["checkpoint"].read_text("utf-8"))
+    checkpoint["per_cell"]["thermal"]["last_applied_event_id"] = (
+        "evt_0000000000000000"
+    )
+    workspace["checkpoint"].write_text(
+        json.dumps(checkpoint, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tampered_checkpoint = workspace["checkpoint"].read_bytes()
+
+    report = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+
+    assert report.cells_failed == 1
+    assert "anchor was not found" in report.cell_results["thermal"].error
+    assert pointer_path.read_bytes() == original_pointer
+    assert workspace["checkpoint"].read_bytes() == tampered_checkpoint
+    loaded = mod.load_verified_projection_commit(
+        workspace["vector_root"],
+        "thermal",
+        expected_embedding_contract=first_event[3],
+        expected_topology_digest=first_event[4],
+    )
+    assert [
+        row["projection_document"]["canonical_solver_id"]
+        for row in loaded["documents"]
+    ] == ["a"]
+
+
+def test_missing_explicit_since_anchor_fails_before_any_write(workspace):
+    _emit(workspace, vector_events.vector_upsert_requested("thermal", "a", "s"))
+
+    with pytest.raises(ValueError, match="requested event anchor was not found"):
+        mod.apply(
+            event_log=workspace["event_log"],
+            vector_root=workspace["vector_root"],
+            checkpoint_path=workspace["checkpoint"],
+            since_event_id="evt_0000000000000000",
+            dry_run=False,
+        )
+
+    assert not workspace["vector_root"].exists()
+    assert not workspace["checkpoint"].exists()
+
+
 def test_recovery_after_failure_succeeds_on_retry(workspace):
     """After a simulated crash, a subsequent clean apply should succeed
     and produce the intended final state."""
@@ -434,6 +498,45 @@ def test_delete_removes_signature_from_next_commit(workspace):
     assert m["vector_count"] == 1
 
 
+def test_identical_projected_upsert_reactivates_after_delete(workspace):
+    projected = _projected_event("heat")
+    _emit(workspace, projected[0])
+    first = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert first.cells_applied == 1
+
+    _emit(workspace, vector_events.vector_delete_requested("thermal", "heat"))
+    deleted = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert deleted.cells_applied == 1
+    assert deleted.cell_results["thermal"].vector_count == 0
+
+    _emit(workspace, projected[0])
+    restored = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert restored.cells_applied == 1
+    loaded = mod.load_verified_projection_commit(
+        workspace["vector_root"],
+        "thermal",
+        expected_embedding_contract=projected[3],
+        expected_topology_digest=projected[4],
+    )
+    assert loaded["manifest"]["document_count"] == 1
+    assert loaded["documents"][0]["projection_document"] == projected[1]
+
+
 # ── Replay / since ────────────────────────────────────────────────
 
 def test_full_replay_and_checkpointed_replay_give_equivalent_state(workspace):
@@ -511,6 +614,41 @@ def test_checksum_mismatch_detected(workspace):
     assert not mod.verify_commit_integrity(
         workspace["vector_root"], "thermal", cid,
     )
+
+
+def test_legacy_writer_rejects_preplanted_hardlink_without_overwrite(
+    workspace,
+    tmp_path,
+):
+    event = vector_events.vector_upsert_requested("thermal", "a", "s")
+    _emit(workspace, event)
+    expected_commit = mod.compute_commit_id(
+        mod.CellState(cell_id="thermal", signatures={"a": "s"})
+    )
+    commit_dir = (
+        workspace["vector_root"] / "thermal" / "commits" / expected_commit
+    )
+    commit_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-sentinel.json"
+    sentinel = b"outside must remain unchanged\n"
+    outside.write_bytes(sentinel)
+    try:
+        os.link(outside, commit_dir / "manifest.json")
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"hardlinks unavailable: {exc}")
+
+    report = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+
+    assert report.cells_failed == 1
+    assert outside.read_bytes() == sentinel
+    assert not (workspace["vector_root"] / "thermal" / "current.json").exists()
+    assert not workspace["checkpoint"].exists()
+    assert list((workspace["vector_root"] / "thermal" / "commits").glob(".stage-*")) == []
 
 
 # ── Determinism ────────────────────────────────────────────────────

@@ -306,6 +306,52 @@ def test_strict_reader_rejects_rows_liberal_reader_skips(tmp_path):
         list(read_events(log, strict=True))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("missing_ts", None),
+        ("ts", "not-a-timestamp"),
+        ("ts", "2026-08-10T02:00:00"),
+        ("source", 7),
+        ("source", "../indexer"),
+        ("faiss_commit_id", "../../escape"),
+        ("artifact_path", "../../outside/manifest.json"),
+        ("vector_count", -1),
+        ("vector_count", True),
+        ("checksum", "sha256:short"),
+    ],
+)
+def test_strict_reader_rejects_unsafe_commit_claim_fields_but_liberal_reads(
+    tmp_path,
+    field,
+    value,
+):
+    from waggledance.core.magma.vector_events import read_events
+
+    valid = vector_commit_applied(
+        cell_id="thermal",
+        faiss_commit_id="faiss_0123456789abcdef",
+        artifact_path="vector/thermal/commits/faiss_0123456789abcdef",
+        vector_count=1,
+        checksum="sha256:" + "a" * 64,
+        source_events=["evt_0123456789abcdef"],
+        input_event_range=("evt_0123456789abcdef", "evt_0123456789abcdef"),
+        source="indexer",
+    ).to_dict()
+    if field == "missing_ts":
+        valid.pop("ts")
+    elif field in {"ts", "source"}:
+        valid[field] = value
+    else:
+        valid["payload"][field] = value
+    log = tmp_path / "events.jsonl"
+    log.write_text(json.dumps(valid) + "\n", encoding="utf-8")
+
+    assert len(list(read_events(log))) == 1
+    with pytest.raises(ValueError, match="invalid strict vector event contract at line 1"):
+        list(read_events(log, strict=True))
+
+
 def test_round_trip_emit_read_preserves_event_id(tmp_path):
     """The consumer must be able to dedup by event_id across a
     restart. Emit, read, and confirm the same id comes back."""

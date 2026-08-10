@@ -64,6 +64,23 @@ PROJECTION_POINTER_SCHEMA = "magma.faiss.current_pointer.v1"
 _PROJECTION_COMMIT_ID = re.compile(r"^proj_[0-9a-f]{64}$")
 _LEGACY_COMMIT_ID = re.compile(r"^faiss_[0-9a-f]{16}$")
 _FULL_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_EVENT_ID = re.compile(r"^evt_[0-9a-f]{16}$")
+_LEGACY_MANIFEST_KEYS = frozenset(
+    {"schema_version", "cell_id", "commit_id", "vector_count", "signatures", "produced_at"}
+)
+_LEGACY_COMMIT_KEYS = frozenset(
+    {
+        "schema_version",
+        "cell_id",
+        "faiss_commit_id",
+        "produced_at",
+        "vector_count",
+        "checksum",
+        "input_event_range",
+        "source",
+        "stage",
+    }
+)
 _PROJECTION_ROW_KEYS = frozenset({"projection_document", "source_identity"})
 _PROJECTION_MANIFEST_KEYS = frozenset(
     {
@@ -245,7 +262,12 @@ def _apply_projected_upsert(
             raise ValueError(
                 "source identity generation conflicts with projected content"
             )
-        return
+        # A later identical event is normally a replay no-op. After an
+        # intervening delete, however, the solver is inactive and the new log
+        # position is an explicit reactivation request. Restore its projection
+        # without discarding the durable identity history.
+        if model_id in cell.signatures:
+            return
 
     cell.projection_mode = True
     cell.signatures[model_id] = document["solver_contract_digest"]
@@ -462,71 +484,224 @@ def _checksum_dir(commit_dir: Path) -> str:
     return "sha256:" + hashlib.sha256(blob).hexdigest()
 
 
+def _require_regular_single_link_files(
+    entries: list[Path],
+    label: str,
+) -> None:
+    for entry in entries:
+        try:
+            stat_result = entry.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError(f"{label} artifact metadata is unavailable") from exc
+        if entry.is_symlink() or not entry.is_file() or stat_result.st_nlink != 1:
+            raise ValueError(f"{label} artifacts must be regular single-link files")
+
+
+def _legacy_vectors_bytes(signatures: dict[str, str]) -> bytes:
+    lines = [
+        json.dumps({"solver_id": model_id, "signature": signature}, sort_keys=True)
+        for model_id, signature in sorted(signatures.items())
+    ]
+    return (("\n".join(lines) + "\n") if lines else "").encode("utf-8")
+
+
+def _load_verified_legacy_directory(
+    commit_dir: Path,
+    *,
+    expected_cell_id: str,
+    expected_commit_id: str,
+    expected_signatures: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    if not commit_dir.is_dir():
+        raise ValueError("legacy commit directory is missing")
+    entries = list(commit_dir.iterdir())
+    expected_names = {"manifest.json", "vectors.jsonl", "commit.json"}
+    if {entry.name for entry in entries} != expected_names:
+        raise ValueError("legacy commit is incomplete or contains extra artifacts")
+    _require_regular_single_link_files(entries, "legacy commit")
+
+    try:
+        manifest = json.loads((commit_dir / "manifest.json").read_text("utf-8"))
+        commit = json.loads((commit_dir / "commit.json").read_text("utf-8"))
+    except Exception as exc:
+        raise ValueError("legacy commit metadata is invalid") from exc
+    if type(manifest) is not dict or frozenset(manifest) != _LEGACY_MANIFEST_KEYS:
+        raise ValueError("legacy manifest has an unknown schema shape")
+    if type(commit) is not dict or frozenset(commit) != _LEGACY_COMMIT_KEYS:
+        raise ValueError("legacy commit record has an unknown schema shape")
+    if manifest["schema_version"] != 1 or commit["schema_version"] != 1:
+        raise ValueError("unsupported legacy commit schema")
+    if (
+        manifest["cell_id"] != expected_cell_id
+        or commit["cell_id"] != expected_cell_id
+        or manifest["commit_id"] != expected_commit_id
+        or commit["faiss_commit_id"] != expected_commit_id
+    ):
+        raise ValueError("legacy commit binding mismatch")
+    if (
+        not isinstance(manifest["produced_at"], str)
+        or commit["produced_at"] != manifest["produced_at"]
+        or commit["source"] != "indexer"
+        or commit["stage"] != 2
+    ):
+        raise ValueError("legacy commit provenance is invalid")
+
+    vector_count = manifest["vector_count"]
+    if type(vector_count) is not int or vector_count < 0:
+        raise ValueError("legacy vector_count is invalid")
+    if type(commit["vector_count"]) is not int or commit["vector_count"] != vector_count:
+        raise ValueError("legacy commit vector_count mismatch")
+    signatures = manifest["signatures"]
+    if type(signatures) is not dict or len(signatures) != vector_count:
+        raise ValueError("legacy commit signatures are invalid")
+    canonical_signatures: dict[str, str] = {}
+    for solver_id, signature in signatures.items():
+        safe_solver_id = vector_projection.validate_solver_id(solver_id)
+        if not isinstance(signature, str):
+            raise ValueError("legacy solver signature must be text")
+        canonical_signatures[safe_solver_id] = signature
+    if expected_signatures is not None and canonical_signatures != expected_signatures:
+        raise ValueError("existing legacy commit conflicts with expected signatures")
+    if compute_commit_id(
+        CellState(cell_id=expected_cell_id, signatures=canonical_signatures)
+    ) != expected_commit_id:
+        raise ValueError("legacy commit content address mismatch")
+    if (commit_dir / "vectors.jsonl").read_bytes() != _legacy_vectors_bytes(
+        canonical_signatures
+    ):
+        raise ValueError("legacy vectors payload does not match manifest")
+
+    event_range = commit["input_event_range"]
+    if event_range is not None and (
+        type(event_range) is not list
+        or len(event_range) != 2
+        or any(
+            not isinstance(event_id, str) or _EVENT_ID.fullmatch(event_id) is None
+            for event_id in event_range
+        )
+    ):
+        raise ValueError("legacy commit input event range is invalid")
+    checksum = commit["checksum"]
+    if not isinstance(checksum, str) or _FULL_DIGEST.fullmatch(checksum) is None:
+        raise ValueError("legacy commit checksum is invalid")
+    if _checksum_dir(commit_dir) != checksum:
+        raise ValueError("legacy commit integrity check failed")
+    return {
+        "commit_dir": commit_dir,
+        "manifest": manifest,
+        "commit": commit,
+        "signatures": canonical_signatures,
+        "vector_count": vector_count,
+        "checksum": checksum,
+    }
+
+
+def _load_verified_legacy_commit(
+    vector_root: Path,
+    cell_id: str,
+    commit_id: str,
+    *,
+    expected_signatures: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    safe_cell = vector_projection.validate_vector_cell_id(cell_id)
+    safe_commit = _validate_commit_id(commit_id)
+    if not _LEGACY_COMMIT_ID.fullmatch(safe_commit):
+        raise ValueError("legacy commit_id is invalid")
+    commit_dir = _safe_legacy_commit_dir(vector_root, safe_cell, safe_commit)
+    return _load_verified_legacy_directory(
+        commit_dir,
+        expected_cell_id=safe_cell,
+        expected_commit_id=safe_commit,
+        expected_signatures=expected_signatures,
+    )
+
+
 # ── Writer: staging → atomic swap ─────────────────────────────────
 
 def _stage_commit(cell: CellState, commit_id: str,
                     vector_root: Path) -> dict:
     """Write `<vector_root>/<cell>/commits/<commit_id>/{manifest, commit, vectors}.
 
-    Idempotent: if the directory already exists with matching content,
-    we still rewrite the manifest (cheap) but keep the existing
-    payload. Returns a dict with artifact_path, vector_count, checksum.
+    Idempotent: an existing directory is verified and never rewritten.
+    New content is built in an unpredictable same-volume staging directory
+    and published only after it passes the complete legacy contract.
     """
-    cell_dir = _safe_cell_dir(vector_root, cell.cell_id)
-    commit_dir = _safe_legacy_commit_dir(vector_root, cell.cell_id, commit_id)
-    commit_dir.mkdir(parents=True, exist_ok=True)
+    commits_dir = _safe_projection_commits_dir(vector_root, cell.cell_id)
+    commits_dir.mkdir(parents=True, exist_ok=True)
+    final_dir = _safe_legacy_commit_dir(vector_root, cell.cell_id, commit_id)
+    expected_signatures = dict(sorted(cell.signatures.items()))
+    if final_dir.exists():
+        existing = _load_verified_legacy_commit(
+            vector_root,
+            cell.cell_id,
+            commit_id,
+            expected_signatures=expected_signatures,
+        )
+        return {
+            "commit_dir": final_dir,
+            "artifact_path": final_dir.relative_to(vector_root.resolve().parent).as_posix(),
+            "vector_count": existing["vector_count"],
+            "checksum": existing["checksum"],
+        }
 
-    # Manifest — projection shape.
+    stage_dir = Path(tempfile.mkdtemp(prefix=".stage-", dir=commits_dir)).resolve()
+    produced_at = _utc_now_iso()
     manifest = {
         "schema_version": 1,
         "cell_id": cell.cell_id,
         "commit_id": commit_id,
         "vector_count": len(cell.signatures),
-        "signatures": dict(sorted(cell.signatures.items())),
-        "produced_at": _utc_now_iso(),
+        "signatures": expected_signatures,
+        "produced_at": produced_at,
     }
-    (commit_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8",
-    )
-
-    # Placeholder vectors payload — Stage-2 skeleton emits a JSONL
-    # file of {solver_id, signature}. A later commit replaces this
-    # with a real FAISS index.
-    lines = [
-        json.dumps({"solver_id": mid, "signature": sig}, sort_keys=True)
-        for mid, sig in sorted(cell.signatures.items())
-    ]
-    (commit_dir / "vectors.jsonl").write_text(
-        ("\n".join(lines) + "\n") if lines else "", encoding="utf-8",
-    )
-
-    # Commit record — projection pointer used by the runtime repoint.
-    checksum = _checksum_dir(commit_dir)
-    commit = {
-        "schema_version": 1,
-        "cell_id": cell.cell_id,
-        "faiss_commit_id": commit_id,
-        "produced_at": manifest["produced_at"],
-        "vector_count": manifest["vector_count"],
-        "checksum": checksum,
-        "input_event_range": (
-            [cell.first_event_id, cell.last_event_id]
-            if cell.first_event_id else None
-        ),
-        "source": "indexer",
-        "stage": 2,
-    }
-    (commit_dir / "commit.json").write_text(
-        json.dumps(commit, indent=2, sort_keys=True), encoding="utf-8",
-    )
-    return {
-        "commit_dir": commit_dir,
-        "artifact_path": commit_dir.relative_to(vector_root.parent).as_posix()
-            if str(commit_dir).startswith(str(vector_root.parent))
-            else commit_dir.as_posix(),
-        "vector_count": len(cell.signatures),
-        "checksum": checksum,
-    }
+    try:
+        _write_fsynced(
+            stage_dir / "manifest.json",
+            json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+        )
+        _write_fsynced(stage_dir / "vectors.jsonl", _legacy_vectors_bytes(cell.signatures))
+        checksum = _checksum_dir(stage_dir)
+        commit = {
+            "schema_version": 1,
+            "cell_id": cell.cell_id,
+            "faiss_commit_id": commit_id,
+            "produced_at": produced_at,
+            "vector_count": manifest["vector_count"],
+            "checksum": checksum,
+            "input_event_range": (
+                [cell.first_event_id, cell.last_event_id]
+                if cell.first_event_id else None
+            ),
+            "source": "indexer",
+            "stage": 2,
+        }
+        _write_fsynced(
+            stage_dir / "commit.json",
+            json.dumps(commit, indent=2, sort_keys=True).encode("utf-8"),
+        )
+        _load_verified_legacy_directory(
+            stage_dir,
+            expected_cell_id=cell.cell_id,
+            expected_commit_id=commit_id,
+            expected_signatures=expected_signatures,
+        )
+        os.replace(stage_dir, final_dir)
+        published = _load_verified_legacy_commit(
+            vector_root,
+            cell.cell_id,
+            commit_id,
+            expected_signatures=expected_signatures,
+        )
+        return {
+            "commit_dir": final_dir,
+            "artifact_path": final_dir.relative_to(vector_root.resolve().parent).as_posix(),
+            "vector_count": published["vector_count"],
+            "checksum": published["checksum"],
+        }
+    except Exception:
+        if stage_dir.exists():
+            _remove_projection_stage(stage_dir, commits_dir)
+        raise
 
 
 def _swap_current_pointer(cell_dir: Path, commit_id: str) -> None:
@@ -563,21 +738,10 @@ def verify_commit_integrity(vector_root: Path, cell_id: str,
     """Re-hash the committed directory and compare with commit.json's
     checksum. Returns False if mismatched or missing."""
     try:
-        commit_dir = _safe_legacy_commit_dir(vector_root, cell_id, commit_id)
-    except ValueError:
-        return False
-    commit_json = commit_dir / "commit.json"
-    if not commit_json.exists():
-        return False
-    try:
-        data = json.loads(commit_json.read_text(encoding="utf-8"))
+        _load_verified_legacy_commit(vector_root, cell_id, commit_id)
     except Exception:
         return False
-    recorded = data.get("checksum")
-    if not recorded:
-        return False
-    actual = _checksum_dir(commit_dir)
-    return actual == recorded
+    return True
 
 
 # ── Validated projection-only materialization ─────────────────────
@@ -941,8 +1105,7 @@ def _load_verified_projection_directory(
     entries = list(commit_dir.iterdir())
     if {entry.name for entry in entries} != expected_names:
         raise ValueError("projection commit contains unexpected artifacts")
-    if any(entry.is_symlink() or not entry.is_file() for entry in entries):
-        raise ValueError("projection commit artifacts must be regular files")
+    _require_regular_single_link_files(entries, "projection commit")
     documents_path = commit_dir / "documents.jsonl"
     manifest_path = commit_dir / "manifest.json"
     commit_path = commit_dir / "commit.json"
@@ -1221,37 +1384,8 @@ def _load_prior_cell_state(
         )
         return _state_from_projection_result(safe_cell, result)
 
-    commit_dir = _safe_legacy_commit_dir(vector_root, safe_cell, commit_id)
-    required = {
-        "manifest.json",
-        "vectors.jsonl",
-        "commit.json",
-    }
-    entries = list(commit_dir.iterdir()) if commit_dir.is_dir() else []
-    if {entry.name for entry in entries} != required:
-        raise ValueError("legacy commit is incomplete or contains extra artifacts")
-    if any(entry.is_symlink() or not entry.is_file() for entry in entries):
-        raise ValueError("legacy commit artifacts must be regular files")
-    if not verify_commit_integrity(vector_root, safe_cell, commit_id):
-        raise ValueError("legacy commit integrity check failed")
-    try:
-        manifest = json.loads((commit_dir / "manifest.json").read_text("utf-8"))
-    except Exception as exc:
-        raise ValueError("legacy commit metadata is invalid") from exc
-    if type(manifest) is not dict:
-        raise ValueError("legacy commit metadata must be an object")
-    if manifest.get("cell_id") != safe_cell or manifest.get("commit_id") != commit_id:
-        raise ValueError("legacy commit manifest binding mismatch")
-    signatures = manifest.get("signatures")
-    if type(signatures) is not dict:
-        raise ValueError("legacy commit signatures are invalid")
-    canonical_signatures: dict[str, str] = {}
-    for solver_id, signature in signatures.items():
-        solver_id = vector_projection.validate_solver_id(solver_id)
-        if not isinstance(signature, str):
-            raise ValueError("legacy solver signature must be text")
-        canonical_signatures[solver_id] = signature
-    return CellState(cell_id=safe_cell, signatures=canonical_signatures)
+    result = _load_verified_legacy_commit(vector_root, safe_cell, commit_id)
+    return CellState(cell_id=safe_cell, signatures=result["signatures"])
 
 
 def _cell_projection_since(cell_id: str,
@@ -1275,6 +1409,8 @@ def _cell_projection_since(cell_id: str,
         cell.last_event_id = eid
         if event.event in vector_events.ALL_VECTOR_EVENT_NAMES:
             _apply_event_to_state(cell, event, eid)
+    if since_event_id is not None and not active:
+        raise ValueError("checkpoint event anchor was not found in the event log")
     return cell
 
 
@@ -1330,6 +1466,8 @@ def _cell_projection_from_prior_state(
         cell.last_event_id = eid
         if event.event in vector_events.ALL_VECTOR_EVENT_NAMES:
             _apply_event_to_state(cell, event, eid)
+    if since_event_id is not None and not active:
+        raise ValueError("checkpoint event anchor was not found in the event log")
     return cell
 
 
@@ -1360,6 +1498,8 @@ def _cells_with_events(
         if first is None:
             first = eid
         last = eid
+    if since_event_id is not None and not active:
+        raise ValueError("requested event anchor was not found in the event log")
     return cells, first, last, count
 
 

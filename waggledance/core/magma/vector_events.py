@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,13 @@ _PROJECTED_UPSERT_KEYS: tuple[str, ...] = (
     "embedding_contract",
     "topology_digest",
 )
+_STRICT_SOURCE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_STRICT_COMMIT_ID = re.compile(
+    r"^(?:faiss_[0-9a-f]{16}|proj_[0-9a-f]{64})$"
+)
+_STRICT_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_STRICT_EVENT_ID = re.compile(r"^evt_[0-9a-f]{16}$")
+_STRICT_ARTIFACT_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _utc_now_iso() -> str:
@@ -451,7 +459,99 @@ def read_events(
                         f"invalid vector event contract at line {line_number}"
                     )
                 continue
+            if strict:
+                try:
+                    _validate_strict_event_contract(event, d)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"invalid strict vector event contract at line {line_number}"
+                    ) from exc
             yield event
+
+
+def _validate_strict_event_contract(
+    event: VectorEvent,
+    raw: dict[str, Any],
+) -> None:
+    """Validate fields required by a materializing consumer.
+
+    The default reader intentionally preserves the historical liberal contract.
+    ``strict=True`` is different: an indexer must not advance a pointer or
+    checkpoint from an event whose provenance or commit claim is ambiguous.
+    """
+    raw_ts = raw.get("ts")
+    if not isinstance(raw_ts, str) or not raw_ts:
+        raise ValueError("event timestamp must be present text")
+    try:
+        parsed_ts = datetime.fromisoformat(
+            raw_ts[:-1] + "+00:00" if raw_ts.endswith("Z") else raw_ts
+        )
+    except ValueError as exc:
+        raise ValueError("event timestamp is not ISO-8601") from exc
+    if parsed_ts.tzinfo is None or parsed_ts.utcoffset() is None:
+        raise ValueError("event timestamp must include a timezone")
+
+    raw_source = raw.get("source")
+    if raw_source is not None and (
+        not isinstance(raw_source, str)
+        or _STRICT_SOURCE.fullmatch(raw_source) is None
+    ):
+        raise ValueError("event source is invalid")
+
+    if event.event != EVT_VECTOR_COMMIT_APPLIED:
+        return
+
+    payload = event.payload
+    commit_id = payload["faiss_commit_id"]
+    if not isinstance(commit_id, str) or _STRICT_COMMIT_ID.fullmatch(commit_id) is None:
+        raise ValueError("vector commit id is invalid")
+
+    artifact_path = payload["artifact_path"]
+    if (
+        not isinstance(artifact_path, str)
+        or not artifact_path
+        or len(artifact_path) > 1024
+        or artifact_path.startswith("/")
+        or "\\" in artifact_path
+        or "\x00" in artifact_path
+    ):
+        raise ValueError("vector artifact path is invalid")
+    segments = artifact_path.split("/")
+    if any(
+        segment in {"", ".", ".."}
+        or _STRICT_ARTIFACT_SEGMENT.fullmatch(segment) is None
+        for segment in segments
+    ):
+        raise ValueError("vector artifact path is invalid")
+
+    vector_count = payload["vector_count"]
+    if type(vector_count) is not int or vector_count < 0:
+        raise ValueError("vector count must be a non-negative integer")
+    checksum = payload["checksum"]
+    if not isinstance(checksum, str) or _STRICT_DIGEST.fullmatch(checksum) is None:
+        raise ValueError("vector checksum must be a full sha256 digest")
+
+    source_events = payload.get("source_events")
+    if source_events is not None and (
+        type(source_events) is not list
+        or any(
+            not isinstance(event_id, str)
+            or _STRICT_EVENT_ID.fullmatch(event_id) is None
+            for event_id in source_events
+        )
+    ):
+        raise ValueError("source_events contains an invalid event id")
+    input_event_range = payload.get("input_event_range")
+    if input_event_range is not None and (
+        type(input_event_range) is not list
+        or len(input_event_range) != 2
+        or any(
+            not isinstance(event_id, str)
+            or _STRICT_EVENT_ID.fullmatch(event_id) is None
+            for event_id in input_event_range
+        )
+    ):
+        raise ValueError("input_event_range is invalid")
 
 
 def _parse_event_dict(d: dict[str, Any]) -> VectorEvent | None:

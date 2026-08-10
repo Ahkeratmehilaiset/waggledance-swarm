@@ -1,0 +1,180 @@
+{
+  "schema_version": "wd.magma.ood_eval.v1",
+  "description": "Frozen true off-domain queries with no matching solver in the current 22-solver projection.",
+  "adjudication_scope": "candidate_only_current_frozen_22_solver_projection",
+  "expected_projection_solver_count": 22,
+  "case_order_semantics": "historical_sequence_only_each_case_is_independent_no_translation_pairing_claim",
+  "source_history": {
+    "query_source": "tests/oracle/_off_domain.yaml",
+    "historical_decision": "docs/plans/phase_D_decision_v2_2026-04-23.md",
+    "note": "Promoted from the manually labeled oracle; historical thresholds are references, not current runtime selections."
+  },
+  "policies": {
+    "retriever_must_not_receive": [
+      "expected_disposition",
+      "query_id"
+    ]
+  },
+  "cases": [
+    {
+      "query_id": "O01",
+      "query": "Mikä on sään ennuste tänään?",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O02",
+      "query": "What is the weather forecast",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O03",
+      "query": "Kerro vitsi",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O04",
+      "query": "Tell me a joke",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O05",
+      "query": "Miten teen kahvia",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O06",
+      "query": "How do I make coffee",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O07",
+      "query": "Mitä on viiden kertotaulu",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O08",
+      "query": "What is 5 times 5",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O09",
+      "query": "Kuka oli Mannerheim",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O10",
+      "query": "Who was Napoleon",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O11",
+      "query": "Suosittele kirjaa",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O12",
+      "query": "Recommend a book to read",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O13",
+      "query": "Mikä on Suomen pinta-ala",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O14",
+      "query": "What is the population of France",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O15",
+      "query": "Käännä englanniksi terve",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O16",
+      "query": "Translate hello to Spanish",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O17",
+      "query": "Mikä on tänään päivä",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O18",
+      "query": "What time is it",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O19",
+      "query": "Soita musiikkia",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O20",
+      "query": "Play some music",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O21",
+      "query": "Lähetä sähköposti äidille",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O22",
+      "query": "Send an email to mom",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O23",
+      "query": "Mikä on maailman suurin valas",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O24",
+      "query": "What is the largest mammal",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O25",
+      "query": "Kerro mehiläisten elinkaaresta",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O26",
+      "query": "Explain photosynthesis",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O27",
+      "query": "Mikä on Pythagoraan lause",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O28",
+      "query": "What is the speed of light",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O29",
+      "query": "Suomen vanhin kaupunki",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O30",
+      "query": "Which city has best public transport",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O31",
+      "query": "Tee minulle ostoslista",
+      "expected_disposition": "reject_no_solver"
+    },
+    {
+      "query_id": "O32",
+      "query": "Generate a shopping list",
+      "expected_disposition": "reject_no_solver"
+    }
+  ]
+}

@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import re
+import stat
 import sys
 import time
 import unicodedata
@@ -54,6 +55,9 @@ DEFAULT_CORPUS = ROOT / "configs" / "benchmarks" / "magma_solver_retrieval_v1.js
 DEFAULT_AXIOMS = ROOT / "configs" / "axioms"
 DEFAULT_VECTOR_ROOT = ROOT / "data" / "vector"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+_WINDOWS_REPARSE_POINT = getattr(
+    stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400
+)
 
 _CASE_KEYS = frozenset(
     {"query_id", "stratum", "query", "expected_solver", "expected_cell"}
@@ -940,8 +944,16 @@ def differential_gate(a0: Mapping[str, Any], a2: Mapping[str, Any]) -> dict[str,
 
 
 def _is_link_like(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or (callable(is_junction) and is_junction())
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & _WINDOWS_REPARSE_POINT
+    )
 
 
 def resolve_audit_output(raw_path: str, repo_root: Path = ROOT) -> Path:

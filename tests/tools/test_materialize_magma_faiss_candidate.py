@@ -3,11 +3,15 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import pickle
 import shutil
+import stat
 import struct
+import subprocess
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -481,6 +485,43 @@ def test_preexisting_snapshots_link_is_rejected(
 
     with pytest.raises(candidate.CandidateContractError, match="must not be a link"):
         candidate._prepare_snapshots_root(output_root, tmp_path / ".codex-audit")
+
+
+def test_materializer_uses_shared_pre312_junction_guard() -> None:
+    class Pre312Junction:
+        def lstat(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR,
+                st_file_attributes=0x0400,
+            )
+
+    assert candidate._is_link_like(Pre312Junction()) is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_remove_stage_unlinks_junction_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    snapshots_root = tmp_path / "snapshots"
+    snapshots_root.mkdir()
+    target = tmp_path / "junction-target"
+    target.mkdir()
+    marker = target / "preserved.txt"
+    marker.write_text("preserved", encoding="utf-8")
+    stage = snapshots_root / ".stage-junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(stage), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {created.stderr.strip()}")
+
+    candidate._remove_stage(stage, snapshots_root)
+
+    assert not os.path.lexists(stage)
+    assert marker.read_text(encoding="utf-8") == "preserved"
 
 
 def test_programmatic_api_rejects_nested_runtime_audit_name(tmp_path: Path) -> None:

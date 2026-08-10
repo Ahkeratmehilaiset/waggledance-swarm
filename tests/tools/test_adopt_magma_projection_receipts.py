@@ -277,6 +277,28 @@ def test_adoption_refuses_output_outside_audit_root(tmp_path: Path) -> None:
         )
 
 
+def test_preexisting_adoptions_link_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_root = tmp_path / ".codex-audit" / "linked-adoptions"
+    adoptions_root = output_root / "adoptions"
+    adoptions_root.mkdir(parents=True)
+    real_is_link_like = candidate._is_link_like
+
+    monkeypatch.setattr(
+        candidate,
+        "_is_link_like",
+        lambda path: path == adoptions_root or real_is_link_like(path),
+    )
+
+    with pytest.raises(
+        candidate.CandidateContractError, match="must not be a link"
+    ):
+        adoption._prepare_adoptions_root(
+            output_root, tmp_path / ".codex-audit"
+        )
+
+
 @pytest.mark.parametrize("use_parent", [False, True])
 def test_adoption_refuses_source_output_overlap_before_writing(
     tmp_path: Path,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -500,17 +502,36 @@ def test_output_rejects_symlinked_audit_root(tmp_path: Path) -> None:
         )
 
 
-def test_output_rejects_junction_like_audit_root(
+def test_link_guard_detects_windows_reparse_point_without_is_junction() -> None:
+    class Pre312Junction:
+        def lstat(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR,
+                st_file_attributes=0x0400,
+            )
+
+    assert benchmark._is_link_like(Pre312Junction()) is True
+
+
+def test_link_guard_fails_closed_when_metadata_is_unavailable() -> None:
+    class UnreadablePath:
+        def lstat(self) -> None:
+            raise PermissionError("denied")
+
+    assert benchmark._is_link_like(UnreadablePath()) is True
+
+
+def test_output_rejects_link_like_audit_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audit_root = tmp_path / ".codex-audit"
     audit_root.mkdir()
-    real_is_junction = getattr(Path, "is_junction", lambda _path: False)
-
-    def fake_is_junction(path: Path) -> bool:
-        return path == audit_root or real_is_junction(path)
-
-    monkeypatch.setattr(Path, "is_junction", fake_is_junction, raising=False)
+    real_is_link_like = benchmark._is_link_like
+    monkeypatch.setattr(
+        benchmark,
+        "_is_link_like",
+        lambda path: path == audit_root or real_is_link_like(path),
+    )
 
     with pytest.raises(
         benchmark.BenchmarkContractError,

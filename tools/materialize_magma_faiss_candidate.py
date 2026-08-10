@@ -262,9 +262,7 @@ def _canonical_json_line(value: Any) -> bytes:
     return canonical_json_bytes(value) + b"\n"
 
 
-def _is_link_like(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or (callable(is_junction) and is_junction())
+_is_link_like = retrieval_benchmark._is_link_like
 
 
 def _require_exact_keys(value: Any, expected: frozenset[str], label: str) -> dict[str, Any]:
@@ -1524,11 +1522,10 @@ def _remove_stage(stage: Path, snapshots_root: Path) -> None:
     tombstone = lexical_root / f".discard-{uuid.uuid4().hex}"
     os.replace(lexical_stage, tombstone)
     if _is_link_like(tombstone):
-        is_junction = getattr(tombstone, "is_junction", None)
-        if callable(is_junction) and is_junction():
-            os.rmdir(tombstone)
-        else:
+        if tombstone.is_symlink():
             tombstone.unlink()
+        else:
+            os.rmdir(tombstone)
     elif tombstone.is_dir():
         shutil.rmtree(tombstone)
     else:

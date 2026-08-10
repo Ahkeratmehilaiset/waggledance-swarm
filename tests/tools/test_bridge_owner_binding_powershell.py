@@ -15,6 +15,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BRIDGE_BIN = REPO_ROOT / ".agent-bridge" / "bin"
 POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 AGENT = "codex-lead-1"
+AGENT_UUID = "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"
+AGENT_ROLE = "lead-impl"
+AGENT_CAPABILITIES = (
+    "implementation,magma,source_changes,tests,bridge_event,work_queue"
+)
 OWNER_NAMES = (
     "AGENT_BRIDGE_OWNER_SESSION_ID",
     "AGENT_BRIDGE_OWNER_TOKEN",
@@ -28,10 +33,23 @@ pytestmark = pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailab
 
 def _owner_env(runtime_root: Path, *, token: str = "a" * 64) -> dict[str, str]:
     env = os.environ.copy()
+    for name in (
+        "AGENT_BRIDGE_AGENT",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_RUN_ID",
+        "AGENT_BRIDGE_SESSION_ID",
+        *OWNER_NAMES,
+    ):
+        env.pop(name, None)
     env.update(
         {
             "AGENT_BRIDGE_RUNTIME_ROOT": str(runtime_root),
             "AGENT_BRIDGE_AGENT": AGENT,
+            "AGENT_BRIDGE_AGENT_UUID": AGENT_UUID,
+            "AGENT_BRIDGE_ROLE": AGENT_ROLE,
+            "AGENT_BRIDGE_CAPABILITIES": AGENT_CAPABILITIES,
             "AGENT_BRIDGE_RUN_ID": "pytest-run",
             "AGENT_BRIDGE_SESSION_ID": "pytest-session",
             "AGENT_BRIDGE_OWNER_SESSION_ID": "pytest-session",
@@ -41,6 +59,36 @@ def _owner_env(runtime_root: Path, *, token: str = "a" * 64) -> dict[str, str]:
         }
     )
     return env
+
+
+def test_owner_env_rebinds_inherited_foreign_bridge_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-tools-1")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_AGENT_UUID", "7a8af68d-20bc-4598-9953-23c5dd98b102"
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_ROLE", "tools-tests")
+    monkeypatch.setenv("AGENT_BRIDGE_CAPABILITIES", "tests,review")
+    runtime_root = tmp_path / "runtime"
+    env = _owner_env(runtime_root)
+
+    assert env["AGENT_BRIDGE_AGENT"] == AGENT
+    assert env["AGENT_BRIDGE_AGENT_UUID"] == AGENT_UUID
+    assert env["AGENT_BRIDGE_ROLE"] == AGENT_ROLE
+    assert env["AGENT_BRIDGE_CAPABILITIES"] == AGENT_CAPABILITIES
+    created = _run_ps(
+        runtime_root,
+        "Claim-AgentTask.ps1",
+        "-Agent",
+        AGENT,
+        "-TaskId",
+        "foreign-profile-isolated",
+        "-Summary",
+        "test environment identity isolation",
+        env=env,
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
 
 
 def _run_ps(

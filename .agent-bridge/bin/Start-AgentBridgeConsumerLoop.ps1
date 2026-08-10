@@ -61,6 +61,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+$previousBoundAgent = [string][Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_AGENT',
+    'Process'
+)
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+$hasSameBoundSession = (
+    $previousBoundAgent -and $previousBoundAgent -ceq $Agent
+)
+
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
     return [System.IO.Path]::GetFullPath($Path)
@@ -478,6 +489,16 @@ $heartbeatDuringCodex = (
 
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_AGENT = $Agent
+if (-not $hasSameBoundSession) {
+    Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:AGENT_BRIDGE_SESSION_ID -ErrorAction SilentlyContinue
+    $ownerStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+    [void](Initialize-AgentBridgeClaimOwnerContext `
+        -SessionId "consumer-$Agent-$ownerStamp-$PID")
+} else {
+    # A same-lane source-upgraded consumer must not continue tokenless.
+    [void](Get-AgentBridgeClaimOwnerContext)
+}
 if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
 if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
 if (@($Capabilities).Count -gt 0) {

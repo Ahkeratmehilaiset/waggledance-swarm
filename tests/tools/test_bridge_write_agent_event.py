@@ -65,14 +65,32 @@ def _run_bridge_script(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for name in (
+        "AGENT_BRIDGE_AGENT",
         "AGENT_BRIDGE_AGENT_UUID",
         "AGENT_BRIDGE_CAPABILITIES",
+        "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN",
+        "AGENT_BRIDGE_OWNER_PID",
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
         "AGENT_BRIDGE_ROLE",
         "AGENT_BRIDGE_RUN_ID",
         "AGENT_BRIDGE_SESSION_ID",
     ):
         env.pop(name, None)
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    if "-Agent" in args:
+        agent = args[args.index("-Agent") + 1]
+        env.update(
+            {
+                "AGENT_BRIDGE_AGENT": agent,
+                "AGENT_BRIDGE_OWNER_SESSION_ID": f"pytest-owner-{agent}",
+                "AGENT_BRIDGE_OWNER_TOKEN": "a" * 64,
+                "AGENT_BRIDGE_OWNER_PID": str(os.getpid()),
+                "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": (
+                    "2026-08-10T00:00:00Z"
+                ),
+            }
+        )
     return subprocess.run(
         [
             _powershell(),

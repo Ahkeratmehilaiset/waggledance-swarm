@@ -123,7 +123,7 @@ distinct worktrees/branches while the source repo branch remains unchanged.
 
 Claim records carry a `last_heartbeat_utc` field that is bumped
 by `Send-Liveness.ps1` on every `liveness/active` and
-`heartbeat/active` event for the claim's owning agent. If
+`heartbeat/active` event from the claim's owning session generation. If
 `now` is at or past the claim's effective lease expiry, the claim
 is automatically archived to
 `work_queue/done/<task>.<utc>.stale_lease.json` and a
@@ -136,6 +136,17 @@ per-claim lease fields. A positive `lease_seconds` value replaces
 the global threshold for that claim, and a later
 `claim_lease_expires_utc` extends the effective expiry. Legacy
 claims without those fields still use the global threshold.
+
+New claims are generation-bound. `Start-AgentBridgeSession.ps1` and
+`Start-AgentBridgeConsumerLoop.ps1` issue a per-session owner context through
+`AGENT_BRIDGE_OWNER_SESSION_ID`, `AGENT_BRIDGE_OWNER_TOKEN`,
+`AGENT_BRIDGE_OWNER_PID`, and `AGENT_BRIDGE_OWNER_PROCESS_START_UTC`.
+PowerShell and Python claim writers persist the session id and only a SHA-256
+digest of the token; the raw token must never be written to bridge state.
+Force-update, heartbeat, and release require the same owner session id and
+token digest. The PID and process-start fields are diagnostic only. Legacy
+tokenless claims cannot be adopted, refreshed, or explicitly released through
+these entry points; they drain through stale-lease expiry.
 
 The sweep is opportunistic: every call to
 `Read-AgentBridge.ps1` and `Get-AgentBridgeStatus.ps1` runs
@@ -380,6 +391,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Monitor-
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Read-AgentBridge.ps1 -Agent codex -ShowClaims -NoAckReceived -Tail 40
 
 # Claim a write task.
+# Run claim/release commands inside a session bootstrapped by
+# Start-AgentBridgeSession.ps1 (or the consumer launcher), which provides the
+# required generation owner context.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Claim-AgentTask.ps1 -Agent codex -TaskId "review-claude-diff" -Summary "Read-only review of Claude diff" -Mode read-only
 
 # Claim an implementation task with a write scope.
@@ -484,9 +498,10 @@ turn is still live. Heartbeat-only traffic without a matching active
 claim is not substantive progress and must not close or satisfy a
 `wake_request`.
 
-A claim with no `heartbeat` event within 5 minutes is considered
-**dropped** and may be re-claimed by another agent (or the operator
-may release it via `Release-AgentTask.ps1`).
+A claim with no owner-generation heartbeat within its effective lease is
+considered **dropped**. It is archived by the stale-lease sweep; another
+generation may claim the task only after that archive. The public release and
+force-update entry points do not transfer authority from the previous owner.
 
 ### Wake requests
 

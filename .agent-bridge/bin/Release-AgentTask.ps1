@@ -11,6 +11,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+$ownerContext = Get-AgentBridgeClaimOwnerContext
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path). Codex
 # blocker 2026-05-09T13:11Z: silent fallback when env points to a
@@ -44,6 +49,15 @@ if (-not (Test-Path -LiteralPath $claimPath)) {
 $claim = Get-Content -Raw -Path $claimPath -Encoding UTF8 | ConvertFrom-Json
 if ([string]$claim.agent -ne $Agent) {
     Write-Error ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent)
+    exit 3
+}
+try {
+    Assert-AgentBridgeClaimOwner `
+        -Claim $claim `
+        -OwnerContext $ownerContext `
+        -Operation 'release'
+} catch {
+    Write-Error $_.Exception.Message
     exit 3
 }
 

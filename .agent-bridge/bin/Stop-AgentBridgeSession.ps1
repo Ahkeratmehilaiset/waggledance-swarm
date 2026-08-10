@@ -44,6 +44,12 @@ param(
 $ErrorActionPreference = 'Continue'
 Set-StrictMode -Version Latest
 
+$boundAgent = [string][Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_AGENT',
+    'Process'
+)
+$isBoundSessionAgent = ($boundAgent -and $Agent -ceq $boundAgent)
+
 $pattern = if ($Agent) {
     "agent-bridge-*-$Agent"
 } else {
@@ -75,6 +81,22 @@ if (-not $Agent -or $Agent -eq 'claude' -or $Agent -eq 'codex' -or $Agent -eq 'o
         )) {
         Remove-Item Env:AGENT_BRIDGE_WAKE_JOB -ErrorAction SilentlyContinue
         Remove-Item Env:AGENT_BRIDGE_HEARTBEAT_JOB -ErrorAction SilentlyContinue
+    }
+}
+if (-not $Agent -or $isBoundSessionAgent) {
+    if ($PSCmdlet.ShouldProcess(
+            'AGENT_BRIDGE claim owner context',
+            'Clear process env vars'
+        )) {
+        foreach ($ownerEnvName in @(
+                'AGENT_BRIDGE_OWNER_SESSION_ID',
+                'AGENT_BRIDGE_OWNER_TOKEN',
+                'AGENT_BRIDGE_OWNER_PID',
+                'AGENT_BRIDGE_OWNER_PROCESS_START_UTC'
+            )) {
+            Remove-Item -Path ("Env:{0}" -f $ownerEnvName) `
+                -ErrorAction SilentlyContinue
+        }
     }
 }
 

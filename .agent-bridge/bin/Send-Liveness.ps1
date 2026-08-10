@@ -57,6 +57,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 $writeEventScript = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
 
 $type = 'liveness'
@@ -73,6 +77,13 @@ if ($Wake) {
     if (-not $To) {
         throw "wake_request requires -To <agent>"
     }
+}
+
+$ownerContext = $null
+if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
+    # Validate before emitting an active event. A same-named successor must
+    # never refresh the previous generation's claims.
+    $ownerContext = Get-AgentBridgeClaimOwnerContext
 }
 
 # Default heartbeat / liveness messages so the bridge is readable
@@ -134,6 +145,11 @@ if ($type -in @('liveness','heartbeat') -and $status -eq 'active') {
                     ConvertFrom-Json
             } catch { continue }
             if ([string]$obj.agent -ne $Agent) { continue }
+            if (-not (Test-AgentBridgeClaimOwner `
+                    -Claim $obj `
+                    -OwnerContext $ownerContext)) {
+                continue
+            }
             # Bump field, preserving claim shape.
             if ($obj.PSObject.Properties['last_heartbeat_utc']) {
                 $obj.last_heartbeat_utc = $heartbeatTs

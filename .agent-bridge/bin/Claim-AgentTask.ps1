@@ -17,6 +17,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+$ownerContext = Get-AgentBridgeClaimOwnerContext
+
 # R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
 # per-agent worktrees can share one runtime state directory. Codex
 # blocker 2026-05-09T13:11Z: if the env var is SET, USE IT - do not
@@ -109,8 +114,16 @@ foreach ($file in $activeClaims) {
         if (-not $Force) {
             Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existing.agent, $file.FullName) -Code 2
         }
-        if ([string]$existing.agent -ne $Agent -and $Agent -notin @('operator','system')) {
+        if ([string]$existing.agent -ne $Agent) {
             Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $file.FullName) -Code 3
+        }
+        try {
+            Assert-AgentBridgeClaimOwner `
+                -Claim $existing `
+                -OwnerContext $ownerContext `
+                -Operation 'force-update'
+        } catch {
+            Stop-BridgeClaim -Message $_.Exception.Message -Code 3
         }
         continue
     }
@@ -175,8 +188,17 @@ $claim = [ordered]@{
     mode                = $Mode
     write_scope         = @($WriteScope)
     run_id              = $RunId
+    session_id          = if ($env:AGENT_BRIDGE_SESSION_ID) {
+        [string]$env:AGENT_BRIDGE_SESSION_ID
+    } else {
+        [string]$ownerContext.owner_session_id
+    }
     lease_seconds       = $LeaseSeconds
     claim_lease_expires_utc = $leaseExpiresUtc
+    owner_session_id    = $ownerContext.owner_session_id
+    owner_token_sha256  = $ownerContext.owner_token_sha256
+    owner_pid           = $ownerContext.owner_pid
+    owner_process_start_utc = $ownerContext.owner_process_start_utc
     pid                 = $PID
     cwd                 = (Get-Location).Path
     git_branch          = Get-CurrentGitBranch

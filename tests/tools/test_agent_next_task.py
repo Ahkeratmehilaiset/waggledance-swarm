@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,26 @@ RCO_FAILOVER_TASK_ID = (
     "rco-lane-failover-scout-2026-05-20-"
     "claude-rco-2-since-20260520t112000z"
 )
+
+
+@pytest.fixture(autouse=True)
+def _valid_work_queue_owner_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.delenv("AGENT_BRIDGE_RUN_ID", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "a" * 64)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", str(os.getpid()))
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _rco_lane_stall_event() -> dict:

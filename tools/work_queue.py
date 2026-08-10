@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, is_dataclass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Sequence
@@ -105,7 +106,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             summary=args.summary,
             mode=args.mode,
             write_scope=_normalize_write_scope(args.write_scope),
-            run_id=args.run_id,
+            run_id=args.run_id or os.environ.get("AGENT_BRIDGE_RUN_ID", ""),
             lease_seconds=args.lease_seconds,
             bridge_root=bridge_root,
             force=args.force,
@@ -187,6 +188,8 @@ def _to_jsonable(value: object) -> Any:
 
 def _exit_code_for_error(message: str) -> int:
     lowered = message.lower()
+    if lowered.startswith("claim_owner_"):
+        return 3
     invalid_markers = (
         "invalid",
         "require",

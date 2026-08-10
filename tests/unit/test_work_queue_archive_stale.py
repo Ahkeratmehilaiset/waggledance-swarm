@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +17,28 @@ from waggledance.core.work_queue import (
     heartbeat,
     list_claims,
 )
+
+OWNER_TOKEN = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def _valid_owner_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.delenv("AGENT_BRIDGE_RUN_ID", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-work-queue-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "pytest-owner-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", OWNER_TOKEN)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", "4242")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _now() -> datetime:
@@ -330,8 +353,17 @@ def test_zero_max_age_seconds_raises(tmp_path: Path) -> None:
     assert (bridge / "work_queue" / "claims" / "task-zero.json").exists()
 
 
-def test_apply_archive_includes_original_metadata(tmp_path: Path) -> None:
+def test_apply_archive_includes_original_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_ROLE", "lead_impl")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_AGENT_UUID",
+        "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_CAPABILITIES", "implementation,work_queue")
     claim_task(
         agent="claude-1",
         task_id="task-metadata",
@@ -353,3 +385,54 @@ def test_apply_archive_includes_original_metadata(tmp_path: Path) -> None:
     assert payload["write_scope"] == ["tools/foo.py", "tools/bar.py"]
     assert payload["run_id"] == "run-abc"
     assert payload["summary"] == "metadata check"
+    assert payload["session_id"] == "pytest-work-queue-session"
+    assert payload["owner_session_id"] == "pytest-owner-session"
+    assert payload["owner_token_sha256"] == hashlib.sha256(
+        OWNER_TOKEN.encode("utf-8")
+    ).hexdigest()
+    assert payload["owner_pid"] == 4242
+    assert payload["owner_process_start_utc"] == "2026-07-28T00:00:00Z"
+    assert payload["role"] == "lead_impl"
+    assert payload["agent_uuid"] == (
+        "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"
+    )
+    assert payload["capabilities"] == ["implementation", "work_queue"]
+
+
+def test_legacy_tokenless_expiry_ignores_spoofed_heartbeat(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claim_path = claims_dir / "legacy-tokenless-expiry.json"
+    claimed_at = _now() - timedelta(seconds=120)
+    claim_path.write_text(
+        json.dumps(
+            {
+                "agent": "claude-1",
+                "task_id": "legacy-tokenless-expiry",
+                "summary": "legacy expiry anchor",
+                "mode": "read-only",
+                "write_scope": [],
+                "run_id": "legacy-run",
+                "claimed_at_utc": claimed_at.isoformat().replace("+00:00", "Z"),
+                "last_heartbeat_utc": "2099-01-01T00:00:00Z",
+                "lease_seconds": 60,
+                "claim_lease_expires_utc": "2099-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    archived = archive_stale_claims(
+        bridge_root=bridge,
+        now_utc=_now(),
+        max_age_seconds=3600,
+        apply=True,
+    )
+
+    assert len(archived) == 1
+    assert archived[0].age_seconds == 120
+    assert "legacy tokenless claim claimed_at_utc" in archived[0].release_reason
+    assert not claim_path.exists()

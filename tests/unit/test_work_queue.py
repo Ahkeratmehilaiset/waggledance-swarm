@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,6 +18,29 @@ from waggledance.core.work_queue import (
     list_claims,
     release_task,
 )
+
+OWNER_TOKEN = "a" * 64
+OWNER_SESSION_ID = "pytest-owner-session"
+
+
+@pytest.fixture(autouse=True)
+def _valid_owner_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT", raising=False)
+    monkeypatch.delenv("AGENT_BRIDGE_RUN_ID", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "pytest-work-queue-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", OWNER_SESSION_ID)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", OWNER_TOKEN)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", "4242")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-28T00:00:00Z",
+    )
+    for name in (
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_claim_creates_persistent_claim_file(tmp_path: Path) -> None:
@@ -266,7 +291,7 @@ def test_claim_refuses_overlapping_agent_claim(tmp_path: Path) -> None:
         )
 
 
-def test_claim_refreshable_by_same_agent(tmp_path: Path) -> None:
+def test_claim_same_agent_requires_force_for_refresh(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim_task(
         agent="claude-1",
@@ -274,13 +299,289 @@ def test_claim_refreshable_by_same_agent(tmp_path: Path) -> None:
         summary="first",
         bridge_root=bridge,
     )
+    with pytest.raises(WorkQueueError, match="already claimed"):
+        claim_task(
+            agent="claude-1",
+            task_id="task-001",
+            summary="refresh without force",
+            bridge_root=bridge,
+        )
     refreshed = claim_task(
         agent="claude-1",
         task_id="task-001",
         summary="refresh",
         bridge_root=bridge,
+        force=True,
     )
     assert refreshed.summary == "refresh"
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    [
+        "AGENT_BRIDGE_OWNER_SESSION_ID",
+        "AGENT_BRIDGE_OWNER_TOKEN",
+        "AGENT_BRIDGE_OWNER_PID",
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+    ],
+)
+def test_claim_requires_complete_owner_context_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_name: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.delenv(missing_name)
+
+    with pytest.raises(WorkQueueError, match="claim_owner_context_invalid"):
+        claim_task(
+            agent="claude-1",
+            task_id="task-owner-context",
+            summary="must fail without owner context",
+            bridge_root=bridge,
+        )
+
+    assert not bridge.exists()
+
+
+def test_claim_serializes_owner_digest_and_session_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_ROLE", "lead_impl")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_AGENT_UUID",
+        "D3C9D1D1-96A9-4EB8-A8E2-6F05F9D1A101",
+    )
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_CAPABILITIES",
+        "implementation,work_queue;implementation",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_RUN_ID", "run-bound")
+
+    claim = claim_task(
+        agent="claude-1",
+        task_id="task-owner-metadata",
+        summary="persist owner metadata",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / "task-owner-metadata.json"
+    payload_text = claim_path.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+    expected_digest = hashlib.sha256(OWNER_TOKEN.encode("utf-8")).hexdigest()
+
+    assert claim.session_id == "pytest-work-queue-session"
+    assert claim.owner_session_id == OWNER_SESSION_ID
+    assert claim.owner_token_sha256 == expected_digest
+    assert claim.owner_pid == 4242
+    assert claim.owner_process_start_utc == "2026-07-28T00:00:00Z"
+    assert claim.role == "lead_impl"
+    assert claim.agent_uuid == "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"
+    assert claim.capabilities == ("implementation", "work_queue")
+    assert payload["run_id"] == "run-bound"
+    assert payload["owner_token_sha256"] == expected_digest
+    assert OWNER_TOKEN not in payload_text
+
+
+def test_same_agent_wrong_generation_cannot_mutate_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    task_id = "task-wrong-generation"
+    claim_task(
+        agent="claude-1",
+        task_id=task_id,
+        summary="owned by generation A",
+        bridge_root=bridge,
+    )
+    claim_path = bridge / "work_queue" / "claims" / f"{task_id}.json"
+    original = claim_path.read_bytes()
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "b" * 64)
+
+    operations = (
+        lambda: claim_task(
+            agent="claude-1",
+            task_id=task_id,
+            summary="generation B force",
+            bridge_root=bridge,
+            force=True,
+        ),
+        lambda: heartbeat(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        ),
+        lambda: release_task(
+            agent="claude-1",
+            task_id=task_id,
+            bridge_root=bridge,
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(WorkQueueError, match="claim_owner_wrong_generation"):
+            operation()
+        assert claim_path.read_bytes() == original
+        assert not (bridge / "work_queue" / "done").exists()
+
+
+def test_diagnostic_owner_fields_do_not_authorize_or_replace_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_ROLE", "lead_impl")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_AGENT_UUID",
+        "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_CAPABILITIES", "implementation,work_queue")
+    created = claim_task(
+        agent="claude-1",
+        task_id="task-diagnostic-fields",
+        summary="diagnostic fields",
+        run_id="run-original",
+        bridge_root=bridge,
+    )
+
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_PID", "9999")
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+        "2026-07-29T00:00:00Z",
+    )
+    monkeypatch.setenv("AGENT_BRIDGE_ROLE", "other_role")
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT_UUID")
+    monkeypatch.setenv("AGENT_BRIDGE_CAPABILITIES", "other_capability")
+
+    refreshed = heartbeat(
+        agent="claude-1",
+        task_id="task-diagnostic-fields",
+        bridge_root=bridge,
+    )
+    released = release_task(
+        agent="claude-1",
+        task_id="task-diagnostic-fields",
+        bridge_root=bridge,
+    )
+    done_path = next((bridge / "work_queue" / "done").glob("*.json"))
+    done = json.loads(done_path.read_text(encoding="utf-8"))
+
+    assert refreshed.owner_pid == created.owner_pid == 4242
+    assert released.owner_pid == 4242
+    assert done["owner_pid"] == 4242
+    assert done["run_id"] == "run-original"
+    assert done["role"] == "lead_impl"
+    assert done["agent_uuid"] == created.agent_uuid
+    assert done["capabilities"] == ["implementation", "work_queue"]
+
+
+def test_powershell_diagnostics_survive_python_heartbeat_and_release(
+    tmp_path: Path,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claim_path = claims_dir / "powershell-round-trip.json"
+    claim_path.write_text(
+        json.dumps(
+            {
+                "agent": "claude-1",
+                "task_id": "powershell-round-trip",
+                "summary": "PowerShell-shaped claim",
+                "mode": "read-only",
+                "write_scope": [],
+                "run_id": "ps-run",
+                "claimed_at_utc": "2026-07-28T00:00:00Z",
+                "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+                "lease_seconds": 900,
+                "claim_lease_expires_utc": "2026-07-28T00:15:00Z",
+                "session_id": "pytest-work-queue-session",
+                "owner_session_id": OWNER_SESSION_ID,
+                "owner_token_sha256": hashlib.sha256(
+                    OWNER_TOKEN.encode("utf-8")
+                ).hexdigest(),
+                "owner_pid": 4242,
+                "owner_process_start_utc": "2026-07-28T00:00:00Z",
+                "pid": 12345,
+                "cwd": "C:\\Python\\project2",
+                "git_branch": None,
+                "role": "rco_security",
+                "agent_uuid": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+                "capabilities": ["rco_review", "tests"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    heartbeat(
+        agent="claude-1",
+        task_id="powershell-round-trip",
+        bridge_root=bridge,
+    )
+    heartbeat_payload = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert heartbeat_payload["pid"] == 12345
+    assert heartbeat_payload["cwd"] == "C:\\Python\\project2"
+    assert heartbeat_payload["git_branch"] is None
+
+    release_task(
+        agent="claude-1",
+        task_id="powershell-round-trip",
+        bridge_root=bridge,
+    )
+    done_path = next((bridge / "work_queue" / "done").glob("*.json"))
+    done = json.loads(done_path.read_text(encoding="utf-8"))
+    assert done["pid"] == 12345
+    assert done["cwd"] == "C:\\Python\\project2"
+    assert done["git_branch"] is None
+
+
+def test_legacy_tokenless_claim_cannot_be_mutated(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    claim_path = claims_dir / "task-legacy-tokenless.json"
+    claim_path.write_text(
+        json.dumps(
+            {
+                "agent": "claude-1",
+                "task_id": "task-legacy-tokenless",
+                "summary": "legacy tokenless claim",
+                "mode": "read-only",
+                "write_scope": [],
+                "run_id": "legacy-run",
+                "claimed_at_utc": "2026-07-28T00:00:00Z",
+                "last_heartbeat_utc": "2026-07-28T00:00:00Z",
+                "lease_seconds": 900,
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = claim_path.read_bytes()
+
+    operations = (
+        lambda: claim_task(
+            agent="claude-1",
+            task_id="task-legacy-tokenless",
+            summary="force legacy claim",
+            bridge_root=bridge,
+            force=True,
+        ),
+        lambda: heartbeat(
+            agent="claude-1",
+            task_id="task-legacy-tokenless",
+            bridge_root=bridge,
+        ),
+        lambda: release_task(
+            agent="claude-1",
+            task_id="task-legacy-tokenless",
+            bridge_root=bridge,
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(WorkQueueError, match="claim_owner_legacy_tokenless"):
+            operation()
+        assert claim_path.read_bytes() == original
 
 
 def test_claim_refuses_write_scope_conflict_across_tasks(tmp_path: Path) -> None:

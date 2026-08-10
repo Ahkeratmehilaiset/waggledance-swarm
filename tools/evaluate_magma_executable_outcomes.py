@@ -28,10 +28,12 @@ from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.reasoning import question_frame  # noqa: E402
 
 
-REPORT_SCHEMA = "magma.faiss.executable_outcome_smoke.v1"
+REPORT_SCHEMA = "magma.faiss.executable_outcome_smoke.v2"
 SUITE_SCHEMA = "magma.faiss.executable_outcome_suite.v1"
 DEFAULT_MIN_SCORE = 0.55
 VALUE_TOLERANCE = 1.0e-9
+CALLER_RETRIEVAL_SCOPE = "caller_supplied_unverified"
+LIVE_RETRIEVAL_SCOPE = "verified_snapshot_session_global_all_cells"
 _SESSION_ID = re.compile(r"^faisssession_[0-9a-f]{32}$")
 _SNAPSHOT_ID = re.compile(r"^faisscand_[0-9a-f]{64}$")
 _NON_EXECUTABLE_SPEECH_ACT = re.compile(
@@ -434,7 +436,11 @@ def run_frozen_outcome_gate(
         "case_count": len(cases),
         "positive_case_count": len(positive_rows),
         "ood_negative_case_count": len(negative_rows),
+        "retrieval_evidence_scope": CALLER_RETRIEVAL_SCOPE,
+        "candidate_snapshot_verified": False,
+        "embedding_catalog_verified": False,
         "global_all_cell_search_required": True,
+        "global_all_cell_search_verified": False,
         "cell_local_pruning_evaluated": False,
         "route_and_executable_outcome_observed": executor_call_count > 0,
         "negative_zero_executor_calls": all(
@@ -443,6 +449,8 @@ def run_frozen_outcome_gate(
         "executor_call_count": executor_call_count,
         "frozen_smoke_gate_evaluated": True,
         "frozen_smoke_gate_pass": all_passed,
+        "live_candidate_gate_evaluated": False,
+        "live_candidate_gate_pass": False,
         "production_promotion_gate_evaluated": False,
         "production_promotion_gate_pass": False,
         "promotion_applied": False,
@@ -522,6 +530,18 @@ def run_live_gate(
                 "catalog_contract_verified_after_suite": True,
                 "response_digest_attested": False,
             }
+            report.update(
+                {
+                    "retrieval_evidence_scope": LIVE_RETRIEVAL_SCOPE,
+                    "candidate_snapshot_verified": True,
+                    "embedding_catalog_verified": True,
+                    "global_all_cell_search_verified": True,
+                    "live_candidate_gate_evaluated": True,
+                    "live_candidate_gate_pass": (
+                        report["frozen_smoke_gate_pass"] is True
+                    ),
+                }
+            )
             return report
     finally:
         session.close()
@@ -555,6 +575,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "schema_version": REPORT_SCHEMA,
                     "frozen_smoke_gate_pass": False,
+                    "live_candidate_gate_evaluated": False,
+                    "live_candidate_gate_pass": False,
                     "runtime_authority_granted": False,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
@@ -565,7 +587,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
-    return 0 if report["frozen_smoke_gate_pass"] is True else 1
+    return 0 if report["live_candidate_gate_pass"] is True else 1
 
 
 if __name__ == "__main__":

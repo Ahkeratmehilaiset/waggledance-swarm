@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from core.symbolic_solver import SymbolicSolver
@@ -92,6 +94,13 @@ def test_frozen_gate_executes_exact_positive_and_abstains_on_ood() -> None:
     report = gate.run_frozen_outcome_gate(_frozen_retriever)
 
     assert report["frozen_smoke_gate_pass"] is True
+    assert report["schema_version"] == "magma.faiss.executable_outcome_smoke.v2"
+    assert report["retrieval_evidence_scope"] == gate.CALLER_RETRIEVAL_SCOPE
+    assert report["candidate_snapshot_verified"] is False
+    assert report["embedding_catalog_verified"] is False
+    assert report["global_all_cell_search_verified"] is False
+    assert report["live_candidate_gate_evaluated"] is False
+    assert report["live_candidate_gate_pass"] is False
     assert report["minimum_candidate_score"] == gate.DEFAULT_MIN_SCORE
     assert report["suite_digest"] == gate.FROZEN_SUITE_DIGEST
     assert report["positive_case_count"] == 1
@@ -125,6 +134,115 @@ def test_frozen_gate_executes_exact_positive_and_abstains_on_ood() -> None:
         "solver_not_in_frozen_executable_allowlist"
     )
     assert routing_ood["executor_call_count"] == 0
+
+
+def test_live_gate_qualifies_only_owned_snapshot_and_embedding_path(
+    monkeypatch,
+) -> None:
+    profile = gate.retrieval_benchmark.EmbeddingProfile(
+        name="test",
+        model_id="test-model:latest",
+        model_digest="d" * 64,
+        dimension=2,
+        document_prefix="document: ",
+        query_prefix="query: ",
+    )
+    identity = {
+        "provider": "ollama",
+        "requested_model_tag": profile.model_id,
+        "catalog_digest": profile.model_digest,
+    }
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.search_count = 0
+            self.closed = False
+
+        def search(self, _query_vector, *, k: int) -> list[dict]:
+            assert k == 5
+            query = gate.FROZEN_CASES[self.search_count].query
+            self.search_count += 1
+            return _frozen_retriever(query)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeEmbedder:
+        def __init__(self, _base_url: str) -> None:
+            self.verify_count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def verify_profile(self, observed_profile):
+            assert observed_profile == profile
+            self.verify_count += 1
+            return dict(identity)
+
+        def embed(self, texts, observed_profile, *, label: str):
+            assert len(texts) == 1
+            assert observed_profile == profile
+            assert label == "outcome_gate_query_embedding"
+            return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    session = FakeSession()
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "load_candidate_request",
+        lambda *_args, **_kwargs: SimpleNamespace(embedding_contract={}),
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "open_verified_candidate_search_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "_profile_from_contract",
+        lambda _contract: profile,
+    )
+    monkeypatch.setattr(
+        gate.retrieval_benchmark,
+        "OllamaEmbeddingClient",
+        FakeEmbedder,
+    )
+
+    report = gate.run_live_gate("request.json", "snapshot")
+
+    assert report["frozen_smoke_gate_pass"] is True
+    assert report["retrieval_evidence_scope"] == gate.LIVE_RETRIEVAL_SCOPE
+    assert report["candidate_snapshot_verified"] is True
+    assert report["embedding_catalog_verified"] is True
+    assert report["global_all_cell_search_verified"] is True
+    assert report["live_candidate_gate_evaluated"] is True
+    assert report["live_candidate_gate_pass"] is True
+    assert report["embedding_provider_identity"] == {
+        **identity,
+        "catalog_contract_verified_before_suite": True,
+        "catalog_contract_verified_after_suite": True,
+        "response_digest_attested": False,
+    }
+    assert session.search_count == len(gate.FROZEN_CASES)
+    assert session.closed is True
+
+
+def test_cli_exit_does_not_accept_unqualified_frozen_pass(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        gate,
+        "run_live_gate",
+        lambda *_args, **_kwargs: {
+            "frozen_smoke_gate_pass": True,
+            "live_candidate_gate_pass": False,
+        },
+    )
+
+    exit_code = gate.main(["--request", "request.json", "--snapshot", "snapshot"])
+
+    assert exit_code == 1
+    assert '"live_candidate_gate_pass":false' in capsys.readouterr().out
 
 
 def test_gate_rejects_executor_injection() -> None:

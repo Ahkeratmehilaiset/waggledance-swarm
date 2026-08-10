@@ -53,6 +53,7 @@ sys.path.insert(0, str(ROOT))
 
 from waggledance.core.learning.solver_hash import canonical_hash  # noqa: E402
 from waggledance.core.magma import vector_events  # noqa: E402
+from waggledance.core.magma import vector_projection  # noqa: E402
 
 
 AXIOMS_DIR = ROOT / "configs" / "axioms"
@@ -190,6 +191,70 @@ def _timestamp_slug(timestamp: str) -> str:
     if not slug:
         raise ValueError("timestamp must contain filename-safe characters")
     return slug
+
+
+def _source_file_digest(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError("axiom source must remain beneath the repository root") from exc
+    if not resolved.is_file():
+        raise ValueError("axiom source must be an existing file")
+    return "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
+
+
+def _build_projection_upsert_event(
+    axiom: dict,
+    entries: list[dict],
+    topology_contract: dict,
+    source_digest: str,
+) -> vector_events.VectorEvent:
+    """Build one privacy-safe, explicitly unreceipted solver projection event."""
+    dimensions = {
+        entry.get("embedding_dim")
+        for entry in entries
+        if entry.get("canonical_solver_id") == axiom.get("model_id")
+    }
+    if (
+        not dimensions
+        or any(type(value) is not int or value <= 0 for value in dimensions)
+        or len(dimensions) != 1
+    ):
+        raise ValueError("solver projection requires one consistent positive embedding dimension")
+    [dimension] = dimensions
+    validated_topology = vector_projection.validate_retrieval_topology_contract(
+        topology_contract
+    )
+    topology_cells = {row["cell_id"] for row in validated_topology["cells"]}
+    if axiom.get("cell_id") not in topology_cells:
+        raise ValueError("solver projection cell is absent from the retrieval topology")
+    topology_digest = vector_projection.retrieval_topology_digest(validated_topology)
+    document = vector_projection.build_solver_contract_projection(
+        axiom,
+        source_digest=source_digest,
+        topology_digest=topology_digest,
+    )
+    source_identity = vector_projection.build_projection_source_identity(document)
+    embedding_contract = vector_projection.build_embedding_contract(
+        model_id=EMBEDDING_MODEL,
+        model_version=EMBEDDING_MODEL_VERSION,
+        dimension=dimension,
+        normalization="l2-v1",
+        document_prefix="",
+        query_prefix="search_query: ",
+    )
+    return vector_events.vector_upsert_requested(
+        cell_id=document["cell_id"],
+        model_id=document["canonical_solver_id"],
+        signature=document["solver_contract_digest"],
+        reason="axiom_backfill_projection",
+        projection_document=document,
+        source_identity=source_identity,
+        embedding_contract=embedding_contract,
+        topology_digest=topology_digest,
+        source="axiom_backfill",
+    )
 
 
 # ── Multi-view generation ─────────────────────────────────────────
@@ -481,6 +546,11 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
         # WAGGLE_VECTOR_EVENT_LOG env var; fall back to the default
         # path under data/vector/.
         batch: list[vector_events.VectorEvent] = []
+        topology_contract = vector_projection.build_retrieval_topology_contract()
+        axioms_by_model = {
+            axiom["model_id"]: (axiom_path, axiom)
+            for axiom_path, axiom in axioms_to_process
+        }
         for cell, bundle in per_cell_entries.items():
             seen: set[str] = set()
             for entry in bundle["entries"]:
@@ -494,11 +564,17 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
                     signature=entry["canonical_hash"][:16],
                     source_path=entry["source_file"],
                 ))
-                batch.append(vector_events.vector_upsert_requested(
-                    cell_id=cell,
-                    model_id=mid,
-                    signature=entry["canonical_hash"][:16],
-                    reason="axiom_backfill",
+                axiom_path, axiom = axioms_by_model[mid]
+                solver_entries = [
+                    candidate
+                    for candidate in bundle["entries"]
+                    if candidate["canonical_solver_id"] == mid
+                ]
+                batch.append(_build_projection_upsert_event(
+                    axiom=axiom,
+                    entries=solver_entries,
+                    topology_contract=topology_contract,
+                    source_digest=_source_file_digest(axiom_path),
                 ))
         if batch:
             event_log_path = vector_events.emit_many(batch)

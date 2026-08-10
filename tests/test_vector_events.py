@@ -7,6 +7,8 @@ import json
 
 import pytest
 
+from waggledance.core.magma import vector_projection
+
 from waggledance.core.magma.vector_events import (
     VectorEvent,
     EVT_SOLVER_UPSERTED,
@@ -34,6 +36,17 @@ def test_all_four_event_names_exist():
 
 def test_schema_version_exported():
     assert VECTOR_EVENT_SCHEMA_VERSION >= 1
+
+
+@pytest.mark.parametrize("cell_id", ["../thermal", "thermal/child", "C:thermal"])
+def test_event_rejects_unsafe_cell_id(cell_id):
+    with pytest.raises(ValueError, match="cell_id"):
+        solver_upserted(cell_id, "solver", "sig", "source")
+
+
+def test_event_accepts_safe_hierarchical_child_cell():
+    event = solver_upserted("thermal.heating", "solver", "sig", "source")
+    assert event.cell_id == "thermal.heating"
 
 
 def test_unknown_event_rejected_at_construction():
@@ -266,6 +279,111 @@ def test_round_trip_emit_read_preserves_event_id(tmp_path):
     emit(e, log)
     [reparsed] = list(read_events(log))
     assert reparsed.event_id() == original_id
+
+
+def _projected_upsert(reason="projection"):
+    topology = vector_projection.build_retrieval_topology_contract()
+    topology_digest = vector_projection.retrieval_topology_digest(topology)
+    document = vector_projection.build_solver_contract_projection(
+        {
+            "model_id": "heat_loss",
+            "model_name": "Heat Loss",
+            "description": "Estimate heat loss.",
+            "cell_id": "thermal",
+            "variables": {"area": {"unit": "m2"}},
+            "solver_output_schema": {
+                "primary_value": {"name": "loss", "unit": "W"},
+            },
+        },
+        source_digest="sha256:" + "2" * 64,
+        topology_digest=topology_digest,
+    )
+    identity = vector_projection.build_projection_source_identity(document)
+    embedding = vector_projection.build_embedding_contract(
+        model_id="nomic-embed-text",
+        model_version="v1.5",
+        dimension=768,
+    )
+    event = vector_upsert_requested(
+        "thermal",
+        "heat_loss",
+        document["solver_contract_digest"],
+        reason=reason,
+        projection_document=document,
+        source_identity=identity,
+        embedding_contract=embedding,
+        topology_digest=topology_digest,
+        source="test",
+    )
+    return event, document, identity, embedding, topology_digest
+
+
+def test_projected_upsert_round_trip_preserves_full_contract_and_digest(tmp_path):
+    from waggledance.core.magma.vector_events import emit, read_events
+
+    event, document, identity, embedding, topology_digest = _projected_upsert()
+    log = tmp_path / "events.jsonl"
+    emit(event, log)
+    [reparsed] = list(read_events(log))
+
+    assert reparsed.payload["projection_document"] == document
+    assert reparsed.payload["source_identity"] == identity
+    assert reparsed.payload["embedding_contract"] == embedding
+    assert reparsed.payload["topology_digest"] == topology_digest
+    assert reparsed.event_digest().startswith("sha256:")
+    assert len(reparsed.event_digest()) == 71
+
+
+def test_projected_upsert_detaches_validated_contracts_from_caller_mutation():
+    event, document, identity, embedding, _ = _projected_upsert()
+
+    document["contract_fields"]["description"] = "mutated"
+    identity["receipt_bound"] = True
+    embedding["dimension"] = 1
+
+    assert event.payload["projection_document"]["contract_fields"]["description"] == (
+        "Estimate heat loss."
+    )
+    assert event.payload["source_identity"]["receipt_bound"] is False
+    assert event.payload["embedding_contract"]["dimension"] == 768
+
+
+def test_projected_upsert_fields_are_all_or_none():
+    _, document, _, _, _ = _projected_upsert()
+    with pytest.raises(ValueError, match="all-or-none"):
+        vector_upsert_requested(
+            "thermal",
+            "heat_loss",
+            document["solver_contract_digest"],
+            projection_document=document,
+        )
+
+
+def test_projected_upsert_rejects_cross_binding_mismatch():
+    _, document, identity, embedding, topology_digest = _projected_upsert()
+    poisoned = {**document, "cell_id": "energy"}
+    poisoned["projection_digest"] = vector_projection.sha256_digest(
+        {key: value for key, value in poisoned.items() if key != "projection_digest"}
+    )
+
+    with pytest.raises(ValueError, match="projection cell"):
+        vector_upsert_requested(
+            "thermal",
+            "heat_loss",
+            document["solver_contract_digest"],
+            projection_document=poisoned,
+            source_identity=identity,
+            embedding_contract=embedding,
+            topology_digest=topology_digest,
+        )
+
+
+def test_source_identity_dedup_is_independent_of_reason_and_event_timestamp():
+    first, _, identity, _, _ = _projected_upsert(reason="first")
+    second, _, second_identity, _, _ = _projected_upsert(reason="second")
+
+    assert first.event_id() != second.event_id()
+    assert identity["identity_digest"] == second_identity["identity_digest"]
 
 
 # ── read_events_from_offset (Phase D Candidate 2) ─────────────────

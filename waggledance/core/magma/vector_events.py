@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from waggledance.core.magma import vector_projection
+
 
 # Event name constants. Kept as module-level strings so consumers can
 # compare identities without importing enum.
@@ -46,6 +48,13 @@ ALL_VECTOR_EVENT_NAMES: tuple[str, ...] = (
 # breaking change to the field set; consumers should refuse unknown
 # versions.
 VECTOR_EVENT_SCHEMA_VERSION = 1
+
+_PROJECTED_UPSERT_KEYS: tuple[str, ...] = (
+    "projection_document",
+    "source_identity",
+    "embedding_contract",
+    "topology_digest",
+)
 
 
 def _utc_now_iso() -> str:
@@ -90,8 +99,19 @@ class VectorEvent:
                 f"unknown vector event: {self.event!r}. "
                 f"Valid: {ALL_VECTOR_EVENT_NAMES}"
             )
+        if type(self.schema_version) is not int or self.schema_version != VECTOR_EVENT_SCHEMA_VERSION:
+            raise ValueError(f"unsupported vector event schema: {self.schema_version!r}")
+        vector_projection.validate_vector_cell_id(self.cell_id)
+        if self.solver_id is not None:
+            vector_projection.validate_solver_id(self.solver_id)
         # Enforce payload shape per event type (below).
         validate_payload(self.event, self.payload)
+        if self.event == EVT_VECTOR_UPSERT_REQUESTED:
+            _validate_projected_upsert_binding(
+                self.payload,
+                cell_id=self.cell_id,
+                solver_id=self.solver_id,
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Stable dict form for JSON / JSONL persistence."""
@@ -113,17 +133,73 @@ class VectorEvent:
                            default=str).encode("utf-8")
         return "evt_" + hashlib.sha256(blob).hexdigest()[:16]
 
+    def event_digest(self) -> str:
+        """Full immutable event digest, including timestamp and provenance."""
+        return "sha256:" + hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
+
 
 # ── Per-event payload validation ──────────────────────────────────
 
 def validate_payload(event: str, payload: dict[str, Any]) -> None:
     """Raise ValueError if payload is missing required keys for event."""
+    if type(payload) is not dict:
+        raise ValueError("vector event payload must be a plain object")
     required = _REQUIRED_PAYLOAD_KEYS.get(event, ())
     missing = [k for k in required if k not in payload]
     if missing:
         raise ValueError(
             f"event {event!r} payload missing keys: {missing}"
         )
+    if event in {
+        EVT_SOLVER_UPSERTED,
+        EVT_VECTOR_UPSERT_REQUESTED,
+        EVT_VECTOR_DELETE_REQUESTED,
+    }:
+        vector_projection.validate_solver_id(payload.get("model_id"))
+    if event == EVT_VECTOR_UPSERT_REQUESTED:
+        present = [key in payload for key in _PROJECTED_UPSERT_KEYS]
+        if any(present) and not all(present):
+            raise ValueError(
+                "projected vector upsert fields are all-or-none: "
+                + ", ".join(_PROJECTED_UPSERT_KEYS)
+            )
+
+
+def _validate_projected_upsert_binding(
+    payload: dict[str, Any],
+    *,
+    cell_id: str,
+    solver_id: str | None,
+) -> None:
+    if not all(key in payload for key in _PROJECTED_UPSERT_KEYS):
+        return
+    document = vector_projection.validate_solver_contract_projection(
+        payload["projection_document"]
+    )
+    identity = vector_projection.validate_projection_source_identity(
+        payload["source_identity"]
+    )
+    vector_projection.validate_embedding_contract(payload["embedding_contract"])
+    topology_digest = payload["topology_digest"]
+    if not isinstance(topology_digest, str) or not topology_digest.startswith("sha256:"):
+        raise ValueError("topology_digest must be a full sha256 digest")
+    if topology_digest != document["topology_digest"]:
+        raise ValueError("event topology_digest does not match projection document")
+    model_id = payload["model_id"]
+    if solver_id is not None and solver_id != model_id:
+        raise ValueError("event solver_id does not match payload model_id")
+    if document["canonical_solver_id"] != model_id:
+        raise ValueError("projection solver does not match event model_id")
+    if document["cell_id"] != cell_id:
+        raise ValueError("projection cell does not match event cell_id")
+    if identity["canonical_solver_id"] != model_id:
+        raise ValueError("source identity solver does not match event model_id")
+    if identity["solver_contract_digest"] != document["solver_contract_digest"]:
+        raise ValueError("source identity contract digest does not match projection")
+    if identity["source_digest"] != document["source_digest"]:
+        raise ValueError("source identity source digest does not match projection")
+    if payload["signature"] != document["solver_contract_digest"]:
+        raise ValueError("projected upsert signature must be the full solver contract digest")
 
 
 _REQUIRED_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
@@ -165,17 +241,53 @@ def solver_upserted(cell_id: str, model_id: str, signature: str,
     )
 
 
-def vector_upsert_requested(cell_id: str, model_id: str,
-                             signature: str,
-                             reason: str | None = None) -> VectorEvent:
+def vector_upsert_requested(
+    cell_id: str,
+    model_id: str,
+    signature: str,
+    reason: str | None = None,
+    *,
+    projection_document: dict[str, Any] | None = None,
+    source_identity: dict[str, Any] | None = None,
+    embedding_contract: dict[str, Any] | None = None,
+    topology_digest: str | None = None,
+    source: str | None = None,
+) -> VectorEvent:
     payload: dict[str, Any] = {"model_id": model_id, "signature": signature}
     if reason:
         payload["reason"] = reason
+    projected_values = (
+        projection_document,
+        source_identity,
+        embedding_contract,
+        topology_digest,
+    )
+    if any(value is not None for value in projected_values):
+        if not all(value is not None for value in projected_values):
+            raise ValueError("projected vector upsert fields are all-or-none")
+        projection_document = vector_projection.validate_solver_contract_projection(
+            projection_document
+        )
+        source_identity = vector_projection.validate_projection_source_identity(
+            source_identity
+        )
+        embedding_contract = vector_projection.validate_embedding_contract(
+            embedding_contract
+        )
+        payload.update(
+            {
+                "projection_document": projection_document,
+                "source_identity": source_identity,
+                "embedding_contract": embedding_contract,
+                "topology_digest": topology_digest,
+            }
+        )
     return VectorEvent(
         event=EVT_VECTOR_UPSERT_REQUESTED,
         cell_id=cell_id,
         solver_id=model_id,
         payload=payload,
+        source=source,
     )
 
 

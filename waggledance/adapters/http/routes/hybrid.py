@@ -60,17 +60,41 @@ def hybrid_status(container=Depends(get_container), _auth=Depends(require_auth))
     try:
         hr = container.hybrid_retrieval
         mode = getattr(hr, "mode", "shadow")
+        enabled = bool(hr.enabled)
+        requested_enabled = bool(getattr(hr, "requested_enabled", enabled))
+        faiss_available = bool(getattr(hr, "faiss_available", enabled))
+        faiss_degraded = bool(
+            getattr(hr, "faiss_degraded", requested_enabled and not faiss_available)
+        )
+        faiss_degraded_reason = getattr(hr, "faiss_degraded_reason", None)
         return {
-            "enabled": hr.enabled,
+            "enabled": enabled,
+            "effective_enabled": enabled,
+            "requested_enabled": requested_enabled,
+            "faiss_available": faiss_available,
+            "faiss_degraded": faiss_degraded,
+            "faiss_degraded_reason": faiss_degraded_reason,
             "mode": mode,
             "is_authoritative": getattr(hr, "is_authoritative", False),
-            "retrieval_mode": f"hybrid:{mode}" if hr.enabled else "global_only",
+            "retrieval_mode": f"hybrid:{mode}" if enabled else "global_only",
             "ring2_enabled": hr._ring2_enabled,
             "stats": hr.stats(),
         }
     except Exception as e:
         logger.debug("Hybrid status error: %s", e)
-        return {"enabled": False, "retrieval_mode": "global_only", "stats": {}}
+        return {
+            "enabled": False,
+            "effective_enabled": False,
+            "requested_enabled": False,
+            "faiss_available": False,
+            "faiss_degraded": False,
+            "faiss_degraded_reason": None,
+            "mode": "shadow",
+            "is_authoritative": False,
+            "retrieval_mode": "global_only",
+            "ring2_enabled": False,
+            "stats": {},
+        }
 
 
 @router.get("/api/hybrid/topology")

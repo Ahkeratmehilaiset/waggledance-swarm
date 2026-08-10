@@ -59,6 +59,7 @@ class HybridTraceResult:
     # Degraded flags
     embeddings_degraded: bool = False
     faiss_degraded: bool = False
+    faiss_degraded_reason: Optional[str] = None
     chroma_degraded: bool = False
 
     # Counts
@@ -83,6 +84,7 @@ class HybridTraceResult:
             "total_ms": round(self.total_ms, 2),
             "embeddings_degraded": self.embeddings_degraded,
             "faiss_degraded": self.faiss_degraded,
+            "faiss_degraded_reason": self.faiss_degraded_reason,
             "chroma_degraded": self.chroma_degraded,
             "local_candidates": self.local_candidates,
             "neighbor_candidates": self.neighbor_candidates,
@@ -127,7 +129,11 @@ class HybridRetrievalService:
         self._topology = topology
         self._vector_store = vector_store
         self._embed_fn = embed_fn
-        self._enabled = enabled
+        self._requested_enabled = bool(enabled)
+        self._faiss_available, self._faiss_unavailable_reason = (
+            self._faiss_registry_availability(faiss_registry)
+        )
+        self._enabled = self._requested_enabled and self._faiss_available
         self._ring2_enabled = ring2_enabled
         self._mode = mode if mode in ("shadow", "candidate", "authoritative") else "shadow"
         self._min_score = float(min_score)
@@ -144,11 +150,34 @@ class HybridRetrievalService:
 
     @property
     def enabled(self) -> bool:
+        """Whether cell-local FAISS retrieval is effectively enabled."""
         return self._enabled
 
     @enabled.setter
     def enabled(self, value: bool) -> None:
-        self._enabled = value
+        self._requested_enabled = bool(value)
+        self._enabled = self._requested_enabled and self._faiss_available
+
+    @property
+    def requested_enabled(self) -> bool:
+        """Whether configuration requested hybrid FAISS retrieval."""
+        return self._requested_enabled
+
+    @property
+    def faiss_available(self) -> bool:
+        """Whether the injected registry implements the read protocol."""
+        return self._faiss_available
+
+    @property
+    def faiss_degraded(self) -> bool:
+        """Whether requested FAISS retrieval is unavailable at startup."""
+        return self._requested_enabled and not self._faiss_available
+
+    @property
+    def faiss_degraded_reason(self) -> Optional[str]:
+        if not self.faiss_degraded:
+            return None
+        return self._faiss_unavailable_reason
 
     @property
     def mode(self) -> str:
@@ -185,7 +214,10 @@ class HybridRetrievalService:
         t0 = time.perf_counter()
         self._total_queries += 1
 
-        trace = HybridTraceResult()
+        trace = HybridTraceResult(
+            faiss_degraded=self.faiss_degraded,
+            faiss_degraded_reason=self.faiss_degraded_reason,
+        )
 
         if not self._enabled:
             trace.retrieval_mode = "global_only"
@@ -224,7 +256,9 @@ class HybridRetrievalService:
 
         # 1. Local cell FAISS
         t_local = time.perf_counter()
-        local_hits = self._search_faiss_cell(assignment.cell_id, query_vec, k, "local_faiss")
+        local_hits = self._search_faiss_cell(
+            assignment.cell_id, query_vec, k, "local_faiss", trace,
+        )
         trace.local_faiss_ms = (time.perf_counter() - t_local) * 1000
         trace.local_candidates = len(local_hits)
 
@@ -245,7 +279,9 @@ class HybridRetrievalService:
         t_neighbor = time.perf_counter()
         remaining = k - len(trace.hits)
         for neighbor_id in assignment.neighbors_ring1:
-            n_hits = self._search_faiss_cell(neighbor_id, query_vec, remaining, "neighbor_faiss")
+            n_hits = self._search_faiss_cell(
+                neighbor_id, query_vec, remaining, "neighbor_faiss", trace,
+            )
             if n_hits:
                 trace.hits.extend(n_hits)
                 trace.neighbor_hit = True
@@ -270,7 +306,9 @@ class HybridRetrievalService:
         if self._ring2_enabled and assignment.neighbors_ring2:
             remaining = k - len(trace.hits)
             for nn_id in assignment.neighbors_ring2:
-                n_hits = self._search_faiss_cell(nn_id, query_vec, remaining, "neighbor_faiss")
+                n_hits = self._search_faiss_cell(
+                    nn_id, query_vec, remaining, "neighbor_faiss", trace,
+                )
                 if n_hits:
                     trace.hits.extend(n_hits)
                     trace.neighbor_hit = True
@@ -337,8 +375,22 @@ class HybridRetrievalService:
     def stats(self) -> dict:
         """Return hybrid retrieval statistics."""
         total = self._total_queries or 1
+        faiss_stats: dict = {}
+        registry_stats = getattr(self._faiss_registry, "stats", None)
+        if callable(registry_stats):
+            try:
+                result = registry_stats()
+                if isinstance(result, dict):
+                    faiss_stats = result
+            except Exception as exc:
+                log.debug("FAISS registry stats failed: %s", exc)
         return {
             "enabled": self._enabled,
+            "effective_enabled": self._enabled,
+            "requested_enabled": self._requested_enabled,
+            "faiss_available": self._faiss_available,
+            "faiss_degraded": self.faiss_degraded,
+            "faiss_degraded_reason": self.faiss_degraded_reason,
             "mode": self._mode,
             "is_authoritative": self.is_authoritative,
             "min_score": self._min_score,
@@ -354,7 +406,7 @@ class HybridRetrievalService:
             "llm_fallback_rate": round(self._llm_fallbacks / total, 4),
             "ring2_enabled": self._ring2_enabled,
             "cell_stats": self._topology.stats() if self._topology else {},
-            "faiss_stats": self._faiss_registry.stats() if self._faiss_registry else {},
+            "faiss_stats": faiss_stats,
         }
 
     # ── Private helpers ───────────────────────────────────────
@@ -365,6 +417,7 @@ class HybridRetrievalService:
         query_vec,
         k: int,
         source_layer: str,
+        trace: HybridTraceResult,
     ) -> List[HybridHit]:
         """Search a single cell's FAISS index."""
         if k <= 0:
@@ -373,6 +426,9 @@ class HybridRetrievalService:
         try:
             getter = getattr(self._faiss_registry, "get_existing", None)
             if not callable(getter):
+                self._mark_faiss_degraded(
+                    trace, "faiss_registry_protocol_unavailable",
+                )
                 log.debug(
                     "FAISS registry %s has no get_existing; refusing get_or_create on read path",
                     type(self._faiss_registry).__name__,
@@ -397,8 +453,26 @@ class HybridRetrievalService:
                 if r.score >= self._min_score   # Phase D v2 — instance threshold (was hardcoded _MIN_SCORE)
             ]
         except Exception as e:
+            self._mark_faiss_degraded(trace, "faiss_search_failed")
             log.debug("FAISS cell %s search failed: %s", cell_id, e)
             return []
+
+    @staticmethod
+    def _faiss_registry_availability(registry) -> tuple[bool, Optional[str]]:
+        if registry is None:
+            return False, "faiss_dependency_unavailable"
+        if not callable(getattr(registry, "get_existing", None)):
+            return False, "faiss_registry_protocol_unavailable"
+        return True, None
+
+    @staticmethod
+    def _mark_faiss_degraded(
+        trace: HybridTraceResult,
+        reason: str,
+    ) -> None:
+        if not trace.faiss_degraded:
+            trace.faiss_degraded = True
+            trace.faiss_degraded_reason = reason
 
     async def _search_global(self, query: str, k: int, trace: HybridTraceResult) -> None:
         """Search global ChromaDB and append hits to trace."""

@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from waggledance.adapters.http.routes.hybrid import _collection_count
+from waggledance.adapters.http.routes.hybrid import _collection_count, hybrid_status
+from waggledance.application.services.hybrid_retrieval_service import (
+    HybridRetrievalService,
+)
 
 
 class LegacyRegistry:
@@ -51,3 +54,30 @@ def test_collection_count_does_not_create_missing_collection() -> None:
         _collection_count(registry, "cell_hub")
 
     assert registry.created == []
+
+
+def test_hybrid_status_exposes_requested_effective_and_available_truth() -> None:
+    topology = SimpleNamespace(stats=lambda: {})
+    service = HybridRetrievalService(
+        faiss_registry=None,
+        topology=topology,
+        vector_store=None,
+        enabled=True,
+        mode="candidate",
+    )
+
+    result = hybrid_status(
+        container=SimpleNamespace(hybrid_retrieval=service),
+        _auth=None,
+    )
+
+    assert result["enabled"] is False
+    assert result["effective_enabled"] is False
+    assert result["requested_enabled"] is True
+    assert result["faiss_available"] is False
+    assert result["faiss_degraded"] is True
+    assert result["faiss_degraded_reason"] == "faiss_dependency_unavailable"
+    assert result["mode"] == "candidate"
+    assert result["is_authoritative"] is False
+    assert result["retrieval_mode"] == "global_only"
+    assert result["stats"]["requested_enabled"] is True

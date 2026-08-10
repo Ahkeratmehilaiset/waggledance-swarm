@@ -906,8 +906,10 @@ class Container:
         """
         try:
             from core.faiss_store import FaissRegistry
-        except ImportError:
-            return None
+        except ModuleNotFoundError as exc:
+            if exc.name == "faiss":
+                return None
+            raise
         return FaissRegistry()
 
     @cached_property

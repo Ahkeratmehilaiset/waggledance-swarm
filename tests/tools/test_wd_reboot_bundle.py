@@ -109,10 +109,10 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         "fable-5",
     }
     assert lanes["codex-lead-1"]["branch"] == (
-        "codex-lead-1/biomimetic-shadow-binding-hardening-20260808"
+        "codex-lead-1/magma-faiss-hex-genome-20260810"
     )
     assert lanes["codex-lead-1"]["head"] == (
-        "d87f6c17140348e1ae7d9716dbf9edf53f2bb9f1"
+        "fc03c60077d1787e1f2ec95c4f31d4605370103b"
     )
     assert lanes["claude-rco-1"]["head"] == (
         "5524acaa94f853168bdf79e656c5f083db1b10fc"

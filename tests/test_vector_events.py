@@ -263,6 +263,7 @@ def test_emit_many_batches_into_one_file(tmp_path):
     read_back = list(read_events(log))
     assert len(read_back) == 5
     assert [e.payload["model_id"] for e in read_back] == [f"m{i}" for i in range(5)]
+    assert b"\r\n" not in log.read_bytes()
 
 
 def test_read_events_skips_malformed_lines(tmp_path):

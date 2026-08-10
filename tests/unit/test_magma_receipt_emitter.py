@@ -74,10 +74,11 @@ def receipt_for(
     signature_envelope: dict[str, str] | None = None,
     allow_external_effect: bool = False,
     charter_digest: str | None = None,
+    ts_utc: str = "2026-05-17T07:05:00Z",
 ) -> dict:
     return build_magma_receipt(
         event_id=event_id,
-        ts_utc="2026-05-17T07:05:00Z",
+        ts_utc=ts_utc,
         risk_class=risk_class,
         payload=payload,
         evaluation_result=evaluation,
@@ -279,6 +280,18 @@ def test_rejects_invalid_risk_class_and_external_digest_shape() -> None:
 
     with pytest.raises(ValueError, match="invalid MAGMA receipt v1"):
         receipt_for(payload, evaluation, charter_digest="not-a-sha256")
+
+
+@pytest.mark.parametrize(
+    "ts_utc",
+    ["not-a-timestamp", "2026-05-17T07:05:00", "2026-05-17T09:05:00+02:00"],
+)
+def test_rejects_invalid_or_non_utc_timestamp(ts_utc: str) -> None:
+    payload = {"action": "timestamp_guard"}
+    evaluation = evaluation_for(payload)
+
+    with pytest.raises(ValueError, match="invalid MAGMA receipt v1"):
+        receipt_for(payload, evaluation, ts_utc=ts_utc)
 
 
 def test_emitted_chain_verifies_with_offline_verifier(tmp_path: Path) -> None:

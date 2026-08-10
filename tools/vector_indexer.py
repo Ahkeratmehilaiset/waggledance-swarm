@@ -129,6 +129,27 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _resolve_apply_timestamp(value: str | None) -> str:
+    if value is None:
+        return _utc_now_iso()
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("applied_at_utc must be an ISO-8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(
+            value[:-1] + "+00:00" if value.endswith("Z") else value
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "applied_at_utc must be an ISO-8601 UTC timestamp"
+        ) from exc
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() != timezone.utc.utcoffset(parsed)
+    ):
+        raise ValueError("applied_at_utc must be an ISO-8601 UTC timestamp")
+    return value
+
+
 def _validate_commit_id(value: Any, *, allow_none: bool = False) -> str | None:
     if value is None and allow_none:
         return None
@@ -442,7 +463,7 @@ def save_checkpoint(cp: Checkpoint,
     payload = json.dumps(cp.to_dict(), indent=2, sort_keys=True)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", delete=False,
-        dir=target.parent, prefix=".checkpoint.", suffix=".tmp",
+        dir=target.parent, prefix=".checkpoint.", suffix=".tmp", newline="\n",
     ) as tmp:
         tmp.write(payload)
         tmp_path = Path(tmp.name)
@@ -1591,6 +1612,7 @@ def apply(
     cell_filter: str | None = None,
     dry_run: bool = True,
     force: bool = False,
+    applied_at_utc: str | None = None,
     _fail_before_swap_for_cells: set[str] | None = None,
 ) -> ApplyReport:
     """Run an apply pass.
@@ -1602,6 +1624,7 @@ def apply(
     """
     vroot = Path(vector_root) if vector_root else DEFAULT_VECTOR_ROOT
     elog = event_log if event_log is not None else DEFAULT_EVENT_LOG
+    applied_at = _resolve_apply_timestamp(applied_at_utc)
 
     checkpoint = load_checkpoint(checkpoint_path)
 
@@ -1730,6 +1753,7 @@ def apply(
                     if cell_state.first_event_id else None
                 ),
                 source="indexer",
+                ts=applied_at,
                 **commit_event_kwargs,
             )
             vector_events.emit(event, elog)
@@ -1737,7 +1761,7 @@ def apply(
             # Advance cell checkpoint entry
             per_cell.last_applied_event_id = cell_state.last_event_id or per_cell.last_applied_event_id
             per_cell.commit_id = new_commit_id
-            per_cell.applied_ts = _utc_now_iso()
+            per_cell.applied_ts = applied_at
             per_cell.vector_count = len(cell_state.signatures)
 
             report.cells_applied += 1
@@ -1761,7 +1785,7 @@ def apply(
     # Advance the global checkpoint ts + id only if at least one cell
     # actually applied. Failed cells keep their prior state.
     if not dry_run and report.cells_applied > 0:
-        checkpoint.last_applied_ts = _utc_now_iso()
+        checkpoint.last_applied_ts = applied_at
         checkpoint.global_last_applied_event_id = last_eid_global
         save_checkpoint(checkpoint, checkpoint_path)
 

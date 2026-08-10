@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,6 +20,23 @@ SCHEMA_PATH = (
     / "magma_receipt.v1.json"
 )
 SIGNATURE_ENVELOPE_KEYS = {"signature_algorithm", "signature", "key_id"}
+
+
+def _require_utc_timestamp(value: Any, label: str) -> str:
+    """Validate UTC independently of jsonschema's optional format extras."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{label} must be an ISO-8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(
+            value[:-1] + "+00:00" if value.endswith("Z") else value
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must be an ISO-8601 UTC timestamp"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{label} must be an ISO-8601 UTC timestamp")
+    return value
 
 
 def build_magma_receipt(
@@ -122,6 +140,10 @@ def validate_magma_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
             for error in errors
         )
         raise ValueError(f"invalid MAGMA receipt v1: {message}")
+    try:
+        _require_utc_timestamp(canonical["ts_utc"], "MAGMA receipt ts_utc")
+    except ValueError as exc:
+        raise ValueError(f"invalid MAGMA receipt v1: {exc}") from exc
     return canonical
 
 

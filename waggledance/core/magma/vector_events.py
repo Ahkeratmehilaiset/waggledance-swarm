@@ -334,6 +334,7 @@ def vector_commit_applied(cell_id: str, faiss_commit_id: str,
                            input_event_range: tuple[str, str] | None = None,
                            materialization_state: str | None = None,
                            index_kind: str | None = None,
+                           ts: str | None = None,
                            ) -> VectorEvent:
     """Build a vector.commit_applied event.
 
@@ -365,11 +366,15 @@ def vector_commit_applied(cell_id: str, faiss_commit_id: str,
             )
         payload["materialization_state"] = materialization_state
         payload["index_kind"] = index_kind
+    event_kwargs: dict[str, Any] = {}
+    if ts is not None:
+        event_kwargs["ts"] = ts
     return VectorEvent(
         event=EVT_VECTOR_COMMIT_APPLIED,
         cell_id=cell_id,
         payload=payload,
         source=source,
+        **event_kwargs,
     )
 
 
@@ -404,7 +409,7 @@ def emit(event: VectorEvent, path: Path | str | None = None) -> Path:
     can emit before the data/vector/ directory exists."""
     target = _resolve_event_log(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "a", encoding="utf-8") as f:
+    with open(target, "a", encoding="utf-8", newline="\n") as f:
         f.write(event.to_json())
         f.write("\n")
     return target
@@ -418,7 +423,7 @@ def emit_many(events: list[VectorEvent],
     many events in one pass."""
     target = _resolve_event_log(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "a", encoding="utf-8") as f:
+    with open(target, "a", encoding="utf-8", newline="\n") as f:
         for event in events:
             f.write(event.to_json())
             f.write("\n")

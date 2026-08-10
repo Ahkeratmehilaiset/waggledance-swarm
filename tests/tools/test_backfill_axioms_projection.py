@@ -47,6 +47,21 @@ def test_backfill_nomic_profile_matches_retrieval_evidence_profile() -> None:
     assert backfill.EMBEDDING_QUERY_PREFIX == profile.query_prefix
 
 
+def test_ledger_metadata_carries_complete_embedding_contract() -> None:
+    metadata = backfill._embedding_ledger_metadata()
+    contract = backfill._build_pinned_embedding_contract()
+
+    assert metadata["embedding_model"] == contract["model_id"]
+    assert metadata["embedding_model_version"] == contract["model_version"]
+    assert metadata["embedding_normalization"] == contract["normalization"]
+    assert metadata["embedding_document_prefix"] == contract["document_prefix"]
+    assert metadata["embedding_query_prefix"] == contract["query_prefix"]
+    assert metadata["embedding_dim"] == contract["dimension"]
+    assert metadata["embedding_contract_digest"] == contract["contract_digest"]
+    assert metadata["embedding_catalog_digest_stable_before_after"] is True
+    assert metadata["embedding_response_digest_attested"] is False
+
+
 def test_backfill_projection_event_is_allowlisted_and_explicitly_unreceipted() -> None:
     event = backfill._build_projection_upsert_event(
         axiom=_axiom(),
@@ -207,12 +222,35 @@ def test_embed_texts_rejects_catalog_change_during_run(
         backfill.embed_texts(["solver document"])
 
 
+def test_catalog_rejects_model_alias_with_conflicting_name() -> None:
+    class _AmbiguousCatalogClient:
+        def get(self, _url: str) -> _Response:
+            return _Response(
+                {
+                    "models": [
+                        {
+                            "name": "conflicting-name:latest",
+                            "model": backfill.EMBEDDING_MODEL,
+                            "digest": backfill.EMBEDDING_MODEL_DIGEST,
+                        }
+                    ]
+                }
+            )
+
+    with pytest.raises(backfill.EmbeddingContractError, match="absent from catalog"):
+        backfill._verify_embedding_model_catalog(_AmbiguousCatalogClient())  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("rows", "reason"),
     [
         ([], "row count"),
         ([[0.0] * (backfill.EMBEDDING_DIMENSION - 1)], "dimension"),
-        ([[0.0] * backfill.EMBEDDING_DIMENSION], "zero vector"),
+        ([[0.0] * backfill.EMBEDDING_DIMENSION], "zero or invalid norm"),
+        (
+            [[1.0e-13] + [0.0] * (backfill.EMBEDDING_DIMENSION - 1)],
+            "zero or invalid norm",
+        ),
         ([[float("nan")] + [0.0] * (backfill.EMBEDDING_DIMENSION - 1)], "non-finite"),
         ([[True] + [0.0] * (backfill.EMBEDDING_DIMENSION - 1)], "non-numeric"),
     ],

@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import re
 import sys
 import time
@@ -47,6 +46,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -213,6 +213,32 @@ def _source_file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(resolved.read_bytes()).hexdigest()
 
 
+def _build_pinned_embedding_contract(*, dimension: int = EMBEDDING_DIMENSION) -> dict:
+    return vector_projection.build_embedding_contract(
+        model_id=EMBEDDING_MODEL,
+        model_version=EMBEDDING_MODEL_VERSION,
+        dimension=dimension,
+        normalization=EMBEDDING_NORMALIZATION,
+        document_prefix=EMBEDDING_DOCUMENT_PREFIX,
+        query_prefix=EMBEDDING_QUERY_PREFIX,
+    )
+
+
+def _embedding_ledger_metadata() -> dict:
+    contract = _build_pinned_embedding_contract()
+    return {
+        "embedding_model": contract["model_id"],
+        "embedding_model_version": contract["model_version"],
+        "embedding_normalization": contract["normalization"],
+        "embedding_document_prefix": contract["document_prefix"],
+        "embedding_query_prefix": contract["query_prefix"],
+        "embedding_dim": contract["dimension"],
+        "embedding_contract_digest": contract["contract_digest"],
+        "embedding_catalog_digest_stable_before_after": True,
+        "embedding_response_digest_attested": False,
+    }
+
+
 def _build_projection_upsert_event(
     axiom: dict,
     entries: list[dict],
@@ -247,14 +273,7 @@ def _build_projection_upsert_event(
         topology_digest=topology_digest,
     )
     source_identity = vector_projection.build_projection_source_identity(document)
-    embedding_contract = vector_projection.build_embedding_contract(
-        model_id=EMBEDDING_MODEL,
-        model_version=EMBEDDING_MODEL_VERSION,
-        dimension=dimension,
-        normalization=EMBEDDING_NORMALIZATION,
-        document_prefix=EMBEDDING_DOCUMENT_PREFIX,
-        query_prefix=EMBEDDING_QUERY_PREFIX,
-    )
+    embedding_contract = _build_pinned_embedding_contract(dimension=dimension)
     return vector_events.vector_upsert_requested(
         cell_id=document["cell_id"],
         model_id=document["canonical_solver_id"],
@@ -336,19 +355,21 @@ def _verify_embedding_model_catalog(client: httpx.Client) -> dict[str, str]:
     models = payload.get("models") if type(payload) is dict else None
     if type(models) is not list:
         raise EmbeddingContractError("embedding model catalog has invalid shape")
-    matching_name = False
     for model in models:
         if type(model) is not dict:
             continue
-        if model.get("name") != EMBEDDING_MODEL and model.get("model") != EMBEDDING_MODEL:
+        if model.get("name") != EMBEDDING_MODEL:
             continue
-        matching_name = True
         if model.get("digest") == EMBEDDING_MODEL_DIGEST:
             return {
                 "provider": "ollama",
                 "requested_model_tag": EMBEDDING_MODEL,
                 "catalog_digest": EMBEDDING_MODEL_DIGEST,
             }
+    matching_name = any(
+        type(model) is dict and model.get("name") == EMBEDDING_MODEL
+        for model in models
+    )
     reason = (
         "embedding model digest mismatch"
         if matching_name
@@ -364,23 +385,29 @@ def _normalize_embedding_rows(
 ) -> list[list[float]]:
     if type(value) is not list or len(value) != expected_rows:
         raise EmbeddingContractError("embedding response row count mismatch")
-    normalized: list[list[float]] = []
-    for row in value:
-        if type(row) is not list or len(row) != EMBEDDING_DIMENSION:
-            raise EmbeddingContractError("embedding response dimension mismatch")
-        if any(
-            isinstance(item, bool) or not isinstance(item, (int, float))
-            for item in row
-        ):
-            raise EmbeddingContractError("embedding response contains a non-numeric value")
-        vector = [float(item) for item in row]
-        if any(not math.isfinite(item) for item in vector):
-            raise EmbeddingContractError("embedding response contains a non-finite value")
-        norm = math.sqrt(math.fsum(item * item for item in vector))
-        if not math.isfinite(norm) or norm <= 0.0:
-            raise EmbeddingContractError("embedding response contains a zero vector")
-        normalized.append([item / norm for item in vector])
-    return normalized
+    if any(
+        type(row) is not list
+        or any(isinstance(item, bool) for item in row)
+        for row in value
+    ):
+        raise EmbeddingContractError("embedding response contains a non-numeric value")
+    try:
+        matrix = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise EmbeddingContractError(
+            "embedding response is not numeric and rectangular"
+        ) from exc
+    if matrix.ndim != 2 or matrix.shape != (expected_rows, EMBEDDING_DIMENSION):
+        raise EmbeddingContractError("embedding response dimension mismatch")
+    if not np.isfinite(matrix).all():
+        raise EmbeddingContractError("embedding response contains a non-finite value")
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    if not np.isfinite(norms).all() or np.any(norms <= 1.0e-12):
+        raise EmbeddingContractError("embedding response contains a zero or invalid norm")
+    normalized = np.ascontiguousarray(matrix / norms, dtype=np.float32)
+    if not np.isfinite(normalized).all():
+        raise EmbeddingContractError("embedding response normalization failed")
+    return normalized.tolist()
 
 
 def embed_texts(texts: list[str], batch_size: int = DEFAULT_BATCH_SIZE) -> list[list[float]]:
@@ -612,11 +639,7 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
                 "text": view["text"],
                 "text_hash": hashlib.sha256(view["text"].encode("utf-8")).hexdigest(),
                 "vector": vec,
-                "embedding_model": EMBEDDING_MODEL,
-                "embedding_model_version": EMBEDDING_MODEL_VERSION,
-                "embedding_normalization": EMBEDDING_NORMALIZATION,
-                "embedding_document_prefix": EMBEDDING_DOCUMENT_PREFIX,
-                "embedding_dim": len(vec),
+                **_embedding_ledger_metadata(),
                 "source_file": str(axiom_path.relative_to(ROOT)),
                 "domain": domain,
                 "placement_audit": audit,

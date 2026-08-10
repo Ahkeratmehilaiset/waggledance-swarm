@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Strict, dependency-free MAGMA contracts for FAISS materialization.
+"""Strict MAGMA contracts for candidate-only FAISS materialization.
 
 FAISS is a disposable projection, never the authority.  This module defines
 the small allowlisted document that may cross from a validated solver contract
@@ -7,7 +7,8 @@ into the vector event stream, together with the embedding and retrieval
 topology bindings required to rebuild it deterministically.
 
 No function in this module writes files, imports FAISS, embeds text, mutates a
-runtime topology, or grants routing authority.
+runtime topology, or grants routing authority. Receipt-bound v2 validation
+reuses the existing MAGMA JSON-schema validators.
 """
 from __future__ import annotations
 
@@ -21,7 +22,36 @@ from waggledance.core.magma.canonical import sha256_digest
 
 
 SOLVER_PROJECTION_VERSION = "magma.faiss.solver_projection.v1"
-PROJECTION_SOURCE_IDENTITY_VERSION = "magma.faiss.source_identity.v1"
+PROJECTION_SOURCE_IDENTITY_V1_VERSION = "magma.faiss.source_identity.v1"
+PROJECTION_SOURCE_IDENTITY_V2_VERSION = "magma.faiss.source_identity.v2"
+# Backward-compatible name used by existing unreceipted projection manifests.
+PROJECTION_SOURCE_IDENTITY_VERSION = PROJECTION_SOURCE_IDENTITY_V1_VERSION
+PROJECTION_SOURCE_IDENTITY_VERSIONS = frozenset(
+    {PROJECTION_SOURCE_IDENTITY_V1_VERSION, PROJECTION_SOURCE_IDENTITY_V2_VERSION}
+)
+PROJECTION_RECEIPT_PROOF_VERSION = "magma.faiss.projection_receipt_proof.v1"
+PROJECTION_ADMISSION_PAYLOAD_VERSION = (
+    "magma.faiss.projection_admission_payload.v1"
+)
+PROJECTION_ADMISSION_EVALUATOR_VERSION = (
+    "magma.faiss.projection_admission_evaluator.v1"
+)
+PROJECTION_ADMISSION_EVALUATOR_SPEC = {
+    "schema_version": PROJECTION_ADMISSION_EVALUATOR_VERSION,
+    "deterministic": True,
+    "network_access": False,
+    "checks": [
+        "solver_projection_contract",
+        "embedding_contract",
+        "projection_receipt_payload",
+        "evaluation_result_binding",
+        "magma_receipt_binding",
+        "candidate_only_authority",
+    ],
+}
+PROJECTION_ADMISSION_EVALUATOR_DIGEST = sha256_digest(
+    PROJECTION_ADMISSION_EVALUATOR_SPEC
+)
 EMBEDDING_CONTRACT_VERSION = "magma.faiss.embedding_contract.v1"
 RETRIEVAL_TOPOLOGY_VERSION = "waggledance.retrieval_topology.v1"
 
@@ -73,7 +103,7 @@ _CONTRACT_FIELD_KEYS = frozenset(
     }
 )
 _NAMED_UNIT_KEYS = frozenset({"name", "unit"})
-_SOURCE_IDENTITY_KEYS = frozenset(
+_SOURCE_IDENTITY_V1_KEYS = frozenset(
     {
         "schema_version",
         "canonical_solver_id",
@@ -83,6 +113,47 @@ _SOURCE_IDENTITY_KEYS = frozenset(
         "receipt_digest",
         "receipt_bound",
         "identity_digest",
+    }
+)
+_SOURCE_IDENTITY_V2_KEYS = frozenset(
+    {
+        "schema_version",
+        "projection_id",
+        "projection_digest",
+        "canonical_solver_id",
+        "cell_id",
+        "solver_contract_digest",
+        "source_digest",
+        "topology_digest",
+        "embedding_contract_digest",
+        "receipt_event_id",
+        "receipt_digest",
+        "receipt_proof_digest",
+        "receipt_bound",
+        "receipt_proof",
+        "identity_digest",
+    }
+)
+_PROJECTION_RECEIPT_PROOF_KEYS = frozenset(
+    {"schema_version", "payload", "evaluation_result", "receipt", "proof_digest"}
+)
+_PROJECTION_ADMISSION_PAYLOAD_KEYS = frozenset(
+    {
+        "schema_version",
+        "operation",
+        "projection_id",
+        "projection_digest",
+        "canonical_solver_id",
+        "cell_id",
+        "solver_contract_digest",
+        "source_digest",
+        "topology_digest",
+        "embedding_contract_digest",
+        "admission_evaluator_contract_digest",
+        "authority_scope",
+        "runtime_authority_granted",
+        "external_authority_artifacts_verified",
+        "solver_outcome_verified",
     }
 )
 _EMBEDDING_KEYS = frozenset(
@@ -465,10 +536,240 @@ def build_projection_source_identity(
     return validate_projection_source_identity(identity)
 
 
+def build_projection_admission_payload(
+    projection_document: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the privacy-safe payload admitted by a projection receipt."""
+    document = validate_solver_contract_projection(projection_document)
+    embedding = validate_embedding_contract(embedding_contract)
+    return {
+        "schema_version": PROJECTION_ADMISSION_PAYLOAD_VERSION,
+        "operation": "admit_solver_contract_projection",
+        "projection_id": document["projection_id"],
+        "projection_digest": document["projection_digest"],
+        "canonical_solver_id": document["canonical_solver_id"],
+        "cell_id": document["cell_id"],
+        "solver_contract_digest": document["solver_contract_digest"],
+        "source_digest": document["source_digest"],
+        "topology_digest": document["topology_digest"],
+        "embedding_contract_digest": embedding["contract_digest"],
+        "admission_evaluator_contract_digest": PROJECTION_ADMISSION_EVALUATOR_DIGEST,
+        "authority_scope": "candidate_projection_only",
+        "runtime_authority_granted": False,
+        "external_authority_artifacts_verified": False,
+        "solver_outcome_verified": False,
+    }
+
+
+def _projection_admission_event_id(payload: Mapping[str, Any]) -> str:
+    return "magma:faiss:projection:" + sha256_digest(payload).split(":", 1)[1]
+
+
+def projection_admission_event_id(
+    projection_document: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any],
+) -> str:
+    payload = build_projection_admission_payload(
+        projection_document, embedding_contract
+    )
+    return _projection_admission_event_id(payload)
+
+
+def build_projection_receipt_proof(
+    projection_document: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any],
+    *,
+    evaluation_result: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    proof: dict[str, Any] = {
+        "schema_version": PROJECTION_RECEIPT_PROOF_VERSION,
+        "payload": build_projection_admission_payload(
+            projection_document, embedding_contract
+        ),
+        "evaluation_result": dict(evaluation_result),
+        "receipt": dict(receipt),
+        "proof_digest": "",
+    }
+    proof["proof_digest"] = sha256_digest(
+        {key: item for key, item in proof.items() if key != "proof_digest"}
+    )
+    return validate_projection_receipt_proof(
+        proof, projection_document, embedding_contract
+    )
+
+
+def validate_projection_receipt_proof(
+    value: Any,
+    projection_document: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_payload = build_projection_admission_payload(
+        projection_document, embedding_contract
+    )
+    return _validate_projection_receipt_proof_against_payload(
+        value, expected_payload
+    )
+
+
+def _validate_projection_receipt_proof_against_payload(
+    value: Any,
+    expected_payload: dict[str, Any],
+) -> dict[str, Any]:
+    from waggledance.core.magma.evaluation_result import (
+        validate_evaluation_result,
+    )
+    from waggledance.core.magma.receipt import validate_magma_receipt
+
+    proof = _require_plain_mapping(value, "projection receipt proof")
+    _require_exact_keys(
+        proof, _PROJECTION_RECEIPT_PROOF_KEYS, "projection receipt proof"
+    )
+    if proof["schema_version"] != PROJECTION_RECEIPT_PROOF_VERSION:
+        raise ValueError("unsupported projection receipt proof schema")
+    payload = _require_plain_mapping(
+        proof["payload"], "projection admission payload"
+    )
+    _require_exact_keys(
+        payload,
+        _PROJECTION_ADMISSION_PAYLOAD_KEYS,
+        "projection admission payload",
+    )
+    if (
+        payload != expected_payload
+        or payload["runtime_authority_granted"] is not False
+        or payload["external_authority_artifacts_verified"] is not False
+        or payload["solver_outcome_verified"] is not False
+    ):
+        raise ValueError("projection receipt payload does not match projection contracts")
+
+    evaluation = validate_evaluation_result(proof["evaluation_result"])
+    receipt = validate_magma_receipt(proof["receipt"])
+    payload_digest = sha256_digest(expected_payload)
+    solver_id = expected_payload["canonical_solver_id"]
+    expected_event_id = _projection_admission_event_id(expected_payload)
+    if evaluation["target_digest"] != payload_digest:
+        raise ValueError("projection evaluation target digest mismatch")
+    if evaluation["risk_class"] != "local_artifact":
+        raise ValueError("projection evaluation must be local_artifact")
+    if (
+        evaluation["subject_type"] != "solver"
+        or evaluation["expected_gate"] != "allow"
+        or evaluation["actual_gate"] != "allow"
+        or evaluation["verdict"] != "pass"
+        or evaluation["operator_required"] is not False
+        or evaluation["solver_selection"] != [solver_id]
+        or evaluation["verifier_path"]
+        != [PROJECTION_ADMISSION_EVALUATOR_VERSION]
+        or evaluation["policy_version"] != "policy:magma_faiss_projection:v1"
+        or evaluation["charter_version"]
+        != "charter:candidate_projection_only:v1"
+        or evaluation["domain_threshold_version"]
+        != "threshold:projection_contract:v1"
+        or evaluation["reason_codes"]
+        != ["magma:faiss:projection_contract_valid"]
+    ):
+        raise ValueError("projection evaluation does not admit the exact solver")
+    if receipt["event_id"] != expected_event_id:
+        raise ValueError("projection receipt event id mismatch")
+    if receipt["risk_class"] != "local_artifact":
+        raise ValueError("projection receipt must be local_artifact")
+    if receipt["payload_visibility"] != "full_payload":
+        raise ValueError("projection receipt must declare its embedded full payload")
+    if receipt["canonical_payload_digest"] != payload_digest:
+        raise ValueError("projection receipt payload digest mismatch")
+    if receipt["evaluation_result_digest"] != sha256_digest(evaluation):
+        raise ValueError("projection receipt evaluation digest mismatch")
+    if receipt["solver_contract_digest"] != expected_payload["solver_contract_digest"]:
+        raise ValueError("projection receipt solver contract mismatch")
+    if (
+        receipt["operator_gate_required"] is not False
+        or receipt["approval_id"] is not None
+    ):
+        raise ValueError("projection receipt must not claim an operator approval gate")
+    if (
+        receipt["prev_receipt_hash"] is not None
+        or receipt["signature_algorithm"] is not None
+        or receipt["signature"] is not None
+        or receipt["key_id"] is not None
+        or receipt["anchored_at"] is not None
+    ):
+        raise ValueError(
+            "projection receipt proof cannot claim an unverified chain, signature, "
+            "or anchor"
+        )
+
+    canonical: dict[str, Any] = {
+        "schema_version": PROJECTION_RECEIPT_PROOF_VERSION,
+        "payload": expected_payload,
+        "evaluation_result": evaluation,
+        "receipt": receipt,
+        "proof_digest": _require_digest(
+            proof["proof_digest"], "projection receipt proof_digest"
+        ),
+    }
+    expected_proof_digest = sha256_digest(
+        {key: item for key, item in canonical.items() if key != "proof_digest"}
+    )
+    if proof["proof_digest"] != expected_proof_digest:
+        raise ValueError("projection receipt proof digest mismatch")
+    return canonical
+
+
+def build_receipt_bound_projection_source_identity(
+    projection_document: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any],
+    receipt_proof: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build v2 only from a complete, internally verified receipt proof."""
+    document = validate_solver_contract_projection(projection_document)
+    embedding = validate_embedding_contract(embedding_contract)
+    proof = validate_projection_receipt_proof(
+        receipt_proof, document, embedding
+    )
+    receipt = proof["receipt"]
+    identity: dict[str, Any] = {
+        "schema_version": PROJECTION_SOURCE_IDENTITY_V2_VERSION,
+        "projection_id": document["projection_id"],
+        "projection_digest": document["projection_digest"],
+        "canonical_solver_id": document["canonical_solver_id"],
+        "cell_id": document["cell_id"],
+        "solver_contract_digest": document["solver_contract_digest"],
+        "source_digest": document["source_digest"],
+        "topology_digest": document["topology_digest"],
+        "embedding_contract_digest": embedding["contract_digest"],
+        "receipt_event_id": receipt["event_id"],
+        "receipt_digest": sha256_digest(receipt),
+        "receipt_proof_digest": proof["proof_digest"],
+        "receipt_bound": True,
+        "receipt_proof": proof,
+        "identity_digest": "",
+    }
+    identity["identity_digest"] = sha256_digest(
+        {key: item for key, item in identity.items() if key != "identity_digest"}
+    )
+    validated = validate_projection_source_identity(identity)
+    return validate_projection_source_binding(
+        document, validated, embedding
+    )
+
+
 def validate_projection_source_identity(value: Any) -> dict[str, Any]:
     identity = _require_plain_mapping(value, "source_identity")
-    _require_exact_keys(identity, _SOURCE_IDENTITY_KEYS, "source_identity")
-    if identity["schema_version"] != PROJECTION_SOURCE_IDENTITY_VERSION:
+    version = identity.get("schema_version")
+    if version == PROJECTION_SOURCE_IDENTITY_V1_VERSION:
+        return _validate_projection_source_identity_v1(identity)
+    if version == PROJECTION_SOURCE_IDENTITY_V2_VERSION:
+        return _validate_projection_source_identity_v2(identity)
+    raise ValueError("unsupported projection source identity schema")
+
+
+def _validate_projection_source_identity_v1(
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    _require_exact_keys(identity, _SOURCE_IDENTITY_V1_KEYS, "source_identity")
+    if identity["schema_version"] != PROJECTION_SOURCE_IDENTITY_V1_VERSION:
         raise ValueError("unsupported projection source identity schema")
     solver_id = validate_solver_id(identity["canonical_solver_id"])
     contract_digest = _require_digest(
@@ -499,9 +800,127 @@ def validate_projection_source_identity(value: Any) -> dict[str, Any]:
     expected = sha256_digest(
         {key: item for key, item in canonical.items() if key != "identity_digest"}
     )
-    if identity["identity_digest"] != expected:
+    identity_digest = _require_digest(identity["identity_digest"], "identity_digest")
+    if identity_digest != expected:
         raise ValueError("source identity digest mismatch")
     return canonical
+
+
+def _validate_projection_source_identity_v2(
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    _require_exact_keys(identity, _SOURCE_IDENTITY_V2_KEYS, "source_identity")
+    projection_id = _require_digest(identity["projection_id"], "projection_id")
+    projection_digest = _require_digest(
+        identity["projection_digest"], "projection_digest"
+    )
+    solver_id = validate_solver_id(identity["canonical_solver_id"])
+    cell_id = validate_vector_cell_id(identity["cell_id"])
+    contract_digest = _require_digest(
+        identity["solver_contract_digest"], "solver_contract_digest"
+    )
+    source_digest = _require_digest(identity["source_digest"], "source_digest")
+    topology_digest = _require_digest(
+        identity["topology_digest"], "topology_digest"
+    )
+    embedding_digest = _require_digest(
+        identity["embedding_contract_digest"], "embedding_contract_digest"
+    )
+    expected_payload = {
+        "schema_version": PROJECTION_ADMISSION_PAYLOAD_VERSION,
+        "operation": "admit_solver_contract_projection",
+        "projection_id": projection_id,
+        "projection_digest": projection_digest,
+        "canonical_solver_id": solver_id,
+        "cell_id": cell_id,
+        "solver_contract_digest": contract_digest,
+        "source_digest": source_digest,
+        "topology_digest": topology_digest,
+        "embedding_contract_digest": embedding_digest,
+        "admission_evaluator_contract_digest": PROJECTION_ADMISSION_EVALUATOR_DIGEST,
+        "authority_scope": "candidate_projection_only",
+        "runtime_authority_granted": False,
+        "external_authority_artifacts_verified": False,
+        "solver_outcome_verified": False,
+    }
+    proof = _validate_projection_receipt_proof_against_payload(
+        identity["receipt_proof"], expected_payload
+    )
+    receipt = proof["receipt"]
+    event_id = _normalize_text(
+        identity["receipt_event_id"],
+        "receipt_event_id",
+        maximum=180,
+        allow_empty=False,
+    )
+    receipt_digest = _require_digest(identity["receipt_digest"], "receipt_digest")
+    proof_digest = _require_digest(
+        identity["receipt_proof_digest"], "receipt_proof_digest"
+    )
+    if identity["receipt_bound"] is not True:
+        raise ValueError("source_identity.v2 must be receipt-bound")
+    if event_id != receipt["event_id"]:
+        raise ValueError("source identity receipt event mismatch")
+    if receipt_digest != sha256_digest(receipt):
+        raise ValueError("source identity receipt digest mismatch")
+    if proof_digest != proof["proof_digest"]:
+        raise ValueError("source identity receipt proof digest mismatch")
+    canonical: dict[str, Any] = {
+        **identity,
+        "projection_id": projection_id,
+        "projection_digest": projection_digest,
+        "canonical_solver_id": solver_id,
+        "cell_id": cell_id,
+        "solver_contract_digest": contract_digest,
+        "source_digest": source_digest,
+        "topology_digest": topology_digest,
+        "embedding_contract_digest": embedding_digest,
+        "receipt_event_id": event_id,
+        "receipt_digest": receipt_digest,
+        "receipt_proof_digest": proof_digest,
+        "receipt_proof": proof,
+    }
+    identity_digest = _require_digest(identity["identity_digest"], "identity_digest")
+    expected_identity_digest = sha256_digest(
+        {key: item for key, item in canonical.items() if key != "identity_digest"}
+    )
+    if identity_digest != expected_identity_digest:
+        raise ValueError("source identity digest mismatch")
+    return canonical
+
+
+def validate_projection_source_binding(
+    projection_document: Mapping[str, Any],
+    source_identity: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Cross-check an identity against its adjacent immutable contracts."""
+    document = validate_solver_contract_projection(projection_document)
+    identity = validate_projection_source_identity(source_identity)
+    if identity["canonical_solver_id"] != document["canonical_solver_id"]:
+        raise ValueError("source identity solver does not match projection")
+    if identity["solver_contract_digest"] != document["solver_contract_digest"]:
+        raise ValueError("source identity contract digest does not match projection")
+    if identity["source_digest"] != document["source_digest"]:
+        raise ValueError("source identity source digest does not match projection")
+    embedding = (
+        validate_embedding_contract(embedding_contract)
+        if embedding_contract is not None
+        else None
+    )
+    if identity["schema_version"] == PROJECTION_SOURCE_IDENTITY_V2_VERSION:
+        if embedding is None:
+            raise ValueError("source_identity.v2 requires an embedding contract")
+        expected = {
+            "projection_id": document["projection_id"],
+            "projection_digest": document["projection_digest"],
+            "cell_id": document["cell_id"],
+            "topology_digest": document["topology_digest"],
+            "embedding_contract_digest": embedding["contract_digest"],
+        }
+        if any(identity[key] != item for key, item in expected.items()):
+            raise ValueError("source_identity.v2 does not match projection contracts")
+    return identity
 
 
 def build_embedding_contract(

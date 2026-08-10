@@ -11,6 +11,7 @@ See ``docs/architecture/EVALUATION_RESULT_V1_DRAFT.md`` for the v1 design RFC.
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -70,8 +71,7 @@ def build_evaluation_result(
         "confidence_score": confidence_score,
         "uncertainty_sources": uncertainty_sources or [],
     }
-    _validate_evaluation_result(result)
-    return result
+    return validate_evaluation_result(result)
 
 
 def build_evaluation_result_v1(
@@ -139,12 +139,15 @@ def build_evaluation_result_v1(
         result["competitor_axis_reference"] = competitor_axis_reference
     if subject_payload_size_bytes is not None:
         result["subject_payload_size_bytes"] = subject_payload_size_bytes
-    _validate_evaluation_result(result)
-    return result
+    return validate_evaluation_result(result)
 
 
-def _validate_evaluation_result(result: dict[str, Any]) -> None:
-    version = result.get("evaluation_version")
+def validate_evaluation_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and detach one EvaluationResult v0/v1 object."""
+    if type(result) is not dict:
+        raise ValueError("EvaluationResult must be a plain object")
+    canonical = copy.deepcopy(result)
+    version = canonical.get("evaluation_version")
     schema_path = SCHEMA_PATHS.get(version)
     if schema_path is None:
         raise ValueError(
@@ -156,10 +159,16 @@ def _validate_evaluation_result(result: dict[str, Any]) -> None:
         schema,
         format_checker=jsonschema.FormatChecker(),
     )
-    errors = sorted(validator.iter_errors(result), key=lambda item: list(item.path))
+    errors = sorted(validator.iter_errors(canonical), key=lambda item: list(item.path))
     if errors:
         message = "; ".join(
             f"{'.'.join(str(part) for part in error.path) or '<root>'}: {error.message}"
             for error in errors
         )
         raise ValueError(f"invalid {version}: {message}")
+    return canonical
+
+
+def _validate_evaluation_result(result: dict[str, Any]) -> None:
+    """Backward-compatible private validator alias."""
+    validate_evaluation_result(result)

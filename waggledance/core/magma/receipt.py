@@ -2,9 +2,10 @@
 """Helpers for emitting MAGMA receipt v1 objects."""
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import jsonschema
 
@@ -84,8 +85,7 @@ def build_magma_receipt(
         "key_id": signature_fields["key_id"],
         "anchored_at": anchored_at,
     }
-    _validate_magma_receipt(receipt)
-    return receipt
+    return validate_magma_receipt(receipt)
 
 
 def _signature_fields(signature_envelope: dict[str, str] | None) -> dict[str, str | None]:
@@ -105,16 +105,26 @@ def _signature_fields(signature_envelope: dict[str, str] | None) -> dict[str, st
     }
 
 
-def _validate_magma_receipt(receipt: dict[str, Any]) -> None:
+def validate_magma_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and detach one MAGMA receipt v1 object."""
+    if type(receipt) is not dict:
+        raise ValueError("MAGMA receipt must be a plain object")
+    canonical = copy.deepcopy(receipt)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     validator = jsonschema.Draft7Validator(
         schema,
         format_checker=jsonschema.FormatChecker(),
     )
-    errors = sorted(validator.iter_errors(receipt), key=lambda item: list(item.path))
+    errors = sorted(validator.iter_errors(canonical), key=lambda item: list(item.path))
     if errors:
         message = "; ".join(
             f"{'.'.join(str(part) for part in error.path) or '<root>'}: {error.message}"
             for error in errors
         )
         raise ValueError(f"invalid MAGMA receipt v1: {message}")
+    return canonical
+
+
+def _validate_magma_receipt(receipt: dict[str, Any]) -> None:
+    """Backward-compatible private validator alias."""
+    validate_magma_receipt(receipt)

@@ -198,10 +198,14 @@ def _validate_projected_upsert_binding(
     document = vector_projection.validate_solver_contract_projection(
         payload["projection_document"]
     )
-    identity = vector_projection.validate_projection_source_identity(
-        payload["source_identity"]
+    embedding = vector_projection.validate_embedding_contract(
+        payload["embedding_contract"]
     )
-    vector_projection.validate_embedding_contract(payload["embedding_contract"])
+    identity = vector_projection.validate_projection_source_binding(
+        document,
+        payload["source_identity"],
+        embedding,
+    )
     topology_digest = payload["topology_digest"]
     if not isinstance(topology_digest, str) or not topology_digest.startswith("sha256:"):
         raise ValueError("topology_digest must be a full sha256 digest")
@@ -216,10 +220,6 @@ def _validate_projected_upsert_binding(
         raise ValueError("projection cell does not match event cell_id")
     if identity["canonical_solver_id"] != model_id:
         raise ValueError("source identity solver does not match event model_id")
-    if identity["solver_contract_digest"] != document["solver_contract_digest"]:
-        raise ValueError("source identity contract digest does not match projection")
-    if identity["source_digest"] != document["source_digest"]:
-        raise ValueError("source identity source digest does not match projection")
     if payload["signature"] != document["solver_contract_digest"]:
         raise ValueError("projected upsert signature must be the full solver contract digest")
 

@@ -7,6 +7,8 @@ import pytest
 
 from waggledance.core.hex_cell_topology import ALL_CELLS
 from waggledance.core.magma import vector_projection as projection
+from waggledance.core.magma.evaluation_result import build_evaluation_result
+from waggledance.core.magma.receipt import build_magma_receipt
 
 
 SOURCE_DIGEST = "sha256:" + "1" * 64
@@ -53,6 +55,64 @@ def _document(axiom=None, topology=None):
         axiom or _axiom(),
         source_digest=SOURCE_DIGEST,
         topology_digest=projection.retrieval_topology_digest(topology),
+    )
+
+
+def _embedding():
+    return projection.build_embedding_contract(
+        model_id="nomic-embed-text:latest",
+        model_version="ollama-catalog-sha256:" + "a" * 64,
+        dimension=768,
+        normalization="l2-v1",
+        document_prefix="search_document: ",
+        query_prefix="search_query: ",
+    )
+
+
+def _receipt_proof(document=None, embedding=None):
+    document = document or _document()
+    embedding = embedding or _embedding()
+    payload = projection.build_projection_admission_payload(document, embedding)
+    evaluation = build_evaluation_result(
+        case_id="case:magma_faiss_projection:heat_loss",
+        subject_type="solver",
+        target_payload=payload,
+        risk_class="local_artifact",
+        expected_gate="allow",
+        actual_gate="allow",
+        verifier_path=[projection.PROJECTION_ADMISSION_EVALUATOR_VERSION],
+        solver_selection=[document["canonical_solver_id"]],
+        policy_version="policy:magma_faiss_projection:v1",
+        charter_version="charter:candidate_projection_only:v1",
+        domain_threshold_version="threshold:projection_contract:v1",
+        verdict="pass",
+        reason_codes=["magma:faiss:projection_contract_valid"],
+        confidence_score=1.0,
+        uncertainty_sources=[
+            {
+                "kind": "limited_evidence",
+                "detail": "This receipt proves local projection binding, not runtime utility.",
+            }
+        ],
+    )
+    receipt = build_magma_receipt(
+        event_id=projection.projection_admission_event_id(document, embedding),
+        ts_utc="2026-08-10T06:00:00Z",
+        risk_class="local_artifact",
+        payload=payload,
+        evaluation_result=evaluation,
+        policy_digest="sha256:" + "2" * 64,
+        charter_digest="sha256:" + "3" * 64,
+        rco_decision_digest="sha256:" + "4" * 64,
+        world_snapshot_digest="sha256:" + "5" * 64,
+        solver_contract_digest=document["solver_contract_digest"],
+        payload_visibility="full_payload",
+    )
+    return projection.build_projection_receipt_proof(
+        document,
+        embedding,
+        evaluation_result=evaluation,
+        receipt=receipt,
     )
 
 
@@ -158,6 +218,156 @@ def test_source_identity_v1_rejects_unverified_receipt_claims() -> None:
     )
     with pytest.raises(ValueError, match="verified receipt evidence"):
         projection.validate_projection_source_identity(forged)
+
+
+def test_receipt_bound_source_identity_v2_is_fully_reverifiable() -> None:
+    document = _document()
+    embedding = _embedding()
+    proof = _receipt_proof(document, embedding)
+
+    identity = projection.build_receipt_bound_projection_source_identity(
+        document, embedding, proof
+    )
+    validated = projection.validate_projection_source_identity(identity)
+
+    assert validated["schema_version"] == projection.PROJECTION_SOURCE_IDENTITY_V2_VERSION
+    assert validated["receipt_bound"] is True
+    assert validated["receipt_event_id"] == proof["receipt"]["event_id"]
+    assert validated["receipt_digest"] == projection.sha256_digest(proof["receipt"])
+    assert validated["receipt_proof_digest"] == proof["proof_digest"]
+    assert validated["projection_digest"] == document["projection_digest"]
+    assert validated["embedding_contract_digest"] == embedding["contract_digest"]
+    assert (
+        validated["receipt_proof"]["payload"]["runtime_authority_granted"]
+        is False
+    )
+    assert (
+        validated["receipt_proof"]["payload"][
+            "admission_evaluator_contract_digest"
+        ]
+        == projection.PROJECTION_ADMISSION_EVALUATOR_DIGEST
+    )
+    assert (
+        validated["receipt_proof"]["payload"][
+            "external_authority_artifacts_verified"
+        ]
+        is False
+    )
+    assert validated["receipt_proof"]["payload"]["solver_outcome_verified"] is False
+    assert projection.validate_projection_source_binding(
+        document, validated, embedding
+    ) == validated
+
+
+def test_projection_receipt_proof_rejects_payload_and_receipt_tampering() -> None:
+    document = _document()
+    embedding = _embedding()
+    proof = _receipt_proof(document, embedding)
+
+    poisoned_payload = copy.deepcopy(proof)
+    poisoned_payload["payload"]["cell_id"] = "energy"
+    poisoned_payload["proof_digest"] = projection.sha256_digest(
+        {
+            key: value
+            for key, value in poisoned_payload.items()
+            if key != "proof_digest"
+        }
+    )
+    with pytest.raises(ValueError, match="does not match projection contracts"):
+        projection.validate_projection_receipt_proof(
+            poisoned_payload, document, embedding
+        )
+
+    poisoned_receipt = copy.deepcopy(proof)
+    poisoned_receipt["receipt"]["evaluation_result_digest"] = "sha256:" + "9" * 64
+    poisoned_receipt["proof_digest"] = projection.sha256_digest(
+        {
+            key: value
+            for key, value in poisoned_receipt.items()
+            if key != "proof_digest"
+        }
+    )
+    with pytest.raises(ValueError, match="evaluation digest mismatch"):
+        projection.validate_projection_receipt_proof(
+            poisoned_receipt, document, embedding
+        )
+
+    fake_signature = copy.deepcopy(proof)
+    fake_signature["receipt"].update(
+        {
+            "signature_algorithm": "Ed25519",
+            "signature": "base64url:aaaaaaaaaaaaaaaa",
+            "key_id": "key:unverified-test-key",
+        }
+    )
+    fake_signature["proof_digest"] = projection.sha256_digest(
+        {key: value for key, value in fake_signature.items() if key != "proof_digest"}
+    )
+    with pytest.raises(ValueError, match="cannot claim an unverified"):
+        projection.validate_projection_receipt_proof(
+            fake_signature, document, embedding
+        )
+
+
+def test_source_identity_v2_rejects_forged_summaries_and_cross_contracts() -> None:
+    document = _document()
+    embedding = _embedding()
+    identity = projection.build_receipt_bound_projection_source_identity(
+        document, embedding, _receipt_proof(document, embedding)
+    )
+    forged = copy.deepcopy(identity)
+    forged["receipt_digest"] = "sha256:" + "0" * 64
+    forged["identity_digest"] = projection.sha256_digest(
+        {key: value for key, value in forged.items() if key != "identity_digest"}
+    )
+    with pytest.raises(ValueError, match="receipt digest mismatch"):
+        projection.validate_projection_source_identity(forged)
+
+    other_embedding = projection.build_embedding_contract(
+        model_id=embedding["model_id"],
+        model_version=embedding["model_version"],
+        dimension=embedding["dimension"],
+        normalization=embedding["normalization"],
+        document_prefix=embedding["document_prefix"],
+        query_prefix="different-query-prefix: ",
+    )
+    assert projection.projection_admission_event_id(
+        document, embedding
+    ) != projection.projection_admission_event_id(document, other_embedding)
+    with pytest.raises(ValueError, match="does not match projection contracts"):
+        projection.validate_projection_source_binding(
+            document, identity, other_embedding
+        )
+
+
+def test_source_identity_versions_are_strict_and_receipts_cannot_replay() -> None:
+    document = _document()
+    embedding = _embedding()
+    proof = _receipt_proof(document, embedding)
+    identity_v2 = projection.build_receipt_bound_projection_source_identity(
+        document, embedding, proof
+    )
+
+    mislabeled_v2 = copy.deepcopy(identity_v2)
+    mislabeled_v2["schema_version"] = projection.PROJECTION_SOURCE_IDENTITY_V1_VERSION
+    with pytest.raises(ValueError, match="keys mismatch"):
+        projection.validate_projection_source_identity(mislabeled_v2)
+
+    identity_v1 = projection.build_projection_source_identity(document)
+    identity_v1["schema_version"] = projection.PROJECTION_SOURCE_IDENTITY_V2_VERSION
+    with pytest.raises(ValueError, match="keys mismatch"):
+        projection.validate_projection_source_identity(identity_v1)
+
+    other_document = _document(
+        _axiom(
+            model_id="heat_loss_revision",
+            description="A different solver contract and projection.",
+        )
+    )
+    with pytest.raises(ValueError, match="does not match projection contracts"):
+        projection.validate_projection_receipt_proof(
+            proof, other_document, embedding
+        )
 
 
 def test_embedding_contract_binds_exact_model_dimension_normalization_and_prefixes() -> None:

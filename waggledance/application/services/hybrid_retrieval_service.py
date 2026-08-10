@@ -375,6 +375,7 @@ class HybridRetrievalService:
     def stats(self) -> dict:
         """Return hybrid retrieval statistics."""
         total = self._total_queries or 1
+        stats_degraded_sources: list[str] = []
         faiss_stats: dict = {}
         registry_stats = getattr(self._faiss_registry, "stats", None)
         if callable(registry_stats):
@@ -382,8 +383,23 @@ class HybridRetrievalService:
                 result = registry_stats()
                 if isinstance(result, dict):
                     faiss_stats = result
+                else:
+                    stats_degraded_sources.append("faiss_registry")
             except Exception as exc:
                 log.debug("FAISS registry stats failed: %s", exc)
+                stats_degraded_sources.append("faiss_registry")
+        cell_stats: dict = {}
+        topology_stats = getattr(self._topology, "stats", None)
+        if callable(topology_stats):
+            try:
+                result = topology_stats()
+                if isinstance(result, dict):
+                    cell_stats = result
+                else:
+                    stats_degraded_sources.append("topology")
+            except Exception as exc:
+                log.debug("Hybrid topology stats failed: %s", exc)
+                stats_degraded_sources.append("topology")
         return {
             "enabled": self._enabled,
             "effective_enabled": self._enabled,
@@ -405,7 +421,9 @@ class HybridRetrievalService:
             "global_hit_rate": round(self._global_hits / total, 4),
             "llm_fallback_rate": round(self._llm_fallbacks / total, 4),
             "ring2_enabled": self._ring2_enabled,
-            "cell_stats": self._topology.stats() if self._topology else {},
+            "stats_degraded": bool(stats_degraded_sources),
+            "stats_degraded_sources": sorted(set(stats_degraded_sources)),
+            "cell_stats": cell_stats,
             "faiss_stats": faiss_stats,
         }
 

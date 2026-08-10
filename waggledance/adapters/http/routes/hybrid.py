@@ -67,21 +67,8 @@ def hybrid_status(container=Depends(get_container), _auth=Depends(require_auth))
             getattr(hr, "faiss_degraded", requested_enabled and not faiss_available)
         )
         faiss_degraded_reason = getattr(hr, "faiss_degraded_reason", None)
-        return {
-            "enabled": enabled,
-            "effective_enabled": enabled,
-            "requested_enabled": requested_enabled,
-            "faiss_available": faiss_available,
-            "faiss_degraded": faiss_degraded,
-            "faiss_degraded_reason": faiss_degraded_reason,
-            "mode": mode,
-            "is_authoritative": getattr(hr, "is_authoritative", False),
-            "retrieval_mode": f"hybrid:{mode}" if enabled else "global_only",
-            "ring2_enabled": hr._ring2_enabled,
-            "stats": hr.stats(),
-        }
     except Exception as e:
-        logger.debug("Hybrid status error: %s", e)
+        logger.debug("Hybrid service status unavailable: %s", e)
         return {
             "enabled": False,
             "effective_enabled": False,
@@ -93,8 +80,46 @@ def hybrid_status(container=Depends(get_container), _auth=Depends(require_auth))
             "is_authoritative": False,
             "retrieval_mode": "global_only",
             "ring2_enabled": False,
+            "status_degraded": True,
+            "status_degraded_reason": "hybrid_service_unavailable",
+            "stats_degraded": True,
+            "stats_degraded_reason": "hybrid_stats_unavailable",
             "stats": {},
         }
+
+    stats: dict = {}
+    stats_degraded = False
+    stats_degraded_reason = None
+    try:
+        candidate_stats = hr.stats()
+        if not isinstance(candidate_stats, dict):
+            raise TypeError("hybrid stats must be an object")
+        stats = candidate_stats
+        if bool(candidate_stats.get("stats_degraded", False)):
+            stats_degraded = True
+            stats_degraded_reason = "hybrid_stats_source_unavailable"
+    except Exception as e:
+        logger.debug("Hybrid statistics unavailable: %s", e)
+        stats_degraded = True
+        stats_degraded_reason = "hybrid_stats_unavailable"
+
+    return {
+        "enabled": enabled,
+        "effective_enabled": enabled,
+        "requested_enabled": requested_enabled,
+        "faiss_available": faiss_available,
+        "faiss_degraded": faiss_degraded,
+        "faiss_degraded_reason": faiss_degraded_reason,
+        "mode": mode,
+        "is_authoritative": getattr(hr, "is_authoritative", False),
+        "retrieval_mode": f"hybrid:{mode}" if enabled else "global_only",
+        "ring2_enabled": getattr(hr, "_ring2_enabled", False),
+        "status_degraded": False,
+        "status_degraded_reason": None,
+        "stats_degraded": stats_degraded,
+        "stats_degraded_reason": stats_degraded_reason,
+        "stats": stats,
+    }
 
 
 @router.get("/api/hybrid/topology")

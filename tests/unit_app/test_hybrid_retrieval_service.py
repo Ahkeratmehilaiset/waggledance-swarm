@@ -179,7 +179,60 @@ def test_stats_supports_minimal_read_registry_without_stats_method() -> None:
     assert stats["faiss_available"] is True
     assert stats["faiss_degraded"] is False
     assert stats["faiss_degraded_reason"] is None
+    assert stats["stats_degraded"] is False
+    assert stats["stats_degraded_sources"] == []
     assert stats["faiss_stats"] == {}
+
+
+def test_stats_preserves_truth_when_topology_stats_fails() -> None:
+    class Registry:
+        def get_existing(self, _name: str):
+            return None
+
+    class BrokenTopology(_Topology):
+        def stats(self) -> dict:
+            raise RuntimeError("private topology failure")
+
+    service = HybridRetrievalService(
+        faiss_registry=Registry(),
+        topology=BrokenTopology(),
+        enabled=True,
+    )
+
+    stats = service.stats()
+
+    assert stats["requested_enabled"] is True
+    assert stats["enabled"] is True
+    assert stats["faiss_available"] is True
+    assert stats["stats_degraded"] is True
+    assert stats["stats_degraded_sources"] == ["topology"]
+    assert stats["cell_stats"] == {}
+    assert "private topology failure" not in str(stats)
+
+
+def test_stats_preserves_truth_when_registry_stats_fails() -> None:
+    class Registry:
+        def get_existing(self, _name: str):
+            return None
+
+        def stats(self) -> dict:
+            raise RuntimeError("private registry failure")
+
+    service = HybridRetrievalService(
+        faiss_registry=Registry(),
+        topology=_Topology(),
+        enabled=True,
+    )
+
+    stats = service.stats()
+
+    assert stats["requested_enabled"] is True
+    assert stats["enabled"] is True
+    assert stats["faiss_available"] is True
+    assert stats["stats_degraded"] is True
+    assert stats["stats_degraded_sources"] == ["faiss_registry"]
+    assert stats["faiss_stats"] == {}
+    assert "private registry failure" not in str(stats)
 
 
 def test_retrieve_uses_get_existing_collection_when_available() -> None:

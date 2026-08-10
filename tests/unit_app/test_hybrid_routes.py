@@ -80,4 +80,75 @@ def test_hybrid_status_exposes_requested_effective_and_available_truth() -> None
     assert result["mode"] == "candidate"
     assert result["is_authoritative"] is False
     assert result["retrieval_mode"] == "global_only"
+    assert result["status_degraded"] is False
+    assert result["stats_degraded"] is False
     assert result["stats"]["requested_enabled"] is True
+
+
+def test_hybrid_status_preserves_faiss_truth_when_service_stats_raises() -> None:
+    topology = SimpleNamespace(stats=lambda: {})
+    service = HybridRetrievalService(
+        faiss_registry=None,
+        topology=topology,
+        enabled=True,
+        mode="candidate",
+    )
+
+    def broken_stats():
+        raise RuntimeError("private stats failure")
+
+    service.stats = broken_stats
+    result = hybrid_status(
+        container=SimpleNamespace(hybrid_retrieval=service),
+        _auth=None,
+    )
+
+    assert result["requested_enabled"] is True
+    assert result["enabled"] is False
+    assert result["faiss_available"] is False
+    assert result["faiss_degraded"] is True
+    assert result["faiss_degraded_reason"] == "faiss_dependency_unavailable"
+    assert result["retrieval_mode"] == "global_only"
+    assert result["status_degraded"] is False
+    assert result["stats_degraded"] is True
+    assert result["stats_degraded_reason"] == "hybrid_stats_unavailable"
+    assert result["stats"] == {}
+    assert "private stats failure" not in str(result)
+
+
+def test_hybrid_status_marks_localized_topology_stats_degradation() -> None:
+    class BrokenTopology:
+        def stats(self):
+            raise RuntimeError("private topology failure")
+
+    service = HybridRetrievalService(
+        faiss_registry=None,
+        topology=BrokenTopology(),
+        enabled=True,
+        mode="candidate",
+    )
+    result = hybrid_status(
+        container=SimpleNamespace(hybrid_retrieval=service),
+        _auth=None,
+    )
+
+    assert result["requested_enabled"] is True
+    assert result["faiss_degraded"] is True
+    assert result["faiss_degraded_reason"] == "faiss_dependency_unavailable"
+    assert result["stats_degraded"] is True
+    assert result["stats_degraded_reason"] == "hybrid_stats_source_unavailable"
+    assert result["stats"]["stats_degraded_sources"] == ["topology"]
+
+
+def test_hybrid_status_service_failure_is_explicitly_degraded() -> None:
+    class BrokenContainer:
+        @property
+        def hybrid_retrieval(self):
+            raise RuntimeError("service construction failed")
+
+    result = hybrid_status(container=BrokenContainer(), _auth=None)
+
+    assert result["status_degraded"] is True
+    assert result["status_degraded_reason"] == "hybrid_service_unavailable"
+    assert result["stats_degraded"] is True
+    assert result["requested_enabled"] is False

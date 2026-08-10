@@ -163,6 +163,20 @@ def validate_payload(event: str, payload: dict[str, Any]) -> None:
                 "projected vector upsert fields are all-or-none: "
                 + ", ".join(_PROJECTED_UPSERT_KEYS)
             )
+    if event == EVT_VECTOR_COMMIT_APPLIED:
+        materialization_keys = ("materialization_state", "index_kind")
+        present = [key in payload for key in materialization_keys]
+        if any(present) and not all(present):
+            raise ValueError(
+                "vector commit materialization fields are all-or-none"
+            )
+        if all(present):
+            state = payload["materialization_state"]
+            index_kind = payload["index_kind"]
+            if (state, index_kind) != ("projection_only", "none"):
+                raise ValueError(
+                    "unsupported vector commit materialization claim"
+                )
 
 
 def _validate_projected_upsert_binding(
@@ -310,6 +324,8 @@ def vector_commit_applied(cell_id: str, faiss_commit_id: str,
                            source_events: list[str] | None = None,
                            source: str | None = "indexer",
                            input_event_range: tuple[str, str] | None = None,
+                           materialization_state: str | None = None,
+                           index_kind: str | None = None,
                            ) -> VectorEvent:
     """Build a vector.commit_applied event.
 
@@ -334,6 +350,13 @@ def vector_commit_applied(cell_id: str, faiss_commit_id: str,
         payload["source_events"] = list(source_events)
     if input_event_range is not None:
         payload["input_event_range"] = list(input_event_range)
+    if materialization_state is not None or index_kind is not None:
+        if materialization_state is None or index_kind is None:
+            raise ValueError(
+                "vector commit materialization fields are all-or-none"
+            )
+        payload["materialization_state"] = materialization_state
+        payload["index_kind"] = index_kind
     return VectorEvent(
         event=EVT_VECTOR_COMMIT_APPLIED,
         cell_id=cell_id,
@@ -394,37 +417,41 @@ def emit_many(events: list[VectorEvent],
     return target
 
 
-def read_events(path: Path | str | None = None) -> Iterator[VectorEvent]:
-    """Yield every VectorEvent from the log file in write order. Skips
-    unparseable lines silently (they'll show up as a warning once a
-    real consumer lands in Stage 2)."""
+def read_events(
+    path: Path | str | None = None,
+    *,
+    strict: bool = False,
+) -> Iterator[VectorEvent]:
+    """Yield every ``VectorEvent`` from the log in write order.
+
+    The historical default remains liberal and skips malformed rows. A
+    materializing consumer must pass ``strict=True`` so corruption cannot
+    disappear before a pointer or checkpoint is advanced.
+    """
     target = _resolve_event_log(path)
     if not target.exists():
         return
     with open(target, encoding="utf-8") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 d = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                if strict:
+                    raise ValueError(
+                        f"invalid vector event JSON at line {line_number}"
+                    ) from exc
                 continue
-            try:
-                yield VectorEvent(
-                    event=d["event"],
-                    cell_id=d["cell_id"],
-                    solver_id=d.get("solver_id"),
-                    ts=d.get("ts") or _utc_now_iso(),
-                    payload=d.get("payload") or {},
-                    schema_version=d.get("schema_version", VECTOR_EVENT_SCHEMA_VERSION),
-                    # source is optional, defaults to None for old v1
-                    # events that predate the field.
-                    source=d.get("source"),
-                )
-            except (KeyError, ValueError):
-                # Unknown / malformed event — skip
+            event = _parse_event_dict(d)
+            if event is None:
+                if strict:
+                    raise ValueError(
+                        f"invalid vector event contract at line {line_number}"
+                    )
                 continue
+            yield event
 
 
 def _parse_event_dict(d: dict[str, Any]) -> VectorEvent | None:
@@ -432,6 +459,8 @@ def _parse_event_dict(d: dict[str, Any]) -> VectorEvent | None:
     dict is missing required fields or describes an unknown event type.
     Shared by read_events and read_events_from_offset so both paths
     apply the same liberal-skip semantics."""
+    if type(d) is not dict:
+        return None
     try:
         return VectorEvent(
             event=d["event"],
@@ -442,7 +471,7 @@ def _parse_event_dict(d: dict[str, Any]) -> VectorEvent | None:
             schema_version=d.get("schema_version", VECTOR_EVENT_SCHEMA_VERSION),
             source=d.get("source"),
         )
-    except (KeyError, ValueError):
+    except (KeyError, TypeError, ValueError):
         return None
 
 

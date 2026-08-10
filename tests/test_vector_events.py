@@ -135,6 +135,39 @@ def test_vector_commit_applied_helper_with_source_events():
     assert e.payload["source_events"] == ["evt_a", "evt_b", "evt_c"]
 
 
+def test_projection_commit_metadata_cannot_claim_a_faiss_index():
+    event = vector_commit_applied(
+        cell_id="thermal",
+        faiss_commit_id="proj_" + "a" * 64,
+        artifact_path="data/vector/thermal/projection",
+        vector_count=1,
+        checksum="sha256:" + "b" * 64,
+        materialization_state="projection_only",
+        index_kind="none",
+    )
+    assert event.payload["materialization_state"] == "projection_only"
+    assert event.payload["index_kind"] == "none"
+    with pytest.raises(ValueError, match="all-or-none"):
+        vector_commit_applied(
+            cell_id="thermal",
+            faiss_commit_id="proj_" + "a" * 64,
+            artifact_path="data/vector/thermal/projection",
+            vector_count=1,
+            checksum="sha256:" + "b" * 64,
+            materialization_state="projection_only",
+        )
+    with pytest.raises(ValueError, match="unsupported vector commit materialization"):
+        vector_commit_applied(
+            cell_id="thermal",
+            faiss_commit_id="proj_" + "a" * 64,
+            artifact_path="data/vector/thermal/projection",
+            vector_count=1,
+            checksum="sha256:" + "b" * 64,
+            materialization_state="ready",
+            index_kind="faiss_flat",
+        )
+
+
 def test_to_dict_round_trips_through_json():
     e = solver_upserted("thermal", "x", "sig", "path")
     d = e.to_dict()
@@ -261,6 +294,16 @@ def test_emit_uses_env_var_when_no_path(tmp_path, monkeypatch):
     emit(solver_upserted("thermal", "a", "sig", "p"))
     assert target.exists()
     assert len(list(read_events())) == 1
+
+
+def test_strict_reader_rejects_rows_liberal_reader_skips(tmp_path):
+    from waggledance.core.magma.vector_events import read_events
+
+    log = tmp_path / "events.jsonl"
+    log.write_text('{"event":"vector.upsert_requested"\n', encoding="utf-8")
+    assert list(read_events(log)) == []
+    with pytest.raises(ValueError, match="line 1"):
+        list(read_events(log, strict=True))
 
 
 def test_round_trip_emit_read_preserves_event_id(tmp_path):

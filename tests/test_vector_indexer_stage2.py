@@ -6,7 +6,9 @@ Covers the R6 §6 checklist. Companion to test_vector_indexer.py
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from waggledance.core.magma import vector_events
+from waggledance.core.magma import vector_events, vector_projection
 
 
 def _load_mod():
@@ -52,6 +54,58 @@ def _emit(ws, event):
 def _emit_many(ws, events):
     vector_events.emit_many(events, ws["event_log"])
     return [e.event_id() for e in events]
+
+
+def _digest(label: str) -> str:
+    return "sha256:" + hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def _projected_event(
+    model_id: str,
+    *,
+    cell_id: str = "thermal",
+    revision: str = "v1",
+    embedding_version: str = "1",
+    dimension: int = 8,
+    topology_digest: str | None = None,
+):
+    if topology_digest is None:
+        topology_digest = vector_projection.retrieval_topology_digest(
+            vector_projection.build_retrieval_topology_contract()
+        )
+    axiom = {
+        "model_id": model_id,
+        "cell_id": cell_id,
+        "model_name": f"{model_id} {revision}",
+        "description": f"validated {revision} solver contract",
+        "variables": {"x": {"unit": "m"}},
+        "solver_output_schema": {"primary": {"name": "result", "unit": "m"}},
+        "formulas": [{"name": "main", "output_unit": "m", "expression": "x"}],
+        "capabilities": ["deterministic"],
+        "tags": [revision],
+    }
+    document = vector_projection.build_solver_contract_projection(
+        axiom,
+        source_digest=_digest(f"source:{model_id}:{revision}"),
+        topology_digest=topology_digest,
+    )
+    identity = vector_projection.build_projection_source_identity(document)
+    embedding = vector_projection.build_embedding_contract(
+        model_id="test-embedding",
+        model_version=embedding_version,
+        dimension=dimension,
+    )
+    event = vector_events.vector_upsert_requested(
+        cell_id,
+        model_id,
+        document["solver_contract_digest"],
+        projection_document=document,
+        source_identity=identity,
+        embedding_contract=embedding,
+        topology_digest=topology_digest,
+        source="test",
+    )
+    return event, document, identity, embedding, topology_digest
 
 
 # ── Schema extension — backward compat ────────────────────────────
@@ -529,3 +583,361 @@ def test_since_parameter_skips_earlier_events(workspace):
         (cell_dir / "commits" / current_id / "manifest.json").read_text("utf-8")
     )
     assert list(m["signatures"]) == ["b"]
+
+
+# ── Strict projection-only materialization ───────────────────────
+
+def test_projected_apply_is_truthful_and_strictly_readable(workspace):
+    event, document, _identity, embedding, topology_digest = _projected_event("heat")
+    _emit(workspace, event)
+
+    report = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+
+    assert report.cells_applied == 1
+    pointer_path = workspace["vector_root"] / "thermal" / "current.json"
+    pointer = json.loads(pointer_path.read_text("utf-8"))
+    assert pointer["schema_version"] == mod.PROJECTION_POINTER_SCHEMA
+    assert pointer["commit_id"].startswith("proj_")
+    loaded = mod.load_verified_projection_commit(
+        workspace["vector_root"],
+        "thermal",
+        expected_embedding_contract=embedding,
+        expected_topology_digest=topology_digest,
+    )
+    assert loaded["manifest"]["materialization_state"] == "projection_only"
+    assert loaded["manifest"]["index_kind"] == "none"
+    assert loaded["documents"][0]["projection_document"] == document
+
+    commits = [
+        item
+        for item in vector_events.read_events(workspace["event_log"], strict=True)
+        if item.event == vector_events.EVT_VECTOR_COMMIT_APPLIED
+    ]
+    assert commits[-1].payload["materialization_state"] == "projection_only"
+    assert commits[-1].payload["index_kind"] == "none"
+
+
+def test_projected_artifacts_are_byte_deterministic(tmp_path):
+    def materialize(root: Path):
+        ws = {
+            "event_log": root / "events.jsonl",
+            "vector_root": root / "vector",
+            "checkpoint": root / "checkpoint.json",
+        }
+        event, _document, _identity, _embedding, _topology = _projected_event("heat")
+        _emit(ws, event)
+        result = mod.apply(
+            event_log=ws["event_log"],
+            vector_root=ws["vector_root"],
+            checkpoint_path=ws["checkpoint"],
+            dry_run=False,
+        )
+        commit_id = result.cell_results["thermal"].commit_id
+        commit_dir = ws["vector_root"] / "thermal" / "commits" / commit_id
+        return {
+            "documents": (commit_dir / "documents.jsonl").read_bytes(),
+            "manifest": (commit_dir / "manifest.json").read_bytes(),
+            "commit": (commit_dir / "commit.json").read_bytes(),
+            "pointer": (ws["vector_root"] / "thermal" / "current.json").read_bytes(),
+        }
+
+    assert materialize(tmp_path / "a") == materialize(tmp_path / "b")
+
+
+def test_strict_apply_rejects_truncated_event_before_writes(workspace):
+    event, *_ = _projected_event("heat")
+    _emit(workspace, event)
+    with open(workspace["event_log"], "a", encoding="utf-8") as stream:
+        stream.write('{"event":"vector.upsert_requested"')
+
+    with pytest.raises(ValueError, match="invalid vector event JSON"):
+        mod.apply(
+            event_log=workspace["event_log"],
+            vector_root=workspace["vector_root"],
+            checkpoint_path=workspace["checkpoint"],
+            dry_run=False,
+        )
+    assert not (workspace["vector_root"] / "thermal" / "current.json").exists()
+    assert not workspace["checkpoint"].exists()
+
+
+def test_incomplete_legacy_migration_does_not_swap(workspace):
+    _emit_many(
+        workspace,
+        [
+            vector_events.vector_upsert_requested("thermal", "a", "legacy-a"),
+            vector_events.vector_upsert_requested("thermal", "b", "legacy-b"),
+        ],
+    )
+    first = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    legacy_commit = first.cell_results["thermal"].commit_id
+
+    event_a, *_ = _projected_event("a")
+    _emit(workspace, event_a)
+    partial = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert partial.cells_failed == 1
+    pointer_path = workspace["vector_root"] / "thermal" / "current.json"
+    assert json.loads(pointer_path.read_text("utf-8"))["commit_id"] == legacy_commit
+
+    event_b, _doc_b, _id_b, embedding, topology_digest = _projected_event("b")
+    _emit(workspace, event_b)
+    complete = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert complete.cells_applied == 1
+    loaded = mod.load_verified_projection_commit(
+        workspace["vector_root"],
+        "thermal",
+        expected_embedding_contract=embedding,
+        expected_topology_digest=topology_digest,
+    )
+    assert loaded["pointer"]["previous_commit_id"] == legacy_commit
+    assert loaded["manifest"]["document_count"] == 2
+
+
+@pytest.mark.parametrize("migration", ["embedding", "topology"])
+def test_projection_generation_migrates_only_when_complete(workspace, migration):
+    initial = [_projected_event("a"), _projected_event("b")]
+    _emit_many(workspace, [item[0] for item in initial])
+    first = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    first_commit = first.cell_results["thermal"].commit_id
+
+    if migration == "embedding":
+        changed = [
+            _projected_event("a", embedding_version="2", dimension=16),
+            _projected_event("b", embedding_version="2", dimension=16),
+        ]
+    else:
+        new_topology = _digest("topology-v2")
+        changed = [
+            _projected_event("a", topology_digest=new_topology),
+            _projected_event("b", topology_digest=new_topology),
+        ]
+
+    _emit(workspace, changed[0][0])
+    partial = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert partial.cells_failed == 1
+    pointer_path = workspace["vector_root"] / "thermal" / "current.json"
+    assert json.loads(pointer_path.read_text("utf-8"))["commit_id"] == first_commit
+
+    _emit(workspace, changed[1][0])
+    complete = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert complete.cells_applied == 1
+    assert complete.cell_results["thermal"].commit_id != first_commit
+    loaded = mod.load_verified_projection_commit(
+        workspace["vector_root"],
+        "thermal",
+        expected_embedding_contract=changed[1][3],
+        expected_topology_digest=changed[1][4],
+    )
+    assert loaded["manifest"]["document_count"] == 2
+
+
+def test_historical_identity_dedup_is_restart_stable(workspace):
+    v1 = _projected_event("heat", revision="v1")
+    v2 = _projected_event("heat", revision="v2")
+    _emit_many(workspace, [v1[0], v2[0]])
+    first = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    first_commit = first.cell_results["thermal"].commit_id
+
+    _emit(workspace, v1[0])
+    replayed = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert replayed.cells_skipped_no_change == 1
+    assert replayed.cell_results["thermal"].commit_id == first_commit
+    loaded = mod.load_verified_projection_commit(
+        workspace["vector_root"],
+        "thermal",
+        expected_embedding_contract=v2[3],
+        expected_topology_digest=v2[4],
+    )
+    assert loaded["documents"][0]["projection_document"] == v2[1]
+    assert len(loaded["manifest"]["processed_source_identities"]) == 2
+
+
+def test_projection_reader_rejects_tamper_extra_files_and_noncanonical_pointer(
+    workspace,
+):
+    event, _document, _identity, embedding, topology_digest = _projected_event("heat")
+    _emit(workspace, event)
+    applied = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    commit_id = applied.cell_results["thermal"].commit_id
+    commit_dir = workspace["vector_root"] / "thermal" / "commits" / commit_id
+    (commit_dir / "unexpected.bin").write_bytes(b"not allowed")
+    with pytest.raises(ValueError, match="unexpected artifacts"):
+        mod.load_verified_projection_commit(
+            workspace["vector_root"],
+            "thermal",
+            expected_embedding_contract=embedding,
+            expected_topology_digest=topology_digest,
+        )
+    (commit_dir / "unexpected.bin").unlink()
+
+    pointer_path = workspace["vector_root"] / "thermal" / "current.json"
+    pointer = json.loads(pointer_path.read_text("utf-8"))
+    pointer_path.write_text(json.dumps(pointer, indent=2), encoding="utf-8")
+    with pytest.raises(ValueError, match="not canonically encoded"):
+        mod.load_verified_projection_commit(
+            workspace["vector_root"],
+            "thermal",
+            expected_embedding_contract=embedding,
+            expected_topology_digest=topology_digest,
+        )
+
+
+def test_projection_reader_rejects_stale_model_topology_and_document_tamper(
+    workspace,
+):
+    event, _document, _identity, embedding, topology_digest = _projected_event("heat")
+    _emit(workspace, event)
+    applied = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    commit_id = applied.cell_results["thermal"].commit_id
+    wrong_embedding = vector_projection.build_embedding_contract(
+        model_id="test-embedding",
+        model_version="wrong",
+        dimension=embedding["dimension"],
+    )
+    with pytest.raises(ValueError, match="embedding contract mismatch"):
+        mod.load_verified_projection_commit(
+            workspace["vector_root"],
+            "thermal",
+            expected_embedding_contract=wrong_embedding,
+            expected_topology_digest=topology_digest,
+        )
+    with pytest.raises(ValueError, match="topology digest mismatch"):
+        mod.load_verified_projection_commit(
+            workspace["vector_root"],
+            "thermal",
+            expected_embedding_contract=embedding,
+            expected_topology_digest=_digest("stale-topology"),
+        )
+
+    documents = (
+        workspace["vector_root"]
+        / "thermal"
+        / "commits"
+        / commit_id
+        / "documents.jsonl"
+    )
+    documents.write_bytes(documents.read_bytes() + b"{}\n")
+    with pytest.raises(ValueError):
+        mod.load_verified_projection_commit(
+            workspace["vector_root"],
+            "thermal",
+            expected_embedding_contract=embedding,
+            expected_topology_digest=topology_digest,
+        )
+
+
+def test_projection_failure_before_swap_keeps_pointer_unpublished(workspace):
+    event, *_ = _projected_event("heat")
+    _emit(workspace, event)
+    failed = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+        _fail_before_swap_for_cells={"thermal"},
+    )
+    assert failed.cells_failed == 1
+    assert not (workspace["vector_root"] / "thermal" / "current.json").exists()
+    assert not workspace["checkpoint"].exists()
+
+
+def test_commits_link_cannot_escape_vector_root(workspace, tmp_path):
+    event, *_ = _projected_event("heat")
+    _emit(workspace, event)
+    cell_dir = workspace["vector_root"] / "thermal"
+    outside = tmp_path / "outside"
+    cell_dir.mkdir(parents=True)
+    outside.mkdir()
+    link = cell_dir / "commits"
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    report = mod.apply(
+        event_log=workspace["event_log"],
+        vector_root=workspace["vector_root"],
+        checkpoint_path=workspace["checkpoint"],
+        dry_run=False,
+    )
+    assert report.cells_failed == 1
+    assert "escapes cell root" in report.cell_results["thermal"].error
+    assert list(outside.iterdir()) == []
+
+
+def test_checkpoint_path_identifiers_fail_closed(workspace):
+    workspace["checkpoint"].write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "global_last_applied_event_id": None,
+                "last_applied_ts": None,
+                "per_cell": {
+                    "../escape": {
+                        "last_applied_event_id": None,
+                        "commit_id": "faiss_0123456789abcdef",
+                        "applied_ts": None,
+                        "vector_count": 0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        mod.load_checkpoint(workspace["checkpoint"])

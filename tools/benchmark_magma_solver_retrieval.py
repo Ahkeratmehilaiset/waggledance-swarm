@@ -313,12 +313,15 @@ def validate_corpus(
         if case["expected_cell"] != expected["cell_id"]:
             raise BenchmarkContractError("expected_cell_projection_mismatch")
         query_plain = _plain_tokens(case["query"])
-        solver_plain = _plain_tokens(case["expected_solver"])
-        model_name_plain = _plain_tokens(expected["contract_fields"]["model_name"])
-        if _contains_sequence(query_plain, solver_plain) or _contains_sequence(
-            query_plain, model_name_plain
-        ):
-            raise BenchmarkContractError("query_label_leakage")
+        for candidate in documents:
+            solver_plain = _plain_tokens(candidate["canonical_solver_id"])
+            model_name_plain = _plain_tokens(
+                candidate["contract_fields"]["model_name"]
+            )
+            if _contains_sequence(query_plain, solver_plain) or _contains_sequence(
+                query_plain, model_name_plain
+            ):
+                raise BenchmarkContractError("query_label_leakage")
         overlap = set(tokenizer(case["query"])) & set(
             tokenizer(expected["embedding_text"])
         )
@@ -557,7 +560,7 @@ def run_lexical_benchmark(
 
 
 class OllamaEmbeddingClient:
-    """Pinned Ollama embedder with a persistent HTTP connection."""
+    """Catalog-checked Ollama embedder with a persistent HTTP connection."""
 
     def __init__(self, base_url: str, timeout_seconds: float = 120.0) -> None:
         self._client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout_seconds)
@@ -571,7 +574,7 @@ class OllamaEmbeddingClient:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def verify_profile(self, profile: EmbeddingProfile) -> None:
+    def verify_profile(self, profile: EmbeddingProfile) -> dict[str, Any]:
         try:
             response = self._client.get("/api/tags")
             response.raise_for_status()
@@ -597,6 +600,11 @@ class OllamaEmbeddingClient:
             )
             reason = "embedding_model_digest_mismatch" if matching_name else "embedding_model_missing"
             raise BenchmarkUnavailable(reason)
+        return {
+            "provider": "ollama",
+            "requested_model_tag": profile.model_id,
+            "catalog_digest": profile.model_digest,
+        }
 
     def embed(
         self,
@@ -623,7 +631,9 @@ class OllamaEmbeddingClient:
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise BenchmarkUnavailable("embedding_request_failed") from exc
-        embeddings = payload.get("embeddings") if type(payload) is dict else None
+        if type(payload) is not dict or payload.get("model") != profile.model_id:
+            raise EmbeddingValidationError(f"{label}_response_model_mismatch")
+        embeddings = payload.get("embeddings")
         return normalize_embedding_matrix(
             embeddings,
             expected_rows=len(texts),
@@ -640,11 +650,11 @@ def run_vector_benchmark(
     profile: EmbeddingProfile,
     embedder: OllamaEmbeddingClient,
 ) -> dict[str, Any]:
-    """Run label-blind exact retrieval under one immutable model contract."""
+    """Run label-blind exact retrieval under one catalog-checked contract."""
     solver_ids = [row["canonical_solver_id"] for row in documents]
     document_inputs = [profile.document_prefix + row["embedding_text"] for row in documents]
     query_inputs = [profile.query_prefix + query for query in query_texts]
-    embedder.verify_profile(profile)
+    identity_before = embedder.verify_profile(profile)
     document_started = time.perf_counter_ns()
     document_matrix = embedder.embed(document_inputs, profile, label="document_embeddings")
     document_embedding_ms = (time.perf_counter_ns() - document_started) / 1_000_000.0
@@ -661,6 +671,9 @@ def run_vector_benchmark(
         expected_dimension=profile.dimension,
         label="query_embedding_matrix",
     )
+    identity_after = embedder.verify_profile(profile)
+    if identity_after != identity_before:
+        raise BenchmarkUnavailable("embedding_model_catalog_changed_during_run")
     rankings: list[list[int]] = []
     score_rows: list[np.ndarray] = []
     search_latency_ms: list[float] = []
@@ -682,7 +695,7 @@ def run_vector_benchmark(
     )
     contract = vector_projection.build_embedding_contract(
         model_id=profile.model_id,
-        model_version="sha256:" + profile.model_digest,
+        model_version="ollama-catalog-sha256:" + profile.model_digest,
         dimension=profile.dimension,
         normalization="l2-v1",
         document_prefix=profile.document_prefix,
@@ -704,6 +717,16 @@ def run_vector_benchmark(
             "index_kind": "exact_numpy_flat_ip_proxy",
             "faiss_materialized": False,
             "embedding_contract": contract,
+            "provider_identity_evidence": {
+                **identity_before,
+                "catalog_digest_stable_before_after": True,
+                "response_digest_attested": False,
+                "limitation": (
+                    "Ollama embeds by mutable tag and does not attest a model digest "
+                    "in /api/embed responses; the catalog digest was equal before and "
+                    "after this candidate-only run."
+                ),
+            },
             "fallback_used": False,
         }
     )
@@ -724,6 +747,7 @@ def unavailable_vector_result(profile: EmbeddingProfile, cases_total: int, reaso
         "per_query": [],
         "index_kind": "exact_numpy_flat_ip_proxy",
         "faiss_materialized": False,
+        "provider_identity_evidence": None,
         "fallback_used": False,
     }
 
@@ -750,6 +774,58 @@ def existing_index_preflight(vector_root: Path = DEFAULT_VECTOR_ROOT) -> dict[st
     return {**base, "reason_codes": ["searchable_materialization_contract_absent"]}
 
 
+def _paired_sign_evidence(
+    a0: Mapping[str, Any],
+    a2: Mapping[str, Any],
+    *,
+    stratum: str,
+    outcome: str,
+) -> dict[str, Any]:
+    baseline = {
+        row["query_id"]: row
+        for row in a0.get("per_query", [])
+        if row.get("stratum") == stratum
+    }
+    candidate = {
+        row["query_id"]: row
+        for row in a2.get("per_query", [])
+        if row.get("stratum") == stratum
+    }
+    if not baseline or set(baseline) != set(candidate):
+        raise BenchmarkContractError("paired_gate_query_set_mismatch")
+
+    def success(row: Mapping[str, Any]) -> bool:
+        if outcome == "top1":
+            return row.get("correct_at_1") is True
+        if outcome == "recall_at_5":
+            return row.get("expected_rank_at_5") is not None
+        raise BenchmarkContractError("unknown_paired_gate_outcome")
+
+    wins = 0
+    losses = 0
+    for query_id in sorted(baseline):
+        before = success(baseline[query_id])
+        after = success(candidate[query_id])
+        wins += int(after and not before)
+        losses += int(before and not after)
+    discordant = wins + losses
+    if discordant == 0:
+        p_one_sided = 1.0
+    else:
+        p_one_sided = sum(
+            math.comb(discordant, successes)
+            for successes in range(wins, discordant + 1)
+        ) / (2**discordant)
+    return {
+        "cases": len(baseline),
+        "candidate_wins": wins,
+        "candidate_losses": losses,
+        "discordant_pairs": discordant,
+        "one_sided_exact_sign_p": round(p_one_sided, 8),
+        "passed": wins > losses and p_one_sided <= 0.05,
+    }
+
+
 def differential_gate(a0: Mapping[str, Any], a2: Mapping[str, Any]) -> dict[str, Any]:
     if not a2.get("measurement_complete"):
         return {
@@ -759,6 +835,19 @@ def differential_gate(a0: Mapping[str, Any], a2: Mapping[str, Any]) -> dict[str,
         }
     baseline = a0["metrics"]
     candidate = a2["metrics"]
+    semantic_top1 = _paired_sign_evidence(
+        a0, a2, stratum="semantic_zero_overlap", outcome="top1"
+    )
+    semantic_recall5 = _paired_sign_evidence(
+        a0, a2, stratum="semantic_zero_overlap", outcome="recall_at_5"
+    )
+    anchored_top1 = _paired_sign_evidence(
+        a0, a2, stratum="anchored_natural", outcome="top1"
+    )
+    anchored_recall5 = _paired_sign_evidence(
+        a0, a2, stratum="anchored_natural", outcome="recall_at_5"
+    )
+    identity = a2.get("provider_identity_evidence") or {}
     criteria = {
         "measurement_complete": True,
         "overall_top1_non_regression": (
@@ -767,20 +856,33 @@ def differential_gate(a0: Mapping[str, Any], a2: Mapping[str, Any]) -> dict[str,
         "overall_recall5_non_regression": (
             candidate["all"]["recall_at_5"] >= baseline["all"]["recall_at_5"]
         ),
-        "semantic_top1_positive_lift": (
-            candidate["semantic_zero_overlap"]["top1_accuracy"]
-            > baseline["semantic_zero_overlap"]["top1_accuracy"]
+        "anchored_top1_net_loss_at_most_one_case": (
+            anchored_top1["candidate_losses"] - anchored_top1["candidate_wins"]
+            <= 1
         ),
-        "semantic_recall5_positive_lift": (
-            candidate["semantic_zero_overlap"]["recall_at_5"]
-            > baseline["semantic_zero_overlap"]["recall_at_5"]
+        "anchored_recall5_non_regression": (
+            anchored_recall5["candidate_losses"]
+            <= anchored_recall5["candidate_wins"]
         ),
-        "nonempty_all_queries": candidate["all"]["nonempty_rate"] == 1.0,
+        "semantic_top1_paired_evidence": semantic_top1["passed"],
+        "semantic_recall5_paired_evidence": semantic_recall5["passed"],
+        "rankings_present_all_queries": candidate["all"]["nonempty_rate"] == 1.0,
         "exact_search_p95_below_10ms": a2["latency_ms"]["search"]["p95"] < 10.0,
+        "provider_catalog_digest_stable_before_after": identity.get(
+            "catalog_digest_stable_before_after"
+        )
+        is True,
     }
     return {
         "passed": all(criteria.values()),
+        "gate_scope": "paired_positive_ranking_only_no_rejection_calibration",
         "criteria": criteria,
+        "paired_evidence": {
+            "anchored_top1": anchored_top1,
+            "anchored_recall5": anchored_recall5,
+            "semantic_top1": semantic_top1,
+            "semantic_recall5": semantic_recall5,
+        },
         "deltas": {
             "overall_top1": round(
                 candidate["all"]["top1_accuracy"] - baseline["all"]["top1_accuracy"], 6
@@ -802,10 +904,18 @@ def differential_gate(a0: Mapping[str, Any], a2: Mapping[str, Any]) -> dict[str,
     }
 
 
+def _is_link_like(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or (callable(is_junction) and is_junction())
+
+
 def resolve_audit_output(raw_path: str, repo_root: Path = ROOT) -> Path:
     if not raw_path or Path(raw_path).is_absolute():
         raise BenchmarkContractError("output_path_must_be_repo_relative")
-    audit_root = (repo_root / ".codex-audit").resolve()
+    unresolved_audit_root = repo_root / ".codex-audit"
+    if _is_link_like(unresolved_audit_root):
+        raise BenchmarkContractError("codex_audit_root_must_not_be_link")
+    audit_root = unresolved_audit_root.resolve()
     candidate = (repo_root / raw_path).resolve()
     try:
         candidate.relative_to(audit_root)
@@ -815,8 +925,8 @@ def resolve_audit_output(raw_path: str, repo_root: Path = ROOT) -> Path:
         raise BenchmarkContractError("output_path_must_name_a_file")
     cursor = candidate.parent
     while cursor != audit_root:
-        if cursor.exists() and cursor.is_symlink():
-            raise BenchmarkContractError("output_parent_must_not_be_symlink")
+        if cursor.exists() and _is_link_like(cursor):
+            raise BenchmarkContractError("output_parent_must_not_be_link")
         if cursor.parent == cursor:
             raise BenchmarkContractError("output_path_parent_invalid")
         cursor = cursor.parent
@@ -874,7 +984,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         a1 = existing_index_preflight(vector_root)
         a2_results: list[dict[str, Any]] = []
         gates: dict[str, Any] = {}
-        profiles = [] if args.skip_vector else (args.profile or ["nomic"])
+        requested_profiles = args.profile or ["nomic"]
+        if len(requested_profiles) != len(set(requested_profiles)):
+            raise BenchmarkContractError("duplicate_embedding_profile")
+        if args.skip_vector and args.profile:
+            raise BenchmarkContractError("embedding_profile_conflicts_with_skip_vector")
+        profiles = [] if args.skip_vector else requested_profiles
         for profile_name in profiles:
             profile = EMBEDDING_PROFILES[profile_name]
             try:
@@ -926,6 +1041,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "A1_searchable_materialization_absent",
                 "A3_guarded_authoritative_trial_not_run",
                 "independent_corpus_adjudication_pending",
+                "off_domain_rejection_not_calibrated",
+                "ollama_embed_response_digest_not_attested",
             ],
         }
         if output_path is not None:

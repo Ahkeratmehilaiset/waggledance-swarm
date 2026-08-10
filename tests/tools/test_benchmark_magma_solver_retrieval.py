@@ -90,6 +90,15 @@ def test_overlap_and_label_guards_are_rederived(
             expected_sha256=benchmark.canonical_json_sha256(leakage_mutation),
         )
 
+    other_solver_leakage = copy.deepcopy(corpus_value)
+    other_solver_leakage["cases"][22]["query"] += " battery discharge"
+    with pytest.raises(benchmark.BenchmarkContractError, match="query_label_leakage"):
+        benchmark.validate_corpus(
+            other_solver_leakage,
+            projection_documents,
+            expected_sha256=benchmark.canonical_json_sha256(other_solver_leakage),
+        )
+
     stratum_mutation = copy.deepcopy(corpus_value)
     stratum_mutation["cases"][22]["stratum"] = "anchored_natural"
     with pytest.raises(benchmark.BenchmarkContractError):
@@ -164,6 +173,41 @@ def test_valid_embeddings_are_finite_normalized_float32() -> None:
     np.testing.assert_allclose(np.linalg.norm(matrix, axis=1), [1.0, 1.0])
 
 
+@pytest.mark.parametrize("response_model", [None, "wrong-model:latest"])
+def test_embedding_response_model_must_match_requested_profile(
+    response_model: str | None,
+) -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            payload = {"embeddings": [[3.0, 4.0]]}
+            if response_model is not None:
+                payload["model"] = response_model
+            return payload
+
+    class _Client:
+        def post(self, *_args: object, **_kwargs: object) -> _Response:
+            return _Response()
+
+    profile = benchmark.EmbeddingProfile(
+        name="test",
+        model_id="expected-model:latest",
+        model_digest="a" * 64,
+        dimension=2,
+        document_prefix="",
+        query_prefix="",
+    )
+    embedder = object.__new__(benchmark.OllamaEmbeddingClient)
+    embedder._client = _Client()  # type: ignore[attr-defined]
+
+    with pytest.raises(
+        benchmark.EmbeddingValidationError, match="response_model_mismatch"
+    ):
+        embedder.embed(["query"], profile, label="test")
+
+
 def test_equal_score_ranking_is_input_order_independent() -> None:
     assert [
         ["zeta", "alpha"][index]
@@ -186,8 +230,13 @@ class _SpyEmbedder:
         self.inputs: list[list[str]] = []
         self.verified: list[str] = []
 
-    def verify_profile(self, profile: benchmark.EmbeddingProfile) -> None:
+    def verify_profile(self, profile: benchmark.EmbeddingProfile) -> dict:
         self.verified.append(profile.name)
+        return {
+            "provider": "spy",
+            "requested_model_tag": profile.model_id,
+            "catalog_digest": profile.model_digest,
+        }
 
     def embed(
         self,
@@ -234,7 +283,7 @@ def test_retrieval_receives_only_documents_and_query_text(
         embedder,  # type: ignore[arg-type]
     )
 
-    assert embedder.verified == ["spy"]
+    assert embedder.verified == ["spy", "spy"]
     assert embedder.inputs[0] == [
         profile.document_prefix + row["embedding_text"]
         for row in projection_documents
@@ -242,6 +291,7 @@ def test_retrieval_receives_only_documents_and_query_text(
     assert embedder.inputs[1:] == [[profile.query_prefix + query] for query in queries]
     assert result["measurement_complete"] is True
     assert result["fallback_used"] is False
+    assert result["provider_identity_evidence"]["response_digest_attested"] is False
 
 
 def test_evaluation_labels_cannot_change_existing_rankings(
@@ -396,12 +446,85 @@ def test_output_rejects_symlinked_parent_that_escapes_audit_root(
         )
 
 
+def test_output_rejects_symlinked_audit_root(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    audit_root = tmp_path / ".codex-audit"
+    try:
+        audit_root.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this Windows host")
+
+    with pytest.raises(
+        benchmark.BenchmarkContractError,
+        match="codex_audit_root_must_not_be_link",
+    ):
+        benchmark.resolve_audit_output(
+            ".codex-audit/report.json", repo_root=tmp_path
+        )
+
+
+def test_output_rejects_junction_like_audit_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_root = tmp_path / ".codex-audit"
+    audit_root.mkdir()
+    real_is_junction = getattr(Path, "is_junction", lambda _path: False)
+
+    def fake_is_junction(path: Path) -> bool:
+        return path == audit_root or real_is_junction(path)
+
+    monkeypatch.setattr(Path, "is_junction", fake_is_junction, raising=False)
+
+    with pytest.raises(
+        benchmark.BenchmarkContractError,
+        match="codex_audit_root_must_not_be_link",
+    ):
+        benchmark.resolve_audit_output(
+            ".codex-audit/report.json", repo_root=tmp_path
+        )
+
+
 def test_gate_requires_semantic_lift_and_keeps_authority_separate() -> None:
+    baseline_rows = [
+        {
+            "query_id": f"S{index:02d}",
+            "stratum": "semantic_zero_overlap",
+            "correct_at_1": False,
+            "expected_rank_at_5": None if index > 3 else index,
+        }
+        for index in range(1, 23)
+    ]
+    baseline_rows += [
+        {
+            "query_id": f"A{index:02d}",
+            "stratum": "anchored_natural",
+            "correct_at_1": True,
+            "expected_rank_at_5": 1,
+        }
+        for index in range(1, 23)
+    ]
+    candidate_rows = [
+        {
+            "query_id": f"S{index:02d}",
+            "stratum": "semantic_zero_overlap",
+            "correct_at_1": index <= 14,
+            "expected_rank_at_5": index if index <= 20 else None,
+        }
+        for index in range(1, 23)
+    ]
+    candidate_rows += copy.deepcopy(baseline_rows[22:])
     a0 = {
         "metrics": {
             "all": {"top1_accuracy": 0.5, "recall_at_5": 0.6},
+            "anchored_natural": {
+                "cases": 22,
+                "top1_accuracy": 1.0,
+                "recall_at_5": 1.0,
+            },
             "semantic_zero_overlap": {"top1_accuracy": 0.0, "recall_at_5": 0.1},
-        }
+        },
+        "per_query": baseline_rows,
     }
     a2 = {
         "measurement_complete": True,
@@ -411,15 +534,188 @@ def test_gate_requires_semantic_lift_and_keeps_authority_separate() -> None:
                 "recall_at_5": 0.8,
                 "nonempty_rate": 1.0,
             },
+            "anchored_natural": {
+                "cases": 22,
+                "top1_accuracy": 1.0,
+                "recall_at_5": 1.0,
+            },
             "semantic_zero_overlap": {
                 "top1_accuracy": 0.4,
                 "recall_at_5": 0.7,
             },
         },
         "latency_ms": {"search": {"p95": 0.1}},
+        "per_query": candidate_rows,
+        "provider_identity_evidence": {
+            "catalog_digest_stable_before_after": True
+        },
     }
 
     gate = benchmark.differential_gate(a0, a2)
 
     assert gate["passed"] is True
     assert gate["deltas"]["semantic_top1"] == 0.4
+    assert gate["paired_evidence"]["semantic_top1"]["candidate_wins"] == 14
+
+
+def test_gate_rejects_one_query_lift_as_insufficient_evidence() -> None:
+    baseline_rows = [
+        {
+            "query_id": f"S{index:02d}",
+            "stratum": "semantic_zero_overlap",
+            "correct_at_1": False,
+            "expected_rank_at_5": None,
+        }
+        for index in range(1, 23)
+    ]
+    baseline_rows += [
+        {
+            "query_id": f"A{index:02d}",
+            "stratum": "anchored_natural",
+            "correct_at_1": True,
+            "expected_rank_at_5": 1,
+        }
+        for index in range(1, 23)
+    ]
+    candidate_rows = copy.deepcopy(baseline_rows)
+    candidate_rows[0]["correct_at_1"] = True
+    candidate_rows[0]["expected_rank_at_5"] = 1
+    a0 = {
+        "metrics": {
+            "all": {"top1_accuracy": 0.5, "recall_at_5": 0.5},
+            "anchored_natural": {
+                "cases": 22,
+                "top1_accuracy": 1.0,
+                "recall_at_5": 1.0,
+            },
+            "semantic_zero_overlap": {"top1_accuracy": 0.0, "recall_at_5": 0.0},
+        },
+        "per_query": baseline_rows,
+    }
+    a2 = {
+        "measurement_complete": True,
+        "metrics": {
+            "all": {
+                "top1_accuracy": 0.500001,
+                "recall_at_5": 0.500001,
+                "nonempty_rate": 1.0,
+            },
+            "anchored_natural": {
+                "cases": 22,
+                "top1_accuracy": 1.0,
+                "recall_at_5": 1.0,
+            },
+            "semantic_zero_overlap": {
+                "top1_accuracy": 1 / 22,
+                "recall_at_5": 1 / 22,
+            },
+        },
+        "latency_ms": {"search": {"p95": 0.1}},
+        "per_query": candidate_rows,
+        "provider_identity_evidence": {
+            "catalog_digest_stable_before_after": True
+        },
+    }
+
+    gate = benchmark.differential_gate(a0, a2)
+
+    assert gate["passed"] is False
+    assert gate["criteria"]["semantic_top1_paired_evidence"] is False
+    assert gate["paired_evidence"]["semantic_top1"]["one_sided_exact_sign_p"] == 0.5
+
+
+def test_gate_rejects_anchored_collapse_despite_semantic_gain() -> None:
+    baseline_rows = [
+        {
+            "query_id": f"S{index:02d}",
+            "stratum": "semantic_zero_overlap",
+            "correct_at_1": False,
+            "expected_rank_at_5": None,
+        }
+        for index in range(1, 23)
+    ]
+    baseline_rows += [
+        {
+            "query_id": f"A{index:02d}",
+            "stratum": "anchored_natural",
+            "correct_at_1": True,
+            "expected_rank_at_5": 1,
+        }
+        for index in range(1, 23)
+    ]
+    candidate_rows = [
+        {
+            **row,
+            "correct_at_1": True,
+            "expected_rank_at_5": 1,
+        }
+        for row in baseline_rows[:22]
+    ]
+    candidate_rows += [
+        {
+            **row,
+            "correct_at_1": index == 0,
+            "expected_rank_at_5": 1 if index < 3 else None,
+        }
+        for index, row in enumerate(baseline_rows[22:])
+    ]
+    a0 = {
+        "metrics": {
+            "all": {"top1_accuracy": 0.5, "recall_at_5": 0.5},
+            "anchored_natural": {
+                "cases": 22,
+                "top1_accuracy": 1.0,
+                "recall_at_5": 1.0,
+            },
+            "semantic_zero_overlap": {"top1_accuracy": 0.0, "recall_at_5": 0.0},
+        },
+        "per_query": baseline_rows,
+    }
+    a2 = {
+        "measurement_complete": True,
+        "metrics": {
+            "all": {
+                "top1_accuracy": 23 / 44,
+                "recall_at_5": 25 / 44,
+                "nonempty_rate": 1.0,
+            },
+            "anchored_natural": {
+                "cases": 22,
+                "top1_accuracy": 1 / 22,
+                "recall_at_5": 3 / 22,
+            },
+            "semantic_zero_overlap": {
+                "top1_accuracy": 1.0,
+                "recall_at_5": 1.0,
+            },
+        },
+        "latency_ms": {"search": {"p95": 0.1}},
+        "per_query": candidate_rows,
+        "provider_identity_evidence": {
+            "catalog_digest_stable_before_after": True
+        },
+    }
+
+    gate = benchmark.differential_gate(a0, a2)
+
+    assert gate["passed"] is False
+    assert gate["criteria"]["anchored_top1_net_loss_at_most_one_case"] is False
+    assert gate["criteria"]["anchored_recall5_non_regression"] is False
+
+
+def test_duplicate_profiles_fail_before_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    class _UnexpectedClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr(benchmark, "OllamaEmbeddingClient", _UnexpectedClient)
+
+    exit_code = benchmark.main(
+        ["--no-write", "--profile", "nomic", "--profile", "nomic"]
+    )
+
+    assert exit_code == 2
+    assert called is False

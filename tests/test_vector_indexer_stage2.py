@@ -19,8 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from waggledance.core.magma import vector_events, vector_projection
-from waggledance.core.magma.evaluation_result import build_evaluation_result
-from waggledance.core.magma.receipt import build_magma_receipt
 
 
 def _load_mod():
@@ -116,53 +114,10 @@ def _projected_event(
 
 
 def _receipt_bound_identity(document, embedding):
-    payload = vector_projection.build_projection_admission_payload(
-        document, embedding
-    )
-    evaluation = build_evaluation_result(
-        case_id=(
-            "case:indexer_projection:" + document["canonical_solver_id"]
-        ),
-        subject_type="solver",
-        target_payload=payload,
-        risk_class="local_artifact",
-        expected_gate="allow",
-        actual_gate="allow",
-        verifier_path=[vector_projection.PROJECTION_ADMISSION_EVALUATOR_VERSION],
-        solver_selection=[document["canonical_solver_id"]],
-        policy_version="policy:magma_faiss_projection:v1",
-        charter_version="charter:candidate_projection_only:v1",
-        domain_threshold_version="threshold:projection_contract:v1",
-        verdict="pass",
-        reason_codes=["magma:faiss:projection_contract_valid"],
-        confidence_score=1.0,
-        uncertainty_sources=[
-            {
-                "kind": "limited_evidence",
-                "detail": "Projection binding is not solver outcome evidence.",
-            }
-        ],
-    )
-    receipt = build_magma_receipt(
-        event_id=vector_projection.projection_admission_event_id(
-            document, embedding
-        ),
-        ts_utc="2026-08-10T06:00:00Z",
-        risk_class="local_artifact",
-        payload=payload,
-        evaluation_result=evaluation,
-        policy_digest=_digest("projection-policy"),
-        charter_digest=_digest("candidate-charter"),
-        rco_decision_digest=_digest("local-rco-record"),
-        world_snapshot_digest=_digest("local-world-snapshot"),
-        solver_contract_digest=document["solver_contract_digest"],
-        payload_visibility="full_payload",
-    )
-    proof = vector_projection.build_projection_receipt_proof(
+    proof = vector_projection.build_self_certified_projection_receipt_proof(
         document,
         embedding,
-        evaluation_result=evaluation,
-        receipt=receipt,
+        ts_utc="2026-08-10T06:00:00Z",
     )
     return vector_projection.build_receipt_bound_projection_source_identity(
         document, embedding, proof

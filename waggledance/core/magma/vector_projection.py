@@ -53,6 +53,9 @@ PROJECTION_ADMISSION_EVALUATOR_SPEC = {
 PROJECTION_ADMISSION_EVALUATOR_DIGEST = sha256_digest(
     PROJECTION_ADMISSION_EVALUATOR_SPEC
 )
+PROJECTION_RECEIPT_CONTEXT_VERSION = (
+    "magma.faiss.self_certified_receipt_context.v1"
+)
 EMBEDDING_CONTRACT_VERSION = "magma.faiss.embedding_contract.v1"
 RETRIEVAL_TOPOLOGY_VERSION = "waggledance.retrieval_topology.v1"
 
@@ -140,7 +143,56 @@ _SOURCE_IDENTITY_V2_KEYS = frozenset(
     }
 )
 _PROJECTION_RECEIPT_PROOF_KEYS = frozenset(
-    {"schema_version", "payload", "evaluation_result", "receipt", "proof_digest"}
+    {
+        "schema_version",
+        "payload",
+        "receipt_context",
+        "evaluation_result",
+        "receipt",
+        "proof_digest",
+    }
+)
+_PROJECTION_RECEIPT_CONTEXT_KEYS = frozenset(
+    {
+        "schema_version",
+        "policy_artifact",
+        "charter_artifact",
+        "rco_decision_artifact",
+        "world_snapshot_artifact",
+    }
+)
+_LOCAL_POLICY_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "scope",
+        "receipt_semantics",
+        "admission_evaluator_contract_digest",
+        "runtime_authority_granted",
+    }
+)
+_LOCAL_CHARTER_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "authority",
+        "external_governance_verified",
+        "solver_outcome_verified",
+    }
+)
+_LOCAL_RCO_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "review_performed",
+        "decision",
+        "authority_granted",
+    }
+)
+_LOCAL_WORLD_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "observation_scope",
+        "external_state_observed",
+        "network_access",
+    }
 )
 _PROJECTION_ADMISSION_PAYLOAD_KEYS = frozenset(
     {
@@ -542,6 +594,85 @@ def build_projection_source_identity(
     return validate_projection_source_identity(identity)
 
 
+def build_projection_receipt_context() -> dict[str, Any]:
+    """Build the exact local artifacts behind a self-certified receipt.
+
+    These artifacts satisfy the generic MAGMA receipt envelope without
+    pretending that an external policy authority, RCO reviewer, or world-state
+    observer participated. Their negative posture is data, not documentation.
+    """
+    return {
+        "schema_version": PROJECTION_RECEIPT_CONTEXT_VERSION,
+        "policy_artifact": {
+            "schema_version": "magma.faiss.local_policy_declaration.v1",
+            "scope": "candidate_projection_only",
+            "receipt_semantics": "self_certified_structure_only",
+            "admission_evaluator_contract_digest": (
+                PROJECTION_ADMISSION_EVALUATOR_DIGEST
+            ),
+            "runtime_authority_granted": False,
+        },
+        "charter_artifact": {
+            "schema_version": "magma.faiss.local_charter_declaration.v1",
+            "authority": "none",
+            "external_governance_verified": False,
+            "solver_outcome_verified": False,
+        },
+        "rco_decision_artifact": {
+            "schema_version": "magma.faiss.local_rco_status.v1",
+            "review_performed": False,
+            "decision": "not_evaluated",
+            "authority_granted": False,
+        },
+        "world_snapshot_artifact": {
+            "schema_version": "magma.faiss.local_world_snapshot.v1",
+            "observation_scope": "projection_contract_only",
+            "external_state_observed": False,
+            "network_access": False,
+        },
+    }
+
+
+def validate_projection_receipt_context(value: Any) -> dict[str, Any]:
+    context = _require_plain_mapping(value, "projection receipt context")
+    _require_exact_keys(
+        context,
+        _PROJECTION_RECEIPT_CONTEXT_KEYS,
+        "projection receipt context",
+    )
+    expected = build_projection_receipt_context()
+    artifact_keys = {
+        "policy_artifact": _LOCAL_POLICY_ARTIFACT_KEYS,
+        "charter_artifact": _LOCAL_CHARTER_ARTIFACT_KEYS,
+        "rco_decision_artifact": _LOCAL_RCO_ARTIFACT_KEYS,
+        "world_snapshot_artifact": _LOCAL_WORLD_ARTIFACT_KEYS,
+    }
+    for name, keys in artifact_keys.items():
+        artifact = _require_plain_mapping(context[name], name.replace("_", " "))
+        _require_exact_keys(artifact, keys, name.replace("_", " "))
+    if context != expected:
+        raise ValueError(
+            "projection receipt context must remain explicitly non-authoritative"
+        )
+    return expected
+
+
+def projection_receipt_context_digests(
+    value: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    context = validate_projection_receipt_context(
+        value if value is not None else build_projection_receipt_context()
+    )
+    return {
+        "policy_digest": sha256_digest(context["policy_artifact"]),
+        "charter_digest": sha256_digest(context["charter_artifact"]),
+        "rco_decision_digest": sha256_digest(context["rco_decision_artifact"]),
+        "world_snapshot_digest": sha256_digest(
+            context["world_snapshot_artifact"]
+        ),
+    }
+
+
 def build_projection_admission_payload(
     projection_document: Mapping[str, Any],
     embedding_contract: Mapping[str, Any],
@@ -589,12 +720,15 @@ def build_projection_receipt_proof(
     *,
     evaluation_result: Mapping[str, Any],
     receipt: Mapping[str, Any],
+    receipt_context: Mapping[str, Any],
 ) -> dict[str, Any]:
+    context = validate_projection_receipt_context(receipt_context)
     proof: dict[str, Any] = {
         "schema_version": PROJECTION_RECEIPT_PROOF_VERSION,
         "payload": build_projection_admission_payload(
             projection_document, embedding_contract
         ),
+        "receipt_context": context,
         "evaluation_result": dict(evaluation_result),
         "receipt": dict(receipt),
         "proof_digest": "",
@@ -652,6 +786,9 @@ def _validate_projection_receipt_proof_against_payload(
     ):
         raise ValueError("projection receipt payload does not match projection contracts")
 
+    receipt_context = validate_projection_receipt_context(
+        proof["receipt_context"]
+    )
     evaluation = validate_evaluation_result(proof["evaluation_result"])
     receipt = validate_magma_receipt(proof["receipt"])
     payload_digest = sha256_digest(expected_payload)
@@ -691,6 +828,9 @@ def _validate_projection_receipt_proof_against_payload(
         raise ValueError("projection receipt evaluation digest mismatch")
     if receipt["solver_contract_digest"] != expected_payload["solver_contract_digest"]:
         raise ValueError("projection receipt solver contract mismatch")
+    context_digests = projection_receipt_context_digests(receipt_context)
+    if any(receipt[key] != digest for key, digest in context_digests.items()):
+        raise ValueError("projection receipt context digest mismatch")
     if (
         receipt["operator_gate_required"] is not False
         or receipt["approval_id"] is not None
@@ -711,6 +851,7 @@ def _validate_projection_receipt_proof_against_payload(
     canonical: dict[str, Any] = {
         "schema_version": PROJECTION_RECEIPT_PROOF_VERSION,
         "payload": expected_payload,
+        "receipt_context": receipt_context,
         "evaluation_result": evaluation,
         "receipt": receipt,
         "proof_digest": _require_digest(
@@ -723,6 +864,67 @@ def _validate_projection_receipt_proof_against_payload(
     if proof["proof_digest"] != expected_proof_digest:
         raise ValueError("projection receipt proof digest mismatch")
     return canonical
+
+
+def build_self_certified_projection_receipt_proof(
+    projection_document: Mapping[str, Any],
+    embedding_contract: Mapping[str, Any],
+    *,
+    ts_utc: str,
+) -> dict[str, Any]:
+    """Build deterministic local admission evidence with zero external authority."""
+    from waggledance.core.magma.evaluation_result import build_evaluation_result
+    from waggledance.core.magma.receipt import build_magma_receipt
+
+    document = validate_solver_contract_projection(projection_document)
+    embedding = validate_embedding_contract(embedding_contract)
+    payload = build_projection_admission_payload(document, embedding)
+    context = build_projection_receipt_context()
+    context_digests = projection_receipt_context_digests(context)
+    evaluation = build_evaluation_result(
+        case_id=(
+            "case:magma_faiss_projection:" + document["canonical_solver_id"]
+        ),
+        subject_type="solver",
+        target_payload=payload,
+        risk_class="local_artifact",
+        expected_gate="allow",
+        actual_gate="allow",
+        verifier_path=[PROJECTION_ADMISSION_EVALUATOR_VERSION],
+        solver_selection=[document["canonical_solver_id"]],
+        policy_version="policy:magma_faiss_projection:v1",
+        charter_version="charter:candidate_projection_only:v1",
+        domain_threshold_version="threshold:projection_contract:v1",
+        verdict="pass",
+        reason_codes=["magma:faiss:projection_contract_valid"],
+        confidence_score=1.0,
+        uncertainty_sources=[
+            {
+                "kind": "limited_evidence",
+                "detail": (
+                    "Self-certified projection structure; no receipt authenticity, "
+                    "solver outcome, external governance, or runtime authority."
+                ),
+            }
+        ],
+    )
+    receipt = build_magma_receipt(
+        event_id=projection_admission_event_id(document, embedding),
+        ts_utc=ts_utc,
+        risk_class="local_artifact",
+        payload=payload,
+        evaluation_result=evaluation,
+        solver_contract_digest=document["solver_contract_digest"],
+        payload_visibility="full_payload",
+        **context_digests,
+    )
+    return build_projection_receipt_proof(
+        document,
+        embedding,
+        evaluation_result=evaluation,
+        receipt=receipt,
+        receipt_context=context,
+    )
 
 
 def build_receipt_bound_projection_source_identity(

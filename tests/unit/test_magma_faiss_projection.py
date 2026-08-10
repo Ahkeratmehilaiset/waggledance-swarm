@@ -7,8 +7,6 @@ import pytest
 
 from waggledance.core.hex_cell_topology import ALL_CELLS
 from waggledance.core.magma import vector_projection as projection
-from waggledance.core.magma.evaluation_result import build_evaluation_result
-from waggledance.core.magma.receipt import build_magma_receipt
 
 
 SOURCE_DIGEST = "sha256:" + "1" * 64
@@ -72,47 +70,10 @@ def _embedding():
 def _receipt_proof(document=None, embedding=None):
     document = document or _document()
     embedding = embedding or _embedding()
-    payload = projection.build_projection_admission_payload(document, embedding)
-    evaluation = build_evaluation_result(
-        case_id="case:magma_faiss_projection:heat_loss",
-        subject_type="solver",
-        target_payload=payload,
-        risk_class="local_artifact",
-        expected_gate="allow",
-        actual_gate="allow",
-        verifier_path=[projection.PROJECTION_ADMISSION_EVALUATOR_VERSION],
-        solver_selection=[document["canonical_solver_id"]],
-        policy_version="policy:magma_faiss_projection:v1",
-        charter_version="charter:candidate_projection_only:v1",
-        domain_threshold_version="threshold:projection_contract:v1",
-        verdict="pass",
-        reason_codes=["magma:faiss:projection_contract_valid"],
-        confidence_score=1.0,
-        uncertainty_sources=[
-            {
-                "kind": "limited_evidence",
-                "detail": "This receipt proves local projection binding, not runtime utility.",
-            }
-        ],
-    )
-    receipt = build_magma_receipt(
-        event_id=projection.projection_admission_event_id(document, embedding),
-        ts_utc="2026-08-10T06:00:00Z",
-        risk_class="local_artifact",
-        payload=payload,
-        evaluation_result=evaluation,
-        policy_digest="sha256:" + "2" * 64,
-        charter_digest="sha256:" + "3" * 64,
-        rco_decision_digest="sha256:" + "4" * 64,
-        world_snapshot_digest="sha256:" + "5" * 64,
-        solver_contract_digest=document["solver_contract_digest"],
-        payload_visibility="full_payload",
-    )
-    return projection.build_projection_receipt_proof(
+    return projection.build_self_certified_projection_receipt_proof(
         document,
         embedding,
-        evaluation_result=evaluation,
-        receipt=receipt,
+        ts_utc="2026-08-10T06:00:00Z",
     )
 
 
@@ -258,6 +219,25 @@ def test_receipt_bound_source_identity_v2_is_fully_reverifiable() -> None:
         is False
     )
     assert validated["receipt_proof"]["payload"]["solver_outcome_verified"] is False
+    context = validated["receipt_proof"]["receipt_context"]
+    assert context["rco_decision_artifact"] == {
+        "schema_version": "magma.faiss.local_rco_status.v1",
+        "review_performed": False,
+        "decision": "not_evaluated",
+        "authority_granted": False,
+    }
+    assert validated["receipt_digest"] == projection.sha256_digest(
+        validated["receipt_proof"]["receipt"]
+    )
+    assert {
+        key: validated["receipt_proof"]["receipt"][key]
+        for key in (
+            "policy_digest",
+            "charter_digest",
+            "rco_decision_digest",
+            "world_snapshot_digest",
+        )
+    } == projection.projection_receipt_context_digests(context)
     assert projection.validate_projection_source_binding(
         document, validated, embedding
     ) == validated
@@ -310,6 +290,26 @@ def test_projection_receipt_proof_rejects_payload_and_receipt_tampering() -> Non
     with pytest.raises(ValueError, match="cannot claim an unverified"):
         projection.validate_projection_receipt_proof(
             fake_signature, document, embedding
+        )
+
+    invented_rco_approval = copy.deepcopy(proof)
+    invented_rco_approval["receipt_context"]["rco_decision_artifact"].update(
+        {
+            "review_performed": True,
+            "decision": "allow",
+            "authority_granted": True,
+        }
+    )
+    invented_rco_approval["proof_digest"] = projection.sha256_digest(
+        {
+            key: value
+            for key, value in invented_rco_approval.items()
+            if key != "proof_digest"
+        }
+    )
+    with pytest.raises(ValueError, match="explicitly non-authoritative"):
+        projection.validate_projection_receipt_proof(
+            invented_rco_approval, document, embedding
         )
 
 

@@ -870,7 +870,10 @@ def test_manifest_v2_mixed_v1_v2_round_trip(workspace):
     )
     assert loaded["receipt_bound_count"] == 1
     assert loaded["unreceipted_count"] == 1
-    assert loaded["receipt_evidence_reverified"] is True
+    assert loaded["receipt_structure_reverified"] is True
+    assert loaded["receipt_authenticity_verified"] is False
+    assert loaded["solver_outcome_verified"] is False
+    assert loaded["runtime_authority_granted"] is False
 
 
 def test_manifest_v1_backward_load_is_byte_stable(workspace):

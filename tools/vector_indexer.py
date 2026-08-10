@@ -1335,7 +1335,10 @@ def _load_verified_projection_directory(
         "unreceipted_count": len(rows) - receipt_bound_count,
         # Every v2 proof above was replayed through the deterministic admission
         # contract and cross-bound to this exact document/embedding generation.
-        "receipt_evidence_reverified": True,
+        "receipt_structure_reverified": True,
+        "receipt_authenticity_verified": False,
+        "solver_outcome_verified": False,
+        "runtime_authority_granted": False,
     }
 
 

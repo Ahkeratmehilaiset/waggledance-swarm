@@ -237,6 +237,10 @@ def test_receipt_bound_source_identity_v2_is_fully_reverifiable() -> None:
     assert validated["receipt_proof_digest"] == proof["proof_digest"]
     assert validated["projection_digest"] == document["projection_digest"]
     assert validated["embedding_contract_digest"] == embedding["contract_digest"]
+    assert validated["receipt_authenticity_verified"] is False
+    assert validated["external_authority_artifacts_verified"] is False
+    assert validated["solver_outcome_verified"] is False
+    assert validated["runtime_authority_granted"] is False
     assert (
         validated["receipt_proof"]["payload"]["runtime_authority_granted"]
         is False
@@ -322,6 +326,18 @@ def test_source_identity_v2_rejects_forged_summaries_and_cross_contracts() -> No
     )
     with pytest.raises(ValueError, match="receipt digest mismatch"):
         projection.validate_projection_source_identity(forged)
+
+    false_authenticity = copy.deepcopy(identity)
+    false_authenticity["receipt_authenticity_verified"] = True
+    false_authenticity["identity_digest"] = projection.sha256_digest(
+        {
+            key: value
+            for key, value in false_authenticity.items()
+            if key != "identity_digest"
+        }
+    )
+    with pytest.raises(ValueError, match="cannot grant authority or authenticity"):
+        projection.validate_projection_source_identity(false_authenticity)
 
     other_embedding = projection.build_embedding_contract(
         model_id=embedding["model_id"],

@@ -8,7 +8,9 @@ All output is content-addressed beneath ``.codex-audit``.
 
 Physical indices are per live leaf cell, while candidate search remains global:
 each query searches every cell and results are merged deterministically.  Cell
-routing and runtime authority are deliberately outside this milestone.
+routing and runtime authority are deliberately outside this milestone. Receipt
+counts are structural provenance inventory, never authentication or solver-
+outcome evidence.
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 
 
 REQUEST_SCHEMA = "magma.faiss.candidate_request.v1"
-SNAPSHOT_SCHEMA = "magma.faiss.candidate_snapshot.v1"
+SNAPSHOT_SCHEMA = "magma.faiss.candidate_snapshot.v2"
 CELL_SCHEMA = "magma.faiss.candidate_cell.v1"
 ROW_SCHEMA = "magma.faiss.candidate_row.v1"
 SNAPSHOT_PREFIX = "faisscand_"
@@ -94,6 +96,9 @@ _SNAPSHOT_MANIFEST_KEYS = frozenset(
         "snapshot_id",
         "scope",
         "runtime_authority_ready",
+        "receipt_semantics",
+        "receipt_authenticity_verified",
+        "solver_outcome_verified",
         "cell_local_routing_evaluated",
         "chromosome_count",
         "chromosome_coverage_evaluated",
@@ -356,6 +361,15 @@ def _load_source_cells(request: CandidateRequest) -> list[dict[str, Any]]:
             expected_topology_digest=request.topology_digest,
             commit_id=commit_id,
         )
+        if (
+            result.get("receipt_structure_reverified") is not True
+            or result.get("receipt_authenticity_verified") is not False
+            or result.get("solver_outcome_verified") is not False
+            or result.get("runtime_authority_granted") is not False
+        ):
+            raise CandidateContractError(
+                "projection source receipt scope was not safely reverified"
+            )
         rows = sorted(
             result["documents"],
             key=lambda row: row["projection_document"]["canonical_solver_id"],
@@ -364,8 +378,10 @@ def _load_source_cells(request: CandidateRequest) -> list[dict[str, Any]]:
             document = vector_projection.validate_solver_contract_projection(
                 row["projection_document"]
             )
-            identity = vector_projection.validate_projection_source_identity(
-                row["source_identity"]
+            identity = vector_projection.validate_projection_source_binding(
+                document,
+                row["source_identity"],
+                request.embedding_contract,
             )
             solver_id = document["canonical_solver_id"]
             projection_id = document["projection_id"]
@@ -814,19 +830,24 @@ def search_verified_candidate(
     The caller must supply the result of :func:`load_verified_candidate_snapshot`.
     Each cell is searched for only its local top-k.  If FAISS reports a tie at a
     local cutoff, that cell is searched fully so solver-id tie breaking cannot
-    silently discard an equally scored candidate.
+    silently discard an equally scored candidate. A result exposes
+    ``receipt_bound=True`` only after the immutable source commits were reopened
+    and their embedded receipt structure was cross-validated. Receipt
+    authenticity, solver outcome, and runtime authority remain explicitly false.
     """
     if type(k) is not int or k <= 0:
         raise CandidateContractError("candidate search k must be a positive integer")
-    if type(verified) is not dict or frozenset(verified) not in {
-        frozenset({"manifest", "cells", "snapshot_dir"}),
-        frozenset({"manifest", "cells", "snapshot_dir", "source_commits_reverified"}),
-    }:
+    if type(verified) is not dict or frozenset(verified) != frozenset(
+        {"manifest", "cells", "snapshot_dir", "source_commits_reverified"}
+    ):
         raise CandidateContractError("candidate search input is not a verified snapshot")
     manifest = verified["manifest"]
     loaded_cells = verified["cells"]
     if type(manifest) is not dict or type(loaded_cells) is not list:
         raise CandidateContractError("candidate search input is invalid")
+    source_commits_reverified = verified["source_commits_reverified"]
+    if type(source_commits_reverified) is not bool:
+        raise CandidateContractError("candidate source verification state is invalid")
     dimension = manifest.get("embedding_contract", {}).get("dimension")
     if type(dimension) is not int or dimension <= 0:
         raise CandidateContractError("candidate search dimension is invalid")
@@ -893,16 +914,26 @@ def search_verified_candidate(
             candidates.append((float(score), solver_id, cell_id, row))
 
     candidates.sort(key=lambda item: (-item[0], item[1]))
-    return [
-        {
-            "canonical_solver_id": solver_id,
-            "cell_id": cell_id,
-            "projection_id": row["projection_id"],
-            "receipt_bound": row["receipt_bound"],
-            "score": score,
-        }
-        for score, solver_id, cell_id, row in candidates[:k]
-    ]
+    results: list[dict[str, Any]] = []
+    for score, solver_id, cell_id, row in candidates[:k]:
+        receipt_structure_reverified = (
+            source_commits_reverified and row["receipt_bound"] is True
+        )
+        results.append(
+            {
+                "canonical_solver_id": solver_id,
+                "cell_id": cell_id,
+                "projection_id": row["projection_id"],
+                "source_commit_reverified": source_commits_reverified,
+                "receipt_bound": receipt_structure_reverified,
+                "receipt_structure_reverified": receipt_structure_reverified,
+                "receipt_authenticity_verified": False,
+                "solver_outcome_verified": False,
+                "runtime_authority_granted": False,
+                "score": score,
+            }
+        )
+    return results
 
 
 def verify_persisted_parity(loaded_cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1024,12 +1055,18 @@ def load_verified_candidate_snapshot(
     if (
         manifest["scope"] != "candidate_only_no_runtime_authority"
         or manifest["runtime_authority_ready"] is not False
+        or manifest["receipt_semantics"]
+        != "self_certified_structure_only"
+        or manifest["receipt_authenticity_verified"] is not False
+        or manifest["solver_outcome_verified"] is not False
         or manifest["cell_local_routing_evaluated"] is not False
         or manifest["chromosome_count"] is not None
         or manifest["chromosome_coverage_evaluated"] is not False
         or manifest["gene_bank_ready"] is not False
     ):
-        raise CandidateContractError("candidate authority or genome posture is invalid")
+        raise CandidateContractError(
+            "candidate authority, receipt, or genome posture is invalid"
+        )
     embedding = vector_projection.validate_embedding_contract(manifest["embedding_contract"])
     provider_identity = _require_exact_keys(
         manifest["embedding_provider_identity"],
@@ -1359,6 +1396,9 @@ def materialize_candidate(
             "schema_version": SNAPSHOT_SCHEMA,
             "scope": "candidate_only_no_runtime_authority",
             "runtime_authority_ready": False,
+            "receipt_semantics": "self_certified_structure_only",
+            "receipt_authenticity_verified": False,
+            "solver_outcome_verified": False,
             "cell_local_routing_evaluated": False,
             "chromosome_count": None,
             "chromosome_coverage_evaluated": False,

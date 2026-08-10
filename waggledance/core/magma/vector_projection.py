@@ -29,9 +29,9 @@ PROJECTION_SOURCE_IDENTITY_VERSION = PROJECTION_SOURCE_IDENTITY_V1_VERSION
 PROJECTION_SOURCE_IDENTITY_VERSIONS = frozenset(
     {PROJECTION_SOURCE_IDENTITY_V1_VERSION, PROJECTION_SOURCE_IDENTITY_V2_VERSION}
 )
-PROJECTION_RECEIPT_PROOF_VERSION = "magma.faiss.projection_receipt_proof.v1"
+PROJECTION_RECEIPT_PROOF_VERSION = "magma.faiss.projection_receipt_proof.v2"
 PROJECTION_ADMISSION_PAYLOAD_VERSION = (
-    "magma.faiss.projection_admission_payload.v1"
+    "magma.faiss.projection_admission_payload.v2"
 )
 PROJECTION_ADMISSION_EVALUATOR_VERSION = (
     "magma.faiss.projection_admission_evaluator.v1"
@@ -46,6 +46,7 @@ PROJECTION_ADMISSION_EVALUATOR_SPEC = {
         "projection_receipt_payload",
         "evaluation_result_binding",
         "magma_receipt_binding",
+        "self_certified_receipt_scope",
         "candidate_only_authority",
     ],
 }
@@ -130,6 +131,10 @@ _SOURCE_IDENTITY_V2_KEYS = frozenset(
         "receipt_digest",
         "receipt_proof_digest",
         "receipt_bound",
+        "receipt_authenticity_verified",
+        "external_authority_artifacts_verified",
+        "solver_outcome_verified",
+        "runtime_authority_granted",
         "receipt_proof",
         "identity_digest",
     }
@@ -151,6 +156,7 @@ _PROJECTION_ADMISSION_PAYLOAD_KEYS = frozenset(
         "embedding_contract_digest",
         "admission_evaluator_contract_digest",
         "authority_scope",
+        "receipt_authenticity_verified",
         "runtime_authority_granted",
         "external_authority_artifacts_verified",
         "solver_outcome_verified",
@@ -556,6 +562,7 @@ def build_projection_admission_payload(
         "embedding_contract_digest": embedding["contract_digest"],
         "admission_evaluator_contract_digest": PROJECTION_ADMISSION_EVALUATOR_DIGEST,
         "authority_scope": "candidate_projection_only",
+        "receipt_authenticity_verified": False,
         "runtime_authority_granted": False,
         "external_authority_artifacts_verified": False,
         "solver_outcome_verified": False,
@@ -638,6 +645,7 @@ def _validate_projection_receipt_proof_against_payload(
     )
     if (
         payload != expected_payload
+        or payload["receipt_authenticity_verified"] is not False
         or payload["runtime_authority_granted"] is not False
         or payload["external_authority_artifacts_verified"] is not False
         or payload["solver_outcome_verified"] is not False
@@ -722,7 +730,13 @@ def build_receipt_bound_projection_source_identity(
     embedding_contract: Mapping[str, Any],
     receipt_proof: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Build v2 only from a complete, internally verified receipt proof."""
+    """Build v2 from a structurally verified, self-certified receipt proof.
+
+    ``receipt_bound`` means that the exact local receipt envelope is embedded
+    and re-derivable. It never means that an external authority authenticated
+    the receipt, that solver output was evaluated, or that runtime use is
+    authorized; those negative capabilities are explicit top-level fields.
+    """
     document = validate_solver_contract_projection(projection_document)
     embedding = validate_embedding_contract(embedding_contract)
     proof = validate_projection_receipt_proof(
@@ -743,6 +757,10 @@ def build_receipt_bound_projection_source_identity(
         "receipt_digest": sha256_digest(receipt),
         "receipt_proof_digest": proof["proof_digest"],
         "receipt_bound": True,
+        "receipt_authenticity_verified": False,
+        "external_authority_artifacts_verified": False,
+        "solver_outcome_verified": False,
+        "runtime_authority_granted": False,
         "receipt_proof": proof,
         "identity_digest": "",
     }
@@ -839,6 +857,7 @@ def _validate_projection_source_identity_v2(
         "embedding_contract_digest": embedding_digest,
         "admission_evaluator_contract_digest": PROJECTION_ADMISSION_EVALUATOR_DIGEST,
         "authority_scope": "candidate_projection_only",
+        "receipt_authenticity_verified": False,
         "runtime_authority_granted": False,
         "external_authority_artifacts_verified": False,
         "solver_outcome_verified": False,
@@ -859,6 +878,13 @@ def _validate_projection_source_identity_v2(
     )
     if identity["receipt_bound"] is not True:
         raise ValueError("source_identity.v2 must be receipt-bound")
+    if (
+        identity["receipt_authenticity_verified"] is not False
+        or identity["external_authority_artifacts_verified"] is not False
+        or identity["solver_outcome_verified"] is not False
+        or identity["runtime_authority_granted"] is not False
+    ):
+        raise ValueError("source_identity.v2 cannot grant authority or authenticity")
     if event_id != receipt["event_id"]:
         raise ValueError("source identity receipt event mismatch")
     if receipt_digest != sha256_digest(receipt):

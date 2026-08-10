@@ -332,6 +332,9 @@ def test_materializes_verified_global_candidate_and_is_idempotent(tmp_path: Path
     assert manifest["total_vector_count"] == 2
     assert manifest["unreceipted_count"] == 2
     assert manifest["runtime_authority_ready"] is False
+    assert manifest["receipt_semantics"] == "self_certified_structure_only"
+    assert manifest["receipt_authenticity_verified"] is False
+    assert manifest["solver_outcome_verified"] is False
     assert manifest["cell_local_routing_evaluated"] is False
     assert manifest["chromosome_count"] is None
     assert manifest["gene_bank_ready"] is False
@@ -564,6 +567,37 @@ def test_persisted_catalog_verification_claim_fails_closed(tmp_path: Path) -> No
         )
 
 
+def test_persisted_receipt_authenticity_claim_fails_closed(tmp_path: Path) -> None:
+    request, _request_path = _request_fixture(tmp_path)
+    output_root = candidate.resolve_candidate_root(
+        ".codex-audit/receipt-authenticity-claim", repo_root=tmp_path
+    )
+    report = candidate.materialize_candidate(
+        request,
+        output_root=output_root,
+        embedder=_FakeEmbedder(),
+        faiss_module=_FakeFaiss,
+    )
+    manifest_path = Path(report["snapshot_path"]) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["receipt_authenticity_verified"] = True
+    new_snapshot_id = candidate.SNAPSHOT_PREFIX + candidate.sha256_digest(
+        candidate._snapshot_identity(manifest)
+    ).split(":", 1)[1]
+    manifest["snapshot_id"] = new_snapshot_id
+    manifest_path.write_bytes(candidate._canonical_json_line(manifest))
+    rewritten_snapshot = manifest_path.parent.with_name(new_snapshot_id)
+    manifest_path.parent.rename(rewritten_snapshot)
+
+    with pytest.raises(
+        candidate.CandidateContractError,
+        match="authority, receipt, or genome posture is invalid",
+    ):
+        candidate.load_verified_candidate_snapshot(
+            rewritten_snapshot, faiss_module=_FakeFaiss
+        )
+
+
 def test_deserialized_index_must_actually_be_index_flat_ip(tmp_path: Path) -> None:
     request, _request_path = _request_fixture(tmp_path)
     output_root = candidate.resolve_candidate_root(
@@ -695,6 +729,12 @@ def test_verified_top_k_search_matches_global_numpy_and_reverifies_sources(
     assert [row["score"] for row in results] == pytest.approx(
         [score for score, _solver_id in expected], abs=1.0e-6
     )
+    assert all(row["source_commit_reverified"] is True for row in results)
+    assert all(row["receipt_bound"] is False for row in results)
+    assert all(row["receipt_structure_reverified"] is False for row in results)
+    assert all(row["receipt_authenticity_verified"] is False for row in results)
+    assert all(row["solver_outcome_verified"] is False for row in results)
+    assert all(row["runtime_authority_granted"] is False for row in results)
 
 
 def test_verified_top_k_expands_cutoff_ties_before_solver_id_merge() -> None:
@@ -725,6 +765,67 @@ def test_verified_top_k_expands_cutoff_ties_before_solver_id_merge() -> None:
     )
 
     assert [row["canonical_solver_id"] for row in results] == ["alpha"]
+
+
+@pytest.mark.parametrize(
+    ("source_reverified", "expected_receipt_bound"),
+    [(False, False), (True, True)],
+)
+def test_search_receipt_claim_requires_source_commit_reverification(
+    source_reverified, expected_receipt_bound
+) -> None:
+    index = _ReverseTieIndex(2)
+    index.add(np.asarray([[1.0, 0.0]], dtype=np.float32))
+    verified = {
+        "manifest": {"embedding_contract": {"dimension": 2}},
+        "cells": [
+            {
+                "manifest": {"cell_id": "energy"},
+                "rows": [
+                    {
+                        "canonical_solver_id": "alpha",
+                        "projection_id": "sha256:" + "a" * 64,
+                        "receipt_bound": True,
+                    }
+                ],
+                "index": index,
+            }
+        ],
+        "snapshot_dir": Path("unused"),
+        "source_commits_reverified": source_reverified,
+    }
+
+    [result] = candidate.search_verified_candidate(
+        verified, np.asarray([1.0, 0.0], dtype=np.float32), k=1
+    )
+
+    assert result["source_commit_reverified"] is source_reverified
+    assert result["receipt_bound"] is expected_receipt_bound
+    assert result["receipt_structure_reverified"] is expected_receipt_bound
+    assert result["receipt_authenticity_verified"] is False
+    assert result["solver_outcome_verified"] is False
+    assert result["runtime_authority_granted"] is False
+
+
+def test_search_rejects_missing_or_non_boolean_source_verification_state() -> None:
+    verified = {
+        "manifest": {"embedding_contract": {"dimension": 2}},
+        "cells": [],
+        "snapshot_dir": Path("unused"),
+        "source_commits_reverified": False,
+    }
+    without_state = dict(verified)
+    del without_state["source_commits_reverified"]
+    with pytest.raises(candidate.CandidateContractError, match="verified snapshot"):
+        candidate.search_verified_candidate(
+            without_state, np.asarray([1.0, 0.0], dtype=np.float32), k=1
+        )
+
+    invalid_state = {**verified, "source_commits_reverified": 1}
+    with pytest.raises(candidate.CandidateContractError, match="verification state"):
+        candidate.search_verified_candidate(
+            invalid_state, np.asarray([1.0, 0.0], dtype=np.float32), k=1
+        )
 
 
 def test_expected_request_rejects_changed_projection_source(tmp_path: Path) -> None:

@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     _default_production_liveness_suppression_config,
+    _is_ack_event,
     _load_production_liveness_suppression_config,
     read_events,
     recommend_next_action,
@@ -1415,6 +1416,8 @@ def _has_later_rco_response(
     head = str(candidate.get("head") or "").lower()
 
     for event in events[after_index + 1:]:
+        if _is_ack_event(event):
+            continue
         event_task_id = str(event.get("task_id") or "")
         event_agent = str(event.get("agent") or "")
         status = str(event.get("status") or "").lower()

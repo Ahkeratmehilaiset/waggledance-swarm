@@ -99,7 +99,10 @@ function Read-BridgeEventObjects {
     } else {
         @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
     }
+    $appendIndex = 0L
     foreach ($line in $lines) {
+        $currentAppendIndex = $appendIndex
+        $appendIndex += 1
         if (-not $line) { continue }
         try {
             $obj = $line | ConvertFrom-Json -ErrorAction Stop
@@ -116,6 +119,8 @@ function Read-BridgeEventObjects {
                 $null -ne $obj.PSObject.Properties['task_id'] -and
                 $null -ne $obj.PSObject.Properties['agent']
             ) {
+                $obj | Add-Member -NotePropertyName '_bridge_append_index' `
+                    -NotePropertyValue $currentAppendIndex -Force
                 [void]$items.Add($obj)
             }
         } catch {}
@@ -165,7 +170,7 @@ $requestsForAgent = @(
             -not (Test-BridgeFollowNudgeRequest -Event $_) -and
             (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent)
         } |
-        Sort-Object ts_utc
+        Sort-Object { Get-BridgeEventUtcSortKey -Event $_ }
 )
 
 $freshRequestsForAgent = New-Object System.Collections.Generic.List[object]
@@ -187,7 +192,7 @@ function Test-BridgeRequestStillOpen {
             Where-Object {
                 [string]$_.agent -eq $Agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
-                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
+                (Test-BridgeEventAfter -Event $_ -Reference $Request) -and
                 (Test-BridgeAnswerEvent -Event $_)
             } |
             Select-Object -First 1
@@ -198,8 +203,9 @@ function Test-BridgeRequestStillOpen {
             Where-Object {
                 [string]$_.agent -eq [string]$Request.agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
-                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
-                (Test-BridgeRequesterClosureEvent -Event $_)
+                (Test-BridgeEventAfter -Event $_ -Reference $Request) -and
+                (Test-BridgeRequesterClosureEvent -Event $_) -and
+                (Test-BridgeRequesterIdentityMatch -Request $Request -Closure $_)
             } |
             Select-Object -First 1
     )

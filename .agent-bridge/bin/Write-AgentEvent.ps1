@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
-    [Parameter(Mandatory)] [ValidateSet('status','intent','claim','release','message','finding','decision','test','blocked','handoff','done','heartbeat','wake_request','liveness')] [string] $Type,
+    [Parameter(Mandatory)] [AllowEmptyString()] [string] $Type,
     [string] $TaskId = '',
     [string] $Status = '',
     [string] $Message = '',
@@ -41,6 +41,14 @@ function Assert-NoPrivateMarker {
     }
 }
 
+if ([string]::IsNullOrWhiteSpace($Type)) {
+    throw "Bridge event type must be a non-empty string"
+}
+if ($Type.IndexOf([char]13) -ge 0 -or $Type.IndexOf([char]10) -ge 0) {
+    throw "Bridge event type must be a single-line string"
+}
+
+Assert-NoPrivateMarker -Label 'type' -Value $Type
 Assert-NoPrivateMarker -Label 'task_id' -Value $TaskId
 Assert-NoPrivateMarker -Label 'status' -Value $Status
 Assert-NoPrivateMarker -Label 'severity' -Value $Severity
@@ -130,7 +138,74 @@ foreach ($capability in @($Capabilities)) {
 Assert-BridgeAgentTargets -Targets $To
 
 $taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
-$ackStatuses = @('acknowledged', 'received', 'seen')
+$ackStatusTokens = @('ack', 'acknowledged', 'received', 'seen')
+$knownEventTypes = @(
+    'blocked','claim','decision','done','finding','handoff','heartbeat',
+    'intent','liveness','message','release','status','test','wake_request',
+    'peer_review_request','simulation_open','sandbox_drop'
+)
+$openRequestStatusTokens = @(
+    'active','blocked','missing','needed','open','proposal','pushed','ready',
+    'request','requested','required'
+)
+$responseOnlyStatusTokens = @(
+    'accepted','ack','acknowledged','answered','approved','closed','done',
+    'merged','observed','pass','received','reported','resolved','seen',
+    'superseded','validated','verified'
+)
+$closedRequestStatuses = @(
+    'accepted','acknowledged','answered','approved','autonomous_merge_receipt',
+    'changes_requested_retracted','changes_requested_resolved',
+    'changes_requested_withdrawn','closed','done','finding_retracted',
+    'finding_withdrawn','merged','received','reported','resolved','retracted',
+    'rco_finding_retracted','rco_finding_withdrawn','seen','superseded',
+    'validated','verified','withdrawn'
+)
+
+function Test-BridgeAckStatus {
+    param([AllowEmptyString()] [string] $Value)
+
+    $tokens = @(
+        ($Value.ToLowerInvariant() -split '[^a-z0-9]+') |
+            Where-Object { $_ }
+    )
+    return @(
+        $tokens | Where-Object { $ackStatusTokens -contains $_ }
+    ).Count -gt 0
+}
+
+function Test-BridgeOpenRequestStatus {
+    param([AllowEmptyString()] [string] $Value)
+
+    $normalized = $Value.ToLowerInvariant()
+    if ($closedRequestStatuses -contains $normalized) { return $false }
+    if (Test-BridgeAckStatus -Value $Value) { return $false }
+    $tokens = @(
+        ($normalized -split '[^a-z0-9]+') |
+            Where-Object { $_ }
+    )
+    if (@($tokens | Where-Object {
+        $openRequestStatusTokens -contains $_
+    }).Count -eq 0) { return $false }
+    if (
+        ($tokens -contains 'not') -or
+        @($tokens | Where-Object {
+            @('required','needed','missing') -contains $_
+        }).Count -gt 0
+    ) { return $true }
+    if (
+        @($tokens | Where-Object {
+            @('request','requested') -contains $_
+        }).Count -gt 0 -and
+        @($tokens | Where-Object {
+            $_ -ne 'pass' -and $responseOnlyStatusTokens -contains $_
+        }).Count -eq 0
+    ) { return $true }
+    return @($tokens | Where-Object {
+        $responseOnlyStatusTokens -contains $_
+    }).Count -eq 0
+}
+
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
 $rcoReviewAgents = @('claude-rco-1', 'claude-rco-2')
@@ -143,13 +218,21 @@ $fullGitShaPattern = '^[0-9a-f]{40}$'
 $bridgeTaskBindingPattern = '^[A-Za-z0-9._/-]{1,180}$'
 # Keep this guard in lock-step with waggledance/core/bridge_event_schema.py.
 # It must run before any bridge file I/O so invalid events fail closed.
+$isDirectedCustomRequest = (
+    ($knownEventTypes -notcontains $Type) -and
+    -not [string]::IsNullOrWhiteSpace($To) -and
+    (Test-BridgeOpenRequestStatus -Value $Status)
+)
 $requiresTaskId = (
     ($taskIdRequiredTypes -contains $Type) -or
-    (($Type -eq 'message') -and ($ackStatuses -contains $Status))
+    (Test-BridgeAckStatus -Value $Status) -or
+    $isDirectedCustomRequest
 )
 if ($requiresTaskId -and [string]::IsNullOrWhiteSpace($TaskId)) {
-    $reason = if ($Type -eq 'message') {
-        "type=message status=$Status"
+    $reason = if ($isDirectedCustomRequest) {
+        "directed custom request type=$Type status=$Status"
+    } elseif (Test-BridgeAckStatus -Value $Status) {
+        "type=$Type status=$Status"
     } else {
         "type=$Type"
     }
@@ -549,7 +632,7 @@ function Test-BridgeSubstantiveTargetActivity {
     if ($seenType -in @('heartbeat', 'liveness', 'wake_request')) {
         return $false
     }
-    if (($seenType -eq 'message') -and ($ackStatuses -contains $seenStatus)) {
+    if (Test-BridgeAckStatus -Value $seenStatus) {
         return $false
     }
     return $true

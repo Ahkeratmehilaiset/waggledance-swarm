@@ -2417,6 +2417,14 @@ def test_negative_requester_statuses_do_not_close_canonical_request(
                 status="approved_failure",
                 message="Failure suffix contradicts approved.",
             ),
+            _event(
+                ts_utc="2026-05-17T11:26:00Z",
+                agent="codex-lead-1",
+                type="decision",
+                task_id=task_id,
+                status="superseded_requested",
+                message="A requested suffix contradicts supersession.",
+            ),
         ]
     )
 
@@ -2430,7 +2438,9 @@ def test_negative_requester_statuses_do_not_close_canonical_request(
     [
         ("decision", "completed"),
         ("decision", "cancelled"),
-        ("decision", "superseded_requested"),
+        ("status", "superseded"),
+        ("status", "changes_requested_resolved"),
+        ("decision", "rco_finding_withdrawn"),
         ("message", "cancelled_by_requester"),
     ],
 )
@@ -2454,6 +2464,192 @@ def test_exact_positive_requester_closure_shapes_close_canonical_request(
     report = _run(tmp_path, _base_idle_events() + [request, closure])
 
     assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "received"),
+        ("message", "seen"),
+        ("message", "acknowledged"),
+        ("message", "wake_ack"),
+        ("message", "ack"),
+        ("message", "received_with_context"),
+        ("done", "done_received"),
+        ("done", "request"),
+    ],
+)
+def test_legacy_rco_target_ack_or_request_does_not_close(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
+    task_id = f"legacy-rco-non-answer-{event_type}-{status}"
+    request = _event(
+        ts_utc="2026-05-17T10:00:00Z",
+        agent="codex-lead-1",
+        type="handoff",
+        task_id=task_id,
+        status="rco_requested",
+        to="claude-rco-1",
+        message="Legacy RCO review requested.",
+    )
+    non_answer = _event(
+        ts_utc="2026-05-17T10:10:00Z",
+        agent="claude-rco-1",
+        type=event_type,
+        task_id=task_id,
+        status=status,
+        to="codex-lead-1",
+        message="Receipt or a follow-up request is not a substantive answer.",
+    )
+
+    report = _run(tmp_path, _base_idle_events() + [request, non_answer])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == [task_id]
+
+
+@pytest.mark.parametrize(
+    ("request_identity", "closure_identity", "is_closed"),
+    [
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-stale-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "99999999-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {},
+            False,
+        ),
+        (
+            {},
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+    ],
+)
+def test_requester_closure_binds_to_idle_request_identity(
+    tmp_path: Path,
+    request_identity: dict[str, str],
+    closure_identity: dict[str, str],
+    is_closed: bool,
+) -> None:
+    task_id = "canonical-requester-identity-binding"
+    request = _canonical_rco_request(
+        task_id=task_id,
+        head="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    request.update(request_identity)
+    closure = _event(
+        ts_utc="2026-05-17T11:05:00Z",
+        agent="codex-lead-1",
+        type="status",
+        task_id=task_id,
+        status="superseded",
+        message="Requester emitted terminal closure.",
+    )
+    closure.update(closure_identity)
+
+    report = _run(tmp_path, _base_idle_events() + [request, closure])
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == (
+        [] if is_closed else [task_id]
+    )
+
+
+@pytest.mark.parametrize("reverse_append", [False, True])
+def test_idle_requester_closure_orders_adjacent_100ns_ticks(
+    tmp_path: Path,
+    reverse_append: bool,
+) -> None:
+    task_id = "idle-adjacent-100ns"
+    request = _canonical_rco_request(
+        task_id=task_id,
+        head="b" * 40,
+        ts_utc="2026-05-17T11:00:00.0000001Z",
+    )
+    closure = _event(
+        ts_utc="2026-05-17T11:00:00.0000002Z",
+        agent="codex-lead-1",
+        type="status",
+        task_id=task_id,
+        status="superseded",
+        to="claude-rco-1",
+        message="Requester closed the exact-head review.",
+    )
+    ordered = [closure, request] if reverse_append else [request, closure]
+
+    report = _run(tmp_path, _base_idle_events() + ordered)
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("closure_first", "expected_open"),
+    [(False, False), (True, True)],
+)
+def test_idle_equal_timestamp_uses_append_order(
+    tmp_path: Path,
+    closure_first: bool,
+    expected_open: bool,
+) -> None:
+    task_id = "idle-equal-timestamp-append-order"
+    request = _canonical_rco_request(
+        task_id=task_id,
+        head="c" * 40,
+        ts_utc="2026-05-17T11:00:00.0000001Z",
+    )
+    closure = _event(
+        ts_utc="2026-05-17T11:00:00.0000001Z",
+        agent="codex-lead-1",
+        type="status",
+        task_id=task_id,
+        status="superseded",
+        to="claude-rco-1",
+        message="Requester closeout at the same timestamp.",
+    )
+    ordered = [closure, request] if closure_first else [request, closure]
+
+    report = _run(tmp_path, _base_idle_events() + ordered)
+
+    assert report["criteria"]["open_rco_requests"]["task_ids"] == (
+        [task_id] if expected_open else []
+    )
 
 
 def test_canonical_response_requires_strict_raw_head_type_and_status(

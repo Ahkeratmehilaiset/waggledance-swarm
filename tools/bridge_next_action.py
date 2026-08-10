@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import json
 import math
@@ -24,7 +25,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
+from waggledance.core.bridge_event_schema import (  # noqa: E402
+    CLOSED_REQUEST_STATUSES as BRIDGE_CLOSED_REQUEST_STATUSES,
+    KNOWN_ACK_STATUSES,
+    KNOWN_EVENT_TYPES,
+    OPEN_REQUEST_STATUS_TOKENS,
+    RESPONSE_ONLY_STATUS_TOKENS,
+    is_ack_status,
+    is_open_request_status,
+    is_response_only_status,
+)
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
 )
@@ -76,6 +86,7 @@ _LEGACY_BARE_CR_EVENT_FINGERPRINTS = (
 )
 REQUEST_TYPES = {
     "message",
+    "done",
     "finding",
     "handoff",
     "wake_request",
@@ -84,6 +95,7 @@ REQUEST_TYPES = {
     "sandbox_drop",
     "decision",
 }
+STANDARD_REQUEST_EVENT_TYPES = frozenset(KNOWN_EVENT_TYPES | REQUEST_TYPES)
 ANSWER_TYPES = {
     "message",
     "done",
@@ -94,43 +106,63 @@ ANSWER_TYPES = {
     "release",
     "handoff",
 }
-OPEN_STATUS_FRAGMENTS = (
-    "open",
-    "proposal",
-    "request",
-    "requested",
-    "required",
-    "needed",
-    "missing",
-    "ready",
-    "pushed",
-    "active",
-    "blocked",
+OPEN_STATUS_FRAGMENTS = tuple(sorted(OPEN_REQUEST_STATUS_TOKENS))
+CLOSED_REQUEST_STATUSES = BRIDGE_CLOSED_REQUEST_STATUSES
+REQUESTER_TERMINAL_EVENT_TYPES = frozenset(
+    {"status", "done", "release", "decision"}
 )
-CLOSED_REQUEST_STATUSES = frozenset(
+REQUESTER_TERMINAL_STATUS_STEMS = (
+    "done",
+    "closed",
+    "superseded",
+    "merged",
+    "abandoned",
+    "completed",
+    "approved",
+    "cancelled",
+    "canceled",
+)
+REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS = (
+    "closed",
+    "superseded",
+    "cancelled",
+    "canceled",
+)
+REQUESTER_EXPLICIT_TERMINAL_STATUSES = frozenset(
     {
-        "accepted",
-        *KNOWN_ACK_STATUSES,
-        "answered",
-        "approved",
-        "autonomous_merge_receipt",
         "changes_requested_retracted",
         "changes_requested_resolved",
         "changes_requested_withdrawn",
-        "closed",
-        "done",
         "finding_retracted",
         "finding_withdrawn",
-        "merged",
-        "reported",
-        "resolved",
-        "retracted",
+        "rco_closed_postmerge",
         "rco_finding_retracted",
         "rco_finding_withdrawn",
-        "superseded",
-        "validated",
-        "verified",
-        "withdrawn",
+    }
+)
+REQUESTER_NONTERMINAL_STATUS_TOKENS = frozenset(
+    {
+        "ack",
+        "acknowledged",
+        "cannot",
+        "failed",
+        "failure",
+        "incomplete",
+        "missing",
+        "needed",
+        "never",
+        "not",
+        "notyet",
+        "open",
+        "pending",
+        "progress",
+        "received",
+        "request",
+        "requested",
+        "required",
+        "seen",
+        "unresolved",
+        "working",
     }
 )
 ANSWER_STATUS_FRAGMENTS = (
@@ -152,25 +184,7 @@ ANSWER_STATUS_FRAGMENTS = (
     "validated",
     "verified",
 )
-RESPONSE_ONLY_STATUS_FRAGMENTS = (
-    "accepted",
-    "ack",
-    *tuple(sorted(KNOWN_ACK_STATUSES)),
-    "answered",
-    "approved",
-    "closed",
-    "done",
-    "merged",
-    "observed",
-    "pass",
-    "received",
-    "reported",
-    "resolved",
-    "seen",
-    "superseded",
-    "validated",
-    "verified",
-)
+RESPONSE_ONLY_STATUS_FRAGMENTS = tuple(sorted(RESPONSE_ONLY_STATUS_TOKENS))
 DEFAULT_STALE_REQUEST_REPORT_MAX_AGE_HOURS = 72.0
 DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES = 12.0
@@ -191,8 +205,7 @@ PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json
 TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
-PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
-TERMINAL_RECEIPT_AGENT_KEY = "terminal-receipt"
+REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
 
 
 class BridgeNextActionError(ValueError):
@@ -565,7 +578,12 @@ def recommend_next_action(
             }
         )
 
-    effective_now = now_utc or _latest_event_time(events) or datetime.now(timezone.utc)
+    ordered_events = _chronological_events(events)
+    effective_now = (
+        now_utc
+        or _latest_event_time(ordered_events)
+        or datetime.now(timezone.utc)
+    )
     active_claims, stale_claims = _split_active_and_stale_claims(
         claims,
         now_utc=effective_now,
@@ -576,14 +594,17 @@ def recommend_next_action(
         for claim in active_claims
         if claim.agent != agent and claim.mode == "write"
     ]
-    all_open_requests = _open_requests_for_agent(agent=agent, events=events)
+    all_open_requests = _open_requests_for_agent(
+        agent=agent,
+        events=ordered_events,
+    )
     open_request_events, stale_open_requests = _split_fresh_and_stale_requests(
         all_open_requests,
         now_utc=effective_now,
         max_age_hours=open_request_max_age_hours,
     )
     stale_suppression_index = _build_stale_incoming_suppression_index(
-        events,
+        ordered_events,
         agent=agent,
     )
     stale_open_requests = [
@@ -609,7 +630,7 @@ def recommend_next_action(
         production_liveness_suppressed_agents
     )
     production_liveness = _production_liveness_report(
-        events=events,
+        events=ordered_events,
         bridge_root=bridge_root,
         now_utc=effective_now,
         idle_warn_minutes=production_idle_warn_minutes,
@@ -777,47 +798,74 @@ def _open_requests_for_agent(
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
-    closure_index = _build_request_closure_index(events)
-    idle_progress_index = _build_idle_protocol_progress_index(events)
+    ordered_events = _chronological_events(events)
+    closure_index = _build_request_closure_index(ordered_events)
+    idle_progress_index = _build_idle_protocol_progress_index(ordered_events)
     requests = [
         event
-        for event in events
+        for event in ordered_events
         if _is_request_like(event) and _addressed_to(event, agent)
     ]
     open_requests: list[Mapping[str, Any]] = []
     for request in requests:
-        if _is_direct_rco_pass_block_request(agent=agent, event=request):
-            answered = _direct_rco_pass_block_request_closed(
-                request=request,
-                agent=agent,
-                events=events,
-            )
-        else:
-            answered = _request_closed_by_index(
-                request=request,
-                agent=agent,
-                closure_index=closure_index,
-            )
-        if not answered and _idle_protocol_progressed_by_index(
-            request,
-            idle_progress_index,
-        ):
-            answered = True
+        answered = _request_closed_for_agent(
+            request=request,
+            agent=agent,
+            events=ordered_events,
+            closure_index=closure_index,
+            idle_progress_index=idle_progress_index,
+        )
         if not answered:
             open_requests.append(request)
     return open_requests
 
 
+def _request_closed_for_agent(
+    *,
+    request: Mapping[str, Any],
+    agent: str,
+    events: Sequence[Mapping[str, Any]],
+    closure_index: Mapping[str, Mapping[str, EventOrderKey]],
+    idle_progress_index: Mapping[str, EventOrderKey],
+) -> bool:
+    """Apply the canonical target/requester/idle closure rules to one request."""
+    if _is_direct_rco_pass_block_request(agent=agent, event=request):
+        answered = _direct_rco_pass_block_request_closed(
+            request=request,
+            agent=agent,
+            events=events,
+        )
+    else:
+        answered = _request_closed_by_index(
+            request=request,
+            agent=agent,
+            closure_index=closure_index,
+        )
+    return answered or _idle_protocol_progressed_by_index(
+        request,
+        idle_progress_index,
+    )
+
+
+BRIDGE_APPEND_INDEX_FIELD = "_bridge_append_index"
+EventTimestampKey = tuple[datetime, Decimal]
+EventOrderKey = tuple[datetime, Decimal, int]
+
+
 def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, dict[str, str]]:
-    """Return latest answer-like event timestamps by task and closing agent."""
-    closure_index: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, EventOrderKey]]:
+    """Return target answers and requester-terminal timestamps by task."""
+    closure_index: dict[str, dict[str, EventOrderKey]] = {}
     for event in events:
-        if not _is_answer_like(event):
+        answer_like = _is_answer_like(event)
+        requester_terminal = _is_requester_terminal_closure(event)
+        if not answer_like and not requester_terminal:
             continue
         event_agent = _event_agent(event)
-        event_ts = _event_ts(event)
+        event_ts = _event_order_key(event)
+        if event_ts is None:
+            continue
         task_id = _task_id(event)
         if task_id:
             closure_keys = {_task_closure_key(task_id)}
@@ -828,17 +876,18 @@ def _build_request_closure_index(
             closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
             task_closures = closure_index.setdefault(closure_key, {})
-            if event_ts > task_closures.get(event_agent, ""):
+            if answer_like and event_ts > task_closures.get(
+                event_agent,
+                _minimum_event_order_key(),
+            ):
                 task_closures[event_agent] = event_ts
-            if _is_same_task_terminal_receipt(event):
-                if event_ts > task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, ""):
-                    task_closures[TERMINAL_RECEIPT_AGENT_KEY] = event_ts
-            if closure_key.startswith(
-                PR_CLOSURE_KEY_PREFIX
-            ) and _is_explicit_terminal_pr_closure(event):
-                terminal_agent = _pr_requester_terminal_agent_key(event_agent)
-                if event_ts > task_closures.get(terminal_agent, ""):
-                    task_closures[terminal_agent] = event_ts
+            if requester_terminal:
+                for terminal_agent in _requester_terminal_closure_keys(event):
+                    if event_ts > task_closures.get(
+                        terminal_agent,
+                        _minimum_event_order_key(),
+                    ):
+                        task_closures[terminal_agent] = event_ts
     return closure_index
 
 
@@ -846,10 +895,12 @@ def _request_closed_by_index(
     *,
     request: Mapping[str, Any],
     agent: str,
-    closure_index: Mapping[str, Mapping[str, str]],
+    closure_index: Mapping[str, Mapping[str, EventOrderKey]],
 ) -> bool:
     task_id = _task_id(request)
-    request_ts = _event_ts(request)
+    request_ts = _event_order_key(request)
+    if request_ts is None:
+        return False
     closure_keys = []
     if task_id:
         closure_keys.append(_task_closure_key(task_id))
@@ -865,22 +916,29 @@ def _request_closed_by_index(
         task_closures = closure_index.get(pr_closure_key, {})
         if task_closures:
             target_agent = agent.lower()
-            if task_closures.get(target_agent, "") > request_ts:
+            if task_closures.get(target_agent) and (
+                task_closures[target_agent] > request_ts
+            ):
                 return True
-            requester_terminal_agent = _pr_requester_terminal_agent_key(
-                _event_agent(request)
-            )
-            if task_closures.get(requester_terminal_agent, "") > request_ts:
+            requester_terminal_agent = _requester_terminal_request_key(request)
+            if task_closures.get(requester_terminal_agent) and (
+                task_closures[requester_terminal_agent] > request_ts
+            ):
                 return True
     for closure_key in closure_keys:
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
             continue
-        if task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, "") > request_ts:
+        target_agent = agent.lower()
+        if task_closures.get(target_agent) and (
+            task_closures[target_agent] > request_ts
+        ):
             return True
-        for closing_agent in {agent.lower(), _event_agent(request)}:
-            if task_closures.get(closing_agent, "") > request_ts:
-                return True
+        requester_terminal_agent = _requester_terminal_request_key(request)
+        if task_closures.get(requester_terminal_agent) and (
+            task_closures[requester_terminal_agent] > request_ts
+        ):
+            return True
     return False
 
 
@@ -918,23 +976,126 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) == "done"
-        or _event_status(event) in CLOSED_REQUEST_STATUSES
+def _is_requester_terminal_closure(event: Mapping[str, Any]) -> bool:
+    """Return whether an original requester explicitly closes its request."""
+    event_type = _event_type(event)
+    status = _event_status(event)
+    if not status:
+        return False
+    if event_type == "message":
+        stems = REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS
+    elif event_type in REQUESTER_TERMINAL_EVENT_TYPES:
+        stems = REQUESTER_TERMINAL_STATUS_STEMS
+    else:
+        return False
+    if (
+        event_type != "message"
+        and status in REQUESTER_EXPLICIT_TERMINAL_STATUSES
+    ):
+        return True
+    status_tokens = _status_tokens(status)
+    if status_tokens.intersection(REQUESTER_NONTERMINAL_STATUS_TOKENS):
+        return False
+    return any(
+        status == stem or status.startswith(f"{stem}_")
+        for stem in stems
     )
 
 
-def _is_same_task_terminal_receipt(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) == "decision"
-        and _event_status(event) == "autonomous_merge_receipt"
-        and bool(_task_id(event))
+def _requester_identity_value(
+    event: Mapping[str, Any],
+    field: str,
+    *,
+    lowercase: bool = False,
+) -> str:
+    value = str(event.get(field, "") or "").strip()
+    return value.lower() if lowercase else value
+
+
+def _requester_terminal_agent_key(
+    *,
+    agent: str,
+    agent_uuid: str = "",
+    session_id: str = "",
+) -> str:
+    identity = {
+        "agent": agent.lower(),
+        "agent_uuid": agent_uuid.lower(),
+        "session_id": session_id,
+    }
+    return REQUESTER_TERMINAL_AGENT_PREFIX + json.dumps(
+        identity,
+        separators=(",", ":"),
+        sort_keys=True,
     )
 
 
-def _pr_requester_terminal_agent_key(agent: str) -> str:
-    return f"{PR_REQUESTER_TERMINAL_AGENT_PREFIX}{agent}"
+def _requester_terminal_closure_keys(
+    event: Mapping[str, Any],
+) -> set[str]:
+    """Return aliases able to close legacy or identity-bound requests."""
+    agent = _event_agent(event)
+    agent_uuid = _requester_identity_value(
+        event,
+        "agent_uuid",
+        lowercase=True,
+    )
+    session_id = _requester_identity_value(event, "session_id")
+    identities = {("", "")}
+    if agent_uuid:
+        identities.add((agent_uuid, ""))
+    if session_id:
+        identities.add(("", session_id))
+    if agent_uuid and session_id:
+        identities.add((agent_uuid, session_id))
+    return {
+        _requester_terminal_agent_key(
+            agent=agent,
+            agent_uuid=identity_uuid,
+            session_id=identity_session,
+        )
+        for identity_uuid, identity_session in identities
+    }
+
+
+def _requester_terminal_request_key(request: Mapping[str, Any]) -> str:
+    """Return the most-specific requester key required by a request."""
+    return _requester_terminal_agent_key(
+        agent=_event_agent(request),
+        agent_uuid=_requester_identity_value(
+            request,
+            "agent_uuid",
+            lowercase=True,
+        ),
+        session_id=_requester_identity_value(request, "session_id"),
+    )
+
+
+def _requester_identity_matches(
+    request: Mapping[str, Any],
+    closure: Mapping[str, Any],
+) -> bool:
+    """Bind requester closeout to every identity field on the request."""
+    if _event_agent(request) != _event_agent(closure):
+        return False
+    request_uuid = _requester_identity_value(
+        request,
+        "agent_uuid",
+        lowercase=True,
+    )
+    if request_uuid and request_uuid != _requester_identity_value(
+        closure,
+        "agent_uuid",
+        lowercase=True,
+    ):
+        return False
+    request_session = _requester_identity_value(request, "session_id")
+    if request_session and request_session != _requester_identity_value(
+        closure,
+        "session_id",
+    ):
+        return False
+    return True
 
 
 def _deduplicate_repeated_wake_requests(
@@ -973,7 +1134,7 @@ def _closes_request_for_agent(
 ) -> bool:
     if _task_id(event) != _task_id(request):
         return False
-    if _event_ts(event) <= _event_ts(request):
+    if not _event_occurs_after(event, request):
         return False
     if not _is_answer_like(event):
         return False
@@ -1025,9 +1186,9 @@ def _build_stale_incoming_suppression_index(
     events: Sequence[Mapping[str, Any]],
     *,
     agent: str,
-) -> dict[str, str]:
+) -> dict[str, EventOrderKey]:
     """Return target-authored stale-sweep finding timestamps by stale task."""
-    suppression_index: dict[str, str] = {}
+    suppression_index: dict[str, EventOrderKey] = {}
     for event in events:
         if _event_agent(event) != agent:
             continue
@@ -1035,9 +1196,14 @@ def _build_stale_incoming_suppression_index(
             continue
         if "stale_incoming" not in _event_status(event):
             continue
-        event_ts = _event_ts(event)
+        event_ts = _event_order_key(event)
+        if event_ts is None:
+            continue
         for task_id in _stale_finding_task_ids(event):
-            if event_ts > suppression_index.get(task_id, ""):
+            if event_ts > suppression_index.get(
+                task_id,
+                _minimum_event_order_key(),
+            ):
                 suppression_index[task_id] = event_ts
     return suppression_index
 
@@ -1062,12 +1228,18 @@ def _stale_finding_task_ids(event: Mapping[str, Any]) -> set[str]:
 def _stale_request_suppressed_by_index(
     request: Mapping[str, Any],
     *,
-    stale_suppression_index: Mapping[str, str],
+    stale_suppression_index: Mapping[str, EventOrderKey],
 ) -> bool:
     task_id = _task_id(request)
     if not task_id:
         return False
-    return stale_suppression_index.get(task_id, "") > _event_ts(request)
+    request_ts = _event_order_key(request)
+    suppression_ts = stale_suppression_index.get(task_id)
+    return bool(
+        request_ts is not None
+        and suppression_ts is not None
+        and suppression_ts > request_ts
+    )
 
 
 def _split_active_and_stale_claims(
@@ -1112,13 +1284,15 @@ def _idle_protocol_progressed(
 
 def _build_idle_protocol_progress_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, str]:
-    progress_index: dict[str, str] = {}
+) -> dict[str, EventOrderKey]:
+    progress_index: dict[str, EventOrderKey] = {}
     for event in events:
         payload = _payload(event)
         if payload.get("protocol_version") != "idle-protocol.v1":
             continue
-        event_ts = _event_ts(event)
+        event_ts = _event_order_key(event)
+        if event_ts is None:
+            continue
         for field in (
             "responds_to",
             "consensus_target_proposal_id",
@@ -1126,14 +1300,17 @@ def _build_idle_protocol_progress_index(
             "rejected_event_id",
         ):
             proposal_id = str(payload.get(field) or "")
-            if proposal_id and event_ts > progress_index.get(proposal_id, ""):
+            if proposal_id and event_ts > progress_index.get(
+                proposal_id,
+                _minimum_event_order_key(),
+            ):
                 progress_index[proposal_id] = event_ts
     return progress_index
 
 
 def _idle_protocol_progressed_by_index(
     request: Mapping[str, Any],
-    progress_index: Mapping[str, str],
+    progress_index: Mapping[str, EventOrderKey],
 ) -> bool:
     payload = _payload(request)
     if payload.get("protocol_version") != "idle-protocol.v1":
@@ -1141,21 +1318,32 @@ def _idle_protocol_progressed_by_index(
     proposal_id = str(payload.get("proposal_id") or "")
     if not proposal_id:
         return False
-    request_ts = _event_ts(request)
-    return progress_index.get(proposal_id, "") > request_ts
+    request_ts = _event_order_key(request)
+    progress_ts = progress_index.get(proposal_id)
+    return bool(
+        request_ts is not None
+        and progress_ts is not None
+        and progress_ts > request_ts
+    )
+
+
+def _is_ack_event(event: Mapping[str, Any]) -> bool:
+    return is_ack_status(_event_status(event))
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
     if _is_bridge_follow_nudge(event):
         return False
+    if _is_ack_event(event):
+        return False
+    if _event_type(event) in {"heartbeat", "liveness"}:
+        return False
     status = _event_status(event)
-    if _is_closed_request_status(status):
+    if not is_open_request_status(status):
         return False
-    if _is_response_only_status(status):
-        return False
-    return _event_type(event) in REQUEST_TYPES and _status_has_any(
-        status, OPEN_STATUS_FRAGMENTS
-    )
+    if _event_type(event) in REQUEST_TYPES:
+        return True
+    return bool(_task_id(event) and _event_recipients(event))
 
 
 def _is_bridge_follow_nudge(event: Mapping[str, Any]) -> bool:
@@ -1220,14 +1408,16 @@ def _direct_rco_pass_block_request_closed(
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> bool:
-    request_ts = _event_ts(request)
+    request_ts = _event_order_key(request)
+    if request_ts is None:
+        return False
     request_task_id = _task_id(request)
     request_pr_key = _pr_closure_key_for_event(request)
     requester = _event_agent(request)
     target = agent.lower()
     for event in events:
-        event_ts = _event_ts(event)
-        if event_ts <= request_ts:
+        event_ts = _event_order_key(event)
+        if event_ts is None or event_ts <= request_ts:
             continue
         same_task = bool(request_task_id and _task_id(event) == request_task_id)
         event_pr_key = _pr_closure_key_for_event(event)
@@ -1237,16 +1427,17 @@ def _direct_rco_pass_block_request_closed(
         event_agent = _event_agent(event)
         if event_agent == target and _is_substantive_rco_pass_block_response(event):
             return True
-        if event_agent == requester and _is_explicit_terminal_pr_closure(event):
+        if (
+            event_agent == requester
+            and _is_requester_terminal_closure(event)
+            and _requester_identity_matches(request, event)
+        ):
             return True
     return False
 
 
 def _is_substantive_rco_pass_block_response(event: Mapping[str, Any]) -> bool:
-    status_tokens = _status_tokens(_event_status(event))
-    if status_tokens.intersection(KNOWN_ACK_STATUSES) or {"wake", "ack"}.issubset(
-        status_tokens
-    ):
+    if _is_ack_event(event):
         return False
     if _event_type(event) == "finding":
         return True
@@ -1302,14 +1493,33 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
 
 
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
-    if _event_type(event) == "done":
-        return True
+    if _is_ack_event(event):
+        return False
+    event_type = _event_type(event)
     status = _event_status(event)
-    return _event_type(event) in ANSWER_TYPES and (
+    if event_type in {"heartbeat", "intent", "liveness", "status", "wake_request"}:
+        return False
+    request_like = _is_request_like(event)
+    if request_like and event_type in STANDARD_REQUEST_EVENT_TYPES:
+        return False
+    if event_type == "done":
+        return True
+    if event_type in ANSWER_TYPES and (
         status in CLOSED_REQUEST_STATUSES
         or _is_response_only_status(status)
         or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
-    )
+    ):
+        return True
+    if request_like:
+        # Accepted ADR 020 keeps unknown/custom directed open events
+        # polymorphic: they may answer prior work while opening reciprocal work.
+        return True
+    if _status_has_any(status, OPEN_STATUS_FRAGMENTS) and not _status_has_any(
+        status,
+        ANSWER_STATUS_FRAGMENTS,
+    ):
+        return False
+    return bool(event_type)
 
 
 def _is_closed_request_status(status: str) -> bool:
@@ -1322,14 +1532,7 @@ def _status_has_any(status: str, candidates: Sequence[str]) -> bool:
 
 
 def _is_response_only_status(status: str) -> bool:
-    tokens = _status_tokens(status)
-    if "not" in tokens or tokens.intersection({"required", "needed", "missing"}):
-        return False
-    if tokens.intersection({"request", "requested"}) and not tokens.intersection(
-        set(RESPONSE_ONLY_STATUS_FRAGMENTS) - {"pass"}
-    ):
-        return False
-    return any(candidate in tokens for candidate in RESPONSE_ONLY_STATUS_FRAGMENTS)
+    return is_response_only_status(status)
 
 
 def _status_tokens(status: str) -> set[str]:
@@ -1430,6 +1633,82 @@ def _event_type(event: Mapping[str, Any]) -> str:
 
 def _event_ts(event: Mapping[str, Any]) -> str:
     return str(event.get("ts_utc") or event.get("timestamp") or "")
+
+
+def _event_datetime(event: Mapping[str, Any]) -> datetime | None:
+    return _parse_utc(_event_ts(event))
+
+
+def _timestamp_order_key(value: str) -> EventTimestampKey | None:
+    parsed = _parse_utc(value)
+    if parsed is None:
+        return None
+    text = str(value or "").strip()
+    match = re.search(
+        r"\.(\d+)(?=(?:Z|[+-]\d{2}:\d{2})?$)",
+        text,
+    )
+    fraction = match.group(1) if match else ""
+    submicrosecond = (
+        Decimal(f"0.{fraction[6:]}")
+        if len(fraction) > 6
+        else Decimal(0)
+    )
+    return parsed, submicrosecond
+
+
+def _event_order_key(event: Mapping[str, Any]) -> EventOrderKey | None:
+    timestamp = _timestamp_order_key(_event_ts(event))
+    if timestamp is None:
+        return None
+    append_index = event.get(BRIDGE_APPEND_INDEX_FIELD, -1)
+    if type(append_index) is not int or append_index < 0:
+        append_index = -1
+    return timestamp[0], timestamp[1], append_index
+
+
+def _minimum_event_order_key() -> EventOrderKey:
+    return datetime.min.replace(tzinfo=timezone.utc), Decimal(0), -1
+
+
+def _event_occurs_after(
+    event: Mapping[str, Any],
+    reference: Mapping[str, Any],
+) -> bool:
+    event_ts = _event_order_key(event)
+    reference_ts = _event_order_key(reference)
+    return bool(
+        event_ts is not None
+        and reference_ts is not None
+        and event_ts > reference_ts
+    )
+
+
+def _chronological_events(
+    events: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Sort by parsed UTC, preserving append order for equal timestamps."""
+    invalid_time: EventTimestampKey = (
+        datetime.max.replace(tzinfo=timezone.utc),
+        Decimal(0),
+    )
+    decorated: list[tuple[EventTimestampKey, int, Mapping[str, Any]]] = []
+    for index, event in enumerate(events):
+        # This is a trust boundary: serialized bridge rows may contain arbitrary
+        # extra keys, including this private field. Physical sequence position
+        # is authoritative and must always overwrite event-supplied metadata.
+        append_index = index
+        annotated_event = dict(event)
+        annotated_event[BRIDGE_APPEND_INDEX_FIELD] = append_index
+        decorated.append(
+            (
+                _timestamp_order_key(_event_ts(event)) or invalid_time,
+                append_index,
+                annotated_event,
+            )
+        )
+    decorated.sort(key=lambda item: (item[0], item[1]))
+    return [event for _, _, event in decorated]
 
 
 def _bounded_message(value: object) -> str:
@@ -1832,14 +2111,13 @@ def _unresolved_wake_delivery_groups(
         if event_agent and _is_wake_delivery_activity(event):
             _clear_wake_delivery_groups_for_target_activity(
                 groups,
-                event_agent=event_agent,
-                event_ts=event_ts,
+                event=event,
             )
         _clear_wake_delivery_groups_for_terminal_task(groups, event)
         _record_wake_send_failure_for_groups(groups, event)
         if _event_type(event) != "wake_request":
             continue
-        if _event_status(event) in CLOSED_REQUEST_STATUSES:
+        if _is_ack_event(event) or _event_status(event) in CLOSED_REQUEST_STATUSES:
             continue
         task_id = _task_id(event)
         if not task_id:
@@ -1860,16 +2138,33 @@ def _unresolved_wake_delivery_groups(
                     "requesters": {event_agent} if event_agent else set(),
                     "wake_request_count": 1,
                     "last_status": _event_status(event),
+                    "request_events": [event],
                 }
                 continue
-            existing["last_ts_utc"] = event_ts
-            existing["wake_request_count"] = int(existing["wake_request_count"]) + 1
-            existing["last_status"] = _event_status(event)
-            if event_agent:
-                requesters = existing["requesters"]
-                if isinstance(requesters, set):
-                    requesters.add(event_agent)
+            request_events = existing.get("request_events")
+            if not isinstance(request_events, list):
+                request_events = []
+                existing["request_events"] = request_events
+            request_events.append(event)
+            _refresh_wake_delivery_group(existing)
     return groups
+
+
+def _refresh_wake_delivery_group(group: dict[str, Any]) -> None:
+    request_events = group.get("request_events")
+    if not isinstance(request_events, list) or not request_events:
+        return
+    first_request = request_events[0]
+    last_request = request_events[-1]
+    group["first_ts_utc"] = _event_ts(first_request)
+    group["last_ts_utc"] = _event_ts(last_request)
+    group["wake_request_count"] = len(request_events)
+    group["last_status"] = _event_status(last_request)
+    group["requesters"] = {
+        requester
+        for requester in (_event_agent(request) for request in request_events)
+        if requester
+    }
 
 
 def _record_wake_send_failure_for_groups(
@@ -1989,15 +2284,17 @@ def _rco_single_wake_preflight(
 def _clear_wake_delivery_groups_for_target_activity(
     groups: dict[tuple[str, str], dict[str, Any]],
     *,
-    event_agent: str,
-    event_ts: str,
+    event: Mapping[str, Any],
 ) -> None:
+    event_agent = _event_agent(event)
     for key, group in list(groups.items()):
         target, _task_id_value = key
         if target != event_agent:
             continue
-        last_ts = str(group["last_ts_utc"])
-        if event_ts and event_ts > last_ts:
+        request_events = group.get("request_events")
+        if not isinstance(request_events, list) or not request_events:
+            continue
+        if _event_occurs_after(event, request_events[-1]):
             del groups[key]
 
 
@@ -2005,15 +2302,38 @@ def _clear_wake_delivery_groups_for_terminal_task(
     groups: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
 ) -> None:
-    if _event_type(event) != "done" and _event_status(event) not in CLOSED_REQUEST_STATUSES:
+    closed_wake_request = (
+        _event_type(event) == "wake_request"
+        and not _is_ack_event(event)
+        and _event_status(event) in CLOSED_REQUEST_STATUSES
+    )
+    if not _is_requester_terminal_closure(event) and not closed_wake_request:
         return
     task_id = _task_id(event)
     if not task_id:
         return
-    for key in list(groups):
+    for key, group in list(groups.items()):
         _target, group_task_id = key
-        if group_task_id == task_id:
+        if group_task_id != task_id:
+            continue
+        request_events = group.get("request_events")
+        if not isinstance(request_events, list) or not request_events:
+            continue
+        remaining = [
+            request
+            for request in request_events
+            if not (
+                _requester_identity_matches(request, event)
+                and _event_occurs_after(event, request)
+            )
+        ]
+        if len(remaining) == len(request_events):
+            continue
+        if not remaining:
             del groups[key]
+            continue
+        group["request_events"] = remaining
+        _refresh_wake_delivery_group(group)
 
 
 def _wake_delivery_row(

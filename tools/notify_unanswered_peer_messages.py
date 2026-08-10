@@ -36,15 +36,18 @@ from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
     PRIVATE_MARKERS,
+    _build_idle_protocol_progress_index,
+    _build_request_closure_index,
+    _chronological_events,
     _event_agent,
     _event_status,
     _event_ts,
     _event_type,
-    _idle_protocol_progressed,
-    _is_answer_like,
+    _is_ack_event,
     _is_request_like,
     _message,
     _parse_utc,
+    _request_closed_for_agent,
     _split_fresh_and_stale_requests,
     _task_id,
     read_events,
@@ -213,9 +216,12 @@ def _open_requests_for_agent(
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
+    ordered_events = _chronological_events(events)
+    closure_index = _build_request_closure_index(ordered_events)
+    idle_progress_index = _build_idle_protocol_progress_index(ordered_events)
     requests = [
         event
-        for event in events
+        for event in ordered_events
         if _is_peer_request_like(event)
         and _event_agent(event) != agent
         and _addressed_to(event, agent)
@@ -223,30 +229,21 @@ def _open_requests_for_agent(
     ]
     open_requests: list[Mapping[str, Any]] = []
     for request in requests:
-        request_ts = _event_ts(request)
-        task_id = _task_id(request)
-        answered = any(
-            _event_agent(event) == agent
-            and _task_id(event) == task_id
-            and _event_ts(event) > request_ts
-            and _is_substantive_answer_like(event)
-            for event in events
+        answered = _request_closed_for_agent(
+            request=request,
+            agent=agent,
+            events=ordered_events,
+            closure_index=closure_index,
+            idle_progress_index=idle_progress_index,
         )
-        if not answered:
-            answered = any(
-                _task_id(event) == task_id
-                and _event_ts(event) > request_ts
-                and _is_closing_event_like(event)
-                for event in events
-            )
-        if not answered and _idle_protocol_progressed(request, events):
-            answered = True
         if not answered:
             open_requests.append(request)
     return open_requests
 
 
 def _is_peer_request_like(event: Mapping[str, Any]) -> bool:
+    if _is_ack_event(event):
+        return False
     if _is_request_like(event):
         return True
     status_tokens = _status_tokens(_event_status(event))
@@ -255,56 +252,13 @@ def _is_peer_request_like(event: Mapping[str, Any]) -> bool:
     )
 
 
-def _is_substantive_answer_like(event: Mapping[str, Any]) -> bool:
-    event_type = _event_type(event)
-    status = _event_status(event)
-    if event_type in {"heartbeat", "liveness", "wake_request"}:
-        return False
-    if event_type == "message" and status in {"received", "seen", "acknowledged"}:
-        return False
-    if _is_answer_like(event):
-        return True
-    return event_type in {
-        "message",
-        "claim",
-        "done",
-        "decision",
-        "blocked",
-        "finding",
-        "test",
-        "handoff",
-        "release",
-    }
-
-
-def _is_closing_event_like(event: Mapping[str, Any]) -> bool:
-    event_type = _event_type(event)
-    if event_type not in {"done", "decision", "blocked", "release", "handoff"}:
-        return False
-    tokens = _status_tokens(_event_status(event))
-    return bool(
-        tokens
-        & {
-            "blocked",
-            "closed",
-            "done",
-            "merged",
-            "postmerge",
-            "resolved",
-            "superseded",
-            "validated",
-            "verified",
-        }
-    )
-
-
 def _latest_request_by_task(
     requests: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
     by_task: dict[str, Mapping[str, Any]] = {}
-    for request in requests:
+    for request in _chronological_events(requests):
         by_task[_task_id(request)] = request
-    return sorted(by_task.values(), key=lambda event: _event_ts(event))
+    return _chronological_events(list(by_task.values()))
 
 
 def _build_marker(

@@ -193,7 +193,232 @@ def test_requester_terminal_event_closes_request() -> None:
     assert report["unanswered_count"] == 0
 
 
-def test_terminal_same_task_event_closes_obsolete_request_from_any_agent() -> None:
+@pytest.mark.parametrize(
+    ("request_identity", "closure_identity", "is_closed"),
+    [
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-stale-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "99999999-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {},
+            False,
+        ),
+        (
+            {},
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+    ],
+)
+def test_requester_terminal_event_binds_to_request_identity(
+    request_identity: dict[str, str],
+    closure_identity: dict[str, str],
+    is_closed: bool,
+) -> None:
+    request = _request() | request_identity
+    closure = _answer(agent="codex-tools-1", status="superseded")
+    closure["type"] = "status"
+    closure.update(closure_identity)
+
+    report = report_unanswered_requests(
+        events=[request, closure],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == (0 if is_closed else 1)
+
+
+@pytest.mark.parametrize(
+    ("agent", "event_type", "status"),
+    [
+        ("claude-rco-1", "message", "received"),
+        ("codex-tools-1", "message", "acknowledged"),
+        ("codex-lead-1", "message", "seen"),
+        ("claude-rco-1", "done", "ack"),
+        ("claude-rco-1", "message", "received_with_context"),
+        ("claude-rco-1", "done", "done_received"),
+    ],
+)
+def test_ack_or_third_party_request_event_does_not_close_request(
+    agent: str,
+    event_type: str,
+    status: str,
+) -> None:
+    event = _answer(agent=agent, status=status)
+    event["type"] = event_type
+
+    report = report_unanswered_requests(
+        events=[_request(), event],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+
+
+def test_third_party_done_request_is_actionable_and_does_not_close_request() -> None:
+    event = _answer(agent="codex-lead-1", status="request")
+    event["type"] = "done"
+
+    report = report_unanswered_requests(
+        events=[_request(), event],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 2
+    assert {row["task_id"] for row in report["requests"]} == {"task-1"}
+    assert {row["target_agent"] for row in report["requests"]} == {
+        "claude-rco-1",
+        "codex-tools-1",
+    }
+
+
+def test_prior_ack_with_same_pr_does_not_suppress_later_request() -> None:
+    ack = _answer(
+        ts="2026-06-13T12:07:00Z",
+        agent="codex-lead-1",
+        status="received",
+    )
+    ack["type"] = "message"
+    ack["payload"] = {"pr": 1122}
+    later_request = _request(ts="2026-06-13T12:08:00Z")
+
+    report = report_unanswered_requests(
+        events=[ack, later_request],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+
+
+def test_mixed_precision_request_reopens_after_requester_closure() -> None:
+    request = _request(ts="2026-06-13T12:00:00.0000000Z")
+    closure = _answer(
+        ts="2026-06-13T12:01:00Z",
+        agent="codex-tools-1",
+        status="superseded",
+    )
+    closure["type"] = "status"
+    reopened = _request(ts="2026-06-13T12:01:00.1000000Z")
+    reopened["message"] = "new exact-head request"
+
+    report = report_unanswered_requests(
+        events=[request, closure, reopened],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+    assert report["requests"][0]["message"] == "new exact-head request"
+
+
+def test_out_of_append_order_requester_closure_uses_event_time() -> None:
+    request = _request(ts="2026-06-13T12:01:00.0000001Z")
+    closure = _answer(
+        ts="2026-06-13T12:01:00.0000002Z",
+        agent="codex-tools-1",
+        status="superseded",
+    )
+    closure["type"] = "status"
+
+    report = report_unanswered_requests(
+        events=[closure, request],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("closure_first", "expected_count"),
+    [(False, 0), (True, 1)],
+)
+def test_equal_timestamp_requester_closure_uses_append_order(
+    closure_first: bool,
+    expected_count: int,
+) -> None:
+    request = _request(ts="2026-06-13T12:01:00.0000001Z")
+    closure = _answer(
+        ts="2026-06-13T12:01:00.0000001Z",
+        agent="codex-tools-1",
+        status="superseded",
+    )
+    closure["type"] = "status"
+    events = [closure, request] if closure_first else [request, closure]
+
+    report = report_unanswered_requests(
+        events=events,
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == expected_count
+
+
+def test_request_like_merge_receipt_cannot_spoof_global_completion() -> None:
+    spoof = _answer(
+        agent="codex-lead-1",
+        task_id="task-1",
+        status="request_merge_receipt",
+    )
+    spoof["type"] = "message"
+    spoof["payload"] = {"pr": 1122}
+
+    report = report_unanswered_requests(
+        events=[_request(), spoof],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 2
+    assert {row["target_agent"] for row in report["requests"]} == {
+        "claude-rco-1",
+        "codex-tools-1",
+    }
+
+
+def test_third_party_done_merged_does_not_close_same_task_request() -> None:
     report = report_unanswered_requests(
         events=[
             _request(
@@ -213,10 +438,10 @@ def test_terminal_same_task_event_closes_obsolete_request_from_any_agent() -> No
         min_age_minutes=0,
     )
 
-    assert report["unanswered_count"] == 0
+    assert report["unanswered_count"] == 1
 
 
-def test_terminal_same_pr_event_closes_obsolete_request_from_any_agent() -> None:
+def test_third_party_done_merged_does_not_close_same_pr_request() -> None:
     terminal = _answer(
         agent="codex-lead-1",
         task_id="different-closeout-task",
@@ -239,10 +464,10 @@ def test_terminal_same_pr_event_closes_obsolete_request_from_any_agent() -> None
         min_age_minutes=0,
     )
 
-    assert report["unanswered_count"] == 0
+    assert report["unanswered_count"] == 1
 
 
-def test_autonomous_merge_receipt_closes_obsolete_driver_ready_request() -> None:
+def test_third_party_autonomous_merge_receipt_does_not_close_request() -> None:
     merge_receipt = _answer(
         agent="claude-rco-1",
         task_id="codex-tools-1/bridge-session-titlemap-hint-20260615",
@@ -265,10 +490,10 @@ def test_autonomous_merge_receipt_closes_obsolete_driver_ready_request() -> None
         min_age_minutes=0,
     )
 
-    assert report["unanswered_count"] == 0
+    assert report["unanswered_count"] == 1
 
 
-def test_prior_autonomous_merge_receipt_prevents_obsolete_driver_ready_reopen() -> None:
+def test_prior_third_party_merge_receipt_does_not_suppress_later_request() -> None:
     merge_receipt = _answer(
         agent="claude-rco-1",
         task_id="codex-tools-1/bridge-session-titlemap-hint-20260615",
@@ -289,6 +514,31 @@ def test_prior_autonomous_merge_receipt_prevents_obsolete_driver_ready_reopen() 
             )
             | {"type": "handoff", "payload": {"pr": 1233}},
         ],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [("decision", "autonomous_merge_receipt"), ("done", "merged")],
+)
+def test_target_merge_completion_closes_request(
+    event_type: str,
+    status: str,
+) -> None:
+    request = _request(to="codex-lead-1")
+    completion = _answer(
+        agent="codex-lead-1",
+        task_id="task-1",
+        status=status,
+    )
+    completion["type"] = event_type
+
+    report = report_unanswered_requests(
+        events=[request, completion],
         now_utc=_now(),
         min_age_minutes=0,
     )

@@ -24,11 +24,16 @@ from waggledance.core.bridge_identity_registry import load_bridge_identity_regis
 from waggledance.core.work_queue import TASK_ID_PATTERN, resolve_bridge_root
 from tools.bridge_next_action import (
     _event_agent,
+    _event_order_key,
+    _event_occurs_after,
     _event_recipients,
     _event_status,
     _event_type,
+    _is_ack_event,
     _is_answer_like,
     _is_request_like,
+    _is_requester_terminal_closure,
+    _requester_identity_matches,
     _task_id,
 )
 
@@ -37,6 +42,7 @@ DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 DEFAULT_CLAIMS_DIR = Path(".agent-bridge") / "work_queue" / "claims"
 DEFAULT_WAIVERS_PATH = ROOT / "configs" / "bridge_event_validation_waivers.json"
 CANONICAL_RCO_SCHEMA = "wd.exact_head_consensus_request.v1"
+CANONICAL_CONSENSUS_RESPONSE_SCHEMA = "wd.exact_head_consensus_response.v1"
 DIRECT_RCO_SCHEMA = "wd.rco_direct_pass_block_request.v1"
 DIRECT_RCO_REQUEST_STATUS = "rco_pass_or_block_requested"
 DIRECT_RCO_REQUEST_TEXT = "rco pass or block required"
@@ -55,23 +61,6 @@ DIRECT_RCO_PAYLOAD_KEYS = frozenset(
         "merge_authority_granted",
         "deployment_authority_granted",
     }
-)
-REQUESTER_TERMINAL_STATUS_STEMS = (
-    "done",
-    "closed",
-    "superseded",
-    "merged",
-    "abandoned",
-    "completed",
-    "approved",
-    "cancelled",
-    "canceled",
-)
-REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS = (
-    "closed",
-    "superseded",
-    "cancelled",
-    "canceled",
 )
 NONTERMINAL_STATUS_TOKENS = frozenset(
     {
@@ -274,13 +263,14 @@ def _read_events(
         try:
             event = json.loads(line)
             event["_line_no"] = line_no
+            event["_bridge_append_index"] = line_no
             event["_ts"] = _parse_utc(str(event["ts_utc"]))
             events.append(event)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             if waivers.get(line_no) == _line_sha256(line):
                 continue
             invalid += 1
-    events.sort(key=lambda event: (event["_ts"], event["_line_no"]))
+    events.sort(key=lambda event: _event_order_key(event))
     return events, invalid
 
 
@@ -407,11 +397,8 @@ def _reduce_event_requests(
                     if strict_contract
                     else _event_agent(event)
                 ),
-                "request_agent_uuid": (
-                    str(event.get("agent_uuid") or "")
-                    if direct_contract_valid
-                    else ""
-                ),
+                "request_agent_uuid": str(event.get("agent_uuid") or ""),
+                "request_session_id": str(event.get("session_id") or ""),
                 "target_agent_uuid": (
                     BRIDGE_IDENTITY_REGISTRY.get(target_agent, "")
                     if direct_contract_valid
@@ -457,7 +444,7 @@ def _reduce_event_requests(
                     )
                     else "false"
                 ),
-                "opened_at_utc": _iso(event["_ts"]),
+                "opened_at_utc": str(event["ts_utc"]),
                 "opened_line_no": str(event.get("_line_no") or ""),
             }
         for key, request in list(open_by_key.items()):
@@ -633,6 +620,8 @@ def _is_near_canonical_rco_request(event: Mapping[str, Any]) -> bool:
         for schema_text in _schema_texts(payload.get("schema"))
         if schema_text.startswith("wd.")
     )
+    if CANONICAL_CONSENSUS_RESPONSE_SCHEMA in owned_schema_texts:
+        return False
     if (
         any(
             "wd.rco_direct_pass_block_request" in schema_text
@@ -1032,8 +1021,19 @@ def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> boo
             return False
         if type(event_line) is not int or event_line <= opened_line:
             return False
-    elif event["_ts"] <= _parse_utc(request["opened_at_utc"]):
-        return False
+    else:
+        try:
+            opened_line = int(request.get("opened_line_no") or "")
+        except ValueError:
+            return False
+        if not _event_occurs_after(
+            event,
+            {
+                "ts_utc": request["opened_at_utc"],
+                "_bridge_append_index": opened_line,
+            },
+        ):
+            return False
     target_event_agent = (
         _literal_event_agent(event) if canonical_schema else _event_agent(event)
     )
@@ -1045,11 +1045,22 @@ def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> boo
         not direct_contract
         and _literal_event_agent(event) == request["request_agent"]
         and _is_requester_closure_event(event)
+        and _requester_identity_matches(
+            {
+                "agent": request["request_agent"],
+                "agent_uuid": request.get("request_agent_uuid", ""),
+                "session_id": request.get("request_session_id", ""),
+            },
+            event,
+        )
     )
     if requester_closure:
         return True
     if not target_answer:
         return False
+    request_head = request.get("request_head", "")
+    if request_head and request["kind"] == "rco":
+        return _is_valid_exact_head_rco_response(request, event)
     answer_like = (
         _is_answer_like(event)
         if canonical_schema
@@ -1057,14 +1068,11 @@ def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> boo
     )
     if not answer_like:
         return False
-    request_head = request.get("request_head", "")
     response_head = (
         _literal_canonical_head(event) if canonical_schema else _event_head(event)
     )
     if request_head and response_head != request_head:
         return False
-    if target_answer and request_head and request["kind"] == "rco":
-        return _is_valid_exact_head_rco_response(request, event)
     return True
 
 
@@ -1075,24 +1083,7 @@ def _is_requester_closure_event(event: Mapping[str, Any]) -> bool:
         return False
     if event_type != event_type.lower() or status != status.lower():
         return False
-    stems = (
-        REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS
-        if event_type == "message"
-        else REQUESTER_TERMINAL_STATUS_STEMS
-    )
-    if event_type not in {"message", "done", "release", "decision"}:
-        return False
-    normalized_status = status
-    status_tokens = _identity_tokens(normalized_status)
-    if status_tokens & NONTERMINAL_STATUS_TOKENS:
-        return False
-    # Preserve the tracked close helper's explicit requester receipt contract.
-    if event_type == "decision" and normalized_status == "rco_closed_postmerge":
-        return True
-    return any(
-        normalized_status == stem or normalized_status.startswith(f"{stem}_")
-        for stem in stems
-    )
+    return _is_requester_terminal_closure(event)
 
 
 def _is_legacy_target_answer(
@@ -1101,8 +1092,11 @@ def _is_legacy_target_answer(
 ) -> bool:
     event_type = _event_type(event)
     status = _event_status(event)
+    status_tokens = _identity_tokens(status)
+    if _is_ack_event(event) or _is_request_like(event):
+        return False
     if event_type == "message" and (
-        _identity_tokens(status) & NONTERMINAL_STATUS_TOKENS
+        status_tokens & NONTERMINAL_STATUS_TOKENS
     ):
         return False
     if _request_targets(event):

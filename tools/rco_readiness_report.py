@@ -23,14 +23,17 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
+    _chronological_events,
     _event_agent,
     _event_recipients,
     _event_status,
     _event_ts,
     _event_type,
+    _event_occurs_after,
     _is_request_like,
+    _requester_identity_matches,
+    _is_requester_terminal_closure,
     _latest_event_time,
     _parse_utc,
     _task_id,
@@ -253,7 +256,7 @@ def _open_direct_rco_pass_block_requests(
     else:
         max_age_minutes = None
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for index, event in enumerate(events):
+    for index, event in enumerate(_chronological_events(events)):
         _close_direct_requests(open_by_key, event, target_agent=agent)
         if not _is_direct_rco_pass_block_request(agent=agent, event=event):
             continue
@@ -270,6 +273,7 @@ def _open_direct_rco_pass_block_requests(
             "event_index": index,
             "head": _payload_scalar(event, "head"),
             "pr": _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number"),
+            "_request_event": event,
         }
 
     rows: list[dict[str, Any]] = []
@@ -283,6 +287,7 @@ def _open_direct_rco_pass_block_requests(
         if max_age_minutes is not None and age_minutes > max_age_minutes:
             continue
         row = dict(state)
+        row.pop("_request_event", None)
         row["age_minutes"] = round(age_minutes, 3)
         row["priority"] = "direct_rco_pass_block"
         rows.append(row)
@@ -304,13 +309,13 @@ def _close_direct_requests(
     *,
     target_agent: str,
 ) -> None:
-    event_ts = _event_ts(event)
     event_agent = _event_agent(event)
     event_task = _task_id(event)
     event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
     for key, state in list(open_by_key.items()):
         task_id, pr = key
-        if event_ts <= str(state["ts_utc"]):
+        request_event = state["_request_event"]
+        if not _event_occurs_after(event, request_event):
             continue
         same_task = bool(task_id and event_task == task_id)
         same_pr = bool(pr and event_pr == pr)
@@ -320,7 +325,11 @@ def _close_direct_requests(
         if event_agent == target_agent and _is_substantive_rco_response(event):
             del open_by_key[key]
             continue
-        if event_agent == requester and _is_terminal_closure(event):
+        if (
+            event_agent == requester
+            and _is_requester_terminal_closure(event)
+            and _requester_identity_matches(request_event, event)
+        ):
             del open_by_key[key]
 
 
@@ -368,10 +377,6 @@ def _is_substantive_rco_response(event: Mapping[str, Any]) -> bool:
     if {"changes", "requested"}.issubset(tokens):
         return True
     return False
-
-
-def _is_terminal_closure(event: Mapping[str, Any]) -> bool:
-    return _event_type(event) == "done" or _event_status(event) in CLOSED_REQUEST_STATUSES
 
 
 def _event_tokens(event: Mapping[str, Any]) -> set[str]:

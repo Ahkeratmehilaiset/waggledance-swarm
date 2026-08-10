@@ -449,6 +449,43 @@ def test_finding_changes_requested_after_pass_still_vetoes() -> None:
     assert result["latest_rco_is_veto"] is True
 
 
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("finding", "ack"),
+        ("finding", "acknowledged"),
+        ("finding", "approved_acknowledged"),
+        ("finding", "received_approved"),
+        ("blocked", "acknowledged"),
+        ("blocked", "rco_pass_acknowledged"),
+    ],
+)
+def test_ack_status_cannot_exempt_type_authoritative_veto_after_pass(
+    event_type: str,
+    status: str,
+) -> None:
+    events = [
+        _rco_event(
+            ts="2026-06-03T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+        ),
+        _rco_event(
+            ts="2026-06-03T10:01:00Z",
+            status=status,
+            type_=event_type,
+            message="ACK-shaped type-authoritative veto",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
 def test_not_blocked_clarification_status_after_pass_does_not_veto() -> None:
     events = [
         _rco_event(

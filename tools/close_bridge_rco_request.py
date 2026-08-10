@@ -20,9 +20,8 @@ This helper closes that gap. Run it after a successful merge:
 
 The emitted event uses ``type=decision status=rco_closed_postmerge`` so it:
 
-* Closes the RCO via the ``_closes_request`` type-decision rule in
-  ``tools/idle_check.py`` (which accepts ``type`` in
-  ``{decision, done, blocked, release}``).
+* Closes the RCO via the canonical target/requester closure reducer shared by
+  next-action, idle, reporting, notification, and this writer gate.
 * Does NOT match ``_is_merge_event`` (which requires status containing
   ``"merged"`` or ``type=done`` plus a merge-context message). This avoids
   pushing the ``recent_merge`` quiet window forward by an extra 60 minutes
@@ -54,6 +53,17 @@ from tools.bridge_event_writer import (  # noqa: E402
     validate_v1_replayer_event,
     write_bridge_event,
 )
+from tools.bridge_next_action import (  # noqa: E402
+    _build_idle_protocol_progress_index,
+    _build_request_closure_index,
+    _chronological_events,
+    _event_recipients,
+    _event_status,
+    _event_ts,
+    _is_request_like,
+    _request_closed_for_agent,
+    _task_id,
+)
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -75,6 +85,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-agent",
         required=True,
         help="Agent id emitting the close (claude / codex / operator).",
+    )
+    parser.add_argument(
+        "--agent-uuid",
+        default="",
+        help="Optional UUID of the emitting requester identity.",
+    )
+    parser.add_argument(
+        "--session-id",
+        default="",
+        help="Optional session id of the emitting requester identity.",
     )
     parser.add_argument(
         "--bridge-root",
@@ -129,6 +149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_id=args.task_id,
             pr_number=args.pr,
             from_agent=args.from_agent,
+            from_agent_uuid=args.agent_uuid,
+            from_session_id=args.session_id,
             bridge_root=bridge_root,
             merge_commit=args.merge_commit,
             merged_at=args.merged_at,
@@ -168,6 +190,8 @@ def close_bridge_rco_request(
     task_id: str,
     pr_number: int,
     from_agent: str,
+    from_agent_uuid: str = "",
+    from_session_id: str = "",
     bridge_root: Path,
     merge_commit: str = "",
     merged_at: str = "",
@@ -207,6 +231,8 @@ def close_bridge_rco_request(
         task_id=task_id,
         pr_number=pr_number,
         from_agent=from_agent,
+        from_agent_uuid=from_agent_uuid,
+        from_session_id=from_session_id,
         to_agents=to_agents,
         merge_commit=merge_commit,
         merged_at=merged_at,
@@ -217,6 +243,18 @@ def close_bridge_rco_request(
         validate_v1_replayer_event(event)
     except BridgeEventWriteError as exc:
         raise CloseRcoError(str(exc), "invalid_args") from exc
+
+    candidate_state = _open_rco_for([*events, event], task_id)
+    if candidate_state["has_open_rco"]:
+        raise CloseRcoError(
+            (
+                "proposed close event would not close the open RCO under the "
+                "canonical requester/target, identity, target-set, and "
+                "event-order rules"
+            ),
+            "close_event_would_not_close",
+            exit_code=4,
+        )
 
     report: dict[str, Any] = {
         "ok": True,
@@ -252,6 +290,8 @@ def _build_close_event(
     task_id: str,
     pr_number: int,
     from_agent: str,
+    from_agent_uuid: str,
+    from_session_id: str,
     to_agents: str,
     merge_commit: str,
     merged_at: str,
@@ -268,14 +308,14 @@ def _build_close_event(
     if merge_commit:
         parts.append(f"Merge commit: {merge_commit}.")
     parts.append(
-        "Status 'rco_closed_postmerge' closes the open RCO via the "
-        "type-decision rule in tools/idle_check.py without triggering "
+        "Status 'rco_closed_postmerge' closes the open RCO via the canonical "
+        "requester-closure rule without triggering "
         "_is_merge_event (which would extend the recent_merge window by "
         "60 minutes)."
     )
     if note:
         parts.append(f"Note: {note}")
-    return {
+    event: dict[str, Any] = {
         "ts_utc": _iso(now_utc),
         "agent": from_agent,
         "type": "decision",
@@ -290,39 +330,45 @@ def _build_close_event(
         "pid": os.getpid(),
         "cwd": str(Path.cwd()),
     }
+    if from_agent_uuid:
+        event["agent_uuid"] = from_agent_uuid
+    if from_session_id:
+        event["session_id"] = from_session_id
+    return event
 
 
 def _open_rco_for(
     events: Sequence[Mapping[str, Any]],
     task_id: str,
 ) -> dict[str, Any]:
-    opened_at: str = ""
-    is_open = False
-    for event in events:
-        if str(event.get("task_id", "")) != task_id:
+    ordered_events = _chronological_events(events)
+    closure_index = _build_request_closure_index(ordered_events)
+    idle_progress_index = _build_idle_protocol_progress_index(ordered_events)
+    open_requests: list[Mapping[str, Any]] = []
+    for request in ordered_events:
+        if (
+            _task_id(request) != task_id
+            or _event_status(request) != RCO_OPEN_STATUS
+            or not _is_request_like(request)
+        ):
             continue
-        status = str(event.get("status", "")).lower()
-        if status == RCO_OPEN_STATUS:
-            is_open = True
-            opened_at = str(event.get("ts_utc", ""))
-            continue
-        if is_open and _closes_open_rco(event):
-            is_open = False
-            opened_at = ""
-    return {"has_open_rco": is_open, "opened_at_utc": opened_at}
-
-
-def _closes_open_rco(event: Mapping[str, Any]) -> bool:
-    status = str(event.get("status", "")).lower()
-    if status == RCO_OPEN_STATUS:
-        return False
-    event_type = str(event.get("type", "")).lower()
-    if event_type in {"decision", "done", "blocked", "release"}:
-        return True
-    return any(
-        marker in status
-        for marker in ("rco_", "source_review", "pass", "blocked", "done")
-    )
+        for target in _event_recipients(request):
+            if not _request_closed_for_agent(
+                request=request,
+                agent=target,
+                events=ordered_events,
+                closure_index=closure_index,
+                idle_progress_index=idle_progress_index,
+            ):
+                open_requests.append(request)
+                break
+    if not open_requests:
+        return {"has_open_rco": False, "opened_at_utc": ""}
+    latest_open = open_requests[-1]
+    return {
+        "has_open_rco": True,
+        "opened_at_utc": _event_ts(latest_open),
+    }
 
 
 def _read_events(events_path: Path) -> list[dict[str, Any]]:

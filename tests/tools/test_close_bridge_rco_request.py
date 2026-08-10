@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 import tools.close_bridge_rco_request as closer  # noqa: E402
 from tools.close_bridge_rco_request import (  # noqa: E402
     CloseRcoError,
+    _open_rco_for,
     close_bridge_rco_request,
     _read_events,
 )
@@ -64,7 +65,12 @@ def test_read_events_skips_bare_null_event_line(tmp_path: Path) -> None:
     ]
 
 
-def _opening_handoff(task_id: str, ts: str, agent: str = "claude") -> dict:
+def _opening_handoff(
+    task_id: str,
+    ts: str,
+    agent: str = "claude",
+    to_agent: str = "codex",
+) -> dict:
     return {
         "ts_utc": ts,
         "agent": agent,
@@ -72,7 +78,7 @@ def _opening_handoff(task_id: str, ts: str, agent: str = "claude") -> dict:
         "task_id": task_id,
         "status": "rco_requested",
         "severity": "",
-        "to": "codex",
+        "to": to_agent,
         "message": f"Please RCO PR #999 task {task_id}",
         "paths": [],
         "write_scope": [],
@@ -80,6 +86,116 @@ def _opening_handoff(task_id: str, ts: str, agent: str = "claude") -> dict:
         "pid": 0,
         "cwd": "",
     }
+
+
+def _rco_follow_up(
+    *,
+    agent: str,
+    event_type: str,
+    status: str,
+    ts: str = "2026-05-20T18:01:00Z",
+) -> dict:
+    return {
+        "ts_utc": ts,
+        "agent": agent,
+        "type": event_type,
+        "task_id": "canonical-rco-closure",
+        "status": status,
+        "severity": "",
+        "to": "codex" if agent != "codex" else "claude",
+        "message": "RCO follow-up",
+        "paths": [],
+        "write_scope": [],
+        "run_id": "",
+        "pid": 0,
+        "cwd": "",
+    }
+
+
+@pytest.mark.parametrize(
+    ("agent", "event_type", "status", "expected_open"),
+    [
+        ("claude", "done", "ack", True),
+        ("claude", "done", "request", True),
+        ("claude", "decision", "request", True),
+        ("fable", "done", "merged", True),
+        ("codex", "status", "superseded", False),
+        ("claude", "message", "late_status_response", False),
+        ("claude", "review_verdict", "independent_pass", False),
+    ],
+)
+def test_open_rco_uses_canonical_target_and_requester_closure_rules(
+    agent: str,
+    event_type: str,
+    status: str,
+    expected_open: bool,
+) -> None:
+    opening = _opening_handoff(
+        "canonical-rco-closure",
+        "2026-05-20T18:00:00Z",
+        agent="codex",
+        to_agent="claude",
+    )
+    follow_up = _rco_follow_up(
+        agent=agent,
+        event_type=event_type,
+        status=status,
+    )
+
+    state = _open_rco_for(
+        [opening, follow_up],
+        "canonical-rco-closure",
+    )
+
+    assert state["has_open_rco"] is expected_open
+
+
+@pytest.mark.parametrize(
+    ("closure_identity", "expected_open"),
+    [
+        ({}, True),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "stale-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "current-session",
+            },
+            False,
+        ),
+    ],
+)
+def test_open_rco_requester_closure_binds_identity(
+    closure_identity: dict[str, str],
+    expected_open: bool,
+) -> None:
+    opening = _opening_handoff(
+        "canonical-rco-closure",
+        "2026-05-20T18:00:00Z",
+        agent="codex",
+        to_agent="claude",
+    )
+    opening.update(
+        {
+            "agent_uuid": "11111111-2222-3333-4444-555555555555",
+            "session_id": "current-session",
+        }
+    )
+    closure = _rco_follow_up(
+        agent="codex",
+        event_type="status",
+        status="superseded",
+    )
+    closure.update(closure_identity)
+
+    state = _open_rco_for([opening, closure], "canonical-rco-closure")
+
+    assert state["has_open_rco"] is expected_open
 
 
 def test_close_emits_event_that_clears_open_rco(tmp_path: Path) -> None:
@@ -186,6 +302,91 @@ def test_dry_run_does_not_write(tmp_path: Path) -> None:
     assert result["emitted"] is False
     assert result["decision"] == "ready"
     assert events_path.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["missing_identity", "third_party", "multi_target", "backdated"],
+)
+def test_close_refuses_event_that_would_leave_rco_open_before_write(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    opening = _opening_handoff(
+        "close-preflight",
+        "2026-05-20T18:00:00Z",
+        agent="codex",
+        to_agent="claude",
+    )
+    from_agent = "codex"
+    now_utc = datetime(2026, 5, 20, 18, 1, tzinfo=timezone.utc)
+    if case == "missing_identity":
+        opening.update(
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "identity-bound-session",
+            }
+        )
+    elif case == "third_party":
+        from_agent = "fable"
+    elif case == "multi_target":
+        opening["to"] = "claude,fable"
+        from_agent = "claude"
+    elif case == "backdated":
+        now_utc = datetime(2026, 5, 20, 17, 59, tzinfo=timezone.utc)
+
+    bridge_root = _seed_bridge(tmp_path, [opening])
+    events_path = bridge_root / "shared" / "events.jsonl"
+    before = events_path.read_bytes()
+
+    with pytest.raises(CloseRcoError) as excinfo:
+        close_bridge_rco_request(
+            task_id="close-preflight",
+            pr_number=999,
+            from_agent=from_agent,
+            bridge_root=bridge_root,
+            now_utc=now_utc,
+            emit=True,
+            writer_backend=_PortableTestBackend(),
+        )
+
+    assert excinfo.value.decision == "close_event_would_not_close"
+    assert events_path.read_bytes() == before
+    assert not (bridge_root / "spool").exists()
+    assert not (bridge_root / "outbox").exists()
+
+
+def test_identity_bound_request_can_close_with_explicit_requester_identity(
+    tmp_path: Path,
+) -> None:
+    agent_uuid = "11111111-2222-3333-4444-555555555555"
+    session_id = "identity-bound-session"
+    opening = _opening_handoff(
+        "close-with-identity",
+        "2026-05-20T18:00:00Z",
+        agent="codex",
+        to_agent="claude",
+    )
+    opening.update({"agent_uuid": agent_uuid, "session_id": session_id})
+    bridge_root = _seed_bridge(tmp_path, [opening])
+
+    result = close_bridge_rco_request(
+        task_id="close-with-identity",
+        pr_number=999,
+        from_agent="codex",
+        from_agent_uuid=agent_uuid,
+        from_session_id=session_id,
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 5, 20, 18, 1, tzinfo=timezone.utc),
+        emit=True,
+        writer_backend=_PortableTestBackend(),
+    )
+
+    assert result["decision"] == "closed"
+    assert result["proposed_event"]["agent_uuid"] == agent_uuid
+    assert result["proposed_event"]["session_id"] == session_id
+    events = _read_events(bridge_root / "shared" / "events.jsonl")
+    assert _open_rco_for(events, "close-with-identity")["has_open_rco"] is False
 
 
 def test_writer_failure_maps_to_typed_close_decision_without_sidecars(

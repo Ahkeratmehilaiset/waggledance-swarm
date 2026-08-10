@@ -16,10 +16,10 @@ race past it.
 This tool fills that gap. It refuses if a peer has emitted a
 ``decision`` event with a blocking status (``changes_requested``,
 ``rco_block``, ``blocked``) for the given task_id AFTER the most recent
-RCO pass / acknowledgement event from the SAME peer (so a fresh approval
-overrides an older block). Build-consensus pass events also clear an older
-block from the same peer; this keeps the peer-veto gate aligned with the
-promotion-consensus vocabulary.
+explicit RCO/build-consensus pass or approval event from the SAME peer (so a
+fresh approval overrides an older block). ACK-token statuses are receipts,
+never approvals, including compound forms such as ``approved_acknowledged``.
+This keeps the peer-veto gate aligned with the promotion-consensus vocabulary.
 
 Designed to be called BEFORE ``gh pr merge --squash --match-head-commit`` and
 ANDed with ``tools/check_rco_pass_present.py``. Absence of a peer block is not
@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from waggledance.core.bridge_event_schema import is_ack_status  # noqa: E402
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     bridge_identity_binding_status,
     load_bridge_identity_registry,
@@ -200,7 +201,6 @@ APPROVAL_STATUSES = frozenset(
         "build_consensus_pass",
         "approved",
         "approved_ci_green",
-        "acknowledged",
     }
 )
 DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})
@@ -632,13 +632,14 @@ def _has_non_blocking_context_status(status: str) -> bool:
 
 
 def _is_approval_status(status: str) -> bool:
+    if is_ack_status(status):
+        return False
     if status in APPROVAL_STATUSES:
         return True
     tokens = _status_tokens(status)
     return (
         {"rco", "pass"}.issubset(tokens)
         or "approved" in tokens
-        or "acknowledged" in tokens
     )
 
 

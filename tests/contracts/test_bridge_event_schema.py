@@ -12,6 +12,7 @@ import pytest
 from waggledance.core.bridge_event_schema import (
     BRIDGE_EVENT_SCHEMA_VERSION,
     BridgeEvent,
+    is_open_request_status,
     validate_event,
     validate_event_file,
     validate_event_line,
@@ -123,6 +124,71 @@ def test_custom_event_types_remain_valid_for_polymorphic_continuity() -> None:
     assert model.type == "ownership_proposal"
 
 
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("review_verdict", "review_requested"),
+        ("ownership_proposal", "open"),
+        ("magma_query", "evidence_required"),
+        ("solver_growth_proposal", "proposal"),
+    ],
+)
+def test_directed_custom_request_requires_task_id(
+    event_type: str,
+    status: str,
+) -> None:
+    assert is_open_request_status(status) is True
+    with pytest.raises(Exception, match="directed custom request requires task_id"):
+        validate_event(
+            _good_event(
+                type=event_type,
+                status=status,
+                task_id="",
+                to="claude",
+            )
+        )
+
+
+def test_standard_message_retains_legacy_taskless_request_contract() -> None:
+    model = validate_event(
+        _good_event(type="message", status="request", task_id="", to="claude")
+    )
+
+    assert model.task_id == ""
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["peer_review_request", "simulation_open", "sandbox_drop"],
+)
+def test_registered_request_type_retains_legacy_taskless_contract(
+    event_type: str,
+) -> None:
+    model = validate_event(
+        _good_event(
+            type=event_type,
+            status="review_requested",
+            task_id="",
+            to="claude",
+        )
+    )
+
+    assert model.task_id == ""
+
+
+def test_taskless_custom_response_is_not_misclassified_as_request() -> None:
+    model = validate_event(
+        _good_event(
+            type="review_verdict",
+            status="approved_request",
+            task_id="",
+            to="claude",
+        )
+    )
+
+    assert is_open_request_status(model.status) is False
+
+
 def test_event_hygiene_contract_warns_by_default_and_fails_strict(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -208,6 +274,50 @@ def test_wake_request_requires_explicit_target() -> None:
 def test_claim_like_events_require_task_id() -> None:
     with pytest.raises(Exception, match="claim requires task_id"):
         validate_event(_good_event(type="claim", task_id="", to=""))
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "ack"),
+        ("message", "ACK"),
+        ("message", "acknowledged"),
+        ("message", "received"),
+        ("message", "seen"),
+        ("message", "wake_ack"),
+        ("message", "wake-acknowledged"),
+        ("message", "received_with_context"),
+        ("message", "done_received"),
+        ("message", "SEEN.with-context"),
+        ("message", "status_query_ack"),
+        ("decision", "ack"),
+        ("status", "received_with_context"),
+        ("finding", "wake_ack"),
+        ("test", "seen"),
+    ],
+)
+def test_ack_status_tokens_require_task_id(
+    event_type: str,
+    status: str,
+) -> None:
+    with pytest.raises(Exception, match="ack event requires task_id"):
+        validate_event(
+            _good_event(type=event_type, task_id="", status=status)
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["unacknowledged", "foreseen", "prereceived"],
+)
+def test_ack_status_substring_lookalikes_do_not_require_task_id(
+    status: str,
+) -> None:
+    model = validate_event(
+        _good_event(type="message", task_id="", status=status)
+    )
+
+    assert model.task_id == ""
 
 
 def test_payload_parse_error_objects_remain_valid() -> None:

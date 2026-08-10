@@ -269,8 +269,8 @@ operation lock / lease for TOCTOU).
    - If an agent disagrees, it must say why and propose the smallest safe
      alternative. Silence is treated as unresolved work.
    - If the original requester later proves the request is obsolete, it may
-     close the request with the same `task_id`. For `done`, `release`,
-     and `decision`, closeout statuses are `done`, `closed`,
+     close the request with the same `task_id`. For `status`, `done`,
+     `release`, and `decision`, closeout statuses are `done`, `closed`,
      `superseded`, `merged`, `abandoned`, `completed`, `approved`,
      `cancelled`/`canceled`, or a descriptive underscore-suffixed form
      of one of those stems such as `superseded_availability_ping` or
@@ -278,8 +278,33 @@ operation lock / lease for TOCTOU).
      `superseded`, `cancelled`/`canceled`, and their underscore-suffixed
      forms close a request. Status tools report requester closeout as
      `closed`, not as an answer from the target agent.
-   - `done/request` is still request-like work. Do not use it as a
+   - ACK/progress/negated forms such as `status/received`,
+     `status/working`, and `decision/done_not` never close requester work.
+     The standalone status tokens `ack`, `received`, `seen`, and
+     `acknowledged` remain ACK-only inside underscore/hyphen compound statuses
+     too; substring lookalikes such as `unacknowledged` do not match.
+     Every event carrying one of those standalone ACK tokens must include the
+     request's exact `task_id`; both the schema and the PowerShell writer
+     reject an unbound ACK before bridge I/O. Peer notification also rejects
+     ACK-bearing rows before its legacy `status_query` fallback.
+     `done/request` is still request-like work and is not an answer or a
      closeout status.
+   - A requester closeout must match every identity field carried by the
+     request: `agent_uuid` case-insensitively and `session_id` exactly.
+     Missing closeout identity cannot close an identity-bearing request.
+     Requests without those fields retain legacy agent-and-task matching;
+     `run_id` is provenance, not requester identity.
+   - Request/answer/close ordering uses parsed UTC event time, including the
+     seventh fractional digit emitted by PowerShell `ToString('o')`; append
+     order is only the stable tie-break for equal timestamps. An invalid or
+     missing timestamp cannot close a request. Next-action, status, continuity,
+     RCO-readiness, idle-state, unanswered-report, and peer-notification
+     reducers apply the same rule.
+   - Serialized internal ordering fields are never authoritative; readers derive
+     append order from the physical event sequence. A merge-like event or
+     `decision/autonomous_merge_receipt` from an unrelated third party cannot
+     close another agent's request. The addressed target must answer, or the
+     requester must issue an identity-matched terminal closeout.
 
 7. Alternate review loops.
    - For meaningful bridge/protocol/source changes, run the
@@ -562,19 +587,32 @@ with the normal `done`, `finding`, `blocked`, `handoff`, `test`, or
 other substantive event using the same `task_id`. The ACK is deduped by
 `agent + task_id + request_ts_utc` so repeated bridge reads do not spam
 the event log for the same request.
+ACK-token statuses are receipts only: merge and RCO gates never treat an ACK,
+including compound forms such as `approved_acknowledged`, as approval.
 
 ## Polymorphic Continuity Classification (added 2026-05-11)
 
 Bridge readers must tolerate richer domain event types. A targeted event with
 the same `task_id` from the requested agent is a substantive answer unless it
-is an ACK (`message/received`, `seen`, `acknowledged`) or infrastructure
+is an ACK (a status containing the standalone token `ack`, `received`, `seen`,
+or `acknowledged`) or infrastructure
 traffic (`heartbeat`, `liveness`, `wake_request`). This prevents custom events
 such as `ownership_proposal/open` from being silently dropped by polling.
 
-Directed events are request-like when they have `to`, `task_id`, and an
-open/proposal/request-style status. Readers split comma-separated `to` values
+Directed events are request-like when they have `to` and an exact-token
+open/proposal/request-style status. Standard request event types retain legacy
+taskless routing; unregistered custom request types also require `task_id`.
+Readers split
+comma-separated `to` values
 so `to: "claude,operator"` is tracked per target instead of waiting for a
 nonexistent combined agent named `claude,operator`.
+For standard protocol event types, request-like and answer-like classification
+are mutually exclusive: a `decision/request` or `finding/proposal` opens work
+and cannot also close an older request. Accepted ADR 020 deliberately preserves
+custom polymorphism: a directed custom event such as
+`ownership_proposal/open` may answer prior work while opening reciprocal work.
+State-mutating helpers such as the post-merge RCO closer use this same canonical
+reducer before appending.
 
 ## Files
 

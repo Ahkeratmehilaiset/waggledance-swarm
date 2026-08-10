@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from waggledance.core.bridge_event_schema import is_ack_status  # noqa: E402
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     bridge_identity_binding_status,
     load_bridge_identity_registry,
@@ -866,13 +867,14 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
 
 
 def _is_approval_status(status: str) -> bool:
+    if is_ack_status(status):
+        return False
     if status in RCO_PASS_STATUSES:
         return True
     tokens = _status_tokens(status)
     return (
         {"rco", "pass"}.issubset(tokens)
         or "approved" in tokens
-        or "acknowledged" in tokens
     )
 
 

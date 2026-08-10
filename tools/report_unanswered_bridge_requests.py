@@ -22,17 +22,22 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
+    _chronological_events,
     _event_agent,
+    _event_occurs_after,
     _event_recipients,
     _event_status,
     _event_ts,
     _event_type,
+    _is_ack_event,
     _is_answer_like,
     _is_request_like,
+    _is_requester_terminal_closure,
     _latest_event_time,
     _parse_utc,
+    _requester_identity_matches,
+    _status_tokens,
     _task_id,
     read_events,
 )
@@ -263,24 +268,8 @@ def _open_requests_by_target(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     known_agents = _known_bridge_agents(events)
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    closed_merge_task_keys: set[str] = set()
-    closed_prs: set[str] = set()
-    for index, event in enumerate(events):
+    for index, event in enumerate(_chronological_events(events)):
         _close_answered_requests(open_by_key, event, known_agents=known_agents)
-        if _is_terminal_closure_event(event):
-            if _event_status(event).endswith("merge_receipt"):
-                closed_merge_task_keys.add(
-                    _task_key(
-                        _task_id(event),
-                        known_agents=known_agents,
-                        requester=_event_agent(event),
-                    )
-                )
-            closed_pr = _payload_scalar(event, "pr") or _payload_scalar(
-                event, "pr_number"
-            )
-            if closed_pr:
-                closed_prs.add(closed_pr)
         if not _is_request_like(event):
             continue
         requester = _event_agent(event)
@@ -298,15 +287,13 @@ def _open_requests_by_target(
             payload_pr = _payload_scalar(event, "pr") or _payload_scalar(
                 event, "pr_number"
             )
-            if task_key in closed_merge_task_keys or (
-                payload_pr and payload_pr in closed_prs
-            ):
-                continue
             key = (target, task_key)
             previous = open_by_key.get(key)
             open_by_key[key] = {
                 "target_agent": target,
                 "requester": requester,
+                "requester_agent_uuid": str(event.get("agent_uuid") or ""),
+                "requester_session_id": str(event.get("session_id") or ""),
                 "task_id": task_id,
                 "type": _event_type(event),
                 "status": _event_status(event),
@@ -323,6 +310,7 @@ def _open_requests_by_target(
                 "event_index": index,
                 "payload_head": _payload_scalar(event, "head"),
                 "payload_pr": payload_pr,
+                "_request_event": event,
             }
     return open_by_key
 
@@ -333,7 +321,9 @@ def _close_answered_requests(
     *,
     known_agents: Sequence[str],
 ) -> None:
-    if not _is_answer_like(event) and not _is_terminal_closure_event(event):
+    requester_terminal = _is_requester_terminal_closure(event)
+    substantive_answer = _is_substantive_target_answer(event)
+    if not requester_terminal and not substantive_answer:
         return
     event_agent = _event_agent(event)
     event_task_key = _task_key(
@@ -341,7 +331,6 @@ def _close_answered_requests(
         known_agents=known_agents,
         requester=event_agent,
     )
-    event_ts = _event_ts(event)
     for key, state in list(open_by_key.items()):
         target, state_task_key = key
         requester = str(state["requester"])
@@ -349,9 +338,17 @@ def _close_answered_requests(
         same_pr = _same_payload_pr(event, state)
         if not same_task and not same_pr:
             continue
-        if event_ts <= str(state["ts_utc"]):
+        request_event = state["_request_event"]
+        if not _event_occurs_after(event, request_event):
             continue
-        if event_agent in {target, requester} or _is_terminal_closure_event(event):
+        if event_agent == target and substantive_answer:
+            del open_by_key[key]
+            continue
+        if (
+            event_agent == requester
+            and requester_terminal
+            and _requester_identity_matches(request_event, event)
+        ):
             del open_by_key[key]
 
 
@@ -396,13 +393,8 @@ def _same_payload_pr(event: Mapping[str, Any], state: Mapping[str, Any]) -> bool
     return bool(event_pr and state_pr and event_pr == state_pr)
 
 
-def _is_terminal_closure_event(event: Mapping[str, Any]) -> bool:
-    status = _event_status(event)
-    return (
-        _event_type(event) == "done"
-        or status in CLOSED_REQUEST_STATUSES
-        or status.endswith("merge_receipt")
-    )
+def _is_substantive_target_answer(event: Mapping[str, Any]) -> bool:
+    return not _is_ack_event(event) and _is_answer_like(event)
 
 
 def _request_row(

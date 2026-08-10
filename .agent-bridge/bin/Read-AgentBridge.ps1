@@ -64,7 +64,11 @@ function Read-BridgeEventObjects {
     if ($result.status -in @('BLOCKED','RETRY')) {
         throw "Read-AgentBridge: stable event snapshot unavailable: $($result.reason)"
     }
+    $appendIndex = 0L
     foreach ($event in @($result.rows)) {
+        $event | Add-Member -NotePropertyName '_bridge_append_index' `
+            -NotePropertyValue $appendIndex -Force
+        $appendIndex += 1
         [void]$items.Add($event)
     }
     return $items
@@ -132,7 +136,7 @@ function Read-BridgeContinuityEventObjects {
         }
     }
 
-    return @($items | Sort-Object ts_utc)
+    return @($items | Sort-Object { Get-BridgeEventUtcSortKey -Event $_ })
 }
 
 function Send-ReceivedAck {
@@ -151,8 +155,7 @@ function Send-ReceivedAck {
             Where-Object {
                 [string]$_.agent -eq $AgentName -and
                 [string]$_.task_id -eq $taskId -and
-                [string]$_.type -eq 'message' -and
-                [string]$_.status -eq 'received' -and
+                (Test-BridgeAckEvent -Event $_) -and
                 $_.PSObject.Properties['payload'] -and
                 $_.payload.PSObject.Properties['request_ts_utc'] -and
                 [string]$_.payload.request_ts_utc -eq $requestTs
@@ -265,7 +268,7 @@ if ($Agent -and -not $NoContinuity) {
                     [string]$_.agent -ne $Agent -and
                     [string]$_.task_id
                 } |
-                Sort-Object ts_utc
+                Sort-Object { Get-BridgeEventUtcSortKey -Event $_ }
         )
 
         if ($requests.Count -eq 0) {
@@ -286,14 +289,16 @@ if ($Agent -and -not $NoContinuity) {
                     continue
                 }
                 $requestForTask = $latestByTask[$eventTaskId]
-                if ([string]$event.ts_utc -le [string]$requestForTask.ts_utc) {
+                if (-not (Test-BridgeEventAfter -Event $event -Reference $requestForTask)) {
                     continue
                 }
                 if ([string]$event.agent -eq $Agent -and (Test-BridgeAnswerEvent -Event $event)) {
                     $replyByTask[$eventTaskId] = $event
                     continue
                 }
-                if ([string]$event.agent -eq [string]$requestForTask.agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                if ([string]$event.agent -eq [string]$requestForTask.agent -and
+                    (Test-BridgeRequesterClosureEvent -Event $event) -and
+                    (Test-BridgeRequesterIdentityMatch -Request $requestForTask -Closure $event)) {
                     $closureByTask[$eventTaskId] = $event
                 }
             }
@@ -352,7 +357,7 @@ if ($Agent -and -not $NoContinuity) {
         foreach ($r in @($allEvents | Where-Object {
                     [string]$_.agent -eq $Agent -and
                     (Test-BridgeRequestLikeEvent -Event $_)
-                } | Sort-Object ts_utc)) {
+                } | Sort-Object { Get-BridgeEventUtcSortKey -Event $_ })) {
             foreach ($target in @(Get-BridgeEventTargets -Event $r)) {
                 if ($target -and $target -ne $Agent) {
                     [void]$sentRequests.Add([pscustomobject]@{
@@ -391,14 +396,16 @@ if ($Agent -and -not $NoContinuity) {
                     $reqInfoForKey = $sentLatestByTask[$sentKey]
                     $requestForKey = $reqInfoForKey.event
                     $targetForKey = [string]$reqInfoForKey.target
-                    if ([string]$event.ts_utc -le [string]$requestForKey.ts_utc) {
+                    if (-not (Test-BridgeEventAfter -Event $event -Reference $requestForKey)) {
                         continue
                     }
                     if ([string]$event.agent -eq $targetForKey -and (Test-BridgeAnswerEvent -Event $event)) {
                         $sentReplyByKey[$sentKey] = $event
                         continue
                     }
-                    if ([string]$event.agent -eq $Agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                    if ([string]$event.agent -eq $Agent -and
+                        (Test-BridgeRequesterClosureEvent -Event $event) -and
+                        (Test-BridgeRequesterIdentityMatch -Request $requestForKey -Closure $event)) {
                         $sentClosureByKey[$sentKey] = $event
                         continue
                     }
@@ -488,14 +495,13 @@ if ($ShowLiveness -and -not $NoContinuity) {
         )
         foreach ($wake in $wakeRequests) {
             $target = [string]$wake.to
-            $wakeTs = [string]$wake.ts_utc
             $closed = @(
                 $allLivenessEvents |
                     Where-Object {
                         [string]$_.task_id -eq [string]$wake.task_id -and
                         [string]$_.type -eq 'wake_request' -and
                         [string]$_.status -eq 'closed' -and
-                        [string]$_.ts_utc -gt $wakeTs
+                        (Test-BridgeEventAfter -Event $_ -Reference $wake)
                     } |
                     Select-Object -First 1
             )
@@ -505,7 +511,7 @@ if ($ShowLiveness -and -not $NoContinuity) {
                     $allLivenessEvents |
                         Where-Object {
                             [string]$_.agent -eq $target -and
-                            [string]$_.ts_utc -gt $wakeTs -and
+                            (Test-BridgeEventAfter -Event $_ -Reference $wake) -and
                             $activityTypes -contains [string]$_.type
                         } |
                         Select-Object -First 1
@@ -647,7 +653,7 @@ if ($ShowScoreboard) {
                         ([string]$_.type -eq 'done') -or
                         ([string]$_.type -eq 'finding' -and [string]$_.status -eq 'closed')
                     } |
-                    Sort-Object ts_utc |
+                    Sort-Object { Get-BridgeEventUtcSortKey -Event $_ } |
                     Select-Object -Last 12
             )
             if ($recentFixes.Count -eq 0) {

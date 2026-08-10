@@ -479,6 +479,43 @@ def test_done_acknowledged_does_not_clear_same_peer_block() -> None:
     assert result["latest_approval_event"] is None
 
 
+def test_ack_status_tokens_do_not_clear_same_peer_block() -> None:
+    for status in (
+        "ack",
+        "ACK",
+        "acknowledged",
+        "received",
+        "seen",
+        "wake_ack",
+        "received_with_context",
+        "wake_acknowledged",
+    ):
+        events = [
+            _event(
+                "2026-06-06T17:53:00Z",
+                "codex-tools-1",
+                "finding",
+                "changes_requested",
+            ),
+            _event(
+                "2026-06-06T18:12:00Z",
+                "codex-tools-1",
+                "decision",
+                status,
+            ),
+        ]
+
+        result = check_bridge_clear_to_merge(
+            events=events,
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is False, status
+        assert result["latest_blocking_event"]["status"] == "changes_requested"
+        assert result["latest_approval_event"] is None
+
+
 def test_different_peer_approval_does_not_clear_block() -> None:
     events = [
         _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),

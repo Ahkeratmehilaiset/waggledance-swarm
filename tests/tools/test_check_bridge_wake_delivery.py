@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_bridge_wake_delivery.py"
@@ -202,6 +204,135 @@ def test_target_heartbeat_after_wake_does_not_clear_pending_group() -> None:
     assert row["target_agent"] == "claude-rco-2"
     assert row["wake_request_count"] == 2
     assert row["latest_wake_age_minutes"] == 25.0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ack",
+        "wake_ack",
+        "wake-acknowledged",
+        "received_with_context",
+        "done_received",
+        "seen.with-context",
+    ],
+)
+def test_ack_shaped_wake_request_is_not_a_pending_delivery(status: str) -> None:
+    report = check_wake_delivery(
+        events=[_wake(status=status)],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=1,
+    )
+
+    assert report["decision"] == "wake_delivery_ok"
+    assert report["stalled_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "later_event",
+    [
+        {
+            "ts_utc": "2026-06-13T12:06:00Z",
+            "agent": "operator",
+            "type": "message",
+            "task_id": "bridge-follow-nudge-20260613",
+            "status": "acknowledged",
+        },
+        {
+            "ts_utc": "2026-06-13T12:06:00Z",
+            "agent": "unrelated-agent",
+            "type": "done",
+            "task_id": "bridge-follow-nudge-20260613",
+            "status": "merged",
+        },
+    ],
+)
+def test_ack_or_third_party_terminal_does_not_clear_pending_wake(
+    later_event: dict[str, object],
+) -> None:
+    report = check_wake_delivery(
+        events=[_wake(), later_event],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=1,
+    )
+
+    assert report["decision"] == "wake_delivery_stalled"
+    assert report["stalled_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("closure_uuid", "closure_session", "expected_count"),
+    [
+        ("", "", 1),
+        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "wake-session", 1),
+        ("11111111-2222-3333-4444-555555555555", "other-session", 1),
+        ("11111111-2222-3333-4444-555555555555", "wake-session", 0),
+        ("11111111-2222-3333-4444-555555555555".upper(), "wake-session", 0),
+    ],
+)
+def test_requester_terminal_wake_requires_matching_identity(
+    closure_uuid: str,
+    closure_session: str,
+    expected_count: int,
+) -> None:
+    request = _wake()
+    request["agent_uuid"] = "11111111-2222-3333-4444-555555555555"
+    request["session_id"] = "wake-session"
+    closure = {
+        "ts_utc": "2026-06-13T12:06:00Z",
+        "agent": "operator",
+        "agent_uuid": closure_uuid,
+        "session_id": closure_session,
+        "type": "status",
+        "task_id": "bridge-follow-nudge-20260613",
+        "status": "superseded",
+    }
+
+    report = check_wake_delivery(
+        events=[request, closure],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=1,
+    )
+
+    assert report["stalled_count"] == expected_count
+
+
+def test_backdated_closure_does_not_clear_pending_wake() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:05:00.0000001Z"),
+            {
+                "ts_utc": "2026-06-13T12:05:00.0000000Z",
+                "agent": "operator",
+                "type": "status",
+                "task_id": "bridge-follow-nudge-20260613",
+                "status": "superseded",
+            },
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=1,
+    )
+
+    assert report["stalled_count"] == 1
+
+
+def test_equal_timestamp_later_target_activity_clears_pending_wake() -> None:
+    timestamp = "2026-06-13T12:05:00.1234567Z"
+    report = check_wake_delivery(
+        events=[
+            _wake(ts=timestamp),
+            _activity(ts=timestamp, event_type="decision"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=1,
+    )
+
+    assert report["stalled_count"] == 0
 
 
 def test_prior_target_self_liveness_does_not_suppress_restart_escalation() -> None:

@@ -44,9 +44,17 @@ function Read-EventObjects {
     } else {
         Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8
     })
+    $appendIndex = 0L
     foreach ($line in $lines) {
+        $currentAppendIndex = $appendIndex
+        $appendIndex += 1
         if (-not $line) { continue }
-        try { [void]$items.Add(($line | ConvertFrom-Json)) } catch {}
+        try {
+            $event = $line | ConvertFrom-Json
+            $event | Add-Member -NotePropertyName '_bridge_append_index' `
+                -NotePropertyValue $currentAppendIndex -Force
+            [void]$items.Add($event)
+        } catch {}
     }
     return $items
 }
@@ -81,7 +89,11 @@ $contributions = @()
 foreach ($agent in $agents) {
     $agentEvents = @($events | Where-Object { [string]$_.agent -eq $agent })
     $agentClaims = @($claims | Where-Object { [string]$_.agent -eq $agent })
-    $lastEvent = @($agentEvents | Sort-Object ts_utc | Select-Object -Last 1)
+    $lastEvent = @(
+        $agentEvents |
+            Sort-Object { Get-BridgeEventUtcSortKey -Event $_ } |
+            Select-Object -Last 1
+    )
     $contributions += [pscustomobject]@{
         agent          = $agent
         events         = $agentEvents.Count
@@ -98,7 +110,11 @@ foreach ($agent in $agents) {
 }
 
 $latestRequests = @{}
-foreach ($event in @($events | Where-Object { Test-BridgeRequestLikeEvent -Event $_ } | Sort-Object ts_utc)) {
+foreach ($event in @(
+    $events |
+        Where-Object { Test-BridgeRequestLikeEvent -Event $_ } |
+        Sort-Object { Get-BridgeEventUtcSortKey -Event $_ }
+)) {
     foreach ($target in @(Get-BridgeEventTargets -Event $event)) {
         $key = "{0}|{1}" -f $target, [string]$event.task_id
         $latestRequests[$key] = [pscustomobject]@{
@@ -119,10 +135,10 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
             Where-Object {
                 [string]$_.agent -eq $target -and
                 [string]$_.task_id -eq $taskId -and
-                [string]$_.ts_utc -gt [string]$request.ts_utc -and
+                (Test-BridgeEventAfter -Event $_ -Reference $request) -and
                 (Test-BridgeAnswerEvent -Event $_)
             } |
-            Sort-Object ts_utc |
+            Sort-Object { Get-BridgeEventUtcSortKey -Event $_ } |
             Select-Object -Last 1
     )
     $received = @(
@@ -132,9 +148,9 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.type -eq 'message' -and
                 [string]$_.status -eq 'received' -and
-                [string]$_.ts_utc -gt [string]$request.ts_utc
+                (Test-BridgeEventAfter -Event $_ -Reference $request)
             } |
-            Sort-Object ts_utc |
+            Sort-Object { Get-BridgeEventUtcSortKey -Event $_ } |
             Select-Object -Last 1
     )
     $closure = @(
@@ -142,10 +158,11 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
             Where-Object {
                 [string]$_.agent -eq [string]$request.agent -and
                 [string]$_.task_id -eq $taskId -and
-                [string]$_.ts_utc -gt [string]$request.ts_utc -and
-                (Test-BridgeRequesterClosureEvent -Event $_)
+                (Test-BridgeEventAfter -Event $_ -Reference $request) -and
+                (Test-BridgeRequesterClosureEvent -Event $_) -and
+                (Test-BridgeRequesterIdentityMatch -Request $request -Closure $_)
             } |
-            Sort-Object ts_utc |
+            Sort-Object { Get-BridgeEventUtcSortKey -Event $_ } |
             Select-Object -Last 1
     )
     $state = 'waiting'
@@ -173,7 +190,7 @@ $recentSubstantive = @(
             -not ([string]$_.type -eq 'message' -and [string]$_.status -eq 'received') -and
             [string]$_.type -notin @('heartbeat','liveness')
         } |
-        Sort-Object ts_utc |
+        Sort-Object { Get-BridgeEventUtcSortKey -Event $_ } |
         Select-Object -Last $Recent
 )
 
@@ -249,7 +266,15 @@ $unresolved = @($requestStates | Where-Object { $_.state -notin @('answered','cl
 if ($unresolved.Count -eq 0) {
     Write-Host '  (none)'
 } else {
-    $unresolvedForDisplay = @($unresolved | Sort-Object ts_utc -Descending | Select-Object -First $MaxUnresolved)
+    $unresolvedForDisplay = @(
+        $unresolved |
+            Sort-Object {
+                ConvertTo-BridgeEventUtcDateTime -Value (
+                    Get-BridgeEventTimestampValue -Event $_
+                )
+            } -Descending |
+            Select-Object -First $MaxUnresolved
+    )
     foreach ($item in $unresolvedForDisplay) {
         Write-Host ("  {0} {1} <- {2} {3} [{4}] {5}: {6}" -f `
             $item.state, $item.to, $item.from, $item.task_id, $item.request, $item.ts_utc, (Format-BridgeText $item.message))

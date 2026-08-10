@@ -27,14 +27,20 @@ import tools.bridge_next_action as bridge_next_action  # noqa: E402
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     CLOSED_REQUEST_STATUSES,
+    _build_idle_protocol_progress_index,
+    _build_request_closure_index,
+    _chronological_events,
     _event_agent,
+    _event_occurs_after,
     _event_recipients,
     _event_status,
     _event_ts,
     _event_type,
+    _is_ack_event,
     _is_request_like,
     _latest_event_time,
     _parse_utc,
+    _request_closed_for_agent,
     _task_id,
     read_events,
 )
@@ -321,9 +327,12 @@ def build_operator_attention_digest(
 def _open_operator_attention_items(
     events: Sequence[Mapping[str, Any]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
+    ordered_events = _chronological_events(events)
+    closure_index = _build_request_closure_index(ordered_events)
+    idle_progress_index = _build_idle_protocol_progress_index(ordered_events)
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for index, event in enumerate(events):
-        _close_satisfied_items(open_by_key, event)
+    for index, event in enumerate(ordered_events):
+        _close_resumed_wake_send_failures(open_by_key, event)
         if _is_wake_send_failed_event(event):
             target = _wake_send_failed_target(event)
             if not target:
@@ -348,6 +357,7 @@ def _open_operator_attention_items(
                 "payload_pr": "",
                 "payload_head": "",
                 "target_agent": target,
+                "_request_event": event,
                 "attention_reasons": [
                     "operator_action_signal",
                     "wake_send_failed",
@@ -355,6 +365,14 @@ def _open_operator_attention_items(
             }
             continue
         if not _is_operator_attention_event(event):
+            continue
+        if _request_closed_for_agent(
+            request=event,
+            agent=OPERATOR_AGENT,
+            events=ordered_events,
+            closure_index=closure_index,
+            idle_progress_index=idle_progress_index,
+        ):
             continue
         key = (_task_key(event), _payload_scalar(event, "pr") or "")
         previous = open_by_key.get(key)
@@ -394,33 +412,23 @@ def _wake_send_failed_target(event: Mapping[str, Any]) -> str:
     return match.group("agent").strip().lower()
 
 
-def _close_satisfied_items(
+def _close_resumed_wake_send_failures(
     open_by_key: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
 ) -> None:
-    is_closure = _is_closure_event(event)
     event_agent = _event_agent(event)
     event_type = _event_type(event)
-    if not is_closure and event_type == "heartbeat":
+    if event_type == "heartbeat":
         return
-    event_ts = _event_ts(event)
-    event_task_key = _task_key(event)
-    event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
     for key, state in list(open_by_key.items()):
-        state_task_key, state_pr = key
-        if event_ts <= str(state["ts_utc"]):
-            continue
-        same_task = bool(
-            is_closure and event_task_key and event_task_key == state_task_key
-        )
-        same_pr = bool(is_closure and event_pr and state_pr and event_pr == state_pr)
         target_agent = str(state.get("target_agent") or "")
-        target_resumed = (
-            bool(target_agent)
+        request_event = state.get("_request_event")
+        if (
+            target_agent
             and event_agent == target_agent
-            and event_type != "heartbeat"
-        )
-        if same_task or same_pr or target_resumed:
+            and isinstance(request_event, Mapping)
+            and _event_occurs_after(event, request_event)
+        ):
             del open_by_key[key]
 
 
@@ -429,13 +437,18 @@ def _is_operator_attention_event(event: Mapping[str, Any]) -> bool:
         return False
     if _event_agent(event) in {OPERATOR_AGENT, "system"}:
         return False
-    if _event_status(event) in CLOSED_REQUEST_STATUSES:
+    if _is_ack_event(event):
         return False
     event_type = _event_type(event)
-    if event_type in TERMINAL_TYPES or event_type in {"claim", "test"}:
+    if event_type in {"claim", "test"}:
         return False
     if _is_request_like(event):
         return True
+    if (
+        _event_status(event) in CLOSED_REQUEST_STATUSES
+        or event_type in TERMINAL_TYPES
+    ):
+        return False
     reasons = set(_attention_reasons(event))
     if event_type == "finding" and any(
         reason.startswith("severity:") for reason in reasons
@@ -450,13 +463,6 @@ def _is_operator_attention_event(event: Mapping[str, Any]) -> bool:
                 "wake_request_to_operator",
             }
         )
-    )
-
-
-def _is_closure_event(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) in TERMINAL_TYPES
-        or _event_status(event) in CLOSED_REQUEST_STATUSES
     )
 
 

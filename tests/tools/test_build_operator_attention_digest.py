@@ -32,6 +32,8 @@ def _event(
     severity: str = "high",
     message: str = "wake file exists at C:\\secret\\bridge\\wake_claude-rco-2",
     payload: dict[str, object] | None = None,
+    agent_uuid: str = "",
+    session_id: str = "",
 ) -> dict[str, object]:
     return {
         "ts_utc": ts,
@@ -43,6 +45,8 @@ def _event(
         "severity": severity,
         "message": message,
         "payload": payload or {},
+        "agent_uuid": agent_uuid,
+        "session_id": session_id,
     }
 
 
@@ -94,6 +98,175 @@ def test_reports_operator_addressed_attention_without_paths() -> None:
     assert "<redacted-path>" in encoded
     assert report["events_path_recorded"] is False
     assert report["local_paths_recorded"] is False
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ack",
+        "wake_ack",
+        "wake-acknowledged",
+        "received_with_context",
+        "done_received",
+        "seen.with-context",
+    ],
+)
+def test_ack_shaped_wake_request_does_not_open_operator_attention(
+    status: str,
+) -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                event_type="wake_request",
+                status=status,
+                severity="",
+                payload={},
+            )
+        ],
+        include_wake_delivery=False,
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 0
+
+
+@pytest.mark.parametrize("event_type", ["done", "release"])
+def test_nonterminal_request_with_terminal_event_type_opens_attention(
+    event_type: str,
+) -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                event_type=event_type,
+                status="request",
+                severity="",
+                payload={},
+            )
+        ],
+        include_wake_delivery=False,
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "later_event",
+    [
+        _event(
+            ts="2026-06-14T05:10:00Z",
+            agent="operator",
+            to="codex-lead-1",
+            event_type="message",
+            status="acknowledged",
+            severity="",
+        ),
+        _event(
+            ts="2026-06-14T05:10:00Z",
+            agent="unrelated-agent",
+            event_type="done",
+            status="merged",
+            severity="",
+        ),
+        _event(
+            ts="2026-06-14T05:10:00Z",
+            agent="unrelated-agent",
+            event_type="done",
+            task_id="different-task",
+            status="merged",
+            severity="",
+            payload={"pr": 1192},
+        ),
+    ],
+)
+def test_ack_or_third_party_terminal_does_not_close_operator_attention(
+    later_event: dict[str, object],
+) -> None:
+    report = build_operator_attention_digest(
+        events=[_event(payload={"pr": 1192}), later_event],
+        include_wake_delivery=False,
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 1
+
+
+def test_custom_operator_reply_closes_attention() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(),
+            _event(
+                ts="2026-06-14T05:10:00Z",
+                agent="operator",
+                to="codex-lead-1",
+                event_type="review_verdict",
+                status="independent_pass",
+                severity="",
+            ),
+        ],
+        include_wake_delivery=False,
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("closure_uuid", "closure_session", "expected_count"),
+    [
+        ("", "", 1),
+        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "request-session", 1),
+        ("11111111-2222-3333-4444-555555555555", "other-session", 1),
+        ("a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6", "request-session", 0),
+        ("a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6".upper(), "request-session", 0),
+    ],
+)
+def test_requester_terminal_attention_requires_matching_identity(
+    closure_uuid: str,
+    closure_session: str,
+    expected_count: int,
+) -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                agent_uuid="a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6",
+                session_id="request-session",
+            ),
+            _event(
+                ts="2026-06-14T05:10:00Z",
+                event_type="status",
+                status="superseded",
+                severity="",
+                agent_uuid=closure_uuid,
+                session_id=closure_session,
+            ),
+        ],
+        include_wake_delivery=False,
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == expected_count
+
+
+def test_equal_timestamp_later_operator_reply_closes_attention() -> None:
+    timestamp = "2026-06-14T05:10:00.1234567Z"
+    report = build_operator_attention_digest(
+        events=[
+            _event(ts=timestamp),
+            _event(
+                ts=timestamp,
+                agent="operator",
+                to="codex-lead-1",
+                event_type="decision",
+                status="approved",
+                severity="",
+            ),
+        ],
+        include_wake_delivery=False,
+        now_utc=_now(),
+    )
+
+    assert report["attention_count"] == 0
 
 
 def test_live_wake_delivery_stall_is_urgent_synthetic_attention() -> None:
@@ -246,13 +419,96 @@ def test_operator_wake_send_failed_clears_after_target_activity() -> None:
     assert report["items"] == []
 
 
-def test_later_terminal_event_closes_operator_attention() -> None:
+@pytest.mark.parametrize(
+    ("activity", "expected_count"),
+    [
+        (
+            _event(
+                ts="2026-06-14T05:04:00Z",
+                agent="codex-lead-1",
+                to="",
+                event_type="message",
+                task_id="lead-active",
+                status="acknowledged",
+                severity="",
+            ),
+            0,
+        ),
+        (
+            _event(
+                ts="2026-06-14T05:00:00Z",
+                agent="codex-lead-1",
+                to="",
+                event_type="status",
+                task_id="lead-active",
+                status="working",
+                severity="",
+            ),
+            0,
+        ),
+        (
+            _event(
+                ts="not-a-timestamp",
+                agent="codex-lead-1",
+                to="",
+                event_type="status",
+                task_id="lead-active",
+                status="working",
+                severity="",
+            ),
+            1,
+        ),
+        (
+            _event(
+                ts="2026-06-14T05:04:00Z",
+                agent="unrelated-agent",
+                to="",
+                event_type="status",
+                task_id="lead-active",
+                status="working",
+                severity="",
+            ),
+            1,
+        ),
+    ],
+)
+def test_operator_wake_send_failed_recovery_is_target_and_order_bound(
+    activity: dict[str, object],
+    expected_count: int,
+) -> None:
     report = build_operator_attention_digest(
         events=[
-            _event(task_id="task-close", payload={"pr": 1192}),
+            _event(
+                ts="2026-06-14T05:00:00Z",
+                agent="operator",
+                to="",
+                event_type="message",
+                task_id="wd/ops/stall-rescue-watch",
+                status="wake_send_failed",
+                severity="",
+                message="Keying 'codex-lead-1' failed (tab not found).",
+            ),
+            activity,
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == expected_count
+
+
+def test_later_requester_terminal_event_closes_operator_attention_by_pr() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(
+                task_id="task-close",
+                payload={"pr": 1192},
+                agent_uuid="11111111-2222-3333-4444-555555555555",
+                session_id="request-session",
+            ),
             _event(
                 ts="2026-06-14T05:10:00Z",
-                agent="driver",
+                agent="codex-lead-1",
                 to="operator",
                 event_type="done",
                 task_id="different-task",
@@ -260,6 +516,8 @@ def test_later_terminal_event_closes_operator_attention() -> None:
                 severity="",
                 message="merged",
                 payload={"pr": 1192},
+                agent_uuid="11111111-2222-3333-4444-555555555555",
+                session_id="request-session",
             ),
         ],
         now_utc=_now(),

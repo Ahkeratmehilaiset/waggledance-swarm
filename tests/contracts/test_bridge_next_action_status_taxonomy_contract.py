@@ -13,6 +13,7 @@ import pytest
 
 from tools.bridge_next_action import (
     CLOSED_REQUEST_STATUSES,
+    _is_requester_terminal_closure,
     recommend_next_action,
 )
 
@@ -124,3 +125,47 @@ def test_negated_terminal_status_words_do_not_close_requests(status: str) -> Non
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "bridge-status-taxonomy"
     assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("status", "superseded"),
+        ("status", "completed_after_review"),
+        ("status", "changes_requested_retracted"),
+        ("status", "changes_requested_resolved"),
+        ("status", "changes_requested_withdrawn"),
+        ("done", "closed_current_main_reconciled"),
+        ("decision", "rco_finding_withdrawn"),
+        ("message", "superseded_by_new_head"),
+    ],
+)
+def test_requester_terminal_closure_contract(
+    event_type: str,
+    status: str,
+) -> None:
+    event = _event(status)
+    event["type"] = event_type
+
+    assert _is_requester_terminal_closure(event) is True
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("status", "received"),
+        ("status", "working"),
+        ("done", "request"),
+        ("decision", "done_not"),
+        ("decision", "changes_requested_resolved_pending"),
+        ("message", "completed_after_review"),
+    ],
+)
+def test_requester_nonterminal_closure_contract(
+    event_type: str,
+    status: str,
+) -> None:
+    event = _event(status)
+    event["type"] = event_type
+
+    assert _is_requester_terminal_closure(event) is False

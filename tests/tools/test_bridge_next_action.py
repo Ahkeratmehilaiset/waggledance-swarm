@@ -101,6 +101,128 @@ def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path)
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("ownership_proposal", "open"),
+        ("solver_gap", "architecture_proposal"),
+        ("review_thread", "request"),
+    ],
+)
+def test_directed_polymorphic_open_event_is_actionable(
+    event_type: str,
+    status: str,
+) -> None:
+    event = {
+        "ts_utc": "2026-08-09T20:00:00Z",
+        "agent": "codex-lead-1",
+        "to": "codex-tools-1",
+        "type": event_type,
+        "task_id": "polymorphic-open-request",
+        "status": status,
+        "message": "directed polymorphic work request",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[event],
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "polymorphic-open-request"
+    assert report["open_incoming_count"] == 1
+
+
+def test_custom_open_event_can_answer_and_open_reciprocal_work() -> None:
+    task_id = "custom-dual-continuity"
+    events = [
+        {
+            "ts_utc": "2026-08-09T20:00:00Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": task_id,
+            "status": "request",
+            "message": "propose ownership split",
+        },
+        {
+            "ts_utc": "2026-08-09T20:01:00Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1",
+            "type": "ownership_proposal",
+            "task_id": task_id,
+            "status": "open",
+            "message": "substantive proposal and reciprocal work",
+        },
+    ]
+
+    target_report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+    requester_report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+    )
+
+    assert target_report["open_incoming_count"] == 0
+    assert requester_report["action"] == "answer_incoming"
+    assert requester_report["task_id"] == task_id
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "changes_requested"),
+        ("message", "blocked"),
+        ("decision", "changes_requested"),
+        ("finding", "changes_requested"),
+        ("handoff", "blocked"),
+        ("blocked", "blocked"),
+        ("test", "changes_requested"),
+        ("release", "blocked"),
+    ],
+)
+def test_standard_counter_request_does_not_close_original_request(
+    event_type: str,
+    status: str,
+) -> None:
+    task_id = "counter-request-remains-open"
+    events = [
+        {
+            "ts_utc": "2026-08-09T20:00:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": task_id,
+            "status": "request",
+            "message": "original request",
+        },
+        {
+            "ts_utc": "2026-08-09T20:01:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-1",
+            "type": event_type,
+            "task_id": task_id,
+            "status": status,
+            "message": "counter-request, not an answer",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == task_id
+    assert report["open_incoming_count"] == 1
+
+
 def test_suppressed_unavailable_agent_does_not_claim_operator_follow_nudge() -> None:
     events = [
         {
@@ -999,7 +1121,7 @@ def test_done_postmerge_validated_closes_incoming_handoff() -> None:
     assert report["open_incoming_count"] == 0
 
 
-def test_autonomous_merge_receipt_closes_same_task_incoming_request() -> None:
+def test_third_party_autonomous_merge_receipt_does_not_close_request() -> None:
     events = [
         {
             "ts_utc": "2026-06-16T00:21:54Z",
@@ -1035,9 +1157,150 @@ def test_autonomous_merge_receipt_closes_same_task_incoming_request() -> None:
         now_utc=datetime.fromisoformat("2026-06-16T00:23:00+00:00"),
     )
 
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+    assert report["stale_incoming_count"] == 0
+
+
+def test_target_autonomous_merge_receipt_closes_same_task_request() -> None:
+    request = {
+        "ts_utc": "2026-06-16T00:21:54Z",
+        "agent": "codex-tools-1",
+        "to": "codex-lead-1",
+        "type": "wake_request",
+        "task_id": "target-merge-receipt",
+        "status": "review_requested",
+        "message": "Target must reconcile the merged PR.",
+    }
+    receipt = {
+        "ts_utc": "2026-06-16T00:22:05Z",
+        "agent": "codex-lead-1",
+        "to": "codex-tools-1",
+        "type": "decision",
+        "task_id": "target-merge-receipt",
+        "status": "autonomous_merge_receipt",
+        "message": "Target verified the merge receipt.",
+    }
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=[request, receipt],
+        claims=[],
+    )
+
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
-    assert report["stale_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "received"),
+        ("message", "seen"),
+        ("message", "acknowledged"),
+        ("message", "wake_ack"),
+        ("message", "wake_acknowledged"),
+        ("message", "ack"),
+        ("done", "ack"),
+        ("message", "received_with_context"),
+        ("done", "done_received"),
+    ],
+)
+def test_generic_target_ack_does_not_close_request(
+    event_type: str,
+    status: str,
+) -> None:
+    request = {
+        "ts_utc": "2026-06-16T00:21:54Z",
+        "agent": "codex-lead-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "generic-target-ack",
+        "status": "request",
+        "message": "Please provide a substantive answer.",
+    }
+    ack = {
+        "ts_utc": "2026-06-16T00:22:05Z",
+        "agent": "codex-tools-1",
+        "to": "codex-lead-1",
+        "type": event_type,
+        "task_id": "generic-target-ack",
+        "status": status,
+        "message": "Receipt only.",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, ack],
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("status", ["unacknowledged", "foreseen", "prereceived"])
+def test_ack_classifier_does_not_match_status_substrings(status: str) -> None:
+    assert bridge_next_action._is_ack_event(  # noqa: SLF001
+        {"type": "message", "status": status}
+    ) is False
+
+
+@pytest.mark.parametrize("event_type", ["heartbeat", "liveness"])
+def test_directed_infrastructure_activity_does_not_open_incoming_work(
+    event_type: str,
+) -> None:
+    event = {
+        "ts_utc": "2026-06-16T00:21:54Z",
+        "agent": "codex-lead-1",
+        "to": "codex-tools-1",
+        "type": event_type,
+        "task_id": "infrastructure-is-not-work",
+        "status": "active",
+        "message": "background liveness only",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[event],
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize("status", ["request_closed", "done_request"])
+def test_done_response_compound_closes_prior_request(status: str) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-16T00:21:54Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "done-compound-response",
+            "status": "request",
+            "message": "please complete this task",
+        },
+        {
+            "ts_utc": "2026-06-16T00:22:54Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1",
+            "type": "done",
+            "task_id": "done-compound-response",
+            "status": status,
+            "message": "substantive completion response",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
 
 
 def test_autonomous_merge_receipt_does_not_close_unrelated_task_request() -> None:
@@ -1135,7 +1398,7 @@ def test_done_with_domain_status_closes_incoming_request() -> None:
 
 
 @pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
-def test_ack_message_statuses_close_incoming_request(status: str) -> None:
+def test_ack_message_statuses_do_not_close_incoming_request(status: str) -> None:
     events = [
         {
             "ts_utc": "2026-05-18T10:10:00Z",
@@ -1159,9 +1422,9 @@ def test_ack_message_statuses_close_incoming_request(status: str) -> None:
 
     report = recommend_next_action(agent="codex", events=events, claims=[])
 
-    assert report["action"] == "claim_unblocked_work"
-    assert report["task_id"] == "next-unclaimed-scout-or-implementation"
-    assert report["open_incoming_count"] == 0
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "ack-request"
+    assert report["open_incoming_count"] == 1
     assert report["stale_incoming_count"] == 0
 
 
@@ -1381,6 +1644,487 @@ def test_requester_done_close_closes_incoming_request_for_target() -> None:
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
     assert report["stale_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("status", "superseded"),
+        ("status", "completed_after_review"),
+        ("done", "closed_current_main_reconciled"),
+        ("decision", "rco_finding_withdrawn"),
+    ],
+)
+def test_requester_terminal_event_closes_incoming_request(
+    event_type: str,
+    status: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-09T10:10:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "requester-terminal-taxonomy",
+            "status": "request",
+            "message": "please review this finding",
+        },
+        {
+            "ts_utc": "2026-08-09T10:12:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": event_type,
+            "task_id": "requester-terminal-taxonomy",
+            "status": status,
+            "message": "requester terminal closeout",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("status", "received"),
+        ("status", "seen"),
+        ("status", "acknowledged"),
+        ("status", "working"),
+        ("decision", "done_not"),
+    ],
+)
+def test_requester_nonterminal_event_does_not_close_incoming_request(
+    event_type: str,
+    status: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-09T10:10:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "requester-nonterminal-taxonomy",
+            "status": "request",
+            "message": "please review this finding",
+        },
+        {
+            "ts_utc": "2026-08-09T10:12:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": event_type,
+            "task_id": "requester-nonterminal-taxonomy",
+            "status": status,
+            "message": "requester progress, not a closeout",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "requester-nonterminal-taxonomy"
+    assert report["open_incoming_count"] == 1
+
+
+def test_requester_done_request_is_actionable_and_does_not_close_prior_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-09T10:10:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "requester-done-request",
+            "status": "request",
+            "message": "first request",
+        },
+        {
+            "ts_utc": "2026-08-09T10:12:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "done",
+            "task_id": "requester-done-request",
+            "status": "request",
+            "message": "follow-up request carried by a done event",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["type"] == "done"
+    assert report["incoming"]["status"] == "request"
+    assert report["open_incoming_count"] == 2
+
+
+def test_target_status_event_is_not_a_generic_answer() -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-09T10:10:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "target-status-is-not-answer",
+            "status": "request",
+            "message": "please review this finding",
+        },
+        {
+            "ts_utc": "2026-08-09T10:12:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-1",
+            "type": "status",
+            "task_id": "target-status-is-not-answer",
+            "status": "superseded",
+            "message": "target status is not a substantive reply",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "late_status_response"),
+        ("review_verdict", "independent_pass"),
+    ],
+)
+def test_polymorphic_target_response_closes_incoming_request(
+    event_type: str,
+    status: str,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-09T10:10:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "polymorphic-target-response",
+            "status": "request",
+            "message": "please answer",
+        },
+        {
+            "ts_utc": "2026-08-09T10:12:00Z",
+            "agent": "codex-tools-1",
+            "to": "claude-rco-1",
+            "type": event_type,
+            "task_id": "polymorphic-target-response",
+            "status": status,
+            "message": "substantive target response",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_later_same_task_request_reopens_after_requester_terminal_event() -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-09T10:09:59.0000000Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "requester-reopen",
+            "status": "request",
+            "message": "old request",
+        },
+        {
+            "ts_utc": "2026-08-09T10:10:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "status",
+            "task_id": "requester-reopen",
+            "status": "superseded",
+            "message": "old request is obsolete",
+        },
+        {
+            "ts_utc": "2026-08-09T10:10:00.1000000Z",
+            "agent": "claude-rco-1",
+            "to": "codex-tools-1",
+            "type": "message",
+            "task_id": "requester-reopen",
+            "status": "review_requested",
+            "message": "new exact-head request",
+        },
+    ]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["message"] == "new exact-head request"
+    assert report["open_incoming_count"] == 1
+
+
+def test_requester_terminal_event_orders_adjacent_100ns_ticks() -> None:
+    request = {
+        "ts_utc": "2026-08-09T10:10:00.0000001Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "requester-adjacent-ticks",
+        "status": "request",
+        "message": "please review this finding",
+    }
+    closure = {
+        "ts_utc": "2026-08-09T10:10:00.0000002Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "status",
+        "task_id": "requester-adjacent-ticks",
+        "status": "superseded",
+        "message": "requester terminal closeout",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, closure],
+        claims=[],
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("closure_first", "expected_open"),
+    [(False, 0), (True, 1)],
+)
+def test_requester_terminal_event_uses_append_order_for_equal_timestamps(
+    closure_first: bool,
+    expected_open: int,
+) -> None:
+    request = {
+        "ts_utc": "2026-08-09T10:10:00.0000001Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "requester-equal-timestamp",
+        "status": "request",
+        "message": "please review this finding",
+    }
+    closure = {
+        "ts_utc": "2026-08-09T10:10:00.0000001Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "status",
+        "task_id": "requester-equal-timestamp",
+        "status": "superseded",
+        "message": "requester terminal closeout",
+    }
+    events = [closure, request] if closure_first else [request, closure]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["open_incoming_count"] == expected_open
+
+
+@pytest.mark.parametrize(
+    ("closure_first", "expected_open"),
+    [(False, 0), (True, 1)],
+)
+def test_serialized_append_index_cannot_override_physical_order(
+    closure_first: bool,
+    expected_open: int,
+) -> None:
+    request = {
+        "ts_utc": "2026-08-09T10:10:00.0000001Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "requester-append-index-spoof",
+        "status": "request",
+        "message": "please review this finding",
+        "_bridge_append_index": 0 if closure_first else 100,
+    }
+    closure = {
+        "ts_utc": "2026-08-09T10:10:00.0000001Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "status",
+        "task_id": "requester-append-index-spoof",
+        "status": "superseded",
+        "message": "requester terminal closeout",
+        "_bridge_append_index": 100 if closure_first else 0,
+    }
+    events = [closure, request] if closure_first else [request, closure]
+
+    report = recommend_next_action(agent="codex-tools-1", events=events, claims=[])
+
+    assert report["open_incoming_count"] == expected_open
+
+
+def test_invalid_timestamp_requester_terminal_event_does_not_close() -> None:
+    request = {
+        "ts_utc": "2026-08-09T10:10:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "requester-invalid-timestamp",
+        "status": "request",
+        "message": "please review this finding",
+    }
+    closure = {
+        "ts_utc": "not-a-timestamp",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "status",
+        "task_id": "requester-invalid-timestamp",
+        "status": "superseded",
+        "message": "malformed closeout must fail closed",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, closure],
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("request_identity", "closure_identity", "is_closed"),
+    [
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-stale-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "99999999-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {},
+            False,
+        ),
+        (
+            {},
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {"agent_uuid": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"},
+            {
+                "agent_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "session_id": "closure-extra-session",
+            },
+            True,
+        ),
+        (
+            {"session_id": "requester-current-session"},
+            {
+                "agent_uuid": "99999999-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {"agent_uuid": "11111111-2222-3333-4444-555555555555"},
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {"session_id": "requester-current-session"},
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+                "run_id": "request-run",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+                "run_id": "closure-run",
+            },
+            True,
+        ),
+    ],
+)
+def test_requester_terminal_event_binds_to_request_identity(
+    request_identity: dict[str, str],
+    closure_identity: dict[str, str],
+    is_closed: bool,
+) -> None:
+    request = {
+        "ts_utc": "2026-08-09T10:10:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "requester-identity-binding",
+        "status": "request",
+        "message": "please review this finding",
+        **request_identity,
+    }
+    closure = {
+        "ts_utc": "2026-08-09T10:12:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-tools-1",
+        "type": "status",
+        "task_id": "requester-identity-binding",
+        "status": "superseded",
+        "message": "requester terminal closeout",
+        **closure_identity,
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, closure],
+        claims=[],
+    )
+
+    assert report["open_incoming_count"] == (0 if is_closed else 1)
+    assert report["action"] == (
+        "claim_unblocked_work" if is_closed else "answer_incoming"
+    )
 
 
 def test_comma_separated_recipient_is_incoming_for_target_agent() -> None:
@@ -2593,6 +3337,365 @@ def test_target_heartbeat_does_not_clear_wake_delivery_gap() -> None:
     assert wake["target_agent"] == "claude-rco-1"
     assert wake["wake_request_count"] == 2
     assert wake["latest_wake_age_minutes"] == 15.0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ack",
+        "ACK",
+        "wake_ack",
+        "wake-acknowledged",
+        "received_with_context",
+        "done_received",
+        "SEEN.with-context",
+        "status_query_ack",
+    ],
+)
+def test_ack_shaped_wake_request_does_not_open_delivery_group(status: str) -> None:
+    event = {
+        "ts_utc": "2026-06-06T10:00:00Z",
+        "agent": "operator",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "rco-needed",
+        "status": status,
+    }
+
+    assert bridge_next_action._unresolved_wake_delivery_groups([event]) == {}
+
+
+def test_target_ack_wake_clears_without_opening_reciprocal_group() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00Z",
+            "agent": "claude-rco-1",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "received_with_context",
+        },
+    ]
+
+    assert bridge_next_action._unresolved_wake_delivery_groups(events) == {}
+
+
+def test_requester_ack_wake_does_not_close_original_delivery_group() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "wake_ack",
+        },
+    ]
+
+    groups = bridge_next_action._unresolved_wake_delivery_groups(events)
+
+    assert list(groups) == [("claude-rco-1", "rco-needed")]
+    assert groups[("claude-rco-1", "rco-needed")]["wake_request_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("closure_uuid", "closure_session", "expected_open"),
+    [
+        ("A1B2C3D4-E5F6-A7B8-C9D0-E1F2A3B4C5D6", "wake-session", False),
+        ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "wake-session", True),
+        ("a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6", "other-session", True),
+    ],
+)
+def test_closed_wake_request_is_requester_identity_bound(
+    closure_uuid: str,
+    closure_session: str,
+    expected_open: bool,
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00.1234567Z",
+            "agent": "codex-lead-1",
+            "agent_uuid": "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6",
+            "session_id": "wake-session",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+        },
+        {
+            "ts_utc": "2026-06-06T10:01:00.1234567Z",
+            "agent": "codex-lead-1",
+            "agent_uuid": closure_uuid,
+            "session_id": closure_session,
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "closed",
+        },
+    ]
+
+    groups = bridge_next_action._unresolved_wake_delivery_groups(events)
+
+    assert bool(groups) is expected_open
+
+
+@pytest.mark.parametrize(
+    "terminal_event",
+    [
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "fable-5",
+            "type": "done",
+            "task_id": "rco-needed",
+            "status": "merged",
+            "message": "unrelated actor observed a merge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "done",
+            "task_id": "rco-needed",
+            "status": "request",
+            "message": "request is still open",
+        },
+    ],
+)
+def test_unauthorized_or_nonterminal_event_does_not_clear_wake_delivery_gap(
+    terminal_event: dict[str, object],
+) -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        terminal_event,
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "escalate_wake_delivery_stall"
+    delivery = report["production_liveness"]["wake_delivery"]
+    assert delivery["stalled_wakes"][0]["wake_request_count"] == 2
+
+
+def test_matching_requester_terminal_event_clears_wake_delivery_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "operator",
+            "type": "status",
+            "task_id": "rco-needed",
+            "status": "superseded",
+            "message": "request withdrawn",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "production_liveness" not in report
+
+
+def test_equal_timestamp_later_target_activity_clears_wake_delivery_gap() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00.1234567Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00.1234567Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            # Physical append order breaks equal 100 ns timestamps.
+            "ts_utc": "2026-06-06T10:05:00.1234567Z",
+            "agent": "claude-rco-1",
+            "type": "decision",
+            "task_id": "rco-needed",
+            "status": "rco_pass",
+            "message": "reviewed",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert "wake_delivery" not in report.get("production_liveness", {})
+
+
+def test_wake_delivery_terminal_event_must_match_requester_identity() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "agent_uuid": "11111111-2222-3333-4444-555555555555",
+            "session_id": "wake-session",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "agent_uuid": "11111111-2222-3333-4444-555555555555",
+            "session_id": "wake-session",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "please read bridge again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "operator",
+            "agent_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "session_id": "other-session",
+            "type": "status",
+            "task_id": "rco-needed",
+            "status": "superseded",
+            "message": "mismatched identity",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "escalate_wake_delivery_stall"
+
+
+def test_one_requester_terminal_event_preserves_other_requester_wakes() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T09:59:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "operator wake",
+        },
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "lead wake",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "codex-lead-1",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": "rco-needed",
+            "status": "open",
+            "message": "lead wake again",
+        },
+        {
+            "ts_utc": "2026-06-06T10:06:00Z",
+            "agent": "operator",
+            "type": "status",
+            "task_id": "rco-needed",
+            "status": "superseded",
+            "message": "operator request withdrawn",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "escalate_wake_delivery_stall"
+    wake = report["production_liveness"]["wake_delivery"]["stalled_wakes"][0]
+    assert wake["wake_request_count"] == 2
+    assert wake["requesters"] == ["codex-lead-1"]
 
 
 def test_wake_send_failure_changes_wake_delivery_escalation() -> None:

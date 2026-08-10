@@ -50,6 +50,75 @@ KNOWN_EVENT_TYPES = frozenset(
     }
 )
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
+ACK_STATUS_TOKENS = frozenset({"ack", *KNOWN_ACK_STATUSES})
+OPEN_REQUEST_STATUS_TOKENS = frozenset(
+    {
+        "active",
+        "blocked",
+        "missing",
+        "needed",
+        "open",
+        "proposal",
+        "pushed",
+        "ready",
+        "request",
+        "requested",
+        "required",
+    }
+)
+STANDARD_PROTOCOL_EVENT_TYPES = frozenset(
+    {
+        *KNOWN_EVENT_TYPES,
+        "peer_review_request",
+        "sandbox_drop",
+        "simulation_open",
+    }
+)
+RESPONSE_ONLY_STATUS_TOKENS = frozenset(
+    {
+        "accepted",
+        "ack",
+        *KNOWN_ACK_STATUSES,
+        "answered",
+        "approved",
+        "closed",
+        "done",
+        "merged",
+        "observed",
+        "pass",
+        "reported",
+        "resolved",
+        "superseded",
+        "validated",
+        "verified",
+    }
+)
+CLOSED_REQUEST_STATUSES = frozenset(
+    {
+        "accepted",
+        *KNOWN_ACK_STATUSES,
+        "answered",
+        "approved",
+        "autonomous_merge_receipt",
+        "changes_requested_retracted",
+        "changes_requested_resolved",
+        "changes_requested_withdrawn",
+        "closed",
+        "done",
+        "finding_retracted",
+        "finding_withdrawn",
+        "merged",
+        "reported",
+        "resolved",
+        "retracted",
+        "rco_finding_retracted",
+        "rco_finding_withdrawn",
+        "superseded",
+        "validated",
+        "verified",
+        "withdrawn",
+    }
+)
 KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
 FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
 GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
@@ -67,6 +136,46 @@ GROK_FRESHNESS_OPTIONAL_SHA_FIELDS = (
     "reviewed_head_sha",
     "target_head_sha",
 )
+
+
+def is_ack_status(status: str) -> bool:
+    """Return whether a status contains a standalone ACK vocabulary token."""
+    tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", status.lower())
+        if token
+    }
+    return bool(tokens.intersection(ACK_STATUS_TOKENS))
+
+
+def is_response_only_status(status: str) -> bool:
+    """Return whether status tokens describe a response rather than new work."""
+    tokens = _status_tokens(status)
+    if "not" in tokens or tokens.intersection({"required", "needed", "missing"}):
+        return False
+    if tokens.intersection({"request", "requested"}) and not tokens.intersection(
+        RESPONSE_ONLY_STATUS_TOKENS - {"pass"}
+    ):
+        return False
+    return bool(tokens.intersection(RESPONSE_ONLY_STATUS_TOKENS))
+
+
+def is_open_request_status(status: str) -> bool:
+    """Return whether the shared exact-token taxonomy marks status as open."""
+    normalized = status.lower()
+    if normalized in CLOSED_REQUEST_STATUSES or is_ack_status(status):
+        return False
+    if is_response_only_status(status):
+        return False
+    return bool(_status_tokens(status).intersection(OPEN_REQUEST_STATUS_TOKENS))
+
+
+def _status_tokens(status: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", status.lower())
+        if token
+    }
 
 
 class BridgeEvent(BaseModel):
@@ -183,12 +292,15 @@ class BridgeEvent(BaseModel):
         if self.type in {"claim", "release", "done", "handoff", "blocked"}:
             if not self.task_id.strip():
                 raise ValueError(f"{self.type} requires task_id")
+        if is_ack_status(self.status) and not self.task_id.strip():
+            raise ValueError("ack event requires task_id")
         if (
-            self.type == "message"
-            and self.status in KNOWN_ACK_STATUSES
+            self.type.lower() not in STANDARD_PROTOCOL_EVENT_TYPES
+            and self.to.strip()
+            and is_open_request_status(self.status)
             and not self.task_id.strip()
         ):
-            raise ValueError("ack message requires task_id")
+            raise ValueError("directed custom request requires task_id")
         self._validate_grok_review_freshness()
         return self
 
@@ -437,6 +549,8 @@ def _validate_agent_uuid_binding(
 __all__ = [
     "BRIDGE_EVENT_SCHEMA_VERSION",
     "AGENT_ID_PATTERN",
+    "ACK_STATUS_TOKENS",
+    "CLOSED_REQUEST_STATUSES",
     "FULL_GIT_SHA_PATTERN",
     "GROK_FRESHNESS_EPOCH_UTC",
     "GROK_REVIEW_AGENTS",
@@ -447,7 +561,14 @@ __all__ = [
     "KNOWN_AGENTS",
     "LEGACY_AGENTS",
     "KNOWN_EVENT_TYPES",
+    "KNOWN_ACK_STATUSES",
     "KNOWN_SEVERITIES",
+    "OPEN_REQUEST_STATUS_TOKENS",
+    "RESPONSE_ONLY_STATUS_TOKENS",
+    "STANDARD_PROTOCOL_EVENT_TYPES",
+    "is_ack_status",
+    "is_open_request_status",
+    "is_response_only_status",
     "validate_event",
     "validate_event_file",
     "validate_event_line",

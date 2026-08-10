@@ -1784,6 +1784,105 @@ def test_later_rco_response_clears_rco_reemit_priority(tmp_path: Path) -> None:
     assert report["candidate"]["kind"] == "run_substrate_smoke"
 
 
+@pytest.mark.parametrize(
+    (
+        "event_agent",
+        "event_type",
+        "status",
+        "bind_canonical_task",
+        "message_template",
+    ),
+    [
+        (
+            "claude-rco-1",
+            "decision",
+            "rco_pass_acknowledged",
+            True,
+            "RCO pass receipt only for PR #1122 head={head}",
+        ),
+        (
+            "claude-rco-1",
+            "finding",
+            "changes_requested_received",
+            True,
+            "Changes-requested receipt only for PR #1122 head={head}",
+        ),
+        (
+            "claude-rco-1",
+            "done",
+            "merged_seen",
+            True,
+            "Merge receipt only for PR #1122 head={head}",
+        ),
+        (
+            "fable-5",
+            "message",
+            "acknowledged",
+            False,
+            "PR #1122 merged; receipt only",
+        ),
+    ],
+)
+def test_ack_event_does_not_clear_rco_reemit_priority(
+    tmp_path: Path,
+    event_agent: str,
+    event_type: str,
+    status: str,
+    bind_canonical_task: bool,
+    message_template: str,
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    head = "5" * 40
+    task_id = "codex-tools-1-operator-feedback-action-bridge-template-20260613"
+    events_path = _events_file(
+        bridge,
+        [
+            {
+                "ts_utc": "2026-05-20T11:58:00Z",
+                "agent": "codex-tools-1",
+                "type": "finding",
+                "task_id": (
+                    "continuous-operational-scout-open-pr-queue-scout-"
+                    "2026-05-20-0"
+                ),
+                "status": "queue_snapshot",
+                "message": "open PR scout: #1122 needs RCO re-emit",
+                "payload": {
+                    "schema": "tools.continuous_scout.open_pr_queue.v1",
+                    "prs": [
+                        {
+                            "pr": 1122,
+                            "head": head,
+                            "rco_gate": "no_rco_events_for_task",
+                            "required_task_id": task_id,
+                        }
+                    ],
+                },
+            },
+            {
+                "ts_utc": "2026-05-20T11:59:00Z",
+                "agent": event_agent,
+                "type": event_type,
+                "task_id": task_id if bind_canonical_task else "ack-only-third-party",
+                "status": status,
+                "message": message_template.format(head=head),
+            },
+        ],
+    )
+    _claims_dir(bridge)
+
+    report = evaluate_agent_next_task(
+        agent="codex-lead-1",
+        events_path=events_path,
+        bridge_root=bridge,
+        now_utc=NOW,
+    )
+
+    assert report["decision"] == "claim_rco_reemit_watch_scout"
+    assert report["candidate"]["kind"] == "rco_task_id_reemit_watch_scout"
+    assert report["candidate"]["head"] == head
+
+
 def test_wrong_head_rco_response_keeps_rco_reemit_priority(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     head = "5" * 40

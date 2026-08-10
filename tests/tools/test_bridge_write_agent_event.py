@@ -22,6 +22,18 @@ REQUIRES_TASK_ID_CASES = [
     ("message", "acknowledged"),
     ("message", "received"),
     ("message", "seen"),
+    ("message", "ack"),
+    ("message", "ACK"),
+    ("message", "wake_ack"),
+    ("message", "wake-acknowledged"),
+    ("message", "received_with_context"),
+    ("message", "done_received"),
+    ("message", "SEEN.with-context"),
+    ("message", "status_query_ack"),
+    ("decision", "ack"),
+    ("status", "received_with_context"),
+    ("finding", "wake_ack"),
+    ("test", "seen"),
 ]
 MAIN_SHA = "a" * 40
 PR_HEAD_SHA = "b" * 40
@@ -151,6 +163,35 @@ def test_task_id_required_events_fail_before_runtime_write(
     assert completed.returncode != 0
     assert "requires non-empty -TaskId" in completed.stderr
     assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["unacknowledged", "foreseen", "prereceived"],
+)
+def test_ack_status_substring_lookalikes_do_not_trigger_task_id_guard(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        "message",
+        "-Status",
+        status,
+        "-Message",
+        "ack-token substring lookalike",
+    )
+
+    assert "requires non-empty -TaskId" not in completed.stderr
+    if os.name == "nt":
+        assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="exercises the non-Windows fence")
@@ -345,6 +386,137 @@ def test_wake_request_requires_to_before_runtime_write(tmp_path: Path) -> None:
 
 
 @WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "peer_review_request",
+        "ownership_proposal",
+        "simulation_open",
+        "sandbox_drop",
+    ],
+)
+def test_custom_event_type_writes_schema_valid_event(
+    tmp_path: Path,
+    event_type: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        event_type,
+        "-TaskId",
+        f"custom-{event_type}",
+        "-Status",
+        "request",
+        "-To",
+        "smoke-2",
+        "-Message",
+        "custom polymorphic bridge event",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        runtime_root / "shared" / "events.jsonl"
+    ).read_text(encoding="utf-8").strip()
+    event = validate_event_line(line)
+    assert event.type == event_type
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    "event_type",
+    ["", " \t", "custom\nrequest", "custom\rrequest"],
+)
+def test_writer_rejects_empty_or_multiline_custom_event_type_before_io(
+    tmp_path: Path,
+    event_type: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        event_type,
+        "-TaskId",
+        "invalid-custom-type",
+    )
+
+    assert completed.returncode != 0
+    assert not runtime_root.exists()
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("review_verdict", "review_requested"),
+        ("ownership_proposal", "open"),
+        ("magma_query", "evidence_required"),
+        ("solver_growth_proposal", "proposal"),
+    ],
+)
+def test_writer_rejects_taskless_directed_custom_request_before_io(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        event_type,
+        "-Status",
+        status,
+        "-To",
+        "smoke-2",
+    )
+
+    assert completed.returncode != 0
+    assert "directed custom request" in completed.stderr
+    assert not runtime_root.exists()
+
+
+@WINDOWS_APPEND_V1
+def test_writer_preserves_taskless_standard_message_request(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        "message",
+        "-Status",
+        "request",
+        "-To",
+        "smoke-2",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (
+        runtime_root / "shared" / "events.jsonl"
+    ).read_text(encoding="utf-8").strip()
+    event = validate_event_line(line)
+    assert event.task_id == ""
+
+
+@WINDOWS_APPEND_V1
 def test_operator_bridge_follow_nudge_duplicate_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -380,6 +552,71 @@ def test_operator_bridge_follow_nudge_duplicate_is_idempotent(
     assert event["agent"] == "operator"
     assert event["task_id"] == "bridge-follow-nudge-20260614"
     validate_event_line(event_lines[0])
+
+
+@WINDOWS_APPEND_V1
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "ack"),
+        ("message", "wake_ack"),
+        ("message", "received_with_context"),
+        ("done", "done_received"),
+        ("decision", "ack"),
+        ("test", "seen"),
+    ],
+)
+def test_operator_bridge_follow_nudge_ack_is_not_target_activity(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    wake_args = [
+        "-Agent",
+        "operator",
+        "-Type",
+        "wake_request",
+        "-TaskId",
+        "bridge-follow-nudge-20260614",
+        "-Status",
+        "open",
+        "-To",
+        "claude-rco-2",
+        "-Message",
+        "poll the bridge",
+    ]
+
+    first = _run_writer(root, runtime_root, *wake_args)
+    target_ack = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "claude-rco-2",
+        "-Type",
+        event_type,
+        "-TaskId",
+        f"ack-{status}",
+        "-Status",
+        status,
+        "-Message",
+        "target acknowledged without substantive activity",
+        "-AgentUuid",
+        CLAUDE_RCO2_UUID,
+    )
+    second = _run_writer(root, runtime_root, *wake_args)
+
+    assert first.returncode == 0, first.stderr
+    assert target_ack.returncode == 0, target_ack.stderr
+    assert second.returncode == 0, second.stderr
+    events = [
+        json.loads(line)
+        for line in (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [event["type"] for event in events] == ["wake_request", event_type]
 
 
 @WINDOWS_APPEND_V1

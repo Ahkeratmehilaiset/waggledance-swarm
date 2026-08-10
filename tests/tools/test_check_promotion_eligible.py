@@ -1240,6 +1240,47 @@ def test_negated_approval_shaped_status_cannot_clear_peer_block(
     assert "unresolved peer bridge block" in report["reasons"][0]
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ack",
+        "ACK",
+        "acknowledged",
+        "received",
+        "seen",
+        "wake_ack",
+        "received_with_context",
+        "wake_acknowledged",
+    ],
+)
+def test_ack_status_token_cannot_enable_promotion_or_clear_peer_block(
+    status: str,
+) -> None:
+    events = _full_events()
+    events.extend(
+        [
+            _event(
+                "peer-agent",
+                "changes_requested",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "peer-agent",
+                status,
+                ts="2026-06-05T05:34:00Z",
+                payload={"head": HEAD, "pr": 901},
+            ),
+        ]
+    )
+    events[-1]["message"] = f"{status} exact head {HEAD}"
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert "unresolved peer bridge block" in report["reasons"][0]
+
+
 def test_custom_rco_informational_finding_does_not_poison_history() -> None:
     events = _full_events(rco_agent="fable-5")
     events.append(

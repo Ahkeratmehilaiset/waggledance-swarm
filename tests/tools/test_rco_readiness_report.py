@@ -92,7 +92,21 @@ def test_reports_direct_rco_pass_request_ahead_of_general_review(tmp_path: Path)
     assert "Test-BridgeWake.ps1 -Agent claude-rco-2" in report["wake_consume_step0_command"]
 
 
-def test_wake_ack_does_not_close_underlying_direct_request(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("event_type", "status"),
+    [
+        ("message", "wake_ack_corrected_rco_pass_already_posted_clear_to_merge"),
+        ("message", "ack"),
+        ("done", "ack"),
+        ("message", "received_with_context"),
+        ("done", "done_received"),
+    ],
+)
+def test_ack_status_does_not_close_underlying_direct_request(
+    tmp_path: Path,
+    event_type: str,
+    status: str,
+) -> None:
     report = build_rco_readiness_report(
         agent="claude-rco-2",
         events=[
@@ -101,9 +115,9 @@ def test_wake_ack_does_not_close_underlying_direct_request(tmp_path: Path) -> No
                 "ts_utc": "2026-06-14T12:02:00Z",
                 "agent": "claude-rco-2",
                 "to": "codex-tools-1",
-                "type": "message",
+                "type": event_type,
                 "task_id": "pr1208-rco-pass",
-                "status": "wake_ack_corrected_rco_pass_already_posted_clear_to_merge",
+                "status": status,
                 "message": "Wake bit consumed; not a new RCO_PASS.",
                 "payload": {"pr": 1208, "head": "c" * 40},
             },
@@ -142,6 +156,350 @@ def test_real_rco_pass_closes_direct_request(tmp_path: Path) -> None:
     assert report["decision"] == "rco_ready_no_direct_pass_block_request"
     assert report["direct_pass_block_request_count"] == 0
     assert report["highest_priority_request"] == {}
+
+
+def test_requester_status_superseded_closes_direct_request(tmp_path: Path) -> None:
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            _request(),
+            {
+                "ts_utc": "2026-06-14T12:03:00Z",
+                "agent": "codex-tools-1",
+                "to": "claude-rco-2",
+                "type": "status",
+                "task_id": "pr1208-rco-pass",
+                "status": "superseded_by_new_head",
+                "message": "requester closed the old exact-head request",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_ready_no_direct_pass_block_request"
+    assert report["direct_pass_block_request_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "received",
+        "seen",
+        "acknowledged",
+        "ack",
+        "received_with_context",
+        "done_received",
+    ],
+)
+def test_requester_ack_status_does_not_close_direct_request(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            _request(),
+            {
+                "ts_utc": "2026-06-14T12:03:00Z",
+                "agent": "codex-tools-1",
+                "to": "claude-rco-2",
+                "type": "status",
+                "task_id": "pr1208-rco-pass",
+                "status": status,
+                "message": "requester progress acknowledgement",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "direct_rco_pass_block_request_ready"
+    assert report["direct_pass_block_request_count"] == 1
+
+
+def test_requester_done_request_does_not_close_direct_request(tmp_path: Path) -> None:
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            _request(),
+            {
+                "ts_utc": "2026-06-14T12:03:00Z",
+                "agent": "codex-tools-1",
+                "to": "claude-rco-2",
+                "type": "done",
+                "task_id": "pr1208-rco-pass",
+                "status": "request",
+                "message": "follow-up work request, not a closeout",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "direct_rco_pass_block_request_ready"
+    assert report["direct_pass_block_request_count"] == 1
+
+
+def test_later_direct_request_reopens_after_requester_terminal_event(
+    tmp_path: Path,
+) -> None:
+    first_request = _request(ts="2026-06-14T12:02:59.0000000Z")
+    later_request = _request(ts="2026-06-14T12:03:00.1000000Z")
+    later_request["message"] = "new exact-head pass/block request"
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[
+            first_request,
+            {
+                "ts_utc": "2026-06-14T12:03:00Z",
+                "agent": "codex-tools-1",
+                "to": "claude-rco-2",
+                "type": "status",
+                "task_id": "pr1208-rco-pass",
+                "status": "superseded",
+                "message": "old exact-head request is obsolete",
+                "payload": {"pr": 1208, "head": "c" * 40},
+            },
+            later_request,
+        ],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "direct_rco_pass_block_request_ready"
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["bridge_next_action"]["action"] == "answer_incoming"
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
+    assert report["highest_priority_request"]["message"] == (
+        "new exact-head pass/block request"
+    )
+
+
+def test_out_of_append_order_request_and_closure_use_event_time(
+    tmp_path: Path,
+) -> None:
+    request = _request(ts="2026-06-14T12:01:00.1000000Z")
+    closure: dict[str, object] = {
+        "ts_utc": "2026-06-14T12:02:00Z",
+        "agent": "codex-tools-1",
+        "to": "claude-rco-2",
+        "type": "status",
+        "task_id": "pr1208-rco-pass",
+        "status": "superseded",
+        "message": "requester closed the old exact-head request",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[closure, request],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_ready_no_direct_pass_block_request"
+    assert report["direct_pass_block_request_count"] == 0
+    assert report["bridge_next_action"]["open_incoming_count"] == 0
+
+
+def test_adjacent_100ns_request_and_closure_use_exact_event_time(
+    tmp_path: Path,
+) -> None:
+    request = _request(ts="2026-06-14T12:01:00.0000001Z")
+    closure: dict[str, object] = {
+        "ts_utc": "2026-06-14T12:01:00.0000002Z",
+        "agent": "codex-tools-1",
+        "to": "claude-rco-2",
+        "type": "status",
+        "task_id": "pr1208-rco-pass",
+        "status": "superseded",
+        "message": "requester closed the old exact-head request",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_ready_no_direct_pass_block_request"
+    assert report["direct_pass_block_request_count"] == 0
+    assert report["bridge_next_action"]["open_incoming_count"] == 0
+
+
+def test_equal_timestamp_request_and_closure_use_append_order(
+    tmp_path: Path,
+) -> None:
+    request = _request(ts="2026-06-14T12:01:00.0000001Z")
+    closure: dict[str, object] = {
+        "ts_utc": "2026-06-14T12:01:00.0000001Z",
+        "agent": "codex-tools-1",
+        "to": "claude-rco-2",
+        "type": "status",
+        "task_id": "pr1208-rco-pass",
+        "status": "superseded",
+        "message": "requester closed the old exact-head request",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["decision"] == "rco_ready_no_direct_pass_block_request"
+    assert report["direct_pass_block_request_count"] == 0
+    assert report["bridge_next_action"]["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("request_identity", "closure_identity", "is_closed"),
+    [
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-stale-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {
+                "agent_uuid": "99999999-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {},
+            False,
+        ),
+        (
+            {},
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {"agent_uuid": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"},
+            {
+                "agent_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "session_id": "closure-extra-session",
+            },
+            True,
+        ),
+        (
+            {"session_id": "requester-current-session"},
+            {
+                "agent_uuid": "99999999-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            True,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {"agent_uuid": "11111111-2222-3333-4444-555555555555"},
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+            },
+            {"session_id": "requester-current-session"},
+            False,
+        ),
+        (
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+                "run_id": "request-run",
+            },
+            {
+                "agent_uuid": "11111111-2222-3333-4444-555555555555",
+                "session_id": "requester-current-session",
+                "run_id": "closure-run",
+            },
+            True,
+        ),
+    ],
+)
+def test_requester_terminal_event_binds_to_direct_request_identity(
+    tmp_path: Path,
+    request_identity: dict[str, str],
+    closure_identity: dict[str, str],
+    is_closed: bool,
+) -> None:
+    request = _request()
+    request.update(request_identity)
+    closure: dict[str, object] = {
+        "ts_utc": "2026-06-14T12:03:00Z",
+        "agent": "codex-tools-1",
+        "to": "claude-rco-2",
+        "type": "status",
+        "task_id": "pr1208-rco-pass",
+        "status": "superseded_by_new_head",
+        "message": "requester closed the old exact-head request",
+        "payload": {"pr": 1208, "head": "c" * 40},
+        **closure_identity,
+    }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == (0 if is_closed else 1)
+    assert report["decision"] == (
+        "rco_ready_no_direct_pass_block_request"
+        if is_closed
+        else "direct_rco_pass_block_request_ready"
+    )
 
 
 def test_pass_words_in_done_or_decision_do_not_create_direct_requests(

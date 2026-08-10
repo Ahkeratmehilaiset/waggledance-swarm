@@ -3,8 +3,10 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import pickle
 import shutil
 import struct
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -693,7 +695,7 @@ def test_equal_scores_merge_by_solver_id() -> None:
 
 
 def test_verified_top_k_search_matches_global_numpy_and_reverifies_sources(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     request, _request_path = _request_fixture(tmp_path)
     output_root = candidate.resolve_candidate_root(
@@ -711,6 +713,7 @@ def test_verified_top_k_search_matches_global_numpy_and_reverifies_sources(
         expected_request=request,
     )
     query = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+    monkeypatch.setattr(candidate, "_import_faiss", lambda: _FakeFaiss)
 
     results = candidate.search_verified_candidate(
         verified, query, k=2, expected_request=request
@@ -732,6 +735,10 @@ def test_verified_top_k_search_matches_global_numpy_and_reverifies_sources(
         [score for score, _solver_id in expected], abs=1.0e-6
     )
     assert all(row["source_commit_reverified"] is True for row in results)
+    assert all(row["source_reverification_scope"] == "per_search" for row in results)
+    assert all(row["source_reverified_during_search_call"] is True for row in results)
+    assert all(row["snapshot_id"] == report["snapshot_id"] for row in results)
+    assert all(row["verification_session_id"] is None for row in results)
     assert all(row["receipt_bound"] is False for row in results)
     assert all(row["receipt_structure_reverified"] is False for row in results)
     assert all(row["receipt_authenticity_verified"] is False for row in results)
@@ -796,6 +803,8 @@ def test_search_without_source_reverification_suppresses_receipt_claim() -> None
     )
 
     assert result["source_commit_reverified"] is False
+    assert result["source_reverification_scope"] == "none"
+    assert result["source_reverified_during_search_call"] is False
     assert result["receipt_bound"] is False
     assert result["receipt_structure_reverified"] is False
     assert result["receipt_authenticity_verified"] is False
@@ -834,6 +843,37 @@ def test_search_rejects_forged_source_reverification_flag() -> None:
         )
 
 
+def test_per_search_reverification_ignores_caller_mutated_loaded_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _request_path = _request_fixture(tmp_path)
+    output_root = candidate.resolve_candidate_root(
+        ".codex-audit/search-index-alias", repo_root=tmp_path
+    )
+    report = candidate.materialize_candidate(
+        request,
+        output_root=output_root,
+        embedder=_FakeEmbedder(),
+        faiss_module=_FakeFaiss,
+    )
+    verified = candidate.load_verified_candidate_snapshot(
+        report["snapshot_path"], faiss_module=_FakeFaiss
+    )
+    query = verified["cells"][0]["vectors"][0].copy()
+    [expected] = candidate.search_verified_candidate(verified, query, k=1)
+    verified["cells"][0]["index"].vectors[0] *= -1.0
+    monkeypatch.setattr(candidate, "_import_faiss", lambda: _FakeFaiss)
+
+    [observed] = candidate.search_verified_candidate(
+        verified, query, k=1, expected_request=request
+    )
+
+    assert observed["canonical_solver_id"] == expected["canonical_solver_id"]
+    assert observed["score"] == pytest.approx(expected["score"], abs=1.0e-6)
+    assert observed["source_commit_reverified"] is True
+    assert observed["source_reverification_scope"] == "per_search"
+
+
 def test_search_rejects_missing_or_non_boolean_source_verification_state() -> None:
     verified = {
         "manifest": {"embedding_contract": {"dimension": 2}},
@@ -855,7 +895,185 @@ def test_search_rejects_missing_or_non_boolean_source_verification_state() -> No
         )
 
 
-def test_expected_request_rejects_changed_projection_source(tmp_path: Path) -> None:
+def test_verified_search_session_reverifies_once_and_hides_loaded_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _request_path = _request_fixture(tmp_path)
+    output_root = candidate.resolve_candidate_root(
+        ".codex-audit/search-session", repo_root=tmp_path
+    )
+    report = candidate.materialize_candidate(
+        request,
+        output_root=output_root,
+        embedder=_FakeEmbedder(),
+        faiss_module=_FakeFaiss,
+    )
+    source_verifications = 0
+    original_verify = candidate._verify_snapshot_sources
+
+    def counted_verify(*args: object, **kwargs: object) -> None:
+        nonlocal source_verifications
+        source_verifications += 1
+        original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(candidate, "_verify_snapshot_sources", counted_verify)
+    monkeypatch.setattr(candidate, "_import_faiss", lambda: _FakeFaiss)
+    session = candidate.open_verified_candidate_search_session(
+        report["snapshot_path"],
+        expected_request=request,
+    )
+    query = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+
+    first = session.search(query, k=2)
+    second = session.search(query, k=2)
+
+    assert source_verifications == 1
+    assert first == second
+    assert session.snapshot_id == report["snapshot_id"]
+    assert session.source_reverification_scope == "session_open"
+    assert not hasattr(session, "__dict__")
+    assert not hasattr(session, "manifest")
+    assert not hasattr(session, "cells")
+    assert not hasattr(session, "source_commits_reverified")
+    assert all(row["source_commit_reverified"] is True for row in first)
+    assert all(row["source_reverification_scope"] == "session_open" for row in first)
+    assert all(row["source_reverified_during_search_call"] is False for row in first)
+    assert all(row["snapshot_id"] == report["snapshot_id"] for row in first)
+    assert all(
+        row["verification_session_id"].startswith("faisssession_") for row in first
+    )
+    assert all(row["receipt_authenticity_verified"] is False for row in first)
+    assert all(row["solver_outcome_verified"] is False for row in first)
+    assert all(row["runtime_authority_granted"] is False for row in first)
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(session)
+
+    session.close()
+    with pytest.raises(candidate.CandidateContractError, match="not active"):
+        session.search(query, k=1)
+
+
+def test_verified_search_session_close_waits_for_inflight_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _request_path = _request_fixture(tmp_path)
+    output_root = candidate.resolve_candidate_root(
+        ".codex-audit/search-session-close", repo_root=tmp_path
+    )
+    report = candidate.materialize_candidate(
+        request,
+        output_root=output_root,
+        embedder=_FakeEmbedder(),
+        faiss_module=_FakeFaiss,
+    )
+    monkeypatch.setattr(candidate, "_import_faiss", lambda: _FakeFaiss)
+    session = candidate.open_verified_candidate_search_session(
+        report["snapshot_path"], expected_request=request
+    )
+    state = candidate._SEARCH_SESSION_STATES[session]
+    index = state["cells"][0]["index"]
+    original_search = index.search
+    search_entered = threading.Event()
+    release_search = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    outcomes: list[list[dict[str, object]]] = []
+    errors: list[BaseException] = []
+
+    def blocking_search(queries: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarray]:
+        search_entered.set()
+        if not release_search.wait(2.0):
+            raise AssertionError("test did not release the blocked search")
+        return original_search(queries, count)
+
+    def run_search() -> None:
+        try:
+            outcomes.append(
+                session.search(
+                    np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), k=1
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def close_session() -> None:
+        close_started.set()
+        session.close()
+        close_finished.set()
+
+    index.search = blocking_search
+    search_thread = threading.Thread(target=run_search)
+    close_thread = threading.Thread(target=close_session)
+    search_thread.start()
+    assert search_entered.wait(1.0)
+    close_thread.start()
+    assert close_started.wait(1.0)
+    assert not close_finished.wait(0.05)
+    release_search.set()
+    search_thread.join(2.0)
+    close_thread.join(2.0)
+
+    assert not search_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert close_finished.is_set()
+    assert not errors
+    assert len(outcomes) == 1
+    with pytest.raises(candidate.CandidateContractError, match="not active"):
+        session.search(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), k=1)
+
+
+def test_verified_search_session_rejects_unregistered_handles() -> None:
+    with pytest.raises(TypeError, match="must be opened by the factory"):
+        candidate.VerifiedCandidateSearchSession()
+
+    forged = object.__new__(candidate.VerifiedCandidateSearchSession)
+    with pytest.raises(candidate.CandidateContractError, match="not active"):
+        forged.search(np.asarray([1.0, 0.0], dtype=np.float32), k=1)
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(forged)
+
+
+def test_verified_search_session_is_point_in_time_and_new_open_detects_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _request_path = _request_fixture(tmp_path)
+    output_root = candidate.resolve_candidate_root(
+        ".codex-audit/search-session-tamper", repo_root=tmp_path
+    )
+    report = candidate.materialize_candidate(
+        request,
+        output_root=output_root,
+        embedder=_FakeEmbedder(),
+        faiss_module=_FakeFaiss,
+    )
+    monkeypatch.setattr(candidate, "_import_faiss", lambda: _FakeFaiss)
+    session = candidate.open_verified_candidate_search_session(
+        report["snapshot_path"],
+        expected_request=request,
+    )
+    cell_id, commit_id = request.cells[0]
+    source_manifest = (
+        request.vector_root / cell_id / "commits" / commit_id / "manifest.json"
+    )
+    payload = bytearray(source_manifest.read_bytes())
+    payload[-2] ^= 1
+    source_manifest.write_bytes(payload)
+
+    [result] = session.search(
+        np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), k=1
+    )
+    assert result["source_commit_reverified"] is True
+    assert result["source_reverification_scope"] == "session_open"
+    with pytest.raises(candidate.CandidateContractError):
+        candidate.open_verified_candidate_search_session(
+            report["snapshot_path"],
+            expected_request=request,
+        )
+
+
+def test_expected_request_rejects_changed_projection_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     request, _request_path = _request_fixture(tmp_path)
     output_root = candidate.resolve_candidate_root(
         ".codex-audit/source-reverify", repo_root=tmp_path
@@ -878,6 +1096,7 @@ def test_expected_request_rejects_changed_projection_source(tmp_path: Path) -> N
     payload = bytearray(source_manifest.read_bytes())
     payload[-2] ^= 1
     source_manifest.write_bytes(payload)
+    monkeypatch.setattr(candidate, "_import_faiss", lambda: _FakeFaiss)
 
     with pytest.raises((candidate.CandidateContractError, ValueError)):
         candidate.search_verified_candidate(

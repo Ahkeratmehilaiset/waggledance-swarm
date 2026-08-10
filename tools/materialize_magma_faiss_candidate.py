@@ -23,7 +23,9 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import uuid
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -156,6 +158,89 @@ class CandidateContractError(ValueError):
 
 class CandidateUnavailable(RuntimeError):
     """Required candidate machinery is absent; no fallback is permitted."""
+
+
+class VerifiedCandidateSearchSession:
+    """Opaque point-in-time capability for repeated verified candidate search.
+
+    Instances can only become usable through
+    :func:`open_verified_candidate_search_session`.  The handle deliberately
+    contains no caller-mutable verification state; its loaded snapshot remains
+    in a module-private identity registry until the handle is closed or garbage
+    collected.
+    """
+
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls) -> VerifiedCandidateSearchSession:
+        raise TypeError(
+            "verified candidate search sessions must be opened by the factory"
+        )
+
+    @property
+    def snapshot_id(self) -> str:
+        return _get_search_session_state(self)["snapshot_id"]
+
+    @property
+    def source_reverification_scope(self) -> str:
+        _get_search_session_state(self)
+        return "session_open"
+
+    def search(
+        self, query_vector: np.ndarray, *, k: int = 5
+    ) -> list[dict[str, Any]]:
+        with _SEARCH_SESSION_LOCK:
+            state = _SEARCH_SESSION_STATES.get(self)
+            if state is None:
+                raise CandidateContractError("candidate search session is not active")
+            state["search_lock"].acquire()
+        try:
+            return _search_loaded_candidate(
+                state["manifest"],
+                state["cells"],
+                query_vector,
+                k=k,
+                source_reverification_scope="session_open",
+                verification_session_id=state["verification_session_id"],
+            )
+        finally:
+            state["search_lock"].release()
+
+    def close(self) -> None:
+        with _SEARCH_SESSION_LOCK:
+            state = _SEARCH_SESSION_STATES.get(self)
+            if state is None:
+                return
+            with state["search_lock"]:
+                _SEARCH_SESSION_STATES.pop(self, None)
+
+    def __enter__(self) -> VerifiedCandidateSearchSession:
+        _get_search_session_state(self)
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.close()
+
+    def __reduce_ex__(self, _protocol: int) -> Any:
+        raise TypeError("verified candidate search sessions cannot be serialized")
+
+
+_SEARCH_SESSION_LOCK = threading.RLock()
+_SEARCH_SESSION_STATES: weakref.WeakKeyDictionary[
+    VerifiedCandidateSearchSession, dict[str, Any]
+] = weakref.WeakKeyDictionary()
+
+
+def _get_search_session_state(
+    session: VerifiedCandidateSearchSession,
+) -> dict[str, Any]:
+    if type(session) is not VerifiedCandidateSearchSession:
+        raise CandidateContractError("candidate search session handle is invalid")
+    with _SEARCH_SESSION_LOCK:
+        state = _SEARCH_SESSION_STATES.get(session)
+    if state is None:
+        raise CandidateContractError("candidate search session is not active")
+    return state
 
 
 @dataclass(frozen=True)
@@ -836,10 +921,11 @@ def search_verified_candidate(
     local cutoff, that cell is searched fully so solver-id tie breaking cannot
     silently discard an equally scored candidate. A result exposes
     ``receipt_bound=True`` only when this call receives the exact source request,
-    reopens those immutable source commits, and cross-validates their embedded
-    receipt structure. A loader-produced boolean is never trusted at this claim
-    boundary. Receipt authenticity, solver outcome, and runtime authority remain
-    explicitly false.
+    reopens the persisted candidate plus those immutable source commits, and
+    cross-validates their embedded receipt structure. The caller's loaded index
+    and a loader-produced boolean are never trusted at this claim boundary.
+    Receipt authenticity, solver outcome, and runtime authority remain explicitly
+    false.
     """
     if type(k) is not int or k <= 0:
         raise CandidateContractError("candidate search k must be a positive integer")
@@ -866,15 +952,61 @@ def search_verified_candidate(
             raise CandidateContractError(
                 "candidate search expected source request is invalid"
             )
+        expected_snapshot_id = manifest.get("snapshot_id")
+        if (
+            type(expected_snapshot_id) is not str
+            or not _SNAPSHOT_ID.fullmatch(expected_snapshot_id)
+        ):
+            raise CandidateContractError("candidate search snapshot binding is invalid")
         try:
-            _verify_snapshot_sources(manifest, loaded_cells, expected_request)
-        except CandidateContractError:
+            reverified = load_verified_candidate_snapshot(
+                verified["snapshot_dir"],
+                faiss_module=_import_faiss(),
+                expected_snapshot_id=expected_snapshot_id,
+                expected_request=expected_request,
+            )
+        except (CandidateContractError, CandidateUnavailable):
             raise
         except Exception as exc:
             raise CandidateContractError(
                 "candidate search source reverification failed"
             ) from exc
+        manifest = reverified["manifest"]
+        loaded_cells = reverified["cells"]
         source_commits_reverified = True
+    return _search_loaded_candidate(
+        manifest,
+        loaded_cells,
+        query_vector,
+        k=k,
+        source_reverification_scope=(
+            "per_search" if source_commits_reverified else "none"
+        ),
+        verification_session_id=None,
+    )
+
+
+def _search_loaded_candidate(
+    manifest: Mapping[str, Any],
+    loaded_cells: Sequence[Mapping[str, Any]],
+    query_vector: np.ndarray,
+    *,
+    k: int,
+    source_reverification_scope: str,
+    verification_session_id: str | None,
+) -> list[dict[str, Any]]:
+    """Search already-loaded cells with an explicit internal evidence scope."""
+    if type(k) is not int or k <= 0:
+        raise CandidateContractError("candidate search k must be a positive integer")
+    if source_reverification_scope not in {"none", "per_search", "session_open"}:
+        raise CandidateContractError("candidate source reverification scope is invalid")
+    if (source_reverification_scope == "session_open") != (
+        type(verification_session_id) is str
+        and verification_session_id.startswith("faisssession_")
+        and len(verification_session_id) == len("faisssession_") + 32
+    ):
+        raise CandidateContractError("candidate verification session binding is invalid")
+    source_commits_reverified = source_reverification_scope != "none"
     dimension = manifest.get("embedding_contract", {}).get("dimension")
     if type(dimension) is not int or dimension <= 0:
         raise CandidateContractError("candidate search dimension is invalid")
@@ -951,7 +1083,13 @@ def search_verified_candidate(
                 "canonical_solver_id": solver_id,
                 "cell_id": cell_id,
                 "projection_id": row["projection_id"],
+                "snapshot_id": manifest.get("snapshot_id"),
+                "verification_session_id": verification_session_id,
                 "source_commit_reverified": source_commits_reverified,
+                "source_reverification_scope": source_reverification_scope,
+                "source_reverified_during_search_call": (
+                    source_reverification_scope == "per_search"
+                ),
                 "receipt_bound": receipt_structure_reverified,
                 "receipt_structure_reverified": receipt_structure_reverified,
                 "receipt_authenticity_verified": False,
@@ -1215,6 +1353,52 @@ def load_verified_candidate_snapshot(
         "snapshot_dir": root,
         "source_commits_reverified": expected_request is not None,
     }
+
+
+def open_verified_candidate_search_session(
+    snapshot_dir: Path | str,
+    *,
+    expected_request: CandidateRequest,
+    expected_snapshot_id: str | None = None,
+    enforce_directory_name: bool = True,
+) -> VerifiedCandidateSearchSession:
+    """Open an opaque fast-search capability after one full source verification.
+
+    Source commits are reopened and cross-bound while this factory runs.  Later
+    searches attest only to that point-in-time ``session_open`` verification;
+    they do not claim to have reread source bytes for every query.  Callers that
+    require per-query verification must keep using
+    :func:`search_verified_candidate` with ``expected_request``.
+    """
+    if type(expected_request) is not CandidateRequest:
+        raise CandidateContractError(
+            "candidate search session expected source request is invalid"
+        )
+    try:
+        verified = load_verified_candidate_snapshot(
+            snapshot_dir,
+            faiss_module=_import_faiss(),
+            expected_snapshot_id=expected_snapshot_id,
+            expected_request=expected_request,
+            enforce_directory_name=enforce_directory_name,
+        )
+    except (CandidateContractError, CandidateUnavailable):
+        raise
+    except Exception as exc:
+        raise CandidateContractError(
+            "candidate search session verification failed"
+        ) from exc
+    handle = object.__new__(VerifiedCandidateSearchSession)
+    state = {
+        "manifest": verified["manifest"],
+        "cells": verified["cells"],
+        "snapshot_id": verified["manifest"]["snapshot_id"],
+        "verification_session_id": "faisssession_" + uuid.uuid4().hex,
+        "search_lock": threading.RLock(),
+    }
+    with _SEARCH_SESSION_LOCK:
+        _SEARCH_SESSION_STATES[handle] = state
+    return handle
 
 
 def _build_row(index: int, source_row: Mapping[str, Any]) -> dict[str, Any]:

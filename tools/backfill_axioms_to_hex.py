@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 import time
@@ -61,8 +62,16 @@ LEDGER_DIR = ROOT / "data" / "faiss_delta_ledger"
 VECTOR_EVENT_LOG = ROOT / "data" / "vector" / "events.jsonl"
 CENTROIDS_FILE = ROOT / "data" / "faiss_staging" / "cell_centroids.json"
 OLLAMA_URL = "http://localhost:11434/api/embed"
-EMBEDDING_MODEL = "nomic-embed-text"
-EMBEDDING_MODEL_VERSION = "v1.5"   # if Ollama exposes more precise tag, update
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+EMBEDDING_MODEL = "nomic-embed-text:latest"
+EMBEDDING_MODEL_DIGEST = (
+    "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+)
+EMBEDDING_MODEL_VERSION = "ollama-catalog-sha256:" + EMBEDDING_MODEL_DIGEST
+EMBEDDING_DIMENSION = 768
+EMBEDDING_NORMALIZATION = "l2-v1"
+EMBEDDING_DOCUMENT_PREFIX = "search_document: "
+EMBEDDING_QUERY_PREFIX = "search_query: "
 DEFAULT_BATCH_SIZE = 32
 
 # Same classification as cell_manifest.py (for keyword-cell heuristic)
@@ -223,6 +232,8 @@ def _build_projection_upsert_event(
     ):
         raise ValueError("solver projection requires one consistent positive embedding dimension")
     [dimension] = dimensions
+    if dimension != EMBEDDING_DIMENSION:
+        raise ValueError("solver projection embedding dimension does not match pinned model")
     validated_topology = vector_projection.validate_retrieval_topology_contract(
         topology_contract
     )
@@ -240,9 +251,9 @@ def _build_projection_upsert_event(
         model_id=EMBEDDING_MODEL,
         model_version=EMBEDDING_MODEL_VERSION,
         dimension=dimension,
-        normalization="l2-v1",
-        document_prefix="",
-        query_prefix="search_query: ",
+        normalization=EMBEDDING_NORMALIZATION,
+        document_prefix=EMBEDDING_DOCUMENT_PREFIX,
+        query_prefix=EMBEDDING_QUERY_PREFIX,
     )
     return vector_events.vector_upsert_requested(
         cell_id=document["cell_id"],
@@ -311,18 +322,108 @@ def build_views(axiom: dict) -> list[dict]:
 # ── Embedding client ──────────────────────────────────────────────
 
 
+class EmbeddingContractError(ValueError):
+    """The provider response does not satisfy the declared embedding contract."""
+
+
+def _verify_embedding_model_catalog(client: httpx.Client) -> dict[str, str]:
+    response = client.get(OLLAMA_TAGS_URL)
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise EmbeddingContractError("embedding model catalog is not JSON") from exc
+    models = payload.get("models") if type(payload) is dict else None
+    if type(models) is not list:
+        raise EmbeddingContractError("embedding model catalog has invalid shape")
+    matching_name = False
+    for model in models:
+        if type(model) is not dict:
+            continue
+        if model.get("name") != EMBEDDING_MODEL and model.get("model") != EMBEDDING_MODEL:
+            continue
+        matching_name = True
+        if model.get("digest") == EMBEDDING_MODEL_DIGEST:
+            return {
+                "provider": "ollama",
+                "requested_model_tag": EMBEDDING_MODEL,
+                "catalog_digest": EMBEDDING_MODEL_DIGEST,
+            }
+    reason = (
+        "embedding model digest mismatch"
+        if matching_name
+        else "embedding model is absent from catalog"
+    )
+    raise EmbeddingContractError(reason)
+
+
+def _normalize_embedding_rows(
+    value: object,
+    *,
+    expected_rows: int,
+) -> list[list[float]]:
+    if type(value) is not list or len(value) != expected_rows:
+        raise EmbeddingContractError("embedding response row count mismatch")
+    normalized: list[list[float]] = []
+    for row in value:
+        if type(row) is not list or len(row) != EMBEDDING_DIMENSION:
+            raise EmbeddingContractError("embedding response dimension mismatch")
+        if any(
+            isinstance(item, bool) or not isinstance(item, (int, float))
+            for item in row
+        ):
+            raise EmbeddingContractError("embedding response contains a non-numeric value")
+        vector = [float(item) for item in row]
+        if any(not math.isfinite(item) for item in vector):
+            raise EmbeddingContractError("embedding response contains a non-finite value")
+        norm = math.sqrt(math.fsum(item * item for item in vector))
+        if not math.isfinite(norm) or norm <= 0.0:
+            raise EmbeddingContractError("embedding response contains a zero vector")
+        normalized.append([item / norm for item in vector])
+    return normalized
+
+
 def embed_texts(texts: list[str], batch_size: int = DEFAULT_BATCH_SIZE) -> list[list[float]]:
-    """Batch-embed via Ollama /api/embed. Returns vectors in same order as texts."""
-    all_vectors = []
+    """Embed normalized document vectors under the catalog-checked contract."""
+    if type(texts) is not list or any(not isinstance(text, str) for text in texts):
+        raise EmbeddingContractError("embedding inputs must be a list of strings")
+    if type(batch_size) is not int or batch_size <= 0:
+        raise EmbeddingContractError("embedding batch_size must be a positive integer")
+    if not texts:
+        return []
+    all_vectors: list[list[float]] = []
     with httpx.Client(timeout=120.0) as client:
+        identity_before = _verify_embedding_model_catalog(client)
         for i in range(0, len(texts), batch_size):
-            batch = [canonicalize_for_embedding(t) for t in texts[i:i + batch_size]]
+            batch = [
+                EMBEDDING_DOCUMENT_PREFIX + canonicalize_for_embedding(text)
+                for text in texts[i:i + batch_size]
+            ]
             r = client.post(
                 OLLAMA_URL,
-                json={"model": EMBEDDING_MODEL, "input": batch, "keep_alive": "30m"},
+                json={
+                    "model": EMBEDDING_MODEL,
+                    "input": batch,
+                    "keep_alive": "30m",
+                    "truncate": False,
+                },
             )
             r.raise_for_status()
-            all_vectors.extend(r.json()["embeddings"])
+            try:
+                payload = r.json()
+            except ValueError as exc:
+                raise EmbeddingContractError("embedding response is not JSON") from exc
+            if type(payload) is not dict or payload.get("model") != EMBEDDING_MODEL:
+                raise EmbeddingContractError("embedding response model mismatch")
+            all_vectors.extend(
+                _normalize_embedding_rows(
+                    payload.get("embeddings"),
+                    expected_rows=len(batch),
+                )
+            )
+        identity_after = _verify_embedding_model_catalog(client)
+        if identity_after != identity_before:
+            raise EmbeddingContractError("embedding model catalog changed during backfill")
     return all_vectors
 
 
@@ -511,7 +612,10 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
                 "text": view["text"],
                 "text_hash": hashlib.sha256(view["text"].encode("utf-8")).hexdigest(),
                 "vector": vec,
-                "embedding_model": f"{EMBEDDING_MODEL}:{EMBEDDING_MODEL_VERSION}",
+                "embedding_model": EMBEDDING_MODEL,
+                "embedding_model_version": EMBEDDING_MODEL_VERSION,
+                "embedding_normalization": EMBEDDING_NORMALIZATION,
+                "embedding_document_prefix": EMBEDDING_DOCUMENT_PREFIX,
                 "embedding_dim": len(vec),
                 "source_file": str(axiom_path.relative_to(ROOT)),
                 "domain": domain,

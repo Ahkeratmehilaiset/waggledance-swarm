@@ -48,7 +48,12 @@ def test_backfill_nomic_profile_matches_retrieval_evidence_profile() -> None:
 
 
 def test_ledger_metadata_carries_complete_embedding_contract() -> None:
-    metadata = backfill._embedding_ledger_metadata()
+    metadata = backfill._embedding_ledger_metadata(
+        {
+            "catalog_contract_verified_before_embedding": True,
+            "catalog_contract_verified_after_embedding": True,
+        }
+    )
     contract = backfill._build_pinned_embedding_contract()
 
     assert metadata["embedding_model"] == contract["model_id"]
@@ -58,8 +63,19 @@ def test_ledger_metadata_carries_complete_embedding_contract() -> None:
     assert metadata["embedding_query_prefix"] == contract["query_prefix"]
     assert metadata["embedding_dim"] == contract["dimension"]
     assert metadata["embedding_contract_digest"] == contract["contract_digest"]
-    assert metadata["embedding_catalog_digest_stable_before_after"] is True
+    assert metadata["embedding_catalog_contract_verified_before_embedding"] is True
+    assert metadata["embedding_catalog_contract_verified_after_embedding"] is True
     assert metadata["embedding_response_digest_attested"] is False
+
+
+def test_ledger_metadata_rejects_unverified_catalog_claim() -> None:
+    with pytest.raises(backfill.EmbeddingContractError, match="catalog evidence"):
+        backfill._embedding_ledger_metadata(
+            {
+                "catalog_contract_verified_before_embedding": True,
+                "catalog_contract_verified_after_embedding": False,
+            }
+        )
 
 
 def test_backfill_projection_event_is_allowlisted_and_explicitly_unreceipted() -> None:

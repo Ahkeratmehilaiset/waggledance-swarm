@@ -126,7 +126,8 @@ _PROVIDER_IDENTITY_KEYS = frozenset(
         "provider",
         "requested_model_tag",
         "catalog_digest",
-        "catalog_digest_stable_before_after",
+        "catalog_contract_verified_before_embedding",
+        "catalog_contract_verified_after_embedding",
         "response_digest_attested",
     }
 )
@@ -435,7 +436,13 @@ def _embed_source_cells(
         raise CandidateUnavailable(str(exc)) from exc
     if identity_after != identity_before:
         raise CandidateContractError("embedding model catalog changed during materialization")
-    if type(identity_before) is not dict:
+    identity_before_verified = retrieval_benchmark.provider_identity_matches_profile(
+        identity_before, profile
+    )
+    identity_after_verified = retrieval_benchmark.provider_identity_matches_profile(
+        identity_after, profile
+    )
+    if not identity_before_verified or not identity_after_verified:
         raise CandidateContractError("embedding provider identity evidence is invalid")
     provider = identity_before.get("provider")
     requested_model = identity_before.get("requested_model_tag")
@@ -451,7 +458,8 @@ def _embed_source_cells(
         "provider": provider,
         "requested_model_tag": requested_model,
         "catalog_digest": catalog_digest,
-        "catalog_digest_stable_before_after": True,
+        "catalog_contract_verified_before_embedding": identity_before_verified,
+        "catalog_contract_verified_after_embedding": identity_after_verified,
         "response_digest_attested": False,
     }
 
@@ -1039,7 +1047,8 @@ def load_verified_candidate_snapshot(
         or not provider_identity["provider"]
         or provider_identity["requested_model_tag"] != embedding["model_id"]
         or provider_identity["catalog_digest"] != expected_catalog_digest
-        or provider_identity["catalog_digest_stable_before_after"] is not True
+        or provider_identity["catalog_contract_verified_before_embedding"] is not True
+        or provider_identity["catalog_contract_verified_after_embedding"] is not True
         or provider_identity["response_digest_attested"] is not False
     ):
         raise CandidateContractError("candidate embedding provider identity is invalid")

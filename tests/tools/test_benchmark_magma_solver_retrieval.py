@@ -258,6 +258,30 @@ class _SpyEmbedder:
         )
 
 
+def test_provider_identity_match_requires_exact_live_catalog_result() -> None:
+    profile = benchmark.EmbeddingProfile(
+        name="strict",
+        model_id="strict-model",
+        model_digest="a" * 64,
+        dimension=2,
+        document_prefix="doc: ",
+        query_prefix="query: ",
+    )
+    valid = {
+        "provider": "ollama",
+        "requested_model_tag": profile.model_id,
+        "catalog_digest": profile.model_digest,
+    }
+
+    assert benchmark.provider_identity_matches_profile(valid, profile) is True
+    assert benchmark.provider_identity_matches_profile(
+        {**valid, "catalog_digest": "b" * 64}, profile
+    ) is False
+    assert benchmark.provider_identity_matches_profile(
+        {**valid, "unverified": True}, profile
+    ) is False
+
+
 def test_retrieval_receives_only_documents_and_query_text(
     projection_documents: list[dict],
     validated: tuple[dict, benchmark.ContentTokenizer, str],
@@ -291,6 +315,18 @@ def test_retrieval_receives_only_documents_and_query_text(
     assert embedder.inputs[1:] == [[profile.query_prefix + query] for query in queries]
     assert result["measurement_complete"] is True
     assert result["fallback_used"] is False
+    assert (
+        result["provider_identity_evidence"][
+            "catalog_contract_verified_before_embedding"
+        ]
+        is True
+    )
+    assert (
+        result["provider_identity_evidence"][
+            "catalog_contract_verified_after_embedding"
+        ]
+        is True
+    )
     assert result["provider_identity_evidence"]["response_digest_attested"] is False
 
 
@@ -547,7 +583,8 @@ def test_gate_requires_semantic_lift_and_keeps_authority_separate() -> None:
         "latency_ms": {"search": {"p95": 0.1}},
         "per_query": candidate_rows,
         "provider_identity_evidence": {
-            "catalog_digest_stable_before_after": True
+            "catalog_contract_verified_before_embedding": True,
+            "catalog_contract_verified_after_embedding": True,
         },
     }
 
@@ -613,7 +650,8 @@ def test_gate_rejects_one_query_lift_as_insufficient_evidence() -> None:
         "latency_ms": {"search": {"p95": 0.1}},
         "per_query": candidate_rows,
         "provider_identity_evidence": {
-            "catalog_digest_stable_before_after": True
+            "catalog_contract_verified_before_embedding": True,
+            "catalog_contract_verified_after_embedding": True,
         },
     }
 
@@ -692,7 +730,8 @@ def test_gate_rejects_anchored_collapse_despite_semantic_gain() -> None:
         "latency_ms": {"search": {"p95": 0.1}},
         "per_query": candidate_rows,
         "provider_identity_evidence": {
-            "catalog_digest_stable_before_after": True
+            "catalog_contract_verified_before_embedding": True,
+            "catalog_contract_verified_after_embedding": True,
         },
     }
 

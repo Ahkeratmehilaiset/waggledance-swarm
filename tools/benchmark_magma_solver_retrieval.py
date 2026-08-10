@@ -89,6 +89,9 @@ _POLICY_KEYS = frozenset(
     }
 )
 _STRATA = frozenset({"anchored_natural", "semantic_zero_overlap"})
+_PROVIDER_IDENTITY_CORE_KEYS = frozenset(
+    {"provider", "requested_model_tag", "catalog_digest"}
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,21 @@ class EmbeddingProfile:
     dimension: int
     document_prefix: str
     query_prefix: str
+
+
+def provider_identity_matches_profile(
+    value: Any,
+    profile: EmbeddingProfile,
+) -> bool:
+    """Return whether one live catalog result exactly satisfies the contract."""
+    return (
+        type(value) is dict
+        and frozenset(value) == _PROVIDER_IDENTITY_CORE_KEYS
+        and isinstance(value["provider"], str)
+        and bool(value["provider"])
+        and value["requested_model_tag"] == profile.model_id
+        and value["catalog_digest"] == profile.model_digest
+    )
 
 
 EMBEDDING_PROFILES: dict[str, EmbeddingProfile] = {
@@ -602,8 +620,8 @@ class OllamaEmbeddingClient:
             raise BenchmarkUnavailable(reason)
         return {
             "provider": "ollama",
-            "requested_model_tag": profile.model_id,
-            "catalog_digest": profile.model_digest,
+            "requested_model_tag": matched["name"],
+            "catalog_digest": matched["digest"],
         }
 
     def embed(
@@ -655,6 +673,11 @@ def run_vector_benchmark(
     document_inputs = [profile.document_prefix + row["embedding_text"] for row in documents]
     query_inputs = [profile.query_prefix + query for query in query_texts]
     identity_before = embedder.verify_profile(profile)
+    identity_before_verified = provider_identity_matches_profile(
+        identity_before, profile
+    )
+    if not identity_before_verified:
+        raise EmbeddingValidationError("provider_identity_before_mismatch")
     document_started = time.perf_counter_ns()
     document_matrix = embedder.embed(document_inputs, profile, label="document_embeddings")
     document_embedding_ms = (time.perf_counter_ns() - document_started) / 1_000_000.0
@@ -672,6 +695,11 @@ def run_vector_benchmark(
         label="query_embedding_matrix",
     )
     identity_after = embedder.verify_profile(profile)
+    identity_after_verified = provider_identity_matches_profile(
+        identity_after, profile
+    )
+    if not identity_after_verified:
+        raise EmbeddingValidationError("provider_identity_after_mismatch")
     if identity_after != identity_before:
         raise BenchmarkUnavailable("embedding_model_catalog_changed_during_run")
     rankings: list[list[int]] = []
@@ -719,7 +747,12 @@ def run_vector_benchmark(
             "embedding_contract": contract,
             "provider_identity_evidence": {
                 **identity_before,
-                "catalog_digest_stable_before_after": True,
+                "catalog_contract_verified_before_embedding": (
+                    identity_before_verified
+                ),
+                "catalog_contract_verified_after_embedding": (
+                    identity_after_verified
+                ),
                 "response_digest_attested": False,
                 "limitation": (
                     "Ollama embeds by mutable tag and does not attest a model digest "
@@ -868,10 +901,12 @@ def differential_gate(a0: Mapping[str, Any], a2: Mapping[str, Any]) -> dict[str,
         "semantic_recall5_paired_evidence": semantic_recall5["passed"],
         "rankings_present_all_queries": candidate["all"]["nonempty_rate"] == 1.0,
         "exact_search_p95_below_10ms": a2["latency_ms"]["search"]["p95"] < 10.0,
-        "provider_catalog_digest_stable_before_after": identity.get(
-            "catalog_digest_stable_before_after"
-        )
-        is True,
+        "provider_catalog_contract_verified_before_embedding": identity.get(
+            "catalog_contract_verified_before_embedding"
+        ) is True,
+        "provider_catalog_contract_verified_after_embedding": identity.get(
+            "catalog_contract_verified_after_embedding"
+        ) is True,
     }
     return {
         "passed": all(criteria.values()),

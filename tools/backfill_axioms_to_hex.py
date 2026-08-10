@@ -224,7 +224,19 @@ def _build_pinned_embedding_contract(*, dimension: int = EMBEDDING_DIMENSION) ->
     )
 
 
-def _embedding_ledger_metadata() -> dict:
+def _embedding_ledger_metadata(catalog_evidence: dict[str, bool]) -> dict:
+    expected_evidence_keys = {
+        "catalog_contract_verified_before_embedding",
+        "catalog_contract_verified_after_embedding",
+    }
+    if (
+        type(catalog_evidence) is not dict
+        or set(catalog_evidence) != expected_evidence_keys
+        or any(catalog_evidence[key] is not True for key in expected_evidence_keys)
+    ):
+        raise EmbeddingContractError(
+            "embedding ledger requires verified before/after catalog evidence"
+        )
     contract = _build_pinned_embedding_contract()
     return {
         "embedding_model": contract["model_id"],
@@ -234,7 +246,12 @@ def _embedding_ledger_metadata() -> dict:
         "embedding_query_prefix": contract["query_prefix"],
         "embedding_dim": contract["dimension"],
         "embedding_contract_digest": contract["contract_digest"],
-        "embedding_catalog_digest_stable_before_after": True,
+        "embedding_catalog_contract_verified_before_embedding": (
+            catalog_evidence["catalog_contract_verified_before_embedding"]
+        ),
+        "embedding_catalog_contract_verified_after_embedding": (
+            catalog_evidence["catalog_contract_verified_after_embedding"]
+        ),
         "embedding_response_digest_attested": False,
     }
 
@@ -363,8 +380,8 @@ def _verify_embedding_model_catalog(client: httpx.Client) -> dict[str, str]:
         if model.get("digest") == EMBEDDING_MODEL_DIGEST:
             return {
                 "provider": "ollama",
-                "requested_model_tag": EMBEDDING_MODEL,
-                "catalog_digest": EMBEDDING_MODEL_DIGEST,
+                "requested_model_tag": model["name"],
+                "catalog_digest": model["digest"],
             }
     matching_name = any(
         type(model) is dict and model.get("name") == EMBEDDING_MODEL
@@ -410,14 +427,20 @@ def _normalize_embedding_rows(
     return normalized.tolist()
 
 
-def embed_texts(texts: list[str], batch_size: int = DEFAULT_BATCH_SIZE) -> list[list[float]]:
-    """Embed normalized document vectors under the catalog-checked contract."""
+def _embed_texts_with_evidence(
+    texts: list[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> tuple[list[list[float]], dict[str, bool]]:
+    """Embed vectors and derive evidence from two reachable live catalog checks."""
     if type(texts) is not list or any(not isinstance(text, str) for text in texts):
         raise EmbeddingContractError("embedding inputs must be a list of strings")
     if type(batch_size) is not int or batch_size <= 0:
         raise EmbeddingContractError("embedding batch_size must be a positive integer")
     if not texts:
-        return []
+        return [], {
+            "catalog_contract_verified_before_embedding": False,
+            "catalog_contract_verified_after_embedding": False,
+        }
     all_vectors: list[list[float]] = []
     with httpx.Client(timeout=120.0) as client:
         identity_before = _verify_embedding_model_catalog(client)
@@ -451,7 +474,28 @@ def embed_texts(texts: list[str], batch_size: int = DEFAULT_BATCH_SIZE) -> list[
         identity_after = _verify_embedding_model_catalog(client)
         if identity_after != identity_before:
             raise EmbeddingContractError("embedding model catalog changed during backfill")
-    return all_vectors
+    expected_identity = {
+        "provider": "ollama",
+        "requested_model_tag": EMBEDDING_MODEL,
+        "catalog_digest": EMBEDDING_MODEL_DIGEST,
+    }
+    evidence = {
+        "catalog_contract_verified_before_embedding": (
+            identity_before == expected_identity
+        ),
+        "catalog_contract_verified_after_embedding": (
+            identity_after == expected_identity
+        ),
+    }
+    if not all(evidence.values()):
+        raise EmbeddingContractError("embedding model catalog evidence mismatch")
+    return all_vectors, evidence
+
+
+def embed_texts(texts: list[str], batch_size: int = DEFAULT_BATCH_SIZE) -> list[list[float]]:
+    """Embed normalized document vectors under the catalog-checked contract."""
+    vectors, _evidence = _embed_texts_with_evidence(texts, batch_size=batch_size)
+    return vectors
 
 
 # ── Cell honesty audit ─────────────────────────────────────────────
@@ -591,7 +635,9 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
     print(f"Embedding {len(all_views)} views in batches of {DEFAULT_BATCH_SIZE} ...")
     texts = [v["text"] for _, v in all_views]
     t0 = time.perf_counter()
-    vectors = embed_texts(texts, batch_size=DEFAULT_BATCH_SIZE)
+    vectors, embedding_catalog_evidence = _embed_texts_with_evidence(
+        texts, batch_size=DEFAULT_BATCH_SIZE
+    )
     elapsed = time.perf_counter() - t0
     print(f"  embedded in {elapsed:.1f}s ({elapsed*1000/len(texts):.1f}ms/view avg)")
 
@@ -639,7 +685,7 @@ def backfill(dry_run: bool = False, filter_domain: Optional[str] = None) -> dict
                 "text": view["text"],
                 "text_hash": hashlib.sha256(view["text"].encode("utf-8")).hexdigest(),
                 "vector": vec,
-                **_embedding_ledger_metadata(),
+                **_embedding_ledger_metadata(embedding_catalog_evidence),
                 "source_file": str(axiom_path.relative_to(ROOT)),
                 "domain": domain,
                 "placement_audit": audit,

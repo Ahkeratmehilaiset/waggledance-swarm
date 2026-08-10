@@ -335,6 +335,18 @@ def test_materializes_verified_global_candidate_and_is_idempotent(tmp_path: Path
     assert manifest["cell_local_routing_evaluated"] is False
     assert manifest["chromosome_count"] is None
     assert manifest["gene_bank_ready"] is False
+    assert (
+        manifest["embedding_provider_identity"][
+            "catalog_contract_verified_before_embedding"
+        ]
+        is True
+    )
+    assert (
+        manifest["embedding_provider_identity"][
+            "catalog_contract_verified_after_embedding"
+        ]
+        is True
+    )
     assert manifest["persisted_parity"]["exact_rankings_match"] is True
     assert not (tmp_path / "data" / "faiss").exists()
     assert not (tmp_path / "data" / "faiss_staging").exists()
@@ -517,6 +529,39 @@ def test_persisted_vector_tamper_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(candidate.CandidateContractError, match="checksum mismatch"):
         candidate.load_verified_candidate_snapshot(snapshot, faiss_module=_FakeFaiss)
+
+
+def test_persisted_catalog_verification_claim_fails_closed(tmp_path: Path) -> None:
+    request, _request_path = _request_fixture(tmp_path)
+    output_root = candidate.resolve_candidate_root(
+        ".codex-audit/catalog-claim", repo_root=tmp_path
+    )
+    report = candidate.materialize_candidate(
+        request,
+        output_root=output_root,
+        embedder=_FakeEmbedder(),
+        faiss_module=_FakeFaiss,
+    )
+    manifest_path = Path(report["snapshot_path"]) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["embedding_provider_identity"][
+        "catalog_contract_verified_after_embedding"
+    ] = False
+    new_snapshot_id = candidate.SNAPSHOT_PREFIX + candidate.sha256_digest(
+        candidate._snapshot_identity(manifest)
+    ).split(":", 1)[1]
+    manifest["snapshot_id"] = new_snapshot_id
+    manifest_path.write_bytes(candidate._canonical_json_line(manifest))
+    rewritten_snapshot = manifest_path.parent.with_name(new_snapshot_id)
+    manifest_path.parent.rename(rewritten_snapshot)
+
+    with pytest.raises(
+        candidate.CandidateContractError,
+        match="embedding provider identity is invalid",
+    ):
+        candidate.load_verified_candidate_snapshot(
+            rewritten_snapshot, faiss_module=_FakeFaiss
+        )
 
 
 def test_deserialized_index_must_actually_be_index_flat_ip(tmp_path: Path) -> None:

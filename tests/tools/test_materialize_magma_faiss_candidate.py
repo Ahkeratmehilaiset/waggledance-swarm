@@ -712,7 +712,9 @@ def test_verified_top_k_search_matches_global_numpy_and_reverifies_sources(
     )
     query = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
 
-    results = candidate.search_verified_candidate(verified, query, k=2)
+    results = candidate.search_verified_candidate(
+        verified, query, k=2, expected_request=request
+    )
     normalized_query = query / np.linalg.norm(query)
     expected = []
     for cell in verified["cells"]:
@@ -767,13 +769,7 @@ def test_verified_top_k_expands_cutoff_ties_before_solver_id_merge() -> None:
     assert [row["canonical_solver_id"] for row in results] == ["alpha"]
 
 
-@pytest.mark.parametrize(
-    ("source_reverified", "expected_receipt_bound"),
-    [(False, False), (True, True)],
-)
-def test_search_receipt_claim_requires_source_commit_reverification(
-    source_reverified, expected_receipt_bound
-) -> None:
+def test_search_without_source_reverification_suppresses_receipt_claim() -> None:
     index = _ReverseTieIndex(2)
     index.add(np.asarray([[1.0, 0.0]], dtype=np.float32))
     verified = {
@@ -792,19 +788,50 @@ def test_search_receipt_claim_requires_source_commit_reverification(
             }
         ],
         "snapshot_dir": Path("unused"),
-        "source_commits_reverified": source_reverified,
+        "source_commits_reverified": False,
     }
 
     [result] = candidate.search_verified_candidate(
         verified, np.asarray([1.0, 0.0], dtype=np.float32), k=1
     )
 
-    assert result["source_commit_reverified"] is source_reverified
-    assert result["receipt_bound"] is expected_receipt_bound
-    assert result["receipt_structure_reverified"] is expected_receipt_bound
+    assert result["source_commit_reverified"] is False
+    assert result["receipt_bound"] is False
+    assert result["receipt_structure_reverified"] is False
     assert result["receipt_authenticity_verified"] is False
     assert result["solver_outcome_verified"] is False
     assert result["runtime_authority_granted"] is False
+
+
+def test_search_rejects_forged_source_reverification_flag() -> None:
+    index = _ReverseTieIndex(2)
+    index.add(np.asarray([[1.0, 0.0]], dtype=np.float32))
+    forged = {
+        "manifest": {"embedding_contract": {"dimension": 2}},
+        "cells": [
+            {
+                "manifest": {"cell_id": "energy"},
+                "rows": [
+                    {
+                        "canonical_solver_id": "alpha",
+                        "projection_id": "sha256:" + "a" * 64,
+                        "receipt_bound": True,
+                    }
+                ],
+                "index": index,
+            }
+        ],
+        "snapshot_dir": Path("never-opened"),
+        "source_commits_reverified": True,
+    }
+
+    with pytest.raises(
+        candidate.CandidateContractError,
+        match="requires the expected source request",
+    ):
+        candidate.search_verified_candidate(
+            forged, np.asarray([1.0, 0.0], dtype=np.float32), k=1
+        )
 
 
 def test_search_rejects_missing_or_non_boolean_source_verification_state() -> None:
@@ -839,6 +866,11 @@ def test_expected_request_rejects_changed_projection_source(tmp_path: Path) -> N
         embedder=_FakeEmbedder(),
         faiss_module=_FakeFaiss,
     )
+    verified = candidate.load_verified_candidate_snapshot(
+        report["snapshot_path"],
+        faiss_module=_FakeFaiss,
+        expected_request=request,
+    )
     cell_id, commit_id = request.cells[0]
     source_manifest = (
         request.vector_root / cell_id / "commits" / commit_id / "manifest.json"
@@ -846,6 +878,14 @@ def test_expected_request_rejects_changed_projection_source(tmp_path: Path) -> N
     payload = bytearray(source_manifest.read_bytes())
     payload[-2] ^= 1
     source_manifest.write_bytes(payload)
+
+    with pytest.raises((candidate.CandidateContractError, ValueError)):
+        candidate.search_verified_candidate(
+            verified,
+            np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            k=1,
+            expected_request=request,
+        )
 
     with pytest.raises((candidate.CandidateContractError, ValueError)):
         candidate.load_verified_candidate_snapshot(

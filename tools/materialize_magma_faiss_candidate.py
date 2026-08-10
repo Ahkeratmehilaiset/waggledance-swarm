@@ -823,7 +823,11 @@ def _search_all_cells(
 
 
 def search_verified_candidate(
-    verified: Mapping[str, Any], query_vector: np.ndarray, *, k: int = 5
+    verified: Mapping[str, Any],
+    query_vector: np.ndarray,
+    *,
+    k: int = 5,
+    expected_request: CandidateRequest | None = None,
 ) -> list[dict[str, Any]]:
     """Search every physical cell and deterministically merge a global top-k.
 
@@ -831,9 +835,11 @@ def search_verified_candidate(
     Each cell is searched for only its local top-k.  If FAISS reports a tie at a
     local cutoff, that cell is searched fully so solver-id tie breaking cannot
     silently discard an equally scored candidate. A result exposes
-    ``receipt_bound=True`` only after the immutable source commits were reopened
-    and their embedded receipt structure was cross-validated. Receipt
-    authenticity, solver outcome, and runtime authority remain explicitly false.
+    ``receipt_bound=True`` only when this call receives the exact source request,
+    reopens those immutable source commits, and cross-validates their embedded
+    receipt structure. A loader-produced boolean is never trusted at this claim
+    boundary. Receipt authenticity, solver outcome, and runtime authority remain
+    explicitly false.
     """
     if type(k) is not int or k <= 0:
         raise CandidateContractError("candidate search k must be a positive integer")
@@ -845,9 +851,30 @@ def search_verified_candidate(
     loaded_cells = verified["cells"]
     if type(manifest) is not dict or type(loaded_cells) is not list:
         raise CandidateContractError("candidate search input is invalid")
-    source_commits_reverified = verified["source_commits_reverified"]
-    if type(source_commits_reverified) is not bool:
+    declared_source_reverification = verified["source_commits_reverified"]
+    if type(declared_source_reverification) is not bool:
         raise CandidateContractError("candidate source verification state is invalid")
+    if expected_request is None:
+        if declared_source_reverification:
+            raise CandidateContractError(
+                "candidate search requires the expected source request to expose "
+                "reverification claims"
+            )
+        source_commits_reverified = False
+    else:
+        if type(expected_request) is not CandidateRequest:
+            raise CandidateContractError(
+                "candidate search expected source request is invalid"
+            )
+        try:
+            _verify_snapshot_sources(manifest, loaded_cells, expected_request)
+        except CandidateContractError:
+            raise
+        except Exception as exc:
+            raise CandidateContractError(
+                "candidate search source reverification failed"
+            ) from exc
+        source_commits_reverified = True
     dimension = manifest.get("embedding_contract", {}).get("dimension")
     if type(dimension) is not int or dimension <= 0:
         raise CandidateContractError("candidate search dimension is invalid")

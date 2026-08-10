@@ -134,6 +134,32 @@ def test_source_identity_is_explicitly_unreceipted_and_content_addressed() -> No
         )
 
 
+def test_source_identity_v1_rejects_unverified_receipt_claims() -> None:
+    document = _document()
+    fake_digest = "sha256:" + "0" * 64
+
+    with pytest.raises(ValueError, match="verified receipt evidence"):
+        projection.build_projection_source_identity(
+            document,
+            receipt_event_id="entirely-invented",
+            receipt_digest=fake_digest,
+        )
+
+    forged = projection.build_projection_source_identity(document)
+    forged.update(
+        {
+            "receipt_event_id": "entirely-invented",
+            "receipt_digest": fake_digest,
+            "receipt_bound": True,
+        }
+    )
+    forged["identity_digest"] = projection.sha256_digest(
+        {key: value for key, value in forged.items() if key != "identity_digest"}
+    )
+    with pytest.raises(ValueError, match="verified receipt evidence"):
+        projection.validate_projection_source_identity(forged)
+
+
 def test_embedding_contract_binds_exact_model_dimension_normalization_and_prefixes() -> None:
     contract = projection.build_embedding_contract(
         model_id="nomic-embed-text",

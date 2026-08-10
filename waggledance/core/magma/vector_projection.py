@@ -445,10 +445,10 @@ def build_projection_source_identity(
     if (receipt_event_id is None) != (receipt_digest is None):
         raise ValueError("receipt_event_id and receipt_digest are all-or-none")
     if receipt_event_id is not None:
-        receipt_event_id = _normalize_text(
-            receipt_event_id, "receipt_event_id", maximum=256, allow_empty=False
+        raise ValueError(
+            "receipt-bound source identity requires verified receipt evidence; "
+            "source_identity.v1 is unreceipted only"
         )
-        _require_digest(receipt_digest, "receipt_digest")
     identity: dict[str, Any] = {
         "schema_version": PROJECTION_SOURCE_IDENTITY_VERSION,
         "canonical_solver_id": document["canonical_solver_id"],
@@ -484,10 +484,10 @@ def validate_projection_source_identity(value: Any) -> dict[str, Any]:
     if identity["receipt_bound"] is not (event_id is not None):
         raise ValueError("receipt_bound does not match receipt identity")
     if event_id is not None:
-        event_id = _normalize_text(
-            event_id, "receipt_event_id", maximum=256, allow_empty=False
+        raise ValueError(
+            "receipt-bound source identity requires verified receipt evidence; "
+            "source_identity.v1 is unreceipted only"
         )
-        receipt_digest = _require_digest(receipt_digest, "receipt_digest")
     canonical = {
         **identity,
         "canonical_solver_id": solver_id,

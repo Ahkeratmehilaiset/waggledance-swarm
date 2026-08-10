@@ -58,7 +58,10 @@ DEFAULT_CHECKPOINT = DEFAULT_VECTOR_ROOT / "checkpoints" / "vector_indexer.json"
 
 CHECKPOINT_SCHEMA_VERSION = 1
 
-PROJECTION_MANIFEST_SCHEMA = "magma.faiss.projection_manifest.v1"
+PROJECTION_MANIFEST_V1_SCHEMA = "magma.faiss.projection_manifest.v1"
+PROJECTION_MANIFEST_V2_SCHEMA = "magma.faiss.projection_manifest.v2"
+# New commits use v2. The reader retains exact v1 support for persisted commits.
+PROJECTION_MANIFEST_SCHEMA = PROJECTION_MANIFEST_V2_SCHEMA
 PROJECTION_COMMIT_SCHEMA = "magma.faiss.projection_commit.v1"
 PROJECTION_POINTER_SCHEMA = "magma.faiss.current_pointer.v1"
 _PROJECTION_COMMIT_ID = re.compile(r"^proj_[0-9a-f]{64}$")
@@ -82,7 +85,7 @@ _LEGACY_COMMIT_KEYS = frozenset(
     }
 )
 _PROJECTION_ROW_KEYS = frozenset({"projection_document", "source_identity"})
-_PROJECTION_MANIFEST_KEYS = frozenset(
+_PROJECTION_MANIFEST_COMMON_KEYS = frozenset(
     {
         "schema_version",
         "materialization_state",
@@ -97,8 +100,13 @@ _PROJECTION_MANIFEST_KEYS = frozenset(
         "embedding_contract",
         "topology_digest",
         "projection_schema_version",
-        "source_identity_schema_version",
     }
+)
+_PROJECTION_MANIFEST_V1_KEYS = _PROJECTION_MANIFEST_COMMON_KEYS | frozenset(
+    {"source_identity_schema_version"}
+)
+_PROJECTION_MANIFEST_V2_KEYS = _PROJECTION_MANIFEST_COMMON_KEYS | frozenset(
+    {"source_identity_schema_versions"}
 )
 _PROJECTION_COMMIT_KEYS = frozenset(
     {
@@ -237,11 +245,13 @@ def _apply_projected_upsert(
     document = vector_projection.validate_solver_contract_projection(
         payload["projection_document"]
     )
-    identity = vector_projection.validate_projection_source_identity(
-        payload["source_identity"]
-    )
     embedding = vector_projection.validate_embedding_contract(
         payload["embedding_contract"]
+    )
+    identity = vector_projection.validate_projection_source_binding(
+        document,
+        payload["source_identity"],
+        embedding,
     )
     topology_digest = payload["topology_digest"]
     model_id = document["canonical_solver_id"]
@@ -865,22 +875,23 @@ def _projection_rows(cell: CellState) -> list[dict[str, Any]]:
         document = vector_projection.validate_solver_contract_projection(
             cell.projection_documents[model_id]
         )
-        identity = vector_projection.validate_projection_source_identity(
-            cell.projection_source_identities[model_id]
+        embedding = vector_projection.validate_embedding_contract(
+            cell.projection_embedding_contracts[model_id]
+        )
+        identity = vector_projection.validate_projection_source_binding(
+            document,
+            cell.projection_source_identities[model_id],
+            embedding,
         )
         if document["canonical_solver_id"] != model_id:
             raise ValueError("projection document key does not match solver state")
         if identity["canonical_solver_id"] != model_id:
             raise ValueError("source identity key does not match solver state")
-        if identity["solver_contract_digest"] != document["solver_contract_digest"]:
-            raise ValueError("source identity does not bind projection contract")
-        if identity["source_digest"] != document["source_digest"]:
-            raise ValueError("source identity does not bind projection source")
         if document["cell_id"] != cell.cell_id:
             raise ValueError("projection document is assigned to another cell")
         if document["topology_digest"] != cell.topology_digest:
             raise ValueError("projection document topology binding is stale")
-        if cell.projection_embedding_contracts[model_id] != cell.embedding_contract:
+        if embedding != cell.embedding_contract:
             raise ValueError("projection row embedding binding is stale")
         if cell.projection_topology_digests[model_id] != cell.topology_digest:
             raise ValueError("projection row topology generation is stale")
@@ -911,12 +922,17 @@ def _projection_rows(cell: CellState) -> list[dict[str, Any]]:
 
 def _projection_artifact_payload(
     cell: CellState,
+    *,
+    manifest_schema: str = PROJECTION_MANIFEST_SCHEMA,
 ) -> tuple[str, bytes, dict[str, Any], bytes, dict[str, Any], bytes]:
     rows = _projection_rows(cell)
     documents_bytes = b"".join(_canonical_json_line(row) for row in rows)
     documents_sha256 = _sha256_bytes(documents_bytes)
+    identity_versions = sorted(
+        {row["source_identity"]["schema_version"] for row in rows}
+    )
     identity_payload = {
-        "schema_version": PROJECTION_MANIFEST_SCHEMA,
+        "schema_version": manifest_schema,
         "materialization_state": "projection_only",
         "index_kind": "none",
         "cell_id": cell.cell_id,
@@ -934,10 +950,22 @@ def _projection_artifact_payload(
         ),
         "topology_digest": cell.topology_digest,
         "projection_schema_version": vector_projection.SOLVER_PROJECTION_VERSION,
-        "source_identity_schema_version": (
-            vector_projection.PROJECTION_SOURCE_IDENTITY_VERSION
-        ),
     }
+    if manifest_schema == PROJECTION_MANIFEST_V1_SCHEMA:
+        if identity_versions not in (
+            [],
+            [vector_projection.PROJECTION_SOURCE_IDENTITY_V1_VERSION],
+        ):
+            raise ValueError(
+                "projection manifest v1 cannot encode receipt-bound identities"
+            )
+        identity_payload["source_identity_schema_version"] = (
+            vector_projection.PROJECTION_SOURCE_IDENTITY_V1_VERSION
+        )
+    elif manifest_schema == PROJECTION_MANIFEST_V2_SCHEMA:
+        identity_payload["source_identity_schema_versions"] = identity_versions
+    else:
+        raise ValueError("unsupported projection manifest schema")
     commit_id = "proj_" + sha256_digest(identity_payload).split(":", 1)[1]
     manifest = {**identity_payload, "commit_id": commit_id}
     manifest_bytes = _canonical_json_line(manifest)
@@ -1091,6 +1119,28 @@ def _read_exact_json(path: Path, expected_keys: frozenset[str], label: str) -> d
     return value
 
 
+def _read_projection_manifest(path: Path) -> dict[str, Any]:
+    """Read one canonical manifest and dispatch its exact versioned shape."""
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("invalid projection manifest") from exc
+    if type(value) is not dict:
+        raise ValueError("projection manifest has an unknown schema shape")
+    expected_keys = {
+        PROJECTION_MANIFEST_V1_SCHEMA: _PROJECTION_MANIFEST_V1_KEYS,
+        PROJECTION_MANIFEST_V2_SCHEMA: _PROJECTION_MANIFEST_V2_KEYS,
+    }.get(value.get("schema_version"))
+    if expected_keys is None:
+        raise ValueError("unsupported projection manifest schema")
+    if frozenset(value) != expected_keys:
+        raise ValueError("projection manifest has an unknown schema shape")
+    if raw != _canonical_json_line(value):
+        raise ValueError("projection manifest is not canonically encoded")
+    return value
+
+
 def _load_verified_projection_directory(
     commit_dir: Path,
     *,
@@ -1111,14 +1161,11 @@ def _load_verified_projection_directory(
     commit_path = commit_dir / "commit.json"
     if not all(path.is_file() for path in (documents_path, manifest_path, commit_path)):
         raise ValueError("projection commit is incomplete")
-    manifest = _read_exact_json(
-        manifest_path, _PROJECTION_MANIFEST_KEYS, "projection manifest"
-    )
+    manifest = _read_projection_manifest(manifest_path)
     commit = _read_exact_json(
         commit_path, _PROJECTION_COMMIT_KEYS, "projection commit record"
     )
-    if manifest["schema_version"] != PROJECTION_MANIFEST_SCHEMA:
-        raise ValueError("unsupported projection manifest schema")
+    manifest_schema = manifest["schema_version"]
     if commit["schema_version"] != PROJECTION_COMMIT_SCHEMA:
         raise ValueError("unsupported projection commit schema")
     if manifest["materialization_state"] != "projection_only" or manifest["index_kind"] != "none":
@@ -1142,11 +1189,28 @@ def _load_verified_projection_directory(
         raise ValueError("expected projection topology digest is invalid")
     if manifest["projection_schema_version"] != vector_projection.SOLVER_PROJECTION_VERSION:
         raise ValueError("projection document schema mismatch")
-    if (
-        manifest["source_identity_schema_version"]
-        != vector_projection.PROJECTION_SOURCE_IDENTITY_VERSION
-    ):
-        raise ValueError("projection source identity schema mismatch")
+    if manifest_schema == PROJECTION_MANIFEST_V1_SCHEMA:
+        if (
+            manifest["source_identity_schema_version"]
+            != vector_projection.PROJECTION_SOURCE_IDENTITY_V1_VERSION
+        ):
+            raise ValueError("projection source identity schema mismatch")
+        declared_identity_versions = [
+            vector_projection.PROJECTION_SOURCE_IDENTITY_V1_VERSION
+        ]
+    else:
+        declared_identity_versions = manifest["source_identity_schema_versions"]
+        if (
+            type(declared_identity_versions) is not list
+            or any(
+                type(version) is not str
+                or version not in vector_projection.PROJECTION_SOURCE_IDENTITY_VERSIONS
+                for version in declared_identity_versions
+            )
+            or declared_identity_versions
+            != sorted(set(declared_identity_versions))
+        ):
+            raise ValueError("projection source identity schemas are invalid")
 
     documents_bytes = documents_path.read_bytes()
     rows: list[dict[str, Any]] = []
@@ -1162,15 +1226,11 @@ def _load_verified_projection_directory(
         document = vector_projection.validate_solver_contract_projection(
             row["projection_document"]
         )
-        identity = vector_projection.validate_projection_source_identity(
-            row["source_identity"]
+        identity = vector_projection.validate_projection_source_binding(
+            document,
+            row["source_identity"],
+            validated_embedding,
         )
-        if document["canonical_solver_id"] != identity["canonical_solver_id"]:
-            raise ValueError("projection row solver binding mismatch")
-        if document["solver_contract_digest"] != identity["solver_contract_digest"]:
-            raise ValueError("projection row contract binding mismatch")
-        if document["source_digest"] != identity["source_digest"]:
-            raise ValueError("projection row source binding mismatch")
         if document["cell_id"] != expected_cell_id:
             raise ValueError("projection row cell mismatch")
         if document["topology_digest"] != expected_topology_digest:
@@ -1191,6 +1251,16 @@ def _load_verified_projection_directory(
         raise ValueError("projection commit contains duplicate source identities")
     if manifest["source_identity_digests"] != identity_digests:
         raise ValueError("projection source identity manifest mismatch")
+    actual_identity_versions = sorted(
+        {row["source_identity"]["schema_version"] for row in rows}
+    )
+    expected_identity_versions = (
+        []
+        if manifest_schema == PROJECTION_MANIFEST_V1_SCHEMA and not rows
+        else declared_identity_versions
+    )
+    if actual_identity_versions != expected_identity_versions:
+        raise ValueError("projection source identity schema manifest mismatch")
     solver_ids = [row["projection_document"]["canonical_solver_id"] for row in rows]
     if len(solver_ids) != len(set(solver_ids)):
         raise ValueError("projection commit contains duplicate solver documents")
@@ -1241,13 +1311,19 @@ def _load_verified_projection_directory(
         derived_manifest_bytes,
         derived_commit,
         derived_commit_bytes,
-    ) = _projection_artifact_payload(reconstructed)
+    ) = _projection_artifact_payload(
+        reconstructed,
+        manifest_schema=manifest_schema,
+    )
     if derived_commit_id != expected_commit_id:
         raise ValueError("projection content address mismatch")
     if manifest != derived_manifest or manifest_path.read_bytes() != derived_manifest_bytes:
         raise ValueError("projection manifest mismatch")
     if commit != derived_commit or commit_path.read_bytes() != derived_commit_bytes:
         raise ValueError("projection commit record mismatch")
+    receipt_bound_count = sum(
+        row["source_identity"]["receipt_bound"] is True for row in rows
+    )
     return {
         "commit_id": expected_commit_id,
         "manifest": manifest,
@@ -1255,6 +1331,11 @@ def _load_verified_projection_directory(
         "documents": rows,
         "embedding_contract": validated_embedding,
         "topology_digest": expected_topology_digest,
+        "receipt_bound_count": receipt_bound_count,
+        "unreceipted_count": len(rows) - receipt_bound_count,
+        # Every v2 proof above was replayed through the deterministic admission
+        # contract and cross-bound to this exact document/embedding generation.
+        "receipt_evidence_reverified": True,
     }
 
 
@@ -1370,11 +1451,7 @@ def _load_prior_cell_state(
     commit_id = _validate_commit_id(commit_id)
     if _PROJECTION_COMMIT_ID.fullmatch(commit_id):
         commit_dir = _safe_projection_commit_dir(vector_root, safe_cell, commit_id)
-        manifest = _read_exact_json(
-            commit_dir / "manifest.json",
-            _PROJECTION_MANIFEST_KEYS,
-            "projection manifest",
-        )
+        manifest = _read_projection_manifest(commit_dir / "manifest.json")
         result = load_verified_projection_commit(
             vector_root,
             safe_cell,

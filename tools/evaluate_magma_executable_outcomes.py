@@ -3,7 +3,7 @@
 
 This is a candidate-only development gate.  It proves that one known numeric
 query can travel from a structurally reverified global FAISS snapshot into the
-real deterministic ``SymbolicSolver`` and that two known OOD queries abstain
+real deterministic ``SymbolicSolver`` and that three known OOD queries abstain
 without invoking that executor.  It does not enable a runtime route, evaluate
 hex pruning, authenticate self-certified receipts, or grant promotion authority.
 """

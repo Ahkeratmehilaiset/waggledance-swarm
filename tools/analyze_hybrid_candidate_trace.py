@@ -1,22 +1,9 @@
 #!/usr/bin/env python3
-"""Phase D-3 promotion gate analysis.
+"""Analyze candidate-mode hybrid route-selection traces.
 
-Reads docs/runs/magma_hybrid_candidate_trace.jsonl (written by
-HybridObserver in candidate mode) and computes:
-
-  hybrid_unique_correct:    keyword chose retrieval/llm, hybrid would
-                            have chosen a solver AND the solver passed
-                            question_frame check (likely better answer)
-  hybrid_unique_incorrect:  keyword chose solver, hybrid would have
-                            rejected off-domain (possibly overcautious)
-  agreement:                both chose solver
-  keyword_only_solver:      keyword chose solver, hybrid below threshold
-                            (likely fine — keyword was right)
-  neither_chose_solver:     both fell through to retrieval/llm
-
-Phase D-3 promotion gate per v3:
-  Proceed to authoritative mode if
-    hybrid_unique_correct / max(1, hybrid_unique_incorrect) >= 3.0
+These rows contain route metadata only. They do not contain solver execution,
+an independently evaluated task outcome, or a counterfactual oracle. This tool
+therefore reports diagnostics and always leaves promotion NOT EVALUATED.
 
 Usage:
     python tools/analyze_hybrid_candidate_trace.py
@@ -33,71 +20,131 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 
-TRACE_FILE = Path("docs/runs/magma_hybrid_candidate_trace.jsonl")
+TRACE_FILE = Path("data/runtime/magma_hybrid_candidate_trace.jsonl")
+SOLVER_LAYERS = frozenset(
+    {"model_based", "rule_constraints", "statistical"}
+)
+FALLBACK_LAYERS = frozenset({"retrieval", "llm_reasoning"})
+EVIDENCE_KIND = "route_selection_diagnostic_only"
+OUTCOME_BLOCKER = "missing_executable_solver_outcome_oracle"
 
 
-def load_trace(path: Path, since: datetime = None) -> list[dict]:
-    rows = []
+def load_trace(
+    path: Path, since: datetime | None = None
+) -> list[dict]:
+    rows: list[dict] = []
     if not path.exists():
         return rows
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if since:
-            ts = r.get("ts", "")
-            try:
-                row_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                if row_time < since:
-                    continue
-            except (ValueError, TypeError):
+    with open(path, encoding="utf-8") as stream:
+        for line in stream:
+            line = line.strip()
+            if not line:
                 continue
-        rows.append(r)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if type(row) is not dict:
+                continue
+            if since:
+                ts = row.get("ts", "")
+                try:
+                    row_time = datetime.fromisoformat(
+                        ts.replace("Z", "+00:00")
+                    )
+                    if row_time < since:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+            rows.append(row)
     return rows
 
 
 def classify_row(row: dict) -> str:
-    """Bucket each trace row."""
+    """Bucket route metadata without inferring correctness or outcomes."""
     kw_layer = row.get("keyword_layer", "")
     hybrid_solver = row.get("hybrid_top_solver")
     passed_thresh = row.get("passed_threshold", False)
     passed_qf = row.get("passed_question_frame", False)
     rejected = row.get("hybrid_rejected_off_domain", False)
 
-    keyword_chose_solver = kw_layer in ("model_based", "rule_constraints", "statistical")
-    hybrid_chose_solver = bool(hybrid_solver) and passed_thresh and passed_qf
+    if kw_layer not in SOLVER_LAYERS | FALLBACK_LAYERS:
+        return "unknown_keyword_route_semantics"
 
-    if keyword_chose_solver and hybrid_chose_solver:
-        return "agreement_both_solver"
+    keyword_chose_solver = kw_layer in SOLVER_LAYERS
+    hybrid_has_compatible_candidate = (
+        bool(hybrid_solver)
+        and passed_thresh is True
+        and passed_qf is True
+    )
+
+    if keyword_chose_solver and hybrid_has_compatible_candidate:
+        return "agreement_both_solver_candidates"
     if keyword_chose_solver and rejected:
-        return "hybrid_unique_incorrect"    # hybrid overcautious
-    if keyword_chose_solver and not hybrid_chose_solver and not rejected:
-        return "keyword_only_solver"        # hybrid uncertain, keyword confident
-    if not keyword_chose_solver and hybrid_chose_solver:
-        return "hybrid_unique_correct"      # hybrid would have found a solver
+        return "hybrid_question_frame_rejection_keyword_solver"
+    if keyword_chose_solver:
+        return "keyword_solver_hybrid_no_compatible_candidate"
+    if hybrid_has_compatible_candidate:
+        return "hybrid_compatible_candidate_keyword_fallback"
     if not keyword_chose_solver and rejected:
-        return "agreement_reject_off_domain"
-    return "neither_chose_solver"
+        return "keyword_fallback_hybrid_question_frame_rejection"
+    return "keyword_fallback_hybrid_no_compatible_candidate"
+
+
+def _base_report(rows: list[dict]) -> dict:
+    return {
+        "schema_version": "wd.hybrid_route_selection_diagnostic.v1",
+        "evidence_kind": EVIDENCE_KIND,
+        "outcome_evidence_present": False,
+        "promotion_gate_evaluated": False,
+        "promotion_gate_pass": False,
+        "promotion_blockers": [OUTCOME_BLOCKER],
+        # Deliberately retained as null migration guards for legacy parsers.
+        "hybrid_unique_correct": None,
+        "hybrid_unique_incorrect": None,
+        "promotion_ratio": None,
+        "total_queries": len(rows),
+        "time_range": {
+            "first": rows[0].get("ts") if rows else None,
+            "last": rows[-1].get("ts") if rows else None,
+        },
+    }
 
 
 def analyze(rows: list[dict]) -> dict:
+    report = _base_report(rows)
     if not rows:
-        return {"error": "no trace rows"}
+        return {
+            **report,
+            "error": "no trace rows",
+            "classification": {},
+            "route_selection_ratio": None,
+            "diagnostics": {
+                "threshold_pass_count": 0,
+                "question_frame_pass_count": 0,
+                "solver_matched_at_all_count": 0,
+                "rejected_off_domain_count": 0,
+                "avg_above_threshold_score": None,
+            },
+        }
 
     counts = defaultdict(int)
     for r in rows:
         counts[classify_row(r)] += 1
 
-    uc = counts["hybrid_unique_correct"]
-    ui = counts["hybrid_unique_incorrect"]
-    ratio = uc / max(1, ui)
+    candidate_count = counts.get(
+        "hybrid_compatible_candidate_keyword_fallback", 0
+    )
+    rejection_count = counts.get(
+        "hybrid_question_frame_rejection_keyword_solver", 0
+    )
+    route_ratio = (
+        round(candidate_count / rejection_count, 2)
+        if rejection_count
+        else None
+    )
 
     # Additional diagnostics
-    total = len(rows)
     threshold_pass = sum(1 for r in rows if r.get("passed_threshold"))
     qf_pass = sum(1 for r in rows if r.get("passed_question_frame"))
     solver_matched = sum(1 for r in rows if r.get("hybrid_top_solver"))
@@ -109,16 +156,11 @@ def analyze(rows: list[dict]) -> dict:
     ]
 
     return {
-        "total_queries": total,
-        "time_range": {
-            "first": rows[0].get("ts", "?"),
-            "last": rows[-1].get("ts", "?"),
-        },
+        **report,
         "classification": dict(counts),
-        "hybrid_unique_correct": uc,
-        "hybrid_unique_incorrect": ui,
-        "promotion_ratio": round(ratio, 2),
-        "promotion_gate_pass": ratio >= 3.0,
+        "hybrid_compatible_candidate_keyword_fallback": candidate_count,
+        "hybrid_question_frame_rejection_keyword_solver": rejection_count,
+        "route_selection_ratio": route_ratio,
         "diagnostics": {
             "threshold_pass_count": threshold_pass,
             "question_frame_pass_count": qf_pass,
@@ -132,30 +174,28 @@ def analyze(rows: list[dict]) -> dict:
     }
 
 
-def print_report(analysis: dict, detailed: bool = False):
-    if "error" in analysis:
-        print(f"ERROR: {analysis['error']}")
-        return
-
+def print_report(analysis: dict, detailed: bool = False) -> None:
     cls = analysis["classification"]
     total = analysis["total_queries"]
 
-    print(f"=== Phase D-3 promotion gate analysis ===")
+    print("=== Phase D hybrid route-selection diagnostic ===")
     print(f"  Queries analyzed: {total}")
-    print(f"  Time range: {analysis['time_range']['first'][:19]} -> {analysis['time_range']['last'][:19]}")
+    if "error" in analysis:
+        print(f"  Trace status: {analysis['error']}")
+    first = analysis["time_range"]["first"] or "?"
+    last = analysis["time_range"]["last"] or "?"
+    print(f"  Time range: {str(first)[:19]} -> {str(last)[:19]}")
     print()
     print(f"{'Classification':<40} {'Count':>6} {'%':>8}")
     print("-" * 56)
     for k, v in sorted(cls.items(), key=lambda x: -x[1]):
         pct = 100 * v / total
-        marker = "  <-" if k in ("hybrid_unique_correct", "hybrid_unique_incorrect") else ""
-        print(f"  {k:<38} {v:>6} {pct:>7.1f}%{marker}")
+        print(f"  {k:<38} {v:>6} {pct:>7.1f}%")
     print()
-    print(f"Promotion gate:")
-    print(f"  hybrid_unique_correct   = {analysis['hybrid_unique_correct']}")
-    print(f"  hybrid_unique_incorrect = {analysis['hybrid_unique_incorrect']}")
-    print(f"  ratio                   = {analysis['promotion_ratio']:.2f} (gate requires >= 3.0)")
-    print(f"  VERDICT                 = {'PASS — proceed to Phase D-3 authoritative' if analysis['promotion_gate_pass'] else 'INSUFFICIENT — stay in candidate mode, collect more data'}")
+    print("Outcome/promotion gate:")
+    print("  VERDICT = BLOCKED — NOT EVALUATED")
+    print(f"  blocker = {analysis['promotion_blockers'][0]}")
+    print("  reason  = route metadata contains no executable task outcome")
     print()
     if detailed:
         d = analysis["diagnostics"]
@@ -188,6 +228,13 @@ def main() -> int:
         by_day = defaultdict(list)
         for r in rows:
             by_day[r.get("ts", "")[:10]].append(r)
+        if not by_day:
+            analysis = analyze([])
+            if args.json:
+                print(json.dumps(analysis, indent=2, ensure_ascii=False))
+            else:
+                print_report(analysis, detailed=args.detailed)
+            return 1
         for day in sorted(by_day):
             print(f"\n\n=== Day {day} ===")
             print_report(analyze(by_day[day]), detailed=args.detailed)
@@ -197,6 +244,9 @@ def main() -> int:
             print(json.dumps(analysis, indent=2, ensure_ascii=False))
         else:
             print_report(analysis, detailed=args.detailed)
+
+        if "error" in analysis:
+            return 1
 
     return 0
 

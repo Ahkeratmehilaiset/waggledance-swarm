@@ -1,0 +1,358 @@
+{
+  "schema_version": "wd.magma.semantic_eval.v1",
+  "source_contract": "magma.faiss.solver_projection.v1",
+  "target_text_field": "embedding_text",
+  "normalization": {
+    "unicode": "NFKD; remove combining marks; casefold",
+    "token_regex": "[a-z0-9]+",
+    "drop_single_character_tokens": true,
+    "drop_numeric_tokens": true,
+    "stemming": false,
+    "stopwords": [
+      "a", "an", "and", "are", "as", "at", "be", "because", "before",
+      "based", "by", "can", "considering", "could", "do", "does", "for",
+      "from", "given", "has", "have", "her", "how", "i", "in", "into",
+      "is", "it", "its", "may", "might", "must", "my", "of", "on",
+      "onto", "or", "our", "per", "please", "should", "so", "the",
+      "their", "this", "to", "under", "using", "what", "when", "whether",
+      "which", "while", "will", "with", "without"
+    ],
+    "projection_boilerplate": [
+      "solver", "name", "description", "variables", "outputs", "formulas",
+      "capabilities", "tags", "calculate", "estimate", "predict",
+      "determine", "check", "expected"
+    ],
+    "unit_tokens": [
+      "binary", "bool", "boolean", "c", "count", "d", "day", "days",
+      "db", "dbi", "dbm", "eur", "g", "gdd", "h", "hour", "hours",
+      "kg", "kwh", "l", "m", "ma", "mah", "mhz", "min", "ml",
+      "month", "months", "multiplier", "percent", "ppm", "ppb",
+      "probability", "ratio", "score", "trips", "w", "week", "weeks",
+      "year", "years"
+    ]
+  },
+  "policies": {
+    "query_writer_must_not_see": [
+      "canonical_solver_id",
+      "model_name",
+      "retrieval_rankings"
+    ],
+    "retriever_must_not_receive": [
+      "expected_solver",
+      "expected_cell",
+      "stratum"
+    ],
+    "forbidden_query_label_match": "No normalized canonical_solver_id or full model_name token sequence may occur contiguously in a query.",
+    "semantic_zero_overlap_gate": "content_tokens(query) intersect content_tokens(target embedding_text) must be empty."
+  },
+  "cases": [
+    {
+      "query_id": "A01",
+      "stratum": "anchored_natural",
+      "query": "Are the winter tasks complete before first frost, including mite control, food stores and roof insulation?",
+      "expected_solver": "autumn_preparation",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "A02",
+      "stratum": "anchored_natural",
+      "query": "Are the colony's honey reserves sufficient for winter survival?",
+      "expected_solver": "colony_food_reserves",
+      "expected_cell": "math"
+    },
+    {
+      "query_id": "A03",
+      "stratum": "anchored_natural",
+      "query": "Forecast the bee population in sixty days from egg laying and mortality.",
+      "expected_solver": "colony_growth_rate",
+      "expected_cell": "learning"
+    },
+    {
+      "query_id": "A04",
+      "stratum": "anchored_natural",
+      "query": "What will warming this house cost each month from its insulation and electricity price?",
+      "expected_solver": "heating_cost",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "A05",
+      "stratum": "anchored_natural",
+      "query": "Will hive temperature remain safe for bee survival during freezing weather?",
+      "expected_solver": "hive_thermal_balance",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "A06",
+      "stratum": "anchored_natural",
+      "query": "How much honey can this colony produce during the nectar season?",
+      "expected_solver": "honey_yield",
+      "expected_cell": "math"
+    },
+    {
+      "query_id": "A07",
+      "stratum": "anchored_natural",
+      "query": "When is peak nectar flow, and when should another super be installed?",
+      "expected_solver": "nectar_flow_timing",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "A08",
+      "stratum": "anchored_natural",
+      "query": "How many hours before water in this insulated pipe becomes frozen?",
+      "expected_solver": "pipe_freezing",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "A09",
+      "stratum": "anchored_natural",
+      "query": "Is the queen too old to keep, given her laying rate and colony performance?",
+      "expected_solver": "queen_age_replacement",
+      "expected_cell": "learning"
+    },
+    {
+      "query_id": "A10",
+      "stratum": "anchored_natural",
+      "query": "How much daily energy will these panels produce from their area and sun hours?",
+      "expected_solver": "solar_yield",
+      "expected_cell": "energy"
+    },
+    {
+      "query_id": "A11",
+      "stratum": "anchored_natural",
+      "query": "What is the earliest safe date to inspect a hive in spring weather?",
+      "expected_solver": "spring_inspection_timing",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "A12",
+      "stratum": "anchored_natural",
+      "query": "How likely is swarming from queen cells, season and empty combs?",
+      "expected_solver": "swarm_risk",
+      "expected_cell": "safety"
+    },
+    {
+      "query_id": "A13",
+      "stratum": "anchored_natural",
+      "query": "How much oxalic acid solution is needed for the mite load on these combs?",
+      "expected_solver": "varroa_treatment",
+      "expected_cell": "safety"
+    },
+    {
+      "query_id": "A14",
+      "stratum": "anchored_natural",
+      "query": "When should mites next be treated, given brood status and the previous dose date?",
+      "expected_solver": "varroa_treatment_calendar",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "A15",
+      "stratum": "anchored_natural",
+      "query": "How much supplemental feed does this colony need for the winter duration?",
+      "expected_solver": "winter_feeding_decision",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "A16",
+      "stratum": "anchored_natural",
+      "query": "What preventive maintenance interval follows from operating hours and failure count?",
+      "expected_solver": "mtbf_prediction",
+      "expected_cell": "system"
+    },
+    {
+      "query_id": "A17",
+      "stratum": "anchored_natural",
+      "query": "How effective was the equipment given availability, performance and quality?",
+      "expected_solver": "oee_decomposition",
+      "expected_cell": "system"
+    },
+    {
+      "query_id": "A18",
+      "stratum": "anchored_natural",
+      "query": "How many hours will this IoT battery last at the active and sleep duty cycle?",
+      "expected_solver": "battery_discharge",
+      "expected_cell": "energy"
+    },
+    {
+      "query_id": "A19",
+      "stratum": "anchored_natural",
+      "query": "What received power remains after free-space path loss at this frequency and distance?",
+      "expected_solver": "signal_propagation",
+      "expected_cell": "system"
+    },
+    {
+      "query_id": "A20",
+      "stratum": "anchored_natural",
+      "query": "How much energy and money does lowering the night temperature save?",
+      "expected_solver": "comfort_energy_tradeoff",
+      "expected_cell": "energy"
+    },
+    {
+      "query_id": "A21",
+      "stratum": "anchored_natural",
+      "query": "What efficiency ratio and hourly expense does the heat pump have at these temperatures?",
+      "expected_solver": "heat_pump_cop",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "A22",
+      "stratum": "anchored_natural",
+      "query": "Do CO2, VOC and humidity indicate that ventilation is needed?",
+      "expected_solver": "indoor_air_quality",
+      "expected_cell": "general"
+    },
+    {
+      "query_id": "S01",
+      "stratum": "semantic_zero_overlap",
+      "query": "Can our apiary face cold weather, considering parasites, stored provisions and shelter upgrades?",
+      "expected_solver": "autumn_preparation",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "S02",
+      "stratum": "semantic_zero_overlap",
+      "query": "Will the hive's pantry carry its inhabitants through the dormant season, or must sugar be added?",
+      "expected_solver": "colony_food_reserves",
+      "expected_cell": "math"
+    },
+    {
+      "query_id": "S03",
+      "stratum": "semantic_zero_overlap",
+      "query": "Forecast how the apiary workforce will change during the next two moons from brood production and attrition.",
+      "expected_solver": "colony_growth_rate",
+      "expected_cell": "learning"
+    },
+    {
+      "query_id": "S04",
+      "stratum": "semantic_zero_overlap",
+      "query": "What will I pay to keep this building warm given its envelope, floor space and tariff?",
+      "expected_solver": "heating_cost",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "S05",
+      "stratum": "semantic_zero_overlap",
+      "query": "Can the nest remain warm enough for its occupants during a severe cold snap?",
+      "expected_solver": "hive_thermal_balance",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "S06",
+      "stratum": "semantic_zero_overlap",
+      "query": "How large a harvest could the beekeeper bottle after the bloom?",
+      "expected_solver": "honey_yield",
+      "expected_cell": "math"
+    },
+    {
+      "query_id": "S07",
+      "stratum": "semantic_zero_overlap",
+      "query": "Which day should another box go onto the hive so it precedes the main blossom surge?",
+      "expected_solver": "nectar_flow_timing",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "S08",
+      "stratum": "semantic_zero_overlap",
+      "query": "How long before liquid inside the plumbing turns solid in subzero air?",
+      "expected_solver": "pipe_freezing",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "S09",
+      "stratum": "semantic_zero_overlap",
+      "query": "Does the mother of the brood need swapping because her offspring output has declined?",
+      "expected_solver": "queen_age_replacement",
+      "expected_cell": "learning"
+    },
+    {
+      "query_id": "S10",
+      "stratum": "semantic_zero_overlap",
+      "query": "How much electricity could the rooftop array generate during today's daylight?",
+      "expected_solver": "solar_yield",
+      "expected_cell": "energy"
+    },
+    {
+      "query_id": "S11",
+      "stratum": "semantic_zero_overlap",
+      "query": "When may I open the apiary after thaw without chilling its inhabitants?",
+      "expected_solver": "spring_inspection_timing",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "S12",
+      "stratum": "semantic_zero_overlap",
+      "query": "How likely is the household to split and depart because its nest is crowded?",
+      "expected_solver": "swarm_risk",
+      "expected_cell": "safety"
+    },
+    {
+      "query_id": "S13",
+      "stratum": "semantic_zero_overlap",
+      "query": "How much dribble medicine is appropriate for a parasitized apiary, and when might pests return?",
+      "expected_solver": "varroa_treatment",
+      "expected_cell": "safety"
+    },
+    {
+      "query_id": "S14",
+      "stratum": "semantic_zero_overlap",
+      "query": "How soon must pest suppression be repeated, considering capped young?",
+      "expected_solver": "varroa_treatment_calendar",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "S15",
+      "stratum": "semantic_zero_overlap",
+      "query": "Must extra syrup be supplied so the hive can endure the cold season?",
+      "expected_solver": "winter_feeding_decision",
+      "expected_cell": "seasonal"
+    },
+    {
+      "query_id": "S16",
+      "stratum": "semantic_zero_overlap",
+      "query": "Given breakdown history, how often should preventive servicing occur?",
+      "expected_solver": "mtbf_prediction",
+      "expected_cell": "system"
+    },
+    {
+      "query_id": "S17",
+      "stratum": "semantic_zero_overlap",
+      "query": "What fraction of a plant's scheduled shift became saleable throughput after stoppages and speed losses?",
+      "expected_solver": "oee_decomposition",
+      "expected_cell": "system"
+    },
+    {
+      "query_id": "S18",
+      "stratum": "semantic_zero_overlap",
+      "query": "When will this sensor's cell go flat under its wake and snooze pattern?",
+      "expected_solver": "battery_discharge",
+      "expected_cell": "energy"
+    },
+    {
+      "query_id": "S19",
+      "stratum": "semantic_zero_overlap",
+      "query": "Will a distant wireless receiver hear the transmitter after antenna effects are considered?",
+      "expected_solver": "signal_propagation",
+      "expected_cell": "system"
+    },
+    {
+      "query_id": "S20",
+      "stratum": "semantic_zero_overlap",
+      "query": "What reduction in expense results from letting the home cool while everyone sleeps?",
+      "expected_solver": "comfort_energy_tradeoff",
+      "expected_cell": "energy"
+    },
+    {
+      "query_id": "S21",
+      "stratum": "semantic_zero_overlap",
+      "query": "How economically will this refrigeration-cycle appliance warm the house at current ambient conditions and tariff?",
+      "expected_solver": "heat_pump_cop",
+      "expected_cell": "thermal"
+    },
+    {
+      "query_id": "S22",
+      "stratum": "semantic_zero_overlap",
+      "query": "Should the room be aired because occupants report stuffiness and chemical odours?",
+      "expected_solver": "indoor_air_quality",
+      "expected_cell": "general"
+    }
+  ]
+}

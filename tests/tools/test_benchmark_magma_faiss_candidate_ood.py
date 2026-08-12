@@ -182,6 +182,7 @@ def _install_live_fakes(monkeypatch: pytest.MonkeyPatch) -> _Session:
     }
     request = SimpleNamespace(
         embedding_contract={},
+        topology_digest="sha256:" + "e" * 64,
         cells=(("one", "proj_" + "1" * 64), ("two", "proj_" + "2" * 64)),
     )
     manifest = {
@@ -254,7 +255,18 @@ def _install_live_fakes(monkeypatch: pytest.MonkeyPatch) -> _Session:
         lambda *_args, **_kwargs: {
             "queries": [case["query"] for case in positive_cases],
             "cases": positive_cases,
-            "documents": [{"id": str(index)} for index in range(22)],
+            "documents": [
+                {
+                    "canonical_solver_id": (
+                        "solver_a" if index == 0 else f"snapshot_solver_{index}"
+                    ),
+                    "cell_id": "one" if index % 2 == 0 else "two",
+                    "projection_id": "sha256:" + f"{index + 1:x}" * 64,
+                    "projection_digest": "sha256:" + f"{index + 2:x}" * 64,
+                    "source_digest": "sha256:" + f"{index + 3:x}" * 64,
+                }
+                for index in range(22)
+            ],
             "corpus": {
                 "path": "positive.json",
                 "canonical_sha256": "1" * 64,
@@ -288,7 +300,35 @@ def _install_live_fakes(monkeypatch: pytest.MonkeyPatch) -> _Session:
     monkeypatch.setattr(
         ood.candidate_snapshot,
         "load_verified_candidate_snapshot",
-        lambda *_args, **_kwargs: {"manifest": manifest},
+        lambda *_args, **_kwargs: {
+            "manifest": manifest,
+            "cells": [
+                {
+                    "manifest": {"cell_id": cell_id},
+                    "rows": [
+                        {
+                            "canonical_solver_id": (
+                                "solver_a"
+                                if index == 0
+                                else f"snapshot_solver_{index}"
+                            ),
+                            "projection_id": (
+                                "sha256:" + f"{index + 1:x}" * 64
+                            ),
+                            "projection_digest": (
+                                "sha256:" + f"{index + 2:x}" * 64
+                            ),
+                            "source_digest": (
+                                "sha256:" + f"{index + 3:x}" * 64
+                            ),
+                        }
+                        for index in range(22)
+                        if ("one" if index % 2 == 0 else "two") == cell_id
+                    ],
+                }
+                for cell_id in ("one", "two")
+            ],
+        },
     )
     monkeypatch.setattr(
         ood.candidate_snapshot,
@@ -313,6 +353,64 @@ def _install_live_fakes(monkeypatch: pytest.MonkeyPatch) -> _Session:
     return session
 
 
+def test_live_report_fails_closed_on_same_count_topology_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _install_live_fakes(monkeypatch)
+    original = ood.candidate_benchmark._load_query_suite
+
+    def mismatched_suite(*args, **kwargs):
+        suite = original(*args, **kwargs)
+        suite["corpus"] = {
+            **suite["corpus"],
+            "topology_digest": "sha256:" + "9" * 64,
+        }
+        return suite
+
+    monkeypatch.setattr(
+        ood.candidate_benchmark,
+        "_load_query_suite",
+        mismatched_suite,
+    )
+
+    with pytest.raises(
+        ood.CandidateOodContractError,
+        match="positive_suite_topology_binding_mismatch",
+    ):
+        ood.run_live_ood_measurement("request.json", "snapshot")
+
+    assert session.closed is True
+    assert session.calls == 0
+
+
+def test_live_report_fails_closed_on_same_count_projection_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _install_live_fakes(monkeypatch)
+    original = ood.candidate_benchmark._load_query_suite
+
+    def mismatched_suite(*args, **kwargs):
+        suite = original(*args, **kwargs)
+        suite["documents"] = [dict(row) for row in suite["documents"]]
+        suite["documents"][0]["source_digest"] = "sha256:" + "9" * 64
+        return suite
+
+    monkeypatch.setattr(
+        ood.candidate_benchmark,
+        "_load_query_suite",
+        mismatched_suite,
+    )
+
+    with pytest.raises(
+        ood.CandidateOodContractError,
+        match="positive_suite_projection_binding_mismatch",
+    ):
+        ood.run_live_ood_measurement("request.json", "snapshot")
+
+    assert session.closed is True
+    assert session.calls == 0
+
+
 def test_live_report_measures_thresholds_without_selecting_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -334,6 +432,20 @@ def test_live_report_measures_thresholds_without_selecting_one(
     assert report["measurement"]["ood_query_count"] == 2
     assert report["measurement"]["search_execution_count"] == 4
     assert report["measurement"]["total_cell_searches"] == 8
+    assert report["positive_suite_snapshot_binding"] == {
+        "topology_digest": "sha256:" + "e" * 64,
+        "topology_binding_verified": True,
+        "projection_identity_fields": [
+            "canonical_solver_id",
+            "cell_id",
+            "projection_id",
+            "projection_digest",
+            "source_digest",
+        ],
+        "positive_suite_projection_identity_count": 22,
+        "snapshot_projection_identity_count": 22,
+        "exact_projection_identity_set_match": True,
+    }
     assert report["positive_ranking_quality"]["metrics"]["all"]["top1_hits"] == 1
     assert rows[0.55]["positive_accepted_count"] == 1
     assert rows[0.55]["correct_positive_top1_retained_count"] == 1

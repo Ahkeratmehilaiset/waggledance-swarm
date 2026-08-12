@@ -321,6 +321,111 @@ def _ood_ranking_evidence(
     return evidence
 
 
+def _projection_identity_set(
+    documents: Sequence[Mapping[str, Any]],
+    *,
+    label: str,
+) -> set[tuple[str, str, str, str, str]]:
+    identities: set[tuple[str, str, str, str, str]] = set()
+    required = (
+        "canonical_solver_id",
+        "cell_id",
+        "projection_id",
+        "projection_digest",
+        "source_digest",
+    )
+    if not documents:
+        raise CandidateOodContractError(f"{label}_projection_documents_empty")
+    for index, document in enumerate(documents):
+        if type(document) is not dict:
+            raise CandidateOodContractError(
+                f"{label}_projection_document_{index}_invalid"
+            )
+        values = tuple(document.get(key) for key in required)
+        if any(type(value) is not str or not value for value in values):
+            raise CandidateOodContractError(
+                f"{label}_projection_document_{index}_invalid"
+            )
+        identities.add(values)
+    if len(identities) != len(documents):
+        raise CandidateOodContractError(f"{label}_projection_identities_not_unique")
+    return identities
+
+
+def _verified_snapshot_projection_identity_set(
+    loaded_cells: Sequence[Mapping[str, Any]],
+) -> set[tuple[str, str, str, str, str]]:
+    documents: list[dict[str, Any]] = []
+    for cell_index, cell in enumerate(loaded_cells):
+        if type(cell) is not dict or type(cell.get("manifest")) is not dict:
+            raise CandidateOodContractError(
+                f"snapshot_cell_{cell_index}_invalid"
+            )
+        cell_id = cell["manifest"].get("cell_id")
+        rows = cell.get("rows")
+        if type(cell_id) is not str or not cell_id or type(rows) is not list:
+            raise CandidateOodContractError(
+                f"snapshot_cell_{cell_index}_invalid"
+            )
+        for row in rows:
+            if type(row) is not dict:
+                raise CandidateOodContractError(
+                    f"snapshot_cell_{cell_index}_row_invalid"
+                )
+            documents.append({**row, "cell_id": cell_id})
+    return _projection_identity_set(documents, label="snapshot")
+
+
+def _validate_suite_snapshot_binding(
+    positive_suite: Mapping[str, Any],
+    request: Any,
+    verified: Mapping[str, Any],
+) -> dict[str, Any]:
+    manifest = verified["manifest"]
+    corpus = positive_suite.get("corpus")
+    documents = positive_suite.get("documents")
+    loaded_cells = verified.get("cells")
+    if (
+        type(corpus) is not dict
+        or type(documents) is not list
+        or type(loaded_cells) is not list
+    ):
+        raise CandidateOodContractError("positive_suite_binding_evidence_invalid")
+    topology_digest = corpus.get("topology_digest")
+    if (
+        type(topology_digest) is not str
+        or not topology_digest
+        or topology_digest != request.topology_digest
+        or topology_digest != manifest["topology_digest"]
+    ):
+        raise CandidateOodContractError("positive_suite_topology_binding_mismatch")
+    if len(documents) != manifest["total_vector_count"]:
+        raise CandidateOodContractError("snapshot_projection_count_mismatch")
+    suite_identities = _projection_identity_set(
+        documents,
+        label="positive_suite",
+    )
+    snapshot_identities = _verified_snapshot_projection_identity_set(
+        loaded_cells
+    )
+    if suite_identities != snapshot_identities:
+        raise CandidateOodContractError("positive_suite_projection_binding_mismatch")
+    return {
+        "topology_digest": topology_digest,
+        "topology_binding_verified": True,
+        "projection_identity_fields": [
+            "canonical_solver_id",
+            "cell_id",
+            "projection_id",
+            "projection_digest",
+            "source_digest",
+        ],
+        "positive_suite_projection_identity_count": len(suite_identities),
+        "snapshot_projection_identity_count": len(snapshot_identities),
+        "exact_projection_identity_set_match": True,
+    }
+
+
 def run_live_ood_measurement(
     request_path: Path | str,
     snapshot_dir: Path | str,
@@ -382,12 +487,18 @@ def run_live_ood_measurement(
     if DEFAULT_K > manifest["total_vector_count"]:
         session.close()
         raise CandidateOodContractError("k_exceeds_candidate_vector_count")
-    if len(positive_suite["documents"]) != manifest["total_vector_count"]:
-        session.close()
-        raise CandidateOodContractError("snapshot_projection_count_mismatch")
     if len(request.cells) != len(manifest["cells"]):
         session.close()
         raise CandidateOodContractError("request_cell_count_mismatch")
+    try:
+        suite_snapshot_binding = _validate_suite_snapshot_binding(
+            positive_suite,
+            request,
+            verified,
+        )
+    except CandidateOodContractError:
+        session.close()
+        raise
     try:
         profile = candidate_snapshot._profile_from_contract(
             request.embedding_contract
@@ -499,6 +610,7 @@ def run_live_ood_measurement(
             "faiss_binary_set_sha256": manifest["faiss_binary_set_sha256"],
         },
         "positive_corpus": positive_suite["corpus"],
+        "positive_suite_snapshot_binding": suite_snapshot_binding,
         "ood_corpus": ood_corpus_evidence,
         "embedding_provider_identity": provider_identity_evidence,
         "measurement": {

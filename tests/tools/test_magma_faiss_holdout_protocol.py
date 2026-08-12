@@ -85,6 +85,9 @@ def _protocol() -> dict[str, Any]:
                 "stratified_uniform_without_replacement_after_frame_commit"
             ),
             "frame_commit_precedes_seed_reveal": True,
+            "selection_attempt_count": 1,
+            "selection_reseed_allowed": False,
+            "post_selection_replacement_allowed": False,
             "minimum_frame_multiplier": 2,
             "frozen_solver_count": 22,
             "positive_cluster_count": 132,
@@ -120,7 +123,19 @@ def _protocol() -> dict[str, Any]:
             "adjudication_agreement_required": 1.0,
         },
         "statistics": {
-            "method": "clopper_pearson_zero_failure_bonferroni",
+            "method": (
+                "stratified_srswor_zero_failure_binomial_envelope_bonferroni"
+            ),
+            "finite_frame_estimand": (
+                "selected_quota_weighted_design_cell_error_rate"
+            ),
+            "sampling_model": (
+                "independent_stratified_simple_random_sampling_without_replacement"
+            ),
+            "bound_semantics": (
+                "conservative_binomial_form_envelope_via_weighted_am_gm"
+            ),
+            "iid_clopper_pearson_claimed": False,
             "familywise_confidence": 0.95,
             "component_alpha": 0.025,
             "maximum_error_rate": 0.03,
@@ -168,6 +183,7 @@ def test_preregistration_is_closed_world_and_binds_conservative_counts() -> None
     assert digest.startswith("sha256:") and len(digest) == 71
     assert projection["positive_cluster_count"] == 132
     assert projection["ood_cluster_count"] == 125
+    assert projection["iid_clopper_pearson_claimed"] is False
     assert validated["candidate_identity"]["solver_count"] == 22
     assert validated["sampling"]["positive_per_stratum"] == 22
     assert validated["sampling"]["ood_language_counts_per_stratum"] == {
@@ -245,6 +261,32 @@ def test_preregistration_is_closed_world_and_binds_conservative_counts() -> None
             "positive_count_bool",
             lambda value: _mutate(
                 value, ("sampling", "positive_cluster_count"), True
+            ),
+        ),
+        (
+            "selection_attempt_count_wrong",
+            lambda value: _mutate(
+                value, ("sampling", "selection_attempt_count"), 2
+            ),
+        ),
+        (
+            "selection_attempt_count_bool",
+            lambda value: _mutate(
+                value, ("sampling", "selection_attempt_count"), True
+            ),
+        ),
+        (
+            "selection_reseed_allowed",
+            lambda value: _mutate(
+                value, ("sampling", "selection_reseed_allowed"), True
+            ),
+        ),
+        (
+            "post_selection_replacement_allowed",
+            lambda value: _mutate(
+                value,
+                ("sampling", "post_selection_replacement_allowed"),
+                True,
             ),
         ),
         (
@@ -607,6 +649,22 @@ def test_preregistration_is_closed_world_and_binds_conservative_counts() -> None
             "statistics_alpha_drift",
             lambda value: _mutate(
                 value, ("statistics", "component_alpha"), 0.05
+            ),
+        ),
+        (
+            "statistics_iid_overclaim",
+            lambda value: _mutate(
+                value,
+                ("statistics", "iid_clopper_pearson_claimed"),
+                True,
+            ),
+        ),
+        (
+            "statistics_sampling_model_drift",
+            lambda value: _mutate(
+                value,
+                ("statistics", "sampling_model"),
+                "iid_binomial",
             ),
         ),
     ],

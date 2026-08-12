@@ -155,6 +155,9 @@ _SAMPLING_KEYS = frozenset(
         "translations_and_variants_share_cluster",
         "selection_method",
         "frame_commit_precedes_seed_reveal",
+        "selection_attempt_count",
+        "selection_reseed_allowed",
+        "post_selection_replacement_allowed",
         "minimum_frame_multiplier",
         "frozen_solver_count",
         "positive_cluster_count",
@@ -187,6 +190,10 @@ _ENDPOINT_KEYS = frozenset(
 _STATISTICS_KEYS = frozenset(
     {
         "method",
+        "finite_frame_estimand",
+        "sampling_model",
+        "bound_semantics",
+        "iid_clopper_pearson_claimed",
         "familywise_confidence",
         "component_alpha",
         "maximum_error_rate",
@@ -356,7 +363,7 @@ def _require_canonical_utc(value: Any, label: str) -> str:
 
 
 def zero_failure_upper_bound(sample_count: int, alpha: float) -> float:
-    """Return the exact one-sided Clopper-Pearson bound for zero failures."""
+    """Return the zero-event binomial-form upper envelope ``1-alpha**(1/n)``."""
 
     if type(sample_count) is not int or sample_count <= 0:
         raise HoldoutProtocolError("sample_count_must_be_positive_exact_integer")
@@ -496,6 +503,21 @@ def _validate_sampling(value: Any, *, candidate_solver_count: int) -> None:
         "no_translation_pairs_across_clusters",
     ):
         _require_exact_bool(sampling[key], True, key)
+    _require_exact_int(
+        sampling["selection_attempt_count"],
+        1,
+        "selection_attempt_count",
+    )
+    _require_exact_bool(
+        sampling["selection_reseed_allowed"],
+        False,
+        "selection_reseed_allowed",
+    )
+    _require_exact_bool(
+        sampling["post_selection_replacement_allowed"],
+        False,
+        "post_selection_replacement_allowed",
+    )
     _require_exact_int(sampling["minimum_frame_multiplier"], 2, "minimum_frame_multiplier")
     _require_exact_int(
         sampling["frozen_solver_count"],
@@ -590,9 +612,28 @@ def _validate_statistics(value: Any) -> None:
     statistics = _exact_dict(value, _STATISTICS_KEYS, "statistics")
     if (
         _require_exact_string(statistics["method"], "statistics_method")
-        != "clopper_pearson_zero_failure_bonferroni"
+        != "stratified_srswor_zero_failure_binomial_envelope_bonferroni"
     ):
         raise HoldoutProtocolError("statistics_method_mismatch")
+    expected_strings = {
+        "finite_frame_estimand": (
+            "selected_quota_weighted_design_cell_error_rate"
+        ),
+        "sampling_model": (
+            "independent_stratified_simple_random_sampling_without_replacement"
+        ),
+        "bound_semantics": (
+            "conservative_binomial_form_envelope_via_weighted_am_gm"
+        ),
+    }
+    for key, expected in expected_strings.items():
+        if _require_exact_string(statistics[key], key) != expected:
+            raise HoldoutProtocolError(f"{key}_mismatch")
+    _require_exact_bool(
+        statistics["iid_clopper_pearson_claimed"],
+        False,
+        "iid_clopper_pearson_claimed",
+    )
     _require_exact_float(
         statistics["familywise_confidence"],
         FAMILYWISE_CONFIDENCE,
@@ -678,6 +719,13 @@ def statistics_projection() -> dict[str, Any]:
     )
     ood_bound = zero_failure_upper_bound(OOD_CLUSTER_COUNT, COMPONENT_ALPHA)
     return {
+        "method": (
+            "stratified_srswor_zero_failure_binomial_envelope_bonferroni"
+        ),
+        "finite_frame_estimand": (
+            "selected_quota_weighted_design_cell_error_rate"
+        ),
+        "iid_clopper_pearson_claimed": False,
         "positive_cluster_count": POSITIVE_CLUSTER_COUNT,
         "ood_cluster_count": OOD_CLUSTER_COUNT,
         "component_alpha": COMPONENT_ALPHA,

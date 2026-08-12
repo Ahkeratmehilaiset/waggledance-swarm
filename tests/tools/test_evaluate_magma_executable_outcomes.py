@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -226,6 +227,146 @@ def test_live_gate_qualifies_only_owned_snapshot_and_embedding_path(
         "response_digest_attested": False,
     }
     assert session.search_count == len(gate.FROZEN_CASES)
+    assert session.closed is True
+
+
+def test_live_gate_closes_session_and_normalizes_profile_contract_error(
+    monkeypatch,
+) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = FakeSession()
+    embedder_constructed = False
+
+    def fail_profile(_contract):
+        raise gate.candidate_snapshot.CandidateContractError("bad profile")
+
+    class NeverEmbedder:
+        def __init__(self, _base_url: str) -> None:
+            nonlocal embedder_constructed
+            embedder_constructed = True
+
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "load_candidate_request",
+        lambda *_args, **_kwargs: SimpleNamespace(embedding_contract={}),
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "open_verified_candidate_search_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "_profile_from_contract",
+        fail_profile,
+    )
+    monkeypatch.setattr(
+        gate.retrieval_benchmark,
+        "OllamaEmbeddingClient",
+        NeverEmbedder,
+    )
+
+    with pytest.raises(gate.OutcomeGateContractError, match="bad profile") as exc:
+        gate.run_live_gate("request.json", "snapshot")
+
+    assert isinstance(
+        exc.value.__cause__, gate.candidate_snapshot.CandidateContractError
+    )
+    assert session.closed is True
+    assert embedder_constructed is False
+
+
+def test_cli_normalizes_search_contract_error_and_closes_session(
+    monkeypatch, capsys
+) -> None:
+    profile = gate.retrieval_benchmark.EmbeddingProfile(
+        name="test",
+        model_id="test-model:latest",
+        model_digest="d" * 64,
+        dimension=2,
+        document_prefix="document: ",
+        query_prefix="query: ",
+    )
+    identity = {
+        "provider": "ollama",
+        "requested_model_tag": profile.model_id,
+        "catalog_digest": profile.model_digest,
+    }
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+            self.search_count = 0
+
+        def search(self, _query_vector, *, k: int) -> list[dict]:
+            assert k == 5
+            self.search_count += 1
+            raise gate.candidate_snapshot.CandidateContractError(
+                "persisted search failed"
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeEmbedder:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def verify_profile(self, observed_profile):
+            assert observed_profile == profile
+            return dict(identity)
+
+        def embed(self, texts, observed_profile, *, label: str):
+            assert len(texts) == 1
+            assert observed_profile == profile
+            assert label == "outcome_gate_query_embedding"
+            return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    session = FakeSession()
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "load_candidate_request",
+        lambda *_args, **_kwargs: SimpleNamespace(embedding_contract={}),
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "open_verified_candidate_search_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "_profile_from_contract",
+        lambda _contract: profile,
+    )
+    monkeypatch.setattr(
+        gate.retrieval_benchmark,
+        "OllamaEmbeddingClient",
+        FakeEmbedder,
+    )
+
+    exit_code = gate.main(
+        ["--request", "request.json", "--snapshot", "snapshot"]
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert report["error_type"] == "OutcomeGateContractError"
+    assert report["error"] == "persisted search failed"
+    assert report["live_candidate_gate_evaluated"] is False
+    assert report["runtime_authority_granted"] is False
+    assert session.search_count == 1
     assert session.closed is True
 
 

@@ -487,33 +487,26 @@ def run_live_gate(
         raise OutcomeGateUnavailable(str(exc)) from exc
     except candidate_snapshot.CandidateContractError as exc:
         raise OutcomeGateContractError(str(exc)) from exc
-    profile = candidate_snapshot._profile_from_contract(request.embedding_contract)
     try:
+        profile = candidate_snapshot._profile_from_contract(
+            request.embedding_contract
+        )
         with retrieval_benchmark.OllamaEmbeddingClient(ollama_url) as embedder:
-            try:
-                identity_before = embedder.verify_profile(profile)
-            except retrieval_benchmark.BenchmarkUnavailable as exc:
-                raise OutcomeGateUnavailable(str(exc)) from exc
+            identity_before = embedder.verify_profile(profile)
 
             def retrieve(query: str) -> list[dict[str, Any]]:
-                try:
-                    matrix = embedder.embed(
-                        [profile.query_prefix + query],
-                        profile,
-                        label="outcome_gate_query_embedding",
-                    )
-                except retrieval_benchmark.BenchmarkUnavailable as exc:
-                    raise OutcomeGateUnavailable(str(exc)) from exc
+                matrix = embedder.embed(
+                    [profile.query_prefix + query],
+                    profile,
+                    label="outcome_gate_query_embedding",
+                )
                 return session.search(matrix[0], k=k)
 
             report = run_frozen_outcome_gate(
                 retrieve,
                 minimum_score=minimum_score,
             )
-            try:
-                identity_after = embedder.verify_profile(profile)
-            except retrieval_benchmark.BenchmarkUnavailable as exc:
-                raise OutcomeGateUnavailable(str(exc)) from exc
+            identity_after = embedder.verify_profile(profile)
             if identity_before != identity_after:
                 raise OutcomeGateContractError(
                     "embedding catalog changed during outcome gate"
@@ -543,6 +536,16 @@ def run_live_gate(
                 }
             )
             return report
+    except (
+        candidate_snapshot.CandidateUnavailable,
+        retrieval_benchmark.BenchmarkUnavailable,
+    ) as exc:
+        raise OutcomeGateUnavailable(str(exc)) from exc
+    except (
+        candidate_snapshot.CandidateContractError,
+        retrieval_benchmark.EmbeddingValidationError,
+    ) as exc:
+        raise OutcomeGateContractError(str(exc)) from exc
     finally:
         session.close()
 

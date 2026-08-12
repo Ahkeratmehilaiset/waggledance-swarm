@@ -172,10 +172,7 @@ def test_live_gate_qualifies_only_owned_snapshot_and_embedding_path(
         def __init__(self, _base_url: str) -> None:
             self.verify_count = 0
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args) -> None:
+        def close(self) -> None:
             return None
 
         def verify_profile(self, observed_profile):
@@ -345,10 +342,7 @@ def test_cli_normalizes_post_open_failures_and_closes_session(
         def __init__(self, _base_url: str) -> None:
             pass
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args) -> None:
+        def close(self) -> None:
             return None
 
         def verify_profile(self, observed_profile):
@@ -409,6 +403,230 @@ def test_cli_normalizes_post_open_failures_and_closes_session(
     assert isinstance(captured_exception["value"], public_error_type)
     assert isinstance(captured_exception["value"].__cause__, source_error_type)
     assert session.search_count == int(failure_stage.startswith("search_"))
+    assert session.close_count == 1
+
+
+def test_session_cleanup_failure_does_not_mask_primary_contract_error(
+    monkeypatch,
+) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+            raise RuntimeError("session cleanup detail")
+
+    session = FakeSession()
+
+    def fail_profile(_contract):
+        raise gate.candidate_snapshot.CandidateContractError(
+            "primary profile failure"
+        )
+
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "load_candidate_request",
+        lambda *_args, **_kwargs: SimpleNamespace(embedding_contract={}),
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "open_verified_candidate_search_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "_profile_from_contract",
+        fail_profile,
+    )
+
+    with pytest.raises(
+        gate.OutcomeGateContractError, match="primary profile failure"
+    ) as exc:
+        gate.run_live_gate("request.json", "snapshot")
+
+    assert isinstance(
+        exc.value.__cause__, gate.candidate_snapshot.CandidateContractError
+    )
+    assert exc.value.__notes__ == [
+        "candidate search session cleanup failed: RuntimeError"
+    ]
+    assert session.close_count == 1
+
+
+def test_embedder_cleanup_failure_does_not_mask_primary_unavailability(
+    monkeypatch,
+) -> None:
+    profile = gate.retrieval_benchmark.EmbeddingProfile(
+        name="test",
+        model_id="test-model:latest",
+        model_digest="d" * 64,
+        dimension=2,
+        document_prefix="document: ",
+        query_prefix="query: ",
+    )
+    identity = {
+        "provider": "ollama",
+        "requested_model_tag": profile.model_id,
+        "catalog_digest": profile.model_digest,
+    }
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    class FakeEmbedder:
+        def __init__(self, _base_url: str) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+            raise RuntimeError("embedder cleanup detail")
+
+        def verify_profile(self, observed_profile):
+            assert observed_profile == profile
+            return dict(identity)
+
+        def embed(self, _texts, _profile, *, label: str):
+            assert label == "outcome_gate_query_embedding"
+            raise gate.retrieval_benchmark.BenchmarkUnavailable(
+                "primary embed failure"
+            )
+
+    session = FakeSession()
+    embedder = FakeEmbedder("unused")
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "load_candidate_request",
+        lambda *_args, **_kwargs: SimpleNamespace(embedding_contract={}),
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "open_verified_candidate_search_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "_profile_from_contract",
+        lambda _contract: profile,
+    )
+    monkeypatch.setattr(
+        gate.retrieval_benchmark,
+        "OllamaEmbeddingClient",
+        lambda _base_url: embedder,
+    )
+
+    with pytest.raises(
+        gate.OutcomeGateUnavailable, match="primary embed failure"
+    ) as exc:
+        gate.run_live_gate("request.json", "snapshot")
+
+    assert isinstance(
+        exc.value.__cause__, gate.retrieval_benchmark.BenchmarkUnavailable
+    )
+    assert exc.value.__cause__.__notes__ == [
+        "embedding client cleanup failed: RuntimeError"
+    ]
+    assert embedder.close_count == 1
+    assert session.close_count == 1
+
+
+@pytest.mark.parametrize(
+    ("cleanup_target", "expected_message"),
+    [
+        ("embedder", "embedding client cleanup failed"),
+        ("session", "candidate search session cleanup failed"),
+    ],
+)
+def test_cleanup_only_failure_is_structured_unavailability(
+    monkeypatch, capsys, cleanup_target, expected_message
+) -> None:
+    profile = gate.retrieval_benchmark.EmbeddingProfile(
+        name="test",
+        model_id="test-model:latest",
+        model_digest="d" * 64,
+        dimension=2,
+        document_prefix="document: ",
+        query_prefix="query: ",
+    )
+    identity = {
+        "provider": "ollama",
+        "requested_model_tag": profile.model_id,
+        "catalog_digest": profile.model_digest,
+    }
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.close_count = 0
+            self.search_count = 0
+
+        def search(self, _query_vector, *, k: int) -> list[dict]:
+            assert k == 5
+            query = gate.FROZEN_CASES[self.search_count].query
+            self.search_count += 1
+            return _frozen_retriever(query)
+
+        def close(self) -> None:
+            self.close_count += 1
+            if cleanup_target == "session":
+                raise RuntimeError("session cleanup detail")
+
+    class FakeEmbedder:
+        def __init__(self, _base_url: str) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+            if cleanup_target == "embedder":
+                raise RuntimeError("embedder cleanup detail")
+
+        def verify_profile(self, observed_profile):
+            assert observed_profile == profile
+            return dict(identity)
+
+        def embed(self, _texts, observed_profile, *, label: str):
+            assert observed_profile == profile
+            assert label == "outcome_gate_query_embedding"
+            return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    session = FakeSession()
+    embedder = FakeEmbedder("unused")
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "load_candidate_request",
+        lambda *_args, **_kwargs: SimpleNamespace(embedding_contract={}),
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "open_verified_candidate_search_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        gate.candidate_snapshot,
+        "_profile_from_contract",
+        lambda _contract: profile,
+    )
+    monkeypatch.setattr(
+        gate.retrieval_benchmark,
+        "OllamaEmbeddingClient",
+        lambda _base_url: embedder,
+    )
+
+    exit_code = gate.main(
+        ["--request", "request.json", "--snapshot", "snapshot"]
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert report["error_type"] == "OutcomeGateUnavailable"
+    assert report["error"] == expected_message
+    assert report["live_candidate_gate_evaluated"] is False
+    assert report["runtime_authority_granted"] is False
+    assert session.search_count == len(gate.FROZEN_CASES)
+    assert embedder.close_count == 1
     assert session.close_count == 1
 
 

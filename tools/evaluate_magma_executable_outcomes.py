@@ -14,9 +14,10 @@ import json
 import math
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -52,6 +53,29 @@ class OutcomeGateContractError(ValueError):
 
 class OutcomeGateUnavailable(RuntimeError):
     """A required local candidate dependency is unavailable."""
+
+
+@contextmanager
+def _close_outcome_resource(
+    close: Callable[[], None], *, label: str
+) -> Iterator[None]:
+    """Close a live resource without replacing the primary gate failure."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            close()
+        except Exception as cleanup_error:
+            message = f"{label} cleanup failed"
+            if primary_error is None:
+                raise OutcomeGateUnavailable(message) from cleanup_error
+            primary_error.add_note(
+                f"{message}: {type(cleanup_error).__name__}"
+            )
 
 
 @dataclass(frozen=True)
@@ -487,67 +511,71 @@ def run_live_gate(
         raise OutcomeGateUnavailable(str(exc)) from exc
     except candidate_snapshot.CandidateContractError as exc:
         raise OutcomeGateContractError(str(exc)) from exc
-    try:
-        profile = candidate_snapshot._profile_from_contract(
-            request.embedding_contract
-        )
-        with retrieval_benchmark.OllamaEmbeddingClient(ollama_url) as embedder:
-            identity_before = embedder.verify_profile(profile)
-
-            def retrieve(query: str) -> list[dict[str, Any]]:
-                matrix = embedder.embed(
-                    [profile.query_prefix + query],
-                    profile,
-                    label="outcome_gate_query_embedding",
-                )
-                return session.search(matrix[0], k=k)
-
-            report = run_frozen_outcome_gate(
-                retrieve,
-                minimum_score=minimum_score,
+    with _close_outcome_resource(
+        session.close, label="candidate search session"
+    ):
+        try:
+            profile = candidate_snapshot._profile_from_contract(
+                request.embedding_contract
             )
-            identity_after = embedder.verify_profile(profile)
-            if identity_before != identity_after:
-                raise OutcomeGateContractError(
-                    "embedding catalog changed during outcome gate"
-                )
-            if not retrieval_benchmark.provider_identity_matches_profile(
-                identity_before, profile
+            embedder = retrieval_benchmark.OllamaEmbeddingClient(ollama_url)
+            with _close_outcome_resource(
+                embedder.close, label="embedding client"
             ):
-                raise OutcomeGateContractError(
-                    "embedding provider identity does not match request"
+                identity_before = embedder.verify_profile(profile)
+
+                def retrieve(query: str) -> list[dict[str, Any]]:
+                    matrix = embedder.embed(
+                        [profile.query_prefix + query],
+                        profile,
+                        label="outcome_gate_query_embedding",
+                    )
+                    return session.search(matrix[0], k=k)
+
+                report = run_frozen_outcome_gate(
+                    retrieve,
+                    minimum_score=minimum_score,
                 )
-            report["embedding_provider_identity"] = {
-                **identity_before,
-                "catalog_contract_verified_before_suite": True,
-                "catalog_contract_verified_after_suite": True,
-                "response_digest_attested": False,
-            }
-            report.update(
-                {
-                    "retrieval_evidence_scope": LIVE_RETRIEVAL_SCOPE,
-                    "candidate_snapshot_verified": True,
-                    "embedding_catalog_verified": True,
-                    "global_all_cell_search_verified": True,
-                    "live_candidate_gate_evaluated": True,
-                    "live_candidate_gate_pass": (
-                        report["frozen_smoke_gate_pass"] is True
-                    ),
+                identity_after = embedder.verify_profile(profile)
+                if identity_before != identity_after:
+                    raise OutcomeGateContractError(
+                        "embedding catalog changed during outcome gate"
+                    )
+                if not retrieval_benchmark.provider_identity_matches_profile(
+                    identity_before, profile
+                ):
+                    raise OutcomeGateContractError(
+                        "embedding provider identity does not match request"
+                    )
+                report["embedding_provider_identity"] = {
+                    **identity_before,
+                    "catalog_contract_verified_before_suite": True,
+                    "catalog_contract_verified_after_suite": True,
+                    "response_digest_attested": False,
                 }
-            )
-            return report
-    except (
-        candidate_snapshot.CandidateUnavailable,
-        retrieval_benchmark.BenchmarkUnavailable,
-    ) as exc:
-        raise OutcomeGateUnavailable(str(exc)) from exc
-    except (
-        candidate_snapshot.CandidateContractError,
-        retrieval_benchmark.EmbeddingValidationError,
-    ) as exc:
-        raise OutcomeGateContractError(str(exc)) from exc
-    finally:
-        session.close()
+                report.update(
+                    {
+                        "retrieval_evidence_scope": LIVE_RETRIEVAL_SCOPE,
+                        "candidate_snapshot_verified": True,
+                        "embedding_catalog_verified": True,
+                        "global_all_cell_search_verified": True,
+                        "live_candidate_gate_evaluated": True,
+                        "live_candidate_gate_pass": (
+                            report["frozen_smoke_gate_pass"] is True
+                        ),
+                    }
+                )
+                return report
+        except (
+            candidate_snapshot.CandidateUnavailable,
+            retrieval_benchmark.BenchmarkUnavailable,
+        ) as exc:
+            raise OutcomeGateUnavailable(str(exc)) from exc
+        except (
+            candidate_snapshot.CandidateContractError,
+            retrieval_benchmark.EmbeddingValidationError,
+        ) as exc:
+            raise OutcomeGateContractError(str(exc)) from exc
 
 
 def _build_parser() -> argparse.ArgumentParser:

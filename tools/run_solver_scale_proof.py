@@ -60,6 +60,7 @@ from waggledance.core.autonomy_growth.solver_dispatcher import (
     LowRiskSolverDispatcher,
 )
 from waggledance.core.storage.control_plane import ControlPlaneDB
+from waggledance.core.hex_cell_topology import ALL_CELLS
 
 
 ALLOWED_FAMILIES: tuple[str, ...] = (
@@ -71,10 +72,7 @@ ALLOWED_FAMILIES: tuple[str, ...] = (
     "bounded_interpolation",
 )
 
-HEX_CELLS: tuple[str, ...] = (
-    "general", "thermal", "energy", "safety",
-    "seasonal", "math", "system", "learning",
-)
+HEX_CELLS: tuple[str, ...] = tuple(ALL_CELLS)
 
 
 def _stable_hash(payload: str) -> str:

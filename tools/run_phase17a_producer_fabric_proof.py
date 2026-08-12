@@ -78,6 +78,7 @@ from waggledance.core.ir.adapters import from_self_model as ad_self_model
 from waggledance.core.ir.cognition_ir import Provenance
 from waggledance.core.meta import meta_learner
 from waggledance.core.meta import review_bundle
+from waggledance.core.hex_cell_topology import ALL_CELLS
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +94,7 @@ ALLOWED_FAMILIES: tuple[str, ...] = (
     "bounded_interpolation",
 )
 
-HEX_CELLS: tuple[str, ...] = (
-    "general", "thermal", "energy", "safety",
-    "seasonal", "math", "system", "learning",
-)
+HEX_CELLS: tuple[str, ...] = tuple(ALL_CELLS)
 
 GAP_TYPES: tuple[str, ...] = (
     "missing_solver_for_unit_pair",

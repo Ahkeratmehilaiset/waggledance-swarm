@@ -41,6 +41,7 @@ sys.path.insert(0, str(ROOT))
 from waggledance.core.learning.composition_graph import (  # noqa: E402
     build_graph,
 )
+from waggledance.core.hex_cell_topology import ALL_CELLS  # noqa: E402
 
 # Defaults for triggers (tunable via CLI flags)
 DEFAULT_SOLVER_COUNT_THRESHOLD = 30
@@ -49,6 +50,7 @@ DEFAULT_FALLBACK_RATE_THRESHOLD = 0.5
 DEFAULT_ENTROPY_THRESHOLD = 6
 DEFAULT_BRIDGE_THRESHOLD = 6
 DEFAULT_REJECTION_THRESHOLD = 3
+DEFAULT_CELLS = tuple(ALL_CELLS)
 
 
 @dataclass
@@ -353,10 +355,7 @@ def run(cells: list[str] | None = None,
         plan_path: Path = PLAN_PATH,
         thresholds: dict | None = None) -> dict:
     if cells is None:
-        cells = [
-            "general", "thermal", "energy", "safety",
-            "seasonal", "math", "system", "learning",
-        ]
+        cells = list(DEFAULT_CELLS)
     plan = build_plan(cells, thresholds=thresholds)
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(render_plan(plan), encoding="utf-8")

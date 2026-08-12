@@ -28,12 +28,10 @@ REPORT_PATH = ROOT / "docs" / "runs" / "phase8_capability_report.md"
 
 sys.path.insert(0, str(ROOT))
 from waggledance.core.learning.composition_graph import build_graph  # noqa: E402
+from waggledance.core.hex_cell_topology import ALL_CELLS  # noqa: E402
 
 
-CELLS = [
-    "general", "thermal", "energy", "safety",
-    "seasonal", "math", "system", "learning",
-]
+CELLS = list(ALL_CELLS)
 
 # Cell keyword map (mirrors cell_manifest.py fallback). Used only when
 # hot_results rows need to be attributed to a cell heuristically.

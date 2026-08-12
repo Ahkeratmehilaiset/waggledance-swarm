@@ -55,6 +55,7 @@ sys.path.insert(0, str(ROOT))
 from waggledance.core.learning.solver_hash import canonical_hash  # noqa: E402
 from waggledance.core.magma import vector_events  # noqa: E402
 from waggledance.core.magma import vector_projection  # noqa: E402
+from waggledance.core.hex_cell_topology import ALL_CELLS  # noqa: E402
 
 
 AXIOMS_DIR = ROOT / "configs" / "axioms"
@@ -91,7 +92,7 @@ _CELL_KEYWORDS = {
     "learning": ["learn", "train", "dream", "insight", "adapt"],
     "general":  [],
 }
-KNOWN_CELLS = frozenset(_CELL_KEYWORDS)
+KNOWN_CELLS = frozenset(ALL_CELLS)
 SAFE_LEDGER_SEGMENT = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 # FI aliases for common axiom terms — used to generate canonical_fi view

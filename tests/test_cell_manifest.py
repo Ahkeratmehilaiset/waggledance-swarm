@@ -106,6 +106,17 @@ def test_production_signals_explicit_null_when_no_data():
     assert out["training_pair_count"] == 0
 
 
+def test_gap_score_derives_uniform_share_from_current_cell_count(monkeypatch):
+    mod = _load_cell_manifest()
+    monkeypatch.setattr(mod, "CELLS", ["a", "b", "c", "d"])
+    one_solver = [{}]
+
+    assert mod._compute_gap_score(one_solver, 0, 0, 5) == 0.25
+
+    monkeypatch.setattr(mod, "CELLS", ["a", "b", "c", "d", "e"])
+    assert mod._compute_gap_score(one_solver, 0, 0, 5) == 0.0
+
+
 def test_siblings_match_adjacency_and_are_sorted():
     mod = _load_cell_manifest()
     all_solvers = mod._collect_all_solvers()

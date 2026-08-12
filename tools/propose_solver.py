@@ -75,14 +75,10 @@ sys.path.insert(0, str(ROOT))
 from waggledance.core.learning.solver_hash import (  # noqa: E402
     solver_hash, HashRegistry,
 )
+from waggledance.core.hex_cell_topology import ALL_CELLS  # noqa: E402
 
 
-# 8 real hex-topology cells (mirrored from hex_cell_topology.py to avoid
-# pulling in runtime deps from an offline tool).
-VALID_CELLS = {
-    "general", "thermal", "energy", "safety",
-    "seasonal", "math", "system", "learning",
-}
+VALID_CELLS = frozenset(ALL_CELLS)
 
 # Coverage-lift thresholds. Three-tier verdict:
 #   lift <  reject_threshold       → REJECT_LOW_VALUE

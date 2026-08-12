@@ -49,29 +49,26 @@ AXIOMS_DIR = ROOT / "configs" / "axioms"
 CAPSULES_DIR = ROOT / "configs" / "capsules"
 CELLS_OUT_DIR = ROOT / "docs" / "cells"
 
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from waggledance.core.hex_cell_topology import (  # noqa: E402
+    ALL_CELLS,
+    HexCellTopology,
+)
+
 MANIFEST_SCHEMA_VERSION = 1
 
 # Keys excluded from the deterministic hash (they are inherently per-run).
 _HASH_EXCLUDED_KEYS = ("generated_at", "manifest_hash")
 
 
-# Cell IDs and ring-1 adjacency are mirrored from
-# waggledance/core/hex_cell_topology.py. Keeping a local copy avoids
-# importing runtime code (and its dependencies) from a pure offline tool.
-CELLS = [
-    "general", "thermal", "energy", "safety",
-    "seasonal", "math", "system", "learning",
-]
-
+# Offline tools consume a copy so callers can monkeypatch local iteration
+# without mutating the runtime source of truth.
+CELLS = list(ALL_CELLS)
+_TOPOLOGY = HexCellTopology()
 _ADJACENCY = {
-    "general":  {"safety", "seasonal", "math", "learning"},
-    "thermal":  {"energy", "seasonal", "safety"},
-    "energy":   {"thermal", "safety", "math"},
-    "safety":   {"thermal", "energy", "system", "general"},
-    "seasonal": {"thermal", "general", "learning"},
-    "math":     {"energy", "general", "system"},
-    "system":   {"safety", "math", "learning"},
-    "learning": {"seasonal", "general", "system"},
+    cell: set(_TOPOLOGY.get_neighbors(cell))
+    for cell in CELLS
 }
 
 
@@ -367,7 +364,8 @@ def _compute_gap_score(
 ) -> float:
     library_size = max(1, total_library_size)
     cell_share = len(solvers_in_cell) / library_size
-    cell_underpopulation = max(0.0, 0.125 - cell_share)  # expected 1/8 in each
+    expected_cell_share = 1.0 / max(1, len(CELLS))
+    cell_underpopulation = max(0.0, expected_cell_share - cell_share)
     unresolved_rate = (
         unresolved_count / total_queries_in_campaign
         if total_queries_in_campaign > 0 else 0.0

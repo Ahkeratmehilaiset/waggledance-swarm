@@ -25,18 +25,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from waggledance.core.hex_cell_topology import ALL_CELLS, HexCellTopology
 
-# Ring-1 adjacency, mirrored here to keep this module free of runtime
-# dependencies. In sync with waggledance/core/hex_cell_topology.py.
+# Ring-1 reachability is a local immutable view of the canonical topology.
+_TOPOLOGY = HexCellTopology()
 _ADJACENCY: dict[str, frozenset[str]] = {
-    "general":  frozenset({"safety", "seasonal", "math", "learning"}),
-    "thermal":  frozenset({"energy", "seasonal", "safety"}),
-    "energy":   frozenset({"thermal", "safety", "math"}),
-    "safety":   frozenset({"thermal", "energy", "system", "general"}),
-    "seasonal": frozenset({"thermal", "general", "learning"}),
-    "math":     frozenset({"energy", "general", "system"}),
-    "system":   frozenset({"safety", "math", "learning"}),
-    "learning": frozenset({"seasonal", "general", "system"}),
+    cell: frozenset(_TOPOLOGY.get_neighbors(cell))
+    for cell in ALL_CELLS
 }
 
 

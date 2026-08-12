@@ -34,10 +34,11 @@ LEGACY_STAGING = ROOT / "data" / "faiss_staging"
 LEGACY_LEDGER = ROOT / "data" / "faiss_delta_ledger"
 VECTOR_ROOT = ROOT / "data" / "vector"
 
-CELLS = (
-    "general", "thermal", "energy", "safety",
-    "seasonal", "math", "system", "learning",
-)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from waggledance.core.hex_cell_topology import ALL_CELLS  # noqa: E402
+
+CELLS = tuple(ALL_CELLS)
 
 
 def _sha256(path: Path) -> str:

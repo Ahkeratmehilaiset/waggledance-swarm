@@ -235,10 +235,10 @@ def test_live_gate_closes_session_and_normalizes_profile_contract_error(
 ) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.closed = False
+            self.close_count = 0
 
         def close(self) -> None:
-            self.closed = True
+            self.close_count += 1
 
     session = FakeSession()
     embedder_constructed = False
@@ -278,12 +278,41 @@ def test_live_gate_closes_session_and_normalizes_profile_contract_error(
     assert isinstance(
         exc.value.__cause__, gate.candidate_snapshot.CandidateContractError
     )
-    assert session.closed is True
+    assert session.close_count == 1
     assert embedder_constructed is False
 
 
-def test_cli_normalizes_search_contract_error_and_closes_session(
-    monkeypatch, capsys
+@pytest.mark.parametrize(
+    ("failure_stage", "source_error_type", "public_error_type"),
+    [
+        (
+            "embed_validation",
+            gate.retrieval_benchmark.EmbeddingValidationError,
+            gate.OutcomeGateContractError,
+        ),
+        (
+            "embed_unavailable",
+            gate.retrieval_benchmark.BenchmarkUnavailable,
+            gate.OutcomeGateUnavailable,
+        ),
+        (
+            "search_contract",
+            gate.candidate_snapshot.CandidateContractError,
+            gate.OutcomeGateContractError,
+        ),
+        (
+            "search_unavailable",
+            gate.candidate_snapshot.CandidateUnavailable,
+            gate.OutcomeGateUnavailable,
+        ),
+    ],
+)
+def test_cli_normalizes_post_open_failures_and_closes_session(
+    monkeypatch,
+    capsys,
+    failure_stage,
+    source_error_type,
+    public_error_type,
 ) -> None:
     profile = gate.retrieval_benchmark.EmbeddingProfile(
         name="test",
@@ -301,18 +330,16 @@ def test_cli_normalizes_search_contract_error_and_closes_session(
 
     class FakeSession:
         def __init__(self) -> None:
-            self.closed = False
+            self.close_count = 0
             self.search_count = 0
 
         def search(self, _query_vector, *, k: int) -> list[dict]:
             assert k == 5
             self.search_count += 1
-            raise gate.candidate_snapshot.CandidateContractError(
-                "persisted search failed"
-            )
+            raise source_error_type(f"{failure_stage} failed")
 
         def close(self) -> None:
-            self.closed = True
+            self.close_count += 1
 
     class FakeEmbedder:
         def __init__(self, _base_url: str) -> None:
@@ -332,6 +359,8 @@ def test_cli_normalizes_search_contract_error_and_closes_session(
             assert len(texts) == 1
             assert observed_profile == profile
             assert label == "outcome_gate_query_embedding"
+            if failure_stage.startswith("embed_"):
+                raise source_error_type(f"{failure_stage} failed")
             return np.asarray([[1.0, 0.0]], dtype=np.float32)
 
     session = FakeSession()
@@ -355,6 +384,17 @@ def test_cli_normalizes_search_contract_error_and_closes_session(
         "OllamaEmbeddingClient",
         FakeEmbedder,
     )
+    real_run_live_gate = gate.run_live_gate
+    captured_exception = {}
+
+    def capture_run_live_gate(*args, **kwargs):
+        try:
+            return real_run_live_gate(*args, **kwargs)
+        except (gate.OutcomeGateContractError, gate.OutcomeGateUnavailable) as exc:
+            captured_exception["value"] = exc
+            raise
+
+    monkeypatch.setattr(gate, "run_live_gate", capture_run_live_gate)
 
     exit_code = gate.main(
         ["--request", "request.json", "--snapshot", "snapshot"]
@@ -362,12 +402,14 @@ def test_cli_normalizes_search_contract_error_and_closes_session(
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == 2
-    assert report["error_type"] == "OutcomeGateContractError"
-    assert report["error"] == "persisted search failed"
+    assert report["error_type"] == public_error_type.__name__
+    assert report["error"] == f"{failure_stage} failed"
     assert report["live_candidate_gate_evaluated"] is False
     assert report["runtime_authority_granted"] is False
-    assert session.search_count == 1
-    assert session.closed is True
+    assert isinstance(captured_exception["value"], public_error_type)
+    assert isinstance(captured_exception["value"].__cause__, source_error_type)
+    assert session.search_count == int(failure_stage.startswith("search_"))
+    assert session.close_count == 1
 
 
 def test_cli_exit_does_not_accept_unqualified_frozen_pass(monkeypatch, capsys) -> None:

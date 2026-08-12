@@ -110,7 +110,6 @@ OPEN_STATUS_FRAGMENTS = (
 CLOSED_REQUEST_STATUSES = frozenset(
     {
         "accepted",
-        *KNOWN_ACK_STATUSES,
         "answered",
         "approved",
         "autonomous_merge_receipt",
@@ -1302,6 +1301,11 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
 
 
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
+    # Delivery receipts are never substantive answers. In particular, an ACK
+    # for an older request generation must not close a newer event that reuses
+    # the same task id. PowerShell's shared classifier has the same boundary.
+    if _event_status(event) in KNOWN_ACK_STATUSES:
+        return False
     if _event_type(event) == "done":
         return True
     status = _event_status(event)

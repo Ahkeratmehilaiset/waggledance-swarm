@@ -1155,7 +1155,7 @@ def test_done_with_domain_status_closes_incoming_request() -> None:
 
 
 @pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
-def test_ack_message_statuses_close_incoming_request(status: str) -> None:
+def test_ack_message_statuses_do_not_close_incoming_request(status: str) -> None:
     events = [
         {
             "ts_utc": "2026-05-18T10:10:00Z",
@@ -1179,10 +1179,55 @@ def test_ack_message_statuses_close_incoming_request(status: str) -> None:
 
     report = recommend_next_action(agent="codex", events=events, claims=[])
 
-    assert report["action"] == "claim_unblocked_work"
-    assert report["task_id"] == "next-unclaimed-scout-or-implementation"
-    assert report["open_incoming_count"] == 0
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "ack-request"
+    assert report["incoming"]["message"] == "please acknowledge"
+    assert report["open_incoming_count"] == 1
     assert report["stale_incoming_count"] == 0
+
+
+def test_old_request_ack_does_not_close_newer_same_task_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-08-12T10:00:00Z",
+            "agent": "fable-5",
+            "to": "codex-lead-1",
+            "type": "finding",
+            "task_id": "same-task-revision",
+            "status": "open",
+            "message": "old request",
+        },
+        {
+            "ts_utc": "2026-08-12T10:02:00Z",
+            "agent": "fable-5",
+            "to": "codex-lead-1",
+            "type": "finding",
+            "task_id": "same-task-revision",
+            "status": "open",
+            "message": "new request",
+        },
+        {
+            "ts_utc": "2026-08-12T10:03:00Z",
+            "agent": "codex-lead-1",
+            "to": "fable-5",
+            "type": "message",
+            "task_id": "same-task-revision",
+            "status": "received",
+            "message": "received old request",
+            "payload": {"request_ts_utc": "2026-08-12T10:00:00Z"},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "same-task-revision"
+    assert report["incoming"]["message"] == "new request"
+    assert report["open_incoming_count"] == 2
 
 
 def test_observed_message_status_closes_incoming_handoff() -> None:

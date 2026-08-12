@@ -25,6 +25,8 @@ import subprocess
 
 import pytest
 
+from tools.bridge_next_action import _is_answer_like, _is_request_like
+
 ROOT = Path(__file__).resolve().parents[2]
 CLASSIFIER = ROOT / ".agent-bridge" / "bin" / "BridgeEventClassifier.ps1"
 NEXT_ACTION = ROOT / ".agent-bridge" / "bin" / "Get-BridgeNextAction.ps1"
@@ -147,6 +149,28 @@ def test_wake_request_ack_is_not_actionable() -> None:
     verdict = _classify(_event("wake_request", "received"))
     assert verdict["request_like"] is False
     assert verdict["answer"] is False
+
+
+@pytest.mark.parametrize("status", ["acknowledged", "received", "seen"])
+def test_ack_messages_are_not_answers_in_either_classifier(status: str) -> None:
+    event = _event("message", status)
+
+    verdict = _classify(event)
+
+    assert verdict["request_like"] is False
+    assert verdict["answer"] is False
+    assert _is_answer_like(event) is False
+
+
+def test_compound_ack_message_remains_an_answer_in_either_classifier() -> None:
+    event = _event("message", "acknowledged_ready_review_queued")
+
+    verdict = _classify(event)
+
+    assert verdict["request_like"] is False
+    assert verdict["answer"] is True
+    assert _is_request_like(event) is False
+    assert _is_answer_like(event) is True
 
 
 @pytest.mark.parametrize("event_type", ["heartbeat", "liveness"])

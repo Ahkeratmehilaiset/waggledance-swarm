@@ -48,6 +48,24 @@ from waggledance.core.capabilities.registry import CapabilityRegistry
 from waggledance.core.reasoning.solver_router import SolverRouter
 from waggledance.core.storage.control_plane import ControlPlaneDB
 
+P3_MINIMUM_THRESHOLDS = {
+    "warm_p50_ms": 1.0,
+    "warm_p99_ms": 10.0,
+    "cold_p50_ms": 75.0,
+    "cold_p99_ms": 250.0,
+    "warm_vs_pre_cache_ratio_min": 5.0,
+}
+P3_STRETCH_THRESHOLDS = {
+    "warm_p50_ms": 0.5,
+    "warm_p99_ms": 5.0,
+    "cold_p50_ms": 50.0,
+    "cold_p99_ms": 200.0,
+    "warm_vs_pre_cache_ratio_min": 10.0,
+}
+P3_RATIO_OBSERVATION_REASON = (
+    "hardware_sensitive_sequential_shared_runner_microbenchmark"
+)
+
 
 def _runtime_hint_for_seed(seed: dict) -> dict:
     family = seed["_family_kind"]
@@ -104,6 +122,55 @@ def _run_corpus(
                 ),
             })
     return results, latencies_ms
+
+
+def _p3_threshold_attainment(
+    *,
+    warm_stats: Mapping[str, float],
+    cold_stats: Mapping[str, float],
+    warm_vs_pre_ratio: float,
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    """Build a transparent P3 threshold record with a stable hard gate.
+
+    Absolute latency budgets catch meaningful regressions on shared runners.
+    The relative ratio compares two separately timed microbenchmark phases and
+    is retained as evidence, but it is not a deterministic CI hard gate.
+    """
+
+    details = {
+        "warm_p50_ms_met": warm_stats["p50_ms"] <= thresholds["warm_p50_ms"],
+        "warm_p99_ms_met": warm_stats["p99_ms"] <= thresholds["warm_p99_ms"],
+        "cold_p50_ms_met": cold_stats["p50_ms"] <= thresholds["cold_p50_ms"],
+        "cold_p99_ms_met": cold_stats["p99_ms"] <= thresholds["cold_p99_ms"],
+        "warm_vs_pre_cache_ratio_met": (
+            warm_vs_pre_ratio >= thresholds["warm_vs_pre_cache_ratio_min"]
+        ),
+    }
+    absolute_keys = (
+        "warm_p50_ms_met",
+        "warm_p99_ms_met",
+        "cold_p50_ms_met",
+        "cold_p99_ms_met",
+    )
+    absolute_all_met = all(details[key] for key in absolute_keys)
+    all_targets_met = all(details.values())
+    return {
+        # Preserve the legacy all-five-target meaning for report consumers.
+        "all_met": all_targets_met,
+        "absolute_all_met": absolute_all_met,
+        "all_targets_met": all_targets_met,
+        "acceptance_gate_pass": absolute_all_met,
+        "details": details,
+        "thresholds": dict(thresholds),
+        "relative_ratio_observation": {
+            "observed": warm_vs_pre_ratio,
+            "target": thresholds["warm_vs_pre_cache_ratio_min"],
+            "target_met": details["warm_vs_pre_cache_ratio_met"],
+            "hard_gate": False,
+            "reason": P3_RATIO_OBSERVATION_REASON,
+        },
+    }
 
 
 def run(out_dir: Path, db_path: Path) -> dict:
@@ -260,32 +327,18 @@ def run(out_dir: Path, db_path: Path) -> dict:
     warm_vs_pre_ratio = round(pre_p50 / warm_p50, 2) if warm_p50 > 0 else 0.0
 
     # Threshold attainment
-    floor = {
-        "warm_p50_ms": 1.0, "warm_p99_ms": 10.0,
-        "cold_p50_ms": 75.0, "cold_p99_ms": 250.0,
-        "warm_vs_pre_cache_ratio_min": 5.0,
-    }
-    stretch = {
-        "warm_p50_ms": 0.5, "warm_p99_ms": 5.0,
-        "cold_p50_ms": 50.0, "cold_p99_ms": 200.0,
-        "warm_vs_pre_cache_ratio_min": 10.0,
-    }
-
-    def _check(target: dict, kind: str) -> dict:
-        return {
-            "warm_p50_ms_met": warm_stats["p50_ms"] <= target["warm_p50_ms"],
-            "warm_p99_ms_met": warm_stats["p99_ms"] <= target["warm_p99_ms"],
-            "cold_p50_ms_met": cold_stats["p50_ms"] <= target["cold_p50_ms"],
-            "cold_p99_ms_met": cold_stats["p99_ms"] <= target["cold_p99_ms"],
-            "warm_vs_pre_cache_ratio_met": (
-                warm_vs_pre_ratio >= target["warm_vs_pre_cache_ratio_min"]
-            ),
-        }
-
-    floor_attainment = _check(floor, "floor")
-    floor_all_met = all(floor_attainment.values())
-    stretch_attainment = _check(stretch, "stretch")
-    stretch_all_met = all(stretch_attainment.values())
+    floor_attainment = _p3_threshold_attainment(
+        warm_stats=warm_stats,
+        cold_stats=cold_stats,
+        warm_vs_pre_ratio=warm_vs_pre_ratio,
+        thresholds=P3_MINIMUM_THRESHOLDS,
+    )
+    stretch_attainment = _p3_threshold_attainment(
+        warm_stats=warm_stats,
+        cold_stats=cold_stats,
+        warm_vs_pre_ratio=warm_vs_pre_ratio,
+        thresholds=P3_STRETCH_THRESHOLDS,
+    )
 
     proof: dict[str, Any] = {
         "proof_version": 1,
@@ -322,16 +375,8 @@ def run(out_dir: Path, db_path: Path) -> dict:
         "latency_warm_vs_pre_cache_ratio": warm_vs_pre_ratio,
         "pre_cache_served_via_consult_total": pre_cache_served,
         "p3_threshold_attainment": {
-            "minimum_floor": {
-                "all_met": floor_all_met,
-                "details": floor_attainment,
-                "thresholds": floor,
-            },
-            "stretch": {
-                "all_met": stretch_all_met,
-                "details": stretch_attainment,
-                "thresholds": stretch,
-            },
+            "minimum_floor": floor_attainment,
+            "stretch": stretch_attainment,
         },
         "buffered_sink": {
             "max_unflushed_signals_configured": hot_path.sink.max_unflushed_signals,
@@ -426,8 +471,9 @@ def _summarise(proof: dict) -> str:
         f"  warm_p50_ms / p99_ms      = {proof['latency_warm_ms']['p50_ms']} / {proof['latency_warm_ms']['p99_ms']}",
         f"  warm_vs_pre_cache_ratio   = {proof['latency_warm_vs_pre_cache_ratio']}x",
         "",
-        f"P3 floor met:    {proof['p3_threshold_attainment']['minimum_floor']['all_met']}  ({proof['p3_threshold_attainment']['minimum_floor']['details']})",
-        f"P3 stretch met:  {proof['p3_threshold_attainment']['stretch']['all_met']}  ({proof['p3_threshold_attainment']['stretch']['details']})",
+        f"P3 acceptance gate:     {proof['p3_threshold_attainment']['minimum_floor']['acceptance_gate_pass']}",
+        f"P3 floor targets met:   {proof['p3_threshold_attainment']['minimum_floor']['all_targets_met']}  ({proof['p3_threshold_attainment']['minimum_floor']['details']})",
+        f"P3 stretch targets met: {proof['p3_threshold_attainment']['stretch']['all_targets_met']}  ({proof['p3_threshold_attainment']['stretch']['details']})",
         "",
         "Buffered sink:",
         f"  max_unflushed_signals_configured = {proof['buffered_sink']['max_unflushed_signals_configured']}",

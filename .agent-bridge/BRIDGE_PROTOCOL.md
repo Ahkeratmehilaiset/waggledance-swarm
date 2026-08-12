@@ -455,6 +455,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\.agent-bridge\bin\Release-
 `decision`, `test`, `blocked`, `handoff`, `done`, `heartbeat`,
 `wake_request`, `liveness`.
 
+### Advisory attention level
+
+An event may carry a top-level integer `requested_blocking` with exactly one
+of these producer-requested scheduling levels:
+
+- `0`: retain in the evidence/work queue; Lead need not react now.
+- `1`: present at the next machine checkpoint.
+- `2`: request an immediate Lead interrupt.
+
+The field is a hint, not authority. Missing legacy fields mean `0`. Severity,
+confidence, veto/gate state, and repository/runtime authority are independent
+signals and MUST NOT be inferred from this number. Producers MUST NOT write an
+`effective_blocking` field; that value belongs to a consumer admission policy.
+
+The current source-only admission foundation deliberately caps a requested
+`2` at effective level `1`. The existing HMAC v0 does not bind the requested
+level, recipient, agent UUID, or target HEAD, so no watcher or next-action
+consumer may activate an immediate interrupt from this field yet. A later,
+separately reviewed authentication version must bind those values and enforce
+freshness, replay, identity, current-task/HEAD, and interrupt-budget checks
+before effective level `2` is possible.
+
+All three levels are currently metadata plus a pure, unwired projection only.
+Existing delivery and next-action selection are unchanged: level `0` does not
+yet suppress a request into a background-only queue, and level `1` does not
+yet schedule a machine checkpoint. Those consumer behaviors require a later
+admission-and-queue integration checkpoint.
+
 ## Continuity Protocol (added 2026-05-09)
 
 The bridge has three live consumers with different liveness models:

@@ -107,6 +107,64 @@ def test_invalid_replayer_shape_refuses_before_root_or_wal_creation(
     assert not _canonical(root).exists()
 
 
+@pytest.mark.parametrize(
+    "requested_blocking",
+    [False, True, -1, 3, 1.0, "2", None, {}, []],
+)
+def test_invalid_requested_blocking_refuses_before_root_or_wal_creation(
+    tmp_path: Path,
+    requested_blocking: object,
+) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["requested_blocking"] = requested_blocking
+
+    with pytest.raises(BridgeEventWriteError, match="requested_blocking"):
+        write_bridge_event(
+            bridge_root=root,
+            event=event,
+            backend=_PortableTestBackend(),
+        )
+
+    assert not root.exists()
+
+
+def test_producer_effective_blocking_refuses_before_root_or_wal_creation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event["effective_blocking"] = 2
+
+    with pytest.raises(BridgeEventWriteError, match="effective_blocking"):
+        write_bridge_event(
+            bridge_root=root,
+            event=event,
+            backend=_PortableTestBackend(),
+        )
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("requested_blocking", [0, 1, 2])
+def test_valid_requested_blocking_remains_a_json_integer(
+    tmp_path: Path,
+    requested_blocking: int,
+) -> None:
+    root = tmp_path / "bridge"
+    event = _event()
+    event["requested_blocking"] = requested_blocking
+
+    write_bridge_event(
+        bridge_root=root,
+        event=event,
+        write_sidecars=False,
+        backend=_PortableTestBackend(),
+    )
+
+    assert _rows(_canonical(root))[0]["requested_blocking"] == requested_blocking
+
+
 @pytest.mark.skipif(os.name == "nt", reason="production backend is supported on Windows")
 def test_production_backend_fails_closed_off_windows_before_creation(
     tmp_path: Path,

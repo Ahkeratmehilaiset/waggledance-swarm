@@ -51,6 +51,7 @@ KNOWN_EVENT_TYPES = frozenset(
 )
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
 KNOWN_SEVERITIES = frozenset({"", "low", "medium", "high"})
+BRIDGE_BLOCKING_LEVELS = frozenset({0, 1, 2})
 FULL_GIT_SHA_PATTERN = r"^[0-9a-f]{40}$"
 GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
 GROK_REVIEW_STATUSES = frozenset({"grok_response"})
@@ -80,6 +81,7 @@ class BridgeEvent(BaseModel):
     task_id: StrictStr = ""
     status: StrictStr = ""
     severity: StrictStr = ""
+    requested_blocking: StrictInt = Field(default=0, ge=0, le=2)
     to: StrictStr = ""
     message: StrictStr = ""
     paths: list[StrictStr] = Field(default_factory=list)
@@ -92,6 +94,15 @@ class BridgeEvent(BaseModel):
     pid: StrictInt
     cwd: StrictStr
     payload: Any = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _effective_blocking_is_consumer_owned(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "effective_blocking" in value:
+            raise ValueError(
+                "effective_blocking is computed by the consumer admission layer"
+            )
+        return value
 
     @field_validator("ts_utc")
     @classmethod
@@ -436,6 +447,7 @@ def _validate_agent_uuid_binding(
 
 __all__ = [
     "BRIDGE_EVENT_SCHEMA_VERSION",
+    "BRIDGE_BLOCKING_LEVELS",
     "AGENT_ID_PATTERN",
     "FULL_GIT_SHA_PATTERN",
     "GROK_FRESHNESS_EPOCH_UTC",

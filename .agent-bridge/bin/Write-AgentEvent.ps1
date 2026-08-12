@@ -10,6 +10,7 @@ param(
     [string[]] $Paths = @(),
     [string[]] $WriteScope = @(),
     [string] $Severity = '',
+    [AllowNull()] [object] $RequestedBlocking = $null,
     [string] $RunId = '',
     [string] $Role = '',
     [string] $AgentUuid = '',
@@ -54,6 +55,36 @@ Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
 Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 Assert-NoPrivateMarker -Label 'payload' -Value $PayloadJson
+
+$hasRequestedBlocking = $PSBoundParameters.ContainsKey('RequestedBlocking')
+$normalizedRequestedBlocking = 0
+if ($hasRequestedBlocking) {
+    if ($null -eq $RequestedBlocking) {
+        throw 'RequestedBlocking must be an exact integer or canonical text 0, 1, or 2'
+    }
+    $requestedBlockingType = $RequestedBlocking.GetType()
+    $isExactInteger = @(
+        [System.SByte],
+        [System.Byte],
+        [System.Int16],
+        [System.UInt16],
+        [System.Int32],
+        [System.UInt32],
+        [System.Int64],
+        [System.UInt64]
+    ) -contains $requestedBlockingType
+    $isCanonicalString = (
+        $requestedBlockingType -eq [System.String] -and
+        [string]$RequestedBlocking -cmatch '^[012]$'
+    )
+    if (-not ($isExactInteger -or $isCanonicalString)) {
+        throw 'RequestedBlocking must be an exact integer or canonical text 0, 1, or 2'
+    }
+    $normalizedRequestedBlocking = [int]$RequestedBlocking
+    if ($normalizedRequestedBlocking -lt 0 -or $normalizedRequestedBlocking -gt 2) {
+        throw 'RequestedBlocking must be 0, 1, or 2'
+    }
+}
 
 function Resolve-BridgeMetadataString {
     param([string] $Explicit, [string] $EnvName)
@@ -510,6 +541,7 @@ $event = [ordered]@{
     cwd         = (Get-Location).Path
     payload     = $payload
 }
+if ($hasRequestedBlocking) { $event['requested_blocking'] = $normalizedRequestedBlocking }
 if ($Role) { $event['role'] = $Role }
 if ($AgentUuid) { $event['agent_uuid'] = $AgentUuid }
 if ($SessionId) { $event['session_id'] = $SessionId }

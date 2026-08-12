@@ -26,6 +26,7 @@ def _good_event(**overrides: object) -> dict[str, object]:
         "task_id": "claude-rco-pr420-sqlite-read-transport-2026-05-16",
         "status": "assigned_rco_review",
         "severity": "",
+        "requested_blocking": 0,
         "to": "claude",
         "message": "RCO review requested.",
         "paths": [
@@ -53,6 +54,40 @@ def test_valid_write_agent_event_shape_validates() -> None:
         "tests/v3_13_0/test_sqlite_read_transport.py",
     ]
     assert model.model_extra == {"extra_future_field": "allowed"}
+
+
+@pytest.mark.parametrize("requested_blocking", [0, 1, 2])
+def test_requested_blocking_accepts_only_declared_levels(
+    requested_blocking: int,
+) -> None:
+    model = validate_event(_good_event(requested_blocking=requested_blocking))
+
+    assert model.requested_blocking == requested_blocking
+
+
+def test_legacy_event_without_requested_blocking_defaults_to_background() -> None:
+    event = _good_event()
+    del event["requested_blocking"]
+
+    model = validate_event(event)
+
+    assert model.requested_blocking == 0
+
+
+@pytest.mark.parametrize(
+    "requested_blocking",
+    [False, True, -1, 3, 1.0, "2", None, {}, []],
+)
+def test_requested_blocking_rejects_coercion_and_out_of_range_values(
+    requested_blocking: object,
+) -> None:
+    with pytest.raises(Exception, match="requested_blocking"):
+        validate_event(_good_event(requested_blocking=requested_blocking))
+
+
+def test_producer_cannot_serialize_effective_blocking() -> None:
+    with pytest.raises(Exception, match="effective_blocking is computed"):
+        validate_event(_good_event(effective_blocking=2))
 
 
 def test_comma_separated_targets_are_validated_per_agent() -> None:

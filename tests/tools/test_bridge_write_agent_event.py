@@ -233,6 +233,198 @@ def test_events_without_task_id_requirement_can_write(
     event = json.loads(line)
     assert event["type"] == event_type
     assert event["task_id"] == ""
+    assert "requested_blocking" not in event
+    validate_event_line(line)
+
+
+def test_requested_blocking_out_of_range_fails_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "finding",
+        "-TaskId",
+        "typed-blocking-invalid",
+        "-RequestedBlocking",
+        "3",
+        "-Message",
+        "invalid blocking level",
+    )
+
+    assert completed.returncode != 0
+    assert "RequestedBlocking" in completed.stderr
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize("value", ["-1", "3", "True", "1.0", "01", " 2"])
+def test_noncanonical_requested_blocking_fails_before_runtime_write(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "finding",
+        "-TaskId",
+        "typed-blocking-invalid-shape",
+        "-RequestedBlocking",
+        value,
+        "-Message",
+        "invalid blocking level",
+    )
+
+    assert completed.returncode != 0
+    assert "RequestedBlocking" in completed.stderr
+    assert not runtime_root.exists()
+
+
+@pytest.mark.parametrize("expression", ["$true", "[double]1.0"])
+def test_in_process_typed_requested_blocking_coercions_fail_before_write(
+    tmp_path: Path,
+    expression: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    writer = root / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
+    env = os.environ.copy()
+    for name in (
+        "AGENT_BRIDGE_AGENT_UUID",
+        "AGENT_BRIDGE_CAPABILITIES",
+        "AGENT_BRIDGE_ROLE",
+        "AGENT_BRIDGE_RUN_ID",
+        "AGENT_BRIDGE_SESSION_ID",
+    ):
+        env.pop(name, None)
+    env.update(
+        {
+            "AGENT_BRIDGE_RUNTIME_ROOT": str(runtime_root),
+            "AGENT_BRIDGE_AGENT": "codex",
+            "AGENT_BRIDGE_OWNER_SESSION_ID": "pytest-owner-codex",
+            "AGENT_BRIDGE_OWNER_TOKEN": "a" * 64,
+            "AGENT_BRIDGE_OWNER_PID": str(os.getpid()),
+            "AGENT_BRIDGE_OWNER_PROCESS_START_UTC": "2026-08-10T00:00:00Z",
+        }
+    )
+    command = (
+        f"& '{writer}' -Agent codex -Type finding "
+        "-TaskId typed-blocking-direct-coercion "
+        f"-RequestedBlocking ({expression}) -Message probe"
+    )
+
+    completed = subprocess.run(  # noqa: S603
+        [_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "RequestedBlocking" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_in_process_explicit_null_requested_blocking_fails_before_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    writer = root / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    command = (
+        f"& '{writer}' -Agent codex -Type finding "
+        "-TaskId typed-blocking-direct-null -RequestedBlocking $null "
+        "-Message probe"
+    )
+
+    completed = subprocess.run(  # noqa: S603
+        [_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "RequestedBlocking" in completed.stderr
+    assert not runtime_root.exists()
+
+
+def test_in_process_int64_requested_blocking_serializes_as_json_integer(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    writer = root / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    command = (
+        f"& '{writer}' -Agent codex -Type finding "
+        "-TaskId typed-blocking-direct-int64 -RequestedBlocking ([long]2) "
+        "-Message probe"
+    )
+
+    completed = subprocess.run(  # noqa: S603
+        [_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    event = json.loads(
+        (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+    assert type(event["requested_blocking"]) is int
+    assert event["requested_blocking"] == 2
+
+
+@WINDOWS_APPEND_V1
+def test_requested_blocking_is_serialized_as_an_integer(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex",
+        "-Type",
+        "finding",
+        "-TaskId",
+        "typed-blocking-valid",
+        "-RequestedBlocking",
+        "2",
+        "-Message",
+        "request immediate attention",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    line = (runtime_root / "shared" / "events.jsonl").read_text(
+        encoding="utf-8"
+    ).strip()
+    event = json.loads(line)
+    assert event["requested_blocking"] == 2
     validate_event_line(line)
 
 

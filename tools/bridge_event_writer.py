@@ -411,6 +411,19 @@ def validate_v1_replayer_event(event: Mapping[str, Any]) -> None:
     agent = event["agent"]
     if V1_AGENT_RE.fullmatch(agent) is None:
         raise BridgeEventWriteError(f"bridge event has invalid agent id: {agent}")
+    if "effective_blocking" in event:
+        raise BridgeEventWriteError(
+            "bridge event effective_blocking is consumer-owned"
+        )
+    if "requested_blocking" in event:
+        requested_blocking = event["requested_blocking"]
+        if (
+            type(requested_blocking) is not int
+            or requested_blocking not in (0, 1, 2)
+        ):
+            raise BridgeEventWriteError(
+                "bridge event requested_blocking must be exact integer 0, 1, or 2"
+            )
 
 
 def _last_event_bytes(event: Mapping[str, Any]) -> bytes:

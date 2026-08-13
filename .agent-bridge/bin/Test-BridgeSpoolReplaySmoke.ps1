@@ -78,6 +78,18 @@ function Get-BridgeTestFileLength {
     return [int64](Get-Item -LiteralPath $Path).Length
 }
 
+function Get-BridgeTestSha256Hex {
+    param([Parameter(Mandatory)] [byte[]] $Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace(
+            '-', ''
+        ).ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Write-TestWal {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -145,6 +157,21 @@ try {
         $isolatedAppendName
     )
     $replaySource = [System.IO.File]::ReadAllText($replayScript)
+    $bulkGuardNeedle = 'if (-not $targetedReplay) {'
+    $bulkGuardIndex = $replaySource.IndexOf(
+        $bulkGuardNeedle,
+        [StringComparison]::Ordinal
+    )
+    if ($bulkGuardIndex -lt 0) {
+        throw 'test setup could not locate the production bulk-replay guard'
+    }
+    # Legacy recovery mechanics still need isolated coverage. Only this copied
+    # test script bypasses the production entry-point refusal; the tracked
+    # script itself is exercised below and must fail closed without a target.
+    $replaySource = $replaySource.Remove(
+        $bulkGuardIndex,
+        $bulkGuardNeedle.Length
+    ).Insert($bulkGuardIndex, 'if ($false) {')
     $replaySource = $replaySource.Replace(
         'Global\WaggleDanceBridgeAppendV1',
         $isolatedAppendName
@@ -155,6 +182,21 @@ try {
     )
     [System.IO.File]::WriteAllText($isolatedWriter, $writerSource, $utf8)
     [System.IO.File]::WriteAllText($isolatedReplay, $replaySource, $utf8)
+
+    $bulkGuardRoot = New-TestBridgeRoot -Name 'bulk-replay-disabled'
+    $bulkGuardSpool = Join-Path (Join-Path $bulkGuardRoot 'spool') `
+        'failed-append-smoke-1-20260813T115900000-1233-00000000000000000000000000000000.jsonl'
+    $bulkGuardEvent = '{"ts_utc":"2026-08-13T11:59:00Z","agent":"smoke-1","type":"message","task_id":"bulk-guard","status":"info","message":"must-not-replay"}'
+    Write-TestWal -Path $bulkGuardSpool -Text $bulkGuardEvent
+    $bulkGuardError = ''
+    try { & $replayScript -BridgeRoot $bulkGuardRoot | Out-Null }
+    catch { $bulkGuardError = $_.Exception.Message }
+    Add-Check -Name 'untargeted bulk replay is disabled fail closed' -Passed (
+        ($bulkGuardError -match 'untargeted bulk replay is disabled') -and
+        (Test-Path -LiteralPath $bulkGuardSpool -PathType Leaf) -and
+        (-not (Test-Path -LiteralPath (
+            Join-Path $bulkGuardRoot 'shared/events.jsonl')))
+    ) -Detail "error=$bulkGuardError"
     $appendWaitNeedle = 'try { $appendAcquired = $appendMutex.WaitOne(10000) }'
     if (-not $replaySource.Contains($appendWaitNeedle)) {
         throw 'race smoke could not locate the outer append mutex wait'
@@ -169,7 +211,7 @@ try {
         ($appendWaitSignal + [Environment]::NewLine + '        ' + $appendWaitNeedle)
     )
     [System.IO.File]::WriteAllText($raceReplay, $raceReplaySource, $utf8)
-    $enumerationNeedle = '    $pendingFiles = @('
+    $enumerationNeedle = '    $pendingFiles = @(if (-not $targetedReplay) {'
     if (-not $replaySource.Contains($enumerationNeedle)) {
         throw 'enumeration smoke could not locate fail-closed spool enumeration'
     }
@@ -227,7 +269,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllText($abandonHelper, $abandonSource, $utf8)
 
     # 1. Empty spool -> no-op
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     Add-Check -Name 'empty spool is a no-op' -Passed ($out -match 'nothing to replay')
 
     # 2. A valid spooled event replays into the shared log and archives
@@ -235,7 +277,7 @@ Start-Sleep -Seconds 60
     $spoolFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-fable-5-20260702T100000000-1234.jsonl'
     Write-TestWal -Path $spoolFile -Text $event
 
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     Add-Check -Name 'replay reports one replayed' -Passed ($out -match 'replayed=1 deduped=0 failed=0')
     $logged = Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8
     Add-Check -Name 'event appended to shared log' -Passed ($logged -match 'spool-replay-smoke')
@@ -245,7 +287,7 @@ Start-Sleep -Seconds 60
     )
 
     # 3. Idempotent rerun -> nothing to replay
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     Add-Check -Name 'rerun is a no-op' -Passed ($out -match 'nothing to replay')
 
     # An existing same-name archive is immutable. Preserve both records under
@@ -309,7 +351,7 @@ Start-Sleep -Seconds 60
     Write-TestWal -Path $badFile -Text '{not json'
     $before = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($eventsPath))
     $badError = ''
-    try { & $replayScript -BridgeRoot $tempRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $tempRoot 3>$null | Out-Null }
     catch { $badError = $_.Exception.Message }
     $after = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($eventsPath))
     Add-Check -Name 'malformed file fails loud and is kept' -Passed (
@@ -329,7 +371,7 @@ Start-Sleep -Seconds 60
     # The spooled FAILED attempt: same signal, OLDER ts + different pid.
     Write-TestWal -Path $dupSpool -Text '{"ts_utc":"2026-07-02T10:00:01Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}'
     $before = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     $after = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'distinct same-semantic records both survive' -Passed (
         ($out -match 'replayed=1 deduped=0') -and ($after -eq ($before + 1)) -and
@@ -340,7 +382,7 @@ Start-Sleep -Seconds 60
         'failed-append-fable-5-exact-duplicate.jsonl'
     Write-TestWal -Path $exactSpool -Text $retryCopy
     $before = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     $after = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'exact WAL record dedups idempotently' -Passed (
         ($out -match 'replayed=0 deduped=1') -and
@@ -356,7 +398,7 @@ Start-Sleep -Seconds 60
         $utf8
     )
     $before = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $replayScript -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot
     $after = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'exact duplicate rows inside one WAL append once' -Passed (
         ($out -match 'replayed=1 deduped=1') -and
@@ -368,7 +410,7 @@ Start-Sleep -Seconds 60
     $noAgent = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-x-20260702T120000000-5.jsonl'
     Write-TestWal -Path $noAgent -Text '{"ts_utc":"2026-07-02T12:00:00Z","type":"message","task_id":"t","status":"info"}'
     $noAgentError = ''
-    try { & $replayScript -BridgeRoot $tempRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $tempRoot 3>$null | Out-Null }
     catch { $noAgentError = $_.Exception.Message }
     Add-Check -Name 'missing-core-field WAL fails loud and is kept' -Passed (
         ($noAgentError -match 'missing core field') -and
@@ -382,12 +424,16 @@ Start-Sleep -Seconds 60
     $guardMutex = $null
     $guardAcquired = $false
     try {
-        $guardMutex = New-Object System.Threading.Mutex($false, 'Global\WaggleDanceBridgeSpoolReplayV1')
+        $guardMutex = New-Object System.Threading.Mutex(
+            $false,
+            $isolatedReplayName
+        )
         $guardAcquired = $guardMutex.WaitOne(0)
         if (-not $guardAcquired) {
             Add-Check -Name 'concurrent replay guard setup' -Passed $false -Detail 'could not acquire replay mutex'
         } else {
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $replayScript -BridgeRoot $tempRoot
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass `
+                -File $isolatedReplay -BridgeRoot $tempRoot
             Add-Check -Name 'concurrent replay guard keeps file' -Passed (
                 ($out -match 'already running') -and (Test-Path -LiteralPath $guardFile)
             ) -Detail "out=$out"
@@ -402,10 +448,401 @@ Start-Sleep -Seconds 60
 
     # 8. DryRun neither appends nor archives
     Write-TestWal -Path $spoolFile -Text $event
-    $out = & $replayScript -BridgeRoot $tempRoot -DryRun
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (
         (($out -match 'would archive as exact duplicate') -or ($out -match 'would replay')) -and (Test-Path -LiteralPath $spoolFile)
     )
+
+    # 8b. Targeted replay is bound to one exact writer leaf and immutable WAL
+    # bytes. Unrelated final/pending files are never parsed or mutated.
+    $targetRoot = New-TestBridgeRoot -Name 'targeted-replay'
+    $targetName = `
+        'failed-append-smoke-1-20260813T120000000-1234-11111111111111111111111111111111.jsonl'
+    $otherName = `
+        'failed-append-smoke-2-20260813T120000001-1235-22222222222222222222222222222222.jsonl'
+    $malformedOtherName = `
+        'failed-append-smoke-3-20260813T120000002-1236-33333333333333333333333333333333.jsonl'
+    $targetPath = Join-Path (Join-Path $targetRoot 'spool') $targetName
+    $otherPath = Join-Path (Join-Path $targetRoot 'spool') $otherName
+    $malformedOtherPath = Join-Path `
+        (Join-Path $targetRoot 'spool') $malformedOtherName
+    $targetEvent = $event.Replace('"message":"recovered"', '"message":"targeted"')
+    $otherEvent = $event.Replace('"message":"recovered"', '"message":"unrelated"')
+    Write-TestWal -Path $targetPath -Text $targetEvent
+    Write-TestWal -Path $otherPath -Text $otherEvent
+    [System.IO.File]::WriteAllText($malformedOtherPath, "{broken}`n", $utf8)
+    $targetHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($targetPath)
+    )
+    $targetDryBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($targetPath)
+    )
+    $otherDryBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($otherPath)
+    )
+    $malformedDryBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($malformedOtherPath)
+    )
+    $targetDryOut = & $isolatedReplay -BridgeRoot $targetRoot -DryRun `
+        -SpoolFile $targetName -ExpectedSpoolSha256 $targetHash
+    $targetEventsPath = Join-Path $targetRoot 'shared/events.jsonl'
+    Add-Check -Name 'targeted dry run is byte-inert and names only target' `
+        -Passed (
+            ($targetDryOut -match [regex]::Escape($targetName)) -and
+            ($targetDryOut -notmatch [regex]::Escape($otherName)) -and
+            ($targetDryBefore -ceq [Convert]::ToBase64String(
+                [System.IO.File]::ReadAllBytes($targetPath))) -and
+            ($otherDryBefore -ceq [Convert]::ToBase64String(
+                [System.IO.File]::ReadAllBytes($otherPath))) -and
+            ($malformedDryBefore -ceq [Convert]::ToBase64String(
+                [System.IO.File]::ReadAllBytes($malformedOtherPath))) -and
+            (-not (Test-Path -LiteralPath $targetEventsPath))
+        ) -Detail "out=$targetDryOut"
+
+    $targetOut = & $isolatedReplay -BridgeRoot $targetRoot `
+        -SpoolFile $targetName -ExpectedSpoolSha256 $targetHash
+    $targetArchive = Join-Path `
+        (Join-Path (Join-Path $targetRoot 'spool') 'replayed') $targetName
+    Add-Check -Name 'targeted replay ignores unrelated valid and malformed WALs' `
+        -Passed (
+            ($targetOut -match 'replayed=1 deduped=0 failed=0') -and
+            (-not (Test-Path -LiteralPath $targetPath)) -and
+            (Test-Path -LiteralPath $targetArchive) -and
+            (Test-Path -LiteralPath $otherPath) -and
+            (Test-Path -LiteralPath $malformedOtherPath) -and
+            ([System.IO.File]::ReadAllText($targetEventsPath) -ceq
+                ($targetEvent + [char]10))
+        ) -Detail "out=$targetOut"
+    $targetAfterFirst = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($targetEventsPath)
+    )
+    $targetSecondError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $targetRoot `
+            -SpoolFile $targetName -ExpectedSpoolSha256 $targetHash | Out-Null
+    } catch { $targetSecondError = $_.Exception.Message }
+    Add-Check -Name 'targeted replay never falls back after target archive' `
+        -Passed (
+            ($targetSecondError -match 'not found by exact leaf name') -and
+            ($targetAfterFirst -ceq [Convert]::ToBase64String(
+                [System.IO.File]::ReadAllBytes($targetEventsPath))) -and
+            (Test-Path -LiteralPath $otherPath) -and
+            (Test-Path -LiteralPath $malformedOtherPath)
+        ) -Detail "error=$targetSecondError"
+
+    $validationRoot = New-TestBridgeRoot -Name 'targeted-validation'
+    $validationName = `
+        'failed-append-smoke-1-20260813T121000000-2234-44444444444444444444444444444444.jsonl'
+    $validationPath = Join-Path `
+        (Join-Path $validationRoot 'spool') $validationName
+    Write-TestWal -Path $validationPath -Text $targetEvent
+    $validationHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($validationPath)
+    )
+    $validationBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($validationPath)
+    )
+    $targetParameterCases = @(
+        [pscustomobject]@{
+            Name = 'name-without-hash'
+            Parameters = @{ SpoolFile = $validationName }
+            Error = 'must be supplied together'
+        },
+        [pscustomobject]@{
+            Name = 'hash-without-name'
+            Parameters = @{ ExpectedSpoolSha256 = $validationHash }
+            Error = 'must be supplied together'
+        },
+        [pscustomobject]@{
+            Name = 'wrong-hash'
+            Parameters = @{
+                SpoolFile = $validationName
+                ExpectedSpoolSha256 = ('0' * 64)
+            }
+            Error = 'does not match'
+        },
+        [pscustomobject]@{
+            Name = 'uppercase-hash'
+            Parameters = @{
+                SpoolFile = $validationName
+                ExpectedSpoolSha256 = $validationHash.ToUpperInvariant()
+            }
+            Error = '64 lowercase hex'
+        },
+        [pscustomobject]@{
+            Name = 'rooted-name'
+            Parameters = @{
+                SpoolFile = ('C:\outside\' + $validationName)
+                ExpectedSpoolSha256 = $validationHash
+            }
+            Error = 'exact canonical failed-append leaf'
+        },
+        [pscustomobject]@{
+            Name = 'separator-name'
+            Parameters = @{
+                SpoolFile = ('..\' + $validationName)
+                ExpectedSpoolSha256 = $validationHash
+            }
+            Error = 'exact canonical failed-append leaf'
+        },
+        [pscustomobject]@{
+            Name = 'case-drift-name'
+            Parameters = @{
+                SpoolFile = $validationName.Replace(
+                    'failed-append', 'Failed-append')
+                ExpectedSpoolSha256 = $validationHash
+            }
+            Error = 'exact canonical failed-append leaf'
+        },
+        [pscustomobject]@{
+            Name = 'legacy-name'
+            Parameters = @{
+                SpoolFile = `
+                    'failed-append-smoke-1-20260813T121000000-2234.jsonl'
+                ExpectedSpoolSha256 = $validationHash
+            }
+            Error = 'exact canonical failed-append leaf'
+        },
+        [pscustomobject]@{
+            Name = 'missing-target'
+            Parameters = @{
+                SpoolFile = $validationName.Replace(
+                    '44444444444444444444444444444444',
+                    '55555555555555555555555555555555')
+                ExpectedSpoolSha256 = $validationHash
+            }
+            Error = 'not found by exact leaf name'
+        }
+    )
+    $targetParameterPassed = $true
+    $targetParameterDetails = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($case in $targetParameterCases) {
+        $caseError = ''
+        $caseParameters = @{} + $case.Parameters
+        try {
+            & $isolatedReplay -BridgeRoot $validationRoot @caseParameters |
+                Out-Null
+        } catch { $caseError = $_.Exception.Message }
+        $casePassed = (
+            ($caseError -match [regex]::Escape([string]$case.Error)) -and
+            ($validationBefore -ceq [Convert]::ToBase64String(
+                [System.IO.File]::ReadAllBytes($validationPath))) -and
+            (-not (Test-Path -LiteralPath (
+                Join-Path $validationRoot 'shared/events.jsonl')))
+        )
+        if (-not $casePassed) { $targetParameterPassed = $false }
+        $targetParameterDetails.Add(
+            "$($case.Name):passed=$casePassed error=$caseError"
+        )
+    }
+    Add-Check -Name 'targeted selector and digest inputs fail closed' `
+        -Passed $targetParameterPassed `
+        -Detail ($targetParameterDetails -join ' | ')
+
+    $pendingTargetRoot = New-TestBridgeRoot -Name 'targeted-pending-counterpart'
+    $pendingTargetPath = Join-Path `
+        (Join-Path $pendingTargetRoot 'spool') $validationName
+    $pendingCounterpart = Join-Path `
+        (Join-Path $pendingTargetRoot 'spool') ('.' + $validationName + '.pending')
+    Write-TestWal -Path $pendingTargetPath -Text $targetEvent
+    Write-TestWal -Path $pendingCounterpart -Text $targetEvent
+    $pendingTargetHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($pendingTargetPath)
+    )
+    $pendingTargetError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $pendingTargetRoot `
+            -SpoolFile $validationName `
+            -ExpectedSpoolSha256 $pendingTargetHash | Out-Null
+    } catch { $pendingTargetError = $_.Exception.Message }
+    Add-Check -Name 'targeted pending counterpart blocks without mutation' `
+        -Passed (
+            ($pendingTargetError -match 'pending counterpart') -and
+            (Test-Path -LiteralPath $pendingTargetPath) -and
+            (Test-Path -LiteralPath $pendingCounterpart) -and
+            (-not (Test-Path -LiteralPath (
+                Join-Path $pendingTargetRoot 'shared/events.jsonl')))
+        ) -Detail "error=$pendingTargetError"
+
+    $pendingDirectoryRoot = New-TestBridgeRoot `
+        -Name 'targeted-pending-directory-counterpart'
+    $pendingDirectoryTarget = Join-Path `
+        (Join-Path $pendingDirectoryRoot 'spool') $validationName
+    $pendingDirectoryCounterpart = Join-Path `
+        (Join-Path $pendingDirectoryRoot 'spool') `
+        ('.' + $validationName + '.pending')
+    Write-TestWal -Path $pendingDirectoryTarget -Text $targetEvent
+    [void](New-Item -ItemType Directory -Path $pendingDirectoryCounterpart)
+    $pendingDirectoryHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($pendingDirectoryTarget)
+    )
+    $pendingDirectoryError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $pendingDirectoryRoot `
+            -SpoolFile $validationName `
+            -ExpectedSpoolSha256 $pendingDirectoryHash | Out-Null
+    } catch { $pendingDirectoryError = $_.Exception.Message }
+    Add-Check -Name 'targeted pending directory counterpart blocks' -Passed (
+        ($pendingDirectoryError -match 'pending counterpart') -and
+        (Test-Path -LiteralPath $pendingDirectoryTarget -PathType Leaf) -and
+        (Test-Path -LiteralPath $pendingDirectoryCounterpart -PathType Container) -and
+        (-not (Test-Path -LiteralPath (
+            Join-Path $pendingDirectoryRoot 'shared/events.jsonl')))
+    ) -Detail "error=$pendingDirectoryError"
+
+    $hardLinkRoot = New-TestBridgeRoot -Name 'targeted-hard-link'
+    $hardLinkTarget = Join-Path (Join-Path $hardLinkRoot 'spool') $validationName
+    $hardLinkAlias = Join-Path $hardLinkRoot 'outside-hard-link.jsonl'
+    Write-TestWal -Path $hardLinkTarget -Text $targetEvent
+    [void](New-Item -ItemType HardLink -Path $hardLinkAlias -Target $hardLinkTarget)
+    $hardLinkHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($hardLinkTarget)
+    )
+    $hardLinkError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $hardLinkRoot `
+            -SpoolFile $validationName `
+            -ExpectedSpoolSha256 $hardLinkHash | Out-Null
+    } catch { $hardLinkError = $_.Exception.Message }
+    Add-Check -Name 'targeted hard-linked source fails closed' -Passed (
+        ($hardLinkError -match 'exactly one hard-link name') -and
+        (Test-Path -LiteralPath $hardLinkTarget -PathType Leaf) -and
+        (Test-Path -LiteralPath $hardLinkAlias -PathType Leaf) -and
+        (-not (Test-Path -LiteralPath (
+            Join-Path $hardLinkRoot 'shared/events.jsonl')))
+    ) -Detail "error=$hardLinkError"
+
+    $archiveJunctionRoot = New-TestBridgeRoot -Name 'targeted-archive-junction'
+    $archiveJunctionOutside = Join-Path $archiveJunctionRoot 'outside-archive'
+    [void](New-Item -ItemType Directory -Path $archiveJunctionOutside)
+    $archiveJunctionPath = Join-Path (Join-Path $archiveJunctionRoot 'spool') 'replayed'
+    [void](New-Item -ItemType Junction -Path $archiveJunctionPath `
+        -Target $archiveJunctionOutside)
+    $archiveJunctionTarget = Join-Path `
+        (Join-Path $archiveJunctionRoot 'spool') $validationName
+    Write-TestWal -Path $archiveJunctionTarget -Text $targetEvent
+    $archiveJunctionHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($archiveJunctionTarget)
+    )
+    $archiveJunctionError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $archiveJunctionRoot `
+            -SpoolFile $validationName `
+            -ExpectedSpoolSha256 $archiveJunctionHash | Out-Null
+    } catch { $archiveJunctionError = $_.Exception.Message }
+    Add-Check -Name 'targeted archive junction fails closed' -Passed (
+        ($archiveJunctionError -match 'must not be a reparse point') -and
+        (Test-Path -LiteralPath $archiveJunctionTarget -PathType Leaf) -and
+        (@(Get-ChildItem -LiteralPath $archiveJunctionOutside -Force).Count -eq 0)
+    ) -Detail "error=$archiveJunctionError"
+
+    $sharedJunctionRoot = New-TestBridgeRoot -Name 'targeted-shared-junction'
+    $sharedJunctionPath = Join-Path $sharedJunctionRoot 'shared'
+    $sharedJunctionOutside = Join-Path $sharedJunctionRoot 'outside-shared'
+    [System.IO.Directory]::Delete($sharedJunctionPath)
+    [void](New-Item -ItemType Directory -Path $sharedJunctionOutside)
+    [void](New-Item -ItemType Junction -Path $sharedJunctionPath `
+        -Target $sharedJunctionOutside)
+    $sharedJunctionTarget = Join-Path `
+        (Join-Path $sharedJunctionRoot 'spool') $validationName
+    Write-TestWal -Path $sharedJunctionTarget -Text $targetEvent
+    $sharedJunctionHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($sharedJunctionTarget)
+    )
+    $sharedJunctionError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $sharedJunctionRoot `
+            -SpoolFile $validationName `
+            -ExpectedSpoolSha256 $sharedJunctionHash | Out-Null
+    } catch { $sharedJunctionError = $_.Exception.Message }
+    Add-Check -Name 'targeted shared junction fails closed' -Passed (
+        ($sharedJunctionError -match 'must not be a reparse point') -and
+        (Test-Path -LiteralPath $sharedJunctionTarget -PathType Leaf) -and
+        (@(Get-ChildItem -LiteralPath $sharedJunctionOutside -Force).Count -eq 0)
+    ) -Detail "error=$sharedJunctionError"
+
+    $malformedTargetRoot = New-TestBridgeRoot -Name 'targeted-malformed'
+    $malformedTargetPath = Join-Path `
+        (Join-Path $malformedTargetRoot 'spool') $validationName
+    [System.IO.File]::WriteAllText($malformedTargetPath, "{broken}`n", $utf8)
+    $malformedTargetHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($malformedTargetPath)
+    )
+    $malformedTargetBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($malformedTargetPath)
+    )
+    $malformedTargetError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $malformedTargetRoot `
+            -SpoolFile $validationName `
+            -ExpectedSpoolSha256 $malformedTargetHash | Out-Null
+    } catch { $malformedTargetError = $_.Exception.Message }
+    Add-Check -Name 'selected malformed WAL fails closed' -Passed (
+        ($malformedTargetError -match 'malformed JSON') -and
+        ($malformedTargetBefore -ceq [Convert]::ToBase64String(
+            [System.IO.File]::ReadAllBytes($malformedTargetPath))) -and
+        (-not (Test-Path -LiteralPath (
+            Join-Path $malformedTargetRoot 'shared/events.jsonl')))
+    ) -Detail "error=$malformedTargetError"
+
+    $partialTargetRoot = New-TestBridgeRoot -Name 'targeted-partial-dedup'
+    $partialTargetPath = Join-Path `
+        (Join-Path $partialTargetRoot 'spool') $validationName
+    $partialEventsPath = Join-Path $partialTargetRoot 'shared/events.jsonl'
+    $partialSecondEvent = $targetEvent.Replace(
+        '"message":"targeted"', '"message":"targeted-second"'
+    )
+    [System.IO.File]::WriteAllText(
+        $partialTargetPath,
+        $targetEvent + [char]10 + $partialSecondEvent + [char]10,
+        $utf8
+    )
+    [System.IO.File]::WriteAllText(
+        $partialEventsPath, $targetEvent + [char]10, $utf8
+    )
+    $partialTargetHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($partialTargetPath)
+    )
+    $partialTargetOut = & $isolatedReplay -BridgeRoot $partialTargetRoot `
+        -SpoolFile $validationName `
+        -ExpectedSpoolSha256 $partialTargetHash
+    Add-Check -Name 'targeted multirow replay dedups and appends only missing rows' `
+        -Passed (
+            ($partialTargetOut -match 'replayed=1 deduped=1 failed=0') -and
+            ([System.IO.File]::ReadAllText($partialEventsPath) -ceq
+                ($targetEvent + [char]10 + $partialSecondEvent + [char]10)) -and
+            (-not (Test-Path -LiteralPath $partialTargetPath))
+        ) -Detail "out=$partialTargetOut"
+
+    $canonicalLinkRoot = New-TestBridgeRoot -Name 'targeted-canonical-hard-link'
+    $canonicalLinkTarget = Join-Path `
+        (Join-Path $canonicalLinkRoot 'spool') $validationName
+    $canonicalLinkEvents = Join-Path $canonicalLinkRoot 'shared/events.jsonl'
+    $canonicalLinkAlias = Join-Path $canonicalLinkRoot 'old-canonical-alias.jsonl'
+    $canonicalLinkSeed = $targetEvent.Replace(
+        '"message":"targeted"', '"message":"canonical-link-seed"'
+    )
+    Write-TestWal -Path $canonicalLinkTarget -Text $targetEvent
+    [System.IO.File]::WriteAllText(
+        $canonicalLinkEvents, $canonicalLinkSeed + [char]10, $utf8
+    )
+    [void](New-Item -ItemType HardLink -Path $canonicalLinkAlias `
+        -Target $canonicalLinkEvents)
+    $canonicalLinkHash = Get-BridgeTestSha256Hex -Bytes (
+        [System.IO.File]::ReadAllBytes($canonicalLinkTarget)
+    )
+    $canonicalLinkOut = & $isolatedReplay -BridgeRoot $canonicalLinkRoot `
+        -SpoolFile $validationName `
+        -ExpectedSpoolSha256 $canonicalLinkHash
+    Add-Check -Name 'targeted canonical publish leaves old hard-link identity unchanged' `
+        -Passed (
+            ($canonicalLinkOut -match 'replayed=1 deduped=0 failed=0') -and
+            ([System.IO.File]::ReadAllText($canonicalLinkEvents) -ceq
+                ($canonicalLinkSeed + [char]10 + $targetEvent + [char]10)) -and
+            ([System.IO.File]::ReadAllText($canonicalLinkAlias) -ceq
+                ($canonicalLinkSeed + [char]10)) -and
+            (-not (Test-Path -LiteralPath $canonicalLinkTarget))
+        ) -Detail "out=$canonicalLinkOut"
 
     # 9. Mutex construction failures are hard failures. The writer durably
     #    publishes a spool; the replayer leaves its existing spool untouched.
@@ -513,7 +950,18 @@ Start-Sleep -Seconds 60
     $liveLogCases = @(
         [pscustomobject]@{ Name = 'malformed'; Row = '{not-json}' },
         [pscustomobject]@{ Name = 'non-object'; Row = '[]' },
-        [pscustomobject]@{ Name = 'missing-core'; Row = '{"type":"message"}' }
+        [pscustomobject]@{ Name = 'missing-core'; Row = '{"type":"message"}' },
+        [pscustomobject]@{
+            Name = 'unrecognized-type'
+            Row = $event.Replace(
+                '"type":"message"',
+                '"type":"other-unknown-type"'
+            )
+        },
+        [pscustomobject]@{
+            Name = 'unrecognized-bare-cr'
+            Row = ($event + [char]13 + $event)
+        }
     )
     $liveLogValidationPassed = $true
     $liveLogValidationDetails = New-Object 'System.Collections.Generic.List[string]'
@@ -555,6 +1003,193 @@ Start-Sleep -Seconds 60
     Add-Check -Name 'invalid canonical rows retain exact bytes and all spools' `
         -Passed $liveLogValidationPassed `
         -Detail ($liveLogValidationDetails -join ' | ')
+
+    # 10b. The one historical bare-CR compatibility row is accepted only when
+    # its normalized row hash and both event fingerprints match exactly. The
+    # append-only canonical bytes remain untouched; reconstructed CRLF row keys
+    # are used solely for exact WAL deduplication.
+    $compatRoot = New-TestBridgeRoot -Name 'known-bare-cr-compat'
+    $compatEvents = Join-Path $compatRoot 'shared/events.jsonl'
+    $compatSpool = Join-Path $compatRoot 'spool/failed-append-compat.jsonl'
+    $compatTask = 'production-liveness-reactivation-scout-2026-07-01-codex-tools-1-since-20260701t161039z'
+    $compatFirst = (
+        '{"ts_utc":"2026-07-01T16:45:30.4576368Z",' +
+        '"agent":"codex-lead-1","type":"test","task_id":"' +
+        $compatTask + '","status":"attention","message":"first"}'
+    )
+    $compatSecond = (
+        '{"ts_utc":"2026-07-01T16:46:54.4324612Z",' +
+        '"agent":"codex-lead-1","type":"message","task_id":"' +
+        $compatTask + '","status":"bridge_log_repair_note",' +
+        '"message":"second"}'
+    )
+    $compatRow = $compatFirst + [char]13 + $compatSecond
+    [byte[]]$compatNormalizedBytes = $utf8.GetBytes($compatRow)
+    $compatRowHash = Get-BridgeTestSha256Hex -Bytes $compatNormalizedBytes
+    $productionCompatHash = `
+        '53f863ac93dd977504346feddc382ccd65bafceb4aeaad2bba1765712190a0d3'
+    $compatReplay = Join-Path $isolatedBin 'Restore-BridgeSpool-Compat.ps1'
+    $compatReplaySource = $replaySource.Replace(
+        $productionCompatHash,
+        $compatRowHash
+    )
+    [System.IO.File]::WriteAllText($compatReplay, $compatReplaySource, $utf8)
+    [System.IO.File]::WriteAllBytes(
+        $compatEvents,
+        $utf8.GetBytes($compatRow + [char]13 + [char]10)
+    )
+    [System.IO.File]::WriteAllBytes(
+        $compatSpool,
+        $utf8.GetBytes($compatFirst + [char]13 + [char]10)
+    )
+    $compatBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($compatEvents)
+    )
+    $compatOut = & $compatReplay -BridgeRoot $compatRoot
+    $compatAfter = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($compatEvents)
+    )
+    Add-Check -Name 'known bare-CR row expands only for exact dedup keys' -Passed (
+        ($compatOut -match 'replayed=0 deduped=1 failed=0') -and
+        $compatBefore -ceq $compatAfter -and
+        (-not (Test-Path -LiteralPath $compatSpool))
+    ) -Detail "out=$compatOut"
+
+    $fingerprintRoot = New-TestBridgeRoot -Name 'bare-cr-fingerprint-mismatch'
+    $fingerprintEvents = Join-Path $fingerprintRoot 'shared/events.jsonl'
+    $fingerprintSpool = Join-Path `
+        $fingerprintRoot 'spool/failed-append-fingerprint.jsonl'
+    $wrongSecond = $compatSecond.Replace(
+        '"bridge_log_repair_note"',
+        '"bridge_log_repair_note_changed"'
+    )
+    $wrongRow = $compatFirst + [char]13 + $wrongSecond
+    $wrongHash = Get-BridgeTestSha256Hex -Bytes ($utf8.GetBytes($wrongRow))
+    $wrongReplay = Join-Path $isolatedBin `
+        'Restore-BridgeSpool-FingerprintMismatch.ps1'
+    [System.IO.File]::WriteAllText(
+        $wrongReplay,
+        $replaySource.Replace($productionCompatHash, $wrongHash),
+        $utf8
+    )
+    [System.IO.File]::WriteAllBytes(
+        $fingerprintEvents,
+        $utf8.GetBytes($wrongRow + [char]13 + [char]10)
+    )
+    Write-TestWal -Path $fingerprintSpool -Text $event
+    $fingerprintBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($fingerprintEvents)
+    )
+    $fingerprintError = ''
+    try { & $wrongReplay -BridgeRoot $fingerprintRoot | Out-Null }
+    catch { $fingerprintError = $_.Exception.Message }
+    $fingerprintAfter = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($fingerprintEvents)
+    )
+    Add-Check -Name 'hash-matched bare-CR fingerprint drift fails closed' -Passed (
+        ($fingerprintError -match 'fingerprint does not match') -and
+        $fingerprintBefore -ceq $fingerprintAfter -and
+        (Test-Path -LiteralPath $fingerprintSpool)
+    ) -Detail "error=$fingerprintError"
+
+    $unknownTypeRoot = New-TestBridgeRoot -Name 'known-unknown-type-compat'
+    $unknownTypeEvents = Join-Path $unknownTypeRoot 'shared/events.jsonl'
+    $unknownTypeSpool = Join-Path `
+        $unknownTypeRoot 'spool/failed-append-known-unknown.jsonl'
+    $unknownTypeRow = '{"ts_utc":"2026-08-09T23:24:39.1546638Z","agent":"claude-rco-2","type":"totally-bogus-typo-type","task_id":"rco2-v8-typo-type-probe","status":"test_probe","severity":"","to":"","message":"adversarial probe against v8 patched writer","paths":[],"write_scope":[],"run_id":"wd-reboot-20260808T135923Z","pid":41920,"cwd":"C:\\Python\\project2\\.agent-bridge\\bin","payload":{},"role":"rco-security","agent_uuid":"76739997-0058-41a2-8514-78ff295537aa","session_id":"wd-reboot-20260808T135923Z","capabilities":["rco_review","security_review","adversarial_review","bridge_event","work_queue"]}'
+    $productionUnknownTypeHash = `
+        '056cbafc328c40441b85cf4f7c46dee0e540f222b94a96d8219025835bb0aa7f'
+    $unknownTypeHash = Get-BridgeTestSha256Hex -Bytes (
+        $utf8.GetBytes($unknownTypeRow)
+    )
+    if ($unknownTypeHash -cne $productionUnknownTypeHash) {
+        throw 'known unknown-type production fixture digest drifted'
+    }
+    $unknownTypeReplay = $isolatedReplay
+    [System.IO.File]::WriteAllBytes(
+        $unknownTypeEvents,
+        $utf8.GetBytes($unknownTypeRow + [char]13 + [char]10)
+    )
+    Write-TestWal -Path $unknownTypeSpool -Text $event
+    $unknownTypeBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownTypeEvents)
+    )
+    $unknownTypeOut = & $unknownTypeReplay `
+        -BridgeRoot $unknownTypeRoot -DryRun
+    $unknownTypeAfter = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownTypeEvents)
+    )
+    Add-Check -Name 'known unknown-type probe is scan-only compatible' -Passed (
+        ($unknownTypeOut -match 'would replay') -and
+        $unknownTypeBefore -ceq $unknownTypeAfter -and
+        (Test-Path -LiteralPath $unknownTypeSpool)
+    ) -Detail "out=$unknownTypeOut"
+
+    Write-TestWal -Path $unknownTypeSpool -Text $unknownTypeRow
+    $unknownTypeWalBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownTypeSpool)
+    )
+    $unknownTypeWalError = ''
+    try { & $unknownTypeReplay -BridgeRoot $unknownTypeRoot | Out-Null }
+    catch { $unknownTypeWalError = $_.Exception.Message }
+    $unknownTypeWalAfter = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownTypeSpool)
+    )
+    $unknownTypeCanonicalAfterWal = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownTypeEvents)
+    )
+    Add-Check -Name 'known unknown-type probe remains invalid as WAL input' `
+        -Passed (
+            ($unknownTypeWalError -match 'unknown event type') -and
+            $unknownTypeWalBefore -ceq $unknownTypeWalAfter -and
+            $unknownTypeBefore -ceq $unknownTypeCanonicalAfterWal -and
+            (Test-Path -LiteralPath $unknownTypeSpool)
+        ) -Detail "error=$unknownTypeWalError"
+
+    $unknownFingerprintRoot = New-TestBridgeRoot -Name `
+        'known-unknown-fingerprint-mismatch'
+    $unknownFingerprintEvents = Join-Path `
+        $unknownFingerprintRoot 'shared/events.jsonl'
+    $unknownFingerprintSpool = Join-Path `
+        $unknownFingerprintRoot 'spool/failed-append-unknown-fingerprint.jsonl'
+    $wrongUnknownTypeRow = $unknownTypeRow.Replace(
+        '"test_probe"',
+        '"test_probe_changed"'
+    )
+    $wrongUnknownTypeHash = Get-BridgeTestSha256Hex -Bytes (
+        $utf8.GetBytes($wrongUnknownTypeRow)
+    )
+    $wrongUnknownTypeReplay = Join-Path $isolatedBin `
+        'Restore-BridgeSpool-KnownUnknownMismatch.ps1'
+    [System.IO.File]::WriteAllText(
+        $wrongUnknownTypeReplay,
+        $replaySource.Replace(
+            $productionUnknownTypeHash,
+            $wrongUnknownTypeHash
+        ),
+        $utf8
+    )
+    [System.IO.File]::WriteAllBytes(
+        $unknownFingerprintEvents,
+        $utf8.GetBytes($wrongUnknownTypeRow + [char]13 + [char]10)
+    )
+    Write-TestWal -Path $unknownFingerprintSpool -Text $event
+    $unknownFingerprintBefore = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownFingerprintEvents)
+    )
+    $unknownFingerprintError = ''
+    try {
+        & $wrongUnknownTypeReplay `
+            -BridgeRoot $unknownFingerprintRoot -DryRun | Out-Null
+    } catch { $unknownFingerprintError = $_.Exception.Message }
+    $unknownFingerprintAfter = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($unknownFingerprintEvents)
+    )
+    Add-Check -Name 'known unknown-type fingerprint drift fails closed' -Passed (
+        ($unknownFingerprintError -match 'fingerprint does not match') -and
+        $unknownFingerprintBefore -ceq $unknownFingerprintAfter -and
+        (Test-Path -LiteralPath $unknownFingerprintSpool)
+    ) -Detail "error=$unknownFingerprintError"
 
     # 11. Hold the isolated append V1 mutex beyond the production ten-second
     #     budget. Writer and replayer run concurrently and both fail closed.
@@ -1133,13 +1768,37 @@ Start-Sleep -Seconds 60
             -File -ErrorAction SilentlyContinue
     )
     Add-Check -Name 'unbound torn tail fails closed without quarantine' -Passed (
-        ($unboundError -match 'unbound unterminated tail') -and
+        ($unboundError -match '(unbound|ambiguous short) unterminated tail') -and
         $unboundBefore -ceq [Convert]::ToBase64String(
             [System.IO.File]::ReadAllBytes($unboundEvents)
         ) -and
         (Test-Path -LiteralPath $unboundSpool) -and
         $unboundQuarantine.Count -eq 0
     ) -Detail "error=$unboundError quarantine=$($unboundQuarantine.Count)"
+
+    $shortTailRoot = New-TestBridgeRoot -Name 'ambiguous-short-torn-tail'
+    $shortTailEvents = Join-Path $shortTailRoot 'shared/events.jsonl'
+    $shortTailSpool = Join-Path (Join-Path $shortTailRoot 'spool') `
+        'failed-append-smoke-1-short-torn.jsonl'
+    Write-TestWal -Path $shortTailSpool -Text $tornWalEvent
+    [byte[]]$shortTailBytes = [byte[]]($tornPrefixBytes + @([byte][char]'{'))
+    [System.IO.File]::WriteAllBytes($shortTailEvents, $shortTailBytes)
+    $shortTailBefore = [Convert]::ToBase64String($shortTailBytes)
+    $shortTailError = ''
+    try { & $isolatedReplay -BridgeRoot $shortTailRoot 3>$null | Out-Null }
+    catch { $shortTailError = $_.Exception.Message }
+    $shortTailQuarantine = @(
+        Get-ChildItem -LiteralPath `
+            (Join-Path (Join-Path $shortTailRoot 'spool') 'quarantine') `
+            -File -ErrorAction SilentlyContinue
+    )
+    Add-Check -Name 'one-byte torn tail is never WAL-bound' -Passed (
+        ($shortTailError -match 'ambiguous short unterminated tail') -and
+        ($shortTailBefore -ceq [Convert]::ToBase64String(
+            [System.IO.File]::ReadAllBytes($shortTailEvents))) -and
+        (Test-Path -LiteralPath $shortTailSpool -PathType Leaf) -and
+        $shortTailQuarantine.Count -eq 0
+    ) -Detail "error=$shortTailError quarantine=$($shortTailQuarantine.Count)"
 
     $interiorRoot = New-TestBridgeRoot -Name 'interior-malformed-torn'
     $interiorEvents = Join-Path $interiorRoot 'shared/events.jsonl'

@@ -466,7 +466,9 @@ def run_frozen_outcome_gate(
         "global_all_cell_search_required": True,
         "global_all_cell_search_verified": False,
         "cell_local_pruning_evaluated": False,
-        "route_and_executable_outcome_observed": executor_call_count > 0,
+        "route_and_executable_outcome_observed": any(
+            row["outcome"] is not None for row in cases
+        ),
         "negative_zero_executor_calls": all(
             row["executor_call_count"] == 0 for row in negative_rows
         ),

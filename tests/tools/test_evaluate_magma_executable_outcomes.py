@@ -721,6 +721,7 @@ def test_wrong_solver_outcome_fails_all_or_nothing_gate(monkeypatch) -> None:
 
     assert report["frozen_smoke_gate_pass"] is False
     assert report["executor_call_count"] == 1
+    assert report["route_and_executable_outcome_observed"] is True
     assert report["cases"][0]["case_pass"] is False
     assert all(row["case_pass"] is True for row in report["cases"][1:])
     assert report["runtime_authority_granted"] is False
@@ -736,9 +737,78 @@ def test_executor_exception_is_evidence_not_a_silent_fallback(monkeypatch) -> No
 
     assert report["frozen_smoke_gate_pass"] is False
     assert report["executor_call_count"] == 1
+    assert report["route_and_executable_outcome_observed"] is False
     assert report["cases"][0]["execution_error_type"] == "RuntimeError"
     assert report["cases"][0]["outcome"] is None
     assert report["cases"][0]["case_pass"] is False
+
+
+def test_unsuccessful_normalized_solver_result_is_observed_outcome(
+    monkeypatch,
+) -> None:
+    real_solver = SymbolicSolver()
+
+    class UnsuccessfulSolver:
+        def solve_for_chat(self, solver_id: str, query: str):
+            result = real_solver.solve_for_chat(solver_id, query)
+            return replace(
+                result,
+                success=False,
+                error="simulated unsuccessful outcome",
+                fallback_suggested="llm_reasoning",
+            )
+
+    monkeypatch.setattr(gate, "SymbolicSolver", UnsuccessfulSolver)
+    report = gate.run_frozen_outcome_gate(_frozen_retriever)
+
+    assert report["executor_call_count"] == 1
+    assert report["cases"][0]["outcome"]["success"] is False
+    assert report["route_and_executable_outcome_observed"] is True
+    assert report["frozen_smoke_gate_pass"] is False
+
+
+def test_unexpected_negative_execution_is_observed_but_fails_gate(
+    monkeypatch,
+) -> None:
+    real_solver = SymbolicSolver()
+    positive_query = gate.FROZEN_CASES[0].query
+    forced_negative_query = gate.FROZEN_CASES[1].query
+    real_evaluate_admission = gate.evaluate_admission
+
+    class SuccessfulSolver:
+        def solve_for_chat(self, solver_id: str, _query: str):
+            return real_solver.solve_for_chat(solver_id, positive_query)
+
+    def force_negative_only_execution(
+        query: str,
+        candidates,
+        *,
+        minimum_score: float = gate.DEFAULT_MIN_SCORE,
+    ):
+        decision = real_evaluate_admission(
+            query,
+            candidates,
+            minimum_score=minimum_score,
+        )
+        if query == positive_query:
+            decision["admitted"] = False
+            decision["reason"] = "forced_positive_abstain"
+        elif query == forced_negative_query:
+            decision["admitted"] = True
+            decision["reason"] = "forced_negative_execution"
+            decision["chosen_solver_id"] = "heating_cost"
+        return decision
+
+    monkeypatch.setattr(gate, "SymbolicSolver", SuccessfulSolver)
+    monkeypatch.setattr(gate, "evaluate_admission", force_negative_only_execution)
+    report = gate.run_frozen_outcome_gate(_frozen_retriever)
+
+    assert report["executor_call_count"] == 1
+    assert report["cases"][0]["outcome"] is None
+    assert report["cases"][1]["outcome"]["success"] is True
+    assert report["negative_zero_executor_calls"] is False
+    assert report["route_and_executable_outcome_observed"] is True
+    assert report["frozen_smoke_gate_pass"] is False
 
 
 def test_empty_validation_evidence_fails_closed(monkeypatch) -> None:
@@ -756,6 +826,7 @@ def test_empty_validation_evidence_fails_closed(monkeypatch) -> None:
     assert report["cases"][0]["execution_error_type"] == (
         "OutcomeGateContractError"
     )
+    assert report["route_and_executable_outcome_observed"] is False
     assert report["cases"][0]["case_pass"] is False
 
 

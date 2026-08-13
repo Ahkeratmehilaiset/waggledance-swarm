@@ -61,11 +61,50 @@ function Read-Utf8SupervisorSnapshot {
     }
 }
 
+function Assert-WdSupervisorPathWithoutReparse {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [ValidateSet('Directory', 'Leaf')] [string] $ExpectedType
+    )
+
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $root = [IO.Path]::GetPathRoot($candidate)
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw "supervisor trusted path root is missing: $root"
+    }
+    $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "supervisor trusted path root is a reparse point: $root"
+    }
+    $relative = $candidate.Substring($root.Length).TrimStart('\')
+    $current = $root
+    foreach ($segment in @($relative -split '\\')) {
+        if (-not $segment) { continue }
+        $current = Join-Path $current $segment
+        if (-not (Test-Path -LiteralPath $current)) {
+            throw "supervisor trusted path component is missing: $current"
+        }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "supervisor trusted path component is a reparse point: $current"
+        }
+    }
+    $pathType = if ($ExpectedType -ceq 'Directory') { 'Container' } else { 'Leaf' }
+    if (-not (Test-Path -LiteralPath $candidate -PathType $pathType)) {
+        throw "supervisor trusted path has the wrong type: $candidate"
+    }
+    return $candidate
+}
+
 function Resolve-OwnBundleGeneration {
     param([Parameter(Mandatory)] [string] $ScriptRoot)
 
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $ScriptRoot -ExpectedType Directory)
     $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
     if (Test-Path -LiteralPath $deploymentPath -PathType Leaf) {
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $deploymentPath -ExpectedType Leaf)
         $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
         $deploymentSnapshot = Read-Utf8SupervisorSnapshot -Path $deploymentPath
         $actualManifestHash = ([string]$deploymentSnapshot.Hash).ToUpperInvariant()
@@ -82,6 +121,8 @@ function Resolve-OwnBundleGeneration {
             'wd_supervisor.ps1'
         ]
         $scriptPath = Join-Path $ScriptRoot 'wd_supervisor.ps1'
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $scriptPath -ExpectedType Leaf)
         if (
             [int]$deployment.schema_version -ne 1 -or
             $generation -cnotmatch '^[0-9a-f]{40}$' -or
@@ -116,10 +157,14 @@ function Resolve-OwnBundleGeneration {
 function Assert-SupervisorBundleFileIntegrity {
     param([Parameter(Mandatory)] [string] $RelativePath)
 
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $PSScriptRoot -ExpectedType Directory)
     $deploymentPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
     if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
         return
     }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $deploymentPath -ExpectedType Leaf)
     $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
     $deploymentSnapshot = Read-Utf8SupervisorSnapshot -Path $deploymentPath
     if (
@@ -146,8 +191,13 @@ function Assert-SupervisorBundleFileIntegrity {
             $bundlePrefix,
             [StringComparison]::OrdinalIgnoreCase
         ) -or
-        $null -eq $hashProperty -or
-        -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+        $null -eq $hashProperty
+    ) {
+        throw "supervisor bundle dependency hash mismatch: $manifestRelative"
+    }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $candidate -ExpectedType Leaf)
+    if (
         (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -cne
             [string]$hashProperty.Value
     ) {
@@ -160,6 +210,8 @@ function Assert-MachineToolsConfigExact {
 
     Assert-SupervisorBundleFileIntegrity `
         -RelativePath 'wd_supervisor_loop.json'
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $MachineConfigPath -ExpectedType Leaf)
     $bundledConfigPath = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
     if (
         -not (Test-Path -LiteralPath $MachineConfigPath -PathType Leaf) -or
@@ -282,13 +334,547 @@ function Test-NamedCommandLineArgument {
         [Parameter(Mandatory)] [string] $Value
     )
 
-    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+    $invocation = Get-WdPowerShellFileInvocation -CommandLine $CommandLine
+    if ($null -eq $invocation) { return $false }
+    if ($Name -ieq 'File') {
+        return ([string]$invocation.script_path).Equals(
+            $Value,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    $arguments = @($invocation.arguments)
+    for ($index = [int]$invocation.file_index + 2;
+         $index -lt $arguments.Count - 1;
+         $index++) {
+        if (Test-WdPowerShellSwitchToken -Token ([string]$arguments[$index]) -Name $Name) {
+            return ([string]$arguments[$index + 1]).Equals(
+                $Value,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+    }
+    return $false
+}
+
+function Test-WdWatcherScriptArgument {
+    param(
+        [AllowEmptyString()] [string] $CommandLine,
+        [ValidateSet('Auto', 'WindowsPowerShell', 'Pwsh')]
+        [string] $HostKind = 'Auto',
+        [Parameter(Mandatory)]
+        [ValidateSet('Agent', 'RuntimeRoot')]
+        [string] $Name,
+        [Parameter(Mandatory)] [string] $Value
+    )
+
+    $invocation = Get-WdPowerShellFileInvocation `
+        -CommandLine $CommandLine `
+        -HostKind $HostKind
+    if ($null -eq $invocation) { return $false }
+    $prefixPattern = if ($Name -ceq 'Agent') {
+        'a(?:g(?:e(?:n(?:t)?)?)?)?'
+    } else {
+        'ru(?:n(?:t(?:i(?:m(?:e(?:r(?:o(?:o(?:t)?)?)?)?)?)?)?)?)?'
+    }
+    $arguments = @($invocation.arguments)
+    for ($index = [int]$invocation.file_index + 2;
+         $index -lt $arguments.Count;
+         $index++) {
+        $token = [string]$arguments[$index]
+        $colonPattern = (
+            '^(?i:[\-\u2013\u2014\u2015]{0}:(?<value>.*))$' -f
+                $prefixPattern
+        )
+        if ($token -match $colonPattern) {
+            return ([string]$Matches['value']).Equals(
+                $Value,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+        $separatePattern = (
+            '^(?i:[\-\u2013\u2014\u2015]{0})$' -f $prefixPattern
+        )
+        if ($token -match $separatePattern) {
+            if ($index + 1 -ge $arguments.Count) { return $false }
+            return ([string]$arguments[$index + 1]).Equals(
+                $Value,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+    }
+    return $false
+}
+
+function Get-WdWatcherReconcileMutexName {
+    param([Parameter(Mandatory)] [string] $RuntimeRoot)
+
+    $normalized = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd(
+        [char[]]@('\', '/')
+    ).ToUpperInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = [BitConverter]::ToString(
+            $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalized))
+        ).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return "Global\WaggleDanceWatcherReconcileV1-$digest"
+}
+
+function Invoke-WdWatcherReconcileLocked {
+    param(
+        [Parameter(Mandatory)] [string] $RuntimeRoot,
+        [Parameter(Mandatory)] [scriptblock] $Action
+    )
+
+    $mutex = $null
+    $acquired = $false
+    try {
+        $mutex = [Threading.Mutex]::new(
+            $false,
+            (Get-WdWatcherReconcileMutexName -RuntimeRoot $RuntimeRoot)
+        )
+        try {
+            $acquired = $mutex.WaitOne(0)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) { return $false }
+        $null = & $Action
+        return $true
+    }
+    finally {
+        try {
+            if ($acquired -and $null -ne $mutex) {
+                $mutex.ReleaseMutex()
+            }
+        }
+        finally {
+            if ($null -ne $mutex) {
+                $mutex.Dispose()
+            }
+        }
+    }
+}
+
+function Initialize-WdSupervisorCommandLineParser {
+    if ('WaggleDance.WdSupervisorCommandLineV1.NativeMethods' -as [type]) {
+        return
+    }
+    Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace WaggleDance.WdSupervisorCommandLineV1
+{
+    public static class NativeMethods
+    {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CommandLineToArgvW(
+            string commandLine,
+            out int argumentCount);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
+        public static string[] Split(string commandLine)
+        {
+            int argumentCount;
+            IntPtr memory = CommandLineToArgvW(commandLine, out argumentCount);
+            if (memory == IntPtr.Zero)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            try
+            {
+                string[] arguments = new string[argumentCount];
+                for (int index = 0; index < argumentCount; index++)
+                {
+                    IntPtr item = Marshal.ReadIntPtr(memory, index * IntPtr.Size);
+                    arguments[index] = Marshal.PtrToStringUni(item);
+                }
+                return arguments;
+            }
+            finally
+            {
+                LocalFree(memory);
+            }
+        }
+    }
+}
+'@
+}
+
+function ConvertFrom-WdWindowsCommandLine {
+    param([AllowEmptyString()] [string] $CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return @() }
+    Initialize-WdSupervisorCommandLineParser
+    return @(
+        [WaggleDance.WdSupervisorCommandLineV1.NativeMethods]::Split(
+            $CommandLine
+        )
+    )
+}
+
+function Test-WdPowerShellSwitchToken {
+    param(
+        [AllowEmptyString()] [string] $Token,
+        [Parameter(Mandatory)] [string] $Name
+    )
+
+    return $Token -match (
+        '^(?i:[\-/\u2013\u2014\u2015]{0})$' -f
+            [Regex]::Escape($Name)
+    )
+}
+
+function Test-WdPowerShellHostOptionToken {
+    param(
+        [AllowEmptyString()] [string] $Token,
+        [Parameter(Mandatory)]
+        [ValidateSet('WindowsPowerShell', 'Pwsh')]
+        [string] $HostKind,
+        [Parameter(Mandatory)]
+        [ValidateSet(
+            'NoProfile',
+            'NoLogo',
+            'NonInteractive',
+            'NoExit',
+            'NoProfileLoadTime',
+            'Sta',
+            'Mta',
+            'Login',
+            'Interactive',
+            'ExecutionPolicy',
+            'WindowStyle',
+            'WorkingDirectory',
+            'InputFormat',
+            'OutputFormat',
+            'Version',
+            'PSConsoleFile',
+            'ConfigurationFile',
+            'CustomPipeName',
+            'SettingsFile',
+            'EncodedCommand'
+        )]
+        [string] $Name
+    )
+
+    if ($Token -cnotmatch '^(?i:(?<introducer>[\-/\u2013\u2014\u2015])(?<body>[a-z]+))$') {
         return $false
     }
-    $pattern = '(?i)(?:^|\s)-{0}\s+(?:"{1}"|{1})(?:\s|$)' -f
-        [Regex]::Escape($Name),
-        [Regex]::Escape($Value)
-    return $CommandLine -match $pattern
+    $introducer = [string]$Matches['introducer']
+    $body = ([string]$Matches['body']).ToLowerInvariant()
+    $canonical = $Name.ToLowerInvariant()
+    switch ($Name) {
+        'NoProfile' {
+            return $body.Length -ge 3 -and $canonical.StartsWith($body)
+        }
+        'NoLogo' {
+            return $body.Length -ge 3 -and $canonical.StartsWith($body)
+        }
+        'NonInteractive' {
+            return $body.Length -ge 4 -and $canonical.StartsWith($body)
+        }
+        'NoExit' {
+            return $body.Length -ge 3 -and $canonical.StartsWith($body)
+        }
+        'NoProfileLoadTime' {
+            return $HostKind -ceq 'Pwsh' -and $body -ceq $canonical
+        }
+        'Sta' {
+            if ($HostKind -ceq 'WindowsPowerShell') {
+                return $body -in @('st', 'sta')
+            }
+            return $body -ceq 'sta'
+        }
+        'Mta' { return $body -ceq 'mta' }
+        'Login' {
+            return $HostKind -ceq 'Pwsh' -and
+                $body.Length -ge 1 -and $canonical.StartsWith($body)
+        }
+        'Interactive' {
+            return $HostKind -ceq 'Pwsh' -and
+                $body.Length -ge 1 -and $canonical.StartsWith($body)
+        }
+        'ExecutionPolicy' {
+            return $body -ceq 'ep' -or (
+                $body.Length -ge 2 -and $canonical.StartsWith($body)
+            )
+        }
+        'WindowStyle' {
+            return $body.Length -ge 1 -and $canonical.StartsWith($body)
+        }
+        'WorkingDirectory' {
+            return $body -ceq 'wd' -or (
+                $body.Length -ge 2 -and $canonical.StartsWith($body)
+            )
+        }
+        'InputFormat' {
+            $minimum = if ($HostKind -ceq 'WindowsPowerShell') { 1 } else { 3 }
+            return $body -ceq 'if' -or (
+                $body.Length -ge $minimum -and $canonical.StartsWith($body)
+            )
+        }
+        'OutputFormat' {
+            return $body -ceq 'of' -or (
+                $body.Length -ge 1 -and $canonical.StartsWith($body)
+            )
+        }
+        'Version' {
+            return $HostKind -ceq 'WindowsPowerShell' -and
+                $introducer -cne '/' -and
+                $body.Length -ge 1 -and $canonical.StartsWith($body)
+        }
+        'PSConsoleFile' {
+            return $HostKind -ceq 'WindowsPowerShell' -and
+                $introducer -cne '/' -and
+                $body.Length -ge 1 -and $canonical.StartsWith($body)
+        }
+        'ConfigurationFile' {
+            return $HostKind -ceq 'Pwsh' -and $body -ceq $canonical
+        }
+        'CustomPipeName' {
+            return $HostKind -ceq 'Pwsh' -and
+                $body.Length -ge 3 -and $canonical.StartsWith($body)
+        }
+        'SettingsFile' {
+            return $HostKind -ceq 'Pwsh' -and
+                $body.Length -ge 8 -and $canonical.StartsWith($body)
+        }
+        'EncodedCommand' {
+            return $body -ceq 'ec' -or (
+                $body.Length -ge 1 -and $canonical.StartsWith($body)
+            )
+        }
+    }
+    return $false
+}
+
+function Test-WdPowerShellFileSwitchToken {
+    param([AllowEmptyString()] [string] $Token)
+
+    return $Token -match '^(?i:[\-/\u2013\u2014\u2015]f(?:i(?:l(?:e)?)?)?)$'
+}
+
+function Get-WdPowerShellHostKind {
+    param([AllowEmptyString()] [string] $ExecutableToken)
+
+    try {
+        $leaf = [IO.Path]::GetFileName($ExecutableToken)
+    }
+    catch {
+        return ''
+    }
+    if ($leaf -match '^(?i:powershell)\.exe$') { return 'WindowsPowerShell' }
+    if ($leaf -match '^(?i:pwsh)\.exe$') { return 'Pwsh' }
+    return ''
+}
+
+function Test-WdEncodedCommandValue {
+    param([AllowEmptyString()] [string] $Value)
+
+    try {
+        # Both supported hosts continue to a following -File even for Base64
+        # payloads that are not strict UTF-16. Mirror their lexical admission:
+        # syntactically valid Base64 is enough for conservative discovery.
+        [void][Convert]::FromBase64String($Value)
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-WdPowerShellFileInvocation {
+    param(
+        [AllowEmptyString()] [string] $CommandLine,
+        [ValidateSet('Auto', 'WindowsPowerShell', 'Pwsh')]
+        [string] $HostKind = 'Auto'
+    )
+
+    $arguments = @(ConvertFrom-WdWindowsCommandLine -CommandLine $CommandLine)
+    if ($arguments.Count -lt 2) { return $null }
+    if ($HostKind -ceq 'Auto') {
+        $HostKind = Get-WdPowerShellHostKind `
+            -ExecutableToken ([string]$arguments[0])
+    }
+    if ($HostKind -notin @('WindowsPowerShell', 'Pwsh')) { return $null }
+
+    $index = 1
+    $encodedPrelude = $false
+    while ($index -lt $arguments.Count) {
+        $token = [string]$arguments[$index]
+        if (
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoProfile') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoLogo') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NonInteractive') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoExit') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoProfileLoadTime') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Sta') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Mta') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Login') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Interactive')
+        ) {
+            $index++
+            continue
+        }
+        if (
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'ExecutionPolicy') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'WindowStyle') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'WorkingDirectory') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'InputFormat') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'OutputFormat') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'ConfigurationFile') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'CustomPipeName') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'SettingsFile')
+        ) {
+            if ($index + 1 -ge $arguments.Count) { return $null }
+            $index += 2
+            continue
+        }
+        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Version') {
+            # Windows PowerShell accepts -Version only as the first host option.
+            if ($index -ne 1 -or $index + 1 -ge $arguments.Count) {
+                return $null
+            }
+            $index += 2
+            continue
+        }
+        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'PSConsoleFile') {
+            # Windows PowerShell accepts -PSConsoleFile only as the first host option.
+            if ($index -ne 1 -or $index + 1 -ge $arguments.Count) {
+                return $null
+            }
+            $index += 2
+            continue
+        }
+        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'EncodedCommand') {
+            if (
+                $index + 1 -ge $arguments.Count -or
+                -not (Test-WdEncodedCommandValue -Value ([string]$arguments[$index + 1]))
+            ) {
+                return $null
+            }
+            $encodedPrelude = $true
+            $index += 2
+            continue
+        }
+        if (Test-WdPowerShellFileSwitchToken -Token $token) {
+            if ($index + 1 -ge $arguments.Count) { return $null }
+            return [pscustomobject]@{
+                arguments = $arguments
+                file_index = $index
+                file_token = $token
+                script_path = [string]$arguments[$index + 1]
+            }
+        }
+        if (
+            $token -notmatch '^[\-/\u2013\u2014\u2015]' -and
+            [IO.Path]::GetExtension($token) -ieq '.ps1'
+        ) {
+            if ($encodedPrelude -and $HostKind -ceq 'WindowsPowerShell') {
+                # WinPS continues to explicit -File after EncodedCommand but
+                # consumes a following bare script token as payload instead.
+                return $null
+            }
+            # Both supported hosts accept a script path without an explicit
+            # -File selector. Model it for conflict detection, never health.
+            return [pscustomobject]@{
+                arguments = $arguments
+                file_index = $index - 1
+                file_token = ''
+                script_path = $token
+            }
+        }
+        # An unknown host option or a command payload before the script means
+        # this is not a proven File-mode watcher invocation.
+        return $null
+    }
+    return $null
+}
+
+function Test-NamedCommandLineLeafArgument {
+    param(
+        [AllowEmptyString()] [string] $CommandLine,
+        [ValidateSet('Auto', 'WindowsPowerShell', 'Pwsh')]
+        [string] $HostKind = 'Auto',
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Leaf
+    )
+
+    if ($Name -ine 'File') { return $false }
+    $invocation = Get-WdPowerShellFileInvocation `
+        -CommandLine $CommandLine `
+        -HostKind $HostKind
+    if ($null -eq $invocation) { return $false }
+    return [IO.Path]::GetFileName([string]$invocation.script_path).Equals(
+        $Leaf,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Test-WdCanonicalWatcherProcess {
+    param(
+        [Parameter(Mandatory)] $Process,
+        [Parameter(Mandatory)] [string] $ExpectedExecutable,
+        [Parameter(Mandatory)] [string] $ScriptPath,
+        [Parameter(Mandatory)] [string] $Agent,
+        [Parameter(Mandatory)] [string] $RuntimeRoot
+    )
+
+    try {
+        $actualExecutable = [IO.Path]::GetFullPath(
+            [string]$Process.ExecutablePath
+        )
+        $expectedExecutableFull = [IO.Path]::GetFullPath($ExpectedExecutable)
+    }
+    catch {
+        return $false
+    }
+    if (
+        -not $actualExecutable.Equals(
+            $expectedExecutableFull,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        return $false
+    }
+    $hostKind = if ([string]$Process.Name -ieq 'powershell.exe') {
+        'WindowsPowerShell'
+    } elseif ([string]$Process.Name -ieq 'pwsh.exe') {
+        'Pwsh'
+    } else {
+        return $false
+    }
+    $invocation = Get-WdPowerShellFileInvocation `
+        -CommandLine ([string]$Process.CommandLine) `
+        -HostKind $hostKind
+    if ($null -eq $invocation) { return $false }
+    $arguments = @($invocation.arguments)
+    if ($arguments.Count -ne 10) { return $false }
+    return (
+        [string]$arguments[1] -ceq '-NoProfile' -and
+        [string]$arguments[2] -ceq '-ExecutionPolicy' -and
+        [string]$arguments[3] -ceq 'Bypass' -and
+        [string]$arguments[4] -ceq '-File' -and
+        ([string]$arguments[5]).Equals(
+            $ScriptPath,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        [string]$arguments[6] -ceq '-Agent' -and
+        [string]$arguments[7] -ceq $Agent -and
+        [string]$arguments[8] -ceq '-RuntimeRoot' -and
+        ([string]$arguments[9]).Equals(
+            $RuntimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    )
 }
 
 function ConvertTo-SupervisorUtc {
@@ -388,13 +974,27 @@ function Get-AgentCommandProcesses {
         [Parameter(Mandatory)] [string] $Agent
     )
 
-    $agentPattern = '(?i)(?:^|\s)-Agent\s+(?:"{0}"|{0})(?:\s|$)' -f
-        [Regex]::Escape($Agent)
     return @(
         $Processes |
             Where-Object {
-                (Test-TextContains ([string]$_.CommandLine) $ScriptName) -and
-                [string]$_.CommandLine -match $agentPattern
+                $hostKind = if ([string]$_.Name -ieq 'powershell.exe') {
+                    'WindowsPowerShell'
+                } elseif ([string]$_.Name -ieq 'pwsh.exe') {
+                    'Pwsh'
+                } else {
+                    ''
+                }
+                $hostKind -and
+                (Test-NamedCommandLineLeafArgument `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -HostKind $hostKind `
+                    -Name 'File' `
+                    -Leaf $ScriptName) -and
+                (Test-WdWatcherScriptArgument `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -HostKind $hostKind `
+                    -Name 'Agent' `
+                    -Value $Agent)
             }
     )
 }
@@ -441,22 +1041,6 @@ function Invoke-WithChildIdentity {
             [Environment]::SetEnvironmentVariable($name, $values[$name], 'Process')
         }
     }
-}
-
-function Start-DetachedPowerShell {
-    param(
-        [Parameter(Mandatory)] [string] $HostPath,
-        [Parameter(Mandatory)] [string[]] $ArgumentList,
-        [Parameter(Mandatory)] [string] $Name
-    )
-
-    $process = Start-Process `
-        -FilePath $HostPath `
-        -ArgumentList $ArgumentList `
-        -WindowStyle Hidden `
-        -PassThru `
-        -ErrorAction Stop
-    $actions.Add("RELAUNCHED $Name pid=$($process.Id)")
 }
 
 function ConvertTo-WindowsCommandLineArgument {
@@ -978,9 +1562,13 @@ function Invoke-TaskContainment {
 }
 
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
+[void](Assert-WdSupervisorPathWithoutReparse `
+    -Path $PSScriptRoot -ExpectedType Directory)
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
     throw "supervisor configuration not found: $configFull"
 }
+[void](Assert-WdSupervisorPathWithoutReparse `
+    -Path $configFull -ExpectedType Leaf)
 $supervisorConfigSnapshot = Read-Utf8SupervisorSnapshot -Path $configFull
 $loadedSupervisorConfigHash = [string]$supervisorConfigSnapshot.Hash
 $configuration = [string]$supervisorConfigSnapshot.Text |
@@ -1000,6 +1588,8 @@ if (
 }
 
 $runtimeRoot = [IO.Path]::GetFullPath((Get-RequiredText $configuration 'runtime_root'))
+[void](Assert-WdSupervisorPathWithoutReparse `
+    -Path $runtimeRoot -ExpectedType Directory)
 if (-not $LogPath) {
     $LogPath = Get-RequiredText $configuration 'log_path'
 }
@@ -1010,6 +1600,9 @@ if (-not (Test-Path -LiteralPath $logParent -PathType Container)) {
 }
 
 $powerShellHost = Resolve-PowerShellChildHost
+# Process identity matching is an admission boundary.  If the native argv
+# parser is unavailable, abort before any reconciliation can launch a duplicate.
+Initialize-WdSupervisorCommandLineParser
 $processes = @(
     Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object {
@@ -1027,6 +1620,7 @@ $toolsAgent = ''
 $toolsGeneration = ''
 $toolsExpectedHead = ''
 $toolsLauncher = ''
+$configuredToolsLauncher = ''
 $toolsConfig = ''
 $toolsConflictPath = ''
 $toolsPowerShellHost = ''
@@ -1037,9 +1631,14 @@ if ($toolsEnabled) {
         throw 'tools expected_head must be a full lowercase Git commit'
     }
     $toolsGeneration = Resolve-OwnBundleGeneration -ScriptRoot $PSScriptRoot
-    $toolsLauncher = [IO.Path]::GetFullPath(
+    $configuredToolsLauncher = [IO.Path]::GetFullPath(
         (Get-RequiredText $tools 'launcher_script')
     )
+    $toolsLauncher = [IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot 'start-wd-tools-consumer.ps1')
+    )
+    Assert-SupervisorBundleFileIntegrity `
+        -RelativePath 'start-wd-tools-consumer.ps1'
     $toolsConfig = [IO.Path]::GetFullPath(
         (Get-RequiredText $tools 'config_path')
     )
@@ -1061,10 +1660,14 @@ if ($toolsEnabled) {
     if (-not (Test-Path -LiteralPath $toolsLauncher -PathType Leaf)) {
         throw "required tools consumer launcher is missing: $toolsLauncher"
     }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $toolsLauncher -ExpectedType Leaf)
     if (-not (Test-Path -LiteralPath $toolsConfig -PathType Leaf)) {
         throw "required tools consumer config is missing: $toolsConfig"
     }
     Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
+    Assert-SupervisorBundleFileIntegrity `
+        -RelativePath 'start-wd-tools-consumer.ps1'
     $toolsValidationOutput = @(
         & $toolsLauncher `
             -ConfigPath $toolsConfig `
@@ -1125,6 +1728,12 @@ if ($null -eq $configuration.watchers) {
     throw 'supervisor configuration has no watchers object'
 }
 $watcherRelative = Get-RequiredText $configuration.watchers 'script_relative'
+$watcherIdentityRelative = `
+    'tools-bootstrap\.agent-bridge\bin\AgentBridgeSessionIdentity.ps1'
+$watcherReaderRelative = `
+    'tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1'
+$watcherLogReaderRelative = `
+    'tools-bootstrap\.agent-bridge\bin\BridgeLogReader.ps1'
 if ([IO.Path]::IsPathRooted($watcherRelative)) {
     throw 'supervisor watcher script must be relative to the reboot bundle'
 }
@@ -1151,51 +1760,114 @@ if (-not (Test-Path -LiteralPath $watcherScript -PathType Leaf)) {
 }
 else {
     Assert-SupervisorBundleFileIntegrity -RelativePath $watcherRelative
-    foreach ($agent in $watcherAgents) {
-        if ($agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
-            throw "invalid configured watcher identity: $agent"
-        }
-        $allAgentWatchers = @(
-            Get-AgentCommandProcesses `
-                $processes `
-                'Watch-Bridge.ps1' `
-                $agent
-        )
-        $exactAgentWatchers = @(
-            $allAgentWatchers |
-                Where-Object {
-                    (Test-TextContains ([string]$_.CommandLine) $watcherScript) -and
-                    (Test-TextContains ([string]$_.CommandLine) $runtimeRoot)
+    $watcherDependencies = @(
+        @($configuration.watchers.dependency_relatives) |
+            ForEach-Object {
+                $dependency = [string]$_
+                if ([string]::IsNullOrWhiteSpace($dependency)) {
+                    throw 'supervisor watcher dependency must not be empty'
                 }
-        )
-
-        if ($exactAgentWatchers.Count -eq 1 -and $allAgentWatchers.Count -eq 1) {
-            continue
-        }
-        if ($allAgentWatchers.Count -gt 0) {
-            $ids = @($allAgentWatchers | ForEach-Object { [string]$_.ProcessId }) -join ','
-            $actions.Add(
-                "CONFLICT watcher:$agent count=$($allAgentWatchers.Count) pids=$ids; no duplicate launched"
+                $dependency
+            }
+    )
+    $expectedWatcherDependencies = @(
+        $watcherIdentityRelative,
+        $watcherReaderRelative,
+        $watcherLogReaderRelative
+    )
+    if (
+        $watcherDependencies.Count -ne $expectedWatcherDependencies.Count -or
+        @(Compare-Object `
+            -ReferenceObject $expectedWatcherDependencies `
+            -DifferenceObject $watcherDependencies `
+            -CaseSensitive).Count -ne 0
+    ) {
+        throw 'supervisor watcher dependency set is not exact'
+    }
+    foreach ($watcherDependency in $watcherDependencies) {
+        Assert-SupervisorBundleFileIntegrity -RelativePath $watcherDependency
+    }
+    $watcherReconciled = Invoke-WdWatcherReconcileLocked `
+        -RuntimeRoot $runtimeRoot `
+        -Action {
+            $watcherProcesses = @(
+                Get-CimInstance Win32_Process -ErrorAction Stop |
+                    Where-Object {
+                        $_.ProcessId -ne $selfPid -and
+                        -not [string]::IsNullOrWhiteSpace(
+                            [string]$_.CommandLine
+                        )
+                    }
             )
-            continue
-        }
+            foreach ($agent in $watcherAgents) {
+                if ($agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
+                    throw "invalid configured watcher identity: $agent"
+                }
+                $allAgentWatchers = @(
+                    Get-AgentCommandProcesses `
+                        $watcherProcesses `
+                        'Watch-Bridge.ps1' `
+                        $agent
+                )
+                $exactAgentWatchers = @(
+                    $allAgentWatchers |
+                        Where-Object {
+                            Test-WdCanonicalWatcherProcess `
+                                -Process $_ `
+                                -ExpectedExecutable $powerShellHost `
+                                -ScriptPath $watcherScript `
+                                -Agent $agent `
+                                -RuntimeRoot $runtimeRoot
+                        }
+                )
 
-        if (-not $Apply) {
-            $actions.Add("WOULD-RELAUNCH watcher:$agent")
-            continue
-        }
+                if (
+                    $exactAgentWatchers.Count -eq 1 -and
+                    $allAgentWatchers.Count -eq 1
+                ) {
+                    continue
+                }
+                if ($allAgentWatchers.Count -gt 0) {
+                    $ids = @(
+                        $allAgentWatchers |
+                            ForEach-Object { [string]$_.ProcessId }
+                    ) -join ','
+                    $actions.Add(
+                        "CONFLICT watcher:$agent count=$($allAgentWatchers.Count) pids=$ids; no duplicate launched"
+                    )
+                    continue
+                }
 
-        $watcherArguments = @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', $watcherScript,
-            '-Agent', $agent,
-            '-RuntimeRoot', $runtimeRoot
+                if (-not $Apply) {
+                    $actions.Add("WOULD-RELAUNCH watcher:$agent")
+                    continue
+                }
+
+                $watcherArguments = @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-File', $watcherScript,
+                    '-Agent', $agent,
+                    '-RuntimeRoot', $runtimeRoot
+                )
+                Assert-SupervisorBundleFileIntegrity `
+                    -RelativePath $watcherRelative
+                foreach ($watcherDependency in $watcherDependencies) {
+                    Assert-SupervisorBundleFileIntegrity `
+                        -RelativePath $watcherDependency
+                }
+                Invoke-WithChildIdentity $agent $runtimeRoot {
+                    Start-OutOfTaskJobPowerShell `
+                        $powerShellHost `
+                        $watcherArguments `
+                        "watcher:$agent"
+                }
+            }
+        }
+    if (-not $watcherReconciled) {
+        $actions.Add(
+            'SKIPPED watcher reconciliation: another supervisor owns the runtime mutex'
         )
-        Assert-SupervisorBundleFileIntegrity -RelativePath $watcherRelative
-        Invoke-WithChildIdentity $agent $runtimeRoot {
-            Start-DetachedPowerShell $powerShellHost $watcherArguments "watcher:$agent"
-        }
     }
 }
 
@@ -1204,10 +1876,16 @@ if ($toolsEnabled) {
         $processes |
             Where-Object {
                 [string]$_.Name -match '^(?i:powershell|pwsh)\.exe$' -and
-                (Test-NamedCommandLineArgument `
-                    -CommandLine ([string]$_.CommandLine) `
-                    -Name 'File' `
-                    -Value $toolsLauncher)
+                (
+                    (Test-NamedCommandLineArgument `
+                        -CommandLine ([string]$_.CommandLine) `
+                        -Name 'File' `
+                        -Value $toolsLauncher) -or
+                    (Test-NamedCommandLineArgument `
+                        -CommandLine ([string]$_.CommandLine) `
+                        -Name 'File' `
+                        -Value $configuredToolsLauncher)
+                )
             }
     )
     $configuredWrapperProcesses = @(
@@ -1222,10 +1900,14 @@ if ($toolsEnabled) {
     $exactWrapperProcesses = @(
         $configuredWrapperProcesses |
             Where-Object {
-                Test-NamedCommandLineArgument `
+                (Test-NamedCommandLineArgument `
+                    -CommandLine ([string]$_.CommandLine) `
+                    -Name 'File' `
+                    -Value $toolsLauncher) -and
+                (Test-NamedCommandLineArgument `
                     -CommandLine ([string]$_.CommandLine) `
                     -Name 'Generation' `
-                    -Value $toolsGeneration
+                    -Value $toolsGeneration)
             }
     )
     $readyWrapperProcesses = @(
@@ -1327,6 +2009,8 @@ if ($toolsEnabled) {
                 )
             }
             Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
+            Assert-SupervisorBundleFileIntegrity `
+                -RelativePath 'start-wd-tools-consumer.ps1'
             Start-OutOfTaskJobPowerShell `
                 $toolsPowerShellHost `
                 $toolsArguments `
@@ -1345,6 +2029,8 @@ if ($toolsEnabled) {
     }
     else {
         Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
+        Assert-SupervisorBundleFileIntegrity `
+            -RelativePath 'start-wd-tools-consumer.ps1'
         Start-OutOfTaskJobPowerShell `
             $toolsPowerShellHost `
             $toolsArguments `
@@ -1381,10 +2067,19 @@ $bridgeNote = 'bridge-last-event-age=unknown'
 try {
     $eventsPath = Join-Path $runtimeRoot 'shared\events.jsonl'
     if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $eventsPath -ExpectedType Leaf)
+        Assert-SupervisorBundleFileIntegrity -RelativePath $watcherReaderRelative
+        Assert-SupervisorBundleFileIntegrity -RelativePath $watcherLogReaderRelative
+        . ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot $watcherReaderRelative)))
+        $freshnessResult = Read-BridgeEventTail -Path $eventsPath -MaxLines 80
+        if ($freshnessResult.status -in @('BLOCKED', 'RETRY')) {
+            throw "bridge freshness snapshot unavailable: $($freshnessResult.reason)"
+        }
         $newest = $null
-        foreach ($line in (Get-Content -LiteralPath $eventsPath -Tail 80 -ErrorAction Stop)) {
+        foreach ($event in @($freshnessResult.rows)) {
             try {
-                $timestamp = [string](($line | ConvertFrom-Json -ErrorAction Stop).ts_utc)
+                $timestamp = [string]$event.ts_utc
                 if ($timestamp) {
                     $candidate = [DateTimeOffset]::Parse(
                         $timestamp,
@@ -1397,7 +2092,7 @@ try {
                 }
             }
             catch {
-                # One concurrently appended/truncated row cannot hide valid rows.
+                # One malformed timestamp cannot hide other valid rows.
             }
         }
         if ($null -ne $newest) {

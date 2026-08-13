@@ -131,6 +131,205 @@ try {
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
     }
 
+    $eventsPath = Join-Path $tempRoot 'shared\events.jsonl'
+    $oldLength = (Get-Item -LiteralPath $eventsPath).Length
+    $replacementPath = Join-Path $tempRoot 'shared\events.replacement.jsonl'
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $padding = 'x' * ([int]$oldLength + 128)
+    [System.IO.File]::WriteAllText(
+        $replacementPath,
+        (
+            '{"agent":"claude","to":"codex","type":"message",' +
+            '"status":"open","task_id":"monitor-replacement",' +
+            '"message":"' + $padding + '"}' + [char]10
+        ),
+        $encoding
+    )
+    Move-Item -LiteralPath $replacementPath -Destination $eventsPath -Force
+    $beforeReplacement = [System.IO.File]::ReadAllBytes($state)
+    $replacementBlocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $state `
+            -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $replacementBlocked = $true
+    }
+    $afterReplacement = [System.IO.File]::ReadAllBytes($state)
+    Add-Check 'larger replacement fails closed with cursor byte-identical' (
+        $replacementBlocked -and
+        (Get-Item -LiteralPath $eventsPath).Length -gt $oldLength -and
+        [Convert]::ToBase64String($beforeReplacement) -ceq
+            [Convert]::ToBase64String($afterReplacement)
+    )
+
+    $replayState = Join-Path $tempRoot 'shared\monitor_replay.cursor.json'
+    [System.IO.File]::WriteAllText(
+        $eventsPath,
+        (
+            '{"agent":"claude","to":"codex","type":"message",' +
+            '"status":"open","task_id":"replay-baseline",' +
+            '"message":"baseline"}' + [char]10
+        ),
+        $encoding
+    )
+    & $monitor -Agent codex -FromAgent claude -StatePath $replayState `
+        -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    $beforeReplayReplacement = [System.IO.File]::ReadAllBytes($replayState)
+    $replayReplacement = Join-Path $tempRoot 'shared\events.replay-replacement.jsonl'
+    [System.IO.File]::WriteAllText(
+        $replayReplacement,
+        (
+            '{"agent":"claude","to":"codex","type":"message",' +
+            '"status":"open","task_id":"replay-replacement",' +
+            '"message":"replacement"}' + [char]10
+        ),
+        $encoding
+    )
+    Move-Item -LiteralPath $replayReplacement -Destination $eventsPath -Force
+    $replayBlocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $replayState `
+            -ReplayExisting -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $replayBlocked = $true
+    }
+    $afterReplayReplacement = [System.IO.File]::ReadAllBytes($replayState)
+    Add-Check 'ReplayExisting does not reset across replacement' (
+        $replayBlocked -and
+        [Convert]::ToBase64String($beforeReplayReplacement) -ceq
+            [Convert]::ToBase64String($afterReplayReplacement)
+    )
+
+    $generationState = Join-Path $tempRoot 'shared\monitor_generation.cursor.json'
+    [System.IO.File]::WriteAllText(
+        $eventsPath,
+        (
+            '{"agent":"claude","to":"codex","type":"message",' +
+            '"status":"open","task_id":"generation-baseline",' +
+            '"message":"baseline"}' + [char]10
+        ),
+        $encoding
+    )
+    & $monitor -Agent codex -FromAgent claude -StatePath $generationState `
+        -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    $beforeGeneration = [System.IO.File]::ReadAllBytes($generationState)
+    $generationPath = Join-Path $tempRoot 'shared\events.generation.json'
+    [System.IO.File]::WriteAllText(
+        $generationPath, '{"generation":"g1"}', $encoding
+    )
+    $generationBlocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $generationState `
+            -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $generationBlocked = $true
+    }
+    $afterGeneration = [System.IO.File]::ReadAllBytes($generationState)
+    Add-Check 'generation discontinuity leaves cursor byte-identical' (
+        $generationBlocked -and
+        [Convert]::ToBase64String($beforeGeneration) -ceq
+            [Convert]::ToBase64String($afterGeneration)
+    )
+
+    $malformedState = Join-Path $tempRoot 'shared\monitor_malformed.cursor.json'
+    [System.IO.File]::WriteAllText($malformedState, '{"cursor":', $encoding)
+    $beforeMalformed = [System.IO.File]::ReadAllBytes($malformedState)
+    $blocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $malformedState `
+            -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $blocked = $true
+    }
+    $afterMalformed = [System.IO.File]::ReadAllBytes($malformedState)
+    Add-Check 'malformed cursor state fails closed without mutation' (
+        $blocked -and
+        [Convert]::ToBase64String($beforeMalformed) -ceq
+            [Convert]::ToBase64String($afterMalformed)
+    )
+
+    $nonLeafState = Join-Path $tempRoot 'shared\monitor_nonleaf.cursor.json'
+    [void](New-Item -ItemType Directory -Path $nonLeafState)
+    $nonLeafBlocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $nonLeafState `
+            -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $nonLeafBlocked = $true
+    }
+    Add-Check 'non-leaf cursor state blocks monitor baseline fallback' (
+        $nonLeafBlocked -and
+        (Test-Path -LiteralPath $nonLeafState -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $nonLeafState -Force).Count -eq 0
+    )
+
+    $invalidLogState = Join-Path $tempRoot 'shared\monitor_invalid_log.cursor.json'
+    [System.IO.File]::WriteAllText(
+        $eventsPath,
+        (
+            '{"agent":"claude","to":"codex","type":"message",' +
+            '"status":"open","task_id":"valid-baseline",' +
+            '"message":"baseline"}' + [char]10
+        ),
+        $encoding
+    )
+    & $monitor -Agent codex -FromAgent claude -StatePath $invalidLogState `
+        -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    $beforeInvalidLog = [System.IO.File]::ReadAllBytes($invalidLogState)
+    $badBytes = [byte[]](123,34,120,34,58,34,255,34,125,10)
+    $appendStream = [System.IO.File]::Open(
+        $eventsPath,
+        [System.IO.FileMode]::Append,
+        [System.IO.FileAccess]::Write,
+        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+    )
+    try {
+        $appendStream.Write($badBytes, 0, $badBytes.Length)
+    } finally {
+        $appendStream.Dispose()
+    }
+    $invalidLogBlocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $invalidLogState `
+            -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $invalidLogBlocked = $true
+    }
+    $afterInvalidLog = [System.IO.File]::ReadAllBytes($invalidLogState)
+    Add-Check 'invalid log bytes leave monitor cursor byte-identical' (
+        $invalidLogBlocked -and
+        [Convert]::ToBase64String($beforeInvalidLog) -ceq
+            [Convert]::ToBase64String($afterInvalidLog)
+    )
+
+    $invalidJsonState = Join-Path $tempRoot 'shared\monitor_invalid_json.cursor.json'
+    [System.IO.File]::WriteAllText(
+        $eventsPath,
+        (
+            '{"agent":"claude","to":"codex","type":"message",' +
+            '"status":"open","task_id":"json-baseline",' +
+            '"message":"baseline"}' + [char]10
+        ),
+        $encoding
+    )
+    & $monitor -Agent codex -FromAgent claude -StatePath $invalidJsonState `
+        -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    $beforeInvalidJson = [System.IO.File]::ReadAllBytes($invalidJsonState)
+    [System.IO.File]::AppendAllText($eventsPath, ('[]' + [char]10), $encoding)
+    $invalidJsonBlocked = $false
+    try {
+        & $monitor -Agent codex -FromAgent claude -StatePath $invalidJsonState `
+            -MaxIterations 1 -PollIntervalMs 1 | Out-Null
+    } catch {
+        $invalidJsonBlocked = $true
+    }
+    $afterInvalidJson = [System.IO.File]::ReadAllBytes($invalidJsonState)
+    Add-Check 'invalid JSON leaves monitor cursor byte-identical' (
+        $invalidJsonBlocked -and
+        [Convert]::ToBase64String($beforeInvalidJson) -ceq
+            [Convert]::ToBase64String($afterInvalidJson)
+    )
+
     Write-Host ''
     $passed = ($results | Where-Object { $_.passed }).Count
     $total = $results.Count

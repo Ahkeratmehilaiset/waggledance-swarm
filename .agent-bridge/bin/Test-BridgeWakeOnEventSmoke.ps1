@@ -17,7 +17,9 @@
       4. non-targeted event does NOT wake
       5. Test-BridgeWake consumes the wake file on first read
       6. end-to-end: background Start-Job sees event in <2 s
-      7. WAGGLE_BRIDGE_WAKE_ENABLED=0 short-circuits the watcher
+      7. replacement fails closed instead of skipping replacement rows
+      8. wake write failure terminates before committing the targeted row
+      9. WAGGLE_BRIDGE_WAKE_ENABLED=0 short-circuits the watcher
 
     All test state lives under a fresh temp runtime root so the live
     bridge state is never touched.
@@ -90,6 +92,17 @@ try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $tempRoot
     $env:WAGGLE_BRIDGE_WAKE_ENABLED = '1'
 
+    # ── 0: supervisor-style restart preserves possible offline traffic ──
+    Write-Host '0. default restart sets durable dirty bit before baselining:'
+    Reset-State
+    & $writeEvent -Agent codex -To claude -Type message -Status open `
+        -TaskId 'r23-smoke-0' -Message 'arrived while watcher was absent' | Out-Null
+    $wakeClaude = Join-Path $tempRoot 'wake_claude'
+    & $watch -Agent claude -MaxIterations 1 `
+        -PollIntervalMs 1 -DebounceMs 0 | Out-Null
+    Add-Check 'restart dirty bit covers offline interval' `
+        (Test-Path -LiteralPath $wakeClaude) ''
+
     # ── 1: targeted event creates wake file ────────────────────────────
     Write-Host '1. targeted event (codex -> claude) creates wake_claude:'
     Reset-State
@@ -97,7 +110,6 @@ try {
         -TaskId 'r23-smoke-1' -Message 'targeted ping' | Out-Null
     & $watch -Agent claude -MaxIterations 2 `
         -PollIntervalMs 50 -DebounceMs 0 -StartLineCount 0 | Out-Null
-    $wakeClaude = Join-Path $tempRoot 'wake_claude'
     Add-Check 'targeted event woke claude' (Test-Path -LiteralPath $wakeClaude) $wakeClaude
 
     # ── 2: own-emission does NOT wake ─────────────────────────────────
@@ -141,15 +153,27 @@ try {
     # ── 6: end-to-end <2 s with Start-Job ─────────────────────────────
     Write-Host '6. background watcher reacts to event in < 2 s:'
     Reset-State
+    $readyPath = Join-Path $tempRoot 'watch_ready_6'
     $job = Start-Job -Name 'r23-smoke-watcher' -ScriptBlock {
-        param($s, $a, $r)
-        & $s -Agent $a -RuntimeRoot $r -PollIntervalMs 50 -DebounceMs 0
-    } -ArgumentList $watch, 'claude', $tempRoot
+        param($s, $a, $r, $ready)
+        & $s -Agent $a -RuntimeRoot $r -PollIntervalMs 50 -DebounceMs 0 `
+            -ReadyPath $ready
+    } -ArgumentList $watch, 'claude', $tempRoot, $readyPath
     try {
-        # Wait for the watcher's PowerShell host to come up + read its
-        # baseline. Job-start overhead on Windows can swallow up to 1 s
-        # of the budget; we measure latency only after warm-up.
-        Start-Sleep -Milliseconds 1500
+        $readyDeadline = [datetime]::UtcNow.AddSeconds(5)
+        while (-not (Test-Path -LiteralPath $readyPath) -and
+               [datetime]::UtcNow -lt $readyDeadline) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not (Test-Path -LiteralPath $readyPath)) {
+            throw "background watcher did not initialize: $readyPath"
+        }
+        $startupDirtyBit = Test-Path -LiteralPath $wakeClaude
+        if ($startupDirtyBit) {
+            Remove-Item -LiteralPath $wakeClaude -Force -ErrorAction Stop
+        }
+        Add-Check 'background watcher published startup dirty bit' `
+            $startupDirtyBit ''
         $emitTime = [datetime]::UtcNow
         & $writeEvent -Agent codex -To claude -Type message -Status open `
             -TaskId 'r23-smoke-6' -Message 'live ping' | Out-Null
@@ -167,12 +191,84 @@ try {
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
     }
 
-    # ── 7: WAGGLE_BRIDGE_WAKE_ENABLED=0 short-circuits ────────────────
-    Write-Host '7. WAGGLE_BRIDGE_WAKE_ENABLED=0 makes watcher exit immediately:'
+    # ── 7: replacement fails closed ────────────────────────────────────
+    Write-Host '7. replacement fails closed after setting durable wake:'
+    Reset-State
+    & $writeEvent -Agent codex -To operator -Type message -Status open `
+        -TaskId 'r23-smoke-7-history-a' -Message 'history a' | Out-Null
+    & $writeEvent -Agent codex -To operator -Type message -Status open `
+        -TaskId 'r23-smoke-7-history-b' -Message 'history b' | Out-Null
+    $eventsPath = Join-Path $tempRoot 'shared\events.jsonl'
+    $readyPath = Join-Path $tempRoot 'watch_ready_7'
+    $job = Start-Job -Name 'r23-smoke-replacement-watcher' -ScriptBlock {
+        param($s, $a, $r, $ready)
+        & $s -Agent $a -RuntimeRoot $r -PollIntervalMs 50 -DebounceMs 0 `
+            -MaxIterations 80 -ReadyPath $ready
+    } -ArgumentList $watch, 'claude', $tempRoot, $readyPath
+    try {
+        $readyDeadline = [datetime]::UtcNow.AddSeconds(5)
+        while (-not (Test-Path -LiteralPath $readyPath) -and
+               [datetime]::UtcNow -lt $readyDeadline) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not (Test-Path -LiteralPath $readyPath)) {
+            throw "replacement watcher did not initialize: $readyPath"
+        }
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $replacement = Join-Path $tempRoot 'shared\events.replacement.jsonl'
+        $oldBytes = [System.IO.File]::ReadAllBytes($eventsPath)
+        $newRow = $encoding.GetBytes(
+            '{"agent":"codex","to":"claude","type":"message",' +
+            '"task_id":"r23-smoke-7-replacement","status":"open"}' +
+            [char]10
+        )
+        $replacementBytes = New-Object byte[] ($oldBytes.Length + $newRow.Length)
+        [System.Buffer]::BlockCopy($oldBytes, 0, $replacementBytes, 0, $oldBytes.Length)
+        [System.Buffer]::BlockCopy(
+            $newRow,
+            0,
+            $replacementBytes,
+            $oldBytes.Length,
+            $newRow.Length
+        )
+        [System.IO.File]::WriteAllBytes($replacement, $replacementBytes)
+        Move-Item -LiteralPath $replacement -Destination $eventsPath -Force
+        [void](Wait-Job -Job $job -Timeout 3)
+        $replacementWakeCreated = Test-Path -LiteralPath $wakeClaude
+        & $watch -Agent claude -MaxIterations 1 `
+            -PollIntervalMs 1 -DebounceMs 0 | Out-Null
+        Add-Check 'replacement terminates watcher after durable wake' (
+            $job.State -eq 'Failed' -and
+            $replacementWakeCreated -and
+            (Test-Path -LiteralPath $wakeClaude)
+        ) ([string]$job.State)
+    } finally {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+
+    # ── 8: wake write failure is fatal ─────────────────────────────────
+    Write-Host '8. wake write failure terminates before cursor commit:'
+    Reset-State
+    [void](New-Item -ItemType Directory -Path $wakeClaude -Force)
+    & $writeEvent -Agent codex -To claude -Type message -Status open `
+        -TaskId 'r23-smoke-8' -Message 'wake write must succeed' | Out-Null
+    $wakeWriteBlocked = $false
+    try {
+        & $watch -Agent claude -MaxIterations 1 `
+            -PollIntervalMs 1 -DebounceMs 0 -StartLineCount 0 | Out-Null
+    } catch {
+        $wakeWriteBlocked = $true
+    }
+    Add-Check 'wake write failure is terminating' $wakeWriteBlocked ''
+    Remove-Item -LiteralPath $wakeClaude -Recurse -Force
+
+    # ── 9: WAGGLE_BRIDGE_WAKE_ENABLED=0 short-circuits ────────────────
+    Write-Host '9. WAGGLE_BRIDGE_WAKE_ENABLED=0 makes watcher exit immediately:'
     Reset-State
     $env:WAGGLE_BRIDGE_WAKE_ENABLED = '0'
     & $writeEvent -Agent codex -To claude -Type message -Status open `
-        -TaskId 'r23-smoke-7' -Message 'should be ignored' | Out-Null
+        -TaskId 'r23-smoke-9' -Message 'should be ignored' | Out-Null
     & $watch -Agent claude -MaxIterations 5 `
         -PollIntervalMs 50 -DebounceMs 0 | Out-Null
     Add-Check 'no wake file created when disabled' `

@@ -90,6 +90,15 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert "Invoke-WdToolsCodex.ps1" in (
         manifest["deployment"]["required_bundle_files"]
     )
+    required_bundle_files = manifest["deployment"]["required_bundle_files"]
+    assert (
+        "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1"
+        in required_bundle_files
+    )
+    assert (
+        "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1"
+        in required_bundle_files
+    )
     tools_supervisor = manifest["tools_supervisor"]
     assert tools_supervisor["worktree"] == TOOLS_WORKTREE
     assert tools_supervisor["branch"] == TOOLS_BRANCH
@@ -177,14 +186,40 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "required watcher source is missing" in supervisor
     assert "required tools consumer launcher is missing" in supervisor
     assert "WARN tools consumer launcher missing" not in supervisor
-    assert (
-        "(Test-TextContains ([string]$_.CommandLine) $ScriptName) -and"
-        in supervisor
+    assert "Test-NamedCommandLineLeafArgument `" in supervisor
+    assert "-Value $ScriptName" not in supervisor
+    assert "-Name 'Agent' `" in supervisor
+    assert "'-RuntimeRoot', $runtimeRoot" in supervisor
+    assert "CommandLineToArgvW" in supervisor
+    assert "Get-WdPowerShellFileInvocation" in supervisor
+    assert "Test-WdCanonicalWatcherProcess `" in supervisor
+    assert "Add-Type -ErrorAction Stop -TypeDefinition" in supervisor
+    parser_body = supervisor[
+        supervisor.index("function ConvertFrom-WdWindowsCommandLine") :
+        supervisor.index("function Test-WdPowerShellSwitchToken")
+    ]
+    assert "catch" not in parser_body
+    assert supervisor.index("Initialize-WdSupervisorCommandLineParser\n$processes") < (
+        supervisor.index("if ($toolsEnabled)")
     )
-    assert (
-        "(Test-TextContains ([string]$_.CommandLine) $watcherScript) -and"
-        in supervisor
+    assert "Global\\WaggleDanceWatcherReconcileV1-" in supervisor
+    assert "$mutex.WaitOne(0)" in supervisor
+    assert "catch [Threading.AbandonedMutexException]" in supervisor
+    assert "$mutex.ReleaseMutex()" in supervisor
+    assert "$mutex.Dispose()" in supervisor
+    watcher_lock_start = supervisor.index(
+        "$watcherReconciled = Invoke-WdWatcherReconcileLocked"
     )
+    watcher_lock_end = supervisor.index("if ($toolsEnabled)", watcher_lock_start)
+    watcher_lock = supervisor[watcher_lock_start:watcher_lock_end]
+    assert watcher_lock.index("$watcherProcesses = @(") < watcher_lock.index(
+        "foreach ($agent in $watcherAgents)"
+    )
+    assert "$watcherProcesses `" in watcher_lock
+    assert watcher_lock.index("foreach ($agent in $watcherAgents)") < (
+        watcher_lock.index("Start-OutOfTaskJobPowerShell `")
+    )
+    assert "another supervisor owns the runtime mutex" in watcher_lock
     assert "CmdletizationQuery_NotFound" in supervisor
     assert "Get-OptionalScheduledTask" in supervisor
     assert "$allAgentWatchers = @(" in supervisor
@@ -207,6 +242,12 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "$rootKillSucceeded" in supervisor
     assert "Tools consumer preflight does not match supervisor generation" in supervisor
     assert "Assert-MachineToolsConfigExact" in supervisor
+    assert "Assert-WdSupervisorPathWithoutReparse" in supervisor
+    assert "& $configuredToolsLauncher" not in supervisor
+    assert "'-File', $toolsLauncher" in supervisor
+    assert (
+        supervisor.count("-RelativePath 'start-wd-tools-consumer.ps1'") == 4
+    )
     assert "Assert-SupervisorBundleFileIntegrity -RelativePath $watcherRelative" in (
         supervisor
     )
@@ -224,11 +265,512 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "EnvironmentVariables = [string[]]$environment.ToArray()" in (
         supervisor
     )
-    assert supervisor.count("Start-OutOfTaskJobPowerShell `") == 2
+    assert supervisor.count("Start-OutOfTaskJobPowerShell `") == 3
     assert "Tools consumer preflight did not resolve stable Windows PowerShell" in (
         supervisor
     )
     assert supervisor.index("-ValidateOnly") < supervisor.index("$watcherScript =")
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_supervisor_watcher_discovery_requires_real_file_invocation() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Test-NamedCommandLineArgument',
+    'Test-WdWatcherScriptArgument',
+    'Test-NamedCommandLineLeafArgument',
+    'Initialize-WdSupervisorCommandLineParser',
+    'ConvertFrom-WdWindowsCommandLine',
+    'Test-WdPowerShellSwitchToken',
+    'Test-WdPowerShellHostOptionToken',
+    'Test-WdPowerShellFileSwitchToken',
+    'Get-WdPowerShellHostKind',
+    'Test-WdEncodedCommandValue',
+    'Get-WdPowerShellFileInvocation',
+    'Test-WdCanonicalWatcherProcess',
+    'Get-AgentCommandProcesses'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$watcher = 'C:\\bundle\\Watch-Bridge.ps1'
+$runtime = 'C:\\runtime'
+$hostPath = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+$current = [pscustomobject]@{{
+  ProcessId = 101
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $watcher +
+    ' -Agent codex-lead-1 ' +
+    '-RuntimeRoot ' + $runtime
+  )
+}}
+$stale = [pscustomobject]@{{
+  ProcessId = 102
+  Name = 'pwsh.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'pwsh.exe -File C:\\old\\Watch-Bridge.ps1 -Agent codex-lead-1 ' +
+    '-RuntimeRoot ' + $runtime
+  )
+}}
+$commandNoise = [pscustomobject]@{{
+  ProcessId = 103
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -Command "Write-Output -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime + '"'
+  )
+}}
+$shortCommandNoise = [pscustomobject]@{{
+  ProcessId = 105
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -c "Write-Output -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime + '"'
+  )
+}}
+$encodedNoise = [pscustomobject]@{{
+  ProcessId = 106
+  Name = 'pwsh.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'pwsh.exe -enc ignored -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$slashCommandNoise = [pscustomobject]@{{
+  ProcessId = 107
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe /c "Write-Output -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime + '"'
+  )
+}}
+$unicodeCommandNoise = [pscustomobject]@{{
+  ProcessId = 108
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe ' + [char]0x2013 + 'c "Write-Output -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime + '"'
+  )
+}}
+$implicitCommandNoise = [pscustomobject]@{{
+  ProcessId = 111
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -NoProfile "Write-Output -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime + '"'
+  )
+}}
+$wrongHost = [pscustomobject]@{{
+  ProcessId = 104
+  Name = 'cmd.exe'
+  ExecutablePath = 'C:\\Windows\\System32\\cmd.exe'
+  CommandLine = (
+    'cmd.exe -File ' + $watcher + ' -Agent codex-lead-1 ' +
+    '-RuntimeRoot ' + $runtime
+  )
+}}
+$fileAlias = [pscustomobject]@{{
+  ProcessId = 109
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe /fi C:\\other\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$unicodeFileAlias = [pscustomobject]@{{
+  ProcessId = 110
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe ' + [char]0x2014 + 'f C:\\unicode\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$samePathFileAlias = [pscustomobject]@{{
+  ProcessId = 112
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe /f ' + $watcher + ' -Agent codex-lead-1 ' +
+    '-RuntimeRoot ' + $runtime
+  )
+}}
+$staFileWatcher = [pscustomobject]@{{
+  ProcessId = 113
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -Sta -File C:\\sta\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$mtaFileWatcher = [pscustomobject]@{{
+  ProcessId = 114
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -Mta -File C:\\mta\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$versionFileWatcher = [pscustomobject]@{{
+  ProcessId = 115
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -Version 5.1 -File C:\\version\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$invalidVersionOrderNoise = [pscustomobject]@{{
+  ProcessId = 116
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -NoProfile -Version 5.1 -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$wrongExecutable = [pscustomobject]@{{
+  ProcessId = 117
+  Name = 'powershell.exe'
+  ExecutablePath = 'C:\\evil\\powershell.exe'
+  CommandLine = (
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $watcher +
+    ' -Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$shortOptionWatcher = [pscustomobject]@{{
+  ProcessId = 118
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -nop -ep Bypass -f C:\\short\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$colonArgumentWatcher = [pscustomobject]@{{
+  ProcessId = 119
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -f C:\\colon\\Watch-Bridge.ps1 ' +
+    '-Age:codex-lead-1 -Ru:' + $runtime
+  )
+}}
+$workingDirectoryWatcher = [pscustomobject]@{{
+  ProcessId = 120
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -wd C:\\work -f C:\\working\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$consoleFileWatcher = [pscustomobject]@{{
+  ProcessId = 121
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -p C:\\watcher.psc1 -f C:\\console\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$implicitFileWatcher = [pscustomobject]@{{
+  ProcessId = 122
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -NoProfile C:\\implicit\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$encodedPrelude = [Convert]::ToBase64String(
+  [Text.Encoding]::Unicode.GetBytes("'prelude'")
+)
+$encodedFileWatcher = [pscustomobject]@{{
+  ProcessId = 123
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -ec ' + $encodedPrelude +
+    ' -f C:\\encoded\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$pwshHostOptionsWatcher = [pscustomobject]@{{
+  ProcessId = 124
+  Name = 'pwsh.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'pwsh.exe -i -NoProfileLoadTime -custom pipe -settings settings.json ' +
+    '-f C:\\pwsh\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$windowsHostOptionsWatcher = [pscustomobject]@{{
+  ProcessId = 125
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -st -i Text -f C:\\winps\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$oddEncodedFileWatcher = [pscustomobject]@{{
+  ProcessId = 126
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -e AA== -f C:\\odd\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$surrogateEncodedFileWatcher = [pscustomobject]@{{
+  ProcessId = 127
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -e ANg= -f C:\\surrogate\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$windowsEncodedImplicitNoise = [pscustomobject]@{{
+  ProcessId = 128
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'powershell.exe -e AA== C:\\not-run\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$pwshEncodedImplicitWatcher = [pscustomobject]@{{
+  ProcessId = 129
+  Name = 'pwsh.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    'pwsh.exe -e AA== C:\\pwsh-implicit\\Watch-Bridge.ps1 ' +
+    '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+  )
+}}
+$all = @(
+  Get-AgentCommandProcesses `
+    -Processes @(
+      $current, $stale, $commandNoise, $shortCommandNoise, $encodedNoise,
+      $slashCommandNoise, $unicodeCommandNoise, $wrongHost, $fileAlias,
+      $unicodeFileAlias, $implicitCommandNoise, $samePathFileAlias,
+      $staFileWatcher, $mtaFileWatcher, $versionFileWatcher,
+      $invalidVersionOrderNoise, $wrongExecutable, $shortOptionWatcher,
+      $colonArgumentWatcher, $workingDirectoryWatcher, $consoleFileWatcher,
+      $implicitFileWatcher, $encodedFileWatcher, $pwshHostOptionsWatcher,
+      $windowsHostOptionsWatcher, $oddEncodedFileWatcher,
+      $surrogateEncodedFileWatcher, $windowsEncodedImplicitNoise,
+      $pwshEncodedImplicitWatcher
+    ) `
+    -ScriptName 'Watch-Bridge.ps1' `
+    -Agent 'codex-lead-1'
+)
+$exact = @(
+  $all | Where-Object {{
+    Test-WdCanonicalWatcherProcess `
+      -Process $_ `
+      -ExpectedExecutable $hostPath `
+      -ScriptPath $watcher `
+      -Agent codex-lead-1 `
+      -RuntimeRoot $runtime
+  }}
+)
+[pscustomobject]@{{
+  all_count = $all.Count
+  all_pids = @($all | ForEach-Object {{ [int]$_.ProcessId }})
+  exact_count = $exact.Count
+  exact_pid = [int]$exact[0].ProcessId
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "all_count": 20,
+        "all_pids": [
+            101,
+            102,
+            109,
+            110,
+            112,
+            113,
+            114,
+            115,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            129,
+        ],
+        "exact_count": 1,
+        "exact_pid": 101,
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_supervisor_watcher_reconcile_mutex_is_scoped_and_nonblocking(
+    tmp_path: Path,
+) -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    root_a = str(tmp_path / "runtime-a").replace("'", "''")
+    root_b = str(tmp_path / "runtime-b").replace("'", "''")
+    ready = str(tmp_path / "holder-ready").replace("'", "''")
+    release = str(tmp_path / "holder-release").replace("'", "''")
+    result = _run_powershell(
+        rf"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Get-WdWatcherReconcileMutexName',
+    'Invoke-WdWatcherReconcileLocked'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$rootA = [IO.Path]::GetFullPath('{root_a}')
+$rootB = [IO.Path]::GetFullPath('{root_b}')
+[void][IO.Directory]::CreateDirectory($rootA)
+[void][IO.Directory]::CreateDirectory($rootB)
+$nameA = Get-WdWatcherReconcileMutexName -RuntimeRoot $rootA
+$nameAlias = Get-WdWatcherReconcileMutexName `
+  -RuntimeRoot ($rootA.ToLowerInvariant() + '\\')
+$nameB = Get-WdWatcherReconcileMutexName -RuntimeRoot $rootB
+$job = Start-Job -ArgumentList $nameA, '{ready}', '{release}' -ScriptBlock {{
+  param($mutexName, $readyPath, $releasePath)
+  $mutex = [Threading.Mutex]::new($false, $mutexName)
+  $acquired = $false
+  try {{
+    $acquired = $mutex.WaitOne(5000)
+    if (-not $acquired) {{ throw 'holder failed to acquire mutex' }}
+    [IO.File]::WriteAllText($readyPath, 'ready')
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    while (-not [IO.File]::Exists($releasePath)) {{
+      if ([DateTimeOffset]::UtcNow -gt $deadline) {{
+        throw 'holder release timeout'
+      }}
+      Start-Sleep -Milliseconds 25
+    }}
+  }}
+  finally {{
+    if ($acquired) {{ $mutex.ReleaseMutex() }}
+    $mutex.Dispose()
+  }}
+}}
+try {{
+  $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+  while (-not [IO.File]::Exists('{ready}')) {{
+    if ([DateTimeOffset]::UtcNow -gt $deadline) {{
+      throw 'holder ready timeout'
+    }}
+    Start-Sleep -Milliseconds 25
+  }}
+  $stateAWhileHeld = @{{ ran = $false }}
+  $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $contended = Invoke-WdWatcherReconcileLocked -RuntimeRoot $rootA -Action {{
+    $stateAWhileHeld.ran = $true
+  }}
+  $stopwatch.Stop()
+  $stateB = @{{ ran = $false }}
+  $isolated = Invoke-WdWatcherReconcileLocked -RuntimeRoot $rootB -Action {{
+    $stateB.ran = $true
+  }}
+  [IO.File]::WriteAllText('{release}', 'release')
+  Wait-Job -Job $job -Timeout 10 | Out-Null
+  if ($job.State -ne 'Completed') {{ throw "holder state: $($job.State)" }}
+  Receive-Job -Job $job -ErrorAction Stop | Out-Null
+  $stateAAfter = @{{ ran = $false }}
+  $afterRelease = Invoke-WdWatcherReconcileLocked -RuntimeRoot $rootA -Action {{
+    $stateAAfter.ran = $true
+  }}
+  [pscustomobject]@{{
+    name_alias_equal = $nameA -ceq $nameAlias
+    names_distinct = $nameA -cne $nameB
+    name_shape = (
+      $nameA.StartsWith(
+        'Global\WaggleDanceWatcherReconcileV1-',
+        [StringComparison]::Ordinal
+      ) -and
+      $nameA.Substring('Global\WaggleDanceWatcherReconcileV1-'.Length) `
+        -cmatch '^[0-9A-F]{{64}}$'
+    )
+    contended = [bool]$contended
+    contended_elapsed_ms = [int]$stopwatch.ElapsedMilliseconds
+    ran_a_while_held = [bool]$stateAWhileHeld.ran
+    isolated = [bool]$isolated
+    ran_b = [bool]$stateB.ran
+    after_release = [bool]$afterRelease
+    ran_a_after = [bool]$stateAAfter.ran
+  }} | ConvertTo-Json -Compress
+}}
+finally {{
+  if ($null -ne $job) {{
+    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+  }}
+}}
+"""
+    )
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "name_alias_equal": True,
+        "names_distinct": True,
+        "name_shape": True,
+        "contended": False,
+        "contended_elapsed_ms": payload["contended_elapsed_ms"],
+        "ran_a_while_held": False,
+        "isolated": True,
+        "ran_b": True,
+        "after_release": True,
+        "ran_a_after": True,
+    }
+    assert payload["contended_elapsed_ms"] < 1000
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
@@ -441,6 +983,114 @@ Assert-DirectoryPathWithoutReparse `
         "strict_missing_failed": True,
         "created_during_validation": False,
         "strict_existing_passed": True,
+    }
+
+
+@pytest.mark.skipif(
+    POWERSHELL is None or os.name != "nt",
+    reason="Windows junction semantics are unavailable",
+)
+def test_reboot_trusted_path_guards_reject_reparse_components(
+    tmp_path: Path,
+) -> None:
+    scripts_and_functions = {
+        REBOOT / "Deploy-WdRebootBundle.ps1": [
+            "Resolve-FullPath",
+            "Assert-WdPathWithoutReparse",
+        ],
+        REBOOT / "start-wd-agent.ps1": ["Assert-LanePathWithoutReparse"],
+        REBOOT / "start-wd-tools-consumer.ps1": [
+            "Test-PathAtOrBelow",
+            "Assert-DirectoryPathWithoutReparse",
+            "Assert-FilePathWithoutReparse",
+        ],
+        REBOOT / "wd_supervisor.ps1": [
+            "Assert-WdSupervisorPathWithoutReparse"
+        ],
+    }
+    loaders: list[str] = []
+    for script_path, function_names in scripts_and_functions.items():
+        quoted_path = str(script_path).replace("'", "''")
+        quoted_names = ", ".join(f"'{name}'" for name in function_names)
+        loaders.append(
+            f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{quoted_path}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'trusted-path source parse failed' }}
+foreach ($name in @({quoted_names})) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+"""
+        )
+    root = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "plain.txt").write_text("inside", encoding="utf-8")
+    (outside / "payload.txt").write_text("outside", encoding="utf-8")
+    root_quoted = str(root).replace("'", "''")
+    outside_quoted = str(outside).replace("'", "''")
+    result = _run_powershell(
+        "\n".join(loaders)
+        + f"""
+$root = [IO.Path]::GetFullPath('{root_quoted}')
+$plain = Join-Path $root 'plain.txt'
+$outside = [IO.Path]::GetFullPath('{outside_quoted}')
+$junction = Join-Path $root 'redirected'
+[void](New-Item -ItemType Junction -Path $junction -Target $outside)
+$escaped = Join-Path $junction 'payload.txt'
+
+[void](Assert-WdPathWithoutReparse -Path $plain -TrustedRoot $root -ExpectedType Leaf)
+[void](Assert-LanePathWithoutReparse -Path $plain -TrustedRoot $root -ExpectedType Leaf)
+Assert-FilePathWithoutReparse -Candidate $plain -Root $root
+[void](Assert-WdSupervisorPathWithoutReparse -Path $plain -ExpectedType Leaf)
+
+$results = [ordered]@{{}}
+foreach ($case in @(
+  [pscustomobject]@{{
+    name = 'deploy'
+    action = {{ Assert-WdPathWithoutReparse -Path $escaped -TrustedRoot $root -ExpectedType Leaf }}
+  }},
+  [pscustomobject]@{{
+    name = 'lane'
+    action = {{ Assert-LanePathWithoutReparse -Path $escaped -TrustedRoot $root -ExpectedType Leaf }}
+  }},
+  [pscustomobject]@{{
+    name = 'tools'
+    action = {{ Assert-FilePathWithoutReparse -Candidate $escaped -Root $root }}
+  }},
+  [pscustomobject]@{{
+    name = 'supervisor'
+    action = {{
+      Assert-WdSupervisorPathWithoutReparse -Path $escaped -ExpectedType Leaf
+    }}
+  }}
+)) {{
+  $rejected = $false
+  try {{ [void](& $case.action) }} catch {{ $rejected = $true }}
+  $caseName = [string]$case.name
+  $results[$caseName] = $rejected
+}}
+$results | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "deploy": True,
+        "lane": True,
+        "tools": True,
+        "supervisor": True,
     }
 
 
@@ -856,6 +1506,11 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
     assert snapshot["watchers"]["script_relative"] == (
         r"tools-bootstrap\.agent-bridge\bin\Watch-Bridge.ps1"
     )
+    assert snapshot["watchers"]["dependency_relatives"] == [
+        r"tools-bootstrap\.agent-bridge\bin\AgentBridgeSessionIdentity.ps1",
+        r"tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1",
+        r"tools-bootstrap\.agent-bridge\bin\BridgeLogReader.ps1",
+    ]
     assert tools["agent"] == "codex-tools-1"
     assert tools["agent_uuid"] == "7a8af68d-20bc-4598-9953-23c5dd98b102"
     assert tools["worktree"] == TOOLS_WORKTREE
@@ -1421,12 +2076,13 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
             tools_wrapper,
         )
     ]
-    assert len(bootstrap_gates) == 4
-    assert bootstrap_gates[0] < tools_wrapper.index(". $sessionScript `")
+    assert len(bootstrap_gates) == 6
+    session_call = tools_wrapper.index(". $sessionScript `")
+    assert bootstrap_gates[0] < bootstrap_gates[1] < session_call
     initial_call = tools_wrapper.index("$initialOutput = @(& $consumerScript")
-    assert initial_call < bootstrap_gates[1]
+    assert bootstrap_gates[2] < initial_call < bootstrap_gates[3]
     wake_call = tools_wrapper.index("$wakeOutput = @(& $consumerScript @wakeArguments)")
-    assert bootstrap_gates[1] < bootstrap_gates[2] < wake_call < bootstrap_gates[3]
+    assert bootstrap_gates[4] < wake_call < bootstrap_gates[5]
     assert (
         "Join-Path $PSScriptRoot 'tools-bootstrap\\.agent-bridge\\bin'"
         in tools_wrapper
@@ -1575,6 +2231,14 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
         "'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'"
         in text
     )
+    assert (
+        "'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1'"
+        in text
+    )
+    assert (
+        "'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1'"
+        in text
+    )
     assert "'tools-bootstrap/configs/bridge_identity_registry.json'" in text
     assert "'archive'," in text
     assert "'--format=zip'," in text
@@ -1593,6 +2257,17 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert "-DryRun `" in text[preflight:first_store_write]
     assert "rollback also failed" in text
     assert "`$LASTEXITCODE" not in text
+    assert "function Assert-WdPathWithoutReparse" in text
+    assert text.index("$installedManifestPath =") < text.index(
+        "-Path $installedManifestPath `"
+    ) < text.index("$installedManifest =")
+    machine_creation = text.index(
+        "New-Item -ItemType Directory -Path $machineFull"
+    )
+    strict_machine_check = text.index(
+        "-Path $machineFull `", machine_creation
+    )
+    assert strict_machine_check < text.index("$backupRoot =")
 
 
 def test_interactive_lane_uses_anchored_bundle_bootstrap() -> None:
@@ -1602,6 +2277,58 @@ def test_interactive_lane_uses_anchored_bundle_bootstrap() -> None:
     assert "Assert-LaneBootstrapIntegrity" in launcher
     assert "source lane launcher supports -DryRun only" in launcher
     assert "Join-Path $worktree '.agent-bridge\\bin" not in launcher
+    assert "SkipWakeWatcher = $true" in launcher
+    assert "function Assert-LanePathWithoutReparse" in launcher
+    assert launcher.index("-Path $ManifestPath -TrustedRoot") < launcher.index(
+        "$manifestSnapshot = Read-Utf8LaneSnapshot"
+    )
+    starter_dot_source = launcher.index(". $starter @sessionArgs")
+    final_integrity = launcher.rfind(
+        "Assert-LaneBootstrapIntegrity `", 0, starter_dot_source
+    )
+    assert final_integrity != -1
+    assert "-Path $starter" in launcher[final_integrity:starter_dot_source]
+
+
+def test_reboot_watchers_use_delete_share_reader_stack() -> None:
+    bridge_bin = ROOT / ".agent-bridge" / "bin"
+    incremental = (bridge_bin / "BridgeIncrementalReader.ps1").read_text(
+        encoding="utf-8"
+    )
+    reader = (bridge_bin / "BridgeLogReader.ps1").read_text(encoding="utf-8")
+    watcher = (bridge_bin / "Watch-Bridge.ps1").read_text(encoding="utf-8")
+    monitor = (bridge_bin / "Monitor-AgentBridge.ps1").read_text(encoding="utf-8")
+    interactive_reader = (bridge_bin / "Read-AgentBridge.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "BridgeLogReader.ps1" in incremental
+    assert "[System.IO.FileShare]::Delete" in reader
+    assert "BridgeIncrementalReader.ps1" in watcher
+    assert "BridgeIncrementalReader.ps1" in monitor
+    assert "BridgeIncrementalReader.ps1" in interactive_reader
+    assert "Get-Content -LiteralPath $eventsPath" not in interactive_reader
+
+    supervisor = (REBOOT / "wd_supervisor.ps1").read_text(encoding="utf-8")
+    assert "$configuration.watchers.dependency_relatives" in supervisor
+    assert "supervisor watcher dependency set is not exact" in supervisor
+    assert (
+        "Assert-SupervisorBundleFileIntegrity -RelativePath $watcherDependency"
+        in supervisor
+    )
+    assert "Read-BridgeEventTail -Path $eventsPath -MaxLines 80" in supervisor
+    assert "Get-Content -LiteralPath $eventsPath" not in supervisor
+    assert "-Path $eventsPath -ExpectedType Leaf" in supervisor
+
+    tools_consumer = (REBOOT / "start-wd-tools-consumer.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "'BridgeIncrementalReader.ps1'," in tools_consumer
+    assert "'BridgeLogReader.ps1'," in tools_consumer
+    assert "function Assert-FilePathWithoutReparse" in tools_consumer
+    assert tools_consumer.index("-Candidate $configFull -Root") < (
+        tools_consumer.index("$configSnapshot = Read-Utf8FileSnapshot")
+    )
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")

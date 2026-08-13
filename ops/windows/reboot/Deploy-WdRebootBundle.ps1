@@ -30,6 +30,67 @@ function Resolve-FullPath {
     return [System.IO.Path]::GetFullPath($Path)
 }
 
+function Assert-WdPathWithoutReparse {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $TrustedRoot,
+        [ValidateSet('Any', 'Directory', 'Leaf')]
+        [string] $ExpectedType = 'Any',
+        [switch] $AllowMissing
+    )
+
+    $candidate = Resolve-FullPath $Path
+    $root = Resolve-FullPath $TrustedRoot
+    $rootPrefix = $root.TrimEnd('\') + '\'
+    if (
+        -not $candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
+        -not $candidate.StartsWith(
+            $rootPrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "path escaped its trusted root: $candidate"
+    }
+    $relative = if ($candidate.Equals(
+            $root,
+            [StringComparison]::OrdinalIgnoreCase
+        )) { '' } else { $candidate.Substring($rootPrefix.Length) }
+    if (-not (Test-Path -LiteralPath $root)) {
+        if ($AllowMissing) { return $candidate }
+        throw "required trusted path component is missing: $root"
+    }
+    $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "trusted path component cannot be a reparse point: $root"
+    }
+    $current = $root
+    foreach ($segment in @($relative -split '[\\/]')) {
+        if (-not $segment) { continue }
+        $current = Join-Path $current $segment
+        if (-not (Test-Path -LiteralPath $current)) {
+            if ($AllowMissing) { return $candidate }
+            throw "required trusted path component is missing: $current"
+        }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "trusted path component cannot be a reparse point: $current"
+        }
+    }
+    if (
+        $ExpectedType -ceq 'Directory' -and
+        -not (Test-Path -LiteralPath $candidate -PathType Container)
+    ) {
+        throw "trusted path is not a directory: $candidate"
+    }
+    if (
+        $ExpectedType -ceq 'Leaf' -and
+        -not (Test-Path -LiteralPath $candidate -PathType Leaf)
+    ) {
+        throw "trusted path is not a file: $candidate"
+    }
+    return $candidate
+}
+
 function Assert-ChildPath {
     param(
         [Parameter(Mandatory)] [string] $Parent,
@@ -250,6 +311,21 @@ foreach ($persistentPath in @($sourceRoot, $machineFull, $storeFull)) {
         throw "reboot assets must stay on persistent C: storage: $persistentPath"
     }
 }
+$persistentDriveRoot = [IO.Path]::GetPathRoot($machineFull)
+[void](Assert-WdPathWithoutReparse `
+    -Path $sourceRoot `
+    -TrustedRoot $persistentDriveRoot `
+    -ExpectedType Directory)
+[void](Assert-WdPathWithoutReparse `
+    -Path $machineFull `
+    -TrustedRoot $persistentDriveRoot `
+    -ExpectedType Directory `
+    -AllowMissing)
+[void](Assert-WdPathWithoutReparse `
+    -Path $storeFull `
+    -TrustedRoot $persistentDriveRoot `
+    -ExpectedType Directory `
+    -AllowMissing)
 
 $gitRootProbe = Invoke-GitCapture `
     -Worktree $sourceRoot `
@@ -402,6 +478,8 @@ foreach ($required in @(
         'Register-WdScheduledTasks.ps1',
         'BOOT_AFTER_REBOOT.md',
         'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
+        'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
+        'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1',
         'tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1',
         'tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeSession.ps1',
@@ -452,7 +530,15 @@ if ($DryRun) {
 if (-not (Test-Path -LiteralPath $storeFull -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $storeFull -Force)
 }
+[void](Assert-WdPathWithoutReparse `
+    -Path $storeFull `
+    -TrustedRoot $persistentDriveRoot `
+    -ExpectedType Directory)
 if (Test-Path -LiteralPath $targetRoot) {
+    [void](Assert-WdPathWithoutReparse `
+        -Path $targetRoot `
+        -TrustedRoot $storeFull `
+        -ExpectedType Directory)
     $existingManifest = Join-Path $targetRoot 'deployment-manifest.json'
     if (-not (Test-Path -LiteralPath $existingManifest -PathType Leaf)) {
         throw "existing commit directory is incomplete: $targetRoot"
@@ -462,6 +548,10 @@ if (Test-Path -LiteralPath $targetRoot) {
         Join-Path $storeFull ('.stage-' + [guid]::NewGuid().ToString('N'))
     )
     [void](New-Item -ItemType Directory -Path $stage)
+    [void](Assert-WdPathWithoutReparse `
+        -Path $stage `
+        -TrustedRoot $storeFull `
+        -ExpectedType Directory)
     try {
         foreach ($name in $sourceHashes.Keys) {
             $destination = Join-Path $stage $name
@@ -470,6 +560,10 @@ if (Test-Path -LiteralPath $targetRoot) {
                 [void](New-Item -ItemType Directory -Path $destinationParent -Force)
             }
             Copy-Item -LiteralPath $sourcePaths[[string]$name] -Destination $destination
+            [void](Assert-WdPathWithoutReparse `
+                -Path $destination `
+                -TrustedRoot $stage `
+                -ExpectedType Leaf)
             $copiedHash = (
                 Get-FileHash -LiteralPath $destination -Algorithm SHA256
             ).Hash.ToUpperInvariant()
@@ -481,6 +575,10 @@ if (Test-Path -LiteralPath $targetRoot) {
             -Path (Join-Path $stage 'deployment-manifest.json') `
             -Content (($manifestObject | ConvertTo-Json -Depth 8) + [Environment]::NewLine)
         Move-Item -LiteralPath $stage -Destination $targetRoot
+        [void](Assert-WdPathWithoutReparse `
+            -Path $targetRoot `
+            -TrustedRoot $storeFull `
+            -ExpectedType Directory)
     } catch {
         if (Test-Path -LiteralPath $stage) {
             Remove-Item -LiteralPath $stage -Recurse -Force
@@ -490,6 +588,10 @@ if (Test-Path -LiteralPath $targetRoot) {
 }
 
 $installedManifestPath = Join-Path $targetRoot 'deployment-manifest.json'
+[void](Assert-WdPathWithoutReparse `
+    -Path $installedManifestPath `
+    -TrustedRoot $targetRoot `
+    -ExpectedType Leaf)
 $installedManifestSnapshot = Read-Utf8DeploymentSnapshot `
     -Path $installedManifestPath
 $installedManifest = [string]$installedManifestSnapshot.Text |
@@ -516,6 +618,10 @@ foreach ($name in $sourceHashes.Keys) {
 }
 foreach ($property in $installedManifest.files.PSObject.Properties) {
     $installedFile = Join-Path $targetRoot $property.Name
+    [void](Assert-WdPathWithoutReparse `
+        -Path $installedFile `
+        -TrustedRoot $targetRoot `
+        -ExpectedType Leaf)
     $actual = (Get-FileHash -LiteralPath $installedFile -Algorithm SHA256).Hash
     if ($actual -cne [string]$property.Value) {
         throw "installed reboot bundle integrity mismatch: $($property.Name)"
@@ -566,6 +672,14 @@ $dataSpecs = @(
     [pscustomobject]@{ Name = 'wd_supervisor_loop_snapshot.json'; Target = 'wd_supervisor_loop.json' },
     [pscustomobject]@{ Name = 'BOOT_AFTER_REBOOT.md'; Target = 'BOOT_AFTER_REBOOT.md' }
 )
+
+if (-not (Test-Path -LiteralPath $machineFull -PathType Container)) {
+    [void](New-Item -ItemType Directory -Path $machineFull -Force)
+}
+[void](Assert-WdPathWithoutReparse `
+    -Path $machineFull `
+    -TrustedRoot $persistentDriveRoot `
+    -ExpectedType Directory)
 
 $backupRoot = Join-Path $machineFull (
     'wd-reboot-backups\{0}-{1}-{2}' -f

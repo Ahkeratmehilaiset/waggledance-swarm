@@ -255,6 +255,16 @@ function Assert-ToolsBootstrapIntegrity {
         [Parameter(Mandatory)] [string] $LoadedConfigHash
     )
 
+    $trustedDrive = [IO.Path]::GetPathRoot(
+        [IO.Path]::GetFullPath($ScriptRoot)
+    )
+    Assert-DirectoryPathWithoutReparse `
+        -Candidate $ScriptRoot -Root $trustedDrive
+    Assert-DirectoryPathWithoutReparse `
+        -Candidate $BootstrapRoot -Root $trustedDrive
+    Assert-FilePathWithoutReparse `
+        -Candidate $ConfigPath -Root $trustedDrive
+
     $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
     if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
         $sourceTop = [IO.Path]::GetFullPath(
@@ -281,6 +291,9 @@ function Assert-ToolsBootstrapIntegrity {
             -Label 'source Tools bootstrap inputs'
         return
     }
+
+    Assert-FilePathWithoutReparse `
+        -Candidate $deploymentPath -Root $trustedDrive
 
     $expectedBundleRoot = [IO.Path]::GetFullPath(
         (Join-Path $ScriptRoot 'tools-bootstrap\.agent-bridge\bin')
@@ -311,6 +324,8 @@ function Assert-ToolsBootstrapIntegrity {
         )) {
         $topLevelProperty = $deployment.files.PSObject.Properties[$topLevelName]
         $topLevelPath = Join-Path $ScriptRoot $topLevelName
+        Assert-FilePathWithoutReparse `
+            -Candidate $topLevelPath -Root $trustedDrive
         if (
             $null -eq $topLevelProperty -or
             -not (Test-Path -LiteralPath $topLevelPath -PathType Leaf) -or
@@ -351,6 +366,8 @@ function Assert-ToolsBootstrapIntegrity {
             throw "unsafe Tools bootstrap manifest path: $relativeName"
         }
         $candidate = Join-Path $BootstrapRoot $leaf
+        Assert-FilePathWithoutReparse `
+            -Candidate $candidate -Root $trustedDrive
         if (
             -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
             (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -cne
@@ -362,6 +379,8 @@ function Assert-ToolsBootstrapIntegrity {
     }
     foreach ($requiredLeaf in @(
             'AgentBridgeSessionIdentity.ps1',
+            'BridgeIncrementalReader.ps1',
+            'BridgeLogReader.ps1',
             'Send-Liveness.ps1',
             'Start-AgentBridgeConsumerLoop.ps1',
             'Start-AgentBridgeSession.ps1',
@@ -390,6 +409,8 @@ function Assert-ToolsBootstrapIntegrity {
     $registryPath = Join-Path (
         Split-Path -Parent (Split-Path -Parent $BootstrapRoot)
     ) 'configs\bridge_identity_registry.json'
+    Assert-FilePathWithoutReparse `
+        -Candidate $registryPath -Root $trustedDrive
     if (
         $null -eq $registryHashProperty -or
         -not (Test-Path -LiteralPath $registryPath -PathType Leaf) -or
@@ -410,9 +431,11 @@ function Test-PathAtOrBelow {
         $candidateFull = [IO.Path]::GetFullPath(
             $Candidate.Trim().Trim([char]34)
         ).TrimEnd([char]92, [char]47)
-        $rootFull = [IO.Path]::GetFullPath(
-            $Root.Trim().Trim([char]34)
-        ).TrimEnd([char]92, [char]47)
+        $rawRoot = [IO.Path]::GetFullPath($Root.Trim().Trim([char]34))
+        $rootFull = if ($rawRoot.Equals(
+                [IO.Path]::GetPathRoot($rawRoot),
+                [StringComparison]::OrdinalIgnoreCase
+            )) { $rawRoot } else { $rawRoot.TrimEnd([char]92, [char]47) }
     }
     catch {
         return $false
@@ -421,7 +444,8 @@ function Test-PathAtOrBelow {
     return (
         $candidateFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or
         $candidateFull.StartsWith(
-            $rootFull + [IO.Path]::DirectorySeparatorChar,
+            $rootFull.TrimEnd([char]92, [char]47) +
+                [IO.Path]::DirectorySeparatorChar,
             [StringComparison]::OrdinalIgnoreCase
         )
     )
@@ -438,7 +462,11 @@ function Assert-DirectoryPathWithoutReparse {
         [char]92,
         [char]47
     )
-    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd([char]92, [char]47)
+    $rawRoot = [IO.Path]::GetFullPath($Root)
+    $rootFull = if ($rawRoot.Equals(
+            [IO.Path]::GetPathRoot($rawRoot),
+            [StringComparison]::OrdinalIgnoreCase
+        )) { $rawRoot } else { $rawRoot.TrimEnd([char]92, [char]47) }
     if (-not (Test-PathAtOrBelow -Candidate $candidateFull -Root $rootFull)) {
         throw "directory path escaped its trusted root: $candidateFull"
     }
@@ -473,6 +501,25 @@ function Assert-DirectoryPathWithoutReparse {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "directory path component cannot be a reparse point: $current"
         }
+    }
+}
+
+function Assert-FilePathWithoutReparse {
+    param(
+        [Parameter(Mandatory)] [string] $Candidate,
+        [Parameter(Mandatory)] [string] $Root
+    )
+
+    $candidateFull = [IO.Path]::GetFullPath($Candidate)
+    Assert-DirectoryPathWithoutReparse `
+        -Candidate (Split-Path -Parent $candidateFull) `
+        -Root $Root
+    if (-not (Test-Path -LiteralPath $candidateFull -PathType Leaf)) {
+        throw "required trusted file is missing: $candidateFull"
+    }
+    $item = Get-Item -LiteralPath $candidateFull -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "trusted file cannot be a reparse point: $candidateFull"
     }
 }
 
@@ -667,9 +714,16 @@ if (-not $isDeployedLauncher -and -not $ValidateOnly) {
 }
 
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
+$toolsTrustedDrive = [IO.Path]::GetPathRoot(
+    [IO.Path]::GetFullPath($PSScriptRoot)
+)
+Assert-DirectoryPathWithoutReparse `
+    -Candidate $PSScriptRoot -Root $toolsTrustedDrive
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
     throw "tools consumer configuration not found: $configFull"
 }
+Assert-FilePathWithoutReparse `
+    -Candidate $configFull -Root $toolsTrustedDrive
 $configSnapshot = Read-Utf8FileSnapshot -Path $configFull
 $loadedConfigHash = [string]$configSnapshot.Hash
 $configuration = [string]$configSnapshot.Text |
@@ -1061,6 +1115,11 @@ if ($runId.Length -gt 128) {
     throw 'generated tools run id exceeds 128 characters'
 }
 
+Assert-ToolsBootstrapIntegrity `
+    -ScriptRoot $PSScriptRoot `
+    -BootstrapRoot $bootstrapRoot `
+    -ConfigPath $configFull `
+    -LoadedConfigHash $loadedConfigHash
 . $sessionScript `
     -Agent $agent `
     -RuntimeRoot $runtimeRoot `
@@ -1098,6 +1157,11 @@ $initialArguments['DurationMinutes'] = 0
 $initialArguments['MaxIterations'] = 1
 $initialArguments['PollSeconds'] = 0
 try {
+    Assert-ToolsBootstrapIntegrity `
+        -ScriptRoot $PSScriptRoot `
+        -BootstrapRoot $bootstrapRoot `
+        -ConfigPath $configFull `
+        -LoadedConfigHash $loadedConfigHash
     $initialOutput = @(& $consumerScript @initialArguments)
 }
 finally {

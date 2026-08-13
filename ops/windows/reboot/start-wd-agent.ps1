@@ -41,6 +41,54 @@ function Resolve-NormalizedPath {
   return [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
 }
 
+function Assert-LanePathWithoutReparse {
+  param(
+    [Parameter(Mandatory)] [string] $Path,
+    [Parameter(Mandatory)] [string] $TrustedRoot,
+    [ValidateSet('Directory', 'Leaf')] [string] $ExpectedType
+  )
+  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $rootCandidate = [IO.Path]::GetFullPath($TrustedRoot)
+  $root = if ($rootCandidate.Equals(
+      [IO.Path]::GetPathRoot($rootCandidate),
+      [StringComparison]::OrdinalIgnoreCase
+    )) { $rootCandidate } else { $rootCandidate.TrimEnd('\') }
+  if (
+    -not $candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
+    -not $candidate.StartsWith(
+      $root.TrimEnd('\') + '\',
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+    throw "lane trusted path escaped its root: $candidate"
+  }
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw "lane trusted path root is missing: $root"
+  }
+  $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+  if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "lane trusted path root is a reparse point: $root"
+  }
+  $relative = $candidate.Substring($root.Length).TrimStart('\')
+  $current = $root
+  foreach ($segment in @($relative -split '\\')) {
+    if (-not $segment) { continue }
+    $current = Join-Path $current $segment
+    if (-not (Test-Path -LiteralPath $current)) {
+      throw "lane trusted path component is missing: $current"
+    }
+    $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "lane trusted path component is a reparse point: $current"
+    }
+  }
+  $pathType = if ($ExpectedType -ceq 'Directory') { 'Container' } else { 'Leaf' }
+  if (-not (Test-Path -LiteralPath $candidate -PathType $pathType)) {
+    throw "lane trusted path has the wrong type: $candidate"
+  }
+  return $candidate
+}
+
 function Read-Utf8LaneSnapshot {
   param([Parameter(Mandatory)] [string] $Path)
 
@@ -100,10 +148,18 @@ function Assert-LaneBootstrapIntegrity {
     [Parameter(Mandatory)] [string] $BootstrapRoot
   )
 
+  $trustedRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($ScriptRoot))
+  [void](Assert-LanePathWithoutReparse `
+    -Path $ScriptRoot -TrustedRoot $trustedRoot -ExpectedType Directory)
+  [void](Assert-LanePathWithoutReparse `
+    -Path $BootstrapRoot -TrustedRoot $trustedRoot -ExpectedType Directory)
+
   $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
   if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
     return
   }
+  [void](Assert-LanePathWithoutReparse `
+    -Path $deploymentPath -TrustedRoot $trustedRoot -ExpectedType Leaf)
   $expectedManifestHash = [string]$script:LaneManifestAnchor
   if (
     $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
@@ -136,6 +192,8 @@ function Assert-LaneBootstrapIntegrity {
       throw "unsafe lane bootstrap manifest path: $relativeName"
     }
     $candidate = Join-Path $BootstrapRoot $leaf
+    [void](Assert-LanePathWithoutReparse `
+      -Path $candidate -TrustedRoot $trustedRoot -ExpectedType Leaf)
     if (
       -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
       (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -cne
@@ -157,6 +215,8 @@ function Assert-LaneBootstrapIntegrity {
   $registryPath = Join-Path (
     Split-Path -Parent (Split-Path -Parent $BootstrapRoot)
   ) 'configs\bridge_identity_registry.json'
+  [void](Assert-LanePathWithoutReparse `
+    -Path $registryPath -TrustedRoot $trustedRoot -ExpectedType Leaf)
   if (
     $null -eq $registryProperty -or
     -not (Test-Path -LiteralPath $registryPath -PathType Leaf) -or
@@ -167,12 +227,23 @@ function Assert-LaneBootstrapIntegrity {
   }
 }
 
+$laneTrustedDrive = [IO.Path]::GetPathRoot(
+  [IO.Path]::GetFullPath($PSScriptRoot)
+)
+[void](Assert-LanePathWithoutReparse `
+  -Path $PSScriptRoot -TrustedRoot $laneTrustedDrive -ExpectedType Directory)
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
   throw "fleet manifest is missing: $ManifestPath"
 }
+[void](Assert-LanePathWithoutReparse `
+  -Path $ManifestPath -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
 $manifestSnapshot = Read-Utf8LaneSnapshot -Path $ManifestPath
 $fixedDeploymentManifest = Join-Path $PSScriptRoot 'deployment-manifest.json'
 if (Test-Path -LiteralPath $fixedDeploymentManifest -PathType Leaf) {
+  [void](Assert-LanePathWithoutReparse `
+    -Path $fixedDeploymentManifest `
+    -TrustedRoot $laneTrustedDrive `
+    -ExpectedType Leaf)
   $bundledFleetPath = Resolve-NormalizedPath -Path (
     Join-Path $PSScriptRoot 'wd-fleet.json'
   )
@@ -438,6 +509,7 @@ $sessionArgs = @{
   AgentUuid = [string]$lane.agent_uuid
   Capabilities = @($lane.capabilities | ForEach-Object { [string]$_ })
   SkipBridgeRead = $true
+  SkipWakeWatcher = $true
   PrimaryRepoRoot = $primaryRepo
 }
 if ([bool]$lane.require_dedicated_worktree) {
@@ -446,6 +518,11 @@ if ([bool]$lane.require_dedicated_worktree) {
 
 Set-Location -LiteralPath $worktree
 try {
+  Assert-LaneBootstrapIntegrity `
+    -ScriptRoot $PSScriptRoot `
+    -BootstrapRoot $bootstrapRoot
+  [void](Assert-LanePathWithoutReparse `
+    -Path $starter -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
   $session = . $starter @sessionArgs
 }
 finally {

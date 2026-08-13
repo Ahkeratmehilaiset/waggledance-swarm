@@ -1,0 +1,534 @@
+{
+  "schema_version": 1,
+  "required_adversarial_cases": [
+    "non_finite_overflow_blocks",
+    "safe_integer_positive_boundary_is_accepted",
+    "safe_integer_negative_boundary_is_accepted",
+    "positive_integer_just_outside_blocks",
+    "negative_integer_just_outside_blocks",
+    "nested_unsafe_integer_blocks",
+    "hundred_digit_integer_blocks",
+    "exact_duplicate_keys_block",
+    "case_colliding_keys_block",
+    "single_non_ascii_key_blocks",
+    "nested_non_ascii_keys_block",
+    "escaped_high_surrogate_blocks",
+    "escaped_low_surrogate_blocks",
+    "escaped_surrogate_pair_blocks",
+    "literal_escaped_backslash_is_accepted",
+    "direct_supplementary_utf8_is_accepted",
+    "nesting_depth_32_is_accepted",
+    "nesting_depth_33_blocks"
+  ],
+  "cases": [
+    {
+      "name": "snapshot_two_objects_utf8",
+      "data_b64": "eyJhIjoxfQp7ImIiOiLDpSJ9Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"a": 1}, {"b": "å"}],
+        "candidate_offset": 19,
+        "bytes_read": 19,
+        "bytes_consumed": 19
+      }
+    },
+    {
+      "name": "delta_skips_prefix",
+      "data_b64": "eyJvbGQiOjB9CnsibmV3IjoxfQo=",
+      "cursor_offset": 10,
+      "cursor_identity": "actual",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"new": 1}],
+        "candidate_offset": 20,
+        "bytes_read": 11,
+        "bytes_consumed": 10
+      }
+    },
+    {
+      "name": "partial_record_is_idle",
+      "data_b64": "eyJwYXJ0aWFsIjp0cnVlfQ==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "IDLE",
+        "reason": "partial_record",
+        "rows": [],
+        "candidate_offset": 0,
+        "bytes_read": 16,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "empty_snapshot_is_idle",
+      "data_b64": "",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "IDLE",
+        "reason": "partial_record",
+        "rows": [],
+        "candidate_offset": 0,
+        "bytes_read": 0,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "max_bytes_exact_lf_is_live",
+      "data_b64": "eyJ4IjoxfQo=",
+      "max_bytes": 8,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"x": 1}],
+        "candidate_offset": 8,
+        "bytes_read": 8,
+        "bytes_consumed": 8
+      }
+    },
+    {
+      "name": "max_bytes_exact_without_lf_blocks",
+      "data_b64": "MTIzNDU2Nzg=",
+      "max_bytes": 8,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "record_exceeds_max_bytes",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 8,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "crlf_object_is_accepted",
+      "data_b64": "eyJjcmxmIjp0cnVlfQ0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"crlf": true}],
+        "candidate_offset": 15,
+        "bytes_read": 15,
+        "bytes_consumed": 15
+      }
+    },
+    {
+      "name": "bom_blocks",
+      "data_b64": "77u/eyJ4IjoxfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "log_bom",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 11,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "invalid_utf8_blocks",
+      "data_b64": "eyJ4Ijoi/yJ9Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_utf8",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 10,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "json_array_blocks",
+      "data_b64": "W10K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "json_not_object",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 3,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "json_scalar_blocks",
+      "data_b64": "MTIzCg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "json_not_object",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 4,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "malformed_json_blocks",
+      "data_b64": "e2JhZH0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 6,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "non_standard_number_blocks",
+      "data_b64": "eyJ4IjpOYU59Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 10,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "non_finite_overflow_blocks",
+      "data_b64": "eyJ4IjoxZTk5OTl9Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 13,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "safe_integer_positive_boundary_is_accepted",
+      "data_b64": "eyJuIjo5MDA3MTk5MjU0NzQwOTkxfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"n": 9007199254740991}],
+        "candidate_offset": 23,
+        "bytes_read": 23,
+        "bytes_consumed": 23
+      }
+    },
+    {
+      "name": "safe_integer_negative_boundary_is_accepted",
+      "data_b64": "eyJuIjotOTAwNzE5OTI1NDc0MDk5MX0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"n": -9007199254740991}],
+        "candidate_offset": 24,
+        "bytes_read": 24,
+        "bytes_consumed": 24
+      }
+    },
+    {
+      "name": "positive_integer_just_outside_blocks",
+      "data_b64": "eyJuIjo5MDA3MTk5MjU0NzQwOTkyfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 23,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "negative_integer_just_outside_blocks",
+      "data_b64": "eyJuIjotOTAwNzE5OTI1NDc0MDk5Mn0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 24,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "nested_unsafe_integer_blocks",
+      "data_b64": "eyJvdXRlciI6W3sibiI6OTAwNzE5OTI1NDc0MDk5Mn1dfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 35,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "hundred_digit_integer_blocks",
+      "data_b64": "eyJuIjoxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 107,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "exact_duplicate_keys_block",
+      "data_b64": "eyJ4IjoxLCJ4IjoyfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 14,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "case_colliding_keys_block",
+      "data_b64": "eyJ4IjoxLCJYIjoyfQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 14,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "single_non_ascii_key_blocks",
+      "data_b64": "eyLOoyI6MX0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 9,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "nested_non_ascii_keys_block",
+      "data_b64": "eyJvdXRlciI6eyLOoyI6MSwiz4MiOjJ9fQo=",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 26,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "escaped_high_surrogate_blocks",
+      "data_b64": "eyJ4IjoiXHVEODAwIn0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 15,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "escaped_low_surrogate_blocks",
+      "data_b64": "eyJ4IjoiXHVEQzAwIn0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 15,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "escaped_surrogate_pair_blocks",
+      "data_b64": "eyJ4IjoiXHVEODNEXHVERTAwIn0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 21,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "literal_escaped_backslash_is_accepted",
+      "data_b64": "eyJ4IjoiXFx1RDgwMCJ9Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"x": "\\uD800"}],
+        "candidate_offset": 16,
+        "bytes_read": 16,
+        "bytes_consumed": 16
+      }
+    },
+    {
+      "name": "direct_supplementary_utf8_is_accepted",
+      "data_b64": "eyJ4Ijoi8J+YgCJ9Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"x": "😀"}],
+        "candidate_offset": 13,
+        "bytes_read": 13,
+        "bytes_consumed": 13
+      }
+    },
+    {
+      "name": "nesting_depth_32_is_accepted",
+      "data_b64": "eyJ2IjpbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbMF1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV19Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"v": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}],
+        "candidate_offset": 70,
+        "bytes_read": 70,
+        "bytes_consumed": 70
+      }
+    },
+    {
+      "name": "nesting_depth_33_blocks",
+      "data_b64": "eyJ2IjpbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbWzBdXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXX0K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "invalid_json",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 72,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "blank_row_blocks",
+      "data_b64": "Cg==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "json_not_object",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 1,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "identity_mismatch_retries",
+      "data_b64": "eyJ4IjoxfQo=",
+      "cursor_offset": 0,
+      "cursor_identity": "wrong",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "RETRY",
+        "reason": "file_identity_changed",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 0,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "cursor_inside_row_blocks",
+      "data_b64": "eyJ4IjoxfQo=",
+      "cursor_offset": 4,
+      "cursor_identity": "actual",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "cursor_not_lf_boundary",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 1,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "offset_past_eof_retries",
+      "data_b64": "eyJ4IjoxfQo=",
+      "cursor_offset": 9,
+      "cursor_identity": "actual",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "RETRY",
+        "reason": "log_truncated",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 0,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "generation_snapshot",
+      "data_b64": "eyJ4IjoxfQo=",
+      "generation_document_b64": "eyJnZW5lcmF0aW9uIjoiZzEifQ==",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "OK",
+        "reason": "rows_available",
+        "rows": [{"x": 1}],
+        "candidate_offset": 8,
+        "candidate_generation": "g1",
+        "bytes_read": 8,
+        "bytes_consumed": 8
+      }
+    },
+    {
+      "name": "generation_mismatch_retries",
+      "data_b64": "eyJ4IjoxfQo=",
+      "generation_document_b64": "eyJnZW5lcmF0aW9uIjoiZzEifQ==",
+      "cursor_offset": 0,
+      "cursor_identity": "actual",
+      "cursor_generation": "g0",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "RETRY",
+        "reason": "generation_changed",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 0,
+        "bytes_consumed": 0
+      }
+    },
+    {
+      "name": "invalid_generation_blocks",
+      "data_b64": "eyJ4IjoxfQo=",
+      "generation_document_b64": "W10K",
+      "max_bytes": 1024,
+      "expected": {
+        "status": "BLOCKED",
+        "reason": "generation_invalid",
+        "rows": [],
+        "candidate_offset": null,
+        "bytes_read": 0,
+        "bytes_consumed": 0
+      }
+    }
+  ]
+}

@@ -135,6 +135,44 @@ def test_attention_decision_cannot_be_constructed_as_an_interrupt(
         BridgeAttentionDecision(**values)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("requested", "effective", "decision"),
+    [
+        (2, True, "authenticated_interrupt_admission_unavailable"),
+        (2, 1.0, "authenticated_interrupt_admission_unavailable"),
+        (0, False, "background_queue"),
+        (0, 0.0, "background_queue"),
+    ],
+)
+def test_attention_decision_requires_exact_integer_effective_blocking(
+    requested: int,
+    effective: object,
+    decision: str,
+) -> None:
+    with pytest.raises(TypeError, match="effective_blocking must be an exact integer"):
+        BridgeAttentionDecision(
+            requested_blocking=requested,
+            effective_blocking=effective,  # type: ignore[arg-type]
+            decision=decision,
+        )
+
+
+def test_attention_decision_rejects_comparison_overloading_string_subclass() -> None:
+    class ForgedDecision(str):
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __ne__(self, other: object) -> bool:
+            return False
+
+    with pytest.raises(TypeError, match="decision must be an exact string"):
+        BridgeAttentionDecision(
+            requested_blocking=2,
+            effective_blocking=1,
+            decision=ForgedDecision("interrupt_admitted"),
+        )
+
+
 @pytest.mark.parametrize("construction", ["mutated", "model_construct"])
 def test_admission_revalidates_existing_bridge_event_instances(
     construction: str,

@@ -35,6 +35,10 @@ class BridgeAttentionDecision:
         }
         if type(self.requested_blocking) is not int:
             raise TypeError("requested_blocking must be an exact integer")
+        if type(self.effective_blocking) is not int:
+            raise TypeError("effective_blocking must be an exact integer")
+        if type(self.decision) is not str:
+            raise TypeError("decision must be an exact string")
         if self.requested_blocking not in expected:
             raise ValueError("requested_blocking must be 0, 1, or 2")
         expected_effective, expected_decision = expected[self.requested_blocking]

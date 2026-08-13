@@ -56,6 +56,21 @@ class RoutingFeatures:
     solver_intent: str = ""
 
 
+def normalize_bounded_confidence(value: object) -> float | None:
+    """Return an exact finite confidence in ``[0, 1]``, or ``None``.
+
+    Confidence values cross adapter boundaries.  Reject booleans, strings,
+    numeric subclasses, non-finite values, and unbounded integers instead of
+    relying on coercion or comparison side effects.
+    """
+    if type(value) not in {int, float}:
+        return None
+    if not 0.0 <= value <= 1.0:
+        return None
+    normalized = float(value)
+    return normalized if math.isfinite(normalized) else None
+
+
 def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
     """Return one bounded route with eligible deterministic solvers first.
 
@@ -105,21 +120,18 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
-    micromodel_confidence = features.micromodel_confidence
-    confidence_is_bounded = (
-        type(micromodel_confidence) in {int, float}
-        and 0.0 <= micromodel_confidence <= 1.0
-        and math.isfinite(float(micromodel_confidence))
+    micromodel_confidence = normalize_bounded_confidence(
+        features.micromodel_confidence
     )
     if (
         features.micromodel_enabled
         and features.has_micromodel_hit
-        and confidence_is_bounded
+        and micromodel_confidence is not None
         and micromodel_confidence > 0.85
     ):
         return TaskRoute(
             route_type="micromodel",
-            confidence=float(micromodel_confidence),
+            confidence=micromodel_confidence,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
@@ -131,10 +143,11 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
-    if features.memory_score > 0.7:
+    memory_confidence = normalize_bounded_confidence(features.memory_score)
+    if memory_confidence is not None and memory_confidence > 0.7:
         return TaskRoute(
             route_type="memory",
-            confidence=features.memory_score,
+            confidence=memory_confidence,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 

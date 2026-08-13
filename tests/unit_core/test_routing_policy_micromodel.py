@@ -165,6 +165,33 @@ class TestSelectRouteMicromodel:
         assert route.route_type == "llm"
         assert route.confidence == 0.6
 
+    @pytest.mark.parametrize(
+        "confidence",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            -0.001,
+            1.000001,
+            10**309,
+            -(10**309),
+            True,
+            "0.9",
+            None,
+        ],
+    )
+    def test_memory_rejects_nonfinite_or_noncanonical_confidence(
+        self,
+        confidence,
+    ):
+        route = select_route(
+            RoutingFeatures(memory_score=confidence),
+            _mock_config(),
+        )
+
+        assert route.route_type == "llm"
+        assert route.confidence == 0.6
+
     def test_micromodel_beats_memory(self):
         features = RoutingFeatures(
             micromodel_enabled=True,

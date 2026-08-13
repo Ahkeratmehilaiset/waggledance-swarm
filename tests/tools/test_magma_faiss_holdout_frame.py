@@ -524,6 +524,51 @@ def _fixture() -> tuple[
     return protocol, state, frame
 
 
+def _author_batches(
+    protocol: dict[str, Any],
+    state: dict[str, Any],
+    frame: dict[str, Any],
+    case_class: str,
+) -> list[dict[str, Any]]:
+    roster_key = (
+        "positive_author_actor_ids"
+        if case_class == "positive"
+        else "ood_author_actor_ids"
+    )
+    cases_key = "positive_cases" if case_class == "positive" else "ood_cases"
+    result: list[dict[str, Any]] = []
+    for author in frame["roles"][roster_key]:
+        result.append(
+            {
+                "schema_version": holdout_frame.AUTHOR_BATCH_SCHEMA,
+                "protocol_digest": holdout_protocol.preregistration_digest(
+                    protocol
+                ),
+                "preregistration_state_digest": holdout_protocol.state_digest(
+                    state,
+                    protocol=protocol,
+                ),
+                "declared_preregistration_published_at_utc": frame[
+                    "declared_preregistration_published_at_utc"
+                ],
+                "solver_identity_set_digest": frame[
+                    "solver_identity_set_digest"
+                ],
+                "case_class": case_class,
+                "author_actor_id": author,
+                "cases": [
+                    copy.deepcopy(case)
+                    for case in frame[cases_key]
+                    if case["author_actor_id"] == author
+                ],
+                "capability_boundary": _frame_boundary(
+                    "external_author_batch_validation_only"
+                ),
+            }
+        )
+    return result
+
+
 def _selection(
     protocol: dict[str, Any],
     state: dict[str, Any],
@@ -617,6 +662,538 @@ def test_valid_frame_and_selection_are_bound_balanced_and_non_authoritative() ->
         ]
         assert sum(case["language"] == "fi" for case in selected_stratum) == 12
         assert sum(case["language"] == "en" for case in selected_stratum) == 13
+
+
+def test_external_batches_assemble_exact_frame_without_io_or_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol, state, frame = _fixture()
+    positive_batches = _author_batches(protocol, state, frame, "positive")
+    ood_batches = _author_batches(protocol, state, frame, "ood")
+    original_inputs = copy.deepcopy(
+        (protocol, state, frame, positive_batches, ood_batches)
+    )
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("assembly must not use I/O or create commitments")
+
+    monkeypatch.setattr("builtins.open", forbidden)
+    monkeypatch.setattr(holdout_frame, "create_frame_commitment", forbidden)
+    assembled = holdout_frame.assemble_frame_from_external_author_batches(
+        acting_actor_id=frame["roles"]["custodian_actor_id"],
+        protocol=protocol,
+        preregistration_state=state,
+        declared_preregistration_published_at_utc=frame[
+            "declared_preregistration_published_at_utc"
+        ],
+        frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+        development_exclusion_set_digest=frame[
+            "development_exclusion_set_digest"
+        ],
+        solver_identities=frame["solver_identities"],
+        roles=frame["roles"],
+        attestations=frame["attestations"],
+        positive_author_batches=positive_batches,
+        ood_author_batches=ood_batches,
+    )
+
+    assert assembled == holdout_frame.validate_frame(
+        frame,
+        protocol=protocol,
+        preregistration_state=state,
+    )
+    assert (protocol, state, frame, positive_batches, ood_batches) == original_inputs
+    assert assembled["capability_boundary"] == _frame_boundary(
+        "external_plaintext_frame_validation_only"
+    )
+    assert not any(
+        key in assembled
+        for key in ("frame_commitment", "selection_seed", "score", "capture")
+    )
+
+    positive_batches.reverse()
+    ood_batches.reverse()
+    for batch in [*positive_batches, *ood_batches]:
+        batch["cases"].reverse()
+    permuted = holdout_frame.assemble_frame_from_external_author_batches(
+        acting_actor_id=frame["roles"]["custodian_actor_id"],
+        protocol=protocol,
+        preregistration_state=state,
+        declared_preregistration_published_at_utc=frame[
+            "declared_preregistration_published_at_utc"
+        ],
+        frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+        development_exclusion_set_digest=frame[
+            "development_exclusion_set_digest"
+        ],
+        solver_identities=frame["solver_identities"],
+        roles=frame["roles"],
+        attestations=frame["attestations"],
+        positive_author_batches=positive_batches,
+        ood_author_batches=ood_batches,
+    )
+    assert permuted == assembled
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    [
+        "opaque_case_id",
+        "intent_cluster_id",
+        "query",
+        "author_actor_id",
+        "authored_at_utc",
+    ],
+)
+def test_external_batch_never_generates_missing_case_values(
+    missing_key: str,
+) -> None:
+    protocol, state, frame = _fixture()
+    batch = _author_batches(protocol, state, frame, "positive")[0]
+    del batch["cases"][0][missing_key]
+
+    with pytest.raises(holdout_frame.HoldoutFrameError):
+        holdout_frame.validate_external_author_batch(
+            batch,
+            expected_case_class="positive",
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("location", "forbidden_key"),
+    [
+        ("batch", "score"),
+        ("batch", "capture_receipt"),
+        ("batch", "frame_commitment"),
+        ("batch", "selection_seed"),
+        ("case", "top_score"),
+        ("case", "captured_response"),
+        ("case", "adjudication"),
+        ("case", "adjudicated_label"),
+    ],
+)
+def test_external_batch_rejects_capture_score_and_adjudication_fields(
+    location: str,
+    forbidden_key: str,
+) -> None:
+    protocol, state, frame = _fixture()
+    batch = _author_batches(protocol, state, frame, "positive")[0]
+    target = batch if location == "batch" else batch["cases"][0]
+    target[forbidden_key] = False
+
+    with pytest.raises(holdout_frame.HoldoutFrameError):
+        holdout_frame.validate_external_author_batch(
+            batch,
+            expected_case_class="positive",
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+        )
+
+
+def test_external_batch_snapshots_false_capability_boundary_after_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol, state, frame = _fixture()
+    batch = _author_batches(protocol, state, frame, "positive")[0]
+    original_validator = holdout_frame._validate_capability_boundary
+
+    def mutate_after_validation(*args: Any, **kwargs: Any) -> None:
+        original_validator(*args, **kwargs)
+        batch["capability_boundary"]["external_provenance_verified"] = True
+
+    monkeypatch.setattr(
+        holdout_frame,
+        "_validate_capability_boundary",
+        mutate_after_validation,
+    )
+    validated = holdout_frame.validate_external_author_batch(
+        batch,
+        expected_case_class="positive",
+        protocol=protocol,
+        preregistration_state=state,
+        declared_preregistration_published_at_utc=frame[
+            "declared_preregistration_published_at_utc"
+        ],
+        frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+        solver_identities=frame["solver_identities"],
+        roles=frame["roles"],
+    )
+
+    assert batch["capability_boundary"]["external_provenance_verified"] is True
+    assert validated["capability_boundary"] == _frame_boundary(
+        "external_author_batch_validation_only"
+    )
+
+
+def test_external_frame_assembly_snapshots_attestations_after_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol, state, frame = _fixture()
+    attestations = copy.deepcopy(frame["attestations"])
+    original_validator = holdout_frame._validate_attestations
+    validation_calls = 0
+
+    def mutate_after_validation(value: Any) -> dict[str, bool]:
+        nonlocal validation_calls
+        validation_calls += 1
+        validated = original_validator(value)
+        value["case_authors_score_blind"] = False
+        return validated
+
+    monkeypatch.setattr(
+        holdout_frame,
+        "_validate_attestations",
+        mutate_after_validation,
+    )
+    assembled = holdout_frame.assemble_frame_from_external_author_batches(
+        acting_actor_id=frame["roles"]["custodian_actor_id"],
+        protocol=protocol,
+        preregistration_state=state,
+        declared_preregistration_published_at_utc=frame[
+            "declared_preregistration_published_at_utc"
+        ],
+        frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+        development_exclusion_set_digest=frame[
+            "development_exclusion_set_digest"
+        ],
+        solver_identities=frame["solver_identities"],
+        roles=frame["roles"],
+        attestations=attestations,
+        positive_author_batches=_author_batches(protocol, state, frame, "positive"),
+        ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+    )
+
+    assert validation_calls == 2
+    assert attestations["case_authors_score_blind"] is False
+    assert assembled["attestations"] == frame["attestations"]
+
+
+@pytest.mark.parametrize("actor_kind", ["owner", "author", "adjudicator", "unknown"])
+def test_external_frame_assembly_requires_exact_declared_custodian(
+    actor_kind: str,
+) -> None:
+    protocol, state, frame = _fixture()
+    actors = {
+        "owner": frame["roles"]["candidate_owner_actor_id"],
+        "author": frame["roles"]["positive_author_actor_ids"][0],
+        "adjudicator": frame["roles"]["adjudicator_actor_ids"][0],
+        "unknown": _actor("unknown-custodian"),
+    }
+
+    with pytest.raises(
+        holdout_frame.HoldoutFrameError,
+        match="frame_assembly_requires_declared_custodian",
+    ):
+        holdout_frame.assemble_frame_from_external_author_batches(
+            acting_actor_id=actors[actor_kind],
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            development_exclusion_set_digest=frame[
+                "development_exclusion_set_digest"
+            ],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+            attestations=frame["attestations"],
+            positive_author_batches=_author_batches(
+                protocol, state, frame, "positive"
+            ),
+            ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+        )
+
+
+def test_external_frame_assembly_rejects_custodian_string_subclass() -> None:
+    protocol, state, frame = _fixture()
+
+    with pytest.raises(holdout_frame.HoldoutFrameError):
+        holdout_frame.assemble_frame_from_external_author_batches(
+            acting_actor_id=_StringSubclass(
+                frame["roles"]["custodian_actor_id"]
+            ),
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            development_exclusion_set_digest=frame[
+                "development_exclusion_set_digest"
+            ],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+            attestations=frame["attestations"],
+            positive_author_batches=_author_batches(
+                protocol, state, frame, "positive"
+            ),
+            ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "wrong_lane"])
+def test_external_frame_assembly_requires_one_batch_per_lane_author(
+    mutation: str,
+) -> None:
+    protocol, state, frame = _fixture()
+    positive = _author_batches(protocol, state, frame, "positive")
+    ood = _author_batches(protocol, state, frame, "ood")
+    if mutation == "missing":
+        positive.pop()
+    elif mutation == "duplicate":
+        positive.append(copy.deepcopy(positive[0]))
+    else:
+        ood[0] = copy.deepcopy(positive[0])
+
+    with pytest.raises(holdout_frame.HoldoutFrameError):
+        holdout_frame.assemble_frame_from_external_author_batches(
+            acting_actor_id=frame["roles"]["custodian_actor_id"],
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            development_exclusion_set_digest=frame[
+                "development_exclusion_set_digest"
+            ],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+            attestations=frame["attestations"],
+            positive_author_batches=positive,
+            ood_author_batches=ood,
+        )
+
+
+def test_external_frame_assembly_rejects_bad_roster_before_batch_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol, state, frame = _fixture()
+    positive = _author_batches(protocol, state, frame, "positive")
+    positive.append(copy.deepcopy(positive[0]))
+    validation_calls = 0
+
+    def count_validation(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        raise AssertionError("roster preflight must reject first")
+
+    monkeypatch.setattr(
+        holdout_frame,
+        "_validate_external_author_batch_with_context",
+        count_validation,
+    )
+    with pytest.raises(
+        holdout_frame.HoldoutFrameError,
+        match="positive_author_batch_roster_mismatch",
+    ):
+        holdout_frame.assemble_frame_from_external_author_batches(
+            acting_actor_id=frame["roles"]["custodian_actor_id"],
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            development_exclusion_set_digest=frame[
+                "development_exclusion_set_digest"
+            ],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+            attestations=frame["attestations"],
+            positive_author_batches=positive,
+            ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+        )
+    assert validation_calls == 0
+
+
+def test_external_frame_assembly_snapshots_batch_membership_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol, state, frame = _fixture()
+    positive = _author_batches(protocol, state, frame, "positive")
+    late_batch = copy.deepcopy(positive[0])
+    for index, case in enumerate(late_batch["cases"]):
+        case["opaque_case_id"] = "case_" + _hex(f"late-case:{index}")
+        case["intent_cluster_id"] = "intent_" + _hex(f"late-intent:{index}")
+        case["semantic_family_digest"] = _sha(f"late-family:{index}")
+        case["query"] = f"Late concurrent query {index}"
+    original_validator = holdout_frame._validate_external_author_batch_with_context
+    validation_calls = 0
+
+    def mutate_membership(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 1:
+            positive.append(late_batch)
+        return original_validator(*args, **kwargs)
+
+    monkeypatch.setattr(
+        holdout_frame,
+        "_validate_external_author_batch_with_context",
+        mutate_membership,
+    )
+    assembled = holdout_frame.assemble_frame_from_external_author_batches(
+        acting_actor_id=frame["roles"]["custodian_actor_id"],
+        protocol=protocol,
+        preregistration_state=state,
+        declared_preregistration_published_at_utc=frame[
+            "declared_preregistration_published_at_utc"
+        ],
+        frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+        development_exclusion_set_digest=frame[
+            "development_exclusion_set_digest"
+        ],
+        solver_identities=frame["solver_identities"],
+        roles=frame["roles"],
+        attestations=frame["attestations"],
+        positive_author_batches=positive,
+        ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+    )
+
+    assert len(positive) == 3
+    assert validation_calls == 4
+    assert assembled == holdout_frame.validate_frame(
+        frame,
+        protocol=protocol,
+        preregistration_state=state,
+    )
+
+
+def test_external_frame_assembly_snapshots_case_membership_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol, state, frame = _fixture()
+    positive = _author_batches(protocol, state, frame, "positive")
+    late_case = copy.deepcopy(positive[0]["cases"][0])
+    late_case["opaque_case_id"] = "case_" + _hex("late-case-member")
+    late_case["intent_cluster_id"] = "intent_" + _hex("late-intent-member")
+    late_case["semantic_family_digest"] = _sha("late-family-member")
+    late_case["query"] = "Late concurrent case member"
+    original_validator = holdout_frame._validate_external_author_batch_with_context
+    validation_calls = 0
+
+    def mutate_cases(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 1:
+            positive[0]["cases"].append(late_case)
+        return original_validator(*args, **kwargs)
+
+    monkeypatch.setattr(
+        holdout_frame,
+        "_validate_external_author_batch_with_context",
+        mutate_cases,
+    )
+    assembled = holdout_frame.assemble_frame_from_external_author_batches(
+        acting_actor_id=frame["roles"]["custodian_actor_id"],
+        protocol=protocol,
+        preregistration_state=state,
+        declared_preregistration_published_at_utc=frame[
+            "declared_preregistration_published_at_utc"
+        ],
+        frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+        development_exclusion_set_digest=frame[
+            "development_exclusion_set_digest"
+        ],
+        solver_identities=frame["solver_identities"],
+        roles=frame["roles"],
+        attestations=frame["attestations"],
+        positive_author_batches=positive,
+        ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+    )
+
+    assert len(positive[0]["cases"]) == 133
+    assert validation_calls == 4
+    assert assembled == holdout_frame.validate_frame(
+        frame,
+        protocol=protocol,
+        preregistration_state=state,
+    )
+
+
+@pytest.mark.parametrize(
+    "duplicate_key",
+    ["opaque_case_id", "intent_cluster_id", "semantic_family_digest", "query"],
+)
+def test_external_frame_assembly_rejects_cross_batch_duplicates(
+    duplicate_key: str,
+) -> None:
+    protocol, state, frame = _fixture()
+    positive = _author_batches(protocol, state, frame, "positive")
+    positive[1]["cases"][0][duplicate_key] = positive[0]["cases"][0][
+        duplicate_key
+    ]
+
+    with pytest.raises(holdout_frame.HoldoutFrameError):
+        holdout_frame.assemble_frame_from_external_author_batches(
+            acting_actor_id=frame["roles"]["custodian_actor_id"],
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            development_exclusion_set_digest=frame[
+                "development_exclusion_set_digest"
+            ],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+            attestations=frame["attestations"],
+            positive_author_batches=positive,
+            ood_author_batches=_author_batches(protocol, state, frame, "ood"),
+        )
+
+
+@pytest.mark.parametrize("mutation", ["binding", "time", "target", "capability"])
+def test_external_author_batch_rejects_binding_time_target_and_authority_forgery(
+    mutation: str,
+) -> None:
+    protocol, state, frame = _fixture()
+    batch = _author_batches(protocol, state, frame, "positive")[0]
+    if mutation == "binding":
+        batch["preregistration_state_digest"] = _sha("wrong-state")
+    elif mutation == "time":
+        batch["cases"][0]["authored_at_utc"] = frame[
+            "declared_preregistration_published_at_utc"
+        ]
+    elif mutation == "target":
+        batch["cases"][0]["design_cell_id"] = next(
+            cell
+            for cell in ALL_CELLS
+            if cell != batch["cases"][0]["design_cell_id"]
+        )
+    else:
+        batch["capability_boundary"]["external_provenance_verified"] = True
+
+    with pytest.raises(holdout_frame.HoldoutFrameError):
+        holdout_frame.validate_external_author_batch(
+            batch,
+            expected_case_class="positive",
+            protocol=protocol,
+            preregistration_state=state,
+            declared_preregistration_published_at_utc=frame[
+                "declared_preregistration_published_at_utc"
+            ],
+            frame_frozen_at_utc=frame["frame_frozen_at_utc"],
+            solver_identities=frame["solver_identities"],
+            roles=frame["roles"],
+        )
 
 
 def test_frame_permutation_does_not_change_commitment_or_selection() -> None:

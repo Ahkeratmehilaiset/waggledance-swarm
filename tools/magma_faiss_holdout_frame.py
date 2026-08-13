@@ -32,6 +32,7 @@ from waggledance.core.magma.canonical import canonical_json_bytes, sha256_digest
 
 
 FRAME_SCHEMA = "wd.magma.faiss_holdout_frame.v1"
+AUTHOR_BATCH_SCHEMA = "wd.magma.faiss_holdout_author_batch.v1"
 SELECTION_SCHEMA = "wd.magma.faiss_holdout_selection_projection.v1"
 SELECTION_ALGORITHM = (
     "hmac_sha256_rank_per_locked_stratum_then_hmac_mixed_order_v1"
@@ -65,6 +66,19 @@ _FRAME_KEYS = frozenset(
         "attestations",
         "positive_cases",
         "ood_cases",
+        "capability_boundary",
+    }
+)
+_AUTHOR_BATCH_KEYS = frozenset(
+    {
+        "schema_version",
+        "protocol_digest",
+        "preregistration_state_digest",
+        "declared_preregistration_published_at_utc",
+        "solver_identity_set_digest",
+        "case_class",
+        "author_actor_id",
+        "cases",
         "capability_boundary",
     }
 )
@@ -410,10 +424,11 @@ def _validate_roles(value: Any) -> dict[str, Any]:
     }
 
 
-def _validate_attestations(value: Any) -> None:
+def _validate_attestations(value: Any) -> dict[str, bool]:
     attestations = _exact_dict(value, _ATTESTATION_KEYS, "attestations")
     for key in _ATTESTATION_KEYS:
         _exact_bool(attestations[key], True, f"attestations_{key}")
+    return {key: True for key in sorted(_ATTESTATION_KEYS)}
 
 
 def _validate_query(value: Any, label: str) -> str:
@@ -711,7 +726,7 @@ def validate_frame(
         raise HoldoutFrameError("frame_solver_identity_set_digest_mismatch")
 
     roles = _validate_roles(frame["roles"])
-    _validate_attestations(frame["attestations"])
+    attestations = _validate_attestations(frame["attestations"])
     positive, ood = _validate_cases(
         frame,
         protocol=validated_protocol,
@@ -735,13 +750,428 @@ def validate_frame(
             "solver_identity_set_digest": identity_digest,
             "solver_identities": identities,
             "roles": roles,
-            "attestations": frame["attestations"],
+            "attestations": attestations,
             "positive_cases": positive,
             "ood_cases": ood,
             "capability_boundary": frame["capability_boundary"],
         },
         "frame",
         maximum_bytes=protocol_contract.MAX_COMMITMENT_PAYLOAD_BYTES,
+    )
+
+
+def _validate_external_author_batch_with_context(
+    value: Any,
+    *,
+    case_class: str,
+    protocol_digest: str,
+    state_digest: str,
+    publication_text: str,
+    authored_after: datetime,
+    frozen_at: datetime,
+    identity_digest: str,
+    solver_cells: dict[str, str],
+    allowed_authors: set[str],
+) -> dict[str, Any]:
+    batch = _exact_dict(value, _AUTHOR_BATCH_KEYS, "author_batch")
+    if (
+        _exact_string(batch["schema_version"], "author_batch_schema_version")
+        != AUTHOR_BATCH_SCHEMA
+    ):
+        raise HoldoutFrameError("author_batch_schema_mismatch")
+    if (
+        _regex_string(
+            batch["protocol_digest"],
+            _FULL_SHA256,
+            "author_batch_protocol_digest",
+        )
+        != protocol_digest
+    ):
+        raise HoldoutFrameError("author_batch_protocol_digest_mismatch")
+    if (
+        _regex_string(
+            batch["preregistration_state_digest"],
+            _FULL_SHA256,
+            "author_batch_preregistration_state_digest",
+        )
+        != state_digest
+    ):
+        raise HoldoutFrameError("author_batch_preregistration_state_digest_mismatch")
+    batch_publication_text, _ = _canonical_utc(
+        batch["declared_preregistration_published_at_utc"],
+        "author_batch_declared_preregistration_published_at_utc",
+    )
+    if batch_publication_text != publication_text:
+        raise HoldoutFrameError("author_batch_preregistration_publication_mismatch")
+    if (
+        _regex_string(
+            batch["solver_identity_set_digest"],
+            _FULL_SHA256,
+            "author_batch_solver_identity_set_digest",
+        )
+        != identity_digest
+    ):
+        raise HoldoutFrameError("author_batch_solver_identity_set_digest_mismatch")
+    if _exact_string(batch["case_class"], "author_batch_case_class") != case_class:
+        raise HoldoutFrameError("author_batch_case_class_mismatch")
+
+    author_id = _regex_string(
+        batch["author_actor_id"],
+        _ACTOR_ID,
+        "author_batch_author_actor_id",
+    )
+    if author_id not in allowed_authors:
+        raise HoldoutFrameError("author_batch_author_not_in_expected_role")
+
+    raw_cases = list(_exact_list(batch["cases"], "author_batch_cases"))
+    if not raw_cases:
+        raise HoldoutFrameError("author_batch_cases_must_not_be_empty")
+    if len(raw_cases) > MAX_FRAME_CASE_COUNT:
+        raise HoldoutFrameError("author_batch_case_count_exceeds_limit")
+    cases: list[dict[str, Any]] = []
+    for index, raw_case in enumerate(raw_cases):
+        label = f"author_batch_cases_{index}"
+        case = _validate_case_common(
+            raw_case,
+            label=label,
+            allowed_authors={author_id},
+            authored_after=authored_after,
+            frozen_at=frozen_at,
+        )
+        if case_class == "positive":
+            if case["stratum"] not in protocol_contract.POSITIVE_STRATA:
+                raise HoldoutFrameError(f"{label}_stratum_invalid")
+            if case["language"] != case["stratum"].split("_", 1)[0]:
+                raise HoldoutFrameError(f"{label}_language_stratum_mismatch")
+            _positive_case_target(
+                case,
+                label=label,
+                solver_cells=solver_cells,
+            )
+        else:
+            if case["stratum"] not in protocol_contract.OOD_STRATA:
+                raise HoldoutFrameError(f"{label}_stratum_invalid")
+            _validate_ood_target(case, label=label)
+        cases.append(case)
+
+    uniqueness_vectors = (
+        ([case["opaque_case_id"] for case in cases], "opaque_case_ids"),
+        ([case["intent_cluster_id"] for case in cases], "intent_clusters"),
+        ([case["semantic_family_digest"] for case in cases], "semantic_families"),
+        ([_case_record_digest(case) for case in cases], "case_records"),
+        ([_query_dedup_key(case["query"]) for case in cases], "normalized_queries"),
+    )
+    for values, label in uniqueness_vectors:
+        if len(set(values)) != len(values):
+            raise HoldoutFrameError(f"author_batch_{label}_must_be_unique")
+
+    _validate_capability_boundary(
+        batch["capability_boundary"],
+        artifact_class="external_author_batch_validation_only",
+    )
+    return _canonical_clone(
+        {
+            "schema_version": AUTHOR_BATCH_SCHEMA,
+            "protocol_digest": protocol_digest,
+            "preregistration_state_digest": state_digest,
+            "declared_preregistration_published_at_utc": publication_text,
+            "solver_identity_set_digest": identity_digest,
+            "case_class": case_class,
+            "author_actor_id": author_id,
+            "cases": sorted(cases, key=lambda case: case["opaque_case_id"]),
+            "capability_boundary": _no_authority_boundary(
+                "external_author_batch_validation_only"
+            ),
+        },
+        "author_batch",
+        maximum_bytes=protocol_contract.MAX_COMMITMENT_PAYLOAD_BYTES,
+    )
+
+
+def validate_external_author_batch(
+    value: Any,
+    *,
+    expected_case_class: str,
+    protocol: Any,
+    preregistration_state: Any,
+    declared_preregistration_published_at_utc: str,
+    frame_frozen_at_utc: str,
+    solver_identities: Any,
+    roles: Any,
+) -> dict[str, Any]:
+    """Validate one score-blind author batch without granting provenance.
+
+    The caller supplies every identifier, timestamp, query, role declaration,
+    and frozen candidate binding.  This pure validator neither authenticates
+    the declared author nor creates missing values.  Its returned capability
+    boundary therefore remains entirely false.
+    """
+
+    case_class = _exact_string(expected_case_class, "expected_case_class")
+    if case_class not in {"positive", "ood"}:
+        raise HoldoutFrameError("expected_case_class_invalid")
+
+    validated_protocol = _validated_protocol(protocol)
+    protocol_digest = protocol_contract.preregistration_digest(validated_protocol)
+    try:
+        validated_state = protocol_contract.validate_state(
+            preregistration_state,
+            protocol=validated_protocol,
+        )
+    except protocol_contract.HoldoutProtocolError as exc:
+        raise HoldoutFrameError("preregistration_state_invalid") from exc
+    if validated_state["stage"] != "preregistered":
+        raise HoldoutFrameError("author_batch_requires_preregistered_state")
+    state_digest = protocol_contract.state_digest(
+        validated_state,
+        protocol=validated_protocol,
+    )
+
+    identities = _validated_solver_identities(solver_identities)
+    identity_digest = solver_identity_set_digest(identities)
+    if identity_digest != validated_protocol["candidate_identity"][
+        "projection_identity_set_digest"
+    ]:
+        raise HoldoutFrameError("author_batch_solver_identity_set_mismatch")
+    solver_cells = {
+        row["canonical_solver_id"]: row["cell_id"] for row in identities
+    }
+    validated_roles = _validate_roles(roles)
+    roster_key = (
+        "positive_author_actor_ids"
+        if case_class == "positive"
+        else "ood_author_actor_ids"
+    )
+
+    publication_text, publication_at = _canonical_utc(
+        declared_preregistration_published_at_utc,
+        "declared_preregistration_published_at_utc",
+    )
+    _, frozen_at = _canonical_utc(
+        frame_frozen_at_utc,
+        "frame_frozen_at_utc",
+    )
+    _, cutoff = _canonical_utc(
+        validated_protocol["cutoff"]["cutoff_utc"],
+        "protocol_cutoff_utc",
+    )
+    authored_after = max(cutoff, publication_at)
+    if frozen_at <= authored_after:
+        raise HoldoutFrameError("frame_freeze_must_follow_preregistration")
+
+    return _validate_external_author_batch_with_context(
+        value,
+        case_class=case_class,
+        protocol_digest=protocol_digest,
+        state_digest=state_digest,
+        publication_text=publication_text,
+        authored_after=authored_after,
+        frozen_at=frozen_at,
+        identity_digest=identity_digest,
+        solver_cells=solver_cells,
+        allowed_authors=set(validated_roles[roster_key]),
+    )
+
+
+def assemble_frame_from_external_author_batches(
+    *,
+    acting_actor_id: str,
+    protocol: Any,
+    preregistration_state: Any,
+    declared_preregistration_published_at_utc: str,
+    frame_frozen_at_utc: str,
+    development_exclusion_set_digest: str,
+    solver_identities: Any,
+    roles: Any,
+    attestations: Any,
+    positive_author_batches: Any,
+    ood_author_batches: Any,
+) -> dict[str, Any]:
+    """Assemble a frame only for the declared custodian, without auth claims.
+
+    ``acting_actor_id`` is checked only against the caller-supplied role
+    declaration.  It is not an authenticated identity or provenance proof.
+    Every raw author batch is revalidated before the unchanged frame validator
+    enforces global coverage, uniqueness, and candidate bindings.
+    """
+
+    validated_protocol = _validated_protocol(protocol)
+    protocol_digest = protocol_contract.preregistration_digest(validated_protocol)
+    try:
+        validated_state = protocol_contract.validate_state(
+            preregistration_state,
+            protocol=validated_protocol,
+        )
+    except protocol_contract.HoldoutProtocolError as exc:
+        raise HoldoutFrameError("preregistration_state_invalid") from exc
+    if validated_state["stage"] != "preregistered":
+        raise HoldoutFrameError("frame_requires_preregistered_state")
+    state_digest = protocol_contract.state_digest(
+        validated_state,
+        protocol=validated_protocol,
+    )
+    identities = _validated_solver_identities(solver_identities)
+    identity_digest = solver_identity_set_digest(identities)
+    if identity_digest != validated_protocol["candidate_identity"][
+        "projection_identity_set_digest"
+    ]:
+        raise HoldoutFrameError("frame_solver_identity_set_digest_mismatch")
+    validated_roles = _validate_roles(roles)
+    actor_id = _regex_string(
+        acting_actor_id,
+        _ACTOR_ID,
+        "acting_actor_id",
+    )
+    if actor_id != validated_roles["custodian_actor_id"]:
+        raise HoldoutFrameError("frame_assembly_requires_declared_custodian")
+    validated_attestations = _validate_attestations(attestations)
+    exclusion_digest = _regex_string(
+        development_exclusion_set_digest,
+        _FULL_SHA256,
+        "development_exclusion_set_digest",
+    )
+    publication_text, publication_at = _canonical_utc(
+        declared_preregistration_published_at_utc,
+        "declared_preregistration_published_at_utc",
+    )
+    frozen_text, frozen_at = _canonical_utc(
+        frame_frozen_at_utc,
+        "frame_frozen_at_utc",
+    )
+    _, cutoff = _canonical_utc(
+        validated_protocol["cutoff"]["cutoff_utc"],
+        "protocol_cutoff_utc",
+    )
+    authored_after = max(cutoff, publication_at)
+    if frozen_at <= authored_after:
+        raise HoldoutFrameError("frame_freeze_must_follow_preregistration")
+    solver_cells = {
+        row["canonical_solver_id"]: row["cell_id"] for row in identities
+    }
+
+    def preflight_lane_batches(
+        raw_batches: Any,
+        *,
+        case_class: str,
+        roster_key: str,
+    ) -> tuple[list[Any], int]:
+        batches = list(
+            _exact_list(raw_batches, f"{case_class}_author_batches")
+        )
+        expected_authors = validated_roles[roster_key]
+        if len(batches) != len(expected_authors):
+            raise HoldoutFrameError(f"{case_class}_author_batch_roster_mismatch")
+        authors: list[str] = []
+        case_count = 0
+        snapshots: list[dict[str, Any]] = []
+        for index, raw_batch in enumerate(batches):
+            batch = _exact_dict(
+                raw_batch,
+                _AUTHOR_BATCH_KEYS,
+                f"{case_class}_author_batches_{index}",
+            )
+            authors.append(
+                _regex_string(
+                    batch["author_actor_id"],
+                    _ACTOR_ID,
+                    f"{case_class}_author_batches_{index}_author_actor_id",
+                )
+            )
+            raw_cases = _exact_list(
+                batch["cases"],
+                f"{case_class}_author_batches_{index}_cases",
+            )
+            if not raw_cases:
+                raise HoldoutFrameError("author_batch_cases_must_not_be_empty")
+            case_count += len(raw_cases)
+            if case_count > MAX_FRAME_CASE_COUNT:
+                raise HoldoutFrameError("frame_case_count_exceeds_limit")
+            snapshot = dict(batch)
+            snapshot["cases"] = list(raw_cases)
+            snapshots.append(snapshot)
+        if len(authors) != len(set(authors)):
+            raise HoldoutFrameError(f"{case_class}_author_batches_must_be_unique")
+        if set(authors) != set(expected_authors):
+            raise HoldoutFrameError(f"{case_class}_author_batch_roster_mismatch")
+        return snapshots, case_count
+
+    positive_raw_batches, positive_case_count = preflight_lane_batches(
+        positive_author_batches,
+        case_class="positive",
+        roster_key="positive_author_actor_ids",
+    )
+    ood_raw_batches, ood_case_count = preflight_lane_batches(
+        ood_author_batches,
+        case_class="ood",
+        roster_key="ood_author_actor_ids",
+    )
+    if positive_case_count + ood_case_count > MAX_FRAME_CASE_COUNT:
+        raise HoldoutFrameError("frame_case_count_exceeds_limit")
+
+    def validated_lane_batches(
+        batches: list[Any],
+        *,
+        case_class: str,
+        roster_key: str,
+    ) -> list[dict[str, Any]]:
+        allowed_authors = set(validated_roles[roster_key])
+        validated = [
+            _validate_external_author_batch_with_context(
+                raw_batch,
+                case_class=case_class,
+                protocol_digest=protocol_digest,
+                state_digest=state_digest,
+                publication_text=publication_text,
+                authored_after=authored_after,
+                frozen_at=frozen_at,
+                identity_digest=identity_digest,
+                solver_cells=solver_cells,
+                allowed_authors=allowed_authors,
+            )
+            for raw_batch in batches
+        ]
+        authors = [batch["author_actor_id"] for batch in validated]
+        if len(authors) != len(set(authors)):
+            raise HoldoutFrameError(f"{case_class}_author_batches_must_be_unique")
+        if set(authors) != set(validated_roles[roster_key]):
+            raise HoldoutFrameError(f"{case_class}_author_batch_roster_mismatch")
+        return sorted(validated, key=lambda batch: batch["author_actor_id"])
+
+    positive_batches = validated_lane_batches(
+        positive_raw_batches,
+        case_class="positive",
+        roster_key="positive_author_actor_ids",
+    )
+    ood_batches = validated_lane_batches(
+        ood_raw_batches,
+        case_class="ood",
+        roster_key="ood_author_actor_ids",
+    )
+    positive_cases = [
+        case for batch in positive_batches for case in batch["cases"]
+    ]
+    ood_cases = [case for batch in ood_batches for case in batch["cases"]]
+    frame = {
+        "schema_version": FRAME_SCHEMA,
+        "protocol_digest": protocol_digest,
+        "preregistration_state_digest": state_digest,
+        "declared_preregistration_published_at_utc": publication_text,
+        "frame_frozen_at_utc": frozen_text,
+        "development_exclusion_set_digest": exclusion_digest,
+        "solver_identity_set_digest": identity_digest,
+        "solver_identities": identities,
+        "roles": validated_roles,
+        "attestations": validated_attestations,
+        "positive_cases": positive_cases,
+        "ood_cases": ood_cases,
+        "capability_boundary": _no_authority_boundary(
+            "external_plaintext_frame_validation_only"
+        ),
+    }
+    return validate_frame(
+        frame,
+        protocol=validated_protocol,
+        preregistration_state=validated_state,
     )
 
 
@@ -1085,15 +1515,18 @@ def validate_selection_projection(
 
 
 __all__ = [
+    "AUTHOR_BATCH_SCHEMA",
     "FRAME_SCHEMA",
     "HoldoutFrameError",
     "MAX_FRAME_CASE_COUNT",
     "MAX_QUERY_UTF8_BYTES",
     "SELECTION_ALGORITHM",
     "SELECTION_SCHEMA",
+    "assemble_frame_from_external_author_batches",
     "create_frame_commitment",
     "select_frame_cases",
     "solver_identity_set_digest",
+    "validate_external_author_batch",
     "validate_frame",
     "validate_selection_projection",
 ]

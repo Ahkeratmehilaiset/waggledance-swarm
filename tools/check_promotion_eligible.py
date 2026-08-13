@@ -37,7 +37,6 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
 )
 from tools.check_rco_pass_present import (  # noqa: E402
     DECISION_TYPES_FOR_PASS as RCO_PASS_EVENT_TYPES,
-    _is_rco_veto_event,
     check_rco_pass_present,
 )
 from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
@@ -50,10 +49,7 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
     _consensus_block_scope_match,
     verify_bridge_consensus,
 )
-from tools.bridge_event_taxonomy import (  # noqa: E402
-    BLOCK_BY_TYPE as AUTHORITY_BLOCK_BY_TYPE,
-    RCO_GATED_TYPES as AUTHORITY_RCO_GATED_TYPES,
-)
+from tools.bridge_event_taxonomy import is_type_veto  # noqa: E402
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
     evaluate_diff_content,
@@ -316,6 +312,9 @@ def _evaluate_promotion_eligibility(
         rco_agents,
         author_agent=author_agent,
     )
+    veto_rco_agent_set = tuple(
+        dict.fromkeys((*PEER_RECOGNIZED_RCO_AGENTS, *rco_agent_set))
+    )
     number = _pr_number(pr_status, pr_number)
     status_head = _required_sha(
         pr_status.get("head_sha"),
@@ -334,7 +333,7 @@ def _evaluate_promotion_eligibility(
         expected_task_id=task_id,
         expected_pr_number=number,
         expected_head=head,
-        recognized_rco_agents=rco_agent_set,
+        recognized_rco_agents=veto_rco_agent_set,
     )
     prior_diff_text = _prior_approved_diff_text(
         pr_status=pr_status,
@@ -389,7 +388,7 @@ def _evaluate_promotion_eligibility(
         expected_task_id=task_id,
         expected_pr_number=number,
         expected_head=approval_head,
-        recognized_rco_agents=rco_agent_set,
+        recognized_rco_agents=veto_rco_agent_set,
     )
     try:
         peer_gate = check_bridge_clear_to_merge(
@@ -398,6 +397,7 @@ def _evaluate_promotion_eligibility(
             merging_agent=from_agent,
             author_agent=author_agent,
             pr_number=number,
+            recognized_rco_agents=veto_rco_agent_set,
         )
         rco_pass_gate = _rco_pass_set_gate(
             events=gate_events,
@@ -1191,12 +1191,12 @@ def _is_exact_gate_authority_event(
 ) -> bool:
     event_type = event["type"]
     status = event["status"]
-    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
-        return True
     if _is_exact_gate_blocking_event(
         event,
         recognized_rco_agents=recognized_rco_agents,
     ):
+        return True
+    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
         return True
     if event_type in {"decision", "rco_review", "finding", "done"}:
         if (
@@ -1218,17 +1218,14 @@ def _is_exact_gate_blocking_event(
     event_type = event["type"]
     status = event["status"]
     agent = event["agent"]
-    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
-        return False
-    if event_type in AUTHORITY_BLOCK_BY_TYPE and (
-        event_type not in AUTHORITY_RCO_GATED_TYPES
-        or agent in PEER_RECOGNIZED_RCO_AGENTS
-        or (
-            agent in recognized_rco_agents
-            and _is_rco_veto_event(event)
-        )
+    if is_type_veto(
+        event_type=event_type,
+        agent=agent,
+        recognized_rco_agents=recognized_rco_agents,
     ):
         return True
+    if event_type in PEER_CLEAR_EVENT_TYPES and _peer_is_clear_status(status):
+        return False
     return (
         event_type in PEER_BLOCKING_EVENT_TYPES
         and _peer_is_blocking_status(status, event_type=event_type)
@@ -1546,10 +1543,8 @@ def _recognized_rco_agents(
                 )
             )
         seen.add(value)
-        if value == author_agent:
-            continue
         cleaned.append(value)
-    if not cleaned:
+    if not any(value != author_agent for value in cleaned):
         raise PromotionEligibilityError(
             _invalid_report(
                 "invalid_input", "no non-author recognized RCO agents configured"

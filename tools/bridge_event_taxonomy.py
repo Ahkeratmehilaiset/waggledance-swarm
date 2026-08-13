@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BUSL-1.1
-"""Single shared bridge-event gate taxonomy (RFC P2/D5) — DORMANT / UNWIRED.
+"""Single shared bridge-event gate taxonomy (RFC P2/D5).
 
 Implements the taxonomy + classifier defined by
-``docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V1.md`` (PR #1387). **Consulted by
-nothing yet** — pure, testable logic. Once the spec invariant is operator-signed,
-the gate consumers (check_bridge_changes_requested / check_rco_pass_present /
-verify_bridge_consensus / the merge driver) migrate to call ``classify`` instead
-of re-deriving authority from free-text status names / message bodies.
+``docs/architecture/BRIDGE_EVENT_GATE_TAXONOMY_V1.md`` (PR #1387). The narrow
+``is_type_veto`` primitive is live in gate consumers so type-authoritative vetoes
+cannot be cleared by status text. The full ``classify`` migration remains dormant;
+consumers retain their existing scope, identity, head, and supersession rules.
 
 Authority comes from STRUCTURED FIELDS only:
   - ``type``             event type — authority types MIRROR the live gate exactly
@@ -27,6 +26,7 @@ never default-allow. The status NAME string and message body have ZERO authority
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
@@ -66,6 +66,23 @@ BLOCK_BY_TYPE = frozenset({"finding", "blocked"})
 # — a status NAME or message body on them is ignored. message/handoff/wake_request
 # were never live authority (clarification); rco_review/test/done are the
 # evidence-based deliberate tightenings documented above.
+
+
+def is_type_veto(
+    *,
+    event_type: str,
+    agent: str,
+    recognized_rco_agents: Collection[str],
+) -> bool:
+    """Return whether structured type and identity make an event a veto.
+
+    Status, message, scope, head, and time are intentionally absent. Callers
+    apply their existing admission and ordering rules around this primitive.
+    """
+    return event_type in BLOCK_BY_TYPE and (
+        event_type not in RCO_GATED_TYPES
+        or agent in recognized_rco_agents
+    )
 
 # --- decision_status CLOSED enum (exact-match classification) -----------------
 APPROVE_STATUSES = frozenset({

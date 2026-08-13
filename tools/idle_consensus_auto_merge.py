@@ -46,6 +46,7 @@ from tools.pr_status_snapshot import (  # noqa: E402
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
     evaluate_standing_consensus_sign,
 )
+from tools.bridge_event_taxonomy import is_type_veto  # noqa: E402
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
     evaluate_diff_content,
@@ -1380,6 +1381,7 @@ def verify_bridge_consensus(
         "author_agent": author_agent,
         "blocking_rco_agents": [],
         "ignored_identity_mismatch_events": [],
+        "unverified_block_events": [],
         "lead_stall_failover": _lead_stall_failover_disabled_report(
             head_sha=head_sha,
             threshold_seconds=lead_stall_failover_threshold_seconds,
@@ -1490,6 +1492,7 @@ def verify_bridge_consensus(
     latest_rco_block: dict[str, int] = {}
     watched_agents = set(build_expected) | set(recognized_rco_agents)
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
+    unverified_block_events: list[dict[str, Any]] = []
     identity_valid_events: list[tuple[int, Mapping[str, Any]]] = []
     for index, event in enumerate(events):
         if not isinstance(event, Mapping):
@@ -1500,25 +1503,6 @@ def verify_bridge_consensus(
         agent = agent_value
         if agent not in watched_agents:
             continue
-        binding_status = bridge_identity_binding_status(
-            event,
-            registry=registry,
-            restricted_agents=watched_agents,
-        )
-        if binding_status != "valid":
-            ignored_identity_mismatch_events.append(
-                {
-                    "ts_utc": str(event.get("ts_utc", "")),
-                    "agent": agent,
-                    "agent_uuid": str(event.get("agent_uuid", "")),
-                    "type": str(event.get("type", "")),
-                    "status": str(event.get("status", "")),
-                    "task_id": str(event.get("task_id", "")),
-                    "identity_binding_status": binding_status,
-                }
-            )
-            continue
-        identity_valid_events.append((index, event))
         status = str(event.get("status", "")).lower()
         event_type = str(event.get("type", "")).lower()
         scoped = _consensus_scope_match(
@@ -1526,9 +1510,73 @@ def verify_bridge_consensus(
             task_id=task_id,
             pr_number=pr_number,
         )
+        binding_status = bridge_identity_binding_status(
+            event,
+            registry=registry,
+            restricted_agents=watched_agents,
+        )
+        if binding_status != "valid":
+            summary = {
+                "ts_utc": str(event.get("ts_utc", "")),
+                "agent": agent,
+                "agent_uuid": str(event.get("agent_uuid", "")),
+                "type": str(event.get("type", "")),
+                "status": str(event.get("status", "")),
+                "task_id": str(event.get("task_id", "")),
+                "identity_binding_status": binding_status,
+            }
+            # Invalid identity binding must never manufacture approval or a
+            # clear. Conversely, dropping a veto-shaped event from a recognized
+            # RCO name would fail open. Latch that event conservatively when it
+            # is in the same task/PR/head scope, matching the peer and RCO-pass
+            # gates' asymmetric identity policy.
+            unverified_type_veto = is_type_veto(
+                event_type=event_type,
+                agent=agent,
+                recognized_rco_agents=recognized_rco_agents,
+            )
+            unverified_block = unverified_type_veto or (
+                agent in recognized_rco_agents
+                and _is_consensus_block(status, event_type=event_type)
+            )
+            if unverified_block and _consensus_block_scope_match(
+                event,
+                task_id=task_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                canonical_scope=scoped,
+            ):
+                summary["unverified_veto_fail_closed"] = True
+                unverified_block_events.append(summary)
+                if agent in recognized_rco_agents:
+                    latest_rco_block[agent] = index
+                else:
+                    latest_build_block[agent] = index
+            else:
+                ignored_identity_mismatch_events.append(summary)
+            continue
+        identity_valid_events.append((index, event))
         # Block detection intentionally shares the peer-gate status classifier:
         # authoritative veto types invalidate consensus, but diagnostic
         # bridge chatter must not create a phantom block.
+        if is_type_veto(
+            event_type=event_type,
+            agent=agent,
+            recognized_rco_agents=recognized_rco_agents,
+        ):
+            if not _consensus_block_scope_match(
+                event,
+                task_id=task_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                canonical_scope=scoped,
+            ):
+                continue
+            if agent in recognized_rco_agents:
+                latest_rco_block[agent] = index
+            else:
+                latest_build_block[agent] = index
+            continue
         if _is_consensus_clear(status, event_type=event_type):
             if not _consensus_block_scope_match(
                 event,
@@ -1806,6 +1854,7 @@ def verify_bridge_consensus(
         "author_agent": author_agent,
         "blocking_rco_agents": sorted(blocking_rco_agents),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
+        "unverified_block_events": unverified_block_events,
         "lead_stall_failover": lead_stall_failover,
     }
 
@@ -1828,6 +1877,7 @@ def _invalid_consensus_input(
         "author_agent": "",
         "blocking_rco_agents": [],
         "ignored_identity_mismatch_events": [],
+        "unverified_block_events": [],
     }
 
 

@@ -66,6 +66,10 @@ def _clear(events: list[dict]) -> bool:
         "hold",                                  # bare non-latching token
         "rco1_content_pass",                     # pass-token in a finding
         "info",                                  # neutral-looking
+        "no_changes_requested",                  # approval-looking
+        "no_changes_requested_approved",         # approval-looking compound
+        "changes_requested_resolved",            # clear-looking
+        "changes_requested_cleared",             # clear-looking
     ],
 )
 def test_recognized_rco_finding_blocks_by_type_regardless_of_status(status: str) -> None:
@@ -78,9 +82,104 @@ def test_either_recognized_rco_finding_blocks() -> None:
         assert _clear([_ev("2026-06-25T01:00:00Z", rco, "finding", "x_pass")]) is False
 
 
-def test_type_blocked_blocks_by_type_any_identity() -> None:
-    assert _clear([_ev("2026-06-25T01:00:00Z", "codex-tools-1", "blocked",
-                       "build_slot_blocked_tools_author")]) is False
+def test_recognized_rco_veto_is_not_skipped_as_merging_agent() -> None:
+    result = check_bridge_clear_to_merge(
+        events=[
+            _ev(
+                "2026-06-25T01:00:00Z",
+                "claude-rco-1",
+                "finding",
+                "changes_requested_cleared",
+            )
+        ],
+        task_id="T",
+        merging_agent="claude-rco-1",
+    )
+
+    assert result["clear_to_merge"] is False
+
+
+def test_single_custom_rco_string_is_normalized_as_one_identity() -> None:
+    result = check_bridge_clear_to_merge(
+        events=[
+            _ev(
+                "2026-06-25T01:00:00Z",
+                "claude-rco-1",
+                "finding",
+                "changes_requested_cleared",
+            )
+        ],
+        task_id="T",
+        merging_agent="codex-lead-1",
+        recognized_rco_agents="claude-rco-1",
+    )
+
+    assert result["clear_to_merge"] is False
+
+
+def test_blocked_type_is_not_skipped_as_merging_agent() -> None:
+    result = check_bridge_clear_to_merge(
+        events=[
+            _ev(
+                "2026-06-25T01:00:00Z",
+                "codex-tools-1",
+                "blocked",
+                "no_changes_requested",
+            )
+        ],
+        task_id="T",
+        merging_agent="codex-tools-1",
+    )
+
+    assert result["clear_to_merge"] is False
+
+
+def test_author_status_veto_is_not_skipped_as_merging_agent() -> None:
+    result = check_bridge_clear_to_merge(
+        events=[
+            _ev(
+                "2026-06-25T01:00:00Z",
+                "codex-tools-1",
+                "decision",
+                "changes_requested",
+            )
+        ],
+        task_id="T",
+        merging_agent="codex-tools-1",
+        author_agent="codex-tools-1",
+    )
+
+    assert result["clear_to_merge"] is False
+
+
+def test_unverified_blocked_type_vetoes_fail_closed() -> None:
+    event = _ev(
+        "2026-06-25T01:00:00Z",
+        "codex-tools-1",
+        "blocked",
+        "no_changes_requested",
+    )
+    event.pop("agent_uuid")
+
+    result = check_bridge_clear_to_merge(
+        events=[event],
+        task_id="T",
+        merging_agent="codex-lead-1",
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["unverified_type_block_events"][0][
+        "unverified_veto_fail_closed"
+    ] is True
+
+
+@pytest.mark.parametrize(
+    "status", ["info", "no_changes_requested", "changes_requested_cleared"]
+)
+def test_type_blocked_blocks_by_type_any_identity(status: str) -> None:
+    assert _clear(
+        [_ev("2026-06-25T01:00:00Z", "codex-tools-1", "blocked", status)]
+    ) is False
 
 
 # --- CONTROLS (must NOT over-block) ---
@@ -94,6 +193,22 @@ def test_rco_finding_then_same_rco_rco_pass_supersedes() -> None:
     events = [
         _ev("2026-06-25T01:00:00Z", "claude-rco-1", "finding", "rco1_concern"),
         _ev("2026-06-25T02:00:00Z", "claude-rco-1", "decision", "rco_pass"),
+    ]
+    assert _clear(events) is True
+
+
+@pytest.mark.parametrize(
+    "status", ["changes_requested_resolved", "changes_requested_cleared"]
+)
+def test_decision_clear_still_retracts_same_identity_block(status: str) -> None:
+    events = [
+        _ev(
+            "2026-06-25T01:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _ev("2026-06-25T02:00:00Z", "claude-rco-1", "decision", status),
     ]
     assert _clear(events) is True
 

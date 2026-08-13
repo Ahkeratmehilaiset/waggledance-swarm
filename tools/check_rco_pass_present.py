@@ -16,12 +16,13 @@ Fail-closed rules (per spec):
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
    AND message contains the exact --head (40-char SHA) string or
    payload.exact_head equals it.
-3. If a recognized RCO veto supersedes the satisfying RCO_PASS
-   (changes_requested / finding / blocked / rco_block* etc), REFUSE.
+3. If any recognized RCO has a standing veto (changes_requested / finding /
+   blocked / rco_block* etc), REFUSE. A pass from another RCO cannot outvote
+   it; only a later verified clear/pass from the same identity can retract it.
 4. If NO qualifying RCO_PASS-at-exact-head exists, REFUSE. Silence/absence
    must REFUSE; never default-allow.
-5. Exit 0 ONLY when a valid head-bound RCO_PASS is present and not
-   superseded by a later veto from the rco-agent; else non-zero.
+5. Exit 0 ONLY when a valid head-bound RCO_PASS is present and every recognized
+   RCO lane is free of an unretracted veto; else non-zero.
 
 This tool is intended to be AND-ed with tools/check_bridge_changes_requested.py
 in the merge step: merge only if (no peer/rco block from the changes tool)
@@ -53,32 +54,13 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
     _is_blocking_status as _bridge_is_blocking_status,
     _is_clear_status as _bridge_is_clear_status,
 )
+from tools.bridge_event_taxonomy import is_type_veto  # noqa: E402
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
 RCO_PASS_STATUSES = frozenset({"rco_pass"})
 DECISION_TYPES_FOR_PASS = frozenset({"decision", "rco_review"})
+DECISION_TYPES_FOR_CLEAR = frozenset({"decision", "rco_review"})
 DEFAULT_RCO_AGENTS: tuple[str, ...] = ("claude-rco-1", "claude-rco-2")
-
-BRIDGE_BLOCK_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
-
-# Unambiguously INFORMATIONAL finding statuses. A recognized-RCO ``type=finding``
-# carrying one of these statuses is an advisory/diagnostic note, NOT a veto, so it
-# must not phantom-block a prior exact-head ``rco_pass`` (the ``finding/info``
-# vetoed_after_pass bug). This set is intentionally TIGHT and fail-closed: any
-# finding status NOT in this set (and not an explicit approval) still counts as a
-# veto, so real vetoes (``changes_requested``/``blocked``/``confirmed_*``) and
-# ambiguous statuses (``operator_review_required``/``open``/empty) never silently
-# bypass the gate. Expand deliberately if a specific advisory status should also
-# stop vetoing.
-INFORMATIONAL_FINDING_STATUSES = frozenset(
-    {
-        "info",
-        "informational",
-        "fyi",
-        "note",
-        "advisory",
-    }
-)
 
 # Claim gates per hard rule: all must be false in emitted artifacts.
 CLAIM_GATES: tuple[str, ...] = (
@@ -339,7 +321,7 @@ def check_rco_pass_present(
     """Return whether a valid RCO_PASS at exact head exists for the RCO set on task_id.
 
     Fail-closed: absence, wrong identity, wrong head, missing author, self-review,
-    or later veto from any recognized RCO after the satisfying pass -> not ok.
+    or an unretracted veto from any recognized RCO -> not ok.
     Latest is determined by append order in events list (index), not wallclock ts.
     """
     task_id = (task_id or "").strip()
@@ -482,7 +464,10 @@ def check_rco_pass_present(
             # while the other RCO's verified pass enables the merge. Worst
             # case of honoring a forged veto is a spurious hold (safe);
             # worst case of dropping a real one is a merge past a live veto.
-            if _is_rco_veto_event(event):
+            if _is_rco_veto_event(
+                event,
+                recognized_rco_agents=recognized_rco_agents,
+            ):
                 summary = _summarize_event(event)
                 if summary is not None:
                     summary["identity_binding_status"] = binding_status
@@ -520,7 +505,10 @@ def check_rco_pass_present(
     base["latest_rco_events"] = {
         agent: _summarize_event(ev) for agent, (_idx, ev) in latest_by_agent.items()
     }
-    latest_is_veto = _is_rco_veto_event(latest_ev)
+    latest_is_veto = _is_rco_veto_event(
+        latest_ev,
+        recognized_rco_agents=recognized_rco_agents,
+    )
     base["latest_rco_is_veto"] = latest_is_veto
 
     # Find qualifying head-bound passes (type-restricted, status=rco_pass, bound to exact head)
@@ -560,28 +548,37 @@ def check_rco_pass_present(
     base["satisfying_rco_agent"] = str(latest_pass_ev.get("agent", ""))
     base["has_qualifying_rco_pass_at_head"] = True
 
-    # Check for vetoes that supersede the satisfying pass. An older veto from a
-    # different RCO belongs to the peer-veto preflight; this tool verifies the
-    # exact-head RCO slot and later RCO vetoes that outrank that slot.
+    # Fold every RCO lane independently. A qualifying pass clears earlier
+    # signals only in its own lane; it cannot outvote another identity's
+    # standing veto.
     blocking_agents: list[str] = []
-    for agent, (latest_agent_idx, latest_agent_ev) in latest_by_agent.items():
+    for agent in latest_by_agent:
         latest_agent_pass_idx = max(
             (idx for idx, ev in qualifying if str(ev.get("agent", "")) == agent),
             default=-1,
         )
-        comparison_idx = (
-            latest_agent_pass_idx if latest_agent_pass_idx >= 0 else latest_pass_idx
-        )
-        has_superseding_veto = any(
-            idx > comparison_idx
-            and str(ev.get("agent", "")) == agent
-            and _is_rco_veto_event(ev)
-            for idx, ev in rco_events
-        )
-        if has_superseding_veto or (
-            latest_agent_idx > comparison_idx
-            and _is_rco_veto_event(latest_agent_ev)
-        ):
+        comparison_idx = latest_agent_pass_idx
+        # Fold the agent's authoritative signals in append order. A finding
+        # cannot clear itself with status text because the type-veto branch
+        # wins first. A later verified decision/review clear from that same
+        # identity can, however, retract its standing veto without pretending
+        # to be a new RCO_PASS. Identity-invalid clears never enter rco_events.
+        standing_veto = False
+        for idx, ev in rco_events:
+            if idx <= comparison_idx or str(ev.get("agent", "")) != agent:
+                continue
+            if _is_rco_veto_event(
+                ev,
+                recognized_rco_agents=recognized_rco_agents,
+            ):
+                standing_veto = True
+                continue
+            if _is_rco_clear_event(
+                ev,
+                recognized_rco_agents=recognized_rco_agents,
+            ):
+                standing_veto = False
+        if standing_veto:
             blocking_agents.append(agent)
     base["blocking_rco_agents"] = sorted(set(blocking_agents))
 
@@ -590,7 +587,7 @@ def check_rco_pass_present(
         base["decision"] = "vetoed_after_pass"
         return base
 
-    # Valid: pass at exact head present, and no veto after it
+    # Valid: pass at exact head present, and no recognized RCO lane is blocked.
     base["ok"] = True
     base["decision"] = "rco_pass_present"
     return base
@@ -815,7 +812,11 @@ def _event_head_candidates(event: Mapping[str, Any]) -> list[str]:
     )
 
 
-def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
+def _is_rco_veto_event(
+    event: Mapping[str, Any],
+    *,
+    recognized_rco_agents: Sequence[str] = DEFAULT_RCO_AGENTS,
+) -> bool:
     """Fail-closed veto detection for RCO signals.
 
     Uses the same status taxonomy as the peer gate for explicit veto names,
@@ -824,40 +825,38 @@ def _is_rco_veto_event(event: Mapping[str, Any]) -> bool:
     """
     status = str(event.get("status", "") or "").lower()
     typ = str(event.get("type", "") or "").lower()
+    agent = str(event.get("agent", "") or "")
 
-    if _is_blocking_status(status, event_type=typ):
+    if is_type_veto(
+        event_type=typ,
+        agent=agent,
+        recognized_rco_agents=recognized_rco_agents,
+    ):
         return True
 
-    if typ == "blocked":
-        return not _is_approval_status(status)
-
-    if typ == "finding":
-        if status in RCO_PASS_STATUSES or _is_approval_status(status):
-            return False
-        if _is_informational_finding_status(status):
-            return False
-        if _is_known_bridge_non_veto_status(status):
-            return False
+    if _is_blocking_status(status, event_type=typ):
         return True
 
     return False
 
 
-def _is_known_bridge_non_veto_status(status: str) -> bool:
-    if _bridge_is_clear_status(status):
-        return True
-    return _has_bridge_veto_words(status) and not _bridge_is_blocking_status(
-        status,
-        event_type="finding",
-    )
-
-
-def _has_bridge_veto_words(status: str) -> bool:
-    tokens = _status_tokens(status)
-    return (
-        {"changes", "requested"}.issubset(tokens)
-        or bool(tokens.intersection(BRIDGE_BLOCK_WORD_TOKENS))
-        or any(token.startswith("block") for token in tokens)
+def _is_rco_clear_event(
+    event: Mapping[str, Any],
+    *,
+    recognized_rco_agents: Sequence[str] = DEFAULT_RCO_AGENTS,
+) -> bool:
+    """Return whether a verified authoritative RCO event retracts its veto."""
+    typ = str(event.get("type", "") or "").lower()
+    status = str(event.get("status", "") or "").lower()
+    agent = str(event.get("agent", "") or "")
+    if is_type_veto(
+        event_type=typ,
+        agent=agent,
+        recognized_rco_agents=recognized_rco_agents,
+    ):
+        return False
+    return typ in DECISION_TYPES_FOR_CLEAR and (
+        status in RCO_PASS_STATUSES or _bridge_is_clear_status(status)
     )
 
 
@@ -874,18 +873,6 @@ def _is_approval_status(status: str) -> bool:
         or "approved" in tokens
         or "acknowledged" in tokens
     )
-
-
-def _is_informational_finding_status(status: str) -> bool:
-    """True for unambiguously-informational finding statuses (info/fyi/advisory...).
-
-    Normalizes punctuation to underscores then exact-matches the tight
-    INFORMATIONAL_FINDING_STATUSES allowlist, so only explicitly-informational
-    statuses are exempted from veto detection; unknown, ambiguous, or blocking
-    statuses are never treated as informational (fail-closed).
-    """
-    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
-    return normalized in INFORMATIONAL_FINDING_STATUSES
 
 
 def _status_tokens(status: str) -> set[str]:

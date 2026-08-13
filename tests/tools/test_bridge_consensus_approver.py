@@ -186,6 +186,72 @@ def test_backup_rco_uuid_mismatch_does_not_satisfy_rco_slot() -> None:
     )
 
 
+@pytest.mark.parametrize("uuid_value", [None, AGENT_UUIDS["fable-5"]])
+def test_unverified_recognized_rco_finding_vetoes_fail_closed(
+    uuid_value: str | None,
+) -> None:
+    finding = _block(
+        RCO,
+        ts="2026-05-29T13:03:00Z",
+        payload={"head": HEAD},
+    )
+    finding["status"] = "changes_requested_cleared"
+    if uuid_value is None:
+        finding.pop("agent_uuid")
+    else:
+        finding["agent_uuid"] = uuid_value
+
+    result = verify_bridge_consensus(
+        events=[*_full_consensus(), finding],
+        task_id=TASK,
+        head_sha=HEAD,
+    )
+
+    assert result["ok"] is False
+    assert result["decision"] == "bridge_consensus_incomplete"
+    assert result["blocking_rco_agents"] == [RCO]
+    assert result["ignored_identity_mismatch_events"] == []
+    assert result["unverified_block_events"] == [
+        {
+            "ts_utc": "2026-05-29T13:03:00Z",
+            "agent": RCO,
+            "agent_uuid": "" if uuid_value is None else uuid_value,
+            "type": "finding",
+            "status": "changes_requested_cleared",
+            "task_id": TASK,
+            "identity_binding_status": (
+                "missing_uuid" if uuid_value is None else "mismatch_uuid"
+            ),
+            "unverified_veto_fail_closed": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize("agent", [LEAD, TOOLS])
+def test_unverified_build_blocked_type_vetoes_fail_closed(agent: str) -> None:
+    blocked = {
+        "ts_utc": "2026-05-29T13:03:00Z",
+        "agent": agent,
+        "type": "blocked",
+        "status": "no_changes_requested",
+        "task_id": TASK,
+        "message": "type=blocked remains a veto",
+        "payload": {"head": HEAD},
+    }
+
+    result = verify_bridge_consensus(
+        events=[*_full_consensus(), blocked],
+        task_id=TASK,
+        head_sha=HEAD,
+    )
+
+    assert result["ok"] is False
+    assert result["unverified_block_events"][0]["agent"] == agent
+    assert result["unverified_block_events"][0][
+        "unverified_veto_fail_closed"
+    ] is True
+
+
 def test_build_consensus_shaped_event_reports_invalid_shape() -> None:
     malformed_tools_event = {
         **_approval(TOOLS, "answered_build_consensus_pass", ts="2026-05-29T13:01:00Z"),
@@ -619,7 +685,10 @@ def test_later_block_invalidates_earlier_approval() -> None:
     assert result["identities"]["rco"]["approved"] is False
 
 
-def test_type_agnostic_block_invalidates_approval() -> None:
+@pytest.mark.parametrize(
+    "status", ["info", "no_changes_requested", "changes_requested_cleared"]
+)
+def test_blocked_type_invalidates_approval_regardless_of_status(status: str) -> None:
     # RCO T0b case 11 (fail-open regression guard): a veto posted as
     # type=blocked/status=blocked AFTER an rco_pass must still invalidate
     # consensus, even though type=blocked is not in DECISION_EVENT_TYPES.
@@ -632,13 +701,43 @@ def test_type_agnostic_block_invalidates_approval() -> None:
             "agent": RCO,
             "agent_uuid": AGENT_UUIDS[RCO],
             "type": "blocked",
-            "status": "blocked",
+            "status": status,
             "task_id": TASK,
             "message": "veto via non-decision type",
             "payload": {},
         },
     ]
     result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+    assert result["ok"] is False
+    assert result["identities"]["rco"]["approved"] is False
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "no_changes_requested",
+        "no_changes_requested_approved",
+        "changes_requested_resolved",
+        "changes_requested_cleared",
+    ],
+)
+def test_recognized_rco_finding_invalidates_consensus_by_type(status: str) -> None:
+    events = [
+        *_full_consensus(),
+        {
+            "ts_utc": "2026-05-29T13:03:00Z",
+            "agent": RCO,
+            "agent_uuid": AGENT_UUIDS[RCO],
+            "type": "finding",
+            "status": status,
+            "task_id": TASK,
+            "message": "recognized RCO finding is an absolute veto",
+            "payload": {"head": HEAD},
+        },
+    ]
+
+    result = verify_bridge_consensus(events=events, task_id=TASK, head_sha=HEAD)
+
     assert result["ok"] is False
     assert result["identities"]["rco"]["approved"] is False
 

@@ -40,7 +40,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -60,6 +60,7 @@ from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 from tools.bridge_event_taxonomy import (  # noqa: E402
     BLOCK_BY_TYPE as _TAXONOMY_BLOCK_BY_TYPE,
     RCO_GATED_TYPES as _TAXONOMY_RCO_GATED_TYPES,
+    is_type_veto as _is_type_veto,
 )
 
 # Recognized RCO set per CLAUDE.md Rule 9a / the bridge-consensus contract. Defined
@@ -332,6 +333,7 @@ def check_bridge_clear_to_merge(
     author_agent: str = "",
     pr_number: int | None = None,
     identity_registry: Mapping[str, str] | None = None,
+    recognized_rco_agents: Collection[str] | str = _RECOGNIZED_RCOS,
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
@@ -343,6 +345,11 @@ def check_bridge_clear_to_merge(
     authoritative signal is blocking, we refuse. Otherwise we permit.
     """
     author_agent = (author_agent or "").strip()
+    recognized_rcos = frozenset(
+        (recognized_rco_agents,)
+        if isinstance(recognized_rco_agents, str)
+        else recognized_rco_agents
+    )
     try:
         registry = (
             load_bridge_identity_registry()
@@ -361,6 +368,7 @@ def check_bridge_clear_to_merge(
             "latest_approval_event": None,
             "ignored_identity_mismatch_events": [],
             "unverified_rco_block_events": [],
+            "unverified_type_block_events": [],
             "ignored_author_events": [],
             "decision": "invalid_identity_registry",
             "error": str(exc),
@@ -368,15 +376,29 @@ def check_bridge_clear_to_merge(
     peer_signals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
     ignored_identity_mismatch_events: list[dict[str, Any]] = []
     unverified_rco_block_events: list[dict[str, Any]] = []
+    unverified_type_block_events: list[dict[str, Any]] = []
     ignored_author_events: list[dict[str, Any]] = []
 
     for index, event in enumerate(events):
         if not _event_matches_scope(event, task_id=task_id, pr_number=pr_number):
             continue
         agent = str(event.get("agent", ""))
-        if agent == merging_agent:
-            continue
+        event_type = str(event.get("type", "")).lower()
         author_event = bool(author_agent and agent == author_agent)
+        # Ordinary merging-agent chatter is not peer review. A structured
+        # type veto is different: ``blocked`` from any identity and ``finding``
+        # from a recognized RCO remain authoritative even when the caller uses
+        # that same identity as ``merging_agent``.
+        if (
+            agent == merging_agent
+            and not author_event
+            and not _is_type_veto(
+                event_type=event_type,
+                agent=agent,
+                recognized_rco_agents=recognized_rcos,
+            )
+        ):
+            continue
         binding_status = bridge_identity_binding_status(
             event,
             registry=registry,
@@ -397,19 +419,24 @@ def check_bridge_clear_to_merge(
             # (unsafe). Only a later VERIFIED signal from the same identity
             # can clear it (latest-signal-wins below never admits unverified
             # clears).
-            block_shaped = (
-                event_type in _TAXONOMY_BLOCK_BY_TYPE
-                and (
-                    event_type not in _TAXONOMY_RCO_GATED_TYPES
-                    or agent in _RECOGNIZED_RCOS
-                )
-            ) or _is_blocking_status(status, event_type=event_type)
-            if agent in _RECOGNIZED_RCOS and block_shaped:
+            type_veto = _is_type_veto(
+                event_type=event_type,
+                agent=agent,
+                recognized_rco_agents=recognized_rcos,
+            )
+            block_shaped = type_veto or _is_blocking_status(
+                status,
+                event_type=event_type,
+            )
+            if type_veto or (agent in recognized_rcos and block_shaped):
                 summary = _summarize_event(event)
                 if summary is not None:
                     summary["identity_binding_status"] = binding_status
                     summary["unverified_veto_fail_closed"] = True
-                    unverified_rco_block_events.append(summary)
+                    if agent in recognized_rcos:
+                        unverified_rco_block_events.append(summary)
+                    else:
+                        unverified_type_block_events.append(summary)
                 peer_signals[agent] = (index, "block", event)
                 continue
             summary = _summarize_event(event)
@@ -418,7 +445,16 @@ def check_bridge_clear_to_merge(
                 ignored_identity_mismatch_events.append(summary)
             continue
         status = str(event.get("status", "")).lower()
-        event_type = str(event.get("type", "")).lower()
+        # A structured type veto is evaluated before any status-based clear or
+        # approval. A finding cannot retract itself by carrying clear-looking
+        # text; the same identity must emit a later decision/pass/clear event.
+        if _is_type_veto(
+            event_type=event_type,
+            agent=agent,
+            recognized_rco_agents=recognized_rcos,
+        ):
+            peer_signals[agent] = (index, "block", event)
+            continue
         # Only authoritative review/finding event types can veto. Plain
         # bridge conversation often includes diagnostic status strings with
         # "block"/"clear" words and must not become a phantom merge stop.
@@ -431,23 +467,6 @@ def check_bridge_clear_to_merge(
                 existing = peer_signals.get(agent)
                 if existing is None or existing[1] != "approval":
                     peer_signals[agent] = (index, "clear", event)
-            continue
-        # Cause-B fix (#1387 latch-bypass): a recognized-RCO ``finding`` (and any
-        # ``blocked``-type event) is a veto BY TYPE -- it latches regardless of its
-        # free-text status. The #1387 vector was a recognized-RCO finding whose
-        # status carried a "content_pass" token (no block-vocab), so the
-        # status-string classifier below silently failed open and the PR
-        # auto-merged past a live RCO veto. Authority here is the event TYPE +
-        # RCO identity per the single-source P2/D5 taxonomy
-        # (``BLOCK_BY_TYPE`` / ``RCO_GATED_TYPES``), never the status string. An
-        # explicit clear/retraction status is handled above (so an RCO can still
-        # retract via a clear); the standing veto is otherwise cleared only by a
-        # later ``decision`` rco_pass from the SAME RCO (latest-signal-wins below).
-        if event_type in _TAXONOMY_BLOCK_BY_TYPE and (
-            event_type not in _TAXONOMY_RCO_GATED_TYPES
-            or agent in _RECOGNIZED_RCOS
-        ):
-            peer_signals[agent] = (index, "block", event)
             continue
         if _is_blocking_status(status, event_type=event_type):
             peer_signals[agent] = (index, "block", event)
@@ -500,6 +519,7 @@ def check_bridge_clear_to_merge(
         ),
         "ignored_identity_mismatch_events": ignored_identity_mismatch_events,
         "unverified_rco_block_events": unverified_rco_block_events,
+        "unverified_type_block_events": unverified_type_block_events,
         "ignored_author_events": ignored_author_events,
         "decision": "clear" if clear else "blocked",
     }

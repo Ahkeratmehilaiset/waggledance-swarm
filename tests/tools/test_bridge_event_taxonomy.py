@@ -169,9 +169,19 @@ def test_deliberate_tightening_types_non_authoritative(typ, status):
     assert verdict([ev(typ, status, who="claude-rco-1")]).clear_to_merge is True
 
 
-def test_rco_veto_still_absolute_via_finding():
-    # the RCO veto path that rco_review's drop relies on staying intact.
-    assert verdict([ev("finding", "finding", who="claude-rco-1")]).clear_to_merge is False
+@pytest.mark.parametrize(
+    "status",
+    [
+        "no_changes_requested",
+        "no_changes_requested_approved",
+        "changes_requested_resolved",
+        "changes_requested_cleared",
+    ],
+)
+def test_recognized_rco_finding_vetoes_by_type(status):
+    # A recognized RCO finding is a veto by type; approval/clear-looking status
+    # text cannot turn that authoritative finding into an enabling event.
+    assert verdict([ev("finding", status, who="claude-rco-1")]).clear_to_merge is False
 
 
 def test_done_cannot_clear_a_standing_decision_block():

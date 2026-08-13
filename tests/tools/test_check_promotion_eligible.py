@@ -1240,16 +1240,128 @@ def test_negated_approval_shaped_status_cannot_clear_peer_block(
     assert "unresolved peer bridge block" in report["reasons"][0]
 
 
-def test_custom_rco_informational_finding_does_not_poison_history() -> None:
+@pytest.mark.parametrize(
+    "status",
+    [
+        "no_changes_requested",
+        "no_changes_requested_approved",
+        "changes_requested_resolved",
+        "changes_requested_cleared",
+    ],
+)
+def test_custom_rco_finding_veto_cannot_be_outvoted(status: str) -> None:
+    events = _full_events(rco_agent="claude-rco-1")
+    events.extend(
+        [
+            _event(
+                "fable-5",
+                status,
+                type_="finding",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "claude-rco-1",
+                "rco_pass",
+                ts="2026-06-05T05:34:00Z",
+            ),
+        ]
+    )
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5", "claude-rco-1"],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+
+
+def test_recognized_rco_from_agent_cannot_self_skip_absolute_veto() -> None:
     events = _full_events(rco_agent="fable-5")
     events.append(
         _event(
-            "fable-5",
-            "info",
+            "claude-rco-1",
+            "changes_requested_cleared",
             type_="finding",
             ts="2026-06-05T05:33:00Z",
-            payload={"head": HEAD, "pr": "901"},
         )
+    )
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5"],
+        author_agent="codex-lead-1",
+        from_agent="claude-rco-1",
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+
+
+def test_non_rco_from_agent_cannot_self_skip_blocked_type_veto() -> None:
+    events = _full_events()
+    events.append(
+        _event(
+            "fable-5",
+            "no_changes_requested",
+            type_="blocked",
+            ts="2026-06-05T05:33:00Z",
+        )
+    )
+
+    report = _evaluate(
+        events=events,
+        author_agent="fable-5",
+        from_agent="fable-5",
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+
+
+def test_author_from_agent_cannot_self_skip_status_veto() -> None:
+    events = _full_events()
+    events.append(
+        _event(
+            "fable-5",
+            "changes_requested",
+            type_="decision",
+            ts="2026-06-05T05:33:00Z",
+        )
+    )
+
+    report = _evaluate(
+        events=events,
+        author_agent="fable-5",
+        from_agent="fable-5",
+    )
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+
+
+def test_custom_rco_finding_is_recovered_by_same_rco_decision_pass() -> None:
+    events = _full_events(rco_agent="fable-5")
+    events.extend(
+        [
+            _event(
+                "fable-5",
+                "info",
+                type_="finding",
+                ts="2026-06-05T05:33:00Z",
+            ),
+            _event(
+                "fable-5",
+                "rco_pass",
+                type_="decision",
+                ts="2026-06-05T05:34:00Z",
+            ),
+        ]
     )
 
     report = _evaluate(

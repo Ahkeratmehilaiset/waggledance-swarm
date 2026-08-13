@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -18,6 +20,12 @@ from tools.bridge_next_action import (
 )
 from waggledance.core.bridge_log_reader import BridgeLineReadResult
 from waggledance.core.work_queue import Claim, claim_task
+
+
+ROOT = Path(__file__).resolve().parents[2]
+POWERSHELL_NEXT_ACTION = (
+    ROOT / ".agent-bridge" / "bin" / "Get-BridgeNextAction.ps1"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1941,6 +1949,144 @@ def test_recommends_parallel_read_only_when_foreign_write_claim_exists(
     assert report["action"] == "parallel_read_only"
     assert report["task_id"] == "bridge-review-or-scout"
     assert report["safe_mode"] == "read-only"
+    assert report["active_claim_count"] == 0
+    assert report["foreign_write_claim_count"] == 1
+
+
+def test_reports_only_querying_agents_active_claims() -> None:
+    own = Claim(
+        agent="codex",
+        task_id="own-write",
+        summary="own implementation",
+        mode="write",
+        write_scope=("tools/bridge_next_action.py",),
+        run_id="codex-run",
+        claimed_at_utc="",
+        last_heartbeat_utc="",
+        lease_seconds=900,
+    )
+    foreign = Claim(
+        agent="claude",
+        task_id="foreign-write",
+        summary="parallel implementation",
+        mode="write",
+        write_scope=("tools/foreign.py",),
+        run_id="claude-run",
+        claimed_at_utc="",
+        last_heartbeat_utc="",
+        lease_seconds=900,
+    )
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[],
+        claims=[own, foreign],
+    )
+
+    assert report["action"] == "continue_claim"
+    assert report["active_claim_count"] == 1
+    assert report["foreign_write_claim_count"] == 1
+    assert len(report["claim_snapshot"]["own"]) == 1
+    assert len(report["claim_snapshot"]["foreign_write"]) == 1
+
+
+def _run_powershell_next_action(
+    tmp_path: Path,
+    *,
+    claims: list[dict[str, object]],
+) -> dict[str, object]:
+    powershell = (
+        shutil.which("powershell.exe")
+        or shutil.which("powershell")
+        or shutil.which("pwsh")
+    )
+    if powershell is None:
+        pytest.skip("PowerShell is required for bridge-next-action parity")
+
+    bridge = tmp_path / ".agent-bridge"
+    claims_dir = bridge / "work_queue" / "claims"
+    claims_dir.mkdir(parents=True)
+    for index, claim in enumerate(claims):
+        (claims_dir / f"claim-{index}.json").write_text(
+            json.dumps(claim),
+            encoding="utf-8",
+        )
+    env = os.environ.copy()
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(bridge)
+    completed = subprocess.run(  # noqa: S603
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(POWERSHELL_NEXT_ACTION),
+            "-Agent",
+            "codex",
+            "-Json",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_powershell_reports_only_querying_agents_active_claims(
+    tmp_path: Path,
+) -> None:
+    report = _run_powershell_next_action(
+        tmp_path,
+        claims=[
+            {
+                "agent": "codex",
+                "task_id": "own-write",
+                "mode": "write",
+                "write_scope": ["tools/bridge_next_action.py"],
+            },
+            {
+                "agent": "claude",
+                "task_id": "foreign-write",
+                "mode": "write",
+                "write_scope": ["tools/foreign.py"],
+            },
+        ],
+    )
+
+    assert report["action"] == "continue_claim"
+    assert report["active_claim_count"] == 1
+    assert report["foreign_write_claim_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "claim_identity",
+    [
+        {"agent": "CODEX"},
+        {"Agent": "codex"},
+        {"agent": ["codex"]},
+        {"agent": None},
+    ],
+)
+def test_powershell_agent_identity_is_ordinal_and_foreign_claim_stays_visible(
+    tmp_path: Path,
+    claim_identity: dict[str, object],
+) -> None:
+    report = _run_powershell_next_action(
+        tmp_path,
+        claims=[
+            {
+                **claim_identity,
+                "task_id": "case-mismatched-write",
+                "mode": "write",
+                "write_scope": ["tools/foreign.py"],
+            }
+        ],
+    )
+
+    assert report["action"] == "parallel_read_only"
+    assert report["active_claim_count"] == 0
     assert report["foreign_write_claim_count"] == 1
 
 
@@ -1995,7 +2141,7 @@ def test_keeps_foreign_write_claim_until_explicit_expiry() -> None:
     )
 
     assert report["action"] == "parallel_read_only"
-    assert report["active_claim_count"] == 1
+    assert report["active_claim_count"] == 0
     assert report["foreign_write_claim_count"] == 1
     assert "ignored_stale_claim_count" not in report
 

@@ -2271,7 +2271,9 @@ def _report(
         "task_id": task_id,
         "safe_mode": safe_mode,
         "summary": summary,
-        "active_claim_count": len(claims),
+        # This metric is lane-local: foreign write ownership is reported
+        # separately below and must not inflate the querying agent's load.
+        "active_claim_count": sum(claim.agent == agent for claim in claims),
         "open_incoming_count": len(open_requests),
         "stale_incoming_count": len(stale_task_ids),
         "foreign_write_claim_count": len(foreign_write_claims),

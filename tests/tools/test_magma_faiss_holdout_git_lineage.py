@@ -113,7 +113,7 @@ def _forge_commit_graph_parent(
     row = commit_data + child_index * 36
     graph[row + 20 : row + 24] = parent_index.to_bytes(4, "big")
     graph[row + 24 : row + 28] = (0x70000000).to_bytes(4, "big")
-    graph[-20:] = hashlib.sha1(graph[:-20]).digest()
+    graph[-20:] = hashlib.sha1(graph[:-20], usedforsecurity=False).digest()
     graph_path.chmod(0o600)
     graph_path.write_bytes(graph)
 

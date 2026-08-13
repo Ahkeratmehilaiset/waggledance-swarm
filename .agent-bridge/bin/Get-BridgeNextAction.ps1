@@ -132,6 +132,40 @@ function Read-ClaimObjects {
     return $items
 }
 
+function Test-BridgeClaimOwnedByAgent {
+    param(
+        [Parameter(Mandatory)] [object] $Claim,
+        [Parameter(Mandatory)] [string] $AgentName
+    )
+
+    # PSObject property lookup and -eq are case-insensitive by default. Agent
+    # identity is not: a legacy/malformed CODEX or Agent field is foreign, not
+    # an own claim that can inflate this lane's count or grant continuation.
+    $properties = @(
+        $Claim.PSObject.Properties |
+            Where-Object {
+                [string]::Equals(
+                    [string]$_.Name,
+                    'agent',
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )
+            }
+    )
+    if ($properties.Count -ne 1) { return $false }
+    $property = $properties[0]
+    if (-not [string]::Equals(
+        [string]$property.Name,
+        'agent',
+        [System.StringComparison]::Ordinal
+    )) { return $false }
+    if ($property.Value -isnot [string]) { return $false }
+    return [string]::Equals(
+        $property.Value,
+        $AgentName,
+        [System.StringComparison]::Ordinal
+    )
+}
+
 function Get-BridgeSuppressedAgentReason {
     param([Parameter(Mandatory)] [string] $AgentName)
 
@@ -155,8 +189,17 @@ function Get-BridgeSuppressedAgentReason {
 $events = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
 $claims = @(Read-ClaimObjects)
 $suppressionReason = Get-BridgeSuppressedAgentReason -AgentName $Agent
-$ownClaims = @($claims | Where-Object { [string]$_.agent -eq $Agent })
-$foreignWriteClaims = @($claims | Where-Object { [string]$_.agent -ne $Agent -and [string]$_.mode -eq 'write' })
+$ownClaims = @(
+    $claims | Where-Object {
+        Test-BridgeClaimOwnedByAgent -Claim $_ -AgentName $Agent
+    }
+)
+$foreignWriteClaims = @(
+    $claims | Where-Object {
+        -not (Test-BridgeClaimOwnedByAgent -Claim $_ -AgentName $Agent) -and
+        [string]$_.mode -eq 'write'
+    }
+)
 
 $requestsForAgent = @(
     $events |
@@ -270,7 +313,7 @@ $result = [pscustomobject]@{
     task_id = $taskId
     safe_mode = $safeMode
     summary = $summary
-    active_claim_count = $claims.Count
+    active_claim_count = $ownClaims.Count
     open_incoming_count = $openRequests.Count
     stale_incoming_count = $staleOpenRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count

@@ -630,16 +630,23 @@ def test_writer_rejects_existing_and_reserved_destinations_without_mutation(
 def test_writer_rejects_source_repo_and_git_metadata_destinations(
     current_image: tool.HexRecoveryBundleImage,
 ) -> None:
+    repo_destination = tool.REPO_ROOT / "bundle-must-not-be-created"
     with pytest.raises(tool.BundleBuildError, match="output_scope_unsafe"):
-        tool.write_hex_recovery_bundle(
-            current_image,
-            tool.REPO_ROOT / "bundle-must-not-be-created",
-        )
-    with pytest.raises(tool.BundleBuildError, match="output_scope_unsafe"):
-        tool.write_hex_recovery_bundle(
-            current_image,
-            tool.REPO_ROOT / ".git" / "bundle-must-not-be-created",
-        )
+        tool.write_hex_recovery_bundle(current_image, repo_destination)
+    assert not repo_destination.exists()
+
+    # In a normal clone REPO_ROOT/.git is a directory and the write reaches
+    # the scope check (output_scope_unsafe); in a linked worktree .git is a
+    # gitdir pointer file, so the parent check fails closed first
+    # (output_parent_invalid). Both rejections are correct; the invariant
+    # is that nothing is ever created under git metadata.
+    git_destination = tool.REPO_ROOT / ".git" / "bundle-must-not-be-created"
+    with pytest.raises(
+        tool.BundleBuildError,
+        match="output_scope_unsafe|output_parent_invalid",
+    ):
+        tool.write_hex_recovery_bundle(current_image, git_destination)
+    assert not git_destination.exists()
 
 
 def test_writer_failure_never_promotes_partial_destination(

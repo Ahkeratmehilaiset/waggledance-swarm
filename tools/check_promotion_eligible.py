@@ -317,6 +317,12 @@ def _evaluate_promotion_eligibility(
         author_agent=author_agent,
     )
     number = _pr_number(pr_status, pr_number)
+    _validate_relevant_event_auxiliary_lists(
+        events,
+        expected_task_id=task_id,
+        expected_pr_number=number,
+        expected_heads=(head, prior_approved_head),
+    )
     status_head = _required_sha(
         pr_status.get("head_sha"),
         "pr_status.head_sha",
@@ -990,6 +996,42 @@ def _validate_event_envelopes(events: object) -> None:
                         f"events item {index} {field} must be a string",
                     )
                 )
+        if "pid" in event and (
+            type(event["pid"]) is not int
+            or event["pid"] < 0
+            or event["pid"] > MAX_AUTHORITY_INTEGER
+        ):
+            raise PromotionEligibilityError(
+                _invalid_report(
+                    "invalid_input",
+                    f"events item {index} pid must be a nonnegative integer",
+                )
+            )
+
+
+def _validate_relevant_event_auxiliary_lists(
+    events: object,
+    *,
+    expected_task_id: str,
+    expected_pr_number: int,
+    expected_heads: Sequence[str],
+) -> None:
+    """Validate list metadata only when the event can affect this snapshot.
+
+    Canonical history contains legacy auxiliary metadata that is not consumed
+    by the promotion gates.  It must be inert for unrelated snapshots, while
+    task-, PR-, or head-scoped evidence remains fail-closed.
+    """
+    assert type(events) is list
+    for index, event in enumerate(events, 1):
+        assert type(event) is dict
+        if not _event_matches_auxiliary_validation_scope(
+            event,
+            expected_task_id=expected_task_id,
+            expected_pr_number=expected_pr_number,
+            expected_heads=expected_heads,
+        ):
+            continue
         for field in ("paths", "write_scope", "capabilities"):
             if field not in event:
                 continue
@@ -1008,17 +1050,32 @@ def _validate_event_envelopes(events: object) -> None:
                         f"events item {index} {field} must be an exact string list",
                     )
                 )
-        if "pid" in event and (
-            type(event["pid"]) is not int
-            or event["pid"] < 0
-            or event["pid"] > MAX_AUTHORITY_INTEGER
-        ):
-            raise PromotionEligibilityError(
-                _invalid_report(
-                    "invalid_input",
-                    f"events item {index} pid must be a nonnegative integer",
-                )
-            )
+
+
+def _event_matches_auxiliary_validation_scope(
+    event: Mapping[str, Any],
+    *,
+    expected_task_id: str,
+    expected_pr_number: int,
+    expected_heads: Sequence[str],
+) -> bool:
+    if _peer_event_matches_scope(
+        event,
+        task_id=expected_task_id,
+        pr_number=expected_pr_number,
+    ):
+        return True
+    return any(
+        head
+        and _consensus_block_scope_match(
+            event,
+            task_id=expected_task_id,
+            pr_number=expected_pr_number,
+            head_sha=head,
+            canonical_scope=False,
+        )
+        for head in expected_heads
+    )
 
 
 def _status_has_authority_semantics(status: str) -> bool:

@@ -914,6 +914,57 @@ def test_irrelevant_legacy_authority_payload_shapes_do_not_poison_history() -> N
     assert report["eligible"] is True
 
 
+def test_irrelevant_historical_claim_scope_does_not_poison_history() -> None:
+    events = _full_events()
+    event = _event(
+        "codex-lead-1",
+        "active",
+        type_="claim",
+        task_id="codex-lead-1/unrelated-historical-task",
+        head=OTHER_BASE,
+        payload={"head": OTHER_BASE, "pr": 777},
+        ts="2026-01-01T00:00:00Z",
+    )
+    event["write_scope"] = [None]
+    events.insert(0, event)
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+
+
+@pytest.mark.parametrize(
+    ("task_id", "payload"),
+    [
+        (TASK, {"head": OTHER_BASE, "pr": 777}),
+        ("codex-lead-1/unrelated-task", {"head": OTHER_BASE, "pr": 901}),
+        ("codex-lead-1/unrelated-task", {"head": HEAD, "pr": 777}),
+    ],
+)
+def test_current_scope_claim_lists_remain_fail_closed(
+    task_id: str,
+    payload: dict,
+) -> None:
+    events = _full_events()
+    event = _event(
+        "codex-lead-1",
+        "active",
+        type_="claim",
+        task_id=task_id,
+        payload=payload,
+        ts="2026-06-05T05:29:00Z",
+    )
+    event["write_scope"] = [None]
+    events.insert(0, event)
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "write_scope must be an exact string list" in report["errors"][0]
+
+
 @pytest.mark.parametrize(
     ("payload_key", "payload_value"),
     [

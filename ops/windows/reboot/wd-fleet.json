@@ -1,0 +1,181 @@
+{
+  "schema_version": 2,
+  "fleet_name": "waggledance-five-agent-fleet",
+  "primary_repo_root": "C:\\Python\\project2",
+  "repo_common_git_dir": "C:\\Python\\project2\\.git",
+  "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
+  "handshake_root": "C:\\Python\\wd-reboot-runtime\\handshakes",
+  "grok_output_directory": "C:\\Python",
+  "grok_markdown": "C:\\Python\\WD_GROK_MODEL_CURRENT.md",
+  "target_state": {
+    "id": "wd-swarm-target-state-v1",
+    "relative_path": "WD_SWARM_TARGET_STATE_V1.md",
+    "sha256": "411AC7274A39EB3E4E90CFF7019DE2876AE79F0D1C778D3768E06E2528CD666B",
+    "source_image_sha256": "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117",
+    "capability_effect": "none"
+  },
+  "state_precedence": {
+    "current_state_pointer": "C:\\Python\\WD_REBOOT_STATE_CURRENT.md",
+    "base_state": "C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md",
+    "roles": "C:\\Python\\WD_AGENT_3PACK_ROLES.md",
+    "current_handoff": "C:\\Python\\WD_RESTART_HANDOFF.md",
+    "rule": "The current restart handoff and the lane handoff override conflicting older dated state. None of these files grants new authority."
+  },
+  "deployment": {
+    "manifest_file": "deployment-manifest.json",
+    "required_bundle_files": [
+      "start-wd-all.ps1",
+      "start-wd-agent.ps1",
+      "Invoke-WdToolsCodex.ps1",
+      "wd-fleet.json",
+      "Resolve-WdGrokModel.ps1",
+      "WD_SWARM_TARGET_STATE_V1.md",
+      "tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1",
+      "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1",
+      "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeSession.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Start-BridgeHeartbeat.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Test-BridgeWake.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Watch-Bridge.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1",
+      "tools-bootstrap/configs/bridge_identity_registry.json"
+    ]
+  },
+  "tools_supervisor": {
+    "task_name": "WD-Supervisor",
+    "snapshot_path": "C:\\Python\\wd_supervisor_loop_snapshot.json",
+    "snapshot_schema": "wd.supervisor-loop.v2",
+    "supervisor_script": "C:\\Python\\wd_supervisor.ps1",
+    "launcher_script": "C:\\Python\\start-wd-tools-consumer.ps1",
+    "config_path": "C:\\Python\\wd_supervisor_loop.json",
+    "readiness_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-ready.json",
+    "replacement_conflict_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-replacement-conflict.json",
+    "agent": "codex-tools-1",
+    "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "worktree": "C:\\Python\\waggledance-agent-worktrees\\codex-tools-1-post-reboot-tools-sandbox-followup-20260731",
+    "branch": "codex-tools-1/post-reboot-tools-sandbox-followup-20260731",
+    "head": "1c4e388355d045835edcd1f30cd53eddfdc3d2cb",
+    "resume_policy": "current_worktree",
+    "model": "gpt-5.6-terra",
+    "reasoning_effort": "high",
+    "require_dedicated_worktree": true,
+    "process_markers": [
+      "start-wd-tools-consumer.ps1",
+      "Start-AgentBridgeConsumerLoop.ps1"
+    ],
+    "wait_seconds": 660
+  },
+  "merge_driver_containment": {
+    "standing_task": "WD-BridgeMergeDriverStandingOneShot",
+    "legacy_task": "WD-BridgeMergeDriver",
+    "legacy_script": "C:\\Python\\Invoke-BridgeMergeDriver.ps1",
+    "required_state": "Disabled",
+    "required_enabled": false
+  },
+  "lanes": [
+    {
+      "agent": "codex-lead-1",
+      "role": "lead-impl",
+      "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+      "capabilities": [
+        "implementation",
+        "magma",
+        "source_changes",
+        "tests",
+        "bridge_event",
+        "work_queue"
+      ],
+      "cli": "codex.cmd",
+      "model": "gpt-5.6-sol",
+      "effort": "max",
+      "resume_policy": "current_worktree",
+      "worktree": "C:\\Python\\project2",
+      "branch": "codex-lead-1/magma-faiss-hex-genome-20260810",
+      "head": "fc03c60077d1787e1f2ec95c4f31d4605370103b",
+      "require_dedicated_worktree": false,
+      "prompt": "C:\\Python\\wd-agent-prompts\\codex-lead-1.md",
+      "handoff": "C:\\Python\\wd-agent-prompts\\handoff\\codex-lead-1.md",
+      "legacy_process_markers": [
+        "start-wd-codex-lead.ps1",
+        "start-wd-claude-lead.ps1"
+      ]
+    },
+    {
+      "agent": "claude-rco-1",
+      "role": "rco-security",
+      "agent_uuid": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
+      "capabilities": [
+        "rco_review",
+        "security_review",
+        "adversarial_review",
+        "bridge_event",
+        "work_queue"
+      ],
+      "cli": "claude.cmd",
+      "model": "sonnet",
+      "effort": "max",
+      "resume_policy": "current_worktree",
+      "worktree": "C:\\Python\\waggledance-agent-worktrees\\claude-rco-1-waggledance-claude-rco-1-claude-rco-1-session-20260728t165223z",
+      "branch": "waggledance/claude-rco-1/claude-rco-1-session-20260728t165223z",
+      "head": "5524acaa94f853168bdf79e656c5f083db1b10fc",
+      "require_dedicated_worktree": true,
+      "prompt": "C:\\Python\\wd-agent-prompts\\claude-rco-1.md",
+      "handoff": "C:\\Python\\wd-agent-prompts\\handoff\\claude-rco-1.md",
+      "legacy_process_markers": [
+        "start-wd-claude-rco.ps1"
+      ]
+    },
+    {
+      "agent": "claude-rco-2",
+      "role": "rco-security",
+      "agent_uuid": "76739997-0058-41a2-8514-78ff295537aa",
+      "capabilities": [
+        "rco_review",
+        "security_review",
+        "adversarial_review",
+        "bridge_event",
+        "work_queue"
+      ],
+      "cli": "claude.cmd",
+      "model": "sonnet",
+      "effort": "max",
+      "resume_policy": "current_worktree",
+      "worktree": "C:\\Python\\waggledance-agent-worktrees\\claude-rco-2-waggledance-claude-rco-2-claude-rco-2-session-20260728t165224z",
+      "branch": "waggledance/claude-rco-2/claude-rco-2-session-20260728t165224z",
+      "head": "5524acaa94f853168bdf79e656c5f083db1b10fc",
+      "require_dedicated_worktree": true,
+      "prompt": "C:\\Python\\wd-agent-prompts\\claude-rco-2.md",
+      "handoff": "C:\\Python\\wd-agent-prompts\\handoff\\claude-rco-2.md",
+      "legacy_process_markers": [
+        "start-wd-claude-rco2.ps1"
+      ]
+    },
+    {
+      "agent": "fable-5",
+      "role": "fable-producer",
+      "agent_uuid": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
+      "capabilities": [
+        "implementation",
+        "tests",
+        "docs",
+        "bridge_event",
+        "work_queue"
+      ],
+      "cli": "claude.cmd",
+      "model": "fable",
+      "effort": "max",
+      "resume_policy": "current_worktree",
+      "worktree": "C:\\Python\\waggledance-agent-worktrees\\fable-5-hex-capability-probe-v1-20260730",
+      "branch": "fable-5/hex-capability-probe-v1-20260730",
+      "head": "99f14f92fd32d54ea2b6693973adf22829a0cbc5",
+      "require_dedicated_worktree": true,
+      "prompt": "C:\\Python\\wd-agent-prompts\\fable-5.md",
+      "handoff": "C:\\Python\\wd-agent-prompts\\handoff\\fable-5.md",
+      "legacy_process_markers": [
+        "start-wd-fable-5.ps1"
+      ]
+    }
+  ]
+}

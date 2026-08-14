@@ -1,0 +1,66 @@
+{
+  "schema": "wd.supervisor-loop.v2",
+  "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
+  "log_path": "C:\\Python\\wd_supervisor.log",
+  "target_state": {
+    "id": "wd-swarm-target-state-v1",
+    "relative_path": "WD_SWARM_TARGET_STATE_V1.md",
+    "sha256": "411AC7274A39EB3E4E90CFF7019DE2876AE79F0D1C778D3768E06E2528CD666B",
+    "source_image_sha256": "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117",
+    "capability_effect": "none"
+  },
+  "watchers": {
+    "script_relative": "tools-bootstrap\\.agent-bridge\\bin\\Watch-Bridge.ps1",
+    "dependency_relatives": [
+      "tools-bootstrap\\.agent-bridge\\bin\\AgentBridgeSessionIdentity.ps1",
+      "tools-bootstrap\\.agent-bridge\\bin\\BridgeIncrementalReader.ps1",
+      "tools-bootstrap\\.agent-bridge\\bin\\BridgeLogReader.ps1"
+    ],
+    "agents": [
+      "codex-lead-1",
+      "codex-tools-1",
+      "claude-rco-1",
+      "claude-rco-2",
+      "fable-5"
+    ]
+  },
+  "tools_consumer": {
+    "enabled": true,
+    "launcher_script": "C:\\Python\\start-wd-tools-consumer.ps1",
+    "config_path": "C:\\Python\\wd_supervisor_loop.json",
+    "readiness_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-ready.json",
+    "replacement_conflict_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-replacement-conflict.json",
+    "agent": "codex-tools-1",
+    "agent_uuid": "7a8af68d-20bc-4598-9953-23c5dd98b102",
+    "role": "tools-tests",
+    "capabilities": [
+      "implementation",
+      "tests",
+      "bridge_event",
+      "work_queue"
+    ],
+    "run_id_prefix": "wd-reboot-codex-tools-1",
+    "worktree": "C:\\Python\\waggledance-agent-worktrees\\codex-tools-1-post-reboot-tools-sandbox-followup-20260731",
+    "primary_repo_root": "C:\\Python\\project2",
+    "expected_common_git_dir": "C:\\Python\\project2\\.git",
+    "require_dedicated_worktree": true,
+    "expected_branch": "codex-tools-1/post-reboot-tools-sandbox-followup-20260731",
+    "expected_head": "1c4e388355d045835edcd1f30cd53eddfdc3d2cb",
+    "resume_policy": "current_worktree",
+    "model": "gpt-5.6-terra",
+    "reasoning_effort": "high",
+    "session_script_relative": ".agent-bridge\\bin\\Start-AgentBridgeSession.ps1",
+    "consumer_script_relative": ".agent-bridge\\bin\\Start-AgentBridgeConsumerLoop.ps1",
+    "log_dir": "C:\\Python\\waggledance-agent-worktrees\\codex-tools-1-post-reboot-tools-sandbox-followup-20260731\\.codex-audit\\bridge-consumer-canonical-tools",
+    "poll_seconds": 15,
+    "codex_timeout_seconds": 600,
+    "sandbox": "workspace-write",
+    "approval_policy": "never",
+    "prompt": "Read C:\\Python\\WD_REBOOT_STATE_CURRENT.md first, then C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md and C:\\Python\\WD_RESTART_HANDOFF.md. Newer handoffs and the live bridge override the dated snapshot. Run python tools\\bridge_next_action.py --agent codex-tools-1 --json, reject stale acknowledgements, and act only on current exact task/session evidence. Do one bounded implementation, test, or review slice, write bridge evidence, and stop. This grants no merge, release, deploy, runtime mutation, signature, or protected-path authority."
+  },
+  "driver_containment": {
+    "standing_task": "WD-BridgeMergeDriverStandingOneShot",
+    "legacy_task": "WD-BridgeMergeDriver",
+    "legacy_script_path": "C:\\Python\\Invoke-BridgeMergeDriver.ps1"
+  }
+}

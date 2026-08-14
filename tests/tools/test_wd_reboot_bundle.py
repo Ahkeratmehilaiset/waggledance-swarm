@@ -101,6 +101,14 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     required_bundle_files = manifest["deployment"]["required_bundle_files"]
     assert "WD_SWARM_TARGET_STATE_V1.md" in required_bundle_files
+    for relative in required_bundle_files:
+        if relative.startswith("tools-bootstrap/.agent-bridge/bin/"):
+            source = ROOT / relative.removeprefix("tools-bootstrap/")
+        elif relative == "tools-bootstrap/configs/bridge_identity_registry.json":
+            source = ROOT / "configs" / "bridge_identity_registry.json"
+        else:
+            source = REBOOT / relative
+        assert source.is_file(), f"bundle source is missing: {relative}"
     assert (
         "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1"
         in required_bundle_files
@@ -1576,7 +1584,6 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
         r"tools-bootstrap\.agent-bridge\bin\Watch-Bridge.ps1"
     )
     assert snapshot["watchers"]["dependency_relatives"] == [
-        r"tools-bootstrap\.agent-bridge\bin\AgentBridgeSessionIdentity.ps1",
         r"tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1",
         r"tools-bootstrap\.agent-bridge\bin\BridgeLogReader.ps1",
     ]

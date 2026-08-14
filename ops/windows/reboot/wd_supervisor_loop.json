@@ -12,7 +12,6 @@
   "watchers": {
     "script_relative": "tools-bootstrap\\.agent-bridge\\bin\\Watch-Bridge.ps1",
     "dependency_relatives": [
-      "tools-bootstrap\\.agent-bridge\\bin\\AgentBridgeSessionIdentity.ps1",
       "tools-bootstrap\\.agent-bridge\\bin\\BridgeIncrementalReader.ps1",
       "tools-bootstrap\\.agent-bridge\\bin\\BridgeLogReader.ps1"
     ],

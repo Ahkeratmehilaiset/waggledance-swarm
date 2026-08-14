@@ -478,7 +478,6 @@ foreach ($required in @(
         'Register-WdScheduledTasks.ps1',
         'BOOT_AFTER_REBOOT.md',
         'WD_SWARM_TARGET_STATE_V1.md',
-        'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1',

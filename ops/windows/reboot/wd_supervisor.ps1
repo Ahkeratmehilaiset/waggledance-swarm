@@ -1769,8 +1769,6 @@ if ($null -eq $configuration.watchers) {
     throw 'supervisor configuration has no watchers object'
 }
 $watcherRelative = Get-RequiredText $configuration.watchers 'script_relative'
-$watcherIdentityRelative = `
-    'tools-bootstrap\.agent-bridge\bin\AgentBridgeSessionIdentity.ps1'
 $watcherReaderRelative = `
     'tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1'
 $watcherLogReaderRelative = `
@@ -1812,7 +1810,6 @@ else {
             }
     )
     $expectedWatcherDependencies = @(
-        $watcherIdentityRelative,
         $watcherReaderRelative,
         $watcherLogReaderRelative
     )

@@ -2521,7 +2521,7 @@ param(
   [switch] $SkipCliUpdate,
   [switch] $DryRun
 )
-& $env:ComSpec /c exit 7
+$global:LASTEXITCODE = 7
 [pscustomobject]@{
   run_id = $RunId
   timeout = $HandshakeTimeoutSeconds

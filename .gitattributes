@@ -11,3 +11,7 @@ docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.json 
 docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/**/*.md binary
 docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/checksums.sha256 binary
 docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/README.md binary
+
+# The reboot manifest pins this document by raw SHA-256. Keep the committed,
+# worktree, and git-archive bytes identical even with core.autocrlf=true.
+ops/windows/reboot/WD_SWARM_TARGET_STATE_V1.md binary

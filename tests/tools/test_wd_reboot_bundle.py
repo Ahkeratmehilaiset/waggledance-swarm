@@ -1462,6 +1462,10 @@ catch {{
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Tools generation probe requires Windows path semantics",
+)
 def test_tools_process_generation_distinguishes_current_stale_and_legacy(
     tmp_path: Path,
 ) -> None:

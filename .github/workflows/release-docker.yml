@@ -1,9 +1,7 @@
-name: Release Docker images to GHCR
+name: Release Docker alpha images to GHCR
 
-# R21.6 — operator decision 3: GHCR primary, no Docker Hub yet.
-# Triggered manually after a prerelease tag matching the R20/R21 alpha
-# pattern lands. Builds four image tags per the R21 release plan and
-# publishes them to ghcr.io/ahkeratmehilaiset/waggledance:*.
+# Manual-only prerelease publication. The requested tag is resolved through its
+# exact refs/tags/* ref and peeled to a commit before anything is built.
 
 on:
   workflow_dispatch:
@@ -13,55 +11,122 @@ on:
         required: true
         type: string
       promote_alias:
-        description: "Sliding alias to update (e.g. axis-b-alpha). Empty = none."
+        description: "Allowed sliding alias: axis-b-alpha or none"
         required: false
-        type: string
+        type: choice
+        options: ["axis-b-alpha", "none"]
         default: "axis-b-alpha"
       profile_aliases:
-        description: "Update profile aliases small-* / medium-* (yes/no)"
+        description: "Update small-axis-b-alpha / medium-axis-b-alpha (yes/no)"
         required: false
         type: choice
         options: ["yes", "no"]
         default: "yes"
-  release:
-    types: [published]
 
 permissions:
   contents: read
   packages: write
 
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Resolve target tag
-        id: target
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "promote_alias=axis-b-alpha" >> "$GITHUB_OUTPUT"
-            echo "profile_aliases=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "promote_alias=${{ inputs.promote_alias }}" >> "$GITHUB_OUTPUT"
-            echo "profile_aliases=${{ inputs.profile_aliases }}" >> "$GITHUB_OUTPUT"
-          fi
+concurrency:
+  group: waggledance-ghcr-release
+  cancel-in-progress: false
 
-      - name: Refuse to publish if target tag does NOT match the alpha shape
+env:
+  REGISTRY_IMAGE: ghcr.io/ahkeratmehilaiset/waggledance
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.authority.outputs.tag }}
+      tag_ref_sha: ${{ steps.authority.outputs.tag_ref_sha }}
+      commit_sha: ${{ steps.authority.outputs.commit_sha }}
+      promote_alias: ${{ steps.authority.outputs.promote_alias }}
+      profile_aliases: ${{ steps.authority.outputs.profile_aliases }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate dispatch inputs and resolve exact tag authority
+        id: authority
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PROMOTE_ALIAS: ${{ inputs.promote_alias }}
+          INPUT_PROFILE_ALIASES: ${{ inputs.profile_aliases }}
         run: |
-          TAG="${{ steps.target.outputs.tag }}"
-          # Operator decision 2: only publish prerelease alpha tags from
-          # this workflow. waggledance:latest must NEVER move from this
-          # workflow until a stable tag arrives via a future workflow.
-          if [[ ! "$TAG" =~ alpha$ ]]; then
-            echo "Target tag '$TAG' does not end in 'alpha' — refusing to publish."
-            echo "Stable tags require a separate workflow with explicit operator gate."
+          set -euo pipefail
+
+          if [[ ! "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?-alpha$ ]]; then
+            echo "::error::alpha tag must be a strict, shell-safe vMAJOR.MINOR.PATCH-*-alpha tag"
             exit 1
           fi
 
+          case "$INPUT_PROMOTE_ALIAS" in
+            stable|latest|small-stable|medium-stable)
+              echo "::error::reserved stable alias cannot be moved by the alpha workflow"
+              exit 1
+              ;;
+            axis-b-alpha)
+              promote_alias="$INPUT_PROMOTE_ALIAS"
+              ;;
+            none|"")
+              promote_alias=""
+              ;;
+            *)
+              echo "::error::alpha alias is not allowlisted"
+              exit 1
+              ;;
+          esac
+
+          case "$INPUT_PROFILE_ALIASES" in
+            yes|no) ;;
+            *)
+              echo "::error::profile_aliases must be yes or no"
+              exit 1
+              ;;
+          esac
+
+          tag_ref="refs/tags/$INPUT_TAG"
+          if ! git show-ref --verify --quiet "$tag_ref"; then
+            echo "::error::exact tag ref does not exist: $tag_ref"
+            exit 1
+          fi
+          tag_ref_sha=$(git rev-parse --verify "$tag_ref")
+          commit_sha=$(git rev-parse --verify "$tag_ref^{commit}")
+          if [[ ! "$tag_ref_sha" =~ ^[0-9a-f]{40}$ || ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::tag authority did not resolve to full SHA-1 object IDs"
+            exit 1
+          fi
+
+          echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag_ref_sha=$tag_ref_sha" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+          echo "promote_alias=$promote_alias" >> "$GITHUB_OUTPUT"
+          echo "profile_aliases=$INPUT_PROFILE_ALIASES" >> "$GITHUB_OUTPUT"
+
+  build-candidate:
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ steps.target.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Verify exact checked-out commit
+        env:
+          EXPECTED_COMMIT_SHA: ${{ needs.validate-tag.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          actual_commit_sha=$(git rev-parse HEAD)
+          if [[ "$actual_commit_sha" != "$EXPECTED_COMMIT_SHA" ]]; then
+            echo "::error::checkout is not the validated peeled tag commit"
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -73,73 +138,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Canonical image (full tag from operator decision 2 / 3)
-      - name: Build and push canonical image
+      - name: Build and push untagged candidate by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          push: true
-          tags: |
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-          # NOTE: waggledance:latest is intentionally NOT updated here
-          # per operator decision 2 ("do NOT promote to v3.11.0 stable").
+          outputs: type=image,name=ghcr.io/ahkeratmehilaiset/waggledance,push-by-digest=true,name-canonical=true,push=true
 
-      # Sliding alias (e.g. axis-b-alpha)
-      - name: Tag sliding alias
-        if: ${{ steps.target.outputs.promote_alias != '' }}
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.promote_alias }} \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-
-      # Profile S/M aliases (operator decision 3 image plan).
-      # The Dockerfile is single-stage; the small/medium variants share
-      # the same image but document the supported deployment profile via
-      # tag aliasing. Real Profile S filtering happens at runtime via
-      # WAGGLE_PROFILE / Start-WaggleDanceSolver.ps1 + solver-profiles/*.json.
-      - name: Tag Profile S alias
-        if: ${{ steps.target.outputs.profile_aliases == 'yes' }}
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/ahkeratmehilaiset/waggledance:small-axis-b-alpha \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-
-      - name: Tag Profile M alias
-        if: ${{ steps.target.outputs.profile_aliases == 'yes' }}
-        run: |
-          docker buildx imagetools create \
-            --tag ghcr.io/ahkeratmehilaiset/waggledance:medium-axis-b-alpha \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-
-  smoke-test:
-    needs: build-and-push
+  smoke-candidate:
+    needs: [validate-tag, build-candidate]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Resolve target tag (smoke)
-        id: target
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and run exact candidate digest
+        env:
+          TARGET_DIGEST: ${{ needs.build-candidate.outputs.digest }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ ! "$TARGET_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::builder did not return an immutable sha256 digest"
+            exit 1
           fi
-
-      - name: docker pull
-        run: |
-          docker pull ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }}
-
-      - name: docker run — module-import sanity
-        run: |
-          # Profile S smoke: the image must boot to a Python prompt and
-          # importing waggledance.core.bridge_llm must NOT pull in any
-          # cloud LLM SDK. Operator decision 4 "fail closed if redaction
-          # is unavailable" is enforced inside the package; the import
-          # discipline is the canary.
+          docker pull "$REGISTRY_IMAGE@$TARGET_DIGEST"
           docker run --rm \
             -e WAGGLE_PROFILE=small \
-            ghcr.io/ahkeratmehilaiset/waggledance:${{ steps.target.outputs.tag }} \
+            "$REGISTRY_IMAGE@$TARGET_DIGEST" \
             python -c "
           import sys
           from waggledance.core.bridge_llm import (
@@ -152,3 +183,184 @@ jobs:
           assert BridgeLLMRedactor().redact('alice@example.org').applied
           print('SMOKE_OK')
           "
+
+  publish-tested-digest:
+    needs: [validate-tag, build-candidate, smoke-candidate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate-tag.outputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable tag and transactionally move alpha aliases
+        env:
+          TARGET_TAG: ${{ needs.validate-tag.outputs.tag }}
+          TARGET_TAG_REF_SHA: ${{ needs.validate-tag.outputs.tag_ref_sha }}
+          TARGET_COMMIT_SHA: ${{ needs.validate-tag.outputs.commit_sha }}
+          TARGET_DIGEST: ${{ needs.build-candidate.outputs.digest }}
+          PROMOTE_ALIAS: ${{ needs.validate-tag.outputs.promote_alias }}
+          PROFILE_ALIASES: ${{ needs.validate-tag.outputs.profile_aliases }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$TARGET_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?-alpha$ ]]; then
+            echo "::error::validated alpha tag output is not safe"
+            exit 1
+          fi
+          if [[ ! "$TARGET_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::validated candidate digest is not sha256"
+            exit 1
+          fi
+          tag_ref="refs/tags/$TARGET_TAG"
+          current_tag_ref_sha=$(git rev-parse --verify "$tag_ref")
+          current_commit_sha=$(git rev-parse --verify "$tag_ref^{commit}")
+          if [[ "$current_tag_ref_sha" != "$TARGET_TAG_REF_SHA" || "$current_commit_sha" != "$TARGET_COMMIT_SHA" ]]; then
+            echo "::error::tag authority changed after validation"
+            exit 1
+          fi
+
+          inspect_digest() {
+            local ref="$1"
+            local error_file="$RUNNER_TEMP/wd-inspect-${RANDOM}-${RANDOM}.log"
+            local value
+            if value=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>"$error_file"); then
+              rm -f "$error_file"
+              value=${value//$'\r'/}
+              value=${value//$'\n'/}
+              if [[ ! "$value" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "::error::registry returned a non-digest for $ref" >&2
+                return 1
+              fi
+              printf '%s\n' "$value"
+              return 0
+            fi
+            if grep -Eiq 'manifest unknown|ghcr\.io/ahkeratmehilaiset/waggledance:[^[:space:]]+: not found' "$error_file"; then
+              rm -f "$error_file"
+              return 44
+            fi
+            cat "$error_file" >&2
+            rm -f "$error_file"
+            return 1
+          }
+
+          verify_digest() {
+            local ref="$1"
+            local expected="$2"
+            local actual
+            actual=$(inspect_digest "$ref") || return 1
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$ref resolved to $actual, expected $expected" >&2
+              return 1
+            fi
+          }
+
+          aliases=()
+          if [[ -n "$PROMOTE_ALIAS" ]]; then
+            case "$PROMOTE_ALIAS" in
+              axis-b-alpha) aliases+=("$PROMOTE_ALIAS") ;;
+              stable|latest|small-stable|medium-stable)
+                echo "::error::reserved stable alias reached alpha publisher"
+                exit 1
+                ;;
+              *)
+                echo "::error::non-allowlisted alpha alias reached publisher"
+                exit 1
+                ;;
+            esac
+          fi
+          case "$PROFILE_ALIASES" in
+            yes) aliases+=("small-axis-b-alpha" "medium-axis-b-alpha") ;;
+            no) ;;
+            *)
+              echo "::error::invalid profile alias gate reached publisher"
+              exit 1
+              ;;
+          esac
+
+          declare -A PRESTATE=()
+          for alias in "${aliases[@]}"; do
+            ref="$REGISTRY_IMAGE:$alias"
+            if old_digest=$(inspect_digest "$ref"); then
+              PRESTATE["$alias"]="$old_digest"
+            else
+              rc=$?
+              if [[ $rc -eq 44 ]]; then
+                echo "::error::$ref is absent; automatic rollback to absence is impossible"
+              else
+                echo "::error::could not inventory $ref before mutation"
+              fi
+              exit 1
+            fi
+          done
+
+          canonical_ref="$REGISTRY_IMAGE:$TARGET_TAG"
+          if existing_digest=$(inspect_digest "$canonical_ref"); then
+            if [[ "$existing_digest" != "$TARGET_DIGEST" ]]; then
+              echo "::error::$canonical_ref already exists at a different digest"
+              exit 1
+            fi
+            echo "$canonical_ref already resolves to the tested digest"
+          else
+            rc=$?
+            if [[ $rc -ne 44 ]]; then
+              echo "::error::could not determine existing canonical-tag state"
+              exit 1
+            fi
+            docker buildx imagetools create --prefer-index=false --tag "$canonical_ref" "$REGISTRY_IMAGE@$TARGET_DIGEST"
+            verify_digest "$canonical_ref" "$TARGET_DIGEST"
+          fi
+
+          TOUCHED=()
+          rollback() {
+            local original_rc=$?
+            trap - ERR
+            set +e
+            local rollback_failed=0
+            local alias old_digest ref restored
+            for ((i=${#TOUCHED[@]}-1; i>=0; i--)); do
+              alias=${TOUCHED[$i]}
+              old_digest=${PRESTATE[$alias]}
+              ref="$REGISTRY_IMAGE:$alias"
+              if ! docker buildx imagetools create --prefer-index=false --tag "$ref" "$REGISTRY_IMAGE@$old_digest"; then
+                echo "::error::rollback write failed for $ref" >&2
+                rollback_failed=1
+                continue
+              fi
+              if ! restored=$(inspect_digest "$ref") || [[ "$restored" != "$old_digest" ]]; then
+                echo "::error::rollback verification failed for $ref" >&2
+                rollback_failed=1
+              fi
+            done
+            if [[ $rollback_failed -ne 0 ]]; then
+              exit 97
+            fi
+            exit "$original_rc"
+          }
+          trap rollback ERR
+
+          for alias in "${aliases[@]}"; do
+            if [[ "${PRESTATE[$alias]}" == "$TARGET_DIGEST" ]]; then
+              echo "$REGISTRY_IMAGE:$alias already resolves to the tested digest"
+              continue
+            fi
+            TOUCHED+=("$alias")
+            docker buildx imagetools create --prefer-index=false --tag "$REGISTRY_IMAGE:$alias" "$REGISTRY_IMAGE@$TARGET_DIGEST"
+            verify_digest "$REGISTRY_IMAGE:$alias" "$TARGET_DIGEST"
+          done
+
+          for alias in "${aliases[@]}"; do
+            verify_digest "$REGISTRY_IMAGE:$alias" "$TARGET_DIGEST"
+          done
+          trap - ERR

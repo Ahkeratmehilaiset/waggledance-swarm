@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from tools.check_release_gate import evaluate_release_gate
@@ -15,9 +17,10 @@ from tools.collect_soak_evidence import (
 from tools.run_release_docker_policy_evidence import (
     AUTH_SCHEMA_VERSION as DOCKER_AUTH_SCHEMA_VERSION,
     REQUIRED_SOURCE_FILES as DOCKER_REQUIRED_SOURCE_FILES,
-    REQUIRED_STATIC_CHECKS as DOCKER_REQUIRED_STATIC_CHECKS,
-    SCHEMA_VERSION as DOCKER_SCHEMA_VERSION,
+    build_report as build_docker_policy_report,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_bandit_report(root, *, high: int = 0, medium: int = 0) -> None:
@@ -271,11 +274,52 @@ def _write_ci_status(root, *, commit: str, report_commit: str | None = None) -> 
 def _write_docker_policy(
     root,
     *,
-    commit: str,
     operator_authorized: bool = True,
-    report_commit: str | None = None,
-) -> None:
-    report_commit = commit if report_commit is None else report_commit
+) -> tuple[str, Path]:
+    source_root = root / "policy-source"
+    for item in DOCKER_REQUIRED_SOURCE_FILES:
+        source = Path(item)
+        destination = source_root / item
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    subprocess.run(
+        ["git", "init", "-b", "main", str(source_root)],
+        check=True,
+        capture_output=True,
+    )
+    for key, value in (
+        ("user.name", "WD Soak Test"),
+        ("user.email", "wd-soak@example.invalid"),
+        ("core.autocrlf", "false"),
+        ("commit.gpgsign", "false"),
+    ):
+        subprocess.run(
+            ["git", "-C", str(source_root), "config", key, value],
+            check=True,
+        )
+    subprocess.run(
+        ["git", "-C", str(source_root), "add", "--", *DOCKER_REQUIRED_SOURCE_FILES],
+        check=True,
+    )
+    commit_env = os.environ.copy()
+    commit_env.update(
+        {
+            "GIT_AUTHOR_DATE": "2026-05-22T14:00:00Z",
+            "GIT_COMMITTER_DATE": "2026-05-22T14:00:00Z",
+        }
+    )
+    subprocess.run(
+        ["git", "-C", str(source_root), "commit", "-m", "policy fixture"],
+        check=True,
+        capture_output=True,
+        env=commit_env,
+    )
+    report_commit = subprocess.run(
+        ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     authorization = None
     if operator_authorized:
         authorization = {
@@ -287,30 +331,17 @@ def _write_docker_policy(
             "authorization_id": "operator-docker-stable-v3.12.0",
             "authorized_at_utc": "2026-05-24T00:00:00Z",
         }
-    blockers = [] if operator_authorized else ["operator_authorization_missing"]
+    report = build_docker_policy_report(
+        source_root=source_root,
+        commit=report_commit,
+        operator_authorization=authorization,
+        generated_at_utc=dt.datetime(2026, 5, 22, 14, 10, tzinfo=dt.UTC),
+    )
     (root / "v3.12.0_docker_policy.json").write_text(
-        json.dumps({
-            "schema_version": DOCKER_SCHEMA_VERSION,
-            "target_version": "v3.12.0",
-            "commit": report_commit,
-            "generated_at_utc": "2026-05-22T14:10:00Z",
-            "source_files": list(DOCKER_REQUIRED_SOURCE_FILES),
-            "source_hashes": {
-                path: f"sha256:{index:064x}"
-                for index, path in enumerate(DOCKER_REQUIRED_SOURCE_FILES, start=1)
-            },
-            "static_checks": {
-                check: True for check in DOCKER_REQUIRED_STATIC_CHECKS
-            },
-            "entrypoints": {},
-            "operator_authorization": authorization,
-            "post_tag_runtime_verification_required": True,
-            "latest_move_requires_operator_opt_in": True,
-            "blockers": blockers,
-            "docker_stable_policy": "finalized" if not blockers else "draft",
-        }),
+        json.dumps(report),
         encoding="utf-8",
     )
+    return report_commit, source_root
 
 
 def test_collector_draft_is_fail_closed_until_evidence_is_explicit() -> None:
@@ -514,16 +545,19 @@ def test_local_artifacts_reject_ci_artifact_commit_mismatch(
     assert statuses["ci_status"] == "blocked"
 
 
-def test_local_artifacts_can_finalize_docker_policy_from_artifact(tmp_path) -> None:
-    commit = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
+def test_local_artifacts_can_finalize_docker_policy_from_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir()
     release_notes = tmp_path / "v3.12.0.md"
-    _write_docker_policy(evidence_root, commit=commit)
+    commit, source_root = _write_docker_policy(evidence_root)
     _write_release_notes(release_notes)
+    monkeypatch.chdir(source_root)
 
     evidence = build_soak_evidence(
-        "docs/release/RELEASE_READINESS.md",
+        REPO_ROOT / "docs/release/RELEASE_READINESS.md",
         commit=commit,
         use_local_artifacts=True,
         evidence_root=evidence_root,
@@ -533,10 +567,24 @@ def test_local_artifacts_can_finalize_docker_policy_from_artifact(tmp_path) -> N
     assert evidence["docker_stable_policy"] == "finalized"
 
 
-def test_local_artifacts_can_finalize_docker_policy_from_signed_operator_pack() -> None:
+def test_local_artifacts_can_finalize_docker_policy_from_signed_operator_pack(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    evidence_seed = tmp_path / "evidence-seed"
+    evidence_seed.mkdir()
+    commit, source_root = _write_docker_policy(evidence_seed)
+    (evidence_seed / "v3.12.0_docker_policy.json").unlink()
+    pack = source_root / "docs" / "operator_inbox" / "docker-latest-promotion.yaml"
+    pack.parent.mkdir(parents=True)
+    pack.write_bytes(
+        (REPO_ROOT / "docs" / "operator_inbox" / "docker-latest-promotion.yaml").read_bytes()
+    )
+    monkeypatch.chdir(source_root)
+
     evidence = build_soak_evidence(
-        "docs/release/RELEASE_READINESS.md",
-        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        REPO_ROOT / "docs/release/RELEASE_READINESS.md",
+        commit=commit,
         use_local_artifacts=True,
     )
 
@@ -565,16 +613,20 @@ def test_local_artifacts_override_manual_docker_policy_stub_when_artifact_missin
 
 def test_local_artifacts_keep_docker_policy_draft_without_operator_authorization(
     tmp_path,
+    monkeypatch,
 ) -> None:
-    commit = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir()
     release_notes = tmp_path / "v3.12.0.md"
-    _write_docker_policy(evidence_root, commit=commit, operator_authorized=False)
+    commit, source_root = _write_docker_policy(
+        evidence_root,
+        operator_authorized=False,
+    )
     _write_release_notes(release_notes)
+    monkeypatch.chdir(source_root)
 
     evidence = build_soak_evidence(
-        "docs/release/RELEASE_READINESS.md",
+        REPO_ROOT / "docs/release/RELEASE_READINESS.md",
         commit=commit,
         docker_stable_policy="finalized",
         use_local_artifacts=True,

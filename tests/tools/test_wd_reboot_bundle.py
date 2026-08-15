@@ -168,6 +168,11 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         assert lane["resume_policy"] == "current_worktree"
 
 
+def test_target_state_is_binary_to_preserve_raw_manifest_hash() -> None:
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    assert "ops/windows/reboot/WD_SWARM_TARGET_STATE_V1.md binary" in attributes
+
+
 def test_interactive_launchers_pin_current_models_and_max_effort() -> None:
     agent_launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     bundle_text = "\n".join(

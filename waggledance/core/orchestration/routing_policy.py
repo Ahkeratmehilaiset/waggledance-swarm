@@ -1,10 +1,12 @@
 """Routing policy — pure function, no I/O.
 
 Ported from core/smart_router_v2.py and backend/routes/chat.py.
-Routing order: hotcache -> micromodel -> solver -> memory -> llm -> swarm.
-Only returns route types from ALLOWED_ROUTE_TYPES.
+Routing order keeps hot-cache first, then prefers eligible deterministic
+solvers over specialist micromodel hits before falling back to memory, swarm,
+or LLM paths. Only returns route types from ALLOWED_ROUTE_TYPES.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from waggledance.core.domain.task import TaskRoute
@@ -54,16 +56,33 @@ class RoutingFeatures:
     solver_intent: str = ""
 
 
+def normalize_bounded_confidence(value: object) -> float | None:
+    """Return an exact finite confidence in ``[0, 1]``, or ``None``.
+
+    Confidence values cross adapter boundaries.  Reject booleans, strings,
+    numeric subclasses, non-finite values, and unbounded integers instead of
+    relying on coercion or comparison side effects.
+    """
+    if type(value) not in {int, float}:
+        return None
+    if not 0.0 <= value <= 1.0:
+        return None
+    normalized = float(value)
+    return normalized if math.isfinite(normalized) else None
+
+
 def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
-    """Pure routing decision. Order: hotcache -> micromodel -> solver -> memory -> llm -> swarm.
+    """Return one bounded route with eligible deterministic solvers first.
 
     Only returns route_type from ALLOWED_ROUTE_TYPES.
 
     Decision logic ported from core/smart_router_v2.py:
     - Hot cache hit (confidence=1.0) -> hotcache
-    - Solver-eligible intent (math/thermal/stats) -> solver
+    - Explicit registry solver commands -> solver
+    - Solver-eligible non-time/system intent -> solver
+    - High-confidence micromodel hit -> micromodel
+    - Remaining time/system query -> llm
     - High memory score (>0.7) -> memory
-    - Time/system queries or short queries -> llm
     - Complex queries (long, multi-keyword) with swarm enabled -> swarm
     - Default -> llm
     """
@@ -78,23 +97,41 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
-    if (
-        features.micromodel_enabled
-        and features.has_micromodel_hit
-        and features.micromodel_confidence > 0.85
-    ):
-        return TaskRoute(
-            route_type="micromodel",
-            confidence=features.micromodel_confidence,
-            routing_latency_ms=(time.monotonic() - start) * 1000,
-        )
-
     # Explicit registry solver commands carry JSON payloads where words like
     # "date" or "status" are data, not chat-level time/system intents.
     if features.solver_intent == "v3_13_0_solver":
         return TaskRoute(
             route_type="solver",
             confidence=0.95,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    # Solver-first: eligible deterministic work must not be pre-empted by a
+    # probabilistic specialist hit. Time/system flags exclude ordinary solver
+    # selection and continue through the existing specialist/fallback order.
+    if (
+        not features.is_time_query
+        and not features.is_system_query
+        and features.solver_intent in SOLVER_INTENTS
+    ):
+        return TaskRoute(
+            route_type="solver",
+            confidence=0.95,
+            routing_latency_ms=(time.monotonic() - start) * 1000,
+        )
+
+    micromodel_confidence = normalize_bounded_confidence(
+        features.micromodel_confidence
+    )
+    if (
+        features.micromodel_enabled
+        and features.has_micromodel_hit
+        and micromodel_confidence is not None
+        and micromodel_confidence > 0.85
+    ):
+        return TaskRoute(
+            route_type="micromodel",
+            confidence=micromodel_confidence,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
@@ -106,18 +143,11 @@ def select_route(features: RoutingFeatures, config: ConfigPort) -> TaskRoute:
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 
-    # Solver-first: math, thermal, stats intents get deterministic answers
-    if features.solver_intent in SOLVER_INTENTS:
-        return TaskRoute(
-            route_type="solver",
-            confidence=0.95,
-            routing_latency_ms=(time.monotonic() - start) * 1000,
-        )
-
-    if features.memory_score > 0.7:
+    memory_confidence = normalize_bounded_confidence(features.memory_score)
+    if memory_confidence is not None and memory_confidence > 0.7:
         return TaskRoute(
             route_type="memory",
-            confidence=features.memory_score,
+            confidence=memory_confidence,
             routing_latency_ms=(time.monotonic() - start) * 1000,
         )
 

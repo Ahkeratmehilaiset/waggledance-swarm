@@ -360,7 +360,11 @@ def test_solver_miss_uses_served_orchestrator_fallback_stage() -> None:
         [
             {"stage": "route_selection", "route_type": "solver"},
             {"stage": "deterministic_solver", "answered": False},
-            {"stage": "orchestrator_llm_fallback", "source": "llm"},
+            {
+                "stage": "orchestrator_llm_fallback",
+                "route_type": "llm",
+                "source": "llm",
+            },
         ],
         source="llm",
     )
@@ -370,6 +374,61 @@ def test_solver_miss_uses_served_orchestrator_fallback_stage() -> None:
     assert record["first_hop_class"] == "fallback"
     assert record["route_decision"] == "fallback"
     assert record["first_hop_solver"] == "orchestrator_llm"
+
+
+def test_solver_miss_attributes_restored_micromodel_route() -> None:
+    classified = _classify(
+        [
+            {"stage": "route_selection", "route_type": "solver"},
+            {"stage": "deterministic_solver", "answered": False},
+            {
+                "stage": "orchestrator_llm_fallback",
+                "route_type": "micromodel",
+                "source": "micromodel",
+            },
+        ],
+        source="micromodel",
+    )
+    record = classified["record"]
+
+    assert record["first_hop_stage"] == "orchestrator_llm_fallback"
+    assert record["first_hop_class"] == "fallback"
+    assert record["route_decision"] == "fallback"
+    assert record["first_hop_solver"] == "micromodel"
+    assert mod._validate_records(
+        [record], [], _route_header(), _bindings([ROUTE_ROW])
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("route_type", "source", "expected_solver"),
+    [
+        ("micromodel", "llm", "orchestrator_llm"),
+        ("memory", "swarm", "swarm"),
+    ],
+)
+def test_terminal_attribution_uses_actual_source_not_admitted_route(
+    route_type,
+    source,
+    expected_solver,
+) -> None:
+    classified = _classify(
+        [
+            {"stage": "route_selection", "route_type": route_type},
+            {
+                "stage": "orchestrator_llm_fallback",
+                "route_type": route_type,
+                "source": source,
+            },
+        ],
+        source=source,
+    )
+    record = classified["record"]
+
+    assert record["first_hop_solver"] == expected_solver
+    assert mod._validate_records(
+        [record], [], _route_header(), _bindings([ROUTE_ROW])
+    ) is True
 
 
 def test_refusal_is_the_only_route_with_null_first_hop_solver() -> None:

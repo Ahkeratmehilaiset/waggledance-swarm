@@ -10,12 +10,14 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import replace
 
 from waggledance.application.dto.chat_dto import ChatRequest, ChatResult
 from waggledance.core.domain.task import TaskRequest
 from waggledance.core.orchestration.orchestrator import Orchestrator
 from waggledance.core.orchestration.routing_policy import (
     extract_features,
+    normalize_bounded_confidence,
     select_route,
 )
 from waggledance.core.policies.confidence_policy import should_cache_result
@@ -202,9 +204,13 @@ class ChatService:
             language=language,
             limit=5,
         )
-        memory_score = max(
-            (r.confidence for r in memory_context), default=0.0
-        )
+        memory_score = 0.0
+        for memory_record in memory_context:
+            confidence = normalize_bounded_confidence(
+                getattr(memory_record, "confidence", None)
+            )
+            if confidence is not None:
+                memory_score = max(memory_score, confidence)
         record_route_stage(
             "memory_context",
             language=trace_language,
@@ -273,10 +279,13 @@ class ChatService:
                     cached=False,
                     route_stage_trace=route_stage_trace,
                 )
-            # Solver miss — fall through to hybrid retrieval or LLM
-            route = route.__class__(
-                route_type="llm", confidence=0.6,
-                routing_latency_ms=route.routing_latency_ms,
+            # Solver miss: re-enter the bounded fallback policy without the
+            # already-attempted solver intent.  This preserves an admitted
+            # micromodel (and the existing memory/swarm order) instead of
+            # silently downgrading every miss to the generic LLM route.
+            route = select_route(
+                replace(features, solver_intent=""),
+                self._config,
             )
 
         # v3.4: Hybrid FAISS retrieval — after solver, before LLM

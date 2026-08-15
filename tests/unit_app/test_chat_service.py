@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import threading
 
 import pytest
@@ -12,6 +13,7 @@ from waggledance.application.services.chat_service import ChatService
 from waggledance.application.services.hybrid_retrieval_service import HybridHit, HybridTraceResult
 from waggledance.core.domain.agent import AgentResult
 from waggledance.core.orchestration.routing_policy import select_route
+from waggledance.core.magma.chat_served_receipt import build_chat_served_summary
 from waggledance.core.storage.control_plane import ControlPlaneDB
 
 
@@ -273,6 +275,197 @@ class TestChatService:
                 source="solver",
                 cached=False,
             )
+
+        asyncio.run(_run())
+
+    def test_deterministic_solver_preempts_confident_micromodel(
+        self,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            original_get = mock_config.get.side_effect
+            mock_config.get.side_effect = lambda key, default=None: (
+                True
+                if key == "advanced_learning.micro_model_enabled"
+                else original_get(key, default)
+            )
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            svc._probe_micromodel = MagicMock(return_value=(True, 0.99))
+            query = "what is 15% of 300"
+
+            result = await svc.handle(ChatRequest(query=query))
+
+            assert result.source == "solver"
+            assert result.response == "45"
+            svc._probe_micromodel.assert_called_once_with(query)
+            route_selection = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "route_selection"
+            )
+            solver_stage = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "deterministic_solver"
+            )
+            assert route_selection["route_type"] == "solver"
+            assert solver_stage == {
+                "stage": "deterministic_solver",
+                "intent": "math",
+                "answered": True,
+            }
+            mock_orchestrator.handle_task.assert_not_called()
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        ("query", "expected_intent"),
+        [
+            ("statistics summary", "stats"),
+            ("calculate twelve plus five", "math"),
+        ],
+    )
+    def test_solver_miss_restores_confident_micromodel_route(
+        self,
+        query,
+        expected_intent,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            original_get = mock_config.get.side_effect
+            mock_config.get.side_effect = lambda key, default=None: (
+                True
+                if key == "advanced_learning.micro_model_enabled"
+                else original_get(key, default)
+            )
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            svc._probe_micromodel = MagicMock(return_value=(True, 0.99))
+
+            result = await svc.handle(ChatRequest(query=query))
+
+            svc._probe_micromodel.assert_called_once_with(query)
+            orchestrator_route = mock_orchestrator.handle_task.await_args.args[1]
+            assert orchestrator_route.route_type == "micromodel"
+            assert orchestrator_route.confidence == 0.99
+            route_selection = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "route_selection"
+            )
+            solver_stage = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "deterministic_solver"
+            )
+            fallback_stage = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "orchestrator_llm_fallback"
+            )
+            assert route_selection == {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": expected_intent,
+                "memory_score": 0.0,
+            }
+            assert solver_stage == {
+                "stage": "deterministic_solver",
+                "intent": expected_intent,
+                "answered": False,
+            }
+            assert fallback_stage["route_type"] == "micromodel"
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        "memory_confidence",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            True,
+            1.1,
+            10**309,
+            "0.9",
+            None,
+        ],
+    )
+    def test_solver_miss_rejects_invalid_memory_confidence_from_receipt_trace(
+        self,
+        memory_confidence,
+        mock_orchestrator,
+        mock_memory_service,
+        mock_hot_cache,
+        mock_config,
+    ):
+        async def _run():
+            original_get = mock_config.get.side_effect
+            mock_config.get.side_effect = lambda key, default=None: (
+                True
+                if key == "advanced_learning.micro_model_enabled"
+                else original_get(key, default)
+            )
+            mock_memory_service.retrieve_context.return_value = [
+                MagicMock(confidence=memory_confidence)
+            ]
+            svc = ChatService(
+                orchestrator=mock_orchestrator,
+                memory_service=mock_memory_service,
+                hot_cache=mock_hot_cache,
+                routing_policy_fn=select_route,
+                config=mock_config,
+            )
+            svc._probe_micromodel = MagicMock(
+                return_value=(True, float("nan"))
+            )
+
+            result = await svc.handle(
+                ChatRequest(query="statistics summary")
+            )
+
+            orchestrator_route = mock_orchestrator.handle_task.await_args.args[1]
+            assert orchestrator_route.route_type == "llm"
+            memory_stage = next(
+                event
+                for event in result.route_stage_trace
+                if event["stage"] == "memory_context"
+            )
+            assert memory_stage["memory_score"] == 0.0
+            assert math.isfinite(memory_stage["memory_score"])
+            summary = build_chat_served_summary(
+                query="statistics summary",
+                response=result.response,
+                route_type=orchestrator_route.route_type,
+                source=result.source,
+                confidence=result.confidence,
+                latency_ms=result.latency_ms,
+                cached=result.cached,
+                round_table=result.round_table,
+                agent_id=result.agent_id,
+                language=result.language,
+                profile="HOME",
+                world_snapshot_ref="test-snapshot",
+                route_stage_trace=result.route_stage_trace,
+            )
+            assert summary["route_stage_trace"][2]["memory_score"] == 0.0
 
         asyncio.run(_run())
 

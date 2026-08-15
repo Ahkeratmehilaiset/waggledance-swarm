@@ -473,7 +473,16 @@ def _first_hop_solver(stage: str, event: Mapping[str, Any]) -> str | None:
     if stage == "hex_neighbor_assist_7_cell":
         return "hex_neighbor_assist"
     if stage == "orchestrator_llm_fallback":
-        return "orchestrator_llm"
+        # The selected route is admission evidence, not proof of who served.
+        # Orchestrator may miss a micromodel and answer with the LLM, or execute
+        # a memory route through swarm agents. Attribute the observed source.
+        source = event.get("source")
+        return {
+            "llm": "orchestrator_llm",
+            "memory": "memory",
+            "micromodel": "micromodel",
+            "swarm": "swarm",
+        }.get(source)
     return None
 
 

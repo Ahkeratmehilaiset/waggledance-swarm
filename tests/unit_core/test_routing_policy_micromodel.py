@@ -94,6 +94,104 @@ class TestSelectRouteMicromodel:
         route = select_route(features, _mock_config())
         assert route.route_type == "hotcache"
 
+    @pytest.mark.parametrize(
+        ("query", "expected_intent"),
+        [
+            ("calculate 2+2", "math"),
+            ("what is 15% of 300", "math"),
+        ],
+    )
+    def test_deterministic_solver_beats_confident_micromodel(
+        self,
+        query,
+        expected_intent,
+    ):
+        features = extract_features(
+            query=query,
+            hot_cache_hit=False,
+            memory_score=0.0,
+            matched_keywords=[],
+            profile="HOME",
+            language="en",
+            micromodel_enabled=True,
+            micromodel_hit=True,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(features, _mock_config())
+
+        assert features.solver_intent == expected_intent
+        assert route.route_type == "solver"
+        assert route.confidence == 0.95
+
+    def test_explicit_registry_solver_beats_confident_micromodel(self):
+        features = RoutingFeatures(
+            solver_intent="v3_13_0_solver",
+            micromodel_enabled=True,
+            has_micromodel_hit=True,
+            micromodel_confidence=0.99,
+        )
+
+        route = select_route(features, _mock_config())
+
+        assert route.route_type == "solver"
+        assert route.confidence == 0.95
+
+    @pytest.mark.parametrize(
+        "confidence",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            -0.001,
+            1.000001,
+            10**309,
+            -(10**309),
+            True,
+        ],
+    )
+    def test_micromodel_rejects_nonfinite_or_out_of_range_confidence(
+        self,
+        confidence,
+    ):
+        features = RoutingFeatures(
+            micromodel_enabled=True,
+            has_micromodel_hit=True,
+            micromodel_confidence=confidence,
+        )
+
+        route = select_route(features, _mock_config())
+
+        assert route.route_type == "llm"
+        assert route.confidence == 0.6
+
+    @pytest.mark.parametrize(
+        "confidence",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            -0.001,
+            1.000001,
+            10**309,
+            -(10**309),
+            True,
+            "0.9",
+            None,
+        ],
+    )
+    def test_memory_rejects_nonfinite_or_noncanonical_confidence(
+        self,
+        confidence,
+    ):
+        route = select_route(
+            RoutingFeatures(memory_score=confidence),
+            _mock_config(),
+        )
+
+        assert route.route_type == "llm"
+        assert route.confidence == 0.6
+
     def test_micromodel_beats_memory(self):
         features = RoutingFeatures(
             micromodel_enabled=True,

@@ -464,101 +464,80 @@ function Assert-MachineToolsConfigExact {
     }
 }
 
-function Resolve-PowerShellChildHost {
-    $candidates = New-Object 'System.Collections.Generic.List[string]'
-    $currentWindowsPowerShell = ''
+function Test-WdTrustedInstalledPowerShellExecutable {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $ProcessName
+    )
 
     try {
-        $current = Get-Process -Id $PID -ErrorAction Stop
-        $currentHostName = [IO.Path]::GetFileName([string]$current.Path)
-        if ($current.Path -and $currentHostName -match '^(?i:pwsh)\.exe$') {
-            $candidates.Add($current.Path)
+        $full = [IO.Path]::GetFullPath($Path)
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $full -ExpectedType Leaf)
+        $leaf = [IO.Path]::GetFileName($full)
+        if (-not $leaf.Equals(
+                $ProcessName,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            return $false
         }
-        elseif ($current.Path -and $currentHostName -match '^(?i:powershell)\.exe$') {
-            $currentWindowsPowerShell = $current.Path
+        $systemWindowsPowerShell = [IO.Path]::GetFullPath(
+            (Join-Path ([Environment]::SystemDirectory) `
+                'WindowsPowerShell\v1.0\powershell.exe')
+        )
+        if ($leaf -ieq 'powershell.exe') {
+            return $full.Equals(
+                $systemWindowsPowerShell,
+                [StringComparison]::OrdinalIgnoreCase
+            )
         }
+        if ($leaf -ine 'pwsh.exe') { return $false }
+
+        $programFiles = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::ProgramFiles
+        )
+        if ([string]::IsNullOrWhiteSpace($programFiles)) { return $false }
+        $programFilesFull = [IO.Path]::GetFullPath($programFiles).TrimEnd('\')
+        $msiPrefix = Join-Path $programFilesFull 'PowerShell'
+        $storePrefix = Join-Path $programFilesFull 'WindowsApps'
+        if ($full.StartsWith(
+                $msiPrefix.TrimEnd('\') + '\',
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            $relative = $full.Substring($msiPrefix.TrimEnd('\').Length + 1)
+            return $relative -cmatch '^[0-9][0-9A-Za-z.-]*\\pwsh\.exe$'
+        }
+        if ($full.StartsWith(
+                $storePrefix.TrimEnd('\') + '\',
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            $relative = $full.Substring($storePrefix.TrimEnd('\').Length + 1)
+            return $relative -cmatch (
+                '^Microsoft\.PowerShell_[0-9A-Za-z._-]+\\pwsh\.exe$'
+            )
+        }
+        return $false
     }
     catch {
-        $actions.Add("WARN could not inspect current PowerShell host: $($_.Exception.Message)")
+        return $false
     }
+}
 
-    foreach ($commandName in @('pwsh.exe', 'pwsh')) {
-        try {
-            $command = Get-Command $commandName -ErrorAction Stop |
-                Where-Object {
-                    $_.CommandType -eq [Management.Automation.CommandTypes]::Application
-                } |
-                Select-Object -First 1
-            if ($null -ne $command) {
-                $path = if ($command.Path) { $command.Path } else { $command.Source }
-                if ($path) { $candidates.Add([string]$path) }
-            }
-        }
-        catch {
-            # Other dynamic probes below may still resolve a supported host.
-        }
-    }
+function Resolve-PowerShellChildHost {
+    param([Parameter(Mandatory)] [string] $Policy)
 
-    if ($env:ProgramFiles) {
-        $powerShellRoot = Join-Path $env:ProgramFiles 'PowerShell'
-        if (Test-Path -LiteralPath $powerShellRoot -PathType Container) {
-            $versionDirectories = @(
-                Get-ChildItem -LiteralPath $powerShellRoot -Directory -ErrorAction SilentlyContinue |
-                    Sort-Object {
-                        $version = [Version]'0.0'
-                        [void][Version]::TryParse($_.Name, [ref]$version)
-                        $version
-                    } -Descending
-            )
-            foreach ($directory in $versionDirectories) {
-                $candidates.Add((Join-Path $directory.FullName 'pwsh.exe'))
-            }
-        }
+    if ($Policy -cne 'system_windows_powershell_v1') {
+        throw "unsupported watcher child-host policy: $Policy"
     }
-
-    if ($env:SystemRoot) {
-        if ($currentWindowsPowerShell) {
-            $candidates.Add($currentWindowsPowerShell)
-        }
-        $candidates.Add(
-            (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
-        )
+    $candidate = [IO.Path]::GetFullPath(
+        (Join-Path ([Environment]::SystemDirectory) `
+            'WindowsPowerShell\v1.0\powershell.exe')
+    )
+    if (-not (Test-WdTrustedInstalledPowerShellExecutable `
+            -Path $candidate -ProcessName 'powershell.exe')) {
+        throw 'configured watcher child host is not trusted Windows PowerShell'
     }
-    foreach ($commandName in @('powershell.exe', 'powershell')) {
-        try {
-            $command = Get-Command $commandName -ErrorAction Stop |
-                Where-Object {
-                    $_.CommandType -eq [Management.Automation.CommandTypes]::Application
-                } |
-                Select-Object -First 1
-            if ($null -ne $command) {
-                $path = if ($command.Path) { $command.Path } else { $command.Source }
-                if ($path) { $candidates.Add([string]$path) }
-            }
-        }
-        catch {
-            # The final candidate validation below emits one fail-closed error.
-        }
-    }
-
-    $seen = @{}
-    foreach ($candidate in $candidates) {
-        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-        try {
-            $full = [IO.Path]::GetFullPath($candidate)
-        }
-        catch {
-            continue
-        }
-        $key = $full.ToLowerInvariant()
-        if ($seen.ContainsKey($key)) { continue }
-        $seen[$key] = $true
-        if (Test-Path -LiteralPath $full -PathType Leaf) {
-            return $full
-        }
-    }
-
-    throw 'could not dynamically resolve a supported pwsh/powershell child executable'
+    return $candidate
 }
 
 function Test-TextContains {
@@ -1201,7 +1180,6 @@ function Test-WdReplaceableStaleWatcherProcess {
         $actualExecutable = [IO.Path]::GetFullPath(
             [string]$Process.ExecutablePath
         )
-        $expectedExecutableFull = [IO.Path]::GetFullPath($ExpectedExecutable)
         $currentScriptFull = [IO.Path]::GetFullPath($CurrentScriptPath)
         $bundleParentFull = [IO.Path]::GetFullPath($BundleParent).TrimEnd('\')
         $sourceRepositoryFull = [IO.Path]::GetFullPath(
@@ -1211,11 +1189,12 @@ function Test-WdReplaceableStaleWatcherProcess {
     catch {
         return $false
     }
+    $expectedProcessName = [IO.Path]::GetFileName($ExpectedExecutable)
     if (
-        -not $actualExecutable.Equals(
-            $expectedExecutableFull,
-            [StringComparison]::OrdinalIgnoreCase
-        )
+        -not (Test-WdTrustedInstalledPowerShellExecutable `
+            -Path $ExpectedExecutable -ProcessName $expectedProcessName) -or
+        -not (Test-WdTrustedInstalledPowerShellExecutable `
+            -Path $actualExecutable -ProcessName ([string]$Process.Name))
     ) {
         return $false
     }
@@ -2280,7 +2259,11 @@ if (-not $LogPath) {
 $logFull = [IO.Path]::GetFullPath($LogPath)
 Initialize-SupervisorLogParent -Path $logFull -Apply:$Apply
 
-$powerShellHost = Resolve-PowerShellChildHost
+if ($null -eq $configuration.watchers) {
+    throw 'supervisor configuration has no watchers object'
+}
+$watcherHostPolicy = Get-RequiredText $configuration.watchers 'host_policy'
+$powerShellHost = Resolve-PowerShellChildHost -Policy $watcherHostPolicy
 # Process identity matching is an admission boundary.  If the native argv
 # parser is unavailable, abort before any reconciliation can launch a duplicate.
 Initialize-WdSupervisorCommandLineParser

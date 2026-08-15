@@ -104,6 +104,9 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert supervisor["watchers"]["replacement_conflict_root"] == (
         r"C:\Python\wd-reboot-runtime\watcher-replacement-conflicts"
     )
+    assert supervisor["watchers"]["host_policy"] == (
+        "system_windows_powershell_v1"
+    )
     assert supervisor["watchers"]["git_executable"] == (
         r"C:\Program Files\Git\cmd\git.exe"
     )
@@ -525,6 +528,95 @@ $exactProcesses = @(
         "configured_count": 1,
         "exact_count": 1,
     }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_child_host_policy_ignores_path_applications(
+    tmp_path: Path,
+) -> None:
+    fake_path = tmp_path / "fake-path"
+    fake_path.mkdir()
+    for name in ("pwsh.exe", "powershell.exe"):
+        (fake_path / name).write_text("not an executable\n", encoding="utf-8")
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    fake_path_ps = str(fake_path).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Assert-WdSupervisorPathWithoutReparse',
+    'Test-WdTrustedInstalledPowerShellExecutable',
+    'Resolve-PowerShellChildHost'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$resolverAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Resolve-PowerShellChildHost'
+  }},
+  $true
+)
+$oldPath = $env:PATH
+try {{
+  $env:PATH = '{fake_path_ps};' + $oldPath
+  $resolved = Resolve-PowerShellChildHost `
+    -Policy 'system_windows_powershell_v1'
+  $unsupportedFailed = $false
+  try {{
+    [void](Resolve-PowerShellChildHost -Policy 'path_auto')
+  }}
+  catch {{
+    $unsupportedFailed = $_.Exception.Message -like (
+      'unsupported watcher child-host policy*'
+    )
+  }}
+  [pscustomobject]@{{
+    resolved = $resolved
+    fake_pwsh_selected = $resolved.Equals(
+      (Join-Path '{fake_path_ps}' 'pwsh.exe'),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+    fake_powershell_selected = $resolved.Equals(
+      (Join-Path '{fake_path_ps}' 'powershell.exe'),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+    resolver_uses_get_command = $resolverAst.Extent.Text -match 'Get-Command'
+    unsupported_failed = $unsupportedFailed
+  }} | ConvertTo-Json -Compress
+}}
+finally {{
+  $env:PATH = $oldPath
+}}
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    payload = json.loads(result.stdout)
+    assert WINDOWS_POWERSHELL_PATH is not None
+    assert Path(payload["resolved"]) == WINDOWS_POWERSHELL_PATH
+    assert payload["fake_pwsh_selected"] is False
+    assert payload["fake_powershell_selected"] is False
+    assert payload["resolver_uses_get_command"] is False
+    assert payload["unsupported_failed"] is True
 
 
 @pytest.mark.skipif(
@@ -1485,6 +1577,25 @@ def test_supervisor_only_replaces_hash_bound_stale_bundle_watcher(
     git_executable = shutil.which("git.exe") or shutil.which("git")
     assert git_executable is not None
     git_executable_ps = git_executable.replace("'", "''")
+    pwsh_launcher = shutil.which("pwsh.exe") or shutil.which("pwsh")
+    trusted_pwsh_path = ""
+    if pwsh_launcher is not None:
+        pwsh_probe = subprocess.run(
+            [
+                pwsh_launcher,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Write((Get-Process -Id $PID).Path)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        trusted_pwsh_path = pwsh_probe.stdout.strip()
+    trusted_pwsh_path_ps = trusted_pwsh_path.replace("'", "''")
     result = _run_powershell(
         f"""
 $ErrorActionPreference = 'Stop'
@@ -1512,6 +1623,7 @@ foreach ($name in @(
     'Get-WdPowerShellHostKind',
     'Test-WdEncodedCommandValue',
     'Get-WdPowerShellFileInvocation',
+    'Test-WdTrustedInstalledPowerShellExecutable',
     'Test-WdReplaceableStaleWatcherProcess'
   )) {{
   $functionAst = $ast.Find(
@@ -1548,6 +1660,24 @@ $valid = Test-WdReplaceableStaleWatcherProcess `
   -BundleParent '{bundle_parent_ps}' `
   -SourceRepositoryRoot '{source_repo_ps}' `
   -GitExecutable $gitPath
+$migratedHost = $null
+if ('{trusted_pwsh_path_ps}') {{
+  $migratedProcess = [pscustomobject]@{{
+    ProcessId = 104
+    Name = 'pwsh.exe'
+    ExecutablePath = '{trusted_pwsh_path_ps}'
+    CommandLine = $command.Replace('powershell.exe', 'pwsh.exe')
+  }}
+  $migratedHost = Test-WdReplaceableStaleWatcherProcess `
+    -Process $migratedProcess `
+    -ExpectedExecutable $hostPath `
+    -CurrentScriptPath '{current_script_ps}' `
+    -Agent 'codex-lead-1' `
+    -RuntimeRoot $runtime `
+    -BundleParent '{bundle_parent_ps}' `
+    -SourceRepositoryRoot '{source_repo_ps}' `
+    -GitExecutable $gitPath
+}}
 $env:GIT_DIR = '{poison_git_dir_ps}'
 try {{
   $poisonedEnvironment = Test-WdReplaceableStaleWatcherProcess `
@@ -1633,6 +1763,7 @@ $selfSignedTamper = Test-WdReplaceableStaleWatcherProcess `
   -GitExecutable $gitPath
 [pscustomobject]@{{
   valid = $valid
+  migrated_host = $migratedHost
   poisoned_environment = $poisonedEnvironment
   wrong_agent = $wrongAgent
   current = $current
@@ -1645,6 +1776,7 @@ $selfSignedTamper = Test-WdReplaceableStaleWatcherProcess `
     )
     assert json.loads(result.stdout) == {
         "valid": True,
+        "migrated_host": True if trusted_pwsh_path else None,
         "poisoned_environment": True,
         "wrong_agent": False,
         "current": False,

@@ -11,6 +11,7 @@
     "capability_effect": "none"
   },
   "watchers": {
+    "host_policy": "system_windows_powershell_v1",
     "script_relative": "tools-bootstrap\\.agent-bridge\\bin\\Watch-Bridge.ps1",
     "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
     "source_repo_root": "C:\\Python\\project2",

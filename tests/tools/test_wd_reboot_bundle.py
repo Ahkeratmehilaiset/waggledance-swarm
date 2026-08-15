@@ -96,6 +96,10 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117"
     )
     assert hashlib.sha256(target_path.read_bytes()).hexdigest().upper() == target["sha256"]
+    supervisor = json.loads(
+        (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
+    )
+    assert supervisor["target_state"] == target
     assert "Invoke-WdToolsCodex.ps1" in (
         manifest["deployment"]["required_bundle_files"]
     )

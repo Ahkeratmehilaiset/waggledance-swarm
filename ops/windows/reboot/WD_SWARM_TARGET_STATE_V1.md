@@ -25,4 +25,3 @@ The intended system is a measured, fail-closed swarm in which:
 The near-term path remains: restore canonical append, land thin main-based
 reboot and deterministic-first slices, cold-boot one exact bundle, meet the
 bridge SLO, then serve 100 real queries before scaling the evidence window.
-

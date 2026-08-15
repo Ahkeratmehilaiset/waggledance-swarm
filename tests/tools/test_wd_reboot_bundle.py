@@ -317,6 +317,9 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert watcher_lock.index("post-reconcile count=") < watcher_lock.index(
         "Remove-WdWatcherReplacementMarker"
     )
+    containment_gate = supervisor.index(
+        "Invoke-WdReconciliationUnderDriverHold `", watcher_lock_start - 500
+    )
     watcher_blocked = supervisor.index(
         "$watcherReconciliationBlocked = $true", watcher_lock_start
     )
@@ -324,13 +327,20 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
         "if ($toolsEnabled -and -not $watcherReconciliationBlocked)",
         watcher_blocked,
     )
-    containment = supervisor.index(
-        "Invoke-TaskContainment $standingTaskName", tools_gate
-    )
     final_conflict = supervisor.index(
-        "supervisor reconciliation conflict", containment
+        "supervisor reconciliation conflict", tools_gate
     )
-    assert watcher_blocked < tools_gate < containment < final_conflict
+    assert containment_gate < watcher_lock_start < watcher_blocked < tools_gate
+    assert tools_gate < final_conflict
+    driver_hold_body = supervisor[
+        supervisor.index("function Invoke-WdReconciliationUnderDriverHold") :
+        supervisor.index("$configFull =", supervisor.index(
+            "function Invoke-WdReconciliationUnderDriverHold"
+        ))
+    ]
+    assert driver_hold_body.index(
+        "Invoke-TaskContainment $standingTaskName"
+    ) < driver_hold_body.index(". $ReconciliationAction")
     assert (
         "SKIPPED Tools reconciliation because watcher reconciliation is conflicted"
         in supervisor
@@ -540,7 +550,8 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 if ($errors.Count) {{ throw 'supervisor parse failed' }}
 foreach ($name in @(
     'Initialize-SupervisorLogParent',
-    'Write-SupervisorLogLine'
+    'Write-SupervisorLogLine',
+    'Assert-WdSupervisorPathWithoutReparse'
   )) {{
   $functionAst = $ast.Find(
     {{
@@ -573,6 +584,26 @@ $applyMissingPath = Join-Path $parent 'apply-missing.log'
 Initialize-SupervisorLogParent -Path $applyMissingPath -Apply
 $applyMissingLength = (Get-Item -LiteralPath $applyMissingPath).Length
 Write-SupervisorLogLine -Path $path -Line 'apply' -Apply
+$junctionTarget = Join-Path (Split-Path -Parent $parent) 'junction-target'
+$junctionParent = Join-Path (Split-Path -Parent $parent) 'junction-parent'
+[void](New-Item -ItemType Directory -Path $junctionTarget)
+[void](New-Item -ItemType Junction -Path $junctionParent -Target $junctionTarget)
+$junctionExistingTarget = Join-Path $junctionTarget 'existing.log'
+Set-Content -LiteralPath $junctionExistingTarget -Value 'junction-sentinel' -Encoding UTF8
+$junctionExistingPath = Join-Path $junctionParent 'existing.log'
+$junctionMissingPath = Join-Path $junctionParent 'missing.log'
+$junctionBefore = [Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes($junctionExistingTarget)
+)
+$junctionInitRejected = $false
+try {{ Initialize-SupervisorLogParent -Path $junctionMissingPath -Apply }}
+catch {{ $junctionInitRejected = $true }}
+$junctionAppendRejected = $false
+try {{ Write-SupervisorLogLine -Path $junctionExistingPath -Line 'forbidden' -Apply }}
+catch {{ $junctionAppendRejected = $true }}
+$junctionAfter = [Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes($junctionExistingTarget)
+)
 [pscustomobject]@{{
   dry_parent_exists = $dryParentExists
   dry_file_exists = $dryFileExists
@@ -585,6 +616,12 @@ Write-SupervisorLogLine -Path $path -Line 'apply' -Apply
   dry_existing_lines = @($dryExistingLines) -join "`n"
   apply_file_exists = Test-Path -LiteralPath $path -PathType Leaf
   lines = @(Get-Content -LiteralPath $path) -join "`n"
+  junction_init_rejected = $junctionInitRejected
+  junction_missing_not_created = -not (
+    Test-Path -LiteralPath (Join-Path $junctionTarget 'missing.log')
+  )
+  junction_append_rejected = $junctionAppendRejected
+  junction_existing_bytes_equal = $junctionBefore -ceq $junctionAfter
 }} | ConvertTo-Json -Compress
 """,
         executable=WINDOWS_POWERSHELL,
@@ -598,6 +635,10 @@ Write-SupervisorLogLine -Path $path -Line 'apply' -Apply
         "dry_existing_lines": "sentinel",
         "apply_file_exists": True,
         "lines": "sentinel\napply",
+        "junction_init_rejected": True,
+        "junction_missing_not_created": True,
+        "junction_append_rejected": True,
+        "junction_existing_bytes_equal": True,
     }
 
 
@@ -1777,6 +1818,135 @@ catch {{ $verificationRejected = $true }}
         "verification_rejected": True,
         "failed_order": "disable|stop",
     }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_driver_hold_dominates_reconciliation_failures() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+$requiredFunctions = @(
+  'Invoke-TaskContainment',
+  'Invoke-WdReconciliationUnderDriverHold'
+)
+foreach ($functionName in $requiredFunctions) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $functionName
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $functionName" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+function Get-RequiredText {{
+  param([object] $Object, [string] $Name)
+  return [string]$Object.$Name
+}}
+function Get-OptionalScheduledTask {{
+  param([string] $TaskName)
+  $state = $script:taskStates[$TaskName]
+  if ($null -eq $state) {{ return $null }}
+  return [pscustomobject]@{{
+    State = $(if ($state.running) {{ 'Running' }} else {{ 'Disabled' }})
+    Settings = [pscustomobject]@{{ Enabled = [bool]$state.enabled }}
+  }}
+}}
+function Disable-ScheduledTask {{
+  [CmdletBinding()] param([string] $TaskName)
+  $script:taskStates[$TaskName].enabled = $false
+  $script:taskOrder.Add("disable:$TaskName")
+}}
+function Stop-ScheduledTask {{
+  [CmdletBinding()] param([string] $TaskName)
+  $script:taskStates[$TaskName].running = $false
+  $script:taskOrder.Add("stop:$TaskName")
+}}
+function Test-LegacyDriverProvenNonApply {{ return $false }}
+$Apply = $true
+$actions = [Collections.Generic.List[string]]::new()
+$driver = [pscustomobject]@{{
+  standing_task = 'WD-Standing'
+  legacy_task = 'WD-Legacy'
+  legacy_script_path = 'C:\\Python\\legacy-driver.ps1'
+}}
+$failureStages = @(
+  'marker',
+  'watcher-stop',
+  'watcher-launch',
+  'tools-stop',
+  'postverify'
+)
+$results = [Collections.Generic.List[object]]::new()
+foreach ($failureStage in $failureStages) {{
+  $script:taskStates = @{{
+    'WD-Standing' = [pscustomobject]@{{ enabled = $true; running = $true }}
+    'WD-Legacy' = [pscustomobject]@{{ enabled = $true; running = $true }}
+  }}
+  $script:taskOrder = [Collections.Generic.List[string]]::new()
+  $script:reconcileOrder = [Collections.Generic.List[string]]::new()
+  $script:failureStage = $failureStage
+  $caught = ''
+  try {{
+    Invoke-WdReconciliationUnderDriverHold `
+      -Driver $driver `
+      -ReconciliationAction {{
+        foreach ($stage in $failureStages) {{
+          $script:reconcileOrder.Add($stage)
+          if ($stage -ceq $script:failureStage) {{
+            throw "injected:$stage"
+          }}
+        }}
+      }}
+  }}
+  catch {{ $caught = [string]$_.Exception.Message }}
+  $results.Add([pscustomobject]@{{
+    stage = $failureStage
+    caught = $caught
+    task_order = $script:taskOrder -join '|'
+    reconcile_order = $script:reconcileOrder -join '|'
+    standing_held = (
+      -not $script:taskStates['WD-Standing'].enabled -and
+      -not $script:taskStates['WD-Standing'].running
+    )
+    legacy_held = (
+      -not $script:taskStates['WD-Legacy'].enabled -and
+      -not $script:taskStates['WD-Legacy'].running
+    )
+  }})
+}}
+$results | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    payload = json.loads(result.stdout)
+    assert [item["stage"] for item in payload] == [
+        "marker",
+        "watcher-stop",
+        "watcher-launch",
+        "tools-stop",
+        "postverify",
+    ]
+    for item in payload:
+        assert item["caught"] == f'injected:{item["stage"]}'
+        assert item["task_order"] == (
+            "disable:WD-Standing|stop:WD-Standing|"
+            "disable:WD-Legacy|stop:WD-Legacy"
+        )
+        assert item["standing_held"] is True
+        assert item["legacy_held"] is True
+        assert item["reconcile_order"].split("|")[-1] == item["stage"]
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")

@@ -70,20 +70,52 @@ function Initialize-SupervisorLogParent {
     # Apply preflights its durable log target before any process or task
     # reconciliation. Report-only mode must remain byte-inert.
     if (-not $Apply) { return }
-    $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-        [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $fullPath
+    $missingParents = [Collections.Generic.List[string]]::new()
+    $existingParent = $parent
+    while (-not (Test-Path -LiteralPath $existingParent -PathType Container)) {
+        $missingParents.Insert(0, $existingParent)
+        $nextParent = Split-Path -Parent $existingParent
+        if (
+            [string]::IsNullOrWhiteSpace($nextParent) -or
+            $nextParent.Equals(
+                $existingParent,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            throw "supervisor log parent has no existing trusted ancestor: $parent"
+        }
+        $existingParent = $nextParent
+    }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $existingParent -ExpectedType Directory)
+    foreach ($missingParent in $missingParents) {
+        [void](New-Item `
+            -ItemType Directory `
+            -Path $missingParent `
+            -ErrorAction Stop)
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $missingParent -ExpectedType Directory)
+    }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $parent -ExpectedType Directory)
+    if (Test-Path -LiteralPath $fullPath) {
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $fullPath -ExpectedType Leaf)
     }
     # Prove the final durable append target is writable before any process or
     # task reconciliation. Opening an existing file is byte-inert; a missing
     # Apply log is created as an empty file before the mutation boundary.
     $stream = [IO.File]::Open(
-        $Path,
+        $fullPath,
         [IO.FileMode]::OpenOrCreate,
         [IO.FileAccess]::Write,
         [IO.FileShare]::ReadWrite
     )
     $stream.Dispose()
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $fullPath -ExpectedType Leaf)
 }
 
 function Resolve-WdSupervisorGitApplication {
@@ -223,7 +255,10 @@ function Write-SupervisorLogLine {
     )
 
     if (-not $Apply) { return }
-    Add-Content -LiteralPath $Path -Value $Line -Encoding UTF8
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $fullPath -ExpectedType Leaf)
+    Add-Content -LiteralPath $fullPath -Value $Line -Encoding UTF8
 }
 
 function Assert-WdSupervisorPathWithoutReparse {
@@ -2172,6 +2207,39 @@ function Invoke-TaskContainment {
     $actions.Add("HOLD verified $TaskName disabled/not-running ($Reason)")
 }
 
+function Invoke-WdReconciliationUnderDriverHold {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $Driver,
+        [Parameter(Mandatory)] [scriptblock] $ReconciliationAction
+    )
+
+    $standingTaskName = Get-RequiredText $Driver 'standing_task'
+    $legacyTaskName = Get-RequiredText $Driver 'legacy_task'
+    $legacyScript = [IO.Path]::GetFullPath(
+        (Get-RequiredText $Driver 'legacy_script_path')
+    )
+
+    # The merge-driver HOLD is the dominant safety boundary.  Complete and
+    # verify it before watcher or Tools reconciliation can mutate a process.
+    Invoke-TaskContainment $standingTaskName 'deliberate standing-driver HOLD'
+
+    $legacyTask = Get-OptionalScheduledTask -TaskName $legacyTaskName
+    if ($null -eq $legacyTask) {
+        $actions.Add(
+            "WARN scheduled task '$legacyTaskName' not found for legacy verification"
+        )
+    }
+    elseif (Test-LegacyDriverProvenNonApply $legacyTask $legacyScript) {
+        $actions.Add("LEGACY-NONAPPLY verified $legacyTaskName; left unchanged")
+    }
+    else {
+        Invoke-TaskContainment $legacyTaskName 'legacy action is not proven non-Apply'
+    }
+
+    . $ReconciliationAction
+}
+
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
 [void](Assert-WdSupervisorPathWithoutReparse `
     -Path $PSScriptRoot -ExpectedType Directory)
@@ -2453,6 +2521,14 @@ else {
     $watcherBundleParent = Split-Path -Parent $PSScriptRoot
     [void](Assert-WdSupervisorPathWithoutReparse `
         -Path $watcherBundleParent -ExpectedType Directory)
+
+    if ($null -eq $configuration.driver_containment) {
+        throw 'supervisor configuration has no driver_containment object'
+    }
+    $driver = $configuration.driver_containment
+    Invoke-WdReconciliationUnderDriverHold `
+        -Driver $driver `
+        -ReconciliationAction {
     $watcherConflictMessages = [Collections.Generic.List[string]]::new()
     $watcherReconciled = Invoke-WdWatcherReconcileLocked `
         -RuntimeRoot $runtimeRoot `
@@ -2936,31 +3012,7 @@ elseif ($toolsEnabled) {
         'SKIPPED Tools reconciliation because watcher reconciliation is conflicted'
     )
 }
-
-if ($null -eq $configuration.driver_containment) {
-    throw 'supervisor configuration has no driver_containment object'
-}
-$driver = $configuration.driver_containment
-$standingTaskName = Get-RequiredText $driver 'standing_task'
-$legacyTaskName = Get-RequiredText $driver 'legacy_task'
-$legacyScript = [IO.Path]::GetFullPath(
-    (Get-RequiredText $driver 'legacy_script_path')
-)
-
-Invoke-TaskContainment $standingTaskName 'deliberate standing-driver HOLD'
-
-$legacyTask = Get-OptionalScheduledTask -TaskName $legacyTaskName
-if ($null -eq $legacyTask) {
-    $actions.Add("WARN scheduled task '$legacyTaskName' not found for legacy verification")
-}
-else {
-    if (Test-LegacyDriverProvenNonApply $legacyTask $legacyScript) {
-        $actions.Add("LEGACY-NONAPPLY verified $legacyTaskName; left unchanged")
-    }
-    else {
-        Invoke-TaskContainment $legacyTaskName 'legacy action is not proven non-Apply'
-    }
-}
+        }
 
 $bridgeNote = 'bridge-last-event-age=unknown'
 try {

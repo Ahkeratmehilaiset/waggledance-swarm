@@ -201,7 +201,9 @@ function Move-SpoolToArchive {
 }
 
 function Get-BridgeSha256Hex {
-    param([Parameter(Mandatory)] [byte[]] $Bytes)
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes
+    )
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
@@ -310,6 +312,29 @@ namespace WaggleDance {
     }
 }
 '@
+}
+
+function Get-BridgeOpenFileIdentity {
+    param([Parameter(Mandatory)] [System.IO.FileStream] $Stream)
+
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        return ''
+    }
+    Initialize-BridgeAppendV1Native
+    $information = New-Object WaggleDance.BridgeByHandleFileInformation
+    $handle = $Stream.SafeFileHandle.DangerousGetHandle()
+    if (-not [WaggleDance.BridgeAppendV1Native]::GetFileInformationByHandle(
+        $handle,
+        [ref]$information
+    )) {
+        $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+        throw "GetFileInformationByHandle failed: $nativeCode ($($nativeError.Message))"
+    }
+    return ('windows-file-id-v1:{0:x8}:{1:x8}:{2:x8}' -f
+        ([uint32]$information.VolumeSerialNumber),
+        ([uint32]$information.FileIndexHigh),
+        ([uint32]$information.FileIndexLow))
 }
 
 function Invalidate-BridgeAppendValidationCheckpoint {
@@ -479,15 +504,195 @@ function Add-BridgeCanonicalKeysFromBytes {
     }
 }
 
-function Get-BridgeCanonicalKeys {
+function Read-BridgeExactStreamRange {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [int64] $Offset,
+        [Parameter(Mandatory)] [int64] $Length,
+        [Parameter(Mandatory)] [string] $Label
+    )
+
+    if ($Offset -lt 0 -or $Length -lt 0) {
+        throw "$Label has a negative stream range"
+    }
+    if ($Length -gt [int]::MaxValue) {
+        throw "$Label exceeds the supported in-memory validation size"
+    }
+    [byte[]]$bytes = New-Object byte[] ([int]$Length)
+    [void]$Stream.Seek($Offset, [System.IO.SeekOrigin]::Begin)
+    $readOffset = 0
+    while ($readOffset -lt $bytes.Length) {
+        $read = $Stream.Read($bytes, $readOffset, $bytes.Length - $readOffset)
+        if ($read -le 0) {
+            throw "$Label ended before its captured length"
+        }
+        $readOffset += $read
+    }
+    return ,$bytes
+}
+
+function Get-BridgeCanonicalTailAnchor {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileStream] $Stream,
+        [Parameter(Mandatory)] [int64] $Length
+    )
+
+    if ($Length -lt 0 -or $Length -gt [int64]$Stream.Length) {
+        throw 'cannot anchor an inexact canonical bridge prefix'
+    }
+    $anchorLength = [int][Math]::Min([int64]4096, $Length)
+    [byte[]]$anchorBytes = Read-BridgeExactStreamRange `
+        -Stream $Stream -Offset ($Length - $anchorLength) `
+        -Length $anchorLength -Label 'canonical bridge tail anchor'
+    return [pscustomobject]@{
+        Length = $anchorLength
+        Sha256 = Get-BridgeSha256Hex -Bytes $anchorBytes
+    }
+}
+
+function Open-BridgeCanonicalSnapshot {
     param([Parameter(Mandatory)] [string] $Path)
 
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [pscustomobject]@{
+            Exists = $false
+            Stream = $null
+            Length = [int64]0
+            FileIdentity = ''
+            TailAnchorLength = 0
+            TailAnchorSha256 = Get-BridgeSha256Hex -Bytes ([byte[]]@())
+        }
+    }
+    $stream = $null
+    try {
+        # Keep this exact file object open without delete sharing while the
+        # expensive JSONL scan runs. FileShare.ReadWrite permits cooperating
+        # AppendV1 writers to append; the second mutex phase reconciles them.
+        $stream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite
+        )
+        $length = [int64]$stream.Length
+        if ($length -gt 0) {
+            [byte[]]$tail = Read-BridgeExactStreamRange `
+                -Stream $stream -Offset ($length - 1) -Length 1 `
+                -Label 'canonical bridge tail'
+            if ($tail[0] -ne 10) {
+                throw 'canonical bridge snapshot has an unterminated tail'
+            }
+        }
+        $anchor = Get-BridgeCanonicalTailAnchor -Stream $stream -Length $length
+        $snapshot = [pscustomobject]@{
+            Exists = $true
+            Stream = $stream
+            Length = $length
+            FileIdentity = Get-BridgeOpenFileIdentity -Stream $stream
+            TailAnchorLength = [int]$anchor.Length
+            TailAnchorSha256 = [string]$anchor.Sha256
+        }
+        $stream = $null
+        return $snapshot
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Invoke-BridgeCanonicalScanTestHook {
+    $readyPath = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY',
+        'Process'
+    )
+    if (-not $readyPath) { return }
+    [System.IO.File]::WriteAllText($readyPath, 'ready')
+    for ($attempt = 0; $attempt -lt 400; $attempt++) {
+        if (Test-Path -LiteralPath "$readyPath.release" -PathType Leaf) { return }
+        Start-Sleep -Milliseconds 25
+    }
+    throw 'canonical scan test hook timed out waiting for release'
+}
+
+function Get-BridgeCanonicalKeys {
+    param([Parameter(Mandatory)] $Snapshot)
+
     $keys = New-Object 'System.Collections.Generic.HashSet[string]'
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return ,$keys }
-    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($Path)
+    if (-not [bool]$Snapshot.Exists) { return ,$keys }
+    [byte[]]$bytes = Read-BridgeExactStreamRange `
+        -Stream $Snapshot.Stream -Offset 0 -Length ([int64]$Snapshot.Length) `
+        -Label 'canonical bridge snapshot'
     Add-BridgeCanonicalKeysFromBytes `
         -Bytes $bytes -Label 'canonical bridge log' -Keys $keys
     return ,$keys
+}
+
+function Add-BridgeCanonicalKeysSinceSnapshot {
+    param(
+        [Parameter(Mandatory)] $Snapshot,
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]] $Keys
+    )
+
+    if (-not [bool]$Snapshot.Exists) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+        $lateSnapshot = Open-BridgeCanonicalSnapshot -Path $Path
+        try {
+            [byte[]]$lateBytes = Read-BridgeExactStreamRange `
+                -Stream $lateSnapshot.Stream -Offset 0 `
+                -Length ([int64]$lateSnapshot.Length) `
+                -Label 'late-created canonical bridge log'
+            Add-BridgeCanonicalKeysFromBytes `
+                -Bytes $lateBytes -Label 'late-created canonical bridge log' `
+                -Keys $Keys
+        } finally {
+            if ($null -ne $lateSnapshot.Stream) { $lateSnapshot.Stream.Dispose() }
+        }
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'canonical bridge path disappeared during snapshot scan'
+    }
+    $pathStream = $null
+    try {
+        $pathStream = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite
+        )
+        if (
+            [string]$Snapshot.FileIdentity -and
+            (Get-BridgeOpenFileIdentity -Stream $pathStream) -cne
+                [string]$Snapshot.FileIdentity
+        ) {
+            throw 'canonical bridge file identity changed during snapshot scan'
+        }
+    } finally {
+        if ($null -ne $pathStream) { $pathStream.Dispose() }
+    }
+
+    $currentLength = [int64]$Snapshot.Stream.Length
+    if ($currentLength -lt [int64]$Snapshot.Length) {
+        throw 'canonical bridge log shrank during snapshot scan'
+    }
+    $actualAnchor = Get-BridgeCanonicalTailAnchor `
+        -Stream $Snapshot.Stream -Length ([int64]$Snapshot.Length)
+    if (
+        [int]$actualAnchor.Length -ne [int]$Snapshot.TailAnchorLength -or
+        [string]$actualAnchor.Sha256 -cne [string]$Snapshot.TailAnchorSha256
+    ) {
+        throw 'canonical bridge snapshot tail anchor changed before reconciliation'
+    }
+
+    $deltaLength = $currentLength - [int64]$Snapshot.Length
+    if ($deltaLength -eq 0) { return }
+    [byte[]]$deltaBytes = Read-BridgeExactStreamRange `
+        -Stream $Snapshot.Stream -Offset ([int64]$Snapshot.Length) `
+        -Length $deltaLength -Label 'canonical bridge append delta'
+    Add-BridgeCanonicalKeysFromBytes `
+        -Bytes $deltaBytes -Label 'canonical bridge append delta' -Keys $Keys
 }
 
 function Repair-BridgeTornTailIfBound {
@@ -497,6 +702,22 @@ function Repair-BridgeTornTailIfBound {
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    $tailProbe = $null
+    try {
+        $tailProbe = New-Object System.IO.FileStream(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read
+        )
+        if ($tailProbe.Length -eq 0) { return '' }
+        [byte[]]$lastByte = Read-BridgeExactStreamRange `
+            -Stream $tailProbe -Offset ([int64]$tailProbe.Length - 1) `
+            -Length 1 -Label 'canonical bridge tail probe'
+        if ($lastByte[0] -eq 10) { return '' }
+    } finally {
+        if ($null -ne $tailProbe) { $tailProbe.Dispose() }
+    }
     [byte[]]$canonicalBytes = [System.IO.File]::ReadAllBytes($Path)
     if ($canonicalBytes.Length -eq 0 -or $canonicalBytes[$canonicalBytes.Length - 1] -eq 10) {
         return ''
@@ -585,6 +806,7 @@ function Clear-BridgeHiddenAttribute {
 $appendMutex = $null
 $appendAcquired = $false
 $appendDirtyAbandoned = $false
+$canonicalSnapshot = $null
 try {
     try {
         $appendMutex = New-BridgeV1Mutex `
@@ -611,8 +833,9 @@ try {
         return
     }
 
-    # AppendV1 remains owned across WAL discovery/recovery, live-log scan,
-    # exact-record dedup, transactional append, and archive.
+    # Initial AppendV1 ownership covers WAL discovery/recovery and canonical
+    # snapshot capture. The stable snapshot is scanned after releasing the
+    # append fence so a large log cannot starve live writers.
     $pendingFiles = @(
         Get-ChildItem -LiteralPath $spoolDir `
             -Filter '.failed-append-*.jsonl.pending' -File -Force `
@@ -687,9 +910,41 @@ try {
     [void](Repair-BridgeTornTailIfBound `
         -Path $eventsPath -WalRecords $bindingRecords.ToArray())
 
-    # Validate the canonical stream before promoting or archiving pending WALs.
-    # Strict decoding failures therefore leave every spool path unchanged.
-    $existingKeys = Get-BridgeCanonicalKeys -Path $eventsPath
+    $canonicalSnapshot = Open-BridgeCanonicalSnapshot -Path $eventsPath
+    $appendMutex.ReleaseMutex()
+    $appendAcquired = $false
+
+    # Validate the captured prefix without AppendV1 ownership. The open
+    # no-delete/shared-write handle fixes file identity while allowing live
+    # writers to append. Strict decoding failures leave every spool unchanged.
+    Invoke-BridgeCanonicalScanTestHook
+    $existingKeys = Get-BridgeCanonicalKeys -Snapshot $canonicalSnapshot
+
+    # Re-enter AppendV1 before observing the post-snapshot tail or changing any
+    # canonical/spool path. Writers that completed during the scan are folded
+    # into exact-record dedupe from the append-only delta.
+    $appendDirtyAbandoned = $false
+    try {
+        try { $appendAcquired = $appendMutex.WaitOne(10000) }
+        catch [System.Threading.AbandonedMutexException] {
+            $appendAcquired = $true
+            $appendDirtyAbandoned = $true
+        }
+    } catch {
+        throw "could not reacquire bridge append mutex: $($_.Exception.Message)"
+    }
+    if (-not $appendAcquired) {
+        Write-Warning 'bridge append mutex timeout after canonical scan; all spool files kept'
+        Write-Output 'spool replay skipped: append mutex unavailable after scan; no spool changes'
+        return
+    }
+    if ($appendDirtyAbandoned) {
+        Write-Warning 'AppendV1 was abandoned after canonical scan; dirty ownership cannot replay'
+        Write-Output 'spool replay skipped: dirty abandoned AppendV1 ownership after scan; no spool changes'
+        return
+    }
+    Add-BridgeCanonicalKeysSinceSnapshot `
+        -Snapshot $canonicalSnapshot -Path $eventsPath -Keys $existingKeys
 
     $recordsToProcess = New-Object 'System.Collections.Generic.List[object]'
     foreach ($record in $finalRecords) { $recordsToProcess.Add($record) }
@@ -774,6 +1029,9 @@ try {
         $replayed, $deduped, $failed, $DryRun.IsPresent
     )
 } finally {
+    if ($null -ne $canonicalSnapshot -and $null -ne $canonicalSnapshot.Stream) {
+        $canonicalSnapshot.Stream.Dispose()
+    }
     if ($null -ne $appendMutex) {
         if ($appendAcquired) {
             try { $appendMutex.ReleaseMutex() }

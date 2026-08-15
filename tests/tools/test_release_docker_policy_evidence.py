@@ -893,6 +893,121 @@ def test_build_report_rejects_dirty_required_source_bytes(tmp_path) -> None:
     ] is False
 
 
+def test_build_report_accepts_crlf_lf_materialized_required_source(tmp_path) -> None:
+    commit = _write_source_tree(tmp_path)
+    quickstart_relative = "docs/deployment/DOCKER_QUICKSTART.md"
+    quickstart = tmp_path / quickstart_relative
+    committed_bytes = quickstart.read_bytes()
+    if b"\r\n" in committed_bytes:
+        alternate_checkout_bytes = committed_bytes.replace(b"\r\n", b"\n")
+    else:
+        alternate_checkout_bytes = committed_bytes.replace(b"\n", b"\r\n")
+    assert alternate_checkout_bytes != committed_bytes
+    quickstart.write_bytes(alternate_checkout_bytes)
+
+    report = build_report(
+        source_root=tmp_path,
+        commit=commit,
+        operator_authorization=_authorization(commit=commit),
+    )
+
+    assert report["docker_stable_policy"] == "finalized"
+    assert report["blockers"] == []
+    assert (
+        report["source_git"]["text_normalization"]
+        == "utf8_no_nul_or_bare_cr_crlf_to_lf_v1"
+    )
+    assert report["source_git"]["worktree_matches_commit"][quickstart_relative] is True
+    assert (
+        report["source_git"]["worktree_hashes"][quickstart_relative]
+        == report["source_git"]["blob_hashes"][quickstart_relative]
+    )
+    assert (
+        report["source_hashes"][quickstart_relative]
+        == report["source_git"]["blob_hashes"][quickstart_relative]
+    )
+
+
+@pytest.mark.parametrize("report_checkout", ["lf", "crlf"])
+def test_evaluate_report_is_portable_across_text_checkout_eol(
+    tmp_path,
+    report_checkout,
+) -> None:
+    commit = _write_source_tree(tmp_path)
+    quickstart_relative = "docs/deployment/DOCKER_QUICKSTART.md"
+    quickstart = tmp_path / quickstart_relative
+    lf_bytes = quickstart.read_bytes().replace(b"\r\n", b"\n")
+    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+    assert lf_bytes != crlf_bytes
+    report_bytes, evaluate_bytes = (
+        (lf_bytes, crlf_bytes)
+        if report_checkout == "lf"
+        else (crlf_bytes, lf_bytes)
+    )
+
+    quickstart.write_bytes(report_bytes)
+    report = build_report(
+        source_root=tmp_path,
+        commit=commit,
+        operator_authorization=_authorization(commit=commit),
+    )
+    report_physical_hash = report["source_materialization"][
+        "physical_source_hashes"
+    ][quickstart_relative]
+
+    quickstart.write_bytes(evaluate_bytes)
+    evaluated = build_report(
+        source_root=tmp_path,
+        commit=commit,
+        operator_authorization=_authorization(commit=commit),
+    )
+    blockers = evaluate_report(
+        report,
+        expected_commit=commit,
+        source_root=tmp_path,
+    )
+
+    assert report["docker_stable_policy"] == "finalized"
+    assert evaluated["docker_stable_policy"] == "finalized"
+    assert blockers == []
+    assert report["source_hashes"] == evaluated["source_hashes"]
+    assert (
+        report_physical_hash
+        != evaluated["source_materialization"]["physical_source_hashes"][
+            quickstart_relative
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_bytes",
+    [
+        b"GHCR\x00binary\n",
+        b"GHCR invalid UTF-8: \xff\n",
+        b"GHCR bare carriage return\rcontent\n",
+    ],
+)
+def test_build_report_rejects_invalid_reviewed_source_text(
+    tmp_path,
+    invalid_bytes,
+) -> None:
+    _write_source_tree(tmp_path)
+    quickstart_relative = "docs/deployment/DOCKER_QUICKSTART.md"
+    quickstart = tmp_path / quickstart_relative
+    quickstart.write_bytes(invalid_bytes)
+    commit = _commit_paths(tmp_path, quickstart_relative)
+
+    report = build_report(
+        source_root=tmp_path,
+        commit=commit,
+        operator_authorization=_authorization(commit=commit),
+    )
+
+    assert report["docker_stable_policy"] == "draft"
+    assert f"source_text_invalid:{quickstart_relative}" in report["blockers"]
+    assert quickstart_relative not in report["source_hashes"]
+
+
 def test_build_report_ignores_git_environment_and_path_redirection(
     tmp_path,
     monkeypatch,

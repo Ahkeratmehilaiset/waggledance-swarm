@@ -70,6 +70,7 @@ REQUIRED_SOURCE_FILES = (
     "tools/run_release_docker_policy_evidence.py",
     "tools/operator_decision_pack.py",
 )
+SOURCE_TEXT_NORMALIZATION = "utf8_no_nul_or_bare_cr_crlf_to_lf_v1"
 REQUIRED_STATIC_CHECKS = (
     "release_workflow_templates_exact",
     "alpha_workflow_dispatch_only",
@@ -303,10 +304,46 @@ def _sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _canonical_source_text_bytes(value: bytes) -> bytes:
+    """Validate reviewed UTF-8 text and canonicalize checkout-only CRLF."""
+
+    if b"\x00" in value:
+        raise ValueError("reviewed source text contains NUL")
+    try:
+        value.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("reviewed source text is not valid UTF-8") from exc
+    canonical = value.replace(b"\r\n", b"\n")
+    if b"\r" in canonical:
+        raise ValueError("reviewed source text contains bare CR")
+    return canonical
+
+
+def _source_hash_maps(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Return authoritative semantic hashes and informational checkout hashes."""
+
+    semantic: dict[str, str] = {}
+    physical: dict[str, str] = {}
+    for item in REQUIRED_SOURCE_FILES:
+        path = root / item
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        physical[item] = _sha256_bytes(raw)
+        try:
+            semantic[item] = _sha256_bytes(_canonical_source_text_bytes(raw))
+        except ValueError:
+            # inspect_git_source_binding emits the fail-closed source_text_invalid
+            # blocker. Omitting the semantic hash prevents invalid bytes from
+            # masquerading as a reviewed text representation.
+            continue
+    return semantic, physical
+
+
 def _normalized_text_sha256(path: Path) -> str:
     """Hash a reviewed text template with CRLF and LF treated identically."""
 
-    value = path.read_bytes().replace(b"\r\n", b"\n")
+    value = _canonical_source_text_bytes(path.read_bytes())
     return _sha256_bytes(value)
 
 
@@ -362,7 +399,7 @@ def inspect_git_source_binding(
     source_root: Path | str,
     commit: str,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Bind policy inputs to one exact Git HEAD, its blobs, and worktree bytes."""
+    """Bind policy inputs to one exact Git HEAD and canonical text bytes."""
 
     root = Path(source_root).resolve()
     blockers: list[str] = []
@@ -401,8 +438,14 @@ def inspect_git_source_binding(
     for item in REQUIRED_SOURCE_FILES:
         path = root / item
         if path.is_file():
-            worktree_bytes = path.read_bytes()
-            worktree_hashes[item] = _sha256_bytes(worktree_bytes)
+            try:
+                worktree_bytes = _canonical_source_text_bytes(path.read_bytes())
+                worktree_hashes[item] = _sha256_bytes(worktree_bytes)
+            except (OSError, ValueError):
+                worktree_bytes = None
+                blocker = f"source_text_invalid:{item}"
+                if blocker not in blockers:
+                    blockers.append(blocker)
         else:
             worktree_bytes = None
             blockers.append(f"source_file_missing:{item}")
@@ -417,13 +460,23 @@ def inspect_git_source_binding(
             else:
                 blockers.append(f"source_blob_missing:{item}")
         if isinstance(blob_bytes, bytes):
-            blob_hashes[item] = _sha256_bytes(blob_bytes)
-            matches = worktree_bytes == blob_bytes
+            try:
+                canonical_blob_bytes = _canonical_source_text_bytes(blob_bytes)
+            except ValueError:
+                canonical_blob_bytes = None
+                blocker = f"source_text_invalid:{item}"
+                if blocker not in blockers:
+                    blockers.append(blocker)
+            if canonical_blob_bytes is None:
+                continue
+            blob_hashes[item] = _sha256_bytes(canonical_blob_bytes)
+            matches = worktree_bytes == canonical_blob_bytes
             worktree_matches_commit[item] = matches
             if not matches:
                 blockers.append(f"source_worktree_blob_mismatch:{item}")
 
     binding = {
+        "text_normalization": SOURCE_TEXT_NORMALIZATION,
         "repository_root_verified": repository_root_verified,
         "head": head,
         "commit": resolved_commit,
@@ -436,7 +489,11 @@ def inspect_git_source_binding(
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        text = _canonical_source_text_bytes(path.read_bytes()).decode("utf-8")
+        loaded = yaml.safe_load(text)
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
     return loaded if isinstance(loaded, dict) else {}
 
 
@@ -681,11 +738,15 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
         _load_yaml(alpha_workflow_path) if alpha_workflow_path.exists() else {}
     )
     workflow = _load_yaml(workflow_path) if workflow_path.exists() else {}
-    workflow_template_hashes = {
-        relative: _normalized_text_sha256(root / relative)
-        for relative in APPROVED_WORKFLOW_SHA256
-        if (root / relative).is_file()
-    }
+    workflow_template_hashes: dict[str, str] = {}
+    for relative in APPROVED_WORKFLOW_SHA256:
+        path = root / relative
+        if not path.is_file():
+            continue
+        try:
+            workflow_template_hashes[relative] = _normalized_text_sha256(path)
+        except (OSError, ValueError):
+            continue
     alpha_workflow_on = _workflow_on(alpha_workflow)
     workflow_on = _workflow_on(workflow)
     workflow_dispatch = (
@@ -747,16 +808,21 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
     )
 
     try:
-        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+        pyproject_text = _canonical_source_text_bytes(
+            pyproject_path.read_bytes()
+        ).decode("utf-8")
+        pyproject = tomllib.loads(pyproject_text)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         pyproject = {}
     try:
         compose = _load_yaml(compose_path)
     except (OSError, yaml.YAMLError):
         compose = {}
     try:
-        dockerfile_text = dockerfile_path.read_text(encoding="utf-8")
-    except OSError:
+        dockerfile_text = _canonical_source_text_bytes(
+            dockerfile_path.read_bytes()
+        ).decode("utf-8")
+    except (OSError, ValueError):
         dockerfile_text = ""
 
     compose_command = (
@@ -936,6 +1002,7 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
         "compose_entrypoint_canonical": compose_command == CANONICAL_ENTRYPOINT,
         "pyproject_script_canonical": script == CANONICAL_SCRIPT,
     }
+    source_hashes, physical_source_hashes = _source_hash_maps(root)
     return {
         "checks": checks,
         "entrypoints": {
@@ -947,11 +1014,8 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
             "pyproject_script": script,
         },
         "source_files": [str(path) for path in REQUIRED_SOURCE_FILES],
-        "source_hashes": {
-            str(path): _sha256(root / path)
-            for path in REQUIRED_SOURCE_FILES
-            if (root / path).is_file()
-        },
+        "source_hashes": source_hashes,
+        "physical_source_hashes": physical_source_hashes,
     }
 
 
@@ -1068,6 +1132,10 @@ def build_report(
         "generated_at_utc": _format_utc(generated_at_utc),
         "source_files": static["source_files"],
         "source_hashes": static["source_hashes"],
+        "source_materialization": {
+            "informational_only": True,
+            "physical_source_hashes": static["physical_source_hashes"],
+        },
         "source_git": source_git,
         "git_runtime_provenance": inspect_git_runtime_provenance(),
         "static_checks": static["checks"],

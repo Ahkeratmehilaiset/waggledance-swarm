@@ -14,9 +14,7 @@ from tools.collect_soak_evidence import (
 )
 from tools.run_release_docker_policy_evidence import (
     AUTH_SCHEMA_VERSION as DOCKER_AUTH_SCHEMA_VERSION,
-    REQUIRED_SOURCE_FILES as DOCKER_REQUIRED_SOURCE_FILES,
-    REQUIRED_STATIC_CHECKS as DOCKER_REQUIRED_STATIC_CHECKS,
-    SCHEMA_VERSION as DOCKER_SCHEMA_VERSION,
+    build_report as build_docker_policy_report,
 )
 
 
@@ -287,28 +285,14 @@ def _write_docker_policy(
             "authorization_id": "operator-docker-stable-v3.12.0",
             "authorized_at_utc": "2026-05-24T00:00:00Z",
         }
-    blockers = [] if operator_authorized else ["operator_authorization_missing"]
+    report = build_docker_policy_report(
+        source_root=Path("."),
+        commit=report_commit,
+        operator_authorization=authorization,
+        generated_at_utc=dt.datetime(2026, 5, 22, 14, 10, tzinfo=dt.UTC),
+    )
     (root / "v3.12.0_docker_policy.json").write_text(
-        json.dumps({
-            "schema_version": DOCKER_SCHEMA_VERSION,
-            "target_version": "v3.12.0",
-            "commit": report_commit,
-            "generated_at_utc": "2026-05-22T14:10:00Z",
-            "source_files": list(DOCKER_REQUIRED_SOURCE_FILES),
-            "source_hashes": {
-                path: f"sha256:{index:064x}"
-                for index, path in enumerate(DOCKER_REQUIRED_SOURCE_FILES, start=1)
-            },
-            "static_checks": {
-                check: True for check in DOCKER_REQUIRED_STATIC_CHECKS
-            },
-            "entrypoints": {},
-            "operator_authorization": authorization,
-            "post_tag_runtime_verification_required": True,
-            "latest_move_requires_operator_opt_in": True,
-            "blockers": blockers,
-            "docker_stable_policy": "finalized" if not blockers else "draft",
-        }),
+        json.dumps(report),
         encoding="utf-8",
     )
 

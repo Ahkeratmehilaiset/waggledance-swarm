@@ -9,6 +9,7 @@ from tools.run_release_docker_policy_evidence import (
     CANONICAL_SCRIPT,
     SCHEMA_VERSION,
     build_report,
+    evaluate_report,
     main,
     operator_authorization_from_decision_pack,
 )
@@ -367,6 +368,120 @@ def test_build_report_finalizes_with_operator_authorization(tmp_path) -> None:
 
     assert report["docker_stable_policy"] == "finalized"
     assert report["blockers"] == []
+
+
+def test_evaluate_report_accepts_fresh_source_bound_bundle(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=_authorization(),
+    )
+
+    assert evaluate_report(
+        report,
+        expected_commit=COMMIT,
+        source_root=tmp_path,
+    ) == []
+
+
+def test_evaluate_report_rejects_forged_source_hashes(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=_authorization(),
+    )
+    report["source_hashes"] = {
+        path: "sha256:" + ("0" * 64)
+        for path in report["source_files"]
+    }
+
+    assert "source_hashes_mismatch" in evaluate_report(
+        report,
+        expected_commit=COMMIT,
+        source_root=tmp_path,
+    )
+
+
+def test_evaluate_report_rejects_reordered_source_manifest(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=_authorization(),
+    )
+    report["source_files"].reverse()
+
+    assert "source_files_mismatch" in evaluate_report(
+        report,
+        expected_commit=COMMIT,
+        source_root=tmp_path,
+    )
+
+
+def test_evaluate_report_rejects_source_changed_after_report(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=_authorization(),
+    )
+    (tmp_path / "docs" / "deployment" / "DOCKER_QUICKSTART.md").write_text(
+        "changed after report\n",
+        encoding="utf-8",
+    )
+
+    assert "source_hashes_mismatch" in evaluate_report(
+        report,
+        expected_commit=COMMIT,
+        source_root=tmp_path,
+    )
+
+
+def test_evaluate_report_rejects_forged_static_checks(tmp_path) -> None:
+    warning_workflow = WORKFLOW.replace(
+        'echo "::error::stable alias does not resolve to canonical digest"\n'
+        "            exit 1",
+        'echo "::warning::stable alias does not resolve to canonical digest"',
+    )
+    _write_source_tree(tmp_path, workflow=warning_workflow)
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=_authorization(),
+    )
+    report["static_checks"] = {
+        check: True
+        for check in report["static_checks"]
+    }
+
+    assert "static_checks_source_mismatch" in evaluate_report(
+        report,
+        expected_commit=COMMIT,
+        source_root=tmp_path,
+    )
+
+
+def test_evaluate_report_rejects_forged_entrypoints(tmp_path) -> None:
+    _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=COMMIT,
+        operator_authorization=_authorization(),
+    )
+    report["entrypoints"] = {
+        "expected": ["untrusted"],
+        "dockerfile_cmd": None,
+        "compose_command": None,
+        "pyproject_script": "untrusted:main",
+    }
+
+    assert "entrypoints_mismatch" in evaluate_report(
+        report,
+        expected_commit=COMMIT,
+        source_root=tmp_path,
+    )
 
 
 def test_build_report_blocks_warning_only_stable_alias_smoke(tmp_path) -> None:

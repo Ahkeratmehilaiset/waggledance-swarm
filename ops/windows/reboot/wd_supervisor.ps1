@@ -61,6 +61,32 @@ function Read-Utf8SupervisorSnapshot {
     }
 }
 
+function Initialize-SupervisorLogParent {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [switch] $Apply
+    )
+
+    # Apply preflights its durable log target before any process or task
+    # reconciliation. Report-only mode must remain byte-inert.
+    if (-not $Apply) { return }
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
+    }
+}
+
+function Write-SupervisorLogLine {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Line,
+        [switch] $Apply
+    )
+
+    if (-not $Apply) { return }
+    Add-Content -LiteralPath $Path -Value $Line -Encoding UTF8
+}
+
 function Assert-WdSupervisorPathWithoutReparse {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -330,11 +356,15 @@ function Test-TextContains {
 function Test-NamedCommandLineArgument {
     param(
         [AllowEmptyString()] [string] $CommandLine,
+        [ValidateSet('Auto', 'WindowsPowerShell', 'Pwsh')]
+        [string] $HostKind = 'Auto',
         [Parameter(Mandatory)] [string] $Name,
         [Parameter(Mandatory)] [string] $Value
     )
 
-    $invocation = Get-WdPowerShellFileInvocation -CommandLine $CommandLine
+    $invocation = Get-WdPowerShellFileInvocation `
+        -CommandLine $CommandLine `
+        -HostKind $HostKind
     if ($null -eq $invocation) { return $false }
     if ($Name -ieq 'File') {
         return ([string]$invocation.script_path).Equals(
@@ -700,45 +730,52 @@ function Get-WdPowerShellFileInvocation {
 
     $arguments = @(ConvertFrom-WdWindowsCommandLine -CommandLine $CommandLine)
     if ($arguments.Count -lt 2) { return $null }
-    if ($HostKind -ceq 'Auto') {
-        $HostKind = Get-WdPowerShellHostKind `
+    # A ValidateSet attribute also validates later assignments to a parameter
+    # variable. Keep an unvalidated local for conservative auto-detection so
+    # an unrecognized executable returns no match instead of terminating the
+    # entire supervisor report.
+    $effectiveHostKind = $HostKind
+    if ($effectiveHostKind -ceq 'Auto') {
+        $effectiveHostKind = Get-WdPowerShellHostKind `
             -ExecutableToken ([string]$arguments[0])
     }
-    if ($HostKind -notin @('WindowsPowerShell', 'Pwsh')) { return $null }
+    if ($effectiveHostKind -notin @('WindowsPowerShell', 'Pwsh')) {
+        return $null
+    }
 
     $index = 1
     $encodedPrelude = $false
     while ($index -lt $arguments.Count) {
         $token = [string]$arguments[$index]
         if (
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoProfile') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoLogo') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NonInteractive') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoExit') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'NoProfileLoadTime') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Sta') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Mta') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Login') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Interactive')
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'NoProfile') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'NoLogo') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'NonInteractive') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'NoExit') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'NoProfileLoadTime') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'Sta') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'Mta') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'Login') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'Interactive')
         ) {
             $index++
             continue
         }
         if (
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'ExecutionPolicy') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'WindowStyle') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'WorkingDirectory') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'InputFormat') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'OutputFormat') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'ConfigurationFile') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'CustomPipeName') -or
-            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'SettingsFile')
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'ExecutionPolicy') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'WindowStyle') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'WorkingDirectory') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'InputFormat') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'OutputFormat') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'ConfigurationFile') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'CustomPipeName') -or
+            (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'SettingsFile')
         ) {
             if ($index + 1 -ge $arguments.Count) { return $null }
             $index += 2
             continue
         }
-        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'Version') {
+        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'Version') {
             # Windows PowerShell accepts -Version only as the first host option.
             if ($index -ne 1 -or $index + 1 -ge $arguments.Count) {
                 return $null
@@ -746,7 +783,7 @@ function Get-WdPowerShellFileInvocation {
             $index += 2
             continue
         }
-        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'PSConsoleFile') {
+        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'PSConsoleFile') {
             # Windows PowerShell accepts -PSConsoleFile only as the first host option.
             if ($index -ne 1 -or $index + 1 -ge $arguments.Count) {
                 return $null
@@ -754,7 +791,7 @@ function Get-WdPowerShellFileInvocation {
             $index += 2
             continue
         }
-        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $HostKind -Name 'EncodedCommand') {
+        if (Test-WdPowerShellHostOptionToken -Token $token -HostKind $effectiveHostKind -Name 'EncodedCommand') {
             if (
                 $index + 1 -ge $arguments.Count -or
                 -not (Test-WdEncodedCommandValue -Value ([string]$arguments[$index + 1]))
@@ -778,7 +815,7 @@ function Get-WdPowerShellFileInvocation {
             $token -notmatch '^[\-/\u2013\u2014\u2015]' -and
             [IO.Path]::GetExtension($token) -ieq '.ps1'
         ) {
-            if ($encodedPrelude -and $HostKind -ceq 'WindowsPowerShell') {
+            if ($encodedPrelude -and $effectiveHostKind -ceq 'WindowsPowerShell') {
                 # WinPS continues to explicit -File after EncodedCommand but
                 # consumes a following bare script token as payload instead.
                 return $null
@@ -1609,10 +1646,7 @@ if (-not $LogPath) {
     $LogPath = Get-RequiredText $configuration 'log_path'
 }
 $logFull = [IO.Path]::GetFullPath($LogPath)
-$logParent = Split-Path -Parent $logFull
-if (-not (Test-Path -LiteralPath $logParent -PathType Container)) {
-    [void](New-Item -ItemType Directory -Path $logParent -Force -ErrorAction Stop)
-}
+Initialize-SupervisorLogParent -Path $logFull -Apply:$Apply
 
 $powerShellHost = Resolve-PowerShellChildHost
 # Process identity matching is an admission boundary.  If the native argv
@@ -1913,14 +1947,23 @@ if ($toolsEnabled) {
     $wrapperProcesses = @(
         $processes |
             Where-Object {
-                [string]$_.Name -match '^(?i:powershell|pwsh)\.exe$' -and
-                (
+                if ([string]$_.Name -notmatch '^(?i:powershell|pwsh)\.exe$') {
+                    return $false
+                }
+                $processHostKind = if ([string]$_.Name -ieq 'powershell.exe') {
+                    'WindowsPowerShell'
+                } else {
+                    'Pwsh'
+                }
+                return (
                     (Test-NamedCommandLineArgument `
                         -CommandLine ([string]$_.CommandLine) `
+                        -HostKind $processHostKind `
                         -Name 'File' `
                         -Value $toolsLauncher) -or
                     (Test-NamedCommandLineArgument `
                         -CommandLine ([string]$_.CommandLine) `
+                        -HostKind $processHostKind `
                         -Name 'File' `
                         -Value $configuredToolsLauncher)
                 )
@@ -1929,8 +1972,14 @@ if ($toolsEnabled) {
     $configuredWrapperProcesses = @(
         $wrapperProcesses |
             Where-Object {
+                $processHostKind = if ([string]$_.Name -ieq 'powershell.exe') {
+                    'WindowsPowerShell'
+                } else {
+                    'Pwsh'
+                }
                 Test-NamedCommandLineArgument `
                     -CommandLine ([string]$_.CommandLine) `
+                    -HostKind $processHostKind `
                     -Name 'ConfigPath' `
                     -Value $toolsConfig
             }
@@ -1938,12 +1987,19 @@ if ($toolsEnabled) {
     $exactWrapperProcesses = @(
         $configuredWrapperProcesses |
             Where-Object {
+                $processHostKind = if ([string]$_.Name -ieq 'powershell.exe') {
+                    'WindowsPowerShell'
+                } else {
+                    'Pwsh'
+                }
                 (Test-NamedCommandLineArgument `
                     -CommandLine ([string]$_.CommandLine) `
+                    -HostKind $processHostKind `
                     -Name 'File' `
                     -Value $toolsLauncher) -and
                 (Test-NamedCommandLineArgument `
                     -CommandLine ([string]$_.CommandLine) `
+                    -HostKind $processHostKind `
                     -Name 'Generation' `
                     -Value $toolsGeneration)
             }
@@ -2158,7 +2214,7 @@ else {
     $actions -join '; '
 }
 $line = "[$timestampUtc] [$mode] host=$powerShellHost; $bridgeNote :: $summary"
-Add-Content -LiteralPath $logFull -Value $line -Encoding UTF8
+Write-SupervisorLogLine -Path $logFull -Line $line -Apply:$Apply
 $line
 $conflicts = @($actions | Where-Object { [string]$_ -cmatch '^CONFLICT\s' })
 if ($conflicts.Count -gt 0) {

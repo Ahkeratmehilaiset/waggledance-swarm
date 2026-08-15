@@ -334,6 +334,190 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert supervisor.index("-ValidateOnly") < supervisor.index("$watcherScript =")
 
 
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="watcher parser requires Windows CommandLineToArgvW",
+)
+def test_supervisor_unknown_host_is_a_nonmatch_not_a_validation_failure() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Test-NamedCommandLineArgument',
+    'Initialize-WdSupervisorCommandLineParser',
+    'ConvertFrom-WdWindowsCommandLine',
+    'Test-WdPowerShellSwitchToken',
+    'Test-WdPowerShellHostOptionToken',
+    'Test-WdPowerShellFileSwitchToken',
+    'Get-WdPowerShellHostKind',
+    'Test-WdEncodedCommandValue',
+    'Get-WdPowerShellFileInvocation'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+Initialize-WdSupervisorCommandLineParser
+$scriptPath = 'C:\\bundle\\start-wd-tools-consumer.ps1'
+$configPath = 'C:\\bundle\\wd_supervisor_loop.json'
+$generation = '0123456789012345678901234567890123456789'
+$extensionlessCommand = (
+  'pwsh -File ' + $scriptPath +
+  ' -ConfigPath ' + $configPath +
+  ' -Generation ' + $generation
+)
+$process = [pscustomobject]@{{
+  Name = 'pwsh.exe'
+  CommandLine = $extensionlessCommand
+}}
+$wrapperProcesses = @(
+  $process | Where-Object {{
+    $processHostKind = if ([string]$_.Name -ieq 'powershell.exe') {{
+      'WindowsPowerShell'
+    }} else {{
+      'Pwsh'
+    }}
+    Test-NamedCommandLineArgument `
+      -CommandLine ([string]$_.CommandLine) `
+      -HostKind $processHostKind `
+      -Name 'File' `
+      -Value $scriptPath
+  }}
+)
+$configuredProcesses = @(
+  $wrapperProcesses | Where-Object {{
+    Test-NamedCommandLineArgument `
+      -CommandLine ([string]$_.CommandLine) `
+      -HostKind 'Pwsh' `
+      -Name 'ConfigPath' `
+      -Value $configPath
+  }}
+)
+$exactProcesses = @(
+  $configuredProcesses | Where-Object {{
+    Test-NamedCommandLineArgument `
+      -CommandLine ([string]$_.CommandLine) `
+      -HostKind 'Pwsh' `
+      -Name 'Generation' `
+      -Value $generation
+  }}
+)
+[pscustomobject]@{{
+  unknown_host = Test-NamedCommandLineArgument `
+    -CommandLine $extensionlessCommand `
+    -Name 'File' `
+    -Value $scriptPath
+  explicit_host = Test-NamedCommandLineArgument `
+    -CommandLine $extensionlessCommand `
+    -HostKind 'Pwsh' `
+    -Name 'File' `
+    -Value $scriptPath
+  known_host = Test-NamedCommandLineArgument `
+    -CommandLine ('pwsh.exe -File ' + $scriptPath) `
+    -Name 'File' `
+    -Value $scriptPath
+  wrapper_count = $wrapperProcesses.Count
+  configured_count = $configuredProcesses.Count
+  exact_count = $exactProcesses.Count
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "unknown_host": False,
+        "explicit_host": True,
+        "known_host": True,
+        "wrapper_count": 1,
+        "configured_count": 1,
+        "exact_count": 1,
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_supervisor_report_only_log_is_byte_inert(tmp_path: Path) -> None:
+    supervisor_path = REBOOT / "wd_supervisor.ps1"
+    supervisor_text = supervisor_path.read_text(encoding="utf-8")
+    assert supervisor_text.index(
+        "Initialize-SupervisorLogParent -Path $logFull -Apply:$Apply"
+    ) < supervisor_text.index("$powerShellHost = Resolve-PowerShellChildHost")
+    supervisor = str(supervisor_path).replace("'", "''")
+    log_path = str(tmp_path / "missing" / "supervisor.log").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Initialize-SupervisorLogParent',
+    'Write-SupervisorLogLine'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$path = [IO.Path]::GetFullPath('{log_path}')
+$parent = Split-Path -Parent $path
+Initialize-SupervisorLogParent -Path $path -Apply:$false
+Write-SupervisorLogLine -Path $path -Line 'dry-run' -Apply:$false
+$dryParentExists = Test-Path -LiteralPath $parent
+$dryFileExists = Test-Path -LiteralPath $path
+[void](New-Item -ItemType Directory -Path $parent -Force)
+Set-Content -LiteralPath $path -Value 'sentinel' -Encoding UTF8
+$beforeDryBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+Write-SupervisorLogLine -Path $path -Line 'dry-existing' -Apply:$false
+$afterDryBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+$dryExistingLines = @(Get-Content -LiteralPath $path)
+Initialize-SupervisorLogParent -Path $path -Apply
+Write-SupervisorLogLine -Path $path -Line 'apply' -Apply
+[pscustomobject]@{{
+  dry_parent_exists = $dryParentExists
+  dry_file_exists = $dryFileExists
+  dry_existing_bytes_equal = $beforeDryBytes -ceq $afterDryBytes
+  dry_existing_lines = $dryExistingLines
+  apply_file_exists = Test-Path -LiteralPath $path -PathType Leaf
+  lines = @(Get-Content -LiteralPath $path)
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "dry_parent_exists": False,
+        "dry_file_exists": False,
+        "dry_existing_bytes_equal": True,
+        "dry_existing_lines": ["sentinel"],
+        "apply_file_exists": True,
+        "lines": ["sentinel", "apply"],
+    }
+
+
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
 @pytest.mark.skipif(
     os.name != "nt",

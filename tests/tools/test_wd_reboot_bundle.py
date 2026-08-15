@@ -2437,7 +2437,10 @@ def test_reboot_watchers_use_delete_share_reader_stack() -> None:
     )
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell 5.1 is unavailable",
+)
 def test_native_stderr_is_checked_by_exit_code_under_powershell_51() -> None:
     launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
     result = _run_powershell(
@@ -2477,7 +2480,8 @@ catch {{
   failure_caught = $failureCaught
   preference_restored = $ErrorActionPreference -eq 'Stop'
 }} | ConvertTo-Json -Compress
-"""
+""",
+        executable=WINDOWS_POWERSHELL,
     )
     record = json.loads(
         next(

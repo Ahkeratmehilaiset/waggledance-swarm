@@ -3,7 +3,7 @@
 The reboot entry point is:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Apply
 ```
 
 Its non-mutating verification mode is:
@@ -12,10 +12,19 @@ Its non-mutating verification mode is:
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -DryRun
 ```
 
-Run `-DryRun` first after Windows sign-in. If it exits `0`, run the first command
+Run `-DryRun` first after Windows sign-in. With no mode switch the launcher also
+defaults to byte-inert DryRun. If the explicit DryRun exits `0`, run the first command
 once and leave its four Windows Terminal tabs open. The fifth, headless Tools
 lane and exactly five real-time bridge watchers are reconciled by the same
 command through `WD-Supervisor`.
+
+The DryRun includes the supervisor's byte-inert watcher plan. A single stale
+watcher is replaceable only when its command tuple, identity, runtime root,
+bundle-generation path, deployment manifest, and script hash all verify. Any
+unverified or duplicate watcher, persistent replacement marker, or busy
+reconciliation mutex blocks watcher and Tools reconciliation and fails the
+launcher before CLI or Grok mutation. The supervisor still enforces the
+merge-driver HOLD before returning that conflict.
 
 The command performs a whole-fleet preflight before opening a window. It then
 updates Codex and Claude Code with their supported `update` commands, resolves
@@ -82,6 +91,22 @@ Recovery grants no merge, deploy, signature, canary, runtime-authority, or
 `claim_safe` permission. `WD-BridgeMergeDriverStandingOneShot` is deliberately
 disabled. Neither the launcher nor the supervisor contains an enable path for
 it.
+
+Watcher replacement creates a durable identity- and generation-bound marker
+before the first stop. The marker is removed only after all five watchers pass
+post-reconcile verification. If a marker remains, stop and inspect it; do not
+delete it merely to make the launcher proceed. A pre-existing admission,
+marker, or mutex conflict blocks the planned watcher and Tools mutations, but
+the supervisor may still disable and stop a merge-driver task to preserve the
+dominant HOLD invariant. A stop, launch, or post-verification failure can leave
+a partial roll-forward state plus its durable marker; the next step is
+inspection, not blind marker deletion.
+
+The launcher is roll-forward, not process-transactional. If a later CLI, Grok,
+handshake, or terminal-launch step fails after the supervisor has converged the
+watchers and Tools, leave the verified helpers running, fix the reported cause,
+and repeat `-DryRun` followed by `-Apply`. Do not bulk-replay bridge spool files
+as part of reboot recovery.
 
 `-DryRun` performs read-only probes only: no CLI update, cache write, bridge
 event, task mutation, process launch, report write, checkout, or fetch.

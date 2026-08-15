@@ -1,6 +1,7 @@
 {
   "schema": "wd.supervisor-loop.v2",
   "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
+  "recovery_state_root": "C:\\Python\\wd-reboot-runtime",
   "log_path": "C:\\Python\\wd_supervisor.log",
   "target_state": {
     "id": "wd-swarm-target-state-v1",
@@ -11,6 +12,9 @@
   },
   "watchers": {
     "script_relative": "tools-bootstrap\\.agent-bridge\\bin\\Watch-Bridge.ps1",
+    "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
+    "source_repo_root": "C:\\Python\\project2",
+    "replacement_conflict_root": "C:\\Python\\wd-reboot-runtime\\watcher-replacement-conflicts",
     "dependency_relatives": [
       "tools-bootstrap\\.agent-bridge\\bin\\BridgeIncrementalReader.ps1",
       "tools-bootstrap\\.agent-bridge\\bin\\BridgeLogReader.ps1"

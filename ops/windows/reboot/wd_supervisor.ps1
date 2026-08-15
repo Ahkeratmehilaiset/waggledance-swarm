@@ -74,6 +74,145 @@ function Initialize-SupervisorLogParent {
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
         [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
     }
+    # Prove the final durable append target is writable before any process or
+    # task reconciliation. Opening an existing file is byte-inert; a missing
+    # Apply log is created as an empty file before the mutation boundary.
+    $stream = [IO.File]::Open(
+        $Path,
+        [IO.FileMode]::OpenOrCreate,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::ReadWrite
+    )
+    $stream.Dispose()
+}
+
+function Resolve-WdSupervisorGitApplication {
+    param([string] $ConfiguredPath = '')
+
+    if ($ConfiguredPath) {
+        $candidate = [IO.Path]::GetFullPath($ConfiguredPath)
+        $command = Get-Command `
+            -Name $candidate `
+            -CommandType Application `
+            -ErrorAction Stop
+    }
+    else {
+        $command = Get-Command `
+            -Name 'git.exe' `
+            -CommandType Application `
+            -ErrorAction Stop
+        $candidate = [IO.Path]::GetFullPath([string]$command.Source)
+    }
+    if (
+        -not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+            $candidate,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [IO.Path]::GetExtension($candidate) -cne '.exe'
+    ) {
+        throw 'supervisor Git command is not the configured application'
+    }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $candidate -ExpectedType Leaf)
+    return $candidate
+}
+
+function Invoke-WdSupervisorGitCapture {
+    param(
+        [Parameter(Mandatory)] [string] $RepositoryRoot,
+        [Parameter(Mandatory)] [string[]] $Arguments,
+        [string] $GitExecutable = ''
+    )
+
+    $gitPath = Resolve-WdSupervisorGitApplication `
+        -ConfiguredPath $GitExecutable
+    $savedGitEnvironment = @(
+        Get-ChildItem Env: |
+            Where-Object { [string]$_.Name -cmatch '^(?i:GIT_)' } |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Name = [string]$_.Name
+                    Value = [string]$_.Value
+                }
+            }
+    )
+    $previousPreference = $ErrorActionPreference
+    try {
+        foreach ($entry in $savedGitEnvironment) {
+            Remove-Item -LiteralPath "Env:$([string]$entry.Name)" -ErrorAction Stop
+        }
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_GLOBAL = 'NUL'
+        $env:GIT_OPTIONAL_LOCKS = '0'
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $ErrorActionPreference = 'Continue'
+        $output = @(
+            & $gitPath --no-replace-objects -C $RepositoryRoot @Arguments 2>&1
+        )
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+        foreach ($entry in @(Get-ChildItem Env: | Where-Object {
+                    [string]$_.Name -cmatch '^(?i:GIT_)'
+                })) {
+            Remove-Item -LiteralPath "Env:$([string]$entry.Name)" `
+                -ErrorAction SilentlyContinue
+        }
+        foreach ($entry in $savedGitEnvironment) {
+            [Environment]::SetEnvironmentVariable(
+                [string]$entry.Name,
+                [string]$entry.Value,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
+    }
+    if ($exitCode -ne 0) {
+        throw (
+            "supervisor Git probe failed (exit $exitCode): " +
+            (@($output | ForEach-Object { [string]$_ }) -join "`n")
+        )
+    }
+    return (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim()
+}
+
+function Get-WdCanonicalTextGitBlobId {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $physical = [IO.File]::ReadAllBytes($Path)
+    $canonical = New-Object 'System.Collections.Generic.List[byte]'
+    for ($index = 0; $index -lt $physical.Length; $index += 1) {
+        $value = [byte]$physical[$index]
+        if ($value -eq 13) {
+            if ($index + 1 -ge $physical.Length -or $physical[$index + 1] -ne 10) {
+                throw 'watcher source contains a bare carriage return'
+            }
+            continue
+        }
+        $canonical.Add($value)
+    }
+    $canonicalBytes = $canonical.ToArray()
+    $header = [Text.Encoding]::ASCII.GetBytes(
+        "blob $($canonicalBytes.Length)`0"
+    )
+    $objectBytes = New-Object byte[] ($header.Length + $canonicalBytes.Length)
+    [Array]::Copy($header, 0, $objectBytes, 0, $header.Length)
+    [Array]::Copy(
+        $canonicalBytes,
+        0,
+        $objectBytes,
+        $header.Length,
+        $canonicalBytes.Length
+    )
+    $sha = [Security.Cryptography.SHA1]::Create()
+    try {
+        return [BitConverter]::ToString(
+            $sha.ComputeHash($objectBytes)
+        ).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
 }
 
 function Write-SupervisorLogLine {
@@ -122,8 +261,47 @@ function Assert-WdSupervisorPathWithoutReparse {
     return $candidate
 }
 
+function Assert-WdRecoveryStatePaths {
+    param(
+        [Parameter(Mandatory)] [string] $RecoveryStateRoot,
+        [Parameter(Mandatory)] [string] $WatcherConflictRoot,
+        [bool] $ToolsEnabled,
+        [string] $ToolsConflictPath = '',
+        [string] $ToolsReadinessPath = ''
+    )
+
+    $recoveryFull = [IO.Path]::GetFullPath($RecoveryStateRoot).TrimEnd('\')
+    if (-not (Split-Path -Parent ([IO.Path]::GetFullPath(
+                    $WatcherConflictRoot
+                ))).Equals(
+            $recoveryFull,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'watcher replacement conflict root is outside the recovery state root'
+    }
+    if ($ToolsEnabled -and (
+            -not (Split-Path -Parent ([IO.Path]::GetFullPath(
+                        $ToolsConflictPath
+                    ))).Equals(
+                $recoveryFull,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not (Split-Path -Parent ([IO.Path]::GetFullPath(
+                        $ToolsReadinessPath
+                    ))).Equals(
+                $recoveryFull,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        )) {
+        throw 'Tools readiness or replacement conflict path is outside the recovery state root'
+    }
+}
+
 function Resolve-OwnBundleGeneration {
-    param([Parameter(Mandatory)] [string] $ScriptRoot)
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [string] $GitExecutable = ''
+    )
 
     [void](Assert-WdSupervisorPathWithoutReparse `
         -Path $ScriptRoot -ExpectedType Directory)
@@ -167,13 +345,16 @@ function Resolve-OwnBundleGeneration {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $output = @(& git -C $ScriptRoot rev-parse HEAD 2>&1)
-        $exitCode = $LASTEXITCODE
+        $generation = Invoke-WdSupervisorGitCapture `
+            -RepositoryRoot $ScriptRoot `
+            -Arguments @('rev-parse', '--verify', 'HEAD^{commit}') `
+            -GitExecutable $GitExecutable
+        $exitCode = 0
     }
     finally {
         $ErrorActionPreference = $previousPreference
     }
-    $generation = (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim().ToLowerInvariant()
+    $generation = ([string]$generation).Trim().ToLowerInvariant()
     if ($exitCode -ne 0 -or $generation -cnotmatch '^[0-9a-f]{40}$') {
         throw 'supervisor source generation is not a full Git commit'
     }
@@ -465,6 +646,61 @@ function Invoke-WdWatcherReconcileLocked {
         $mutex = [Threading.Mutex]::new(
             $false,
             (Get-WdWatcherReconcileMutexName -RuntimeRoot $RuntimeRoot)
+        )
+        try {
+            $acquired = $mutex.WaitOne(0)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) { return $false }
+        $null = & $Action
+        return $true
+    }
+    finally {
+        try {
+            if ($acquired -and $null -ne $mutex) {
+                $mutex.ReleaseMutex()
+            }
+        }
+        finally {
+            if ($null -ne $mutex) {
+                $mutex.Dispose()
+            }
+        }
+    }
+}
+
+function Get-WdToolsReconcileMutexName {
+    param([Parameter(Mandatory)] [string] $RuntimeRoot)
+
+    $normalized = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd(
+        [char[]]@('\', '/')
+    ).ToUpperInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = [BitConverter]::ToString(
+            $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalized))
+        ).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return "Global\WaggleDanceToolsReconcileV1-$digest"
+}
+
+function Invoke-WdToolsReconcileLocked {
+    param(
+        [Parameter(Mandatory)] [string] $RuntimeRoot,
+        [Parameter(Mandatory)] [scriptblock] $Action
+    )
+
+    $mutex = $null
+    $acquired = $false
+    try {
+        $mutex = [Threading.Mutex]::new(
+            $false,
+            (Get-WdToolsReconcileMutexName -RuntimeRoot $RuntimeRoot)
         )
         try {
             $acquired = $mutex.WaitOne(0)
@@ -914,6 +1150,246 @@ function Test-WdCanonicalWatcherProcess {
     )
 }
 
+function Test-WdReplaceableStaleWatcherProcess {
+    param(
+        [Parameter(Mandatory)] $Process,
+        [Parameter(Mandatory)] [string] $ExpectedExecutable,
+        [Parameter(Mandatory)] [string] $CurrentScriptPath,
+        [Parameter(Mandatory)] [string] $Agent,
+        [Parameter(Mandatory)] [string] $RuntimeRoot,
+        [Parameter(Mandatory)] [string] $BundleParent,
+        [Parameter(Mandatory)] [string] $SourceRepositoryRoot,
+        [Parameter(Mandatory)] [string] $GitExecutable
+    )
+
+    try {
+        $actualExecutable = [IO.Path]::GetFullPath(
+            [string]$Process.ExecutablePath
+        )
+        $expectedExecutableFull = [IO.Path]::GetFullPath($ExpectedExecutable)
+        $currentScriptFull = [IO.Path]::GetFullPath($CurrentScriptPath)
+        $bundleParentFull = [IO.Path]::GetFullPath($BundleParent).TrimEnd('\')
+        $sourceRepositoryFull = [IO.Path]::GetFullPath(
+            $SourceRepositoryRoot
+        ).TrimEnd('\')
+    }
+    catch {
+        return $false
+    }
+    if (
+        -not $actualExecutable.Equals(
+            $expectedExecutableFull,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        return $false
+    }
+    $hostKind = if ([string]$Process.Name -ieq 'powershell.exe') {
+        'WindowsPowerShell'
+    } elseif ([string]$Process.Name -ieq 'pwsh.exe') {
+        'Pwsh'
+    } else {
+        return $false
+    }
+    $invocation = Get-WdPowerShellFileInvocation `
+        -CommandLine ([string]$Process.CommandLine) `
+        -HostKind $hostKind
+    if ($null -eq $invocation) { return $false }
+    $arguments = @($invocation.arguments)
+    if ($arguments.Count -ne 10) { return $false }
+    try {
+        $staleScriptFull = [IO.Path]::GetFullPath([string]$arguments[5])
+    }
+    catch {
+        return $false
+    }
+    if (
+        $staleScriptFull.Equals(
+            $currentScriptFull,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [IO.Path]::GetFileName($staleScriptFull) -cne 'Watch-Bridge.ps1'
+    ) {
+        return $false
+    }
+    $bundlePrefix = $bundleParentFull + '\'
+    if (-not $staleScriptFull.StartsWith(
+            $bundlePrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        return $false
+    }
+    $relativeToBundleParent = $staleScriptFull.Substring($bundlePrefix.Length)
+    if (
+        $relativeToBundleParent -cnotmatch (
+            '^(?<generation>[0-9a-f]{40})\\tools-bootstrap\\' +
+            '\.agent-bridge\\bin\\Watch-Bridge\.ps1$'
+        )
+    ) {
+        return $false
+    }
+    $staleGeneration = [string]$Matches['generation']
+    $staleBundleRoot = Join-Path $bundleParentFull $staleGeneration
+    $staleDeploymentPath = Join-Path $staleBundleRoot 'deployment-manifest.json'
+    try {
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $staleBundleRoot -ExpectedType Directory)
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $staleDeploymentPath -ExpectedType Leaf)
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $staleScriptFull -ExpectedType Leaf)
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $sourceRepositoryFull -ExpectedType Directory)
+        $staleDeploymentSnapshot = Read-Utf8SupervisorSnapshot `
+            -Path $staleDeploymentPath
+        $staleDeployment = $staleDeploymentSnapshot.Text |
+            ConvertFrom-Json -ErrorAction Stop
+        $staleRelative = 'tools-bootstrap/.agent-bridge/bin/Watch-Bridge.ps1'
+        $hashProperty = $staleDeployment.files.PSObject.Properties[$staleRelative]
+        if (
+            [int]$staleDeployment.schema_version -ne 1 -or
+            [string]$staleDeployment.source_commit -cne $staleGeneration -or
+            (Get-FileHash `
+                -LiteralPath $staleDeploymentPath `
+                -Algorithm SHA256).Hash -cne $staleDeploymentSnapshot.Hash -or
+            $null -eq $hashProperty -or
+            [string]$hashProperty.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            (Get-FileHash -LiteralPath $staleScriptFull -Algorithm SHA256).Hash -cne
+                ([string]$hashProperty.Value).ToUpperInvariant()
+        ) {
+            return $false
+        }
+        $sourceTopLevel = Invoke-WdSupervisorGitCapture `
+            -RepositoryRoot $sourceRepositoryFull `
+            -Arguments @('rev-parse', '--show-toplevel') `
+            -GitExecutable $GitExecutable
+        $resolvedGeneration = Invoke-WdSupervisorGitCapture `
+            -RepositoryRoot $sourceRepositoryFull `
+            -Arguments @('rev-parse', '--verify', "$staleGeneration^{commit}") `
+            -GitExecutable $GitExecutable
+        $expectedBlob = Invoke-WdSupervisorGitCapture `
+            -RepositoryRoot $sourceRepositoryFull `
+            -Arguments @(
+                'rev-parse',
+                '--verify',
+                "${staleGeneration}:.agent-bridge/bin/Watch-Bridge.ps1"
+            ) `
+            -GitExecutable $GitExecutable
+        $actualBlob = Get-WdCanonicalTextGitBlobId -Path $staleScriptFull
+        if (
+            -not ([IO.Path]::GetFullPath($sourceTopLevel).TrimEnd('\')).Equals(
+                $sourceRepositoryFull,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            $resolvedGeneration -cne $staleGeneration -or
+            $expectedBlob -cnotmatch '^[0-9a-f]{40}$' -or
+            $actualBlob -cne $expectedBlob
+        ) {
+            return $false
+        }
+    }
+    catch {
+        return $false
+    }
+    return (
+        [string]$arguments[1] -ceq '-NoProfile' -and
+        [string]$arguments[2] -ceq '-ExecutionPolicy' -and
+        [string]$arguments[3] -ceq 'Bypass' -and
+        [string]$arguments[4] -ceq '-File' -and
+        [string]$arguments[6] -ceq '-Agent' -and
+        [string]$arguments[7] -ceq $Agent -and
+        [string]$arguments[8] -ceq '-RuntimeRoot' -and
+        ([string]$arguments[9]).Equals(
+            $RuntimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    )
+}
+
+function Get-WdWatcherReconcileDisposition {
+    param(
+        [ValidateRange(0, 1000)] [int] $AllCount,
+        [ValidateRange(0, 1000)] [int] $ExactCount,
+        [ValidateRange(0, 1000)] [int] $ReplaceableCount,
+        [bool] $ConflictMarkerExists
+    )
+
+    if ($ConflictMarkerExists) { return 'conflict' }
+    if ($AllCount -eq 1 -and $ExactCount -eq 1) { return 'current' }
+    if ($AllCount -eq 0 -and $ExactCount -eq 0) { return 'launch' }
+    if (
+        $AllCount -eq 1 -and
+        $ExactCount -eq 0 -and
+        $ReplaceableCount -eq 1
+    ) {
+        return 'replace'
+    }
+    return 'conflict'
+}
+
+function Test-WdWatcherPostReconcileState {
+    param(
+        [ValidateRange(0, 1000)] [int] $AllCount,
+        [ValidateRange(0, 1000)] [int] $ExactCount
+    )
+
+    return ($AllCount -eq 1 -and $ExactCount -eq 1)
+}
+
+function Assert-WdExactWatcherAgentSet {
+    param([Parameter(Mandatory)] [string[]] $Agents)
+
+    $expected = @(
+        'codex-lead-1',
+        'codex-tools-1',
+        'claude-rco-1',
+        'claude-rco-2',
+        'fable-5'
+    )
+    if (
+        $Agents.Count -ne $expected.Count -or
+        @(Compare-Object `
+            -ReferenceObject $expected `
+            -DifferenceObject $Agents `
+            -CaseSensitive).Count -ne 0
+    ) {
+        throw 'supervisor watcher identities are not the exact five-lane set'
+    }
+}
+
+function Invoke-WdWatcherFleetPlan {
+    param(
+        [Parameter(Mandatory)] [object[]] $Plans,
+        [string[]] $ConflictMessages = @(),
+        [switch] $Apply,
+        [Parameter(Mandatory)] [scriptblock] $PrepareAction,
+        [Parameter(Mandatory)] [scriptblock] $ReportAction,
+        [Parameter(Mandatory)] [scriptblock] $StopAction,
+        [Parameter(Mandatory)] [scriptblock] $LaunchAction
+    )
+
+    if ($ConflictMessages.Count -gt 0) { return $false }
+    if ($Apply) {
+        $null = & $PrepareAction $Plans
+    }
+    foreach ($plan in $Plans) {
+        $action = [string]$plan.action
+        if ($action -notin @('current', 'launch', 'replace')) {
+            throw "unsupported watcher reconciliation action: $action"
+        }
+        if ($action -ceq 'current') { continue }
+        if (-not $Apply) {
+            $null = & $ReportAction $plan
+            continue
+        }
+        if ($action -ceq 'replace') {
+            $null = & $StopAction $plan
+        }
+        $null = & $LaunchAction $plan
+    }
+    return $true
+}
+
 function ConvertTo-SupervisorUtc {
     param([Parameter(Mandatory)] $Value)
 
@@ -1203,6 +1679,75 @@ function Start-OutOfTaskJobPowerShell {
     )
 }
 
+function New-WdWatcherReplacementMarker {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Agent,
+        [Parameter(Mandatory)] $StaleProcess,
+        [Parameter(Mandatory)] [string] $StaleGeneration,
+        [Parameter(Mandatory)] [string] $TargetGeneration
+    )
+
+    $markerFull = [IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $markerFull
+    $parentParent = Split-Path -Parent $parent
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $parentParent -ExpectedType Directory)
+    if (-not (Test-Path -LiteralPath $parent)) {
+        [void](New-Item `
+            -ItemType Directory `
+            -Path $parent `
+            -ErrorAction Stop)
+    }
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $parent -ExpectedType Directory)
+    if (Test-Path -LiteralPath $markerFull) {
+        throw "watcher replacement marker already exists: $markerFull"
+    }
+    $record = [ordered]@{
+        schema = 'wd.watcher-replacement-in-progress.v1'
+        created_at_utc = [DateTime]::UtcNow.ToString('o')
+        supervisor_pid = $PID
+        agent = $Agent
+        stale_generation = $StaleGeneration
+        target_generation = $TargetGeneration
+        stale_pid = [int]$StaleProcess.ProcessId
+        stale_creation_date = [string]$StaleProcess.CreationDate
+    }
+    $json = ($record | ConvertTo-Json -Depth 4 -Compress) + "`n"
+    $stream = [IO.File]::Open(
+        $markerFull,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None
+    )
+    try {
+        $writer = [IO.StreamWriter]::new(
+            $stream,
+            [Text.UTF8Encoding]::new($false)
+        )
+        try {
+            $writer.Write($json)
+            $writer.Flush()
+            $stream.Flush($true)
+        }
+        finally {
+            $writer.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Remove-WdWatcherReplacementMarker {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $Path -ExpectedType Leaf)
+    Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+}
+
 function Write-ToolsReplacementConflict {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -1211,6 +1756,11 @@ function Write-ToolsReplacementConflict {
         [int[]] $ProcessIds = @()
     )
 
+    if (Test-Path -LiteralPath $Path) {
+        # Watcher replacement pre-creates a stronger identity/generation marker
+        # before any stop. Never overwrite that durable fail-closed evidence.
+        return
+    }
     $parent = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
         [void](New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop)
@@ -1603,14 +2153,23 @@ function Invoke-TaskContainment {
         return
     }
 
-    if ($isRunning) {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        $actions.Add("STOPPED $TaskName ($Reason)")
-    }
     if ($isEnabled) {
         Disable-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
         $actions.Add("DISABLED $TaskName ($Reason)")
     }
+    if ($isRunning) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        $actions.Add("STOPPED $TaskName ($Reason)")
+    }
+    $verifiedTask = Get-OptionalScheduledTask -TaskName $TaskName
+    if (
+        $null -eq $verifiedTask -or
+        [bool]$verifiedTask.Settings.Enabled -or
+        [string]$verifiedTask.State -eq 'Running'
+    ) {
+        throw "scheduled-task HOLD verification failed: $TaskName ($Reason)"
+    }
+    $actions.Add("HOLD verified $TaskName disabled/not-running ($Reason)")
 }
 
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
@@ -1642,6 +2201,11 @@ if (
 $runtimeRoot = [IO.Path]::GetFullPath((Get-RequiredText $configuration 'runtime_root'))
 [void](Assert-WdSupervisorPathWithoutReparse `
     -Path $runtimeRoot -ExpectedType Directory)
+$recoveryStateRoot = [IO.Path]::GetFullPath(
+    (Get-RequiredText $configuration 'recovery_state_root')
+).TrimEnd('\')
+[void](Assert-WdSupervisorPathWithoutReparse `
+    -Path $recoveryStateRoot -ExpectedType Directory)
 if (-not $LogPath) {
     $LogPath = Get-RequiredText $configuration 'log_path'
 }
@@ -1652,13 +2216,6 @@ $powerShellHost = Resolve-PowerShellChildHost
 # Process identity matching is an admission boundary.  If the native argv
 # parser is unavailable, abort before any reconciliation can launch a duplicate.
 Initialize-WdSupervisorCommandLineParser
-$processes = @(
-    Get-CimInstance Win32_Process -ErrorAction Stop |
-        Where-Object {
-            $_.ProcessId -ne $selfPid -and
-            -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
-        }
-)
 
 if ($null -eq $configuration.tools_consumer) {
     throw 'supervisor configuration has no tools_consumer object'
@@ -1791,7 +2348,7 @@ if ($toolsEnabled) {
     ) {
         throw 'Tools consumer preflight did not resolve stable Windows PowerShell'
     }
-    if (Test-Path -LiteralPath $toolsConflictPath -PathType Leaf) {
+    if (Test-Path -LiteralPath $toolsConflictPath) {
         throw (
             'Tools replacement is blocked by persistent orphan-conflict marker: ' +
             $toolsConflictPath
@@ -1799,6 +2356,7 @@ if ($toolsEnabled) {
     }
 }
 
+$watcherReconciliationBlocked = $false
 if ($null -eq $configuration.watchers) {
     throw 'supervisor configuration has no watchers object'
 }
@@ -1827,6 +2385,39 @@ $watcherAgents = @(
 )
 if ($watcherAgents.Count -eq 0) {
     throw 'supervisor watcher agent list must not be empty'
+}
+Assert-WdExactWatcherAgentSet -Agents $watcherAgents
+$watcherConflictRoot = [IO.Path]::GetFullPath(
+    (Get-RequiredText $configuration.watchers 'replacement_conflict_root')
+)
+$watcherSourceRepository = [IO.Path]::GetFullPath(
+    (Get-RequiredText $configuration.watchers 'source_repo_root')
+)
+$watcherGitExecutable = Resolve-WdSupervisorGitApplication `
+    -ConfiguredPath (Get-RequiredText $configuration.watchers 'git_executable')
+$watcherTargetGeneration = Resolve-OwnBundleGeneration `
+    -ScriptRoot $PSScriptRoot `
+    -GitExecutable $watcherGitExecutable
+if (
+    $toolsEnabled -and
+    -not $watcherSourceRepository.Equals(
+        [IO.Path]::GetFullPath((Get-RequiredText $tools 'primary_repo_root')),
+        [StringComparison]::OrdinalIgnoreCase
+    )
+) {
+    throw 'watcher source repository does not match the Tools source repository'
+}
+[void](Assert-WdSupervisorPathWithoutReparse `
+    -Path $watcherSourceRepository -ExpectedType Directory)
+Assert-WdRecoveryStatePaths `
+    -RecoveryStateRoot $recoveryStateRoot `
+    -WatcherConflictRoot $watcherConflictRoot `
+    -ToolsEnabled $toolsEnabled `
+    -ToolsConflictPath $toolsConflictPath `
+    -ToolsReadinessPath $readinessPath
+if (Test-Path -LiteralPath $watcherConflictRoot) {
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $watcherConflictRoot -ExpectedType Directory)
 }
 if (-not (Test-Path -LiteralPath $watcherScript -PathType Leaf)) {
     throw "required watcher source is missing: $watcherScript"
@@ -1859,11 +2450,18 @@ else {
     foreach ($watcherDependency in $watcherDependencies) {
         Assert-SupervisorBundleFileIntegrity -RelativePath $watcherDependency
     }
+    $watcherBundleParent = Split-Path -Parent $PSScriptRoot
+    [void](Assert-WdSupervisorPathWithoutReparse `
+        -Path $watcherBundleParent -ExpectedType Directory)
+    $watcherConflictMessages = [Collections.Generic.List[string]]::new()
     $watcherReconciled = Invoke-WdWatcherReconcileLocked `
         -RuntimeRoot $runtimeRoot `
         -Action {
+            $watcherProcessSnapshot = @(
+                Get-CimInstance Win32_Process -ErrorAction Stop
+            )
             $watcherProcesses = @(
-                Get-CimInstance Win32_Process -ErrorAction Stop |
+                $watcherProcessSnapshot |
                     Where-Object {
                         $_.ProcessId -ne $selfPid -and
                         -not [string]::IsNullOrWhiteSpace(
@@ -1871,6 +2469,7 @@ else {
                         )
                     }
             )
+            $watcherPlans = [Collections.Generic.List[object]]::new()
             foreach ($agent in $watcherAgents) {
                 if ($agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') {
                     throw "invalid configured watcher identity: $agent"
@@ -1892,60 +2491,255 @@ else {
                                 -RuntimeRoot $runtimeRoot
                         }
                 )
-
-                if (
-                    $exactAgentWatchers.Count -eq 1 -and
-                    $allAgentWatchers.Count -eq 1
-                ) {
-                    continue
-                }
-                if ($allAgentWatchers.Count -gt 0) {
-                    $ids = @(
-                        $allAgentWatchers |
-                            ForEach-Object { [string]$_.ProcessId }
-                    ) -join ','
-                    $actions.Add(
-                        "CONFLICT watcher:$agent count=$($allAgentWatchers.Count) pids=$ids; no duplicate launched"
-                    )
-                    continue
-                }
-
-                if (-not $Apply) {
-                    $actions.Add("WOULD-RELAUNCH watcher:$agent")
-                    continue
-                }
-
-                $watcherArguments = @(
-                    '-NoProfile',
-                    '-ExecutionPolicy', 'Bypass',
-                    '-File', $watcherScript,
-                    '-Agent', $agent,
-                    '-RuntimeRoot', $runtimeRoot
+                $replaceableAgentWatchers = @(
+                    $allAgentWatchers |
+                        Where-Object {
+                            Test-WdReplaceableStaleWatcherProcess `
+                                -Process $_ `
+                                -ExpectedExecutable $powerShellHost `
+                                -CurrentScriptPath $watcherScript `
+                                -Agent $agent `
+                                -RuntimeRoot $runtimeRoot `
+                                -BundleParent $watcherBundleParent `
+                                -SourceRepositoryRoot $watcherSourceRepository `
+                                -GitExecutable $watcherGitExecutable
+                        }
                 )
-                Assert-SupervisorBundleFileIntegrity `
-                    -RelativePath $watcherRelative
-                foreach ($watcherDependency in $watcherDependencies) {
-                    Assert-SupervisorBundleFileIntegrity `
-                        -RelativePath $watcherDependency
+                $watcherConflictPath = Join-Path `
+                    $watcherConflictRoot "$agent.json"
+                $watcherConflictMarkerExists = Test-Path `
+                    -LiteralPath $watcherConflictPath
+                $watcherDisposition = Get-WdWatcherReconcileDisposition `
+                    -AllCount $allAgentWatchers.Count `
+                    -ExactCount $exactAgentWatchers.Count `
+                    -ReplaceableCount $replaceableAgentWatchers.Count `
+                    -ConflictMarkerExists $watcherConflictMarkerExists
+                if ($watcherDisposition -ceq 'current') {
+                    $watcherPlans.Add([pscustomobject]@{
+                        agent = $agent
+                        action = 'current'
+                        process = $exactAgentWatchers[0]
+                    })
+                    continue
                 }
-                Invoke-WithChildIdentity $agent $runtimeRoot {
-                    Start-OutOfTaskJobPowerShell `
-                        $powerShellHost `
-                        $watcherArguments `
-                        "watcher:$agent"
+                if ($watcherDisposition -ceq 'launch') {
+                    $watcherPlans.Add([pscustomobject]@{
+                        agent = $agent
+                        action = 'launch'
+                        process = $null
+                    })
+                    continue
+                }
+                if ($watcherDisposition -ceq 'replace') {
+                    $replacementProcess = $replaceableAgentWatchers[0]
+                    $replacementHostKind = if (
+                        [string]$replacementProcess.Name -ieq 'powershell.exe'
+                    ) {
+                        'WindowsPowerShell'
+                    } else {
+                        'Pwsh'
+                    }
+                    $replacementInvocation = Get-WdPowerShellFileInvocation `
+                        -CommandLine ([string]$replacementProcess.CommandLine) `
+                        -HostKind $replacementHostKind
+                    $replacementScriptFull = [IO.Path]::GetFullPath(
+                        [string]@($replacementInvocation.arguments)[5]
+                    )
+                    $replacementPrefix = $watcherBundleParent.TrimEnd('\') + '\'
+                    $replacementRelative = $replacementScriptFull.Substring(
+                        $replacementPrefix.Length
+                    )
+                    if ($replacementRelative -cnotmatch (
+                            '^(?<generation>[0-9a-f]{40})\\tools-bootstrap\\' +
+                            '\.agent-bridge\\bin\\Watch-Bridge\.ps1$'
+                        )) {
+                        throw 'replaceable watcher lost its generation binding'
+                    }
+                    $watcherPlans.Add([pscustomobject]@{
+                        agent = $agent
+                        action = 'replace'
+                        process = $replacementProcess
+                        stale_generation = [string]$Matches['generation']
+                        conflict_path = $watcherConflictPath
+                    })
+                    continue
+                }
+                $ids = @(
+                    $allAgentWatchers |
+                        ForEach-Object { [string]$_.ProcessId }
+                ) -join ','
+                if (-not $ids) { $ids = '<none>' }
+                $markerState = if ($watcherConflictMarkerExists) {
+                    '; persistent replacement-conflict marker exists'
+                } else {
+                    ''
+                }
+                $watcherConflictMessages.Add(
+                    "watcher:$agent count=$($allAgentWatchers.Count) " +
+                    "exact=$($exactAgentWatchers.Count) " +
+                    "replaceable=$($replaceableAgentWatchers.Count) pids=$ids" +
+                    $markerState
+                )
+            }
+
+            $createdWatcherReplacementMarkers = `
+                [Collections.Generic.List[string]]::new()
+            $watcherPlanExecuted = Invoke-WdWatcherFleetPlan `
+                -Plans @($watcherPlans) `
+                -ConflictMessages @($watcherConflictMessages) `
+                -Apply:$Apply `
+                -PrepareAction {
+                    param([object[]] $plans)
+                    foreach ($plan in @($plans | Where-Object {
+                                [string]$_.action -ceq 'replace'
+                            })) {
+                        New-WdWatcherReplacementMarker `
+                            -Path ([string]$plan.conflict_path) `
+                            -Agent ([string]$plan.agent) `
+                            -StaleProcess $plan.process `
+                            -StaleGeneration ([string]$plan.stale_generation) `
+                            -TargetGeneration $watcherTargetGeneration
+                        $createdWatcherReplacementMarkers.Add(
+                            [string]$plan.conflict_path
+                        )
+                        $actions.Add(
+                            "MARKED watcher replacement:$($plan.agent) " +
+                            "generation=$([string]$plan.stale_generation)"
+                        )
+                    }
+                } `
+                -ReportAction {
+                    param($plan)
+                    if ([string]$plan.action -ceq 'replace') {
+                        $actions.Add(
+                            "WOULD-REPLACE stale-generation watcher:$($plan.agent) " +
+                            "pid=$([int]$plan.process.ProcessId)"
+                        )
+                    }
+                    else {
+                        $actions.Add("WOULD-RELAUNCH watcher:$($plan.agent)")
+                    }
+                } `
+                -StopAction {
+                    param($plan)
+                    [void](Stop-VerifiedProcessTree `
+                        -RootProcess $plan.process `
+                        -InitialProcesses $watcherProcessSnapshot `
+                        -ConflictPath ([string]$plan.conflict_path))
+                    $actions.Add(
+                        "STOPPED stale-generation watcher:$($plan.agent) " +
+                        "pid=$([int]$plan.process.ProcessId)"
+                    )
+                } `
+                -LaunchAction {
+                    param($plan)
+                    $watcherArguments = @(
+                        '-NoProfile',
+                        '-ExecutionPolicy', 'Bypass',
+                        '-File', $watcherScript,
+                        '-Agent', ([string]$plan.agent),
+                        '-RuntimeRoot', $runtimeRoot
+                    )
+                    Assert-SupervisorBundleFileIntegrity `
+                        -RelativePath $watcherRelative
+                    foreach ($watcherDependency in $watcherDependencies) {
+                        Assert-SupervisorBundleFileIntegrity `
+                            -RelativePath $watcherDependency
+                    }
+                    Invoke-WithChildIdentity ([string]$plan.agent) $runtimeRoot {
+                        Start-OutOfTaskJobPowerShell `
+                            $powerShellHost `
+                            $watcherArguments `
+                            "watcher:$($plan.agent)"
+                    }
+                }
+            if (-not $watcherPlanExecuted) {
+                return
+            }
+            if ($Apply) {
+                Start-Sleep -Milliseconds 500
+                $verifiedWatcherProcesses = @(
+                    Get-CimInstance Win32_Process -ErrorAction Stop |
+                        Where-Object {
+                            $_.ProcessId -ne $selfPid -and
+                            -not [string]::IsNullOrWhiteSpace(
+                                [string]$_.CommandLine
+                            )
+                        }
+                )
+                foreach ($agent in $watcherAgents) {
+                    $allVerifiedAgentWatchers = @(
+                        Get-AgentCommandProcesses `
+                            $verifiedWatcherProcesses `
+                            'Watch-Bridge.ps1' `
+                            $agent
+                    )
+                    $exactVerifiedAgentWatchers = @(
+                        $allVerifiedAgentWatchers |
+                            Where-Object {
+                                Test-WdCanonicalWatcherProcess `
+                                    -Process $_ `
+                                    -ExpectedExecutable $powerShellHost `
+                                    -ScriptPath $watcherScript `
+                                    -Agent $agent `
+                                    -RuntimeRoot $runtimeRoot
+                            }
+                    )
+                    if (-not (Test-WdWatcherPostReconcileState `
+                            -AllCount $allVerifiedAgentWatchers.Count `
+                            -ExactCount $exactVerifiedAgentWatchers.Count)) {
+                        $ids = @(
+                            $allVerifiedAgentWatchers |
+                                ForEach-Object { [string]$_.ProcessId }
+                        ) -join ','
+                        if (-not $ids) { $ids = '<none>' }
+                        $watcherConflictMessages.Add(
+                            "watcher:$agent post-reconcile count=" +
+                            "$($allVerifiedAgentWatchers.Count) exact=" +
+                            "$($exactVerifiedAgentWatchers.Count) pids=$ids"
+                        )
+                    }
+                    else {
+                        $actions.Add(
+                            "VERIFIED watcher:$agent " +
+                            "pid=$([int]$exactVerifiedAgentWatchers[0].ProcessId)"
+                        )
+                    }
+                }
+                if ($watcherConflictMessages.Count -eq 0) {
+                    foreach ($markerPath in $createdWatcherReplacementMarkers) {
+                        Remove-WdWatcherReplacementMarker -Path $markerPath
+                        $actions.Add("CLEARED watcher replacement marker:$markerPath")
+                    }
                 }
             }
         }
     if (-not $watcherReconciled) {
-        $actions.Add(
-            'SKIPPED watcher reconciliation: another supervisor owns the runtime mutex'
+        $watcherConflictMessages.Add(
+            'watcher reconciliation mutex is owned by another supervisor'
         )
+    }
+    if ($watcherConflictMessages.Count -gt 0) {
+        foreach ($watcherConflictMessage in $watcherConflictMessages) {
+            $actions.Add("CONFLICT $watcherConflictMessage")
+        }
+        $watcherReconciliationBlocked = $true
     }
 }
 
-if ($toolsEnabled) {
+if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
+    $toolsReconciled = Invoke-WdToolsReconcileLocked `
+        -RuntimeRoot $runtimeRoot `
+        -Action {
+    $toolsProcesses = @(
+        Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object {
+                $_.ProcessId -ne $selfPid -and
+                -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
+            }
+    )
     $wrapperProcesses = @(
-        $processes |
+        $toolsProcesses |
             Where-Object {
                 if ([string]$_.Name -notmatch '^(?i:powershell|pwsh)\.exe$') {
                     return $false
@@ -2042,7 +2836,7 @@ if ($toolsEnabled) {
     )
     $legacyConsumers = @(
         Get-AgentCommandProcesses `
-            $processes `
+            $toolsProcesses `
             'Start-AgentBridgeConsumerLoop.ps1' `
             $toolsAgent
     )
@@ -2090,7 +2884,7 @@ if ($toolsEnabled) {
             $stalePid = [int]$staleProcess.ProcessId
             $stoppedCount = Stop-VerifiedProcessTree `
                 -RootProcess $staleProcess `
-                -InitialProcesses $processes `
+                -InitialProcesses $toolsProcesses `
                 -ConflictPath $toolsConflictPath
             if ($stoppedCount -gt 0) {
                 $actions.Add(
@@ -2130,6 +2924,17 @@ if ($toolsEnabled) {
             $toolsArguments `
             'consumer-loop:codex-tools-1'
     }
+        }
+    if (-not $toolsReconciled) {
+        $actions.Add(
+            'CONFLICT Tools reconciliation mutex is owned by another supervisor'
+        )
+    }
+}
+elseif ($toolsEnabled) {
+    $actions.Add(
+        'SKIPPED Tools reconciliation because watcher reconciliation is conflicted'
+    )
 }
 
 if ($null -eq $configuration.driver_containment) {

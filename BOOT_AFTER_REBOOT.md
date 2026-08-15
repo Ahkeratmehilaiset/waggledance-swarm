@@ -3,7 +3,7 @@
 The supported whole-fleet restore is one command:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Apply
 ```
 
 Verify the complete plan without changing files, tasks, caches, bridge state,
@@ -13,9 +13,12 @@ or processes:
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -DryRun
 ```
 
-After Windows sign-in, run the dry run first. If it exits `0`, run the restore
-command once. It updates both agent CLIs before reconciling Tools and the five
-real-time bridge watchers, then opens the four interactive lanes.
+After Windows sign-in, run the dry run first. With no mode switch the launcher
+also defaults to byte-inert DryRun. If the explicit DryRun exits `0`, run the
+restore command once. It preflights and reconciles Tools plus the five
+real-time bridge watchers before updating both agent CLIs, then opens the four
+interactive lanes. A single stale watcher is replaced only from a verified,
+hash-bound old reboot bundle; duplicates and unknown processes fail closed.
 
 The installed entry point is a hash-checking wrapper around the exact pushed
 bundle recorded in:
@@ -49,6 +52,14 @@ Recovery grants no merge, deploy, signature, canary, runtime-authority, or
 `claim_safe` permission. `WD-BridgeMergeDriverStandingOneShot` is deliberately
 disabled. The reboot launcher and supervisor must never enable it or recommend
 that the operator enable it.
+
+The supervisor may still disable/stop a merge-driver task during a watcher
+conflict because HOLD is the dominant safety invariant. Watcher and Tools
+replacement remains blocked. A durable watcher replacement marker must be
+investigated rather than deleted blindly. Recovery is roll-forward: if a later
+CLI, Grok, handshake, or terminal step fails after verified helper convergence,
+fix the reported cause and repeat DryRun then Apply. Never bulk-replay spool
+files as part of reboot recovery.
 
 The source-controlled implementation and detailed runbook live in
 `ops/windows/reboot/`. Machine-local `C:\Python\start-wd-*.ps1` files are

@@ -335,6 +335,10 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="watcher parser requires Windows CommandLineToArgvW",
+)
 def test_supervisor_watcher_discovery_requires_real_file_invocation() -> None:
     supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
     result = _run_powershell(

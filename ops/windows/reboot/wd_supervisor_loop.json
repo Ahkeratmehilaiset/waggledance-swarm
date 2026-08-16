@@ -53,6 +53,7 @@
     "resume_policy": "current_worktree",
     "model": "gpt-5.6-terra",
     "reasoning_effort": "high",
+    "python_executable": "C:\\Users\\janik\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
     "session_script_relative": ".agent-bridge\\bin\\Start-AgentBridgeSession.ps1",
     "consumer_script_relative": ".agent-bridge\\bin\\Start-AgentBridgeConsumerLoop.ps1",
     "log_dir": "C:\\Python\\waggledance-agent-worktrees\\codex-tools-1-post-reboot-tools-sandbox-followup-20260731\\.codex-audit\\bridge-consumer-canonical-tools",

@@ -23,6 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:WdGitExecutable = ''
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
 }
@@ -101,21 +102,83 @@ function Resolve-ContainedScript {
     return $candidate
 }
 
+function Resolve-ToolsGitApplication {
+    param([Parameter(Mandatory)] [string] $ConfiguredPath)
+
+    if (-not [IO.Path]::IsPathRooted($ConfiguredPath)) {
+        throw 'Tools Git executable path must be absolute'
+    }
+    $candidate = [IO.Path]::GetFullPath($ConfiguredPath)
+    if ([IO.Path]::GetExtension($candidate) -cne '.exe') {
+        throw 'Tools Git executable must be an .exe application'
+    }
+    $command = Get-Command `
+        -Name $candidate `
+        -CommandType Application `
+        -ErrorAction Stop
+    if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+            $candidate,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'Tools Git command is not the configured application'
+    }
+    Assert-FilePathWithoutReparse `
+        -Candidate $candidate `
+        -Root ([IO.Path]::GetPathRoot($candidate))
+    return $candidate
+}
+
 function Invoke-GitText {
     param(
         [Parameter(Mandatory)] [string] $Worktree,
         [Parameter(Mandatory)] [string[]] $ArgumentList,
-        [Parameter(Mandatory)] [string] $Operation
+        [Parameter(Mandatory)] [string] $Operation,
+        [string] $GitExecutable = [string]$script:WdGitExecutable
     )
 
+    $gitPath = Resolve-ToolsGitApplication -ConfiguredPath $GitExecutable
+    $savedGitEnvironment = @(
+        Get-ChildItem Env: |
+            Where-Object { [string]$_.Name -cmatch '^(?i:GIT_)' } |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Name = [string]$_.Name
+                    Value = [string]$_.Value
+                }
+            }
+    )
     $previousPreference = $ErrorActionPreference
     try {
+        foreach ($entry in $savedGitEnvironment) {
+            Remove-Item `
+                -LiteralPath "Env:$([string]$entry.Name)" `
+                -ErrorAction Stop
+        }
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_GLOBAL = 'NUL'
+        $env:GIT_OPTIONAL_LOCKS = '0'
+        $env:GIT_TERMINAL_PROMPT = '0'
         $ErrorActionPreference = 'Continue'
-        $output = @(& git -C $Worktree @ArgumentList 2>&1)
+        $output = @(
+            & $gitPath --no-replace-objects -C $Worktree @ArgumentList 2>&1
+        )
         $exitCode = $LASTEXITCODE
     }
     finally {
         $ErrorActionPreference = $previousPreference
+        foreach ($entry in @(Get-ChildItem Env: | Where-Object {
+                    [string]$_.Name -cmatch '^(?i:GIT_)'
+                })) {
+            Remove-Item -LiteralPath "Env:$([string]$entry.Name)" `
+                -ErrorAction SilentlyContinue
+        }
+        foreach ($entry in $savedGitEnvironment) {
+            [Environment]::SetEnvironmentVariable(
+                [string]$entry.Name,
+                [string]$entry.Value,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
     }
     if ($exitCode -ne 0) {
         throw "git $Operation failed in ${Worktree}: $($output -join ' ')"
@@ -527,6 +590,7 @@ function New-CodexSandboxPath {
         [Parameter(Mandatory)] [string] $CurrentPath,
         [Parameter(Mandatory)] [string] $PythonExecutable,
         [Parameter(Mandatory)] [string] $PowerShellExecutable,
+        [string] $GitExecutable = '',
         [Parameter(Mandatory)] [string[]] $WindowsAppsRoots
     )
 
@@ -535,8 +599,14 @@ function New-CodexSandboxPath {
     $pythonDirectory = Split-Path -Parent $pythonFull
     $candidateEntries = New-Object 'System.Collections.Generic.List[string]'
     $candidateEntries.Add((Split-Path -Parent $powerShellFull))
+    $candidateEntries.Add([Environment]::SystemDirectory)
     $candidateEntries.Add($pythonDirectory)
     $candidateEntries.Add((Join-Path $pythonDirectory 'Scripts'))
+    if (-not [string]::IsNullOrWhiteSpace($GitExecutable)) {
+        $candidateEntries.Add((Split-Path -Parent (
+            [IO.Path]::GetFullPath($GitExecutable)
+        )))
+    }
     foreach ($entry in @($CurrentPath -split [IO.Path]::PathSeparator)) {
         $candidateEntries.Add([string]$entry)
     }
@@ -589,72 +659,41 @@ function New-CodexSandboxPath {
     }
 }
 
-function Find-ApplicationInPath {
-    param(
-        [Parameter(Mandatory)] [string] $PathValue,
-        [Parameter(Mandatory)] [string[]] $ExecutableNames
-    )
-
-    $entries = @(
-        $PathValue -split [IO.Path]::PathSeparator |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    )
-    foreach ($entry in $entries) {
-        foreach ($executableName in $ExecutableNames) {
-            $candidate = Join-Path $entry $executableName
-            if ([IO.File]::Exists($candidate)) {
-                return [IO.Path]::GetFullPath($candidate)
-            }
-        }
-    }
-    return $null
-}
-
 function Resolve-ToolsPythonExecutable {
-    param([Parameter(Mandatory)] [string[]] $WindowsAppsRoots)
+    param(
+        [Parameter(Mandatory)] [string] $ConfiguredPath,
+        [Parameter(Mandatory)] [string[]] $WindowsAppsRoots
+    )
 
-    $pythonFull = $null
-    $launcher = Get-Command py.exe `
-        -CommandType Application `
-        -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -ne $launcher) {
-        $previousPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $pythonOutput = @(
-                & $launcher.Source -3 -c 'import sys; print(sys.executable)' 2>&1
+    if (-not [IO.Path]::IsPathRooted($ConfiguredPath)) {
+        throw 'Tools Python executable path must be absolute'
+    }
+    $pythonFull = [IO.Path]::GetFullPath($ConfiguredPath)
+    if ([IO.Path]::GetExtension($pythonFull) -cne '.exe') {
+        throw 'Tools Python executable must be an .exe application'
+    }
+    $localProgramsRoot = [IO.Path]::GetFullPath(
+        (Join-Path (
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::LocalApplicationData
             )
-            $exitCode = $LASTEXITCODE
-        }
-        finally {
-            $ErrorActionPreference = $previousPreference
-        }
-        if ($exitCode -ne 0) {
-            throw "Python launcher failed with exit code ${exitCode}: $($pythonOutput -join ' ')"
-        }
-        $pythonLines = @(
-            $pythonOutput |
-                ForEach-Object { [string]$_ } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-        if ($pythonLines.Count -ne 1) {
-            throw 'Python launcher did not return one exact executable path'
-        }
-        $pythonFull = [IO.Path]::GetFullPath($pythonLines[0].Trim())
+        ) 'Programs\Python')
+    ).TrimEnd([char]92, [char]47)
+    if (-not (Test-PathAtOrBelow -Candidate $pythonFull -Root $localProgramsRoot)) {
+        throw "Tools Python is outside the trusted per-user Python root: $pythonFull"
     }
-    else {
-        $python = Get-Command python.exe `
-            -CommandType Application `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($null -ne $python) {
-            $pythonFull = [IO.Path]::GetFullPath($python.Source)
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($pythonFull) -or -not [IO.File]::Exists($pythonFull)) {
-        throw 'Could not resolve a real Python executable for the Tools consumer'
+    Assert-FilePathWithoutReparse `
+        -Candidate $pythonFull `
+        -Root ([IO.Path]::GetPathRoot($pythonFull))
+    $command = Get-Command `
+        -Name $pythonFull `
+        -CommandType Application `
+        -ErrorAction Stop
+    if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+            $pythonFull,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'Tools Python command is not the configured application'
     }
     foreach ($windowsAppsRoot in $WindowsAppsRoots) {
         if (Test-PathAtOrBelow $pythonFull $windowsAppsRoot) {
@@ -662,6 +701,36 @@ function Resolve-ToolsPythonExecutable {
         }
     }
     return $pythonFull
+}
+
+function Resolve-ToolsCodexApplication {
+    $roamingRoot = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::ApplicationData
+    )
+    if ([string]::IsNullOrWhiteSpace($roamingRoot)) {
+        throw 'Tools roaming application-data root is unavailable'
+    }
+    $candidate = [IO.Path]::GetFullPath(
+        (Join-Path $roamingRoot (
+            'npm\node_modules\@openai\codex\node_modules\' +
+            '@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\' +
+            'bin\codex.exe'
+        ))
+    )
+    Assert-FilePathWithoutReparse `
+        -Candidate $candidate `
+        -Root ([IO.Path]::GetPathRoot($candidate))
+    $command = Get-Command `
+        -Name $candidate `
+        -CommandType Application `
+        -ErrorAction Stop
+    if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+            $candidate,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'Tools Codex command is not the trusted npm-native application'
+    }
+    return $candidate
 }
 
 function Test-CodexSandboxShell {
@@ -730,6 +799,11 @@ $configuration = [string]$configSnapshot.Text |
 if ([string]$configuration.schema -cne 'wd.supervisor-loop.v2') {
     throw "unsupported tools consumer configuration schema: $($configuration.schema)"
 }
+if ($null -eq $configuration.watchers) {
+    throw 'tools consumer configuration has no watchers object'
+}
+$script:WdGitExecutable = Resolve-ToolsGitApplication `
+    -ConfiguredPath (Get-RequiredText $configuration.watchers 'git_executable')
 if ($null -eq $configuration.tools_consumer) {
     throw 'tools consumer configuration has no tools_consumer object'
 }
@@ -1020,7 +1094,11 @@ if (-not [IO.File]::Exists($codexShim)) {
 }
 
 $windowsAppsRoots = @(
-    Join-Path $env:ProgramFiles 'WindowsApps'
+    Join-Path (
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::ProgramFiles
+        )
+    ) 'WindowsApps'
     Join-Path (
         [Environment]::GetFolderPath(
             [Environment+SpecialFolder]::LocalApplicationData
@@ -1028,10 +1106,11 @@ $windowsAppsRoots = @(
     ) 'Microsoft\WindowsApps'
 )
 $pythonExecutable = Resolve-ToolsPythonExecutable `
+    -ConfiguredPath (Get-RequiredText $tools 'python_executable') `
     -WindowsAppsRoots $windowsAppsRoots
 $systemPowerShell = Join-Path `
-    $env:SystemRoot `
-    'System32\WindowsPowerShell\v1.0\powershell.exe'
+    ([Environment]::SystemDirectory) `
+    'WindowsPowerShell\v1.0\powershell.exe'
 if (-not [IO.File]::Exists($systemPowerShell)) {
     throw "System Windows PowerShell is missing: $systemPowerShell"
 }
@@ -1039,6 +1118,7 @@ $codexPathPlan = New-CodexSandboxPath `
     -CurrentPath $env:Path `
     -PythonExecutable $pythonExecutable `
     -PowerShellExecutable $systemPowerShell `
+    -GitExecutable $script:WdGitExecutable `
     -WindowsAppsRoots $windowsAppsRoots
 $sandboxShell = [IO.Path]::GetFullPath($systemPowerShell)
 try {
@@ -1049,12 +1129,13 @@ try {
 catch {
     throw "Could not resolve the current Tools PowerShell host: $($_.Exception.Message)"
 }
-$codexCommand = Find-ApplicationInPath `
-    -PathValue $codexPathPlan.Path `
-    -ExecutableNames @('codex.exe', 'codex.cmd')
-if ([string]::IsNullOrWhiteSpace($codexCommand)) {
-    throw 'Tools process PATH contains no Codex CLI application'
-}
+$codexCommand = Resolve-ToolsCodexApplication
+$codexCommandHash = (
+    Get-FileHash -LiteralPath $codexCommand -Algorithm SHA256
+).Hash
+$pythonExecutableHash = (
+    Get-FileHash -LiteralPath $pythonExecutable -Algorithm SHA256
+).Hash
 
 $validation = [pscustomobject]@{
     schema = 'wd.tools-consumer-validation.v1'
@@ -1076,10 +1157,12 @@ $validation = [pscustomobject]@{
     session_script = $sessionScript
     consumer_script = $consumerScript
     codex_command = $codexCommand
+    codex_command_sha256 = $codexCommandHash
     codex_shim = $codexShim
     consumer_host = $currentPowerShellHost
     sandbox_shell = $sandboxShell
     python_executable = $pythonExecutable
+    python_executable_sha256 = $pythonExecutableHash
     codex_additional_writable_directories = @($codexWritableDirectories)
     windows_apps_path_entries_removed = @(
         $codexPathPlan.RemovedWindowsAppsEntries
@@ -1229,6 +1312,58 @@ Assert-ToolsBootstrapIntegrity `
     -ConfigPath $configFull `
     -LoadedConfigHash $loadedConfigHash
 
+$canaryTaskId = "wd-append-canary-$runId"
+$canaryPayload = [ordered]@{
+    schema_version = 1
+    generation = $Generation
+    target_state_id = [string]$targetState.id
+    manifest_writer = 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
+} | ConvertTo-Json -Compress
+$canaryStartedUtc = [DateTimeOffset]::UtcNow
+$canaryOutput = @(
+    & $writer `
+        -Agent $agent `
+        -Type status `
+        -TaskId $canaryTaskId `
+        -Status append_canary `
+        -Message "Verified the manifest-hashed canonical writer for $agent generation $runId." `
+        -To '' `
+        -RunId $runId `
+        -Role $role `
+        -AgentUuid $agentUuid `
+        -SessionId $runId `
+        -Capabilities $capabilities `
+        -PayloadJson $canaryPayload
+)
+$canaryCompletedUtc = [DateTimeOffset]::UtcNow
+$canaryEvents = @(
+    $canaryOutput | Where-Object {
+        $_ -is [psobject] -and [string]$_.status -ceq 'append_canary'
+    }
+)
+$canaryLatencyMs = [int64][Math]::Ceiling(
+    ($canaryCompletedUtc - $canaryStartedUtc).TotalMilliseconds
+)
+if (
+    $canaryEvents.Count -ne 1 -or
+    [string]$canaryEvents[0].agent -cne $agent -or
+    [string]$canaryEvents[0].agent_uuid -cne $agentUuid -or
+    [string]$canaryEvents[0].run_id -cne $runId -or
+    [string]$canaryEvents[0].session_id -cne $runId -or
+    [string]$canaryEvents[0].task_id -cne $canaryTaskId -or
+    [string]$canaryEvents[0].to -cne '' -or
+    [int]$canaryEvents[0].pid -ne $PID -or
+    $canaryLatencyMs -gt 5000
+) {
+    throw "manifest-writer append canary failed for $agent"
+}
+$canaryOutput | Out-Host
+Assert-ToolsBootstrapIntegrity `
+    -ScriptRoot $PSScriptRoot `
+    -BootstrapRoot $bootstrapRoot `
+    -ConfigPath $configFull `
+    -LoadedConfigHash $loadedConfigHash
+
 $commonConsumerArguments = @{
     Agent = $agent
     AgentUuid = $agentUuid
@@ -1313,9 +1448,19 @@ $readinessRecord = [ordered]@{
     resume_policy = $resumePolicy
     model = $model
     reasoning_effort = $reasoningEffort
+    codex_command = $codexCommand
+    codex_command_sha256 = $codexCommandHash
+    python_executable = $pythonExecutable
+    python_executable_sha256 = $pythonExecutableHash
     target_state_id = [string]$targetState.id
     target_state_sha256 = [string]$targetState.sha256
     target_state_manifested = $true
+    run_id = $runId
+    session_id = $runId
+    append_canary = $true
+    append_canary_task_id = $canaryTaskId
+    append_canary_event_utc = [string]$canaryEvents[0].ts_utc
+    append_canary_latency_ms = $canaryLatencyMs
     initial_tick_disposition = $initialTickDisposition
     initial_tick_exit_code = [int]$initialResult.exit_code
     initial_tick_timed_out = $initialTickTimedOut

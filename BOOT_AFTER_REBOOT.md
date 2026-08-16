@@ -15,10 +15,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 After Windows sign-in, run the dry run first. With no mode switch the launcher
 also defaults to byte-inert DryRun. If the explicit DryRun exits `0`, run the
-restore command once. It preflights and reconciles Tools plus the five
-real-time bridge watchers before updating both agent CLIs, then opens the four
-interactive lanes. A single stale watcher is replaced only from a verified,
+restore command once. It updates and re-verifies both agent CLIs before any new
+agent starts, then reconciles Tools plus the five real-time bridge watchers and
+opens the four interactive lanes. A single stale watcher is replaced only from a verified,
 hash-bound old reboot bundle; duplicates and unknown processes fail closed.
+An exactly configured `WD-Supervisor` task left Disabled by deployment remains
+held throughout DryRun and is enabled only after the complete fleet, bridge
+prefix, and spool inventory pass verification. The launcher then demand-starts
+that task once and requires a fresh successful scheduler result.
 
 The installed entry point is a hash-checking wrapper around the exact pushed
 bundle recorded in:
@@ -31,12 +35,14 @@ The launcher validates all persistent worktrees before mutation. It does not
 fetch, check out, reset, create a branch, or create a replacement worktree.
 On a real restore it updates Codex and Claude Code, resolves the current
 provider-default Grok model, and resumes the canonical current C-drive
-worktrees. Lead uses `gpt-5.6-sol/max`, Tools uses
+worktrees. Lead uses `gpt-5.6-sol/ultra`, Tools uses
 `gpt-5.6-terra/high`, RCO1/RCO2 use Claude `sonnet/max`, and Fable uses
 Claude `fable/max`.
 
-Each lane emits one hash-bound `target_state_manifested` bridge status before
-its model starts. The target describes the image-backed swarm direction and
+Each lane emits one hash-bound `target_state_manifested` status and one
+unaddressed `append_canary` through the deployed manifest-hashed writer before
+its model starts. The canary must complete within five seconds without creating
+a new spool file. The target describes the image-backed swarm direction and
 does not claim that the capability already exists. Durable bridge state,
 handoffs, Git worktrees, and pushed savepoints—not an assumed provider
 transcript—determine where work resumes.

@@ -1,6 +1,7 @@
 {
   "schema_version": 2,
   "fleet_name": "waggledance-five-agent-fleet",
+  "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
   "primary_repo_root": "C:\\Python\\project2",
   "repo_common_git_dir": "C:\\Python\\project2\\.git",
   "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
@@ -59,6 +60,7 @@
     "resume_policy": "current_worktree",
     "model": "gpt-5.6-terra",
     "reasoning_effort": "high",
+    "python_executable": "C:\\Users\\janik\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
     "require_dedicated_worktree": true,
     "process_markers": [
       "start-wd-tools-consumer.ps1",
@@ -88,7 +90,7 @@
       ],
       "cli": "codex.cmd",
       "model": "gpt-5.6-sol",
-      "effort": "max",
+      "effort": "ultra",
       "resume_policy": "current_worktree",
       "worktree": "C:\\Python\\project2",
       "branch": "codex-lead-1/magma-faiss-hex-genome-20260810",

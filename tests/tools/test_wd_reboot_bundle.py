@@ -100,6 +100,17 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
     )
     assert supervisor["target_state"] == target
+    assert supervisor["recovery_state_root"] == r"C:\Python\wd-reboot-runtime"
+    assert supervisor["watchers"]["replacement_conflict_root"] == (
+        r"C:\Python\wd-reboot-runtime\watcher-replacement-conflicts"
+    )
+    assert supervisor["watchers"]["host_policy"] == (
+        "system_windows_powershell_v1"
+    )
+    assert supervisor["watchers"]["git_executable"] == (
+        r"C:\Program Files\Git\cmd\git.exe"
+    )
+    assert supervisor["watchers"]["source_repo_root"] == r"C:\Python\project2"
     assert "Invoke-WdToolsCodex.ps1" in (
         manifest["deployment"]["required_bundle_files"]
     )
@@ -261,10 +272,11 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
         supervisor.index("function Test-WdPowerShellSwitchToken")
     ]
     assert "catch" not in parser_body
-    assert supervisor.index("Initialize-WdSupervisorCommandLineParser\n$processes") < (
-        supervisor.index("if ($toolsEnabled)")
+    assert supervisor.index("Initialize-WdSupervisorCommandLineParser") < (
+        supervisor.index("$toolsProcesses = @(")
     )
     assert "Global\\WaggleDanceWatcherReconcileV1-" in supervisor
+    assert "Global\\WaggleDanceToolsReconcileV1-" in supervisor
     assert "$mutex.WaitOne(0)" in supervisor
     assert "catch [Threading.AbandonedMutexException]" in supervisor
     assert "$mutex.ReleaseMutex()" in supervisor
@@ -272,7 +284,10 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     watcher_lock_start = supervisor.index(
         "$watcherReconciled = Invoke-WdWatcherReconcileLocked"
     )
-    watcher_lock_end = supervisor.index("if ($toolsEnabled)", watcher_lock_start)
+    watcher_lock_end = supervisor.index(
+        "if ($toolsEnabled -and -not $watcherReconciliationBlocked)",
+        watcher_lock_start,
+    )
     watcher_lock = supervisor[watcher_lock_start:watcher_lock_end]
     assert watcher_lock.index("$watcherProcesses = @(") < watcher_lock.index(
         "foreach ($agent in $watcherAgents)"
@@ -281,7 +296,71 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert watcher_lock.index("foreach ($agent in $watcherAgents)") < (
         watcher_lock.index("Start-OutOfTaskJobPowerShell `")
     )
-    assert "another supervisor owns the runtime mutex" in watcher_lock
+    assert "watcher reconciliation mutex is owned by another supervisor" in (
+        watcher_lock
+    )
+    assert watcher_lock.index("$watcherPlans =") < watcher_lock.index(
+        "$watcherConflictMessages.Count -gt 0"
+    )
+    fleet_plan_body = supervisor[
+        supervisor.index("function Invoke-WdWatcherFleetPlan") : supervisor.index(
+            "function ConvertTo-SupervisorUtc"
+        )
+    ]
+    assert fleet_plan_body.index("$ConflictMessages.Count -gt 0") < (
+        fleet_plan_body.index("& $StopAction")
+    )
+    assert watcher_lock.index("New-WdWatcherReplacementMarker `") < (
+        watcher_lock.index("Stop-VerifiedProcessTree `")
+    )
+    assert watcher_lock.index("Stop-VerifiedProcessTree `") < watcher_lock.index(
+        "$verifiedWatcherProcesses = @("
+    )
+    assert "post-reconcile count=" in watcher_lock
+    assert watcher_lock.index("post-reconcile count=") < watcher_lock.index(
+        "Remove-WdWatcherReplacementMarker"
+    )
+    containment_gate = supervisor.index(
+        "Invoke-WdReconciliationUnderDriverHold `", watcher_lock_start - 500
+    )
+    watcher_blocked = supervisor.index(
+        "$watcherReconciliationBlocked = $true", watcher_lock_start
+    )
+    tools_gate = supervisor.index(
+        "if ($toolsEnabled -and -not $watcherReconciliationBlocked)",
+        watcher_blocked,
+    )
+    final_conflict = supervisor.index(
+        "supervisor reconciliation conflict", tools_gate
+    )
+    assert containment_gate < watcher_lock_start < watcher_blocked < tools_gate
+    assert tools_gate < final_conflict
+    driver_hold_body = supervisor[
+        supervisor.index("function Invoke-WdReconciliationUnderDriverHold") :
+        supervisor.index("$configFull =", supervisor.index(
+            "function Invoke-WdReconciliationUnderDriverHold"
+        ))
+    ]
+    assert driver_hold_body.index(
+        "Invoke-TaskContainment $standingTaskName"
+    ) < driver_hold_body.index(". $ReconciliationAction")
+    assert (
+        "SKIPPED Tools reconciliation because watcher reconciliation is conflicted"
+        in supervisor
+    )
+    tools_lock = supervisor.index("$toolsReconciled = Invoke-WdToolsReconcileLocked")
+    tools_snapshot = supervisor.index("$toolsProcesses = @(", tools_lock)
+    tools_decision = supervisor.index("$wrapperProcesses = @(", tools_snapshot)
+    tools_contention = supervisor.index(
+        "CONFLICT Tools reconciliation mutex is owned by another supervisor",
+        tools_decision,
+    )
+    assert tools_lock < tools_snapshot < tools_decision < tools_contention
+    assert "--no-replace-objects" in supervisor
+    assert "Get-WdCanonicalTextGitBlobId" in supervisor
+    assert "hash-object" not in supervisor
+    assert "$env:GIT_CONFIG_NOSYSTEM = '1'" in supervisor
+    assert "VERIFIED watcher:$agent" in watcher_lock
     assert "CmdletizationQuery_NotFound" in supervisor
     assert "Get-OptionalScheduledTask" in supervisor
     assert "$allAgentWatchers = @(" in supervisor
@@ -292,7 +371,7 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "'stale-generation'" in supervisor
     assert "Stop-VerifiedProcessTree `" in supervisor
     assert "-RootProcess $staleProcess `" in supervisor
-    assert "-InitialProcesses $processes `" in supervisor
+    assert "-InitialProcesses $toolsProcesses `" in supervisor
     assert "-ConflictPath $toolsConflictPath" in supervisor
     assert "System32\\taskkill.exe" in supervisor
     assert "/PID $killPid /F" in supervisor
@@ -332,6 +411,327 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
         supervisor
     )
     assert supervisor.index("-ValidateOnly") < supervisor.index("$watcherScript =")
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="watcher parser requires Windows CommandLineToArgvW",
+)
+def test_supervisor_unknown_host_is_a_nonmatch_not_a_validation_failure() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Test-NamedCommandLineArgument',
+    'Initialize-WdSupervisorCommandLineParser',
+    'ConvertFrom-WdWindowsCommandLine',
+    'Test-WdPowerShellSwitchToken',
+    'Test-WdPowerShellHostOptionToken',
+    'Test-WdPowerShellFileSwitchToken',
+    'Get-WdPowerShellHostKind',
+    'Test-WdEncodedCommandValue',
+    'Get-WdPowerShellFileInvocation'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+Initialize-WdSupervisorCommandLineParser
+$scriptPath = 'C:\\bundle\\start-wd-tools-consumer.ps1'
+$configPath = 'C:\\bundle\\wd_supervisor_loop.json'
+$generation = '0123456789012345678901234567890123456789'
+$extensionlessCommand = (
+  'pwsh -File ' + $scriptPath +
+  ' -ConfigPath ' + $configPath +
+  ' -Generation ' + $generation
+)
+$process = [pscustomobject]@{{
+  Name = 'pwsh.exe'
+  CommandLine = $extensionlessCommand
+}}
+$wrapperProcesses = @(
+  $process | Where-Object {{
+    $processHostKind = if ([string]$_.Name -ieq 'powershell.exe') {{
+      'WindowsPowerShell'
+    }} else {{
+      'Pwsh'
+    }}
+    Test-NamedCommandLineArgument `
+      -CommandLine ([string]$_.CommandLine) `
+      -HostKind $processHostKind `
+      -Name 'File' `
+      -Value $scriptPath
+  }}
+)
+$configuredProcesses = @(
+  $wrapperProcesses | Where-Object {{
+    Test-NamedCommandLineArgument `
+      -CommandLine ([string]$_.CommandLine) `
+      -HostKind 'Pwsh' `
+      -Name 'ConfigPath' `
+      -Value $configPath
+  }}
+)
+$exactProcesses = @(
+  $configuredProcesses | Where-Object {{
+    Test-NamedCommandLineArgument `
+      -CommandLine ([string]$_.CommandLine) `
+      -HostKind 'Pwsh' `
+      -Name 'Generation' `
+      -Value $generation
+  }}
+)
+[pscustomobject]@{{
+  unknown_host = Test-NamedCommandLineArgument `
+    -CommandLine $extensionlessCommand `
+    -Name 'File' `
+    -Value $scriptPath
+  explicit_host = Test-NamedCommandLineArgument `
+    -CommandLine $extensionlessCommand `
+    -HostKind 'Pwsh' `
+    -Name 'File' `
+    -Value $scriptPath
+  known_host = Test-NamedCommandLineArgument `
+    -CommandLine ('pwsh.exe -File ' + $scriptPath) `
+    -Name 'File' `
+    -Value $scriptPath
+  wrapper_count = $wrapperProcesses.Count
+  configured_count = $configuredProcesses.Count
+  exact_count = $exactProcesses.Count
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "unknown_host": False,
+        "explicit_host": True,
+        "known_host": True,
+        "wrapper_count": 1,
+        "configured_count": 1,
+        "exact_count": 1,
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_child_host_policy_ignores_path_applications(
+    tmp_path: Path,
+) -> None:
+    fake_path = tmp_path / "fake-path"
+    fake_path.mkdir()
+    for name in ("pwsh.exe", "powershell.exe"):
+        (fake_path / name).write_text("not an executable\n", encoding="utf-8")
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    fake_path_ps = str(fake_path).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Assert-WdSupervisorPathWithoutReparse',
+    'Test-WdTrustedInstalledPowerShellExecutable',
+    'Resolve-PowerShellChildHost'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$resolverAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Resolve-PowerShellChildHost'
+  }},
+  $true
+)
+$oldPath = $env:PATH
+try {{
+  $env:PATH = '{fake_path_ps};' + $oldPath
+  $resolved = Resolve-PowerShellChildHost `
+    -Policy 'system_windows_powershell_v1'
+  $unsupportedFailed = $false
+  try {{
+    [void](Resolve-PowerShellChildHost -Policy 'path_auto')
+  }}
+  catch {{
+    $unsupportedFailed = $_.Exception.Message -like (
+      'unsupported watcher child-host policy*'
+    )
+  }}
+  [pscustomobject]@{{
+    resolved = $resolved
+    fake_pwsh_selected = $resolved.Equals(
+      (Join-Path '{fake_path_ps}' 'pwsh.exe'),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+    fake_powershell_selected = $resolved.Equals(
+      (Join-Path '{fake_path_ps}' 'powershell.exe'),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+    resolver_uses_get_command = $resolverAst.Extent.Text -match 'Get-Command'
+    unsupported_failed = $unsupportedFailed
+  }} | ConvertTo-Json -Compress
+}}
+finally {{
+  $env:PATH = $oldPath
+}}
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    payload = json.loads(result.stdout)
+    assert WINDOWS_POWERSHELL_PATH is not None
+    assert Path(payload["resolved"]) == WINDOWS_POWERSHELL_PATH
+    assert payload["fake_pwsh_selected"] is False
+    assert payload["fake_powershell_selected"] is False
+    assert payload["resolver_uses_get_command"] is False
+    assert payload["unsupported_failed"] is True
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_report_only_log_is_byte_inert(tmp_path: Path) -> None:
+    supervisor_path = REBOOT / "wd_supervisor.ps1"
+    supervisor_text = supervisor_path.read_text(encoding="utf-8")
+    assert supervisor_text.index(
+        "Initialize-SupervisorLogParent -Path $logFull -Apply:$Apply"
+    ) < supervisor_text.index("$powerShellHost = Resolve-PowerShellChildHost")
+    supervisor = str(supervisor_path).replace("'", "''")
+    log_path = str(tmp_path / "missing" / "supervisor.log").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Initialize-SupervisorLogParent',
+    'Write-SupervisorLogLine',
+    'Assert-WdSupervisorPathWithoutReparse'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$path = [IO.Path]::GetFullPath('{log_path}')
+$parent = Split-Path -Parent $path
+Initialize-SupervisorLogParent -Path $path -Apply:$false
+Write-SupervisorLogLine -Path $path -Line 'dry-run' -Apply:$false
+$dryParentExists = Test-Path -LiteralPath $parent
+$dryFileExists = Test-Path -LiteralPath $path
+[void](New-Item -ItemType Directory -Path $parent -Force)
+Set-Content -LiteralPath $path -Value 'sentinel' -Encoding UTF8
+$beforeDryBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+Write-SupervisorLogLine -Path $path -Line 'dry-existing' -Apply:$false
+$afterDryBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+$dryExistingLines = @(Get-Content -LiteralPath $path)
+Initialize-SupervisorLogParent -Path $path -Apply
+$afterApplyPreflightBytes = [Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes($path)
+)
+$applyMissingPath = Join-Path $parent 'apply-missing.log'
+Initialize-SupervisorLogParent -Path $applyMissingPath -Apply
+$applyMissingLength = (Get-Item -LiteralPath $applyMissingPath).Length
+Write-SupervisorLogLine -Path $path -Line 'apply' -Apply
+$junctionTarget = Join-Path (Split-Path -Parent $parent) 'junction-target'
+$junctionParent = Join-Path (Split-Path -Parent $parent) 'junction-parent'
+[void](New-Item -ItemType Directory -Path $junctionTarget)
+[void](New-Item -ItemType Junction -Path $junctionParent -Target $junctionTarget)
+$junctionExistingTarget = Join-Path $junctionTarget 'existing.log'
+Set-Content -LiteralPath $junctionExistingTarget -Value 'junction-sentinel' -Encoding UTF8
+$junctionExistingPath = Join-Path $junctionParent 'existing.log'
+$junctionMissingPath = Join-Path $junctionParent 'missing.log'
+$junctionBefore = [Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes($junctionExistingTarget)
+)
+$junctionInitRejected = $false
+try {{ Initialize-SupervisorLogParent -Path $junctionMissingPath -Apply }}
+catch {{ $junctionInitRejected = $true }}
+$junctionAppendRejected = $false
+try {{ Write-SupervisorLogLine -Path $junctionExistingPath -Line 'forbidden' -Apply }}
+catch {{ $junctionAppendRejected = $true }}
+$junctionAfter = [Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes($junctionExistingTarget)
+)
+[pscustomobject]@{{
+  dry_parent_exists = $dryParentExists
+  dry_file_exists = $dryFileExists
+  dry_existing_bytes_equal = $beforeDryBytes -ceq $afterDryBytes
+  apply_preflight_bytes_equal = $afterDryBytes -ceq $afterApplyPreflightBytes
+  apply_missing_created_empty = (
+    (Test-Path -LiteralPath $applyMissingPath -PathType Leaf) -and
+    $applyMissingLength -eq 0
+  )
+  dry_existing_lines = @($dryExistingLines) -join "`n"
+  apply_file_exists = Test-Path -LiteralPath $path -PathType Leaf
+  lines = @(Get-Content -LiteralPath $path) -join "`n"
+  junction_init_rejected = $junctionInitRejected
+  junction_missing_not_created = -not (
+    Test-Path -LiteralPath (Join-Path $junctionTarget 'missing.log')
+  )
+  junction_append_rejected = $junctionAppendRejected
+  junction_existing_bytes_equal = $junctionBefore -ceq $junctionAfter
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "dry_parent_exists": False,
+        "dry_file_exists": False,
+        "dry_existing_bytes_equal": True,
+        "apply_preflight_bytes_equal": True,
+        "apply_missing_created_empty": True,
+        "dry_existing_lines": "sentinel",
+        "apply_file_exists": True,
+        "lines": "sentinel\napply",
+        "junction_init_rejected": True,
+        "junction_missing_not_created": True,
+        "junction_append_rejected": True,
+        "junction_existing_bytes_equal": True,
+    }
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
@@ -710,8 +1110,998 @@ $exact = @(
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
-def test_supervisor_watcher_reconcile_mutex_is_scoped_and_nonblocking(
+def test_supervisor_watcher_reconcile_disposition_is_fail_closed() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Get-WdWatcherReconcileDisposition'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing disposition function' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+[pscustomobject]@{{
+  current = Get-WdWatcherReconcileDisposition 1 1 0 $false
+  current_marked = Get-WdWatcherReconcileDisposition 1 1 0 $true
+  missing = Get-WdWatcherReconcileDisposition 0 0 0 $false
+  missing_marked = Get-WdWatcherReconcileDisposition 0 0 0 $true
+  stale = Get-WdWatcherReconcileDisposition 1 0 1 $false
+  stale_marked = Get-WdWatcherReconcileDisposition 1 0 1 $true
+  unverified = Get-WdWatcherReconcileDisposition 1 0 0 $false
+  duplicate_current = Get-WdWatcherReconcileDisposition 2 1 0 $false
+  duplicate_stale = Get-WdWatcherReconcileDisposition 2 0 2 $false
+  impossible_counts = Get-WdWatcherReconcileDisposition 0 1 0 $false
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "current": "current",
+        "current_marked": "conflict",
+        "missing": "launch",
+        "missing_marked": "conflict",
+        "stale": "replace",
+        "stale_marked": "conflict",
+        "unverified": "conflict",
+        "duplicate_current": "conflict",
+        "duplicate_stale": "conflict",
+        "impossible_counts": "conflict",
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_launcher_mode_and_supervisor_invocation_plan_are_behavioral() -> None:
+    launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'launcher parse failed' }}
+foreach ($name in @(
+    'Resolve-WdLauncherMode',
+    'Assert-WdLauncherBundleMode',
+    'Get-WdSupervisorInvocationPlan'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$bothRejected = $false
+try {{ [void](Resolve-WdLauncherMode $true $true) }}
+catch {{ $bothRejected = $true }}
+$sourceApplyRejected = $false
+try {{ Assert-WdLauncherBundleMode source Apply }}
+catch {{ $sourceApplyRejected = $true }}
+Assert-WdLauncherBundleMode source DryRun
+Assert-WdLauncherBundleMode deployed Apply
+$source = Get-WdSupervisorInvocationPlan `
+  -BundleMode source `
+  -SourceScript 'C:\\source\\wd_supervisor.ps1' `
+  -SourceConfig 'C:\\source\\config.json' `
+  -DeployedScript 'C:\\machine\\wd_supervisor.ps1'
+$deployed = Get-WdSupervisorInvocationPlan `
+  -BundleMode deployed `
+  -SourceScript 'C:\\source\\wd_supervisor.ps1' `
+  -SourceConfig 'C:\\source\\config.json' `
+  -DeployedScript 'C:\\machine\\wd_supervisor.ps1'
+[pscustomobject]@{{
+  default_mode = Resolve-WdLauncherMode $false $false
+  dry_mode = Resolve-WdLauncherMode $false $true
+  apply_mode = Resolve-WdLauncherMode $true $false
+  both_rejected = $bothRejected
+  source_apply_rejected = $sourceApplyRejected
+  source_preflight_script = [string]$source.preflight_script
+  source_preflight_arguments = @($source.preflight_arguments) -join '|'
+  source_apply_script = [string]$source.apply_script
+  deployed_preflight_script = [string]$deployed.preflight_script
+  deployed_apply_arguments = @($deployed.apply_arguments) -join '|'
+  deployed_verify_arguments = @($deployed.verify_arguments) -join '|'
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "default_mode": "DryRun",
+        "dry_mode": "DryRun",
+        "apply_mode": "Apply",
+        "both_rejected": True,
+        "source_apply_rejected": True,
+        "source_preflight_script": r"C:\source\wd_supervisor.ps1",
+        "source_preflight_arguments": r"-ConfigPath|C:\source\config.json",
+        "source_apply_script": "",
+        "deployed_preflight_script": r"C:\machine\wd_supervisor.ps1",
+        "deployed_apply_arguments": "-Apply",
+        "deployed_verify_arguments": "",
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_watcher_fleet_plan_is_atomic_and_fail_closed() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Assert-WdExactWatcherAgentSet',
+    'Assert-WdRecoveryStatePaths',
+    'Invoke-WdWatcherFleetPlan',
+    'Test-WdWatcherPostReconcileState'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$agents = @(
+  'codex-lead-1', 'codex-tools-1', 'claude-rco-1',
+  'claude-rco-2', 'fable-5'
+)
+$exactSet = $true
+try {{ Assert-WdExactWatcherAgentSet $agents }}
+catch {{ $exactSet = $false }}
+$duplicateRejected = $false
+try {{ Assert-WdExactWatcherAgentSet @($agents[0], $agents[0], $agents[2..4]) }}
+catch {{ $duplicateRejected = $true }}
+$disabledToolsEscapeRejected = $false
+try {{
+  Assert-WdRecoveryStatePaths `
+    -RecoveryStateRoot 'C:\\state' `
+    -WatcherConflictRoot 'C:\\escaped\\watchers' `
+    -ToolsEnabled $false
+}}
+catch {{ $disabledToolsEscapeRejected = $true }}
+Assert-WdRecoveryStatePaths `
+  -RecoveryStateRoot 'C:\\state' `
+  -WatcherConflictRoot 'C:\\state\\watchers' `
+  -ToolsEnabled $false
+$plans = @([pscustomobject]@{{ action = 'replace'; agent = 'codex-lead-1' }})
+$state = @{{ prepare = 0; report = 0; stop = 0; launch = 0 }}
+$conflicted = Invoke-WdWatcherFleetPlan `
+  -Plans $plans `
+  -ConflictMessages @('one lane conflicted') `
+  -Apply `
+  -PrepareAction {{ param($items) $state.prepare += 1 }} `
+  -ReportAction {{ param($item) $state.report += 1 }} `
+  -StopAction {{ param($item) $state.stop += 1 }} `
+  -LaunchAction {{ param($item) $state.launch += 1 }}
+$conflictCallbacks = "$($state.prepare)/$($state.report)/$($state.stop)/$($state.launch)"
+$state = @{{ prepare = 0; report = 0; stop = 0; launch = 0 }}
+$replaced = Invoke-WdWatcherFleetPlan `
+  -Plans $plans `
+  -Apply `
+  -PrepareAction {{ param($items) $state.prepare += 1 }} `
+  -ReportAction {{ param($item) $state.report += 1 }} `
+  -StopAction {{ param($item) $state.stop += 1 }} `
+  -LaunchAction {{ param($item) $state.launch += 1 }}
+$replaceCallbacks = "$($state.prepare)/$($state.report)/$($state.stop)/$($state.launch)"
+$state = @{{ prepare = 0; stop = 0; launch = 0 }}
+$stopFailed = $false
+try {{
+  [void](Invoke-WdWatcherFleetPlan `
+    -Plans $plans `
+    -Apply `
+    -PrepareAction {{ param($items) $state.prepare += 1 }} `
+    -ReportAction {{ param($item) }} `
+    -StopAction {{ param($item) $state.stop += 1; throw 'stop failure' }} `
+    -LaunchAction {{ param($item) $state.launch += 1 }})
+}}
+catch {{ $stopFailed = $true }}
+[pscustomobject]@{{
+  exact_set = $exactSet
+  duplicate_rejected = $duplicateRejected
+  disabled_tools_escape_rejected = $disabledToolsEscapeRejected
+  conflicted = [bool]$conflicted
+  conflict_callbacks = $conflictCallbacks
+  replaced = [bool]$replaced
+  replace_callbacks = $replaceCallbacks
+  stop_failed = $stopFailed
+  stop_failure_callbacks = "$($state.prepare)/$($state.stop)/$($state.launch)"
+  post_exact = Test-WdWatcherPostReconcileState 1 1
+  post_missing = Test-WdWatcherPostReconcileState 0 0
+  post_duplicate = Test-WdWatcherPostReconcileState 2 1
+  post_wrong = Test-WdWatcherPostReconcileState 1 0
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "exact_set": True,
+        "duplicate_rejected": True,
+        "disabled_tools_escape_rejected": True,
+        "conflicted": False,
+        "conflict_callbacks": "0/0/0/0",
+        "replaced": True,
+        "replace_callbacks": "1/0/1/1",
+        "stop_failed": True,
+        "stop_failure_callbacks": "1/1/0",
+        "post_exact": True,
+        "post_missing": False,
+        "post_duplicate": False,
+        "post_wrong": False,
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_launcher_recovers_and_releases_an_abandoned_fleet_mutex() -> None:
+    launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'launcher parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Enter-WdFleetRebootMutex'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing fleet mutex function' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+Add-Type -TypeDefinition @'
+using System;
+using System.Threading;
+public static class WdAbandonedMutexOwner {{
+    public static void Abandon(string name) {{
+        Exception failure = null;
+        ManualResetEventSlim acquired = new ManualResetEventSlim(false);
+        Thread owner = new Thread(delegate() {{
+            try {{
+                Mutex mutex = Mutex.OpenExisting(name);
+                mutex.WaitOne();
+                acquired.Set();
+            }}
+            catch (Exception error) {{
+                failure = error;
+                acquired.Set();
+            }}
+        }});
+        owner.IsBackground = true;
+        owner.Start();
+        if (!acquired.Wait(5000)) {{
+            throw new TimeoutException("mutex owner did not acquire");
+        }}
+        owner.Join();
+        if (failure != null) {{
+            throw failure;
+        }}
+    }}
+}}
+'@
+$name = 'Local\\WdFleetMutexTest-' + [Guid]::NewGuid().ToString('N')
+$mutex = [Threading.Mutex]::new($false, $name)
+$recovered = $false
+try {{
+  [WdAbandonedMutexOwner]::Abandon($name)
+  $recovered = Enter-WdFleetRebootMutex -Mutex $mutex
+  if (-not $recovered) {{ throw 'abandoned mutex was not acquired' }}
+  $mutex.ReleaseMutex()
+}}
+finally {{
+  $mutex.Dispose()
+}}
+$probe = [Threading.Mutex]::new($false, $name)
+try {{
+  $reacquired = $probe.WaitOne(0)
+  if ($reacquired) {{ $probe.ReleaseMutex() }}
+}}
+finally {{
+  $probe.Dispose()
+}}
+[pscustomobject]@{{ recovered = $recovered; reacquired = $reacquired }} |
+  ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {"recovered": True, "reacquired": True}
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="watcher parser requires Windows CommandLineToArgvW",
+)
+def test_supervisor_only_replaces_hash_bound_stale_bundle_watcher(
     tmp_path: Path,
+) -> None:
+    source_repo = tmp_path / "source-repo"
+    source_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(source_repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source_repo), "config", "core.longpaths", "true"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source_repo), "config", "user.name", "WD Test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source_repo),
+            "config",
+            "user.email",
+            "wd-test@example.invalid",
+        ],
+        check=True,
+    )
+    source_script = source_repo / ".agent-bridge" / "bin" / "Watch-Bridge.ps1"
+    source_script.parent.mkdir(parents=True)
+    source_script.write_text("Write-Output 'watcher'\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(source_repo), "add", ".agent-bridge/bin/Watch-Bridge.ps1"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source_repo), "commit", "-q", "-m", "watcher fixture"],
+        check=True,
+    )
+    generation = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert re.fullmatch(r"[0-9a-f]{40}", generation)
+    source_bytes = source_script.read_bytes()
+    source_script.write_text("Write-Output 'replacement'\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(source_repo), "add", ".agent-bridge/bin/Watch-Bridge.ps1"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source_repo), "commit", "-q", "-m", "replacement fixture"],
+        check=True,
+    )
+    replacement_generation = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(source_repo), "replace", generation, replacement_generation],
+        check=True,
+    )
+    info_attributes = source_repo / ".git" / "info" / "attributes"
+    info_attributes.write_text(
+        ".agent-bridge/bin/Watch-Bridge.ps1 filter=wdtest\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source_repo),
+            "config",
+            "filter.wdtest.clean",
+            "printf filtered",
+        ],
+        check=True,
+    )
+    poison_repo = tmp_path / "poison-repo"
+    poison_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(poison_repo)], check=True)
+    bundle_parent = tmp_path / "wd-reboot-bundles"
+    bundle_root = bundle_parent / generation
+    stale_script = (
+        bundle_root
+        / "tools-bootstrap"
+        / ".agent-bridge"
+        / "bin"
+        / "Watch-Bridge.ps1"
+    )
+    stale_script.parent.mkdir(parents=True)
+    stale_script.write_bytes(source_bytes)
+    relative = "tools-bootstrap/.agent-bridge/bin/Watch-Bridge.ps1"
+    manifest_path = bundle_root / "deployment-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": generation,
+                "files": {
+                    relative: hashlib.sha256(stale_script.read_bytes())
+                    .hexdigest()
+                    .upper()
+                },
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    current_script = (
+        bundle_parent
+        / ("b" * 40)
+        / "tools-bootstrap"
+        / ".agent-bridge"
+        / "bin"
+        / "Watch-Bridge.ps1"
+    )
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    bundle_parent_ps = str(bundle_parent).replace("'", "''")
+    stale_script_ps = str(stale_script).replace("'", "''")
+    current_script_ps = str(current_script).replace("'", "''")
+    manifest_ps = str(manifest_path).replace("'", "''")
+    source_repo_ps = str(source_repo).replace("'", "''")
+    poison_git_dir_ps = str(poison_repo / ".git").replace("'", "''")
+    git_executable = shutil.which("git.exe") or shutil.which("git")
+    assert git_executable is not None
+    git_executable_ps = git_executable.replace("'", "''")
+    pwsh_launcher = shutil.which("pwsh.exe") or shutil.which("pwsh")
+    trusted_pwsh_path = ""
+    if pwsh_launcher is not None:
+        pwsh_probe = subprocess.run(
+            [
+                pwsh_launcher,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Write((Get-Process -Id $PID).Path)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        trusted_pwsh_path = pwsh_probe.stdout.strip()
+    trusted_pwsh_path_ps = trusted_pwsh_path.replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $env:SystemRoot (
+  'System32\\WindowsPowerShell\\v1.0\\Modules\\' +
+  'Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1'
+)) -Force -ErrorAction Stop
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+  'Read-Utf8SupervisorSnapshot',
+    'Resolve-WdSupervisorGitApplication',
+    'Invoke-WdSupervisorGitCapture',
+    'Get-WdCanonicalTextGitBlobId',
+    'Assert-WdSupervisorPathWithoutReparse',
+    'Initialize-WdSupervisorCommandLineParser',
+    'ConvertFrom-WdWindowsCommandLine',
+    'Test-WdPowerShellSwitchToken',
+    'Test-WdPowerShellHostOptionToken',
+    'Test-WdPowerShellFileSwitchToken',
+    'Get-WdPowerShellHostKind',
+    'Test-WdEncodedCommandValue',
+    'Get-WdPowerShellFileInvocation',
+    'Test-WdTrustedInstalledPowerShellExecutable',
+    'Test-WdReplaceableStaleWatcherProcess'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+Initialize-WdSupervisorCommandLineParser
+$gitPath = '{git_executable_ps}'
+$hostPath = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+$runtime = 'C:\\runtime'
+$command = (
+  'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{stale_script_ps}" ' +
+  '-Agent codex-lead-1 -RuntimeRoot ' + $runtime
+)
+$process = [pscustomobject]@{{
+  ProcessId = 101
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $command
+}}
+$valid = Test-WdReplaceableStaleWatcherProcess `
+  -Process $process `
+  -ExpectedExecutable $hostPath `
+  -CurrentScriptPath '{current_script_ps}' `
+  -Agent 'codex-lead-1' `
+  -RuntimeRoot $runtime `
+  -BundleParent '{bundle_parent_ps}' `
+  -SourceRepositoryRoot '{source_repo_ps}' `
+  -GitExecutable $gitPath
+$migratedHost = $null
+if ('{trusted_pwsh_path_ps}') {{
+  $migratedProcess = [pscustomobject]@{{
+    ProcessId = 104
+    Name = 'pwsh.exe'
+    ExecutablePath = '{trusted_pwsh_path_ps}'
+    CommandLine = $command.Replace('powershell.exe', 'pwsh.exe')
+  }}
+  $migratedHost = Test-WdReplaceableStaleWatcherProcess `
+    -Process $migratedProcess `
+    -ExpectedExecutable $hostPath `
+    -CurrentScriptPath '{current_script_ps}' `
+    -Agent 'codex-lead-1' `
+    -RuntimeRoot $runtime `
+    -BundleParent '{bundle_parent_ps}' `
+    -SourceRepositoryRoot '{source_repo_ps}' `
+    -GitExecutable $gitPath
+}}
+$env:GIT_DIR = '{poison_git_dir_ps}'
+try {{
+  $poisonedEnvironment = Test-WdReplaceableStaleWatcherProcess `
+    -Process $process `
+    -ExpectedExecutable $hostPath `
+    -CurrentScriptPath '{current_script_ps}' `
+    -Agent 'codex-lead-1' `
+    -RuntimeRoot $runtime `
+    -BundleParent '{bundle_parent_ps}' `
+    -SourceRepositoryRoot '{source_repo_ps}' `
+    -GitExecutable $gitPath
+}}
+finally {{
+  Remove-Item Env:GIT_DIR -ErrorAction SilentlyContinue
+}}
+$wrongAgent = Test-WdReplaceableStaleWatcherProcess `
+  -Process $process `
+  -ExpectedExecutable $hostPath `
+  -CurrentScriptPath '{current_script_ps}' `
+  -Agent 'claude-rco-1' `
+  -RuntimeRoot $runtime `
+  -BundleParent '{bundle_parent_ps}' `
+  -SourceRepositoryRoot '{source_repo_ps}' `
+  -GitExecutable $gitPath
+$currentProcess = [pscustomobject]@{{
+  ProcessId = 102
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $command.Replace('{stale_script_ps}', '{current_script_ps}')
+}}
+$current = Test-WdReplaceableStaleWatcherProcess `
+  -Process $currentProcess `
+  -ExpectedExecutable $hostPath `
+  -CurrentScriptPath '{current_script_ps}' `
+  -Agent 'codex-lead-1' `
+  -RuntimeRoot $runtime `
+  -BundleParent '{bundle_parent_ps}' `
+  -SourceRepositoryRoot '{source_repo_ps}' `
+  -GitExecutable $gitPath
+$extraProcess = [pscustomobject]@{{
+  ProcessId = 103
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $command + ' -Unexpected value'
+}}
+$extra = Test-WdReplaceableStaleWatcherProcess `
+  -Process $extraProcess `
+  -ExpectedExecutable $hostPath `
+  -CurrentScriptPath '{current_script_ps}' `
+  -Agent 'codex-lead-1' `
+  -RuntimeRoot $runtime `
+  -BundleParent '{bundle_parent_ps}' `
+  -SourceRepositoryRoot '{source_repo_ps}' `
+  -GitExecutable $gitPath
+$manifest = Get-Content -LiteralPath '{manifest_ps}' -Raw | ConvertFrom-Json
+$manifest.files.'{relative}' = ('0' * 64)
+$manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath '{manifest_ps}' -Encoding UTF8
+$forged = Test-WdReplaceableStaleWatcherProcess `
+  -Process $process `
+  -ExpectedExecutable $hostPath `
+  -CurrentScriptPath '{current_script_ps}' `
+  -Agent 'codex-lead-1' `
+  -RuntimeRoot $runtime `
+  -BundleParent '{bundle_parent_ps}' `
+  -SourceRepositoryRoot '{source_repo_ps}' `
+  -GitExecutable $gitPath
+$manifest.files.'{relative}' = (
+  Get-FileHash -LiteralPath '{stale_script_ps}' -Algorithm SHA256
+).Hash
+Set-Content -LiteralPath '{stale_script_ps}' -Value 'self-signed tamper' -Encoding UTF8
+$manifest.files.'{relative}' = (
+  Get-FileHash -LiteralPath '{stale_script_ps}' -Algorithm SHA256
+).Hash
+$manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath '{manifest_ps}' -Encoding UTF8
+$selfSignedTamper = Test-WdReplaceableStaleWatcherProcess `
+  -Process $process `
+  -ExpectedExecutable $hostPath `
+  -CurrentScriptPath '{current_script_ps}' `
+  -Agent 'codex-lead-1' `
+  -RuntimeRoot $runtime `
+  -BundleParent '{bundle_parent_ps}' `
+  -SourceRepositoryRoot '{source_repo_ps}' `
+  -GitExecutable $gitPath
+[pscustomobject]@{{
+  valid = $valid
+  migrated_host = $migratedHost
+  poisoned_environment = $poisonedEnvironment
+  wrong_agent = $wrongAgent
+  current = $current
+  extra = $extra
+  forged = $forged
+  self_signed_tamper = $selfSignedTamper
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "valid": True,
+        "migrated_host": True if trusted_pwsh_path else None,
+        "poisoned_environment": True,
+        "wrong_agent": False,
+        "current": False,
+        "extra": False,
+        "forged": False,
+        "self_signed_tamper": False,
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_watcher_marker_precedes_stop_and_preserves_evidence(
+    tmp_path: Path,
+) -> None:
+    recovery_root = tmp_path / "recovery"
+    recovery_root.mkdir()
+    marker = recovery_root / "watchers" / "codex-lead-1.json"
+    marker_ps = str(marker).replace("'", "''")
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+foreach ($name in @(
+    'Assert-WdSupervisorPathWithoutReparse',
+    'New-WdWatcherReplacementMarker',
+    'Remove-WdWatcherReplacementMarker',
+    'Write-ToolsReplacementConflict'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$process = [pscustomobject]@{{
+  ProcessId = 101
+  CreationDate = '20260815120000.000000+000'
+}}
+New-WdWatcherReplacementMarker `
+  -Path '{marker_ps}' `
+  -Agent codex-lead-1 `
+  -StaleProcess $process `
+  -StaleGeneration ('a' * 40) `
+  -TargetGeneration ('b' * 40)
+$record = Get-Content -LiteralPath '{marker_ps}' -Raw | ConvertFrom-Json
+$before = [Convert]::ToBase64String([IO.File]::ReadAllBytes('{marker_ps}'))
+Write-ToolsReplacementConflict `
+  -Path '{marker_ps}' `
+  -RootPid 999 `
+  -Reason 'must not overwrite watcher marker'
+$after = [Convert]::ToBase64String([IO.File]::ReadAllBytes('{marker_ps}'))
+$duplicateRejected = $false
+try {{
+  New-WdWatcherReplacementMarker `
+    -Path '{marker_ps}' `
+    -Agent codex-lead-1 `
+    -StaleProcess $process `
+    -StaleGeneration ('a' * 40) `
+    -TargetGeneration ('b' * 40)
+}}
+catch {{ $duplicateRejected = $true }}
+Remove-WdWatcherReplacementMarker -Path '{marker_ps}'
+[pscustomobject]@{{
+  schema = [string]$record.schema
+  agent = [string]$record.agent
+  stale_generation = [string]$record.stale_generation
+  target_generation = [string]$record.target_generation
+  stale_pid = [int]$record.stale_pid
+  evidence_preserved = $before -ceq $after
+  duplicate_rejected = $duplicateRejected
+  removed = -not (Test-Path -LiteralPath '{marker_ps}')
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "schema": "wd.watcher-replacement-in-progress.v1",
+        "agent": "codex-lead-1",
+        "stale_generation": "a" * 40,
+        "target_generation": "b" * 40,
+        "stale_pid": 101,
+        "evidence_preserved": True,
+        "duplicate_rejected": True,
+        "removed": True,
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_driver_hold_disables_then_stops_and_verifies() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+$functionAst = $ast.Find(
+  {{
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq 'Invoke-TaskContainment'
+  }},
+  $true
+)
+if ($null -eq $functionAst) {{ throw 'missing containment function' }}
+. ([scriptblock]::Create($functionAst.Extent.Text))
+$script:enabled = $true
+$script:running = $true
+$script:leaveRunning = $false
+$script:order = [Collections.Generic.List[string]]::new()
+function Get-OptionalScheduledTask {{
+  param([string] $TaskName)
+  return [pscustomobject]@{{
+    State = $(if ($script:running) {{ 'Running' }} else {{ 'Disabled' }})
+    Settings = [pscustomobject]@{{ Enabled = $script:enabled }}
+  }}
+}}
+function Disable-ScheduledTask {{
+  [CmdletBinding()] param([string] $TaskName)
+  $script:order.Add('disable')
+  $script:enabled = $false
+}}
+function Stop-ScheduledTask {{
+  [CmdletBinding()] param([string] $TaskName)
+  $script:order.Add('stop')
+  if (-not $script:leaveRunning) {{ $script:running = $false }}
+}}
+$actions = [Collections.Generic.List[string]]::new()
+$Apply = $true
+Invoke-TaskContainment WD-Test 'test HOLD'
+$successOrder = $script:order -join '|'
+$successVerified = @($actions | Where-Object {{
+    [string]$_ -like 'HOLD verified*'
+  }}).Count -eq 1
+$script:enabled = $true
+$script:running = $true
+$script:leaveRunning = $true
+$script:order.Clear()
+$verificationRejected = $false
+try {{ Invoke-TaskContainment WD-Test 'test HOLD' }}
+catch {{ $verificationRejected = $true }}
+[pscustomobject]@{{
+  success_order = $successOrder
+  success_verified = $successVerified
+  verification_rejected = $verificationRejected
+  failed_order = $script:order -join '|'
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "success_order": "disable|stop",
+        "success_verified": True,
+        "verification_rejected": True,
+        "failed_order": "disable|stop",
+    }
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_driver_hold_dominates_reconciliation_failures() -> None:
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{supervisor}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'supervisor parse failed' }}
+$requiredFunctions = @(
+  'Invoke-TaskContainment',
+  'Invoke-WdReconciliationUnderDriverHold'
+)
+foreach ($functionName in $requiredFunctions) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $functionName
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $functionName" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+function Get-RequiredText {{
+  param([object] $Object, [string] $Name)
+  return [string]$Object.$Name
+}}
+function Get-OptionalScheduledTask {{
+  param([string] $TaskName)
+  $state = $script:taskStates[$TaskName]
+  if ($null -eq $state) {{ return $null }}
+  return [pscustomobject]@{{
+    State = $(if ($state.running) {{ 'Running' }} else {{ 'Disabled' }})
+    Settings = [pscustomobject]@{{ Enabled = [bool]$state.enabled }}
+  }}
+}}
+function Disable-ScheduledTask {{
+  [CmdletBinding()] param([string] $TaskName)
+  $script:taskStates[$TaskName].enabled = $false
+  $script:taskOrder.Add("disable:$TaskName")
+}}
+function Stop-ScheduledTask {{
+  [CmdletBinding()] param([string] $TaskName)
+  $script:taskStates[$TaskName].running = $false
+  $script:taskOrder.Add("stop:$TaskName")
+}}
+function Test-LegacyDriverProvenNonApply {{ return $false }}
+$Apply = $true
+$actions = [Collections.Generic.List[string]]::new()
+$driver = [pscustomobject]@{{
+  standing_task = 'WD-Standing'
+  legacy_task = 'WD-Legacy'
+  legacy_script_path = 'C:\\Python\\legacy-driver.ps1'
+}}
+$failureStages = @(
+  'marker',
+  'watcher-stop',
+  'watcher-launch',
+  'tools-stop',
+  'postverify'
+)
+$results = [Collections.Generic.List[object]]::new()
+foreach ($failureStage in $failureStages) {{
+  $script:taskStates = @{{
+    'WD-Standing' = [pscustomobject]@{{ enabled = $true; running = $true }}
+    'WD-Legacy' = [pscustomobject]@{{ enabled = $true; running = $true }}
+  }}
+  $script:taskOrder = [Collections.Generic.List[string]]::new()
+  $script:reconcileOrder = [Collections.Generic.List[string]]::new()
+  $script:failureStage = $failureStage
+  $caught = ''
+  try {{
+    Invoke-WdReconciliationUnderDriverHold `
+      -Driver $driver `
+      -ReconciliationAction {{
+        foreach ($stage in $failureStages) {{
+          $script:reconcileOrder.Add($stage)
+          if ($stage -ceq $script:failureStage) {{
+            throw "injected:$stage"
+          }}
+        }}
+      }}
+  }}
+  catch {{ $caught = [string]$_.Exception.Message }}
+  $results.Add([pscustomobject]@{{
+    stage = $failureStage
+    caught = $caught
+    task_order = $script:taskOrder -join '|'
+    reconcile_order = $script:reconcileOrder -join '|'
+    standing_held = (
+      -not $script:taskStates['WD-Standing'].enabled -and
+      -not $script:taskStates['WD-Standing'].running
+    )
+    legacy_held = (
+      -not $script:taskStates['WD-Legacy'].enabled -and
+      -not $script:taskStates['WD-Legacy'].running
+    )
+  }})
+}}
+$results | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    payload = json.loads(result.stdout)
+    assert [item["stage"] for item in payload] == [
+        "marker",
+        "watcher-stop",
+        "watcher-launch",
+        "tools-stop",
+        "postverify",
+    ]
+    for item in payload:
+        assert item["caught"] == f'injected:{item["stage"]}'
+        assert item["task_order"] == (
+            "disable:WD-Standing|stop:WD-Standing|"
+            "disable:WD-Legacy|stop:WD-Legacy"
+        )
+        assert item["standing_held"] is True
+        assert item["legacy_held"] is True
+        assert item["reconcile_order"].split("|")[-1] == item["stage"]
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.parametrize(
+    ("mutex_name_function", "invoke_function", "prefix"),
+    [
+        (
+            "Get-WdWatcherReconcileMutexName",
+            "Invoke-WdWatcherReconcileLocked",
+            r"Global\WaggleDanceWatcherReconcileV1-",
+        ),
+        (
+            "Get-WdToolsReconcileMutexName",
+            "Invoke-WdToolsReconcileLocked",
+            r"Global\WaggleDanceToolsReconcileV1-",
+        ),
+    ],
+)
+def test_supervisor_reconcile_mutex_is_scoped_and_nonblocking(
+    tmp_path: Path,
+    mutex_name_function: str,
+    invoke_function: str,
+    prefix: str,
 ) -> None:
     supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
     root_a = str(tmp_path / "runtime-a").replace("'", "''")
@@ -727,8 +2117,8 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 )
 if ($errors.Count) {{ throw 'supervisor parse failed' }}
 foreach ($name in @(
-    'Get-WdWatcherReconcileMutexName',
-    'Invoke-WdWatcherReconcileLocked'
+    '{mutex_name_function}',
+    '{invoke_function}'
   )) {{
   $functionAst = $ast.Find(
     {{
@@ -745,10 +2135,10 @@ $rootA = [IO.Path]::GetFullPath('{root_a}')
 $rootB = [IO.Path]::GetFullPath('{root_b}')
 [void][IO.Directory]::CreateDirectory($rootA)
 [void][IO.Directory]::CreateDirectory($rootB)
-$nameA = Get-WdWatcherReconcileMutexName -RuntimeRoot $rootA
-$nameAlias = Get-WdWatcherReconcileMutexName `
+$nameA = {mutex_name_function} -RuntimeRoot $rootA
+$nameAlias = {mutex_name_function} `
   -RuntimeRoot ($rootA.ToLowerInvariant() + '\\')
-$nameB = Get-WdWatcherReconcileMutexName -RuntimeRoot $rootB
+$nameB = {mutex_name_function} -RuntimeRoot $rootB
 $job = Start-Job -ArgumentList $nameA, '{ready}', '{release}' -ScriptBlock {{
   param($mutexName, $readyPath, $releasePath)
   $mutex = [Threading.Mutex]::new($false, $mutexName)
@@ -780,12 +2170,12 @@ try {{
   }}
   $stateAWhileHeld = @{{ ran = $false }}
   $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-  $contended = Invoke-WdWatcherReconcileLocked -RuntimeRoot $rootA -Action {{
+  $contended = {invoke_function} -RuntimeRoot $rootA -Action {{
     $stateAWhileHeld.ran = $true
   }}
   $stopwatch.Stop()
   $stateB = @{{ ran = $false }}
-  $isolated = Invoke-WdWatcherReconcileLocked -RuntimeRoot $rootB -Action {{
+  $isolated = {invoke_function} -RuntimeRoot $rootB -Action {{
     $stateB.ran = $true
   }}
   [IO.File]::WriteAllText('{release}', 'release')
@@ -793,7 +2183,7 @@ try {{
   if ($job.State -ne 'Completed') {{ throw "holder state: $($job.State)" }}
   Receive-Job -Job $job -ErrorAction Stop | Out-Null
   $stateAAfter = @{{ ran = $false }}
-  $afterRelease = Invoke-WdWatcherReconcileLocked -RuntimeRoot $rootA -Action {{
+  $afterRelease = {invoke_function} -RuntimeRoot $rootA -Action {{
     $stateAAfter.ran = $true
   }}
   [pscustomobject]@{{
@@ -801,10 +2191,10 @@ try {{
     names_distinct = $nameA -cne $nameB
     name_shape = (
       $nameA.StartsWith(
-        'Global\WaggleDanceWatcherReconcileV1-',
+        '{prefix}',
         [StringComparison]::Ordinal
       ) -and
-      $nameA.Substring('Global\WaggleDanceWatcherReconcileV1-'.Length) `
+      $nameA.Substring('{prefix}'.Length) `
         -cmatch '^[0-9A-F]{{64}}$'
     )
     contended = [bool]$contended
@@ -1596,9 +2986,17 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
         (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
     )
     assert snapshot["schema"] == "wd.supervisor-loop.v2"
+    assert snapshot["recovery_state_root"] == r"C:\Python\wd-reboot-runtime"
     tools = snapshot["tools_consumer"]
     assert snapshot["watchers"]["script_relative"] == (
         r"tools-bootstrap\.agent-bridge\bin\Watch-Bridge.ps1"
+    )
+    assert snapshot["watchers"]["replacement_conflict_root"] == (
+        r"C:\Python\wd-reboot-runtime\watcher-replacement-conflicts"
+    )
+    assert snapshot["watchers"]["source_repo_root"] == r"C:\Python\project2"
+    assert snapshot["watchers"]["git_executable"] == (
+        r"C:\Program Files\Git\cmd\git.exe"
     )
     assert snapshot["watchers"]["dependency_relatives"] == [
         r"tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1",
@@ -2128,6 +3526,17 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
         REBOOT / "start-wd-tools-consumer.ps1"
     ).read_text(encoding="utf-8")
     assert launcher.count("-Arguments @('update')") == 2
+    assert "[switch] $Apply" in launcher
+    assert "function Enter-WdFleetRebootMutex" in launcher
+    assert "catch [Threading.AbandonedMutexException]" in launcher
+    assert "$mutexAcquired = Enter-WdFleetRebootMutex -Mutex $mutex" in launcher
+    assert launcher.index("$launcherMode = Resolve-WdLauncherMode") < launcher.index(
+        "$bundleManifestAnchor = ''"
+    )
+    bundle_mode_gate = launcher.index("Assert-WdLauncherBundleMode `")
+    assert bundle_mode_gate < launcher.index("$bundleGeneration = if")
+    assert "defaulting to byte-inert DryRun" in launcher
+    assert "Apply and DryRun are mutually exclusive" in launcher
     assert "codex update (once)" in launcher
     assert "claude update (once)" in launcher
     dry_return = launcher.index("DRY RUN: no updates")
@@ -2150,6 +3559,15 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert tools_validation < launcher.index("Updating Codex CLI once")
     assert tools_validation < launcher.index("Resolving the current Grok model")
     assert tools_validation < launcher.index("$supervisorApplyOutput = &")
+    supervisor_preflight = launcher.index("$supervisorPreflightOutput = @(")
+    whole_fleet_passed = launcher.index("whole-fleet preflight passed")
+    supervisor_apply = launcher.index("$supervisorApplyOutput = &")
+    supervisor_verify = launcher.index("$supervisorVerifyOutput = @(")
+    assert supervisor_preflight < whole_fleet_passed < dry_return
+    assert dry_return < supervisor_apply < supervisor_verify < first_update
+    assert supervisor_verify < launcher.index("Resolving the current Grok model")
+    assert "supervisor report-only preflight returned a conflict" in launcher
+    assert "supervisor post-Apply report returned a conflict" in launcher
     assert "Tools consumer validation does not match fleet pins" in launcher
     assert "codex-tools-1 is headless and live" in launcher
     assert "-Generation $bundleGeneration" in launcher
@@ -2157,6 +3575,14 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "ask WD-Supervisor to replace stale generation" in launcher
     assert "Reconciling five bridge watchers" in launcher
     assert "supervisor reconciliation conflict" in supervisor
+    containment_body = supervisor[
+        supervisor.index("function Invoke-TaskContainment") : supervisor.index(
+            "$configFull =", supervisor.index("function Invoke-TaskContainment")
+        )
+    ]
+    assert containment_body.index("Disable-ScheduledTask") < containment_body.index(
+        "Stop-ScheduledTask"
+    ) < containment_body.index("$verifiedTask = Get-OptionalScheduledTask")
     assert "$toolsValidationLauncher = if ($bundleMode -ceq 'deployed')" in launcher
     assert "$toolsValidationConfig = if ($bundleMode -ceq 'deployed')" in launcher
     assert "source-tree reboot rehearsal requires -DryRun" in launcher
@@ -2507,9 +3933,15 @@ def test_deployed_wrappers_preserve_named_parameters() -> None:
     assert "[switch] $ValidateOnly" in text
     assert "[string] $Generation" in text
     assert "$targetParameters['Agent']" in text
+    assert (
+        r"C:\Python\start-wd-all.ps1 -Apply'" in text
+    )
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
 def test_generated_wrappers_forward_switches_and_named_values(tmp_path: Path) -> None:
     target = tmp_path / "target.ps1"
     target.write_text(
@@ -2519,6 +3951,7 @@ param(
   [string] $RunId = '',
   [ValidateRange(10, 300)] [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
+  [switch] $Apply,
   [switch] $DryRun
 )
 $global:LASTEXITCODE = 7
@@ -2526,6 +3959,7 @@ $global:LASTEXITCODE = 7
   run_id = $RunId
   timeout = $HandshakeTimeoutSeconds
   skip_update = [bool]$SkipCliUpdate
+  apply = [bool]$Apply
   dry_run = [bool]$DryRun
   handled_native_status = $LASTEXITCODE
 }
@@ -2582,6 +4016,11 @@ param(
     deployment_manifest_quoted = str(deployment_manifest).replace("'", "''")
     result = _run_powershell(
         f"""
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $env:SystemRoot (
+  'System32\\WindowsPowerShell\\v1.0\\Modules\\' +
+  'Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1'
+)) -Force -ErrorAction Stop
 $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile(
@@ -2607,51 +4046,109 @@ $fleetText = New-ForwardingWrapper `
   -ExpectedHash (Get-FileHash -LiteralPath '{target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
   -WrapperKind fleet
-[IO.File]::WriteAllText('{fleet_wrapper}', $fleetText, $utf8)
+[IO.File]::WriteAllBytes(
+  '{fleet_wrapper}',
+  $utf8.GetBytes([string]$fleetText)
+)
 $agentText = New-ForwardingWrapper `
   -Target '{agent_target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{agent_target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
   -WrapperKind agent `
   -FixedAgent fable-5
-[IO.File]::WriteAllText('{agent_wrapper}', $agentText, $utf8)
+[IO.File]::WriteAllBytes(
+  '{agent_wrapper}',
+  $utf8.GetBytes([string]$agentText)
+)
 $toolsText = New-ForwardingWrapper `
   -Target '{tools_target_quoted}' `
   -ExpectedHash (Get-FileHash -LiteralPath '{tools_target_quoted}' -Algorithm SHA256).Hash `
   -ExpectedManifestHash $manifestHash `
   -WrapperKind tools
-[IO.File]::WriteAllText('{tools_wrapper}', $toolsText, $utf8)
-$fleet = & '{fleet_wrapper}' `
+[IO.File]::WriteAllBytes(
+  '{tools_wrapper}',
+  $utf8.GetBytes([string]$toolsText)
+)
+foreach ($path in @('{fleet_wrapper}', '{agent_wrapper}', '{tools_wrapper}')) {{
+  if ((Get-Item -LiteralPath $path).Length -le 0) {{
+    throw "generated wrapper is empty: $path"
+  }}
+}}
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert Path(fleet_wrapper.replace("''", "'")).stat().st_size > 0
+    assert Path(agent_wrapper.replace("''", "'")).stat().st_size > 0
+    assert Path(tools_wrapper.replace("''", "'")).stat().st_size > 0
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $env:SystemRoot (
+  'System32\\WindowsPowerShell\\v1.0\\Modules\\' +
+  'Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1'
+)) -Force -ErrorAction Stop
+$fleetDry = @(& '{fleet_wrapper}' `
   -RunId reboot-123 `
   -HandshakeTimeoutSeconds 42 `
   -SkipCliUpdate `
-  -DryRun
-$agent = & '{agent_wrapper}' -RunId lane-456 -DryRun
-$tools = & '{tools_wrapper}' `
+  -DryRun) | Where-Object {{ $_.PSObject.Properties['run_id'] }} |
+    Select-Object -Last 1
+$fleetApply = @(& '{fleet_wrapper}' `
+  -RunId reboot-apply-123 `
+  -HandshakeTimeoutSeconds 43 `
+  -Apply) | Where-Object {{ $_.PSObject.Properties['run_id'] }} |
+    Select-Object -Last 1
+$agent = @(& '{agent_wrapper}' -RunId lane-456 -DryRun) |
+  Where-Object {{ $_.PSObject.Properties['agent'] }} | Select-Object -Last 1
+$tools = @(& '{tools_wrapper}' `
   -ConfigPath C:\\Python\\wd_supervisor_loop.json `
   -Generation {TOOLS_HEAD} `
-  -ValidateOnly
-[pscustomobject]@{{ fleet = $fleet; agent = $agent; tools = $tools }} |
+  -ValidateOnly) | Where-Object {{ $_.PSObject.Properties['generation'] }} |
+    Select-Object -Last 1
+[pscustomobject]@{{
+  fleet_dry_run_id = [string]$fleetDry.run_id
+  fleet_dry_timeout = [int]$fleetDry.timeout
+  fleet_dry_skip_update = [bool]$fleetDry.skip_update
+  fleet_dry_apply = [bool]$fleetDry.apply
+  fleet_dry_dry_run = [bool]$fleetDry.dry_run
+  fleet_dry_native_status = [int]$fleetDry.handled_native_status
+  fleet_apply_run_id = [string]$fleetApply.run_id
+  fleet_apply_timeout = [int]$fleetApply.timeout
+  fleet_apply_skip_update = [bool]$fleetApply.skip_update
+  fleet_apply_apply = [bool]$fleetApply.apply
+  fleet_apply_dry_run = [bool]$fleetApply.dry_run
+  fleet_apply_native_status = [int]$fleetApply.handled_native_status
+  agent_name = [string]$agent.agent
+  agent_run_id = [string]$agent.run_id
+  agent_dry_run = [bool]$agent.dry_run
+  tools_config_path = [string]$tools.config_path
+  tools_generation = [string]$tools.generation
+  tools_validate_only = [bool]$tools.validate_only
+}} |
   ConvertTo-Json -Depth 6 -Compress
-"""
+""",
+        executable=WINDOWS_POWERSHELL,
     )
     record = json.loads(result.stdout)
-    assert record["fleet"] == {
-        "run_id": "reboot-123",
-        "timeout": 42,
-        "skip_update": True,
-        "dry_run": True,
-        "handled_native_status": 7,
-    }
-    assert record["agent"] == {
-        "agent": "fable-5",
-        "run_id": "lane-456",
-        "dry_run": True,
-    }
-    assert record["tools"] == {
-        "config_path": r"C:\Python\wd_supervisor_loop.json",
-        "generation": TOOLS_HEAD,
-        "validate_only": True,
+    assert record == {
+        "fleet_dry_run_id": "reboot-123",
+        "fleet_dry_timeout": 42,
+        "fleet_dry_skip_update": True,
+        "fleet_dry_apply": False,
+        "fleet_dry_dry_run": True,
+        "fleet_dry_native_status": 7,
+        "fleet_apply_run_id": "reboot-apply-123",
+        "fleet_apply_timeout": 43,
+        "fleet_apply_skip_update": False,
+        "fleet_apply_apply": True,
+        "fleet_apply_dry_run": False,
+        "fleet_apply_native_status": 7,
+        "agent_name": "fable-5",
+        "agent_run_id": "lane-456",
+        "agent_dry_run": True,
+        "tools_config_path": r"C:\Python\wd_supervisor_loop.json",
+        "tools_generation": TOOLS_HEAD,
+        "tools_validate_only": True,
     }
 
 
@@ -2659,8 +4156,10 @@ def test_root_runbook_names_current_one_line_and_authority_hold() -> None:
     text = (ROOT / "BOOT_AFTER_REBOOT.md").read_text(encoding="utf-8")
     assert (
         "powershell -NoProfile -ExecutionPolicy Bypass "
-        "-File C:\\Python\\start-wd-all.ps1"
+        "-File C:\\Python\\start-wd-all.ps1 -Apply"
     ) in text
+    assert "defaults to byte-inert DryRun" in text
+    assert "hash-bound old reboot bundle" in text
     assert "WD_REBOOT_INTEGRITY_CURRENT.sha256" in text
     assert "deliberately" in text
     assert "must never enable it" in text

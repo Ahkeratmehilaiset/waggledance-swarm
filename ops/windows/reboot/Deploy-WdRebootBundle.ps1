@@ -208,6 +208,7 @@ param(
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
+    [switch] $Apply,
     [switch] $DryRun
 )
 '@
@@ -852,7 +853,7 @@ catch {
 Write-Host ''
 Write-Host 'WD reboot bundle installed and verified.' -ForegroundColor Green
 Write-Host 'One-line restore:'
-Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1'
+Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Apply'
 if ($backedUp) {
     Write-Host "Previous machine-local launchers were backed up to: $backupRoot"
 }

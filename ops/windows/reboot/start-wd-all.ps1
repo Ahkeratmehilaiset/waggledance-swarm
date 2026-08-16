@@ -4,11 +4,12 @@
   Fail-closed, one-command reboot restore for the WaggleDance agent fleet.
 
 .DESCRIPTION
-  Preflights the entire pinned fleet before the first mutation. A real run
+  Preflights the entire pinned fleet before the first mutation. An Apply run
   updates Codex and Claude Code once, resolves the current Grok model, ensures
   the supervisor-managed Tools consumer, and launches missing interactive lanes.
   DryRun performs validation and prints the update/launch plan without updating,
-  writing handshake files, or starting fleet processes.
+  writing handshake files, or starting fleet processes. With neither mode
+  switch, the launcher defaults to DryRun; mutation always requires -Apply.
 #>
 [CmdletBinding()]
 param(
@@ -17,11 +18,83 @@ param(
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
+  [switch] $Apply,
   [switch] $DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Resolve-WdLauncherMode {
+  param(
+    [bool] $ApplyRequested,
+    [bool] $DryRunRequested
+  )
+
+  if ($ApplyRequested -and $DryRunRequested) {
+    throw 'Apply and DryRun are mutually exclusive'
+  }
+  if ($ApplyRequested) { return 'Apply' }
+  return 'DryRun'
+}
+
+function Assert-WdLauncherBundleMode {
+  param(
+    [Parameter(Mandatory)] [string] $BundleMode,
+    [Parameter(Mandatory)] [string] $LauncherMode
+  )
+
+  if ($BundleMode -notin @('source', 'deployed')) {
+    throw "unsupported reboot bundle mode: $BundleMode"
+  }
+  if ($LauncherMode -notin @('Apply', 'DryRun')) {
+    throw "unsupported reboot launcher mode: $LauncherMode"
+  }
+  if ($BundleMode -ceq 'source' -and $LauncherMode -cne 'DryRun') {
+    throw 'source-tree reboot rehearsal requires -DryRun'
+  }
+}
+
+function Get-WdSupervisorInvocationPlan {
+  param(
+    [Parameter(Mandatory)] [string] $BundleMode,
+    [Parameter(Mandatory)] [string] $SourceScript,
+    [Parameter(Mandatory)] [string] $SourceConfig,
+    [Parameter(Mandatory)] [string] $DeployedScript
+  )
+
+  if ($BundleMode -ceq 'source') {
+    return [pscustomobject]@{
+      preflight_script = $SourceScript
+      preflight_arguments = @('-ConfigPath', $SourceConfig)
+      apply_script = ''
+      apply_arguments = @()
+      verify_script = ''
+      verify_arguments = @()
+    }
+  }
+  if ($BundleMode -cne 'deployed') {
+    throw "unsupported reboot bundle mode: $BundleMode"
+  }
+  return [pscustomobject]@{
+    preflight_script = $DeployedScript
+    preflight_arguments = @()
+    apply_script = $DeployedScript
+    apply_arguments = @('-Apply')
+    verify_script = $DeployedScript
+    verify_arguments = @()
+  }
+}
+
+$modeWasDefaulted = -not $Apply -and -not $DryRun
+$launcherMode = Resolve-WdLauncherMode `
+  -ApplyRequested ([bool]$Apply) `
+  -DryRunRequested ([bool]$DryRun)
+$Apply = $launcherMode -ceq 'Apply'
+$DryRun = $launcherMode -ceq 'DryRun'
+if ($modeWasDefaulted) {
+  Write-Warning 'No mode switch supplied; defaulting to byte-inert DryRun. Use -Apply to mutate.'
+}
 $bundleManifestAnchor = ''
 if (-not $ManifestPath) {
   $ManifestPath = Join-Path $PSScriptRoot 'wd-fleet.json'
@@ -30,6 +103,20 @@ if (-not $ManifestPath) {
 function Resolve-NormalizedPath {
   param([Parameter(Mandatory)] [string] $Path)
   return [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+
+function Enter-WdFleetRebootMutex {
+  param([Parameter(Mandatory)] [Threading.Mutex] $Mutex)
+
+  try {
+    return [bool]$Mutex.WaitOne(0)
+  }
+  catch [Threading.AbandonedMutexException] {
+    # The terminating owner relinquished the mutex. The caller now owns it and
+    # must release it in the normal finally path. This is expected after an
+    # abrupt shutdown and must not prevent the fail-closed recovery preflight.
+    return $true
+  }
 }
 
 function Read-Utf8FleetSnapshot {
@@ -891,9 +978,9 @@ if (@($manifest.lanes).Count -ne 4) {
 Write-Host ''
 Write-Host '=== WaggleDance reboot preflight ===' -ForegroundColor Cyan
 $bundleMode = Assert-DeployedBundle -Manifest $manifest
-if ($bundleMode -ceq 'source' -and -not $DryRun) {
-  throw 'source-tree reboot rehearsal requires -DryRun'
-}
+Assert-WdLauncherBundleMode `
+  -BundleMode $bundleMode `
+  -LauncherMode $launcherMode
 $bundleGeneration = if ($bundleMode -ceq 'deployed') {
   [string]$deploymentAnchor.source_commit
 } else {
@@ -1386,6 +1473,26 @@ if ($grokPreflightObjects.Count -eq 0) {
 }
 Write-Host ("    model: {0}" -f [string]$grokPreflightObjects[-1].Model)
 
+$supervisorPlan = Get-WdSupervisorInvocationPlan `
+  -BundleMode $bundleMode `
+  -SourceScript (Join-Path $PSScriptRoot 'wd_supervisor.ps1') `
+  -SourceConfig $bundleToolsConfig `
+  -DeployedScript ([string]$toolsConfig.supervisor_script)
+$supervisorPreflightScript = [string]$supervisorPlan.preflight_script
+$supervisorPreflightArguments = @($supervisorPlan.preflight_arguments)
+Write-Host '  Supervisor byte-inert watcher/Tools preflight:'
+$supervisorPreflightOutput = @(
+  & $supervisorPreflightScript @supervisorPreflightArguments
+)
+if (@($supervisorPreflightOutput | Where-Object {
+      [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
+    }).Count -gt 0) {
+  throw 'supervisor report-only preflight returned a conflict'
+}
+if ($supervisorPreflightOutput) {
+  $supervisorPreflightOutput | Out-Host
+}
+
 if (-not $RunId) {
   $RunId = 'wd-reboot-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 }
@@ -1438,9 +1545,31 @@ $mutex = [System.Threading.Mutex]::new(
 )
 $mutexAcquired = $false
 try {
-  $mutexAcquired = $mutex.WaitOne(0)
+  $mutexAcquired = Enter-WdFleetRebootMutex -Mutex $mutex
   if (-not $mutexAcquired) {
     throw 'another WaggleDance fleet reboot-control run is already active'
+  }
+
+  Write-Host ''
+  Write-Host 'Reconciling five bridge watchers and the Tools consumer first...' -ForegroundColor Cyan
+  $supervisorApplyArguments = @($supervisorPlan.apply_arguments)
+  $supervisorApplyOutput = & ([string]$supervisorPlan.apply_script) `
+    @supervisorApplyArguments
+  if ($supervisorApplyOutput) {
+    $supervisorApplyOutput | Out-Host
+  }
+  Start-Sleep -Milliseconds 500
+  $supervisorVerifyArguments = @($supervisorPlan.verify_arguments)
+  $supervisorVerifyOutput = @(
+    & ([string]$supervisorPlan.verify_script) @supervisorVerifyArguments
+  )
+  if (@($supervisorVerifyOutput | Where-Object {
+        [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
+      }).Count -gt 0) {
+    throw 'supervisor post-Apply report returned a conflict'
+  }
+  if ($supervisorVerifyOutput) {
+    $supervisorVerifyOutput | Out-Host
   }
 
   if (-not $SkipCliUpdate) {
@@ -1499,12 +1628,6 @@ try {
     if ($grokObjects.Count -gt 0 -and $grokObjects[-1].PSObject.Properties['Model']) {
       Write-Host ("  Grok model: {0}" -f [string]$grokObjects[-1].Model)
     }
-  }
-
-  Write-Host 'Reconciling five bridge watchers and the Tools consumer...' -ForegroundColor Cyan
-  $supervisorApplyOutput = & ([string]$toolsConfig.supervisor_script) -Apply
-  if ($supervisorApplyOutput) {
-    $supervisorApplyOutput | Out-Host
   }
 
   if ($toolsLive.Count -eq 0) {

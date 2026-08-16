@@ -26,9 +26,12 @@ reconciliation mutex blocks watcher and Tools reconciliation and fails the
 launcher before CLI or Grok mutation. The supervisor still enforces the
 merge-driver HOLD before returning that conflict.
 
-The command performs a whole-fleet preflight before opening a window. It then
-updates Codex and Claude Code with their supported `update` commands, resolves
-the authenticated Grok CLI's current provider-default model, and resumes each
+The command performs a whole-fleet preflight before opening a window. An exact
+`WD-Supervisor` task held Disabled by a controlled deployment remains Disabled
+through DryRun and is enabled only after a successful Apply has verified the
+entire fleet. Apply updates Codex and Claude Code with their supported `update`
+commands before starting a new Tools or interactive agent, resolves the
+authenticated Grok CLI's current provider-default model, and resumes each
 verified persistent C-drive worktree at its current branch and HEAD. The
 committed branch/HEAD remains a recorded deployment baseline. Recovery never
 fetches, checks out, resets, creates a branch, or creates a replacement
@@ -36,7 +39,7 @@ worktree.
 
 The explicit runtime choices are:
 
-- Lead: `gpt-5.6-sol`, effort `max`;
+- Lead: `gpt-5.6-sol`, Codex mode `ultra`;
 - Tools: `gpt-5.6-terra`, effort `high`;
 - RCO1 and RCO2: Claude `sonnet`, effort `max`;
 - Fable: Claude `fable`, effort `max`.
@@ -47,9 +50,13 @@ checkpoint must still be saved with `tools/savepoint.ps1`, because no launcher
 can reconstruct bytes that were never durably written before a power loss.
 
 Before each lane invokes its model, it writes one
-`target_state_manifested` status event for that reboot run. The hash-anchored
-target is `WD_SWARM_TARGET_STATE_V1.md`; the event grants no capability or
-authority. Failure to append the event prevents that lane from launching.
+`target_state_manifested` status event and one unaddressed `append_canary` for
+that reboot run through the manifest-hashed writer. The canary must complete
+within five seconds. The launcher preserves the frozen canonical prefix and
+requires the pre-existing spool inventory to remain byte-exact before it
+enables and demand-starts `WD-Supervisor`. The hash-anchored target is
+`WD_SWARM_TARGET_STATE_V1.md`; neither event grants capability or authority.
+Failure to append either event prevents that lane from launching.
 
 The Grok provider default is the authoritative, non-hard-coded choice available
 to this account after the CLI update. The resolver verifies that it occurs

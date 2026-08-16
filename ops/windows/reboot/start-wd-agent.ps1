@@ -28,6 +28,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:WdGitExecutable = ''
 if (-not $ManifestPath) {
   $ManifestPath = Join-Path $PSScriptRoot 'wd-fleet.json'
 }
@@ -124,23 +125,120 @@ function Read-NonEmptyFile {
   return $text
 }
 
+function Resolve-WdLaneGitApplication {
+  param([Parameter(Mandatory)] [string] $ConfiguredPath)
+
+  if (-not [IO.Path]::IsPathRooted($ConfiguredPath)) {
+    throw 'lane Git executable path must be absolute'
+  }
+  $candidate = [IO.Path]::GetFullPath($ConfiguredPath)
+  if ([IO.Path]::GetExtension($candidate) -cne '.exe') {
+    throw 'lane Git executable must be an .exe application'
+  }
+  $command = Get-Command `
+    -Name $candidate `
+    -CommandType Application `
+    -ErrorAction Stop
+  if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+      $candidate,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw 'lane Git command is not the configured application'
+  }
+  [void](Assert-LanePathWithoutReparse `
+      -Path $candidate `
+      -TrustedRoot ([IO.Path]::GetPathRoot($candidate)) `
+      -ExpectedType Leaf)
+  return $candidate
+}
+
 function Invoke-CheckedGit {
   param(
     [Parameter(Mandatory)] [string] $Worktree,
-    [Parameter(Mandatory)] [string[]] $Arguments
+    [Parameter(Mandatory)] [string[]] $Arguments,
+    [string] $GitExecutable = [string]$script:WdGitExecutable
+  )
+  $gitPath = Resolve-WdLaneGitApplication -ConfiguredPath $GitExecutable
+  $savedGitEnvironment = @(
+    Get-ChildItem Env: |
+      Where-Object { [string]$_.Name -cmatch '^(?i:GIT_)' } |
+      ForEach-Object {
+        [pscustomobject]@{
+          Name = [string]$_.Name
+          Value = [string]$_.Value
+        }
+      }
   )
   $previousPreference = $ErrorActionPreference
   try {
+    foreach ($entry in $savedGitEnvironment) {
+      Remove-Item -LiteralPath "Env:$([string]$entry.Name)" -ErrorAction Stop
+    }
+    $env:GIT_CONFIG_NOSYSTEM = '1'
+    $env:GIT_CONFIG_GLOBAL = 'NUL'
+    $env:GIT_OPTIONAL_LOCKS = '0'
+    $env:GIT_TERMINAL_PROMPT = '0'
     $ErrorActionPreference = 'Continue'
-    $output = @(& git -C $Worktree @Arguments 2>&1)
+    $output = @(
+      & $gitPath --no-replace-objects -C $Worktree @Arguments 2>&1
+    )
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
+    foreach ($entry in @(Get-ChildItem Env: | Where-Object {
+          [string]$_.Name -cmatch '^(?i:GIT_)'
+        })) {
+      Remove-Item -LiteralPath "Env:$([string]$entry.Name)" `
+        -ErrorAction SilentlyContinue
+    }
+    foreach ($entry in $savedGitEnvironment) {
+      [Environment]::SetEnvironmentVariable(
+        [string]$entry.Name,
+        [string]$entry.Value,
+        [EnvironmentVariableTarget]::Process
+      )
+    }
   }
   if ($exitCode -ne 0) {
-    throw "git -C '$Worktree' $($Arguments -join ' ') failed ($exitCode): $($output -join ' ')"
+    throw "trusted git -C '$Worktree' $($Arguments -join ' ') failed ($exitCode): $($output -join ' ')"
   }
   return (($output -join "`n").Trim())
+}
+
+function Resolve-WdLaneCliApplication {
+  param(
+    [Parameter(Mandatory)]
+    [ValidateSet('codex.cmd', 'claude.cmd')]
+    [string] $Name
+  )
+
+  $roamingRoot = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ApplicationData
+  )
+  if ([string]::IsNullOrWhiteSpace($roamingRoot)) {
+    throw 'lane roaming application-data root is unavailable'
+  }
+  $relative = if ($Name -ceq 'codex.cmd') {
+    'npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+  } else {
+    'npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe'
+  }
+  $candidate = [IO.Path]::GetFullPath((Join-Path $roamingRoot $relative))
+  [void](Assert-LanePathWithoutReparse `
+      -Path $candidate `
+      -TrustedRoot ([IO.Path]::GetPathRoot($candidate)) `
+      -ExpectedType Leaf)
+  $command = Get-Command `
+    -Name $candidate `
+    -CommandType Application `
+    -ErrorAction Stop
+  if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+      $candidate,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "lane CLI '$Name' is not the trusted npm-native application"
+  }
+  return $candidate
 }
 
 function Assert-LaneBootstrapIntegrity {
@@ -240,6 +338,7 @@ if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
   -Path $ManifestPath -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
 $manifestSnapshot = Read-Utf8LaneSnapshot -Path $ManifestPath
 $fixedDeploymentManifest = Join-Path $PSScriptRoot 'deployment-manifest.json'
+$deploymentAnchor = $null
 if (Test-Path -LiteralPath $fixedDeploymentManifest -PathType Leaf) {
   [void](Assert-LanePathWithoutReparse `
     -Path $fixedDeploymentManifest `
@@ -284,6 +383,23 @@ $manifest = [string]$manifestSnapshot.Text |
   ConvertFrom-Json -ErrorAction Stop
 if ([int]$manifest.schema_version -ne 2) {
   throw "unsupported fleet manifest schema: $($manifest.schema_version)"
+}
+$gitProperty = $manifest.PSObject.Properties['git_executable']
+if (
+  $null -eq $gitProperty -or
+  [string]::IsNullOrWhiteSpace([string]$gitProperty.Value)
+) {
+  throw 'fleet manifest is missing git_executable'
+}
+$script:WdGitExecutable = Resolve-WdLaneGitApplication `
+  -ConfiguredPath ([string]$gitProperty.Value)
+$bundleGeneration = if ($null -ne $deploymentAnchor) {
+  ([string]$deploymentAnchor.source_commit).ToLowerInvariant()
+} else {
+  (Invoke-CheckedGit -Worktree $PSScriptRoot -Arguments @('rev-parse', 'HEAD')).ToLowerInvariant()
+}
+if ($bundleGeneration -cnotmatch '^[0-9a-f]{40}$') {
+  throw 'lane bundle generation must be a full lowercase Git commit'
 }
 if (-not $RunId) {
   $RunId = 'wd-lane-' + $Agent + '-' +
@@ -468,11 +584,16 @@ $effort = [string]$lane.effort
 if ([string]::IsNullOrWhiteSpace($model)) {
   throw "lane '$Agent' has no explicit model"
 }
-if ($effort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')) {
+$supportedEfforts = if ($cliName -ieq 'codex.cmd') {
+  @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+} else {
+  @('low', 'medium', 'high', 'xhigh', 'max')
+}
+if ($effort -cnotin $supportedEfforts) {
   throw "lane '$Agent' has unsupported effort '$effort'"
 }
 $expectedRuntime = @{
-  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-5.6-sol'; effort = 'max' }
+  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-5.6-sol'; effort = 'ultra' }
   'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
   'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
   'fable-5' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'fable'; effort = 'max' }
@@ -485,10 +606,10 @@ if (
 ) {
   throw "lane '$Agent' runtime selection differs from the supported fleet contract"
 }
-$cli = Get-Command $cliName -CommandType Application -ErrorAction SilentlyContinue
-if (-not $cli) {
-  throw "lane '$Agent' CLI is unavailable: $cliName"
-}
+$cliPath = Resolve-WdLaneCliApplication -Name $cliName
+$cliExecutableHash = (
+  Get-FileHash -LiteralPath $cliPath -Algorithm SHA256
+).Hash
 
 $stateRule = [string]$manifest.state_precedence.rule
 $startupPrompt = (
@@ -551,6 +672,8 @@ if ($DryRun) {
     branch = $actualBranch
     head = $actualHead
     cli = $cliName
+    cli_executable = $cliPath
+    cli_executable_sha256 = $cliExecutableHash
     model = $model
     effort = $effort
     resume_policy = $resumePolicy
@@ -617,6 +740,8 @@ $targetPayload = [ordered]@{
   capability_effect = 'none'
   model = $model
   effort = $effort
+  cli_executable = $cliPath
+  cli_executable_sha256 = $cliExecutableHash
   resume_policy = $resumePolicy
   baseline_branch = [string]$lane.branch
   baseline_head = [string]$lane.head
@@ -636,6 +761,56 @@ $targetPayload = [ordered]@{
   -Capabilities @($lane.capabilities | ForEach-Object { [string]$_ }) `
   -PayloadJson $targetPayload |
   Out-Host
+Assert-LaneBootstrapIntegrity `
+  -ScriptRoot $PSScriptRoot `
+  -BootstrapRoot $bootstrapRoot
+
+$canaryTaskId = "wd-append-canary-$RunId"
+$canaryPayload = [ordered]@{
+  schema_version = 1
+  generation = $bundleGeneration
+  target_state_id = [string]$targetState.id
+  manifest_writer = 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
+} | ConvertTo-Json -Compress
+$canaryStartedUtc = [DateTimeOffset]::UtcNow
+$canaryOutput = @(
+  & $writer `
+    -Agent $Agent `
+    -Type status `
+    -TaskId $canaryTaskId `
+    -Status append_canary `
+    -Message "Verified the manifest-hashed canonical writer for $Agent generation $RunId." `
+    -To '' `
+    -RunId $RunId `
+    -Role ([string]$lane.role) `
+    -AgentUuid ([string]$lane.agent_uuid) `
+    -SessionId $RunId `
+    -Capabilities @($lane.capabilities | ForEach-Object { [string]$_ }) `
+    -PayloadJson $canaryPayload
+)
+$canaryCompletedUtc = [DateTimeOffset]::UtcNow
+$canaryEvents = @(
+  $canaryOutput | Where-Object {
+    $_ -is [psobject] -and [string]$_.status -ceq 'append_canary'
+  }
+)
+$canaryLatencyMs = [int64][Math]::Ceiling(
+  ($canaryCompletedUtc - $canaryStartedUtc).TotalMilliseconds
+)
+if (
+  $canaryEvents.Count -ne 1 -or
+  [string]$canaryEvents[0].agent -cne $Agent -or
+  [string]$canaryEvents[0].agent_uuid -cne [string]$lane.agent_uuid -or
+  [string]$canaryEvents[0].run_id -cne $RunId -or
+  [string]$canaryEvents[0].session_id -cne $RunId -or
+  [string]$canaryEvents[0].task_id -cne $canaryTaskId -or
+  [string]$canaryEvents[0].to -cne '' -or
+  [int]$canaryEvents[0].pid -ne $PID -or
+  $canaryLatencyMs -gt 5000
+) {
+  throw "manifest-writer append canary failed for $Agent"
+}
+$canaryOutput | Out-Host
 Assert-LaneBootstrapIntegrity `
   -ScriptRoot $PSScriptRoot `
   -BootstrapRoot $bootstrapRoot
@@ -662,12 +837,19 @@ $handshake = [ordered]@{
   model_selection = 'explicit'
   model = $model
   effort = $effort
+  cli_executable = $cliPath
+  cli_executable_sha256 = $cliExecutableHash
   resume_policy = $resumePolicy
   baseline_branch = [string]$lane.branch
   baseline_head = [string]$lane.head
   target_state_id = [string]$targetState.id
   target_state_sha256 = [string]$targetState.sha256
   target_state_manifested = $true
+  append_canary = $true
+  append_canary_task_id = $canaryTaskId
+  append_canary_event_utc = [string]$canaryEvents[0].ts_utc
+  append_canary_latency_ms = $canaryLatencyMs
+  bundle_generation = $bundleGeneration
   created_at_utc = (Get-Date).ToUniversalTime().ToString('o')
 }
 try {
@@ -699,10 +881,22 @@ if ($cliName -ieq 'claude.cmd') {
 }
 $launchArguments += $startupPrompt
 
+$finalCliPath = Resolve-WdLaneCliApplication -Name $cliName
+if (
+  -not $finalCliPath.Equals(
+    $cliPath,
+    [StringComparison]::OrdinalIgnoreCase
+  ) -or
+  (Get-FileHash -LiteralPath $finalCliPath -Algorithm SHA256).Hash -cne
+    $cliExecutableHash
+) {
+  throw "lane '$Agent' CLI application changed after its handshake"
+}
+
 $previousPreference = $ErrorActionPreference
 try {
   $ErrorActionPreference = 'Continue'
-  & ([string]$cli.Source) @launchArguments
+  & $cliPath @launchArguments
   $cliExitCode = $LASTEXITCODE
 } finally {
   $ErrorActionPreference = $previousPreference

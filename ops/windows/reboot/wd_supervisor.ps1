@@ -38,6 +38,36 @@ function Get-RequiredText {
     return [string]$property.Value
 }
 
+function Test-WdSupervisorJsonBooleanTrue {
+    param(
+        [Parameter(Mandatory)] $Object,
+        [Parameter(Mandatory)] [string] $Name
+    )
+
+    $property = $Object.PSObject.Properties[$Name]
+    return (
+        $null -ne $property -and
+        $property.Value -is [bool] -and
+        $property.Value -ceq $true
+    )
+}
+
+function Test-WdSupervisorJsonIntegerRange {
+    param(
+        [Parameter(Mandatory)] $Object,
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [int64] $Minimum,
+        [Parameter(Mandatory)] [int64] $Maximum
+    )
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $false }
+    $value = $property.Value
+    if ($value -isnot [int] -and $value -isnot [int64]) { return $false }
+    $number = [int64]$value
+    return $number -ge $Minimum -and $number -le $Maximum
+}
+
 function Read-Utf8SupervisorSnapshot {
     param([Parameter(Mandatory)] [string] $Path)
 
@@ -1436,6 +1466,7 @@ function Test-ToolsWrapperReadiness {
     param(
         [Parameter(Mandatory)] $Process,
         [Parameter(Mandatory)] $Tools,
+        [Parameter(Mandatory)] $Validation,
         [Parameter(Mandatory)] [string] $Generation,
         [Parameter(Mandatory)] [string] $ConfigPath,
         [Parameter(Mandatory)] [string] $ReadinessPath
@@ -1447,6 +1478,24 @@ function Test-ToolsWrapperReadiness {
         }
         $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
             ConvertFrom-Json -ErrorAction Stop
+        $expectedCodex = [IO.Path]::GetFullPath(
+            [string]$Validation.codex_command
+        )
+        $expectedPython = [IO.Path]::GetFullPath(
+            [string]$Validation.python_executable
+        )
+        $expectedCodexHash = [string]$Validation.codex_command_sha256
+        $expectedPythonHash = [string]$Validation.python_executable_sha256
+        if (
+            $expectedCodexHash -cnotmatch '^[0-9A-F]{64}$' -or
+            $expectedPythonHash -cnotmatch '^[0-9A-F]{64}$' -or
+            (Get-FileHash -LiteralPath $expectedCodex -Algorithm SHA256).Hash -cne
+                $expectedCodexHash -or
+            (Get-FileHash -LiteralPath $expectedPython -Algorithm SHA256).Hash -cne
+                $expectedPythonHash
+        ) {
+            return $false
+        }
         $resumeCurrent = [string]$Tools.resume_policy -ceq 'current_worktree'
         $pinValid = if ($resumeCurrent) {
             [string]$record.branch -cmatch '^\S+$' -and
@@ -1466,7 +1515,31 @@ function Test-ToolsWrapperReadiness {
             [string]$record.resume_policy -cne [string]$Tools.resume_policy -or
             [string]$record.model -cne [string]$Tools.model -or
             [string]$record.reasoning_effort -cne [string]$Tools.reasoning_effort -or
-            -not [bool]$record.target_state_manifested -or
+            -not ([string]$record.codex_command).Equals(
+                $expectedCodex,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            [string]$record.codex_command_sha256 -cne $expectedCodexHash -or
+            -not ([string]$record.python_executable).Equals(
+                $expectedPython,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            [string]$record.python_executable_sha256 -cne $expectedPythonHash -or
+            -not (Test-WdSupervisorJsonBooleanTrue `
+                -Object $record `
+                -Name 'target_state_manifested') -or
+            [string]$record.run_id -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or
+            [string]$record.session_id -cne [string]$record.run_id -or
+            -not (Test-WdSupervisorJsonBooleanTrue `
+                -Object $record `
+                -Name 'append_canary') -or
+            [string]$record.append_canary_task_id -cne
+                "wd-append-canary-$([string]$record.run_id)" -or
+            -not (Test-WdSupervisorJsonIntegerRange `
+                -Object $record `
+                -Name 'append_canary_latency_ms' `
+                -Minimum 0 `
+                -Maximum 5000) -or
             [string]$record.target_state_id -cne 'wd-swarm-target-state-v1' -or
             -not ([string]$record.config_path).Equals(
                 $ConfigPath,
@@ -1482,9 +1555,35 @@ function Test-ToolsWrapperReadiness {
         $processCreated = ConvertTo-SupervisorUtc $Process.CreationDate
         $recordCreated = ConvertTo-SupervisorUtc $record.process_start_utc
         $readyAt = ConvertTo-SupervisorUtc $record.ready_at_utc
+        $canaryAt = ConvertTo-SupervisorUtc $record.append_canary_event_utc
         return (
             [Math]::Abs(($recordCreated - $processCreated).TotalSeconds) -le 1 -and
-            $readyAt -ge $recordCreated
+            $readyAt -ge $recordCreated -and
+            $canaryAt -ge $recordCreated.AddSeconds(-5) -and
+            $canaryAt -le $readyAt
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-ToolsReadinessTargetsProcess {
+    param(
+        [Parameter(Mandatory)] $Process,
+        [Parameter(Mandatory)] [string] $Generation,
+        [Parameter(Mandatory)] [string] $ReadinessPath
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $ReadinessPath -PathType Leaf)) {
+            return $false
+        }
+        $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+        return (
+            [int]$record.pid -eq [int]$Process.ProcessId -and
+            [string]$record.generation -ceq $Generation
         )
     }
     catch {
@@ -2365,7 +2464,9 @@ if ($toolsEnabled) {
         [string]$toolsValidation.head -ceq $toolsExpectedHead
     }
     if (
-        -not [bool]$toolsValidation.validated -or
+        -not (Test-WdSupervisorJsonBooleanTrue `
+            -Object $toolsValidation `
+            -Name 'validated') -or
         [string]$toolsValidation.generation -cne $toolsGeneration -or
         -not $toolsValidationPinValid -or
         [string]$toolsValidation.resume_policy -cne $toolsResumePolicy -or
@@ -2380,7 +2481,25 @@ if ($toolsEnabled) {
             [string]$tools.worktree,
             [StringComparison]::OrdinalIgnoreCase
         ) -or
-        -not [bool]$toolsValidation.require_dedicated_worktree
+        -not (Test-WdSupervisorJsonBooleanTrue `
+            -Object $toolsValidation `
+            -Name 'require_dedicated_worktree') -or
+        -not ([string]$toolsValidation.python_executable).Equals(
+            [string]$tools.python_executable,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [string]$toolsValidation.codex_command_sha256 -cnotmatch
+            '^[0-9A-F]{64}$' -or
+        [string]$toolsValidation.python_executable_sha256 -cnotmatch
+            '^[0-9A-F]{64}$' -or
+        (Get-FileHash `
+            -LiteralPath ([string]$toolsValidation.codex_command) `
+            -Algorithm SHA256).Hash -cne
+                [string]$toolsValidation.codex_command_sha256 -or
+        (Get-FileHash `
+            -LiteralPath ([string]$toolsValidation.python_executable) `
+            -Algorithm SHA256).Hash -cne
+                [string]$toolsValidation.python_executable_sha256
     ) {
         throw 'Tools consumer preflight does not match supervisor generation'
     }
@@ -2388,7 +2507,9 @@ if ($toolsEnabled) {
         [string]$toolsValidation.consumer_host
     )
     $stableWindowsPowerShell = [IO.Path]::GetFullPath(
-        (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+        (Join-Path `
+            ([Environment]::SystemDirectory) `
+            'WindowsPowerShell\v1.0\powershell.exe')
     )
     if (
         -not $toolsPowerShellHost.Equals(
@@ -2863,6 +2984,7 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
                 Test-ToolsWrapperReadiness `
                     -Process $_ `
                     -Tools $tools `
+                    -Validation $toolsValidation `
                     -Generation $toolsGeneration `
                     -ConfigPath $toolsConfig `
                     -ReadinessPath $readinessPath
@@ -2876,13 +2998,24 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         $exactWrapperProcesses |
             Where-Object { [int]$_.ProcessId -notin $readyWrapperIds }
     )
+    $invalidReadinessWrapperIds = @(
+        $startingWrapperProcesses |
+            Where-Object {
+                Test-ToolsReadinessTargetsProcess `
+                    -Process $_ `
+                    -Generation $toolsGeneration `
+                    -ReadinessPath $readinessPath
+            } |
+            ForEach-Object { [int]$_.ProcessId }
+    )
     $toolsStartupGraceSeconds = [int]$tools.codex_timeout_seconds + 60
     $graceWrapperProcesses = @(
         $startingWrapperProcesses |
             Where-Object {
-                Test-ToolsWrapperWithinStartupGrace `
+                [int]$_.ProcessId -notin $invalidReadinessWrapperIds -and
+                (Test-ToolsWrapperWithinStartupGrace `
                     -Process $_ `
-                    -GraceSeconds $toolsStartupGraceSeconds
+                    -GraceSeconds $toolsStartupGraceSeconds)
             }
     )
     $graceWrapperIds = @(

@@ -1387,8 +1387,23 @@ function Test-LaneGenerationAttestation {
       return $false
     }
     $bundleCommit = [IO.Path]::GetFileName($bundleRoot)
+    $agentLauncherPath = Join-Path $bundleRoot 'start-wd-agent.ps1'
     $fleetPath = Join-Path $bundleRoot 'wd-fleet.json'
     $deploymentPath = Join-Path $bundleRoot 'deployment-manifest.json'
+    [void](Assert-WdFleetPathWithoutReparse `
+      -Path $bundleRoot `
+      -TrustedRoot $bundleStore `
+      -ExpectedType Directory)
+    foreach ($authorityPath in @(
+        $agentLauncherPath,
+        $fleetPath,
+        $deploymentPath
+      )) {
+      [void](Assert-WdFleetPathWithoutReparse `
+        -Path $authorityPath `
+        -TrustedRoot $bundleStore `
+        -ExpectedType Leaf)
+    }
     if (
       -not $manifestArgument.Equals(
         (Resolve-NormalizedPath -Path $fleetPath),
@@ -1413,7 +1428,11 @@ function Test-LaneGenerationAttestation {
     }
     foreach ($name in @('start-wd-agent.ps1', 'wd-fleet.json')) {
       $expectedHash = [string]$deployment.files.PSObject.Properties[$name].Value
-      $path = Join-Path $bundleRoot $name
+      $path = if ($name -ceq 'start-wd-agent.ps1') {
+        $agentLauncherPath
+      } else {
+        $fleetPath
+      }
       if (
         [string]::IsNullOrWhiteSpace($expectedHash) -or
         -not (Test-Path -LiteralPath $path -PathType Leaf) -or
@@ -1423,7 +1442,7 @@ function Test-LaneGenerationAttestation {
       }
     }
     $launcherText = Get-Content `
-      -LiteralPath (Join-Path $bundleRoot 'start-wd-agent.ps1') `
+      -LiteralPath $agentLauncherPath `
       -Raw `
       -ErrorAction Stop
     if ($launcherText.IndexOf(

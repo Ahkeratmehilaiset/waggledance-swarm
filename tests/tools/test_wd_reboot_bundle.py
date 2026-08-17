@@ -3468,6 +3468,178 @@ catch {{
     }
 
 
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell junction semantics are unavailable",
+)
+def test_lane_generation_attestation_rejects_reparse_bundle_before_read(
+    tmp_path: Path,
+) -> None:
+    launcher_path = REBOOT / "start-wd-all.ps1"
+    launcher_text = launcher_path.read_text(encoding="utf-8")
+    attestation_text = launcher_text.split(
+        "function Test-LaneGenerationAttestation", 1
+    )[1].split("function Test-ToolsProcessReadiness", 1)[0]
+    assert attestation_text.index("Assert-WdFleetPathWithoutReparse") < (
+        attestation_text.index("Read-Utf8FleetSnapshot")
+    )
+    launcher = str(launcher_path).replace("'", "''")
+    temp = str(tmp_path).replace("'", "''")
+    result = _run_powershell(
+        f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'fleet launcher parse failed' }}
+foreach ($name in @(
+    'Assert-WdFleetPathWithoutReparse',
+    'Test-NamedCommandLineArgument',
+    'Get-NamedCommandLineArgumentValue',
+    'Test-LaneGenerationAttestation'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing fleet function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+
+$root = [IO.Path]::GetFullPath('{temp}')
+$store = Join-Path $root 'wd-reboot-bundles'
+$handshakeRoot = Join-Path $root 'handshakes'
+[void](New-Item -ItemType Directory -Path $store)
+[void](New-Item -ItemType Directory -Path $handshakeRoot)
+$script:Store = $store
+$script:HandshakeRoot = $handshakeRoot
+$script:ReadCalls = 0
+
+function Resolve-NormalizedPath {{
+  param([Parameter(Mandatory)] [string] $Path)
+  if ($Path -ceq 'C:\\Python\\wd-reboot-bundles') {{ return $script:Store }}
+  if ($Path -ceq 'C:\\Python\\start-wd-agent.ps1') {{
+    return (Join-Path $root 'machine-start-wd-agent.ps1')
+  }}
+  if ($Path -ceq 'C:\\Python\\wd-reboot-runtime\\handshakes') {{
+    return $script:HandshakeRoot
+  }}
+  return [IO.Path]::GetFullPath($Path).TrimEnd('\\')
+}}
+function Read-Utf8FleetSnapshot {{
+  param([Parameter(Mandatory)] [string] $Path)
+  $script:ReadCalls++
+  throw "authority read boundary reached: $Path"
+}}
+function New-PlainBundle {{
+  param([Parameter(Mandatory)] [string] $Generation)
+  $bundle = Join-Path $store $Generation
+  [void](New-Item -ItemType Directory -Path $bundle)
+  foreach ($name in @(
+      'start-wd-agent.ps1',
+      'wd-fleet.json',
+      'deployment-manifest.json'
+    )) {{
+    [IO.File]::WriteAllText(
+      (Join-Path $bundle $name),
+      'fixture',
+      (New-Object Text.UTF8Encoding($false))
+    )
+  }}
+  return $bundle
+}}
+function New-LaneProcess {{
+  param([Parameter(Mandatory)] [string] $Bundle)
+  $commandLine = (
+    'powershell.exe -NoProfile -File "' +
+    (Join-Path $Bundle 'start-wd-agent.ps1') +
+    '" -ManifestPath "' +
+    (Join-Path $Bundle 'wd-fleet.json') +
+    '" -Agent codex-lead-1'
+  )
+  return [pscustomobject]@{{
+    Name = 'powershell.exe'
+    CommandLine = $commandLine
+    ProcessId = 4242
+  }}
+}}
+function Invoke-AttestationCase {{
+  param([Parameter(Mandatory)] [string] $Bundle)
+  $before = $script:ReadCalls
+  $accepted = Test-LaneGenerationAttestation `
+    -Lane ([pscustomobject]@{{ agent = 'codex-lead-1' }}) `
+    -Process (New-LaneProcess -Bundle $Bundle)
+  return [pscustomobject]@{{
+    accepted = [bool]$accepted
+    reads = $script:ReadCalls - $before
+  }}
+}}
+
+$plain = New-PlainBundle -Generation ('b' * 40 -join '')
+$outside = Join-Path $root 'outside-root-junction'
+[void](New-Item -ItemType Directory -Path $outside)
+foreach ($name in @(
+    'start-wd-agent.ps1',
+    'wd-fleet.json',
+    'deployment-manifest.json'
+  )) {{
+  [IO.File]::WriteAllText(
+    (Join-Path $outside $name),
+    'fixture',
+    (New-Object Text.UTF8Encoding($false))
+  )
+}}
+$rootJunction = Join-Path $store ('a' * 40 -join '')
+[void](New-Item -ItemType Junction -Path $rootJunction -Target $outside)
+
+$leafCases = [ordered]@{{}}
+$leafNames = @(
+  'deployment-manifest.json',
+  'wd-fleet.json',
+  'start-wd-agent.ps1'
+)
+for ($i = 0; $i -lt $leafNames.Count; $i++) {{
+  $generation = ([char]([int][char]'c' + $i)).ToString() * 40 -join ''
+  $bundle = New-PlainBundle -Generation $generation
+  $leaf = Join-Path $bundle $leafNames[$i]
+  Remove-Item -LiteralPath $leaf -Force
+  $leafTarget = Join-Path $root ("outside-leaf-$i")
+  [void](New-Item -ItemType Directory -Path $leafTarget)
+  [void](New-Item -ItemType Junction -Path $leaf -Target $leafTarget)
+  $leafCases[$leafNames[$i]] = Invoke-AttestationCase -Bundle $bundle
+}}
+
+$plainResult = Invoke-AttestationCase -Bundle $plain
+$rootResult = Invoke-AttestationCase -Bundle $rootJunction
+[pscustomobject]@{{
+  plain_accepted = [bool]$plainResult.accepted
+  plain_reads = [int]$plainResult.reads
+  root_accepted = [bool]$rootResult.accepted
+  root_reads = [int]$rootResult.reads
+  deployment_reads = [int]$leafCases['deployment-manifest.json'].reads
+  fleet_reads = [int]$leafCases['wd-fleet.json'].reads
+  launcher_reads = [int]$leafCases['start-wd-agent.ps1'].reads
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "plain_accepted": False,
+        "plain_reads": 1,
+        "root_accepted": False,
+        "root_reads": 0,
+        "deployment_reads": 0,
+        "fleet_reads": 0,
+        "launcher_reads": 0,
+    }
+
+
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
 @pytest.mark.skipif(
     os.name != "nt",

@@ -1288,6 +1288,12 @@ function Resolve-LanePinState {
   if ($ActualHead -cnotmatch '^[0-9a-f]{40}$') {
     throw "lane '$($Lane.agent)' resolved a malformed HEAD: $ActualHead"
   }
+  if ($LiveCount -eq 1 -and -not $LiveGenerationAttested) {
+    throw (
+      "lane '$($Lane.agent)' has an unattested live generation; " +
+      'external cold replacement is required before fleet mutation'
+    )
+  }
   if ($branchExact -and $headExact) {
     return [pscustomobject]@{
       exact = $true

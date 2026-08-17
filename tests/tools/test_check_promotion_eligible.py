@@ -162,8 +162,15 @@ def test_all_gates_pass_with_rco1() -> None:
     assert report["would_merge"] is True
     assert report["external_effect"] is False
     assert report["gate_results"]["rco_pass"]["satisfying_rco_agent"] == "claude-rco-1"
+    assert report["gate_results"]["rco_pass"]["decision"] == "rco_pass_present"
+    assert report["gate_results"]["rco_pass"]["recognized_rco_agents"] == [
+        "claude-rco-1",
+        "claude-rco-2",
+    ]
     assert (
-        report["gate_results"]["rco_pass"]["by_agent"]["claude-rco-1"]["decision"]
+        report["gate_results"]["rco_pass"]["by_agent"]["claude-rco-1"][
+            "decision"
+        ]
         == "rco_pass_present"
     )
     assert (
@@ -621,6 +628,205 @@ def test_backup_rco_veto_blocks_even_when_rco1_passes() -> None:
     assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
 
 
+def test_author_task_alias_rco_veto_cannot_be_siloed_by_other_rco_pass() -> None:
+    alias_task = TASK.replace("/", "-", 1)
+    events = [
+        *_full_events(rco_agent="claude-rco-1"),
+        _event(
+            "claude-rco-2",
+            "changes_requested",
+            type_="finding",
+            task_id=alias_task,
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": HEAD},
+        ),
+    ]
+
+    report = _evaluate(events=events, author_agent="codex-lead-1")
+
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+    assert (
+        report["gate_results"]["peer_veto"]["latest_blocking_event"]["agent"]
+        == "claude-rco-2"
+    )
+    assert report["gate_results"]["rco_pass"]["ok"] is False
+    assert report["gate_results"]["rco_pass"]["blocking_rco_agents"] == [
+        "claude-rco-2"
+    ]
+    assert (
+        report["gate_results"]["rco_pass"]["combined_authority"]["ok"]
+        is False
+    )
+    assert (
+        report["gate_results"]["rco_pass"]["by_agent"]["claude-rco-1"]["ok"]
+        is True
+    )
+
+
+def test_configured_rco_type_veto_cannot_be_siloed_by_other_rco_pass() -> None:
+    events = _full_events(rco_agent="claude-rco-1")
+    events.insert(
+        2,
+        _event(
+            "fable-5",
+            "security_concern",
+            type_="finding",
+            ts="2026-06-05T05:31:30Z",
+        ),
+    )
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5", "claude-rco-1"],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is False
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+    assert (
+        report["gate_results"]["peer_veto"]["latest_blocking_event"]["agent"]
+        == "fable-5"
+    )
+    assert report["gate_results"]["rco_pass"]["ok"] is True
+
+
+def test_unverified_configured_rco_type_veto_remains_fail_closed() -> None:
+    events = _full_events(rco_agent="claude-rco-1")
+    veto = _event(
+        "fable-5",
+        "security_concern",
+        type_="finding",
+        ts="2026-06-05T05:31:30Z",
+    )
+    veto["agent_uuid"] = AGENT_UUIDS["claude-rco-1"]
+    events.insert(2, veto)
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5", "claude-rco-1"],
+        author_agent="codex-lead-1",
+    )
+
+    assert report["eligible"] is False
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+    assert (
+        report["gate_results"]["peer_veto"]["latest_blocking_event"]["agent"]
+        == "fable-5"
+    )
+    assert len(
+        report["gate_results"]["peer_veto"]["unverified_rco_block_events"]
+    ) == 1
+
+
+@pytest.mark.parametrize("identity_binding", ["verified", "mismatch"])
+def test_configured_rco_author_veto_remains_fail_closed(
+    identity_binding: str,
+) -> None:
+    events = _full_events(rco_agent="claude-rco-1")
+    veto = _event(
+        "fable-5",
+        "security_concern",
+        type_="finding",
+        ts="2026-06-05T05:31:30Z",
+    )
+    if identity_binding == "mismatch":
+        veto["agent_uuid"] = AGENT_UUIDS["claude-rco-1"]
+    events.insert(2, veto)
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5", "claude-rco-1"],
+        author_agent="fable-5",
+    )
+
+    assert report["eligible"] is False
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+    assert (
+        report["gate_results"]["peer_veto"]["latest_blocking_event"]["agent"]
+        == "fable-5"
+    )
+    assert report["recognized_rco_agents"] == ["claude-rco-1"]
+    assert report["configured_rco_agents"] == ["fable-5", "claude-rco-1"]
+
+
+def test_stale_author_task_alias_pass_cannot_clear_current_alias_veto() -> None:
+    alias_task = TASK.replace("/", "-", 1)
+    events = [
+        *_full_events(rco_agent="claude-rco-1"),
+        _event(
+            "claude-rco-2",
+            "changes_requested",
+            type_="finding",
+            task_id=alias_task,
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": HEAD},
+        ),
+        _event(
+            "claude-rco-2",
+            "rco_pass",
+            task_id=alias_task,
+            head=OTHER_BASE,
+            ts="2026-06-05T05:34:00Z",
+            payload={"head": OTHER_BASE},
+        ),
+    ]
+
+    report = _evaluate(events=events, author_agent="codex-lead-1")
+
+    assert report["eligible"] is False
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+    assert (
+        report["gate_results"]["peer_veto"]["latest_blocking_event"]["agent"]
+        == "claude-rco-2"
+    )
+    assert report["gate_results"]["rco_pass"]["ok"] is False
+    assert report["gate_results"]["rco_pass"]["blocking_rco_agents"] == [
+        "claude-rco-2"
+    ]
+
+
+def test_author_task_alias_authority_payload_remains_fail_closed() -> None:
+    alias_task = TASK.replace("/", "-", 1)
+    events = [
+        *_full_events(rco_agent="claude-rco-1"),
+        _event(
+            "claude-rco-2",
+            "rco_pass",
+            task_id=alias_task,
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": False},
+        ),
+    ]
+
+    report = _evaluate(events=events, author_agent="codex-lead-1")
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "head must be an exact lowercase sha" in report["errors"][0]
+
+
+def test_author_task_alias_wrong_pr_binding_remains_fail_closed() -> None:
+    alias_task = TASK.replace("/", "-", 1)
+    events = [
+        *_full_events(rco_agent="claude-rco-1"),
+        _event(
+            "claude-rco-2",
+            "rco_pass",
+            task_id=alias_task,
+            ts="2026-06-05T05:33:00Z",
+            payload={"head": HEAD, "pr": 777},
+        ),
+    ]
+
+    report = _evaluate(events=events, author_agent="codex-lead-1")
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "contradictory PR evidence" in report["errors"][0]
+
+
 def test_malformed_status_fails_closed() -> None:
     status = _status()
     status.pop("changed_paths")
@@ -912,6 +1118,78 @@ def test_irrelevant_legacy_authority_payload_shapes_do_not_poison_history() -> N
     report = _evaluate(events=events)
 
     assert report["eligible"] is True
+
+
+def test_irrelevant_historical_claim_scope_does_not_poison_history() -> None:
+    events = _full_events()
+    event = _event(
+        "codex-lead-1",
+        "active",
+        type_="claim",
+        task_id="codex-lead-1/unrelated-historical-task",
+        head=OTHER_BASE,
+        payload={"head": OTHER_BASE, "pr": 777},
+        ts="2026-01-01T00:00:00Z",
+    )
+    event["write_scope"] = [None]
+    events.insert(0, event)
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is True
+    assert report["decision"] == "promotion_eligible"
+
+
+@pytest.mark.parametrize(
+    ("task_id", "payload"),
+    [
+        (TASK, {"head": OTHER_BASE, "pr": 777}),
+        ("codex-lead-1/unrelated-task", {"head": OTHER_BASE, "pr": 901}),
+        ("codex-lead-1/unrelated-task", {"head": HEAD, "pr": 777}),
+    ],
+)
+def test_current_scope_claim_lists_remain_fail_closed(
+    task_id: str,
+    payload: dict,
+) -> None:
+    events = _full_events()
+    event = _event(
+        "codex-lead-1",
+        "active",
+        type_="claim",
+        task_id=task_id,
+        payload=payload,
+        ts="2026-06-05T05:29:00Z",
+    )
+    event["write_scope"] = [None]
+    events.insert(0, event)
+
+    report = _evaluate(events=events)
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "write_scope must be an exact string list" in report["errors"][0]
+
+
+def test_author_task_alias_claim_lists_remain_fail_closed() -> None:
+    events = _full_events()
+    event = _event(
+        "codex-lead-1",
+        "active",
+        type_="claim",
+        task_id=TASK.replace("/", "-", 1),
+        head=OTHER_BASE,
+        payload={"head": OTHER_BASE, "pr": 777},
+        ts="2026-06-05T05:29:00Z",
+    )
+    event["write_scope"] = [None]
+    events.insert(0, event)
+
+    report = _evaluate(events=events, author_agent="codex-lead-1")
+
+    assert report["eligible"] is False
+    assert report["decision"] == "invalid_input"
+    assert "write_scope must be an exact string list" in report["errors"][0]
 
 
 @pytest.mark.parametrize(
@@ -1362,6 +1640,7 @@ def test_canonical_pr1551_diagnostic_string_pr_is_not_authority() -> None:
         expected_task_id="codex-tools-1/unified-bridge-author-resolver-20260724",
         expected_pr_number=1551,
         expected_head="e6870ebb91b1c30b6278b4d80e261479c325798d",
+        author_agent="codex-tools-1",
     )
 
 
@@ -1398,6 +1677,7 @@ def test_canonical_pr1557_pass_allows_base_and_superseded_sha_roles() -> None:
         expected_task_id=task,
         expected_pr_number=1557,
         expected_head=current_head,
+        author_agent="fable-5",
     )
 
 

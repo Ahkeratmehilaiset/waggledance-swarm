@@ -29,6 +29,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
     CLEAR_EVENT_TYPES as PEER_CLEAR_EVENT_TYPES,
     DONE_APPROVAL_STATUSES as PEER_DONE_APPROVAL_STATUSES,
     _RECOGNIZED_RCOS as PEER_RECOGNIZED_RCO_AGENTS,
+    _author_task_id_aliases,
     _event_matches_scope as _peer_event_matches_scope,
     _is_approval_status as _peer_is_approval_status,
     _is_blocking_status as _peer_is_blocking_status,
@@ -312,11 +313,19 @@ def _evaluate_promotion_eligibility(
     prior_approved_head = _optional_sha(prior_approved_head, "prior_approved_head")
     author_agent = _required_agent_id(author_agent, "author_agent")
     from_agent = _required_agent_id(from_agent, "from_agent")
-    rco_agent_set = _recognized_rco_agents(
-        rco_agents,
+    configured_rco_agent_set = _configured_rco_agents(rco_agents)
+    rco_agent_set = _eligible_rco_agents(
+        configured_rco_agent_set,
         author_agent=author_agent,
     )
     number = _pr_number(pr_status, pr_number)
+    _validate_relevant_event_auxiliary_lists(
+        events,
+        expected_task_id=task_id,
+        expected_pr_number=number,
+        expected_heads=(head, prior_approved_head),
+        author_agent=author_agent,
+    )
     status_head = _required_sha(
         pr_status.get("head_sha"),
         "pr_status.head_sha",
@@ -334,7 +343,8 @@ def _evaluate_promotion_eligibility(
         expected_task_id=task_id,
         expected_pr_number=number,
         expected_head=head,
-        recognized_rco_agents=rco_agent_set,
+        recognized_rco_agents=configured_rco_agent_set,
+        author_agent=author_agent,
     )
     prior_diff_text = _prior_approved_diff_text(
         pr_status=pr_status,
@@ -389,7 +399,8 @@ def _evaluate_promotion_eligibility(
         expected_task_id=task_id,
         expected_pr_number=number,
         expected_head=approval_head,
-        recognized_rco_agents=rco_agent_set,
+        recognized_rco_agents=configured_rco_agent_set,
+        author_agent=author_agent,
     )
     try:
         peer_gate = check_bridge_clear_to_merge(
@@ -398,6 +409,7 @@ def _evaluate_promotion_eligibility(
             merging_agent=from_agent,
             author_agent=author_agent,
             pr_number=number,
+            recognized_rco_agents=configured_rco_agent_set,
         )
         rco_pass_gate = _rco_pass_set_gate(
             events=gate_events,
@@ -477,6 +489,7 @@ def _evaluate_promotion_eligibility(
         "approval_head": approval_head,
         "prior_approved_head": prior_approved_head,
         "recognized_rco_agents": list(rco_agent_set),
+        "configured_rco_agents": list(configured_rco_agent_set),
         "author_agent": author_agent,
         "reasons": reasons,
         "errors": [],
@@ -698,6 +711,17 @@ def _rco_pass_set_gate(
     rco_agents: Sequence[str],
     author_agent: str,
 ) -> dict[str, Any]:
+    # One authority call must see the complete recognized-RCO set.  OR-ing
+    # singleton calls lets one RCO's pass hide another RCO's later veto.
+    authority = check_rco_pass_present(
+        events=events,
+        task_id=task_id,
+        head=head,
+        rco_agent=rco_agents,
+        author_agent=author_agent,
+    )
+    # Preserve the established report schema for downstream diagnostics, but
+    # never derive authority from these singleton results.
     by_agent = {
         agent: check_rco_pass_present(
             events=events,
@@ -708,14 +732,24 @@ def _rco_pass_set_gate(
         )
         for agent in rco_agents
     }
-    passing = [agent for agent, result in by_agent.items() if result.get("ok") is True]
-    return {
-        "ok": bool(passing),
-        "decision": "rco_pass_present" if passing else "rco_pass_absent",
-        "satisfying_rco_agent": passing[0] if passing else "",
-        "recognized_rco_agents": list(rco_agents),
-        "by_agent": by_agent,
-    }
+    result = dict(authority)
+    result.update(
+        {
+            "ok": authority.get("ok") is True,
+            "decision": (
+                "rco_pass_present"
+                if authority.get("ok") is True
+                else "rco_pass_absent"
+            ),
+            "satisfying_rco_agent": str(
+                authority.get("satisfying_rco_agent") or ""
+            ),
+            "recognized_rco_agents": list(rco_agents),
+            "by_agent": by_agent,
+            "combined_authority": dict(authority),
+        }
+    )
+    return result
 
 
 def _bridge_consensus_set_gate(
@@ -990,6 +1024,45 @@ def _validate_event_envelopes(events: object) -> None:
                         f"events item {index} {field} must be a string",
                     )
                 )
+        if "pid" in event and (
+            type(event["pid"]) is not int
+            or event["pid"] < 0
+            or event["pid"] > MAX_AUTHORITY_INTEGER
+        ):
+            raise PromotionEligibilityError(
+                _invalid_report(
+                    "invalid_input",
+                    f"events item {index} pid must be a nonnegative integer",
+                )
+            )
+
+
+def _validate_relevant_event_auxiliary_lists(
+    events: object,
+    *,
+    expected_task_id: str,
+    expected_pr_number: int,
+    expected_heads: Sequence[str],
+    author_agent: str,
+) -> None:
+    """Validate optional list metadata only when it can affect this snapshot.
+
+    Canonical history contains legacy auxiliary metadata that no promotion
+    authority gate consumes.  It stays inert for unrelated snapshots, while
+    task-, author-alias-, PR-, or head-scoped evidence remains fail-closed.
+    """
+
+    assert type(events) is list
+    for index, event in enumerate(events, 1):
+        assert type(event) is dict
+        if not _event_matches_auxiliary_validation_scope(
+            event,
+            expected_task_id=expected_task_id,
+            expected_pr_number=expected_pr_number,
+            expected_heads=expected_heads,
+            author_agent=author_agent,
+        ):
+            continue
         for field in ("paths", "write_scope", "capabilities"):
             if field not in event:
                 continue
@@ -1008,17 +1081,34 @@ def _validate_event_envelopes(events: object) -> None:
                         f"events item {index} {field} must be an exact string list",
                     )
                 )
-        if "pid" in event and (
-            type(event["pid"]) is not int
-            or event["pid"] < 0
-            or event["pid"] > MAX_AUTHORITY_INTEGER
-        ):
-            raise PromotionEligibilityError(
-                _invalid_report(
-                    "invalid_input",
-                    f"events item {index} pid must be a nonnegative integer",
-                )
-            )
+
+
+def _event_matches_auxiliary_validation_scope(
+    event: Mapping[str, Any],
+    *,
+    expected_task_id: str,
+    expected_pr_number: int,
+    expected_heads: Sequence[str],
+    author_agent: str,
+) -> bool:
+    if _peer_event_matches_scope(
+        event,
+        task_id=expected_task_id,
+        pr_number=expected_pr_number,
+        author_agent=author_agent,
+    ):
+        return True
+    return any(
+        head
+        and _consensus_block_scope_match(
+            event,
+            task_id=expected_task_id,
+            pr_number=expected_pr_number,
+            head_sha=head,
+            canonical_scope=False,
+        )
+        for head in expected_heads
+    )
 
 
 def _status_has_authority_semantics(status: str) -> bool:
@@ -1047,9 +1137,16 @@ def _validate_event_authority_consistency(
     expected_task_id: str,
     expected_pr_number: int,
     expected_head: str,
+    author_agent: str,
     recognized_rco_agents: Sequence[str] = DEFAULT_RCO_AGENTS,
 ) -> None:
     assert type(events) is list
+    accepted_task_ids = frozenset(
+        (
+            expected_task_id,
+            *_author_task_id_aliases(expected_task_id, author_agent),
+        )
+    )
     for index, event in enumerate(events, 1):
         assert type(event) is dict
         if not _is_exact_gate_authority_event(
@@ -1067,6 +1164,7 @@ def _validate_event_authority_consistency(
             expected_pr_number=expected_pr_number,
             expected_head=expected_head,
             recognized_rco_agents=recognized_rco_agents,
+            author_agent=author_agent,
         ):
             continue
 
@@ -1172,7 +1270,7 @@ def _validate_event_authority_consistency(
                 )
             )
         if (
-            event_task == expected_task_id
+            event_task in accepted_task_ids
             and payload_prs
             and payload_prs[0] != expected_pr_number
         ):
@@ -1276,12 +1374,14 @@ def _event_matches_gate_consumer_scope(
     expected_pr_number: int,
     expected_head: str,
     recognized_rco_agents: Sequence[str],
+    author_agent: str,
 ) -> bool:
     """Mirror the live peer/consensus task, PR, and head scope predicates."""
     if _peer_event_matches_scope(
         event,
         task_id=expected_task_id,
         pr_number=expected_pr_number,
+        author_agent=author_agent,
     ):
         return True
     consensus_head_scoped = _consensus_block_scope_match(
@@ -1404,6 +1504,7 @@ def _current_head_gate_events(
     expected_pr_number: int,
     expected_head: str,
     recognized_rco_agents: Sequence[str],
+    author_agent: str,
 ) -> list[Mapping[str, Any]]:
     """Drop stale/headless enabling evidence while retaining every block."""
     filtered: list[Mapping[str, Any]] = []
@@ -1423,6 +1524,7 @@ def _current_head_gate_events(
             expected_pr_number=expected_pr_number,
             expected_head=expected_head,
             recognized_rco_agents=recognized_rco_agents,
+            author_agent=author_agent,
         ):
             filtered.append(event)
             continue
@@ -1514,10 +1616,8 @@ def _validate_json_tree(
     )
 
 
-def _recognized_rco_agents(
+def _configured_rco_agents(
     rco_agents: Sequence[str] | None,
-    *,
-    author_agent: str,
 ) -> tuple[str, ...]:
     if rco_agents is None:
         raw: Sequence[object] = DEFAULT_RCO_AGENTS
@@ -1546,9 +1646,16 @@ def _recognized_rco_agents(
                 )
             )
         seen.add(value)
-        if value == author_agent:
-            continue
         cleaned.append(value)
+    return tuple(cleaned)
+
+
+def _eligible_rco_agents(
+    configured_rco_agents: Sequence[str],
+    *,
+    author_agent: str,
+) -> tuple[str, ...]:
+    cleaned = [agent for agent in configured_rco_agents if agent != author_agent]
     if not cleaned:
         raise PromotionEligibilityError(
             _invalid_report(

@@ -50,6 +50,8 @@ from waggledance.core.bridge_identity_registry import (  # noqa: E402
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
+    INFORMATIONAL_FINDING_STATUSES,
+    _author_task_id_aliases,
     _is_blocking_status as _bridge_is_blocking_status,
     _is_clear_status as _bridge_is_clear_status,
 )
@@ -70,16 +72,6 @@ BRIDGE_BLOCK_WORD_TOKENS = frozenset({"block", "blocked", "blocks", "blocking"})
 # ambiguous statuses (``operator_review_required``/``open``/empty) never silently
 # bypass the gate. Expand deliberately if a specific advisory status should also
 # stop vetoing.
-INFORMATIONAL_FINDING_STATUSES = frozenset(
-    {
-        "info",
-        "informational",
-        "fyi",
-        "note",
-        "advisory",
-    }
-)
-
 # Claim gates per hard rule: all must be false in emitted artifacts.
 CLAIM_GATES: tuple[str, ...] = (
     "claim_gate_satisfied",
@@ -680,29 +672,6 @@ def _stale_rco_reemit_guidance(
         "target_rco_agents": list(eligible_rco_agents),
         "legacy_request_status": "rco_requested",
     }
-
-
-def _author_task_id_aliases(task_id: str, author_agent: str) -> tuple[str, ...]:
-    """Return deterministic author namespace slash/hyphen aliases.
-
-    Bridge producers have historically used both `agent/rest` and
-    `agent-rest` as the first namespace separator. Restrict aliases to the
-    PR author prefix so a same-head RCO_PASS from an unrelated task cannot
-    satisfy the gate.
-    """
-
-    aliases: list[str] = []
-    slash_prefix = f"{author_agent}/"
-    hyphen_prefix = f"{author_agent}-"
-    if task_id.startswith(slash_prefix):
-        rest = task_id[len(slash_prefix):]
-        if rest:
-            aliases.append(f"{author_agent}-{rest}")
-    elif task_id.startswith(hyphen_prefix):
-        rest = task_id[len(hyphen_prefix):]
-        if rest:
-            aliases.append(f"{author_agent}/{rest}")
-    return tuple(aliases)
 
 
 def _normalize_rco_agents(value: str | Sequence[str] | None) -> tuple[str, ...]:

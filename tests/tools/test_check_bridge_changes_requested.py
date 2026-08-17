@@ -1266,6 +1266,179 @@ def test_task_id_mismatch_without_pr_number_stays_out_of_scope() -> None:
     assert result["clear_to_merge"] is True
 
 
+def test_author_task_alias_veto_without_pr_number_is_in_scope() -> None:
+    task_id = "codex-lead-1/promotion-eligible-verifier-20260605"
+    events = [
+        _event(
+            "2026-06-05T05:33:00Z",
+            "claude-rco-2",
+            "finding",
+            "changes_requested",
+            task_id=task_id.replace("/", "-", 1),
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id=task_id,
+        merging_agent="codex-tools-1",
+        author_agent="codex-lead-1",
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-2"
+
+
+def test_reverse_author_task_alias_veto_without_pr_number_is_in_scope() -> None:
+    task_id = "codex-lead-1-promotion-eligible-verifier-20260605"
+    events = [
+        _event(
+            "2026-06-05T05:33:00Z",
+            "claude-rco-2",
+            "finding",
+            "changes_requested",
+            task_id=task_id.replace("codex-lead-1-", "codex-lead-1/", 1),
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id=task_id,
+        merging_agent="codex-tools-1",
+        author_agent="codex-lead-1",
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-2"
+
+
+def test_unrelated_author_namespace_alias_stays_out_of_scope() -> None:
+    events = [
+        _event(
+            "2026-06-05T05:33:00Z",
+            "claude-rco-2",
+            "finding",
+            "changes_requested",
+            task_id="codex-tools-1-promotion-eligible-verifier-20260605",
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="codex-lead-1/promotion-eligible-verifier-20260605",
+        merging_agent="codex-tools-1",
+        author_agent="codex-lead-1",
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
+def test_explicit_configured_rco_finding_blocks_by_type() -> None:
+    events = [
+        _event(
+            "2026-06-05T05:31:30Z",
+            "fable-5",
+            "finding",
+            "security_concern",
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        recognized_rco_agents="fable-5",
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "fable-5"
+
+
+def test_explicit_configured_rco_informational_finding_is_advisory() -> None:
+    events = [
+        _event(
+            "2026-06-05T05:31:30Z",
+            "fable-5",
+            "finding",
+            "info",
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        recognized_rco_agents=("fable-5",),
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+
+
+def test_unverified_explicit_configured_rco_finding_blocks_fail_closed() -> None:
+    event = _event(
+        "2026-06-05T05:31:30Z",
+        "fable-5",
+        "finding",
+        "security_concern",
+    )
+    event["agent_uuid"] = AGENT_UUIDS["claude-rco-1"]
+
+    result = check_bridge_clear_to_merge(
+        events=[event],
+        task_id="T",
+        merging_agent="codex-tools-1",
+        recognized_rco_agents=("fable-5", "claude-rco-1"),
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "fable-5"
+    assert len(result["unverified_rco_block_events"]) == 1
+
+
+def test_missing_uuid_explicit_configured_rco_finding_blocks_fail_closed() -> None:
+    event = _event(
+        "2026-06-05T05:31:30Z",
+        "fable-5",
+        "finding",
+        "security_concern",
+    )
+    event.pop("agent_uuid")
+
+    result = check_bridge_clear_to_merge(
+        events=[event],
+        task_id="T",
+        merging_agent="codex-tools-1",
+        recognized_rco_agents=("fable-5",),
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "fable-5"
+    assert len(result["unverified_rco_block_events"]) == 1
+
+
+def test_explicit_configured_rco_set_cannot_disable_standing_rco_veto() -> None:
+    events = [
+        _event(
+            "2026-06-05T05:31:30Z",
+            "claude-rco-2",
+            "finding",
+            "security_concern",
+        )
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="codex-tools-1",
+        recognized_rco_agents=("fable-5",),
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "claude-rco-2"
+
+
 def test_unrelated_event_types_are_ignored() -> None:
     """Heartbeats, claims, handoffs etc. should not affect the gate."""
     events = [

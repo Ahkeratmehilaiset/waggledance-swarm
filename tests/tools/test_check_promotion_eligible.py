@@ -751,6 +751,40 @@ def test_configured_rco_author_veto_remains_fail_closed(
     assert report["configured_rco_agents"] == ["fable-5", "claude-rco-1"]
 
 
+@pytest.mark.parametrize("identity_binding", ["verified", "missing", "mismatch"])
+@pytest.mark.parametrize("author_agent", ["codex-lead-1", "fable-5"])
+def test_configured_rco_merging_agent_veto_remains_fail_closed(
+    identity_binding: str,
+    author_agent: str,
+) -> None:
+    events = _full_events(rco_agent="claude-rco-1")
+    veto = _event(
+        "fable-5",
+        "security_concern",
+        type_="finding",
+        ts="2026-06-05T05:31:30Z",
+    )
+    if identity_binding == "missing":
+        veto.pop("agent_uuid")
+    elif identity_binding == "mismatch":
+        veto["agent_uuid"] = AGENT_UUIDS["claude-rco-1"]
+    events.insert(2, veto)
+
+    report = _evaluate(
+        events=events,
+        rco_agents=["fable-5", "claude-rco-1"],
+        author_agent=author_agent,
+        from_agent="fable-5",
+    )
+
+    assert report["eligible"] is False
+    assert report["gate_results"]["peer_veto"]["clear_to_merge"] is False
+    assert (
+        report["gate_results"]["peer_veto"]["latest_blocking_event"]["agent"]
+        == "fable-5"
+    )
+
+
 def test_stale_author_task_alias_pass_cannot_clear_current_alias_veto() -> None:
     alias_task = TASK.replace("/", "-", 1)
     events = [

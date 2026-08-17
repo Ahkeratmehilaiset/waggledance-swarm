@@ -393,7 +393,11 @@ def check_bridge_clear_to_merge(
         ):
             continue
         agent = str(event.get("agent", ""))
-        if agent == merging_agent:
+        # The merge executor cannot supply its own ordinary peer signal, but
+        # a configured RCO's veto remains authoritative even when that RCO is
+        # also the executor.  Dropping the event here would let another RCO's
+        # later pass hide an absolute veto from the configured set.
+        if agent == merging_agent and agent not in recognized_rco_agent_set:
             continue
         author_event = bool(author_agent and agent == author_agent)
         binding_status = bridge_identity_binding_status(

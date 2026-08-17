@@ -1355,6 +1355,59 @@ def test_explicit_configured_rco_finding_blocks_by_type() -> None:
     assert result["latest_blocking_event"]["agent"] == "fable-5"
 
 
+def test_merging_agent_configured_rco_finding_still_blocks() -> None:
+    events = [
+        _event(
+            "2026-06-05T05:31:30Z",
+            "fable-5",
+            "finding",
+            "security_concern",
+        ),
+        _event(
+            "2026-06-05T05:32:00Z",
+            "claude-rco-1",
+            "decision",
+            "rco_pass",
+        ),
+    ]
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="fable-5",
+        recognized_rco_agents=("fable-5", "claude-rco-1"),
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["agent"] == "fable-5"
+
+
+def test_unverified_merging_agent_configured_rco_finding_blocks_fail_closed(
+) -> None:
+    for identity_binding in ("missing", "mismatch"):
+        event = _event(
+            "2026-06-05T05:31:30Z",
+            "fable-5",
+            "finding",
+            "security_concern",
+        )
+        if identity_binding == "missing":
+            event.pop("agent_uuid")
+        else:
+            event["agent_uuid"] = AGENT_UUIDS["claude-rco-1"]
+
+        result = check_bridge_clear_to_merge(
+            events=[event],
+            task_id="T",
+            merging_agent="fable-5",
+            recognized_rco_agents=("fable-5", "claude-rco-1"),
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["agent"] == "fable-5"
+        assert len(result["unverified_rco_block_events"]) == 1
+
+
 def test_explicit_configured_rco_informational_finding_is_advisory() -> None:
     events = [
         _event(

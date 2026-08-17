@@ -68,6 +68,9 @@ from tools.bridge_event_taxonomy import (  # noqa: E402
 # ``check_rco_pass_present.DEFAULT_RCO_AGENTS``; a drift-guard test asserts the two
 # stay equal (test-time import, no cycle).
 _RECOGNIZED_RCOS = frozenset({"claude-rco-1", "claude-rco-2"})
+INFORMATIONAL_FINDING_STATUSES = frozenset(
+    {"info", "informational", "fyi", "note", "advisory"}
+)
 
 
 DEFAULT_BRIDGE_ROOT = Path(".agent-bridge")
@@ -332,6 +335,7 @@ def check_bridge_clear_to_merge(
     author_agent: str = "",
     pr_number: int | None = None,
     identity_registry: Mapping[str, str] | None = None,
+    recognized_rco_agents: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Return the latest peer decision for task_id and whether it permits merge.
 
@@ -343,6 +347,16 @@ def check_bridge_clear_to_merge(
     authoritative signal is blocking, we refuse. Otherwise we permit.
     """
     author_agent = (author_agent or "").strip()
+    additional_rco_agents: Sequence[str] = ()
+    if isinstance(recognized_rco_agents, str):
+        additional_rco_agents = (recognized_rco_agents,)
+    elif recognized_rco_agents is not None:
+        additional_rco_agents = recognized_rco_agents
+    # An explicit promotion-specific set may extend the standing RCO set, but
+    # must never disable a veto identity that this peer gate already trusted.
+    recognized_rco_agent_set = frozenset(
+        (*_RECOGNIZED_RCOS, *additional_rco_agents)
+    )
     try:
         registry = (
             load_bridge_identity_registry()
@@ -371,7 +385,12 @@ def check_bridge_clear_to_merge(
     ignored_author_events: list[dict[str, Any]] = []
 
     for index, event in enumerate(events):
-        if not _event_matches_scope(event, task_id=task_id, pr_number=pr_number):
+        if not _event_matches_scope(
+            event,
+            task_id=task_id,
+            pr_number=pr_number,
+            author_agent=author_agent,
+        ):
             continue
         agent = str(event.get("agent", ""))
         if agent == merging_agent:
@@ -402,9 +421,13 @@ def check_bridge_clear_to_merge(
                 and (
                     event_type not in _TAXONOMY_RCO_GATED_TYPES
                     or agent in _RECOGNIZED_RCOS
+                    or (
+                        agent in recognized_rco_agent_set
+                        and not _is_informational_finding_status(status)
+                    )
                 )
             ) or _is_blocking_status(status, event_type=event_type)
-            if agent in _RECOGNIZED_RCOS and block_shaped:
+            if agent in recognized_rco_agent_set and block_shaped:
                 summary = _summarize_event(event)
                 if summary is not None:
                     summary["identity_binding_status"] = binding_status
@@ -446,6 +469,10 @@ def check_bridge_clear_to_merge(
         if event_type in _TAXONOMY_BLOCK_BY_TYPE and (
             event_type not in _TAXONOMY_RCO_GATED_TYPES
             or agent in _RECOGNIZED_RCOS
+            or (
+                agent in recognized_rco_agent_set
+                and not _is_informational_finding_status(status)
+            )
         ):
             peer_signals[agent] = (index, "block", event)
             continue
@@ -506,13 +533,44 @@ def check_bridge_clear_to_merge(
 
 
 def _event_matches_scope(
-    event: Mapping[str, Any], *, task_id: str, pr_number: int | None
+    event: Mapping[str, Any],
+    *,
+    task_id: str,
+    pr_number: int | None,
+    author_agent: str = "",
 ) -> bool:
-    if str(event.get("task_id", "")) == task_id:
+    event_task_id = str(event.get("task_id", ""))
+    task_id_scope = frozenset(
+        (task_id, *_author_task_id_aliases(task_id, author_agent))
+    )
+    if event_task_id in task_id_scope:
         return True
     if pr_number is None:
         return False
     return _event_mentions_pr(event, pr_number)
+
+
+def _author_task_id_aliases(task_id: str, author_agent: str) -> tuple[str, ...]:
+    """Return only the deterministic slash/hyphen alias in the author namespace.
+
+    Bridge producers have historically used both ``agent/rest`` and
+    ``agent-rest`` for the first namespace separator.  The author prefix keeps
+    this compatibility bounded: an unrelated same-head task never enters the
+    peer-veto scope.
+    """
+
+    aliases: list[str] = []
+    slash_prefix = f"{author_agent}/"
+    hyphen_prefix = f"{author_agent}-"
+    if author_agent and task_id.startswith(slash_prefix):
+        rest = task_id[len(slash_prefix):]
+        if rest:
+            aliases.append(f"{author_agent}-{rest}")
+    elif author_agent and task_id.startswith(hyphen_prefix):
+        rest = task_id[len(hyphen_prefix):]
+        if rest:
+            aliases.append(f"{author_agent}/{rest}")
+    return tuple(aliases)
 
 
 def _event_mentions_pr(event: Mapping[str, Any], pr_number: int) -> bool:
@@ -621,6 +679,11 @@ def _is_blocking_status(status: str, *, event_type: str = "") -> bool:
     ):
         return False
     return True
+
+
+def _is_informational_finding_status(status: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+    return normalized in INFORMATIONAL_FINDING_STATUSES
 
 
 def _has_non_blocking_context_status(status: str) -> bool:

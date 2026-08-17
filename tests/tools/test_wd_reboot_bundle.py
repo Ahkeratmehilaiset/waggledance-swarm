@@ -3344,6 +3344,26 @@ $exact = Resolve-LanePinState `
   -ActualBranch $lane.branch `
   -ActualHead $lane.head `
   -LiveCount 0
+$exactLive = Resolve-LanePinState `
+  -Lane $lane `
+  -PrimaryRepoRoot 'C:\\Python\\project2' `
+  -ActualBranch $lane.branch `
+  -ActualHead $lane.head `
+  -LiveCount 1 `
+  -LiveGenerationAttested:$true
+try {{
+  [void](Resolve-LanePinState `
+    -Lane $lane `
+    -PrimaryRepoRoot 'C:\\Python\\project2' `
+    -ActualBranch $lane.branch `
+    -ActualHead $lane.head `
+    -LiveCount 1 `
+    -LiveGenerationAttested:$false)
+  $unattestedExactRejected = $false
+}}
+catch {{
+  $unattestedExactRejected = $_.Exception.Message -like '*unattested live generation*'
+}}
 $liveDrift = Resolve-LanePinState `
   -Lane $lane `
   -PrimaryRepoRoot 'C:\\Python\\project2' `
@@ -3368,7 +3388,7 @@ try {{
   $unattestedLiveDriftRejected = $false
 }}
 catch {{
-  $unattestedLiveDriftRejected = $_.Exception.Message -like '*branch mismatch*'
+  $unattestedLiveDriftRejected = $_.Exception.Message -like '*unattested live generation*'
 }}
 $dedicatedLane = [pscustomobject]@{{
   agent = 'claude-rco-1'
@@ -3418,6 +3438,8 @@ catch {{
 }}
 [pscustomobject]@{{
   exact = [bool]$exact.exact
+  exact_live = [bool]$exactLive.exact
+  unattested_exact_rejected = $unattestedExactRejected
   live_drift_exact = [bool]$liveDrift.exact
   live_drift_summary = [string]$liveDrift.summary
   cold_drift_exact = [bool]$coldDrift.exact
@@ -3431,6 +3453,8 @@ catch {{
     )
     assert json.loads(result.stdout) == {
         "exact": True,
+        "exact_live": True,
+        "unattested_exact_rejected": True,
         "live_drift_exact": False,
         "live_drift_summary": (
             "attested live process; current worktree drift accepted without relaunch"

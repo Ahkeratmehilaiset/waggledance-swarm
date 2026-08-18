@@ -9,12 +9,16 @@ open requests.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from tools.bridge_next_action import (
     CLOSED_REQUEST_STATUSES,
     recommend_next_action,
 )
+
+FIXTURE_NOW = datetime.fromisoformat("2026-06-11T09:31:00+00:00")
 
 
 def _event(status: str) -> dict[str, object]:
@@ -35,6 +39,7 @@ def test_exact_closed_request_statuses_are_not_open_incoming(status: str) -> Non
         agent="codex-tools-1",
         events=[_event(status)],
         claims=[],
+        now_utc=FIXTURE_NOW,
     )
 
     assert report["action"] == "claim_unblocked_work"
@@ -57,6 +62,7 @@ def test_request_statuses_remain_open_incoming(status: str) -> None:
         agent="codex-tools-1",
         events=[_event(status)],
         claims=[],
+        now_utc=FIXTURE_NOW,
     )
 
     assert report["action"] == "answer_incoming"
@@ -79,6 +85,7 @@ def test_retraction_statuses_are_not_open_incoming(status: str) -> None:
         agent="codex-tools-1",
         events=[_event(status)],
         claims=[],
+        now_utc=FIXTURE_NOW,
     )
 
     assert report["action"] == "claim_unblocked_work"
@@ -98,6 +105,7 @@ def test_observed_statuses_are_not_open_incoming(status: str) -> None:
         agent="codex-tools-1",
         events=[_event(status)],
         claims=[],
+        now_utc=FIXTURE_NOW,
     )
 
     assert report["action"] == "claim_unblocked_work"
@@ -119,6 +127,7 @@ def test_negated_terminal_status_words_do_not_close_requests(status: str) -> Non
         agent="codex-tools-1",
         events=[_event(status)],
         claims=[],
+        now_utc=FIXTURE_NOW,
     )
 
     assert report["action"] == "answer_incoming"

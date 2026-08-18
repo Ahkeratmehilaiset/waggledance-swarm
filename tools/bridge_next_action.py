@@ -133,6 +133,64 @@ CLOSED_REQUEST_STATUSES = frozenset(
         "withdrawn",
     }
 )
+REQUESTER_TERMINAL_EVENT_TYPES = frozenset(
+    {"status", "done", "release", "decision"}
+)
+REQUESTER_TERMINAL_STATUS_STEMS = (
+    "done",
+    "closed",
+    "superseded",
+    "merged",
+    "abandoned",
+    "completed",
+    "approved",
+    "cancelled",
+    "canceled",
+)
+REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS = (
+    "closed",
+    "superseded",
+    "cancelled",
+    "canceled",
+)
+REQUESTER_EXPLICIT_TERMINAL_STATUSES = frozenset(
+    {
+        "autonomous_merge_receipt",
+        "changes_requested_retracted",
+        "changes_requested_resolved",
+        "changes_requested_withdrawn",
+        "finding_retracted",
+        "finding_withdrawn",
+        "rco_closed_postmerge",
+        "rco_finding_retracted",
+        "rco_finding_withdrawn",
+    }
+)
+REQUESTER_NONTERMINAL_STATUS_TOKENS = frozenset(
+    {
+        "ack",
+        "acknowledged",
+        "cannot",
+        "failed",
+        "failure",
+        "incomplete",
+        "missing",
+        "needed",
+        "never",
+        "not",
+        "notyet",
+        "open",
+        "pending",
+        "progress",
+        "received",
+        "request",
+        "requested",
+        "required",
+        "seen",
+        "unresolved",
+        "working",
+    }
+)
 ANSWER_STATUS_FRAGMENTS = (
     "accepted",
     "ack",
@@ -192,7 +250,6 @@ TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
 PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
-TERMINAL_RECEIPT_AGENT_KEY = "terminal-receipt"
 
 
 class BridgeNextActionError(ValueError):
@@ -565,7 +622,7 @@ def recommend_next_action(
             }
         )
 
-    effective_now = now_utc or _latest_event_time(events) or datetime.now(timezone.utc)
+    effective_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     active_claims, stale_claims = _split_active_and_stale_claims(
         claims,
         now_utc=effective_now,
@@ -576,7 +633,11 @@ def recommend_next_action(
         for claim in active_claims
         if claim.agent != agent and claim.mode == "write"
     ]
-    all_open_requests = _open_requests_for_agent(agent=agent, events=events)
+    all_open_requests = _open_requests_for_agent(
+        agent=agent,
+        events=events,
+        now_utc=effective_now,
+    )
     open_request_events, stale_open_requests = _split_fresh_and_stale_requests(
         all_open_requests,
         now_utc=effective_now,
@@ -776,31 +837,39 @@ def _open_requests_for_agent(
     *,
     agent: str,
     events: Sequence[Mapping[str, Any]],
+    now_utc: datetime,
 ) -> list[Mapping[str, Any]]:
     closure_index = _build_request_closure_index(events)
     idle_progress_index = _build_idle_protocol_progress_index(events)
-    requests = [
-        event
-        for event in events
-        if _is_request_like(event) and _addressed_to(event, agent)
-    ]
+    current_utc = now_utc.astimezone(timezone.utc)
+    requests: list[tuple[int, Mapping[str, Any]]] = []
+    for event_index, event in enumerate(events):
+        if not _is_request_like(event) or not _addressed_to(event, agent):
+            continue
+        request_ts = _parse_utc(_event_ts(event))
+        if request_ts is None or request_ts > current_utc:
+            continue
+        requests.append((event_index, event))
     open_requests: list[Mapping[str, Any]] = []
-    for request in requests:
+    for request_index, request in requests:
         if _is_direct_rco_pass_block_request(agent=agent, event=request):
             answered = _direct_rco_pass_block_request_closed(
                 request=request,
+                request_index=request_index,
                 agent=agent,
                 events=events,
             )
         else:
             answered = _request_closed_by_index(
                 request=request,
+                request_index=request_index,
                 agent=agent,
                 closure_index=closure_index,
             )
         if not answered and _idle_protocol_progressed_by_index(
             request,
-            idle_progress_index,
+            request_index=request_index,
+            progress_index=idle_progress_index,
         ):
             answered = True
         if not answered:
@@ -810,14 +879,15 @@ def _open_requests_for_agent(
 
 def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, dict[str, str]]:
-    """Return latest answer-like event timestamps by task and closing agent."""
-    closure_index: dict[str, dict[str, str]] = {}
-    for event in events:
-        if not _is_answer_like(event):
+) -> dict[str, dict[str, int]]:
+    """Return target answers and identity-bound requester closures by task."""
+    closure_index: dict[str, dict[str, int]] = {}
+    for event_index, event in enumerate(events):
+        answer_like = _is_answer_like(event)
+        requester_terminal = _is_requester_terminal_closure(event)
+        if not answer_like and not requester_terminal:
             continue
         event_agent = _event_agent(event)
-        event_ts = _event_ts(event)
         task_id = _task_id(event)
         if task_id:
             closure_keys = {_task_closure_key(task_id)}
@@ -828,28 +898,23 @@ def _build_request_closure_index(
             closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
             task_closures = closure_index.setdefault(closure_key, {})
-            if event_ts > task_closures.get(event_agent, ""):
-                task_closures[event_agent] = event_ts
-            if _is_same_task_terminal_receipt(event):
-                if event_ts > task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, ""):
-                    task_closures[TERMINAL_RECEIPT_AGENT_KEY] = event_ts
-            if closure_key.startswith(
-                PR_CLOSURE_KEY_PREFIX
-            ) and _is_explicit_terminal_pr_closure(event):
-                terminal_agent = _pr_requester_terminal_agent_key(event_agent)
-                if event_ts > task_closures.get(terminal_agent, ""):
-                    task_closures[terminal_agent] = event_ts
+            if answer_like and event_index > task_closures.get(event_agent, -1):
+                task_closures[event_agent] = event_index
+            if requester_terminal:
+                for terminal_agent in _requester_terminal_closure_keys(event):
+                    if event_index > task_closures.get(terminal_agent, -1):
+                        task_closures[terminal_agent] = event_index
     return closure_index
 
 
 def _request_closed_by_index(
     *,
     request: Mapping[str, Any],
+    request_index: int,
     agent: str,
-    closure_index: Mapping[str, Mapping[str, str]],
+    closure_index: Mapping[str, Mapping[str, int]],
 ) -> bool:
     task_id = _task_id(request)
-    request_ts = _event_ts(request)
     closure_keys = []
     if task_id:
         closure_keys.append(_task_closure_key(task_id))
@@ -865,22 +930,21 @@ def _request_closed_by_index(
         task_closures = closure_index.get(pr_closure_key, {})
         if task_closures:
             target_agent = agent.lower()
-            if task_closures.get(target_agent, "") > request_ts:
+            if task_closures.get(target_agent, -1) > request_index:
                 return True
-            requester_terminal_agent = _pr_requester_terminal_agent_key(
-                _event_agent(request)
-            )
-            if task_closures.get(requester_terminal_agent, "") > request_ts:
+            requester_terminal_agent = _requester_terminal_request_key(request)
+            if task_closures.get(requester_terminal_agent, -1) > request_index:
                 return True
     for closure_key in closure_keys:
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
             continue
-        if task_closures.get(TERMINAL_RECEIPT_AGENT_KEY, "") > request_ts:
+        target_agent = agent.lower()
+        if task_closures.get(target_agent, -1) > request_index:
             return True
-        for closing_agent in {agent.lower(), _event_agent(request)}:
-            if task_closures.get(closing_agent, "") > request_ts:
-                return True
+        requester_terminal_agent = _requester_terminal_request_key(request)
+        if task_closures.get(requester_terminal_agent, -1) > request_index:
+            return True
     return False
 
 
@@ -901,7 +965,7 @@ def _empty_task_closure_keys_for_answer(event: Mapping[str, Any]) -> set[str]:
     return keys
 
 
-def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
+def _pr_number_for_event(event: Mapping[str, Any]) -> str | None:
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
         return None
@@ -909,32 +973,120 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
         value = payload.get(key)
         if isinstance(value, bool):
             continue
-        if isinstance(value, int):
-            return f"{PR_CLOSURE_KEY_PREFIX}{value}"
+        if isinstance(value, int) and value > 0:
+            return str(value)
         if isinstance(value, str):
             normalized = value.strip()
-            if normalized.isdecimal():
-                return f"{PR_CLOSURE_KEY_PREFIX}{int(normalized)}"
+            if normalized.isdecimal() and int(normalized) > 0:
+                return str(int(normalized))
     return None
 
 
-def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) == "done"
-        or _event_status(event) in CLOSED_REQUEST_STATUSES
+def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
+    pr_number = _pr_number_for_event(event)
+    return f"{PR_CLOSURE_KEY_PREFIX}{pr_number}" if pr_number else None
+
+
+def _is_requester_terminal_closure(event: Mapping[str, Any]) -> bool:
+    """Return whether an original requester explicitly closes its request."""
+    event_type = _event_type(event)
+    status = _event_status(event)
+    if not status:
+        return False
+    if event_type == "message":
+        stems = REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS
+    elif event_type in REQUESTER_TERMINAL_EVENT_TYPES:
+        stems = REQUESTER_TERMINAL_STATUS_STEMS
+    else:
+        return False
+    if event_type != "message" and status in REQUESTER_EXPLICIT_TERMINAL_STATUSES:
+        return True
+    status_tokens = _status_tokens(status)
+    if status_tokens.intersection(REQUESTER_NONTERMINAL_STATUS_TOKENS):
+        return False
+    return any(status == stem or status.startswith(f"{stem}_") for stem in stems)
+
+
+def _requester_identity_value(
+    event: Mapping[str, Any],
+    field: str,
+    *,
+    lowercase: bool = False,
+) -> str:
+    value = str(event.get(field, "") or "").strip()
+    return value.lower() if lowercase else value
+
+
+def _requester_terminal_agent_key(
+    *,
+    agent: str,
+    agent_uuid: str = "",
+    session_id: str = "",
+) -> str:
+    identity = {
+        "agent": agent.lower(),
+        "agent_uuid": agent_uuid.lower(),
+        "session_id": session_id,
+    }
+    return PR_REQUESTER_TERMINAL_AGENT_PREFIX + json.dumps(
+        identity,
+        separators=(",", ":"),
+        sort_keys=True,
     )
 
 
-def _is_same_task_terminal_receipt(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) == "decision"
-        and _event_status(event) == "autonomous_merge_receipt"
-        and bool(_task_id(event))
+def _requester_terminal_closure_keys(event: Mapping[str, Any]) -> set[str]:
+    """Return aliases able to close legacy or identity-bound requests."""
+    agent = _event_agent(event)
+    agent_uuid = _requester_identity_value(event, "agent_uuid", lowercase=True)
+    session_id = _requester_identity_value(event, "session_id")
+    identities = {("", "")}
+    if agent_uuid:
+        identities.add((agent_uuid, ""))
+    if session_id:
+        identities.add(("", session_id))
+    if agent_uuid and session_id:
+        identities.add((agent_uuid, session_id))
+    return {
+        _requester_terminal_agent_key(
+            agent=agent,
+            agent_uuid=identity_uuid,
+            session_id=identity_session,
+        )
+        for identity_uuid, identity_session in identities
+    }
+
+
+def _requester_terminal_request_key(request: Mapping[str, Any]) -> str:
+    """Return the most-specific requester identity required by a request."""
+    return _requester_terminal_agent_key(
+        agent=_event_agent(request),
+        agent_uuid=_requester_identity_value(request, "agent_uuid", lowercase=True),
+        session_id=_requester_identity_value(request, "session_id"),
     )
 
 
-def _pr_requester_terminal_agent_key(agent: str) -> str:
-    return f"{PR_REQUESTER_TERMINAL_AGENT_PREFIX}{agent}"
+def _requester_identity_matches(
+    request: Mapping[str, Any],
+    closure: Mapping[str, Any],
+) -> bool:
+    """Bind requester closeout to every identity field present on the request."""
+    if _event_agent(request) != _event_agent(closure):
+        return False
+    request_uuid = _requester_identity_value(request, "agent_uuid", lowercase=True)
+    if request_uuid and request_uuid != _requester_identity_value(
+        closure,
+        "agent_uuid",
+        lowercase=True,
+    ):
+        return False
+    request_session = _requester_identity_value(request, "session_id")
+    if request_session and request_session != _requester_identity_value(
+        closure,
+        "session_id",
+    ):
+        return False
+    return True
 
 
 def _deduplicate_repeated_wake_requests(
@@ -951,7 +1103,7 @@ def _deduplicate_repeated_wake_requests(
             deduped.append(request)
             continue
         key = (
-            _event_agent(request),
+            _requester_terminal_request_key(request),
             _task_id(request),
             _event_status(request),
             target,
@@ -1100,25 +1252,14 @@ def _is_stale_claim(claim: Claim, *, now_utc: datetime) -> bool:
     return now_utc.astimezone(timezone.utc) >= effective_expiry
 
 
-def _idle_protocol_progressed(
-    request: Mapping[str, Any],
-    events: Sequence[Mapping[str, Any]],
-) -> bool:
-    return _idle_protocol_progressed_by_index(
-        request,
-        _build_idle_protocol_progress_index(events),
-    )
-
-
 def _build_idle_protocol_progress_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, str]:
-    progress_index: dict[str, str] = {}
-    for event in events:
+) -> dict[str, int]:
+    progress_index: dict[str, int] = {}
+    for event_index, event in enumerate(events):
         payload = _payload(event)
         if payload.get("protocol_version") != "idle-protocol.v1":
             continue
-        event_ts = _event_ts(event)
         for field in (
             "responds_to",
             "consensus_target_proposal_id",
@@ -1126,14 +1267,16 @@ def _build_idle_protocol_progress_index(
             "rejected_event_id",
         ):
             proposal_id = str(payload.get(field) or "")
-            if proposal_id and event_ts > progress_index.get(proposal_id, ""):
-                progress_index[proposal_id] = event_ts
+            if proposal_id and event_index > progress_index.get(proposal_id, -1):
+                progress_index[proposal_id] = event_index
     return progress_index
 
 
 def _idle_protocol_progressed_by_index(
     request: Mapping[str, Any],
-    progress_index: Mapping[str, str],
+    *,
+    request_index: int,
+    progress_index: Mapping[str, int],
 ) -> bool:
     payload = _payload(request)
     if payload.get("protocol_version") != "idle-protocol.v1":
@@ -1141,8 +1284,7 @@ def _idle_protocol_progressed_by_index(
     proposal_id = str(payload.get("proposal_id") or "")
     if not proposal_id:
         return False
-    request_ts = _event_ts(request)
-    return progress_index.get(proposal_id, "") > request_ts
+    return progress_index.get(proposal_id, -1) > request_index
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
@@ -1217,17 +1359,16 @@ def _is_rco_agent(agent: str) -> bool:
 def _direct_rco_pass_block_request_closed(
     *,
     request: Mapping[str, Any],
+    request_index: int,
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> bool:
-    request_ts = _event_ts(request)
     request_task_id = _task_id(request)
     request_pr_key = _pr_closure_key_for_event(request)
     requester = _event_agent(request)
     target = agent.lower()
-    for event in events:
-        event_ts = _event_ts(event)
-        if event_ts <= request_ts:
+    for event_index, event in enumerate(events):
+        if event_index <= request_index:
             continue
         same_task = bool(request_task_id and _task_id(event) == request_task_id)
         event_pr_key = _pr_closure_key_for_event(event)
@@ -1237,7 +1378,11 @@ def _direct_rco_pass_block_request_closed(
         event_agent = _event_agent(event)
         if event_agent == target and _is_substantive_rco_pass_block_response(event):
             return True
-        if event_agent == requester and _is_explicit_terminal_pr_closure(event):
+        if (
+            event_agent == requester
+            and _is_requester_terminal_closure(event)
+            and _requester_identity_matches(request, event)
+        ):
             return True
     return False
 
@@ -1439,15 +1584,6 @@ def _bounded_message(value: object) -> str:
     return message
 
 
-def _latest_event_time(events: Sequence[Mapping[str, Any]]) -> datetime | None:
-    parsed = [
-        value
-        for value in (_parse_utc(_event_ts(event)) for event in events)
-        if value is not None
-    ]
-    return max(parsed) if parsed else None
-
-
 def _parse_utc(value: str) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -1461,6 +1597,17 @@ def _parse_utc(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _admitted_event_time(
+    event: Mapping[str, Any],
+    *,
+    now_utc: datetime,
+) -> datetime | None:
+    event_ts = _parse_utc(_event_ts(event))
+    if event_ts is None or event_ts > now_utc.astimezone(timezone.utc):
+        return None
+    return event_ts
 
 
 def _trim_fractional_seconds(value: str) -> str:
@@ -1510,11 +1657,12 @@ def _production_liveness_report(
     if idle_warn_minutes is None:
         return {}
 
+    current_utc = now_utc.astimezone(timezone.utc)
     suppressed_lookup = dict(suppressed_agents or {})
     identity_registry = _load_liveness_identity_registry()
     states: dict[str, dict[str, Any]] = {}
     for event in events:
-        event_ts = _parse_utc(_event_ts(event))
+        event_ts = _admitted_event_time(event, now_utc=current_utc)
         if event_ts is None:
             continue
         event_agent = _event_agent(event)
@@ -1609,7 +1757,7 @@ def _production_liveness_report(
     wake_delivery = _wake_delivery_liveness_summary(
         events=events,
         bridge_root=bridge_root,
-        now_utc=now_utc,
+        now_utc=current_utc,
     )
     if not stalled and not suppressed_stalled and not wake_delivery:
         return {}
@@ -1671,11 +1819,14 @@ def _wake_delivery_liveness_summary(
     bridge_root: Path | None,
     now_utc: datetime,
 ) -> dict[str, Any]:
-    groups = _unresolved_wake_delivery_groups(events)
+    groups = _unresolved_wake_delivery_groups(events, now_utc=now_utc)
     stalled: list[dict[str, Any]] = []
     self_pacing: list[dict[str, Any]] = []
     max_age_minutes = DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS * 60.0
-    self_liveness_by_agent = _latest_wake_delivery_self_liveness_by_agent(events)
+    self_liveness_by_agent = _latest_wake_delivery_self_liveness_by_agent(
+        events,
+        now_utc=now_utc,
+    )
     for group in groups.values():
         first_ts = _parse_utc(str(group["first_ts_utc"]))
         last_ts = _parse_utc(str(group["last_ts_utc"]))
@@ -1824,19 +1975,26 @@ def _wake_delivery_escalation_from_liveness(
 
 def _unresolved_wake_delivery_groups(
     events: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for event in events:
         event_agent = _event_agent(event)
-        event_ts = _event_ts(event)
         if event_agent and _is_wake_delivery_activity(event):
             _clear_wake_delivery_groups_for_target_activity(
                 groups,
                 event_agent=event_agent,
-                event_ts=event_ts,
             )
         _clear_wake_delivery_groups_for_terminal_task(groups, event)
-        _record_wake_send_failure_for_groups(groups, event)
+        admitted_ts = _admitted_event_time(event, now_utc=now_utc)
+        if admitted_ts is None:
+            continue
+        _record_wake_send_failure_for_groups(
+            groups,
+            event,
+            admitted_ts=admitted_ts,
+        )
         if _event_type(event) != "wake_request":
             continue
         if _event_status(event) in CLOSED_REQUEST_STATUSES:
@@ -1844,6 +2002,7 @@ def _unresolved_wake_delivery_groups(
         task_id = _task_id(event)
         if not task_id:
             continue
+        event_ts = _event_ts(event)
         for target in _event_recipients(event):
             if not target or target == event_agent:
                 continue
@@ -1862,9 +2021,11 @@ def _unresolved_wake_delivery_groups(
                     "last_status": _event_status(event),
                 }
                 continue
-            existing["last_ts_utc"] = event_ts
             existing["wake_request_count"] = int(existing["wake_request_count"]) + 1
-            existing["last_status"] = _event_status(event)
+            existing_last_ts = _parse_utc(str(existing["last_ts_utc"]))
+            if existing_last_ts is None or admitted_ts >= existing_last_ts:
+                existing["last_ts_utc"] = event_ts
+                existing["last_status"] = _event_status(event)
             if event_agent:
                 requesters = existing["requesters"]
                 if isinstance(requesters, set):
@@ -1875,6 +2036,8 @@ def _unresolved_wake_delivery_groups(
 def _record_wake_send_failure_for_groups(
     groups: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
+    *,
+    admitted_ts: datetime,
 ) -> None:
     target = _wake_send_failed_target(event)
     if not target:
@@ -1883,17 +2046,17 @@ def _record_wake_send_failure_for_groups(
     for (group_target, _task_id_value), group in groups.items():
         if group_target != target:
             continue
-        if event_ts and str(group.get("first_ts_utc") or "") and event_ts < str(
-            group["first_ts_utc"]
-        ):
-            continue
         group["wake_send_failed_count"] = int(
             group.get("wake_send_failed_count") or 0
         ) + 1
-        group["latest_wake_send_failed_ts_utc"] = event_ts
-        group["latest_wake_send_failed_message"] = _bounded_message(
-            event.get("message")
+        previous_ts = _parse_utc(
+            str(group.get("latest_wake_send_failed_ts_utc") or "")
         )
+        if previous_ts is None or admitted_ts >= previous_ts:
+            group["latest_wake_send_failed_ts_utc"] = event_ts
+            group["latest_wake_send_failed_message"] = _bounded_message(
+                event.get("message")
+            )
 
 
 def _wake_send_failed_target(event: Mapping[str, Any]) -> str:
@@ -1918,13 +2081,15 @@ def _is_wake_delivery_self_liveness_activity(event: Mapping[str, Any]) -> bool:
 
 def _latest_wake_delivery_self_liveness_by_agent(
     events: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
 ) -> dict[str, datetime]:
     latest: dict[str, datetime] = {}
     for event in events:
         agent = _event_agent(event)
         if not agent or not _is_wake_delivery_self_liveness_activity(event):
             continue
-        event_ts = _parse_utc(_event_ts(event))
+        event_ts = _admitted_event_time(event, now_utc=now_utc)
         if event_ts is None:
             continue
         existing = latest.get(agent)
@@ -1990,15 +2155,12 @@ def _clear_wake_delivery_groups_for_target_activity(
     groups: dict[tuple[str, str], dict[str, Any]],
     *,
     event_agent: str,
-    event_ts: str,
 ) -> None:
     for key, group in list(groups.items()):
         target, _task_id_value = key
         if target != event_agent:
             continue
-        last_ts = str(group["last_ts_utc"])
-        if event_ts and event_ts > last_ts:
-            del groups[key]
+        del groups[key]
 
 
 def _clear_wake_delivery_groups_for_terminal_task(

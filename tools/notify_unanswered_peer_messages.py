@@ -36,15 +36,18 @@ from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
     PRIVATE_MARKERS,
+    _build_idle_protocol_progress_index,
     _event_agent,
     _event_status,
     _event_ts,
     _event_type,
-    _idle_protocol_progressed,
+    _idle_protocol_progressed_by_index,
     _is_answer_like,
     _is_request_like,
+    _is_requester_terminal_closure,
     _message,
     _parse_utc,
+    _requester_identity_matches,
     _split_fresh_and_stale_requests,
     _task_id,
     read_events,
@@ -166,7 +169,11 @@ def surface_unanswered_peer_messages(
             _error_report("open_request_max_age_hours must be positive")
         )
 
-    open_requests = _open_requests_for_agent(agent=agent, events=events)
+    open_requests = _open_requests_for_agent(
+        agent=agent,
+        events=events,
+        now_utc=now_utc,
+    )
     fresh, stale = _split_fresh_and_stale_requests(
         open_requests,
         now_utc=now_utc,
@@ -212,34 +219,46 @@ def _open_requests_for_agent(
     *,
     agent: str,
     events: Sequence[Mapping[str, Any]],
+    now_utc: datetime,
 ) -> list[Mapping[str, Any]]:
+    current_utc = now_utc.astimezone(timezone.utc)
     requests = [
-        event
-        for event in events
+        (event_index, event)
+        for event_index, event in enumerate(events)
         if _is_peer_request_like(event)
         and _event_agent(event) != agent
         and _addressed_to(event, agent)
         and _task_id(event)
+        and (request_ts := _parse_utc(_event_ts(event))) is not None
+        and request_ts <= current_utc
     ]
+    idle_progress_index = _build_idle_protocol_progress_index(events)
     open_requests: list[Mapping[str, Any]] = []
-    for request in requests:
-        request_ts = _event_ts(request)
+    for request_index, request in requests:
         task_id = _task_id(request)
+        later_events = events[request_index + 1 :]
         answered = any(
             _event_agent(event) == agent
             and _task_id(event) == task_id
-            and _event_ts(event) > request_ts
             and _is_substantive_answer_like(event)
-            for event in events
+            for event in later_events
         )
         if not answered:
             answered = any(
                 _task_id(event) == task_id
-                and _event_ts(event) > request_ts
-                and _is_closing_event_like(event)
-                for event in events
+                and _event_agent(event) == _event_agent(request)
+                and _requester_identity_matches(request, event)
+                and (
+                    _is_closing_event_like(event)
+                    or _is_requester_terminal_closure(event)
+                )
+                for event in later_events
             )
-        if not answered and _idle_protocol_progressed(request, events):
+        if not answered and _idle_protocol_progressed_by_index(
+            request,
+            request_index=request_index,
+            progress_index=idle_progress_index,
+        ):
             answered = True
         if not answered:
             open_requests.append(request)

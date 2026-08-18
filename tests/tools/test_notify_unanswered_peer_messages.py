@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tools.notify_unanswered_peer_messages import (
     PeerNotificationError,
     main,
@@ -110,6 +112,132 @@ def test_answered_request_does_not_create_marker(tmp_path: Path) -> None:
     assert not (tmp_path / "inbox" / "claude").exists()
 
 
+@pytest.mark.parametrize("answer_ts", ["2099-05-21T18:16:04Z", "not-a-timestamp"])
+def test_prior_answer_does_not_close_later_appended_request(
+    tmp_path: Path,
+    answer_ts: str,
+) -> None:
+    report = surface_unanswered_peer_messages(
+        agent="claude",
+        events=[
+            {
+                "ts_utc": answer_ts,
+                "agent": "claude",
+                "to": "codex",
+                "type": "message",
+                "task_id": "append-order-status-query",
+                "status": "late_status_response",
+                "message": "answer was appended before the request",
+            },
+            {
+                "ts_utc": "2026-05-21T18:13:42Z",
+                "agent": "codex",
+                "to": "claude",
+                "type": "message",
+                "task_id": "append-order-status-query",
+                "status": "status_query",
+                "message": "what are you doing?",
+            },
+        ],
+        out_dir=tmp_path / "inbox" / "claude",
+        now_utc=_now(),
+        apply=False,
+    )
+
+    assert report["marker_count"] == 1
+    assert not (tmp_path / "inbox" / "claude").exists()
+
+
+@pytest.mark.parametrize("progress_ts", ["2099-05-21T18:16:04Z", "not-a-timestamp"])
+def test_prior_idle_progress_does_not_close_later_peer_marker(
+    tmp_path: Path,
+    progress_ts: str,
+) -> None:
+    progress = {
+        "ts_utc": progress_ts,
+        "agent": "claude",
+        "to": "codex",
+        "type": "message",
+        "task_id": "idle-progress",
+        "status": "idle_counter_proposal",
+        "message": "progress appended before the proposal",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "proposal_id": "counter-1",
+            "responds_to": "proposal-1",
+        },
+    }
+    proposal = {
+        "ts_utc": "2026-05-21T18:13:42Z",
+        "agent": "codex",
+        "to": "claude",
+        "type": "message",
+        "task_id": "idle-proposal",
+        "status": "idle_proposal",
+        "message": "proposal appended later",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "proposal_id": "proposal-1",
+        },
+    }
+
+    report = surface_unanswered_peer_messages(
+        agent="claude",
+        events=[progress, proposal],
+        out_dir=tmp_path / "inbox" / "claude",
+        now_utc=_now(),
+        apply=False,
+    )
+
+    assert report["marker_count"] == 1
+    assert not (tmp_path / "inbox" / "claude").exists()
+
+
+@pytest.mark.parametrize("progress_ts", ["2026-05-21T18:00:00Z", "not-a-timestamp"])
+def test_later_idle_progress_closes_peer_marker_by_append_order(
+    tmp_path: Path,
+    progress_ts: str,
+) -> None:
+    proposal = {
+        "ts_utc": "2026-05-21T18:13:42Z",
+        "agent": "codex",
+        "to": "claude",
+        "type": "message",
+        "task_id": "idle-proposal",
+        "status": "idle_proposal",
+        "message": "proposal",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "proposal_id": "proposal-1",
+        },
+    }
+    progress = {
+        "ts_utc": progress_ts,
+        "agent": "claude",
+        "to": "codex",
+        "type": "message",
+        "task_id": "idle-progress",
+        "status": "idle_counter_proposal",
+        "message": "progress appended later",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "proposal_id": "counter-1",
+            "responds_to": "proposal-1",
+        },
+    }
+
+    report = surface_unanswered_peer_messages(
+        agent="claude",
+        events=[proposal, progress],
+        out_dir=tmp_path / "inbox" / "claude",
+        now_utc=_now(),
+        apply=False,
+    )
+
+    assert report["marker_count"] == 0
+    assert not (tmp_path / "inbox" / "claude").exists()
+
+
 def test_passive_ack_message_does_not_clear_peer_marker(tmp_path: Path) -> None:
     for status in ("acknowledged", "received", "seen"):
         report = surface_unanswered_peer_messages(
@@ -173,6 +301,54 @@ def test_originator_done_closes_obsolete_rco_request(tmp_path: Path) -> None:
 
     assert report["marker_count"] == 0
     assert not (tmp_path / "inbox" / "claude").exists()
+
+
+@pytest.mark.parametrize(
+    ("closer_agent", "closer_session", "expected_markers"),
+    [
+        ("merge-driver", "session-a", 1),
+        ("codex", "stale-session", 1),
+        ("codex", "session-a", 0),
+    ],
+)
+def test_terminal_receipt_closes_only_matching_requester_identity(
+    tmp_path: Path,
+    closer_agent: str,
+    closer_session: str,
+    expected_markers: int,
+) -> None:
+    request = {
+        "ts_utc": "2026-05-21T18:00:42Z",
+        "agent": "codex",
+        "agent_uuid": "uuid-a",
+        "session_id": "session-a",
+        "to": "claude",
+        "type": "handoff",
+        "task_id": "identity-bound-review",
+        "status": "rco_requested",
+        "message": "please review",
+    }
+    receipt = {
+        "ts_utc": "2026-05-21T18:11:45Z",
+        "agent": closer_agent,
+        "agent_uuid": "uuid-a",
+        "session_id": closer_session,
+        "to": "operator",
+        "type": "decision",
+        "task_id": "identity-bound-review",
+        "status": "autonomous_merge_receipt",
+        "message": "receipt",
+    }
+
+    report = surface_unanswered_peer_messages(
+        agent="claude",
+        events=[request, receipt],
+        out_dir=tmp_path / "inbox" / "claude",
+        now_utc=_now(),
+        apply=False,
+    )
+
+    assert report["marker_count"] == expected_markers
 
 
 def test_self_addressed_request_is_not_surfaced_as_peer_marker(

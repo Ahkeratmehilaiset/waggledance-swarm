@@ -23,7 +23,6 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
     _event_agent,
     _event_recipients,
@@ -31,8 +30,11 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_ts,
     _event_type,
     _is_request_like,
-    _latest_event_time,
+    _is_requester_terminal_closure,
     _parse_utc,
+    _pr_number_for_event,
+    _requester_identity_matches,
+    _requester_terminal_request_key,
     _task_id,
     read_events,
     recommend_next_action,
@@ -171,11 +173,7 @@ def build_rco_readiness_report(
 ) -> dict[str, Any]:
     """Return wake/pass-block readiness for one RCO lane."""
     target = _normalize_rco_agent(agent)
-    effective_now = (
-        now_utc
-        or _latest_event_time(events)
-        or datetime.now(timezone.utc).astimezone(timezone.utc)
-    )
+    effective_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     direct_requests = _open_direct_rco_pass_block_requests(
         events=events,
         agent=target,
@@ -252,13 +250,26 @@ def _open_direct_rco_pass_block_requests(
         max_age_minutes = max_age_hours * 60.0
     else:
         max_age_minutes = None
-    open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    current_utc = now_utc.astimezone(timezone.utc)
+    open_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
         _close_direct_requests(open_by_key, event, target_agent=agent)
         if not _is_direct_rco_pass_block_request(agent=agent, event=event):
             continue
+        event_ts = _parse_utc(_event_ts(event))
+        if event_ts is None or event_ts > current_utc:
+            continue
         task_id = _task_id(event)
-        key = (task_id, _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number"))
+        key = (
+            task_id,
+            _pr_number_for_event(event) or "",
+            _requester_terminal_request_key(event),
+        )
+        existing = open_by_key.get(key)
+        if existing is not None:
+            existing_ts = _parse_utc(str(existing.get("ts_utc") or ""))
+            if existing_ts is not None and event_ts <= existing_ts:
+                continue
         open_by_key[key] = {
             "target_agent": agent,
             "requester": _event_agent(event),
@@ -269,7 +280,8 @@ def _open_direct_rco_pass_block_requests(
             "message": _safe_message(event.get("message")),
             "event_index": index,
             "head": _payload_scalar(event, "head"),
-            "pr": _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number"),
+            "pr": _pr_number_for_event(event) or "",
+            "_request_event": event,
         }
 
     rows: list[dict[str, Any]] = []
@@ -283,6 +295,7 @@ def _open_direct_rco_pass_block_requests(
         if max_age_minutes is not None and age_minutes > max_age_minutes:
             continue
         row = dict(state)
+        row.pop("_request_event", None)
         row["age_minutes"] = round(age_minutes, 3)
         row["priority"] = "direct_rco_pass_block"
         rows.append(row)
@@ -299,19 +312,16 @@ def _open_direct_rco_pass_block_requests(
 
 
 def _close_direct_requests(
-    open_by_key: dict[tuple[str, str], dict[str, Any]],
+    open_by_key: dict[tuple[str, str, str], dict[str, Any]],
     event: Mapping[str, Any],
     *,
     target_agent: str,
 ) -> None:
-    event_ts = _event_ts(event)
     event_agent = _event_agent(event)
     event_task = _task_id(event)
-    event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
+    event_pr = _pr_number_for_event(event) or ""
     for key, state in list(open_by_key.items()):
-        task_id, pr = key
-        if event_ts <= str(state["ts_utc"]):
-            continue
+        task_id, pr, _requester_key = key
         same_task = bool(task_id and event_task == task_id)
         same_pr = bool(pr and event_pr == pr)
         if not same_task and not same_pr:
@@ -320,7 +330,13 @@ def _close_direct_requests(
         if event_agent == target_agent and _is_substantive_rco_response(event):
             del open_by_key[key]
             continue
-        if event_agent == requester and _is_terminal_closure(event):
+        request_event = state.get("_request_event")
+        if (
+            event_agent == requester
+            and isinstance(request_event, Mapping)
+            and _requester_identity_matches(request_event, event)
+            and _is_requester_terminal_closure(event)
+        ):
             del open_by_key[key]
 
 
@@ -368,10 +384,6 @@ def _is_substantive_rco_response(event: Mapping[str, Any]) -> bool:
     if {"changes", "requested"}.issubset(tokens):
         return True
     return False
-
-
-def _is_terminal_closure(event: Mapping[str, Any]) -> bool:
-    return _event_type(event) == "done" or _event_status(event) in CLOSED_REQUEST_STATUSES
 
 
 def _event_tokens(event: Mapping[str, Any]) -> set[str]:

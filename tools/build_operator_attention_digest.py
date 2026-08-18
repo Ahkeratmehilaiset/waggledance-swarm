@@ -33,8 +33,9 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_ts,
     _event_type,
     _is_request_like,
-    _latest_event_time,
+    _admitted_event_time,
     _parse_utc,
+    _pr_number_for_event,
     _task_id,
     read_events,
 )
@@ -240,12 +241,8 @@ def build_operator_attention_digest(
         max_age_hours = None
         max_age_minutes = None
 
-    effective_now = (
-        now_utc
-        or _latest_event_time(events)
-        or datetime.now(timezone.utc).astimezone(timezone.utc)
-    )
-    open_items = _open_operator_attention_items(events)
+    effective_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    open_items = _open_operator_attention_items(events, now_utc=effective_now)
 
     items: list[dict[str, Any]] = []
     for state in open_items.values():
@@ -320,10 +317,15 @@ def build_operator_attention_digest(
 
 def _open_operator_attention_items(
     events: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
         _close_satisfied_items(open_by_key, event)
+        admitted_ts = _admitted_event_time(event, now_utc=now_utc)
+        if admitted_ts is None:
+            continue
         if _is_wake_send_failed_event(event):
             target = _wake_send_failed_target(event)
             if not target:
@@ -331,6 +333,11 @@ def _open_operator_attention_items(
             key = (f"wake-send-failed:{target}", "")
             previous = open_by_key.get(key)
             event_count = int(previous.get("event_count", 0)) + 1 if previous else 1
+            if previous is not None:
+                previous_ts = _parse_utc(str(previous.get("ts_utc") or ""))
+                if previous_ts is not None and admitted_ts < previous_ts:
+                    previous["event_count"] = event_count
+                    continue
             first_ts = (
                 str(previous.get("first_ts_utc")) if previous else _event_ts(event)
             )
@@ -356,9 +363,14 @@ def _open_operator_attention_items(
             continue
         if not _is_operator_attention_event(event):
             continue
-        key = (_task_key(event), _payload_scalar(event, "pr") or "")
+        key = (_task_key(event), _pr_number_for_event(event) or "")
         previous = open_by_key.get(key)
         event_count = int(previous.get("event_count", 0)) + 1 if previous else 1
+        if previous is not None:
+            previous_ts = _parse_utc(str(previous.get("ts_utc") or ""))
+            if previous_ts is not None and admitted_ts < previous_ts:
+                previous["event_count"] = event_count
+                continue
         first_ts = str(previous.get("first_ts_utc")) if previous else _event_ts(event)
         open_by_key[key] = {
             "source_agent": _event_agent(event),
@@ -371,8 +383,7 @@ def _open_operator_attention_items(
             "event_index": index,
             "event_count": event_count,
             "message": _safe_text(event.get("message")),
-            "payload_pr": _payload_scalar(event, "pr")
-            or _payload_scalar(event, "pr_number"),
+            "payload_pr": _pr_number_for_event(event) or "",
             "payload_head": _payload_scalar(event, "head"),
             "attention_reasons": _attention_reasons(event),
         }
@@ -403,13 +414,10 @@ def _close_satisfied_items(
     event_type = _event_type(event)
     if not is_closure and event_type == "heartbeat":
         return
-    event_ts = _event_ts(event)
     event_task_key = _task_key(event)
-    event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
+    event_pr = _pr_number_for_event(event) or ""
     for key, state in list(open_by_key.items()):
         state_task_key, state_pr = key
-        if event_ts <= str(state["ts_utc"]):
-            continue
         same_task = bool(
             is_closure and event_task_key and event_task_key == state_task_key
         )

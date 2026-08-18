@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+import tools.rco_readiness_report as rco_readiness_module
 from tools.rco_readiness_report import (
     CLAIM_GATES,
     RcoReadinessError,
@@ -90,6 +91,274 @@ def test_reports_direct_rco_pass_request_ahead_of_general_review(tmp_path: Path)
     assert report["highest_priority_request"]["priority"] == "direct_rco_pass_block"
     assert report["bridge_next_action"]["open_incoming_count"] == 2
     assert "Test-BridgeWake.ps1 -Agent claude-rco-2" in report["wake_consume_step0_command"]
+
+
+@pytest.mark.parametrize("bad_ts", ["2099-06-14T12:00:00Z", "not-a-timestamp"])
+@pytest.mark.parametrize("bad_first", [False, True])
+@pytest.mark.parametrize("explicit_now", [False, True])
+def test_future_or_invalid_direct_request_cannot_poison_default_clock_or_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_ts: str,
+    bad_first: bool,
+    explicit_now: bool,
+) -> None:
+    fixed_now = _now()
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(rco_readiness_module, "datetime", FixedDatetime)
+    valid = _request(ts="2026-06-14T12:00:00Z", agent="codex-lead-1")
+    bad = _request(ts=bad_ts, agent="codex-tools-1")
+    events = [bad, valid] if bad_first else [valid, bad]
+    kwargs = {"now_utc": fixed_now} if explicit_now else {}
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=events,
+        bridge_root=tmp_path,
+        claims=[],
+        **kwargs,
+    )
+
+    assert report["decision"] == "direct_rco_pass_block_request_ready"
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["highest_priority_request"]["ts_utc"] == (
+        "2026-06-14T12:00:00Z"
+    )
+    assert report["highest_priority_request"]["requester"] == "codex-lead-1"
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
+    assert report["bridge_next_action"]["incoming"]["ts_utc"] == (
+        "2026-06-14T12:00:00Z"
+    )
+
+
+@pytest.mark.parametrize(
+    "closure_ts",
+    ["2026-06-14T11:00:00Z", "2099-06-14T12:05:00Z", "not-a-timestamp"],
+)
+@pytest.mark.parametrize("closer", ["target", "requester"])
+def test_later_direct_closure_uses_append_order_not_event_clock(
+    tmp_path: Path,
+    closure_ts: str,
+    closer: str,
+) -> None:
+    request = _request(agent="codex-lead-1")
+    request.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+    if closer == "target":
+        closure = {
+            "ts_utc": closure_ts,
+            "agent": "claude-rco-2",
+            "to": "codex-lead-1",
+            "type": "decision",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass",
+            "message": "substantive target response appended later",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        }
+    else:
+        closure = {
+            "ts_utc": closure_ts,
+            "agent": "codex-lead-1",
+            "agent_uuid": "uuid-a",
+            "session_id": "session-a",
+            "to": "claude-rco-2",
+            "type": "done",
+            "task_id": "pr1208-rco-pass",
+            "status": "done",
+            "message": "requester closed the request",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == 0
+    assert report["bridge_next_action"]["open_incoming_count"] == 0
+
+
+def test_prior_future_direct_closure_does_not_close_later_request(
+    tmp_path: Path,
+) -> None:
+    closure = {
+        "ts_utc": "2099-06-14T12:05:00Z",
+        "agent": "claude-rco-2",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "pr1208-rco-pass",
+        "status": "rco_pass",
+        "message": "response was appended before the request",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+    request = _request(agent="codex-lead-1")
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[closure, request],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("closure_uuid", "closure_session"),
+    [("uuid-b", "session-a"), ("uuid-a", "session-b")],
+)
+def test_requester_direct_closure_requires_matching_identity(
+    tmp_path: Path,
+    closure_uuid: str,
+    closure_session: str,
+) -> None:
+    request = _request(agent="codex-lead-1")
+    request.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+    closure = {
+        "ts_utc": "2026-06-14T12:05:00Z",
+        "agent": "codex-lead-1",
+        "agent_uuid": closure_uuid,
+        "session_id": closure_session,
+        "to": "claude-rco-2",
+        "type": "done",
+        "task_id": "pr1208-rco-pass",
+        "status": "done",
+        "message": "stale requester identity must not close",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
+
+
+def test_direct_requests_from_distinct_sessions_remain_independent(
+    tmp_path: Path,
+) -> None:
+    first = _request(ts="2026-06-14T12:00:00Z", agent="codex-lead-1")
+    first.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+    second = _request(ts="2026-06-14T12:01:00Z", agent="codex-lead-1")
+    second.update({"agent_uuid": "uuid-a", "session_id": "session-b"})
+    close_first = {
+        "ts_utc": "2026-06-14T12:05:00Z",
+        "agent": "codex-lead-1",
+        "agent_uuid": "uuid-a",
+        "session_id": "session-a",
+        "to": "claude-rco-2",
+        "type": "done",
+        "task_id": "pr1208-rco-pass",
+        "status": "done",
+        "message": "close only session A",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+    target_response = {
+        "ts_utc": "2026-06-14T12:06:00Z",
+        "agent": "claude-rco-2",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "pr1208-rco-pass",
+        "status": "rco_pass",
+        "message": "target response closes every matching request",
+        "payload": {"pr": 1208, "head": "c" * 40},
+    }
+
+    both_open = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[first, second],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+    one_open = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[first, second, close_first],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+    none_open = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[first, second, target_response],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert both_open["direct_pass_block_request_count"] == 2
+    assert both_open["bridge_next_action"]["open_incoming_count"] == 2
+    assert one_open["direct_pass_block_request_count"] == 1
+    assert one_open["bridge_next_action"]["open_incoming_count"] == 1
+    assert none_open["direct_pass_block_request_count"] == 0
+    assert none_open["bridge_next_action"]["open_incoming_count"] == 0
+
+
+def test_backdated_repeat_does_not_expire_current_direct_request(
+    tmp_path: Path,
+) -> None:
+    current = _request(ts="2026-06-14T12:00:00Z", agent="codex-lead-1")
+    current.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+    backdated = _request(ts="2026-06-13T00:00:00Z", agent="codex-lead-1")
+    backdated.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[current, backdated],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["highest_priority_request"]["ts_utc"] == (
+        "2026-06-14T12:00:00Z"
+    )
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("malformed_pr", [True, 1208.5])
+def test_malformed_pr_does_not_create_cross_task_direct_closure(
+    tmp_path: Path,
+    malformed_pr: object,
+) -> None:
+    request = _request(task_id="request-task", agent="codex-lead-1")
+    request["payload"] = {"pr": malformed_pr, "head": "c" * 40}
+    closure = {
+        "ts_utc": "2026-06-14T12:05:00Z",
+        "agent": "claude-rco-2",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "other-task",
+        "status": "rco_pass",
+        "message": "malformed PR must not match across tasks",
+        "payload": {"pr": malformed_pr, "head": "c" * 40},
+    }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
 
 
 def test_wake_ack_does_not_close_underlying_direct_request(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.bridge_next_action import _pr_number_for_event  # noqa: E402
 from tools.report_unanswered_bridge_requests import (  # noqa: E402
     report_unanswered_requests,
 )
@@ -216,11 +217,7 @@ def build_self_drive_queue_planner(
     loaded_events = [dict(event) for event in events]
     _assert_finite(loaded_events, path="events")
     _assert_no_redaction_sentinels(loaded_events)
-    effective_now = (
-        now_utc
-        or _latest_event_time(loaded_events)
-        or datetime.now(timezone.utc).astimezone(timezone.utc)
-    )
+    effective_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
     actions: list[dict[str, Any]] = []
     actions.extend(
@@ -477,10 +474,22 @@ def _ready_review_actions(
     now_utc: datetime,
 ) -> list[dict[str, Any]]:
     latest_by_task: dict[str, Mapping[str, Any]] = {}
+    current_utc = now_utc.astimezone(timezone.utc)
     for event in events:
         task_id = _string(event.get("task_id"))
         if not task_id:
             continue
+        if _terminal_event(event):
+            latest_by_task.pop(task_id, None)
+            continue
+        event_ts = _parse_utc(_string(event.get("ts_utc")))
+        if event_ts is None or event_ts > current_utc:
+            continue
+        existing = latest_by_task.get(task_id)
+        if existing is not None:
+            existing_ts = _parse_utc(_string(existing.get("ts_utc")))
+            if existing_ts is not None and event_ts < existing_ts:
+                continue
         latest_by_task[task_id] = event
 
     actions: list[dict[str, Any]] = []
@@ -504,7 +513,7 @@ def _ready_review_actions(
                     _elapsed_minutes(now_utc, event_ts) if event_ts is not None else None
                 ),
                 requester=_string(event.get("agent")),
-                pr=_payload_scalar(event, "pr") or _payload_scalar(event, "pr_number"),
+                pr=_pr_number_for_event(event) or "",
                 head=_head_prefix(_payload_scalar(event, "head")),
             )
         )
@@ -518,12 +527,23 @@ def _lane_summary(
     now_utc: datetime,
 ) -> dict[str, Any]:
     lanes: dict[str, dict[str, Any]] = {}
+    current_utc = now_utc.astimezone(timezone.utc)
     for event in events:
         if _string(event.get("type")) in KEEPALIVE_TYPES:
             continue
         agent = _string(event.get("agent"))
         if not agent:
             continue
+        event_ts = _parse_utc(_string(event.get("ts_utc")))
+        if event_ts is None or event_ts > current_utc:
+            continue
+        existing = lanes.get(agent)
+        if existing is not None:
+            existing_ts = _parse_utc(
+                _string(existing.get("last_substantive_ts_utc"))
+            )
+            if existing_ts is not None and event_ts <= existing_ts:
+                continue
         lanes[agent] = {
             "last_substantive_ts_utc": _string(event.get("ts_utc")),
             "last_substantive_type": _string(event.get("type")),
@@ -708,17 +728,6 @@ def _normalize_agents(agents: Sequence[str] | None) -> list[str]:
             seen.add(agent)
             normalized.append(agent)
     return normalized
-
-
-def _latest_event_time(events: Sequence[Mapping[str, Any]]) -> datetime | None:
-    latest: datetime | None = None
-    for event in events:
-        parsed = _parse_utc(_string(event.get("ts_utc")))
-        if parsed is None:
-            continue
-        if latest is None or parsed > latest:
-            latest = parsed
-    return latest
 
 
 def _parse_now(value: str | None) -> datetime | None:

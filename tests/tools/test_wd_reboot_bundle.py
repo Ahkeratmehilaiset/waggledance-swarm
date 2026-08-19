@@ -4090,6 +4090,25 @@ $state = Get-ToolsProcessState `
   -ToolsConfig $config `
   -Generation $bundleGeneration `
   -Processes @($current, $stale, $legacy, $substringNoise)
+$bundleLauncher = 'C:\\Python\\wd-reboot-bundles\\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\start-wd-tools-consumer.ps1'
+$bundleCurrent = [pscustomobject]@{{
+  ProcessId = 105
+  Name = 'powershell.exe'
+  CreationDate = $processStarted
+  CommandLine = (
+    'powershell.exe -File ' + $bundleLauncher + ' ' +
+    '-ConfigPath C:\\Python\\wd_supervisor_loop.json ' +
+    '-Generation ' + $bundleGeneration
+  )
+}}
+$ready.pid = 105
+$ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
+$bundleState = Get-ToolsProcessState `
+  -ToolsConfig $config `
+  -Generation $bundleGeneration `
+  -Processes @($bundleCurrent) `
+  -BundleLauncherScript $bundleLauncher
+$ready.pid = 101
 $ready.target_state_manifested = 'false'
 $ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
 $stringTargetRejected = -not (Test-ToolsProcessReadiness $current $config $bundleGeneration)
@@ -4109,6 +4128,8 @@ $stringLatencyRejected = -not (Test-ToolsProcessReadiness $current $config $bund
   stale_pid = [int](@($state.stale)[0].ProcessId)
   legacy = @($state.legacy).Count
   legacy_pid = [int](@($state.legacy)[0].ProcessId)
+  bundle_current = @($bundleState.current).Count
+  bundle_current_pid = [int](@($bundleState.current)[0].ProcessId)
   string_target_rejected = $stringTargetRejected
   string_canary_rejected = $stringCanaryRejected
   string_latency_rejected = $stringLatencyRejected
@@ -4123,6 +4144,8 @@ $stringLatencyRejected = -not (Test-ToolsProcessReadiness $current $config $bund
         "stale_pid": 102,
         "legacy": 1,
         "legacy_pid": 103,
+        "bundle_current": 1,
+        "bundle_current_pid": 105,
         "string_target_rejected": True,
         "string_canary_rejected": True,
         "string_latency_rejected": True,
@@ -5488,6 +5511,8 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "codex-tools-1 is headless and live" in launcher
     assert "-Generation $bundleGeneration" in launcher
     assert "Get-ToolsProcessState" in launcher
+    assert "-BundleLauncherScript $bundleToolsLauncher" in launcher
+    assert "Tools readiness progress: elapsed=" in launcher
     assert "ask WD-Supervisor to replace stale generation" in launcher
     assert "Reconciling five bridge watchers" in launcher
     assert "supervisor reconciliation conflict" in supervisor

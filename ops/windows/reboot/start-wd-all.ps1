@@ -1899,9 +1899,18 @@ function Get-ToolsProcessState {
   param(
     [Parameter(Mandatory)] $ToolsConfig,
     [Parameter(Mandatory)] [string] $Generation,
-    [Parameter(Mandatory)] [object[]] $Processes
+    [Parameter(Mandatory)] [object[]] $Processes,
+    [string] $BundleLauncherScript = ''
   )
-  $launcher = Resolve-NormalizedPath -Path ([string]$ToolsConfig.launcher_script)
+  $launcherScripts = @(
+    Resolve-NormalizedPath -Path ([string]$ToolsConfig.launcher_script)
+  )
+  if (-not [string]::IsNullOrWhiteSpace($BundleLauncherScript)) {
+    $bundleLauncher = Resolve-NormalizedPath -Path $BundleLauncherScript
+    if ($bundleLauncher -notin $launcherScripts) {
+      $launcherScripts += $bundleLauncher
+    }
+  }
   $configPath = Resolve-NormalizedPath -Path ([string]$ToolsConfig.config_path)
   $generation = $Generation.ToLowerInvariant()
   if ($Generation -cne $generation -or $generation -cnotmatch '^[0-9a-f]{40}$') {
@@ -1913,10 +1922,12 @@ function Get-ToolsProcessState {
     $Processes | Where-Object {
       $commandLine = [string]$_.CommandLine
       [string]$_.Name -match '^(?i:powershell|pwsh)\.exe$' -and
-      (Test-NamedCommandLineArgument `
-        -CommandLine $commandLine `
-        -Name 'File' `
-        -Value $launcher)
+      @($launcherScripts | Where-Object {
+          Test-NamedCommandLineArgument `
+            -CommandLine $commandLine `
+            -Name 'File' `
+            -Value $_
+        }).Count -eq 1
     }
   )
   $generationWrappers = @(
@@ -1975,8 +1986,10 @@ function Wait-WdToolsCurrentProcess {
     [Parameter(Mandatory)] $ToolsConfig,
     [Parameter(Mandatory)] [string] $Generation,
     [Parameter(Mandatory)] [int] $TimeoutSeconds,
+    [string] $BundleLauncherScript = '',
     [scriptblock] $ProcessSnapshotAction = { Get-AllProcessSnapshots },
-    [int] $PollMilliseconds = 500
+    [int] $PollMilliseconds = 500,
+    [int] $ProgressSeconds = 30
   )
 
   if ($TimeoutSeconds -lt 0) {
@@ -1985,14 +1998,20 @@ function Wait-WdToolsCurrentProcess {
   if ($PollMilliseconds -lt 0) {
     throw 'Tools readiness poll interval cannot be negative'
   }
+  if ($ProgressSeconds -lt 1) {
+    throw 'Tools readiness progress interval must be positive'
+  }
 
-  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $startedAt = Get-Date
+  $deadline = $startedAt.AddSeconds($TimeoutSeconds)
+  $nextProgressAt = $startedAt.AddSeconds($ProgressSeconds)
   do {
     $processes = @(& $ProcessSnapshotAction)
     $state = Get-ToolsProcessState `
       -ToolsConfig $ToolsConfig `
       -Generation $Generation `
-      -Processes $processes
+      -Processes $processes `
+      -BundleLauncherScript $BundleLauncherScript
     $current = @($state.current)
     $starting = @($state.starting)
     $stale = @($state.stale)
@@ -2007,6 +2026,29 @@ function Wait-WdToolsCurrentProcess {
     }
     if ((Get-Date) -ge $deadline) {
       break
+    }
+    $now = Get-Date
+    if ($now -ge $nextProgressAt) {
+      $readyState = if (Test-Path `
+          -LiteralPath ([string]$ToolsConfig.readiness_path) `
+          -PathType Leaf) {
+        'present-but-not-yet-attested'
+      } else {
+        'pending-initial-tick'
+      }
+      Write-Host (
+        '  Tools readiness progress: elapsed={0}s; ' +
+        'current/starting/stale/legacy={1}/{2}/{3}/{4}; record={5}; ' +
+        'timeout={6}s' -f
+          [int][Math]::Floor(($now - $startedAt).TotalSeconds),
+          $current.Count,
+          $starting.Count,
+          $stale.Count,
+          $legacy.Count,
+          $readyState,
+          $TimeoutSeconds
+      )
+      $nextProgressAt = $now.AddSeconds($ProgressSeconds)
     }
     if ($PollMilliseconds -gt 0) {
       Start-Sleep -Milliseconds $PollMilliseconds
@@ -2647,7 +2689,8 @@ if (Test-Path -LiteralPath $toolsConflictPath -PathType Leaf) {
 $toolsProcessState = Get-ToolsProcessState `
   -ToolsConfig $toolsConfig `
   -Generation $bundleGeneration `
-  -Processes $processes
+  -Processes $processes `
+  -BundleLauncherScript $bundleToolsLauncher
 $toolsLive = @($toolsProcessState.current)
 $toolsStarting = @($toolsProcessState.starting)
 $toolsStale = @($toolsProcessState.stale)
@@ -2898,7 +2941,8 @@ try {
   $lockedToolsState = Get-ToolsProcessState `
     -ToolsConfig $toolsConfig `
     -Generation $bundleGeneration `
-    -Processes $lockedProcesses
+    -Processes $lockedProcesses `
+    -BundleLauncherScript $bundleToolsLauncher
   foreach ($category in @('current', 'starting', 'stale', 'legacy')) {
     if (-not (Test-WdProcessIdentitySetExact `
         -Expected @($toolsProcessState.$category) `
@@ -3118,7 +3162,8 @@ try {
   $toolsNowState = Wait-WdToolsCurrentProcess `
     -ToolsConfig $toolsConfig `
     -Generation $bundleGeneration `
-    -TimeoutSeconds ([int]$toolsConfig.wait_seconds)
+    -TimeoutSeconds ([int]$toolsConfig.wait_seconds) `
+    -BundleLauncherScript $bundleToolsLauncher
   Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
 
   Write-Host 'Resolving the current Grok model...' -ForegroundColor Cyan
@@ -3364,7 +3409,8 @@ try {
   $finalToolsState = Get-ToolsProcessState `
     -ToolsConfig $toolsConfig `
     -Generation $bundleGeneration `
-    -Processes $finalProcesses
+    -Processes $finalProcesses `
+    -BundleLauncherScript $bundleToolsLauncher
   if (
     @($finalToolsState.current).Count -ne 1 -or
     @($finalToolsState.starting).Count -ne 0 -or

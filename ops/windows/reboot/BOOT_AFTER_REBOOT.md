@@ -29,6 +29,11 @@ leave its four Windows Terminal tabs open. The fifth, headless Tools
 lane and exactly five real-time bridge watchers are reconciled by the same
 command through `WD-Supervisor`.
 
+The first headless Tools tick runs before its readiness record is published and
+can take several minutes. During that bounded wait, `-Auto` prints progress
+every 30 seconds. A readiness record that is present but not attested is a
+launcher/process-identity problem, not a reason to wait silently.
+
 After the interactive `codex-lead-1` lane has completed its bridge-bootstrap
 handshake, the restore also reconciles exactly one separate Codex prompt-watcher
 window. It targets only the terminal title `codex-lead-1` and runs the bundled,

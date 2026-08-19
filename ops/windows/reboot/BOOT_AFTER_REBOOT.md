@@ -13,6 +13,10 @@ wrapper requests one Windows UAC elevation before preflight when Task Scheduler
 changes require Administrator rights; accept that prompt to continue. An
 already elevated PowerShell does not prompt again.
 
+Each elevated `-Auto` run keeps a transcript under
+`C:\Python\wd-reboot-runtime\elevated-auto`. If the elevated process fails, the
+parent PowerShell prints the transcript tail and its exact path.
+
 Its non-mutating verification mode is:
 
 ```powershell

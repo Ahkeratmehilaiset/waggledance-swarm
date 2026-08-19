@@ -319,8 +319,47 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     if ([bool]$targetParameters['SkipCliUpdate']) {
         [void]$commandParts.Add('-SkipCliUpdate')
     }
+    $elevationLogRoot = Join-Path (
+        Split-Path -Parent $PSCommandPath
+    ) 'wd-reboot-runtime\elevated-auto'
+    if (-not (Test-Path -LiteralPath $elevationLogRoot)) {
+        [void](New-Item -ItemType Directory -Path $elevationLogRoot -Force)
+    }
+    $elevationLogRootItem = Get-Item -LiteralPath $elevationLogRoot -Force
+    if (
+        -not $elevationLogRootItem.PSIsContainer -or
+        ($elevationLogRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    ) {
+        throw "automatic restore log root is not a trusted directory: $elevationLogRoot"
+    }
+    $elevationLogPath = Join-Path $elevationLogRoot (
+        'auto-{0}-{1}-{2}.log' -f
+            [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'),
+            $PID,
+            [Guid]::NewGuid().ToString('N')
+    )
+    $restoreCommand = $commandParts -join ' '
+    $loggedCommand = @(
+        '$ErrorActionPreference = ''Stop''',
+        '$restoreExitCode = 0',
+        '$transcriptStarted = $false',
+        'try {',
+        ("  Start-Transcript -LiteralPath {0} -Force | Out-Null" -f
+            (ConvertTo-WdSingleQuotedLiteral -Value $elevationLogPath)),
+        '  $transcriptStarted = $true',
+        ("  {0}" -f $restoreCommand),
+        '}',
+        'catch {',
+        '  $restoreExitCode = 1',
+        '  [Console]::Error.WriteLine(($_ | Out-String))',
+        '}',
+        'finally {',
+        '  if ($transcriptStarted) { Stop-Transcript | Out-Null }',
+        '}',
+        'exit $restoreExitCode'
+    ) -join [Environment]::NewLine
     $encodedCommand = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes(($commandParts -join ' '))
+        [Text.Encoding]::Unicode.GetBytes($loggedCommand)
     )
     Write-Host 'Automatic restore needs Administrator rights for Task Scheduler; requesting one UAC elevation...' -ForegroundColor Yellow
     try {
@@ -341,8 +380,18 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         throw "automatic Administrator elevation was declined or failed: $($_.Exception.Message)"
     }
     if ([int]$elevated.ExitCode -ne 0) {
-        throw "elevated automatic restore failed with exit code $([int]$elevated.ExitCode)"
+        Write-Host "Elevated restore failure log: $elevationLogPath" -ForegroundColor Yellow
+        if (Test-Path -LiteralPath $elevationLogPath -PathType Leaf) {
+            Get-Content -LiteralPath $elevationLogPath -Tail 120 |
+                ForEach-Object { Write-Host ([string]$_) }
+        }
+        throw (
+            "elevated automatic restore failed with exit code {0}; log={1}" -f
+                [int]$elevated.ExitCode,
+                $elevationLogPath
+        )
     }
+    Write-Host "Elevated restore log: $elevationLogPath"
     return
 }
 if ($Auto) {

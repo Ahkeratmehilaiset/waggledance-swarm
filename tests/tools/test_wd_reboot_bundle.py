@@ -5010,6 +5010,7 @@ try {{
   foreach ($name in @(
       'Assert-WdFleetPathWithoutReparse',
       'Resolve-WdNpmNativeApplication',
+      'Resolve-WdNpmUpdateShim',
       'Resolve-WdWindowsTerminalApplication'
     )) {{
     $functionAst = $ast.Find(
@@ -5025,6 +5026,8 @@ try {{
   }}
   $fleetCodex = Resolve-WdNpmNativeApplication -Name codex.cmd
   $fleetClaude = Resolve-WdNpmNativeApplication -Name claude.cmd
+  $fleetCodexUpdate = Resolve-WdNpmUpdateShim -Name codex.cmd
+  $fleetClaudeUpdate = Resolve-WdNpmUpdateShim -Name claude.cmd
   $terminal = Resolve-WdWindowsTerminalApplication
 
   $tokens = $null
@@ -5095,6 +5098,8 @@ try {{
   [pscustomobject]@{{
     fleet_codex = $fleetCodex
     fleet_claude = $fleetClaude
+    fleet_codex_update = $fleetCodexUpdate
+    fleet_claude_update = $fleetClaudeUpdate
     lane_codex = $laneCodex
     lane_claude = $laneClaude
     tools_codex = $toolsCodex
@@ -5118,6 +5123,8 @@ finally {{
     for key in (
         "fleet_codex",
         "fleet_claude",
+        "fleet_codex_update",
+        "fleet_claude_update",
         "lane_codex",
         "lane_claude",
         "tools_codex",
@@ -5422,6 +5429,12 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "function Resolve-ApplicationPath" in launcher
     assert "--no-replace-objects" in launcher
     assert "function Resolve-WdNpmNativeApplication" in launcher
+    assert "function Resolve-WdNpmUpdateShim" in launcher
+    assert "-Path $codexUpdateCurrentPath -Arguments @('update')" in launcher
+    assert "-Path $claudeUpdateCurrentPath -Arguments @('update')" in launcher
+    assert "-Path $codexPath -Arguments @('update')" not in launcher
+    assert "-Path $claudePath -Arguments @('update')" not in launcher
+    assert "Codex npm update shim changed after preflight" in launcher
     assert "Appx\\Get-AppxPackage" in launcher
     assert "SignatureKind -ceq 'Store'" in launcher
     assert "Microsoft\\WindowsApps\\wt.exe" not in launcher
@@ -5688,6 +5701,10 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert "-Verb RunAs `" in text
     assert "-EncodedCommand', $encodedCommand" in text
     assert "automatic Administrator elevation was declined or failed" in text
+    assert "wd-reboot-runtime\\elevated-auto" in text
+    assert "Start-Transcript -LiteralPath" in text
+    assert "Elevated restore failure log" in text
+    assert "Get-Content -LiteralPath $elevationLogPath -Tail 120" in text
     assert text.index("if ($Auto -and -not (Test-WdWrapperAdministrator))") < text.index(
         "Write-Host 'Running byte-inert fleet preflight"
     )
@@ -6023,6 +6040,8 @@ foreach ($path in @('{fleet_wrapper}', '{agent_wrapper}', '{tools_wrapper}')) {{
     assert "Start-Process" in fleet_wrapper_text
     assert "-Verb RunAs" in fleet_wrapper_text
     assert "-EncodedCommand" in fleet_wrapper_text
+    assert "Start-Transcript -LiteralPath" in fleet_wrapper_text
+    assert "Elevated restore failure log" in fleet_wrapper_text
     result = _run_powershell(
         f"""
 $ErrorActionPreference = 'Stop'

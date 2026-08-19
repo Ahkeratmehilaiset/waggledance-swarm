@@ -798,6 +798,33 @@ function Resolve-WdNpmNativeApplication {
   return $candidate
 }
 
+function Resolve-WdNpmUpdateShim {
+  param([Parameter(Mandatory)] [ValidateSet('codex.cmd', 'claude.cmd')] [string] $Name)
+
+  $roamingRoot = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ApplicationData
+  )
+  if ([string]::IsNullOrWhiteSpace($roamingRoot)) {
+    throw 'roaming application-data root is unavailable'
+  }
+  $candidate = [IO.Path]::GetFullPath((Join-Path $roamingRoot ("npm\{0}" -f $Name)))
+  [void](Assert-WdFleetPathWithoutReparse `
+      -Path $candidate `
+      -TrustedRoot ([IO.Path]::GetPathRoot($candidate)) `
+      -ExpectedType Leaf)
+  $command = Get-Command `
+    -Name $candidate `
+    -CommandType Application `
+    -ErrorAction Stop
+  if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+      $candidate,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "$Name did not resolve to its trusted npm update shim"
+  }
+  return $candidate
+}
+
 function Resolve-WdWindowsTerminalApplication {
   $packages = @(
     Appx\Get-AppxPackage `
@@ -2347,17 +2374,21 @@ foreach ($lane in @($manifest.lanes)) {
 
 $codexPath = Resolve-ApplicationPath -Name 'codex.cmd'
 $claudePath = Resolve-ApplicationPath -Name 'claude.cmd'
+$codexUpdatePath = Resolve-WdNpmUpdateShim -Name 'codex.cmd'
+$claudeUpdatePath = Resolve-WdNpmUpdateShim -Name 'claude.cmd'
 $wtPath = Resolve-ApplicationPath -Name 'wt.exe'
 $codexHash = (Get-FileHash -LiteralPath $codexPath -Algorithm SHA256).Hash
 $claudeHash = (Get-FileHash -LiteralPath $claudePath -Algorithm SHA256).Hash
+$codexUpdateHash = (Get-FileHash -LiteralPath $codexUpdatePath -Algorithm SHA256).Hash
+$claudeUpdateHash = (Get-FileHash -LiteralPath $claudeUpdatePath -Algorithm SHA256).Hash
 Write-Host '  Codex version probe:'
 $codexVersion = Invoke-CheckedNative -Path $codexPath -Arguments @('--version') -Label 'codex version probe'
 Write-Host '  Codex update command probe:'
-[void](Invoke-CheckedNative -Path $codexPath -Arguments @('update', '--help') -Label 'codex update help')
+[void](Invoke-CheckedNative -Path $codexUpdatePath -Arguments @('update', '--help') -Label 'codex update help')
 Write-Host '  Claude Code version probe:'
 $claudeVersion = Invoke-CheckedNative -Path $claudePath -Arguments @('--version') -Label 'claude version probe'
 Write-Host '  Claude Code update command probe:'
-[void](Invoke-CheckedNative -Path $claudePath -Arguments @('update', '--help') -Label 'claude update help')
+[void](Invoke-CheckedNative -Path $claudeUpdatePath -Arguments @('update', '--help') -Label 'claude update help')
 
 $containment = $manifest.merge_driver_containment
 $standingTask = Get-ScheduledTask `
@@ -2959,10 +2990,35 @@ try {
 
   if (-not $SkipCliUpdate) {
     Write-Host ''
+    $codexUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'codex.cmd'
+    if (
+      -not $codexUpdateCurrentPath.Equals(
+        $codexUpdatePath,
+        [StringComparison]::OrdinalIgnoreCase
+      ) -or
+      (Get-FileHash -LiteralPath $codexUpdateCurrentPath -Algorithm SHA256).Hash -cne
+        $codexUpdateHash
+    ) {
+      throw 'Codex npm update shim changed after preflight'
+    }
     Write-Host 'Updating Codex CLI once...' -ForegroundColor Cyan
-    [void](Invoke-CheckedNative -Path $codexPath -Arguments @('update') -Label 'codex update')
+    # Do not ask the native codex.exe to replace its own locked image on
+    # Windows. The trusted npm shim runs the same updater through Node without
+    # holding codex.exe open, avoiding deterministic EBUSY/exit-code 1.
+    [void](Invoke-CheckedNative -Path $codexUpdateCurrentPath -Arguments @('update') -Label 'codex update')
+    $claudeUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'claude.cmd'
+    if (
+      -not $claudeUpdateCurrentPath.Equals(
+        $claudeUpdatePath,
+        [StringComparison]::OrdinalIgnoreCase
+      ) -or
+      (Get-FileHash -LiteralPath $claudeUpdateCurrentPath -Algorithm SHA256).Hash -cne
+        $claudeUpdateHash
+    ) {
+      throw 'Claude Code npm update shim changed after preflight'
+    }
     Write-Host 'Updating Claude Code once...' -ForegroundColor Cyan
-    [void](Invoke-CheckedNative -Path $claudePath -Arguments @('update') -Label 'claude update')
+    [void](Invoke-CheckedNative -Path $claudeUpdateCurrentPath -Arguments @('update') -Label 'claude update')
   }
   $codexAfterPath = Resolve-ApplicationPath -Name 'codex.cmd'
   $claudeAfterPath = Resolve-ApplicationPath -Name 'claude.cmd'
@@ -3010,6 +3066,7 @@ try {
       before = $codexVersion
       after = $codexAfterVersion
       executable = $codexAfterPath
+      update_executable = $codexUpdatePath
       before_sha256 = $codexHash
       after_sha256 = $codexAfterHash
       update_command = 'codex update'
@@ -3018,6 +3075,7 @@ try {
       before = $claudeVersion
       after = $claudeAfterVersion
       executable = $claudeAfterPath
+      update_executable = $claudeUpdatePath
       before_sha256 = $claudeHash
       after_sha256 = $claudeAfterHash
       update_command = 'claude update'

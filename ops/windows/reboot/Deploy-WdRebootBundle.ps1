@@ -274,6 +274,77 @@ foreach ($key in $PSBoundParameters.Keys) {
         $targetParameters[$key] = $PSBoundParameters[$key]
     }
 }
+function Test-WdWrapperAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator
+        )
+    }
+    finally {
+        $identity.Dispose()
+    }
+}
+function ConvertTo-WdSingleQuotedLiteral {
+    param([AllowEmptyString()] [string] $Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+if ($Auto -and -not (Test-WdWrapperAdministrator)) {
+    $elevationHost = [IO.Path]::Combine(
+        [Environment]::SystemDirectory,
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe'
+    )
+    if (-not (Test-Path -LiteralPath $elevationHost -PathType Leaf)) {
+        throw "stable Windows PowerShell elevation host is missing: $elevationHost"
+    }
+    $commandParts = New-Object 'System.Collections.Generic.List[string]'
+    [void]$commandParts.Add('&')
+    [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
+    [void]$commandParts.Add('-Auto')
+    foreach ($name in @('ManifestPath', 'RunId')) {
+        if ($targetParameters.ContainsKey($name)) {
+            [void]$commandParts.Add("-$name")
+            [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
+        }
+    }
+    if ($targetParameters.ContainsKey('HandshakeTimeoutSeconds')) {
+        [void]$commandParts.Add('-HandshakeTimeoutSeconds')
+        [void]$commandParts.Add(([int]$targetParameters['HandshakeTimeoutSeconds']).ToString(
+            [Globalization.CultureInfo]::InvariantCulture
+        ))
+    }
+    if ([bool]$targetParameters['SkipCliUpdate']) {
+        [void]$commandParts.Add('-SkipCliUpdate')
+    }
+    $encodedCommand = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes(($commandParts -join ' '))
+    )
+    Write-Host 'Automatic restore needs Administrator rights for Task Scheduler; requesting one UAC elevation...' -ForegroundColor Yellow
+    try {
+        $elevated = Start-Process `
+            -FilePath $elevationHost `
+            -Verb RunAs `
+            -ArgumentList @(
+                '-NoLogo',
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-EncodedCommand', $encodedCommand
+            ) `
+            -Wait `
+            -PassThru `
+            -ErrorAction Stop
+    }
+    catch {
+        throw "automatic Administrator elevation was declined or failed: $($_.Exception.Message)"
+    }
+    if ([int]$elevated.ExitCode -ne 0) {
+        throw "elevated automatic restore failed with exit code $([int]$elevated.ExitCode)"
+    }
+    return
+}
 if ($Auto) {
     Write-Host 'Running byte-inert fleet preflight before automatic restore...'
     $dryRunParameters = @{} + $targetParameters

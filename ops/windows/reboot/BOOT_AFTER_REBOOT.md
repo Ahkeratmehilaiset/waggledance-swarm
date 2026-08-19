@@ -8,7 +8,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 `-Auto` runs the byte-inert DryRun first and proceeds to Apply only when that
 preflight returns successfully. It is the recommended operator command after
-Windows sign-in.
+Windows sign-in. It may be launched from an ordinary PowerShell. The verified
+wrapper requests one Windows UAC elevation before preflight when Task Scheduler
+changes require Administrator rights; accept that prompt to continue. An
+already elevated PowerShell does not prompt again.
 
 Its non-mutating verification mode is:
 

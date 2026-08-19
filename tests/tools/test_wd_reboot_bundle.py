@@ -5684,6 +5684,13 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert "ExpectedManifestHash" in text
     assert "[switch] $Auto" in text
     assert "Auto cannot be combined with Apply or DryRun" in text
+    assert "if ($Auto -and -not (Test-WdWrapperAdministrator))" in text
+    assert "-Verb RunAs `" in text
+    assert "-EncodedCommand', $encodedCommand" in text
+    assert "automatic Administrator elevation was declined or failed" in text
+    assert text.index("if ($Auto -and -not (Test-WdWrapperAdministrator))") < text.index(
+        "Write-Host 'Running byte-inert fleet preflight"
+    )
     assert text.index("$dryRunParameters['DryRun'] = $true") < text.index(
         "$applyParameters['Apply'] = $true"
     )
@@ -6009,6 +6016,13 @@ foreach ($path in @('{fleet_wrapper}', '{agent_wrapper}', '{tools_wrapper}')) {{
     assert Path(fleet_wrapper.replace("''", "'")).stat().st_size > 0
     assert Path(agent_wrapper.replace("''", "'")).stat().st_size > 0
     assert Path(tools_wrapper.replace("''", "'")).stat().st_size > 0
+    fleet_wrapper_text = Path(fleet_wrapper.replace("''", "'")).read_text(
+        encoding="utf-8"
+    )
+    assert "Test-WdWrapperAdministrator" in fleet_wrapper_text
+    assert "Start-Process" in fleet_wrapper_text
+    assert "-Verb RunAs" in fleet_wrapper_text
+    assert "-EncodedCommand" in fleet_wrapper_text
     result = _run_powershell(
         f"""
 $ErrorActionPreference = 'Stop'

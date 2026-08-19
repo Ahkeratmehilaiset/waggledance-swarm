@@ -408,7 +408,12 @@ function Get-WdSpoolInventory {
       if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "bridge spool contains a reparse point: $fullName"
       }
-      if (([string]$item.Name).EndsWith(
+      # A .pending entry directly under spool is an active/uncommitted WAL and
+      # must block restore. Lifecycle directories may legitimately preserve
+      # quarantined .pending artifacts as immutable evidence; inventory and
+      # hash those like every other nested file.
+      if ($directory.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
+          ([string]$item.Name).EndsWith(
           '.pending',
           [StringComparison]::OrdinalIgnoreCase
         )) {

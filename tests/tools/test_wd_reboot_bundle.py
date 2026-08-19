@@ -3405,14 +3405,18 @@ for ($i = 0; $i -lt $bytes.Length; $i++) {{ $bytes[$i] = [byte]($i % 251) }}
 $archive = Join-Path $spool 'archive'
 $replayed = Join-Path $archive 'replayed'
 $delivered = Join-Path $spool 'delivered'
-[void](New-Item -ItemType Directory -Path $replayed,$delivered -Force)
+$quarantine = Join-Path $spool 'quarantine-rco1-stale-empty-pending-20260812'
+[void](New-Item -ItemType Directory -Path $replayed,$delivered,$quarantine -Force)
 [IO.File]::WriteAllText((Join-Path $archive 'old.jsonl'), "old`n")
+$quarantinedPending = Join-Path $quarantine '.failed-append.jsonl.pending'
+[IO.File]::WriteAllText($quarantinedPending, "quarantined`n")
 $baseline = New-WdBridgeSafetyBaseline `
   -RuntimeRoot $runtime `
   -SnapshotRuntimeRoot $runtime `
   -RecoveryStateRoot $recovery `
   -ToolsConflictPath $tools `
   -WatcherConflictRoot $watcher
+$nestedPendingPreserved = $true
 [IO.File]::AppendAllText($canonical, "append`n")
 Assert-WdBridgeSafetyBaseline -Baseline $baseline
 $prefixRejected = $false
@@ -3439,13 +3443,13 @@ try {{ Assert-WdBridgeSafetyBaseline -Baseline $baseline }}
 catch {{ $nestedChangeRejected = $true }}
 [IO.File]::WriteAllText($nested, "old`n")
 $pendingRejected = $false
-$pending = Join-Path $replayed '.failed.PENDING'
+$pending = Join-Path $spool '.active.PENDING'
 [IO.File]::WriteAllText($pending, "pending`n")
 try {{ [void](Get-WdSpoolInventory -Path $spool) }}
 catch {{ $pendingRejected = $true }}
 Remove-Item -LiteralPath $pending -Force
 $pendingDirectoryRejected = $false
-$pendingDirectory = Join-Path $archive 'directory.pending'
+$pendingDirectory = Join-Path $spool '.directory.pending'
 [void](New-Item -ItemType Directory -Path $pendingDirectory)
 try {{ [void](Get-WdSpoolInventory -Path $spool) }}
 catch {{ $pendingDirectoryRejected = $true }}
@@ -3505,6 +3509,7 @@ catch {{ $identityRejected = $true }}
   prefix_rejected = $prefixRejected
   spool_add_rejected = $spoolAddRejected
   nested_change_rejected = $nestedChangeRejected
+  nested_pending_preserved = $nestedPendingPreserved
   pending_rejected = $pendingRejected
   pending_directory_rejected = $pendingDirectoryRejected
   nested_reparse_rejected = $nestedReparseRejected
@@ -3524,6 +3529,7 @@ catch {{ $identityRejected = $true }}
         "prefix_rejected": True,
         "spool_add_rejected": True,
         "nested_change_rejected": True,
+        "nested_pending_preserved": True,
         "pending_rejected": True,
         "pending_directory_rejected": True,
         "nested_reparse_rejected": True,
@@ -3532,7 +3538,7 @@ catch {{ $identityRejected = $true }}
         "watcher_rejected": True,
         "tools_rejected": True,
         "identity_rejected": True,
-        "spool_count": 6,
+        "spool_count": 8,
         "prefix_length": 2097173,
     }
 

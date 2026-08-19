@@ -208,6 +208,7 @@ param(
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
+    [switch] $Auto,
     [switch] $Apply,
     [switch] $DryRun
 )
@@ -262,7 +263,34 @@ param(
         }
     }
 
-    $targetInvocation = if ($FixedAgent) {
+    $targetInvocation = if ($WrapperKind -ceq 'fleet') {
+@'
+if ($Auto -and ($Apply -or $DryRun)) {
+    throw 'Auto cannot be combined with Apply or DryRun'
+}
+$targetParameters = @{}
+foreach ($key in $PSBoundParameters.Keys) {
+    if ($key -notin @('Auto', 'Apply', 'DryRun')) {
+        $targetParameters[$key] = $PSBoundParameters[$key]
+    }
+}
+if ($Auto) {
+    Write-Host 'Running byte-inert fleet preflight before automatic restore...'
+    $dryRunParameters = @{} + $targetParameters
+    $dryRunParameters['DryRun'] = $true
+    & $target @dryRunParameters
+    Write-Host 'Preflight passed; applying the verified fleet restore...'
+    $applyParameters = @{} + $targetParameters
+    $applyParameters['Apply'] = $true
+    & $target @applyParameters
+}
+else {
+    if ($Apply) { $targetParameters['Apply'] = $true }
+    if ($DryRun) { $targetParameters['DryRun'] = $true }
+    & $target @targetParameters
+}
+'@
+    } elseif ($FixedAgent) {
         $escapedAgent = $FixedAgent.Replace("'", "''")
 @"
 `$targetParameters = @{}
@@ -470,6 +498,7 @@ $sourcePaths[$identityRegistryRelative] = $identityRegistrySource
 foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
+        'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
         'Invoke-WdToolsCodex.ps1',
         'wd-fleet.json',
@@ -477,7 +506,9 @@ foreach ($required in @(
         'wd_supervisor_loop.json',
         'Resolve-WdGrokModel.ps1',
         'Register-WdScheduledTasks.ps1',
+        'Set-WdTaskConsoleContainment.ps1',
         'BOOT_AFTER_REBOOT.md',
+        'WD_LOCAL_GPU_GUIDE.md',
         'WD_SWARM_TARGET_STATE_V1.md',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
@@ -671,7 +702,9 @@ $dataSpecs = @(
     # Replace the legacy opaque-command snapshot too, so no machine-local
     # reboot artifact retains a dead, versioned WindowsApps executable.
     [pscustomobject]@{ Name = 'wd_supervisor_loop_snapshot.json'; Target = 'wd_supervisor_loop.json' },
-    [pscustomobject]@{ Name = 'BOOT_AFTER_REBOOT.md'; Target = 'BOOT_AFTER_REBOOT.md' }
+    [pscustomobject]@{ Name = 'BOOT_AFTER_REBOOT.md'; Target = 'BOOT_AFTER_REBOOT.md' },
+    [pscustomobject]@{ Name = 'Set-WdTaskConsoleContainment.ps1'; Target = 'Set-WdTaskConsoleContainment.ps1' },
+    [pscustomobject]@{ Name = 'WD_LOCAL_GPU_GUIDE.md'; Target = 'WD_LOCAL_GPU_GUIDE.md' }
 )
 
 if (-not (Test-Path -LiteralPath $machineFull -PathType Container)) {
@@ -853,7 +886,7 @@ catch {
 Write-Host ''
 Write-Host 'WD reboot bundle installed and verified.' -ForegroundColor Green
 Write-Host 'One-line restore:'
-Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Apply'
+Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Auto'
 if ($backedUp) {
     Write-Host "Previous machine-local launchers were backed up to: $backupRoot"
 }

@@ -20,6 +20,7 @@
     "base_state": "C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md",
     "roles": "C:\\Python\\WD_AGENT_3PACK_ROLES.md",
     "current_handoff": "C:\\Python\\WD_RESTART_HANDOFF.md",
+    "gpu_guide": "C:\\Python\\WD_LOCAL_GPU_GUIDE.md",
     "rule": "The current restart handoff and the lane handoff override conflicting older dated state. None of these files grants new authority."
   },
   "deployment": {
@@ -27,9 +28,12 @@
     "required_bundle_files": [
       "start-wd-all.ps1",
       "start-wd-agent.ps1",
+      "Watch-CodexPrompts.ps1",
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
       "Resolve-WdGrokModel.ps1",
+      "Set-WdTaskConsoleContainment.ps1",
+      "WD_LOCAL_GPU_GUIDE.md",
       "WD_SWARM_TARGET_STATE_V1.md",
       "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1",
       "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1",

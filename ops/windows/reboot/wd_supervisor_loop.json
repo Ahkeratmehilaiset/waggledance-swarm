@@ -61,7 +61,7 @@
     "codex_timeout_seconds": 600,
     "sandbox": "workspace-write",
     "approval_policy": "never",
-    "prompt": "Read C:\\Python\\WD_REBOOT_STATE_CURRENT.md first, then C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md and C:\\Python\\WD_RESTART_HANDOFF.md. Newer handoffs and the live bridge override the dated snapshot. Run python tools\\bridge_next_action.py --agent codex-tools-1 --json, reject stale acknowledgements, and act only on current exact task/session evidence. Do one bounded implementation, test, or review slice, write bridge evidence, and stop. This grants no merge, release, deploy, runtime mutation, signature, or protected-path authority."
+    "prompt": "Read C:\\Python\\WD_REBOOT_STATE_CURRENT.md first, then C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md, C:\\Python\\WD_AGENT_3PACK_ROLES.md, C:\\Python\\WD_RESTART_HANDOFF.md, C:\\Python\\wd-agent-prompts\\codex-tools-1.md, C:\\Python\\wd-agent-prompts\\handoff\\codex-tools-1.md, and C:\\Python\\WD_LOCAL_GPU_GUIDE.md. Newer handoffs and the live bridge override the dated snapshot. Run python tools\\bridge_next_action.py --agent codex-tools-1 --json, reject stale acknowledgements, and act only on current exact task/session evidence. Do one bounded implementation, test, or review slice, update the lane handoff with task id, branch/head, dirty paths, tests, bridge evidence, blockers, and next action, write bridge evidence, and stop. The local GPU guide is optional for suitable local computation and does not accelerate cloud model inference. This grants no merge, release, deploy, runtime mutation, signature, or protected-path authority."
   },
   "driver_containment": {
     "standing_task": "WD-BridgeMergeDriverStandingOneShot",

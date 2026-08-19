@@ -568,6 +568,7 @@ if (
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.base_state) -Label 'base reboot state')
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.roles) -Label 'fleet roles')
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.current_handoff) -Label 'current restart handoff')
+[void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.gpu_guide) -Label 'local GPU guide')
 [void](Read-NonEmptyFile -Path ([string]$lane.prompt) -Label "lane '$Agent' role prompt")
 [void](Read-NonEmptyFile -Path ([string]$lane.handoff) -Label "lane '$Agent' handoff")
 
@@ -614,11 +615,11 @@ $cliExecutableHash = (
 $stateRule = [string]$manifest.state_precedence.rule
 $startupPrompt = (
   "Read the current reboot pointer first: {0}. Then read these durable startup " +
-  "files in order: {1}, {2}, {3}, {4}, {5}, {6}. " +
-  "Runtime model selection is explicitly pinned to {7} at effort {8}. Any legacy model labels " +
+  "files in order: {1}, {2}, {3}, {4}, {5}, {6}, {7}. " +
+  "Runtime model selection is explicitly pinned to {8} at effort {9}. Any legacy model labels " +
   "in durable role, prompt, or historical files are " +
   "historical metadata only, not a pin or current runtime identity. " +
-  "State precedence: {9} Then read the bridge with Read-AgentBridge.ps1 " +
+  "State precedence: {10} Then read the bridge with Read-AgentBridge.ps1 " +
   "-NoAckReceived, use Get-BridgeNextAction, reject stale acknowledgements, " +
   "and resume the existing task autonomously without inventing authority. " +
   "Use the Grok guide when Grok analysis is useful."
@@ -630,6 +631,7 @@ $startupPrompt = (
   [string]$lane.prompt,
   [string]$lane.handoff,
   $grokMarkdown,
+  [string]$manifest.state_precedence.gpu_guide,
   $model,
   $effort,
   $stateRule

@@ -83,6 +83,127 @@ def test_all_reboot_powershell_files_parse() -> None:
         assert result.returncode == 0, f"{path.name}: {result.stderr}"
 
 
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None,
+    reason="Windows PowerShell is unavailable",
+)
+def test_supervisor_action_registration_preserves_enabled_state_and_hides_window() -> None:
+    register = str(REBOOT / "Register-WdScheduledTasks.ps1").replace("'", "''")
+    supervisor = str(REBOOT / "wd_supervisor.ps1").replace("'", "''")
+    result = _run_powershell(
+        f"""
+$global:Enabled = $false
+$global:CurrentAction = $null
+$global:SetCalls = 0
+$global:EnableCalls = 0
+$global:DisableCalls = 0
+$global:DesiredArguments = ''
+function Get-ScheduledTask {{
+  [CmdletBinding()]
+  param([string] $TaskName)
+  return [pscustomobject]@{{
+    Settings = [pscustomobject]@{{ Enabled = $global:Enabled }}
+    Actions = @($global:CurrentAction)
+  }}
+}}
+function New-ScheduledTaskAction {{
+  [CmdletBinding()]
+  param(
+    [string] $Execute,
+    [string] $Argument,
+    [string] $WorkingDirectory
+  )
+  $global:DesiredArguments = $Argument
+  return [pscustomobject]@{{
+    Execute = $Execute
+    Arguments = $Argument
+    WorkingDirectory = $WorkingDirectory
+  }}
+}}
+function Set-ScheduledTask {{
+  [CmdletBinding()]
+  param([string] $TaskName, [object[]] $Action)
+  $global:SetCalls++
+  $global:CurrentAction = @($Action)
+}}
+function Enable-ScheduledTask {{
+  [CmdletBinding()]
+  param([string] $TaskName)
+  $global:EnableCalls++
+}}
+function Disable-ScheduledTask {{
+  [CmdletBinding()]
+  param([string] $TaskName)
+  $global:DisableCalls++
+}}
+
+$expectedArguments = (
+  '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden ' +
+  '-ExecutionPolicy Bypass -File "{supervisor}" -Apply'
+)
+$results = New-Object 'System.Collections.Generic.List[object]'
+foreach ($initialEnabled in @($false, $true)) {{
+  $global:Enabled = [bool]$initialEnabled
+  $global:CurrentAction = [pscustomobject]@{{
+    Execute = 'old.exe'
+    Arguments = 'old'
+    WorkingDirectory = 'C:\\old'
+  }}
+  $global:SetCalls = 0
+  & '{register}' `
+    -Apply `
+    -TaskName 'WD-Supervisor' `
+    -SupervisorScript '{supervisor}' `
+    6>$null
+  [void]$results.Add([pscustomobject]@{{
+    initial_enabled = [bool]$initialEnabled
+    final_enabled = [bool]$global:Enabled
+    set_calls = [int]$global:SetCalls
+    arguments_exact = [string]$global:DesiredArguments -ceq $expectedArguments
+  }})
+}}
+
+$global:Enabled = $false
+$global:CurrentAction = [pscustomobject]@{{
+  Execute = 'old.exe'
+  Arguments = 'old'
+  WorkingDirectory = 'C:\\old'
+}}
+$global:SetCalls = 0
+& '{register}' `
+  -TaskName 'WD-Supervisor' `
+  -SupervisorScript '{supervisor}' `
+  6>$null
+[pscustomobject]@{{
+  apply = $results.ToArray()
+  disabled_preflight_set_calls = [int]$global:SetCalls
+  enable_calls = [int]$global:EnableCalls
+  disable_calls = [int]$global:DisableCalls
+}} | ConvertTo-Json -Depth 5 -Compress
+""",
+        executable=WINDOWS_POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "apply": [
+            {
+                "initial_enabled": False,
+                "final_enabled": False,
+                "set_calls": 1,
+                "arguments_exact": True,
+            },
+            {
+                "initial_enabled": True,
+                "final_enabled": True,
+                "set_calls": 1,
+                "arguments_exact": True,
+            },
+        ],
+        "disabled_preflight_set_calls": 0,
+        "enable_calls": 0,
+        "disable_calls": 0,
+    }
+
+
 def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == 2
@@ -117,6 +238,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     required_bundle_files = manifest["deployment"]["required_bundle_files"]
     assert "WD_SWARM_TARGET_STATE_V1.md" in required_bundle_files
+    assert "Watch-CodexPrompts.ps1" in required_bundle_files
     for relative in required_bundle_files:
         if relative.startswith("tools-bootstrap/.agent-bridge/bin/"):
             source = ROOT / relative.removeprefix("tools-bootstrap/")
@@ -188,6 +310,164 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         assert len(lane["head"]) == 40
         assert (lane["model"], lane["effort"]) == expected_models[agent]
         assert lane["resume_policy"] == "current_worktree"
+
+
+def test_codex_prompt_watcher_is_exact_copy_and_integrity_mapped() -> None:
+    watcher = REBOOT / "Watch-CodexPrompts.ps1"
+    assert hashlib.sha256(watcher.read_bytes()).hexdigest().upper() == (
+        "71A623531DA29DC8DAB5BE491AA2FB6773D99A610CDB2AC0DE4FA707E52C4CAB"
+    )
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "ops/windows/reboot/Watch-CodexPrompts.ps1 binary" in attributes
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "!ops/windows/reboot/Watch-CodexPrompts.ps1" in ignore
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Watch-CodexPrompts.ps1'," in deployer
+    runbook = (REBOOT / "BOOT_AFTER_REBOOT.md").read_text(encoding="utf-8")
+    assert "intentionally dangerous" in runbook
+    assert re.search(
+        r"bypasses both that script's command\s+allowlist and denylist",
+        runbook,
+    )
+    assert "neither receives a UI prompt watcher" in runbook
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_codex_prompt_watcher_state_is_exact_and_fail_closed() -> None:
+    launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
+    result = _run_powershell(
+        rf"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'launcher parse failed' }}
+foreach ($name in @(
+    'Test-NamedCommandLineArgument',
+    'Test-WdCommandLineSwitchSequenceExact',
+    'Get-WdCodexPromptWatcherState'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+$watcher = 'C:\bundle generation\Watch-CodexPrompts.ps1'
+$log = 'C:\Python\wd-reboot-runtime\prompt-watchers\codex-lead-1.log'
+$hostPath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$canonicalCommand = (
+  '"' + $hostPath + '" -NoProfile -ExecutionPolicy Bypass ' +
+  '-File "' + $watcher + '" -AllowAll -NoAllNighter ' +
+  '-TabTitle codex-lead-1 -LogPath "' + $log + '"'
+)
+$canonical = [pscustomobject]@{{
+  ProcessId = 101
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand
+}}
+$canonical2 = [pscustomobject]@{{
+  ProcessId = 102
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand
+}}
+$loose = [pscustomobject]@{{
+  ProcessId = 103
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    $canonicalCommand.Replace(
+      $watcher,
+      'C:\Python\Watch-CodexPrompts.ps1'
+    )
+  )
+}}
+$extraUnsafe = [pscustomobject]@{{
+  ProcessId = 104
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand + ' -MinUserIdleSeconds 0'
+}}
+$wrongHost = [pscustomobject]@{{
+  ProcessId = 105
+  Name = 'powershell.exe'
+  ExecutablePath = 'C:\untrusted\powershell.exe'
+  CommandLine = $canonicalCommand
+}}
+$otherLane = [pscustomobject]@{{
+  ProcessId = 106
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-TabTitle codex-lead-1',
+    '-TabTitle claude-rco-1'
+  )
+}}
+function Get-State([object[]]$Processes) {{
+  Get-WdCodexPromptWatcherState `
+    -Processes $Processes `
+    -WatcherScript $watcher `
+    -TargetTitle codex-lead-1 `
+    -LogPath $log `
+    -ExpectedExecutable $hostPath
+}}
+$current = Get-State @($canonical)
+$duplicate = Get-State @($canonical, $canonical2)
+$looseState = Get-State @($loose)
+$extraState = Get-State @($extraUnsafe)
+$hostState = Get-State @($wrongHost)
+$otherState = Get-State @($otherLane)
+$missing = Get-State @()
+[pscustomobject]@{{
+  current = [string]$current.action
+  current_exact = @($current.exact).Count
+  duplicate = [string]$duplicate.action
+  loose = [string]$looseState.action
+  extra = [string]$extraState.action
+  wrong_host = [string]$hostState.action
+  other_lane = [string]$otherState.action
+  missing = [string]$missing.action
+}} | ConvertTo-Json -Compress
+""",
+        executable=WINDOWS_POWERSHELL or POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "current": "current",
+        "current_exact": 1,
+        "duplicate": "conflict",
+        "loose": "conflict",
+        "extra": "conflict",
+        "wrong_host": "conflict",
+        "other_lane": "launch",
+        "missing": "launch",
+    }
+
+
+def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
+    launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    launch_block = launcher.index(
+        "# The UI prompt watcher is intentionally separate from the five bridge"
+    )
+    handshake_verify = launcher.index(
+        'throw "bridge bootstrap handshake process is not alive for $launchedAgent"'
+    )
+    assert handshake_verify < launch_block
+    assert "$promptWatcherTargetTitle = 'codex-lead-1'" in launcher
+    assert "$promptWatcherWindowTitle = 'WD Codex Prompt Watcher'" in launcher
+    assert "'-AllowAll'" in launcher[launch_block:]
+    assert "'-NoAllNighter'" in launcher[launch_block:]
+    assert "-TargetTitle $promptWatcherTargetTitle" in launcher[launch_block:]
+    assert "claude-rco-1" not in launcher[launch_block:]
+    assert "claude-rco-2" not in launcher[launch_block:]
+    assert "codex-tools-1" not in launcher[launch_block:]
 
 
 def test_target_state_is_binary_to_preserve_raw_manifest_hash() -> None:
@@ -1234,11 +1514,11 @@ $deployed = Get-WdSupervisorInvocationPlan `
   both_rejected = $bothRejected
   source_apply_rejected = $sourceApplyRejected
   source_preflight_script = [string]$source.preflight_script
-  source_preflight_arguments = @($source.preflight_arguments) -join '|'
+  source_preflight_config = [string]$source.preflight_parameters.ConfigPath
   source_apply_script = [string]$source.apply_script
   deployed_preflight_script = [string]$deployed.preflight_script
-  deployed_apply_arguments = @($deployed.apply_arguments) -join '|'
-  deployed_verify_arguments = @($deployed.verify_arguments) -join '|'
+  deployed_apply = [bool]$deployed.apply_parameters.Apply
+  deployed_verify_count = [int]$deployed.verify_parameters.Count
 }} | ConvertTo-Json -Compress
 """,
         executable=WINDOWS_POWERSHELL,
@@ -1250,11 +1530,11 @@ $deployed = Get-WdSupervisorInvocationPlan `
         "both_rejected": True,
         "source_apply_rejected": True,
         "source_preflight_script": r"C:\source\wd_supervisor.ps1",
-        "source_preflight_arguments": r"-ConfigPath|C:\source\config.json",
+        "source_preflight_config": r"C:\source\config.json",
         "source_apply_script": "",
         "deployed_preflight_script": r"C:\machine\wd_supervisor.ps1",
-        "deployed_apply_arguments": "-Apply",
-        "deployed_verify_arguments": "",
+        "deployed_apply": True,
+        "deployed_verify_count": 0,
     }
 
 
@@ -2777,7 +3057,7 @@ $script:TerminalState = 'Ready'
 $script:Clock = [DateTime]::UtcNow
 $script:ObservedTaskPaths = New-Object 'System.Collections.Generic.List[string]'
 $expectedExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-$expectedArgs = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\\Python\\wd_supervisor.ps1" -Apply'
+$expectedArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\\Python\\wd_supervisor.ps1" -Apply'
 $expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $expectedBoundary = '2026-06-30T08:28:36+03:00'
 function New-FakeTask {{
@@ -3122,6 +3402,11 @@ for ($i = 0; $i -lt $bytes.Length; $i++) {{ $bytes[$i] = [byte]($i % 251) }}
 [IO.File]::WriteAllBytes($canonical, $bytes)
 [IO.File]::WriteAllText((Join-Path $spool 'a.jsonl'), "a`n")
 [IO.File]::WriteAllText((Join-Path $spool 'b.jsonl'), "b`n")
+$archive = Join-Path $spool 'archive'
+$replayed = Join-Path $archive 'replayed'
+$delivered = Join-Path $spool 'delivered'
+[void](New-Item -ItemType Directory -Path $replayed,$delivered -Force)
+[IO.File]::WriteAllText((Join-Path $archive 'old.jsonl'), "old`n")
 $baseline = New-WdBridgeSafetyBaseline `
   -RuntimeRoot $runtime `
   -SnapshotRuntimeRoot $runtime `
@@ -3147,12 +3432,33 @@ $extra = Join-Path $spool 'c.jsonl'
 try {{ Assert-WdBridgeSafetyBaseline -Baseline $baseline }}
 catch {{ $spoolAddRejected = $true }}
 Remove-Item -LiteralPath $extra -Force
+$nestedChangeRejected = $false
+$nested = Join-Path $archive 'old.jsonl'
+[IO.File]::AppendAllText($nested, "changed`n")
+try {{ Assert-WdBridgeSafetyBaseline -Baseline $baseline }}
+catch {{ $nestedChangeRejected = $true }}
+[IO.File]::WriteAllText($nested, "old`n")
 $pendingRejected = $false
-$pending = Join-Path $spool '.failed.PENDING'
+$pending = Join-Path $replayed '.failed.PENDING'
 [IO.File]::WriteAllText($pending, "pending`n")
 try {{ [void](Get-WdSpoolInventory -Path $spool) }}
 catch {{ $pendingRejected = $true }}
 Remove-Item -LiteralPath $pending -Force
+$pendingDirectoryRejected = $false
+$pendingDirectory = Join-Path $archive 'directory.pending'
+[void](New-Item -ItemType Directory -Path $pendingDirectory)
+try {{ [void](Get-WdSpoolInventory -Path $spool) }}
+catch {{ $pendingDirectoryRejected = $true }}
+Remove-Item -LiteralPath $pendingDirectory -Recurse -Force
+$nestedReparseRejected = $false
+$alternateNested = Join-Path $root 'alternate-nested'
+$nestedLink = Join-Path $archive 'linked'
+[void](New-Item -ItemType Directory -Path $alternateNested)
+[void](New-Item -ItemType Junction -Path $nestedLink -Target $alternateNested)
+try {{ [void](Get-WdSpoolInventory -Path $spool) }}
+catch {{ $nestedReparseRejected = $true }}
+Remove-Item -LiteralPath $nestedLink -Force
+Remove-Item -LiteralPath $alternateNested -Recurse -Force
 $spoolReparseRejected = $false
 $originalSpool = "$spool.original"
 $alternateSpool = "$spool.alternate"
@@ -3198,7 +3504,10 @@ catch {{ $identityRejected = $true }}
   append_only = $true
   prefix_rejected = $prefixRejected
   spool_add_rejected = $spoolAddRejected
+  nested_change_rejected = $nestedChangeRejected
   pending_rejected = $pendingRejected
+  pending_directory_rejected = $pendingDirectoryRejected
+  nested_reparse_rejected = $nestedReparseRejected
   spool_reparse_rejected = $spoolReparseRejected
   recovery_reparse_rejected = $recoveryReparseRejected
   watcher_rejected = $watcherRejected
@@ -3214,13 +3523,16 @@ catch {{ $identityRejected = $true }}
         "append_only": True,
         "prefix_rejected": True,
         "spool_add_rejected": True,
+        "nested_change_rejected": True,
         "pending_rejected": True,
+        "pending_directory_rejected": True,
+        "nested_reparse_rejected": True,
         "spool_reparse_rejected": True,
         "recovery_reparse_rejected": True,
         "watcher_rejected": True,
         "tools_rejected": True,
         "identity_rejected": True,
-        "spool_count": 2,
+        "spool_count": 6,
         "prefix_length": 2097173,
     }
 
@@ -5092,8 +5404,14 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "codex update (once)" in launcher
     assert "claude update (once)" in launcher
     dry_return = launcher.index("DRY RUN: no updates")
+    console_containment_apply = launcher.index(
+        "Applying scheduled-task console containment"
+    )
+    supervisor_registration = launcher.index(
+        "Registering the exact hidden WD-Supervisor action"
+    )
     first_update = launcher.index("Updating Codex CLI once")
-    assert dry_return < first_update
+    assert dry_return < console_containment_apply < supervisor_registration < first_update
     assert "WD_CLI_VERSIONS_CURRENT.json" in launcher
     assert "function Resolve-ApplicationPath" in launcher
     assert "--no-replace-objects" in launcher
@@ -5145,6 +5463,7 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert lane_launch < final_lane_verify < final_supervisor_verify
     assert final_supervisor_verify < final_bridge_gate < task_activation < completion
     assert "supervisor report-only preflight returned a conflict" in launcher
+    assert "verified legacy visible action" in launcher
     assert "supervisor post-Apply report returned a conflict" in launcher
     assert "Tools consumer validation does not match fleet pins" in launcher
     assert "codex-tools-1 is headless and live" in launcher
@@ -5357,6 +5676,13 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     assert "$materializedRebootRoot" in text
     assert "WD_REBOOT_EXPECTED_MANIFEST_HASH" in text
     assert "ExpectedManifestHash" in text
+    assert "[switch] $Auto" in text
+    assert "Auto cannot be combined with Apply or DryRun" in text
+    assert text.index("$dryRunParameters['DryRun'] = $true") < text.index(
+        "$applyParameters['Apply'] = $true"
+    )
+    assert "'Set-WdTaskConsoleContainment.ps1'," in text
+    assert "Name = 'Set-WdTaskConsoleContainment.ps1'" in text
     assert "unexpected recursive file set" in text
     assert "$expectedInstalledSet" in text
     assert r"C:\Python\project2\.git" in text
@@ -5380,6 +5706,23 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
         "-Path $machineFull `", machine_creation
     )
     assert strict_machine_check < text.index("$backupRoot =")
+
+
+def test_scheduled_task_console_containment_is_dry_by_default_and_fail_closed() -> None:
+    text = (REBOOT / "Set-WdTaskConsoleContainment.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "param([switch] $Apply)" in text
+    assert "wd.task-console-containment.v1" in text
+    assert "4CD4FBED01E3EAD1C999493212F7499137C0937F597BDD5172C0EFEEDA3F509F" in text
+    assert "if (-not $Apply)" in text
+    assert text.index("if (-not $Apply)") < text.index(
+        "Disable-ScheduledTask"
+    ) < text.index("Stop-ScheduledTask")
+    assert "Enable-ScheduledTask" not in text
+    assert "Set-ScheduledTask `\n      -TaskPath" in text
+    assert "[bool]$after.Settings.Enabled -ne $enabledBefore" in text
+    assert "scheduled-task console containment requires an Administrator PowerShell" in text
 
 
 def test_interactive_lane_uses_anchored_bundle_bootstrap() -> None:
@@ -5514,7 +5857,7 @@ def test_deployed_wrappers_preserve_named_parameters() -> None:
     assert "[string] $Generation" in text
     assert "$targetParameters['Agent']" in text
     assert (
-        r"C:\Python\start-wd-all.ps1 -Apply'" in text
+        r"C:\Python\start-wd-all.ps1 -Auto'" in text
     )
 
 

@@ -1,10 +1,14 @@
 # WaggleDance: reboot recovery
 
-The reboot entry point is:
+The single-command reboot entry point is:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Apply
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Auto
 ```
+
+`-Auto` runs the byte-inert DryRun first and proceeds to Apply only when that
+preflight returns successfully. It is the recommended operator command after
+Windows sign-in.
 
 Its non-mutating verification mode is:
 
@@ -12,11 +16,28 @@ Its non-mutating verification mode is:
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -DryRun
 ```
 
-Run `-DryRun` first after Windows sign-in. With no mode switch the launcher also
-defaults to byte-inert DryRun. If the explicit DryRun exits `0`, run the first command
-once and leave its four Windows Terminal tabs open. The fifth, headless Tools
+For a manual two-step recovery, run `-DryRun` and then `-Apply`. With no mode
+switch the launcher defaults to byte-inert DryRun. After a successful restore,
+leave its four Windows Terminal tabs open. The fifth, headless Tools
 lane and exactly five real-time bridge watchers are reconciled by the same
 command through `WD-Supervisor`.
+
+After the interactive `codex-lead-1` lane has completed its bridge-bootstrap
+handshake, the restore also reconciles exactly one separate Codex prompt-watcher
+window. It targets only the terminal title `codex-lead-1` and runs the bundled,
+hash-verified `Watch-CodexPrompts.ps1` with `-AllowAll -NoAllNighter`. This is
+intentionally dangerous: `-AllowAll` bypasses both that script's command
+allowlist and denylist and can approve any Codex command prompt it recognizes
+after the desktop-idle guard permits input. Keep the prompt-watcher window open
+only while this unattended behavior is intended. Claude lanes already use
+`--dangerously-skip-permissions`, and headless Tools uses approval policy
+`never`; neither receives a UI prompt watcher.
+
+DryRun verifies the prompt-watcher script and reports whether it would keep or
+launch the single Lead watcher. A non-canonical Lead watcher or more than one
+watcher targeting `codex-lead-1` is an ambiguous conflict and stops recovery
+before CLI updates or process launches. The prompt watcher is separate from the
+five supervisor-managed real-time bridge watchers.
 
 The DryRun includes the supervisor's byte-inert watcher plan. A single stale
 watcher is replaceable only when its command tuple, identity, runtime root,

@@ -146,6 +146,10 @@ REQUESTER_TERMINAL_STATUS_STEMS = (
     "approved",
     "cancelled",
     "canceled",
+    "resolved",
+    "postmerge",
+    "validated",
+    "verified",
 )
 REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS = (
     "closed",
@@ -842,33 +846,33 @@ def _open_requests_for_agent(
     closure_index = _build_request_closure_index(events)
     idle_progress_index = _build_idle_protocol_progress_index(events)
     current_utc = now_utc.astimezone(timezone.utc)
-    requests: list[tuple[int, Mapping[str, Any]]] = []
+    requests: list[tuple[tuple[datetime, int], Mapping[str, Any]]] = []
     for event_index, event in enumerate(events):
         if not _is_request_like(event) or not _addressed_to(event, agent):
             continue
         request_ts = _parse_utc(_event_ts(event))
         if request_ts is None or request_ts > current_utc:
             continue
-        requests.append((event_index, event))
+        requests.append(((request_ts, event_index), event))
     open_requests: list[Mapping[str, Any]] = []
-    for request_index, request in requests:
+    for request_moment, request in requests:
         if _is_direct_rco_pass_block_request(agent=agent, event=request):
             answered = _direct_rco_pass_block_request_closed(
                 request=request,
-                request_index=request_index,
+                request_moment=request_moment,
                 agent=agent,
                 events=events,
             )
         else:
             answered = _request_closed_by_index(
                 request=request,
-                request_index=request_index,
+                request_moment=request_moment,
                 agent=agent,
                 closure_index=closure_index,
             )
         if not answered and _idle_protocol_progressed_by_index(
             request,
-            request_index=request_index,
+            request_moment=request_moment,
             progress_index=idle_progress_index,
         ):
             answered = True
@@ -879,14 +883,23 @@ def _open_requests_for_agent(
 
 def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, dict[str, int]]:
-    """Return target answers and identity-bound requester closures by task."""
-    closure_index: dict[str, dict[str, int]] = {}
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return target answers and identity-bound requester closures by task.
+
+    Timestamped closures are kept as undominated moments of parsed event
+    time plus append index: a closure counts against a request only when it
+    follows the request in BOTH orders (see _closure_occurs_after_request),
+    and a single maximum under either order could be shadowed by a stale
+    replay or a post-dated closure. Closures without a parseable timestamp
+    keep the legacy append-order behavior as a maximum append index.
+    """
+    closure_index: dict[str, dict[str, dict[str, Any]]] = {}
     for event_index, event in enumerate(events):
         answer_like = _is_answer_like(event)
         requester_terminal = _is_requester_terminal_closure(event)
         if not answer_like and not requester_terminal:
             continue
+        closure_ts = _parse_utc(_event_ts(event))
         event_agent = _event_agent(event)
         task_id = _task_id(event)
         if task_id:
@@ -898,21 +911,94 @@ def _build_request_closure_index(
             closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
             task_closures = closure_index.setdefault(closure_key, {})
-            if answer_like and event_index > task_closures.get(event_agent, -1):
-                task_closures[event_agent] = event_index
+            if answer_like:
+                _record_closure_entry(
+                    task_closures.setdefault(event_agent, _new_closure_entry()),
+                    closure_ts=closure_ts,
+                    closure_index=event_index,
+                )
             if requester_terminal:
                 for terminal_agent in _requester_terminal_closure_keys(event):
-                    if event_index > task_closures.get(terminal_agent, -1):
-                        task_closures[terminal_agent] = event_index
+                    _record_closure_entry(
+                        task_closures.setdefault(
+                            terminal_agent, _new_closure_entry()
+                        ),
+                        closure_ts=closure_ts,
+                        closure_index=event_index,
+                    )
     return closure_index
+
+
+def _new_closure_entry() -> dict[str, Any]:
+    return {"moments": [], "tsless_max_index": -1}
+
+
+def _record_closure_entry(
+    entry: dict[str, Any],
+    *,
+    closure_ts: datetime | None,
+    closure_index: int,
+) -> None:
+    if closure_ts is None:
+        entry["tsless_max_index"] = max(
+            int(entry["tsless_max_index"]), closure_index
+        )
+    else:
+        _merge_closure_moment(entry["moments"], (closure_ts, closure_index))
+
+
+def _entry_closes_request(
+    entry: Mapping[str, Any] | None,
+    *,
+    request_ts: datetime,
+    request_index: int,
+) -> bool:
+    if entry is None:
+        return False
+    if int(entry["tsless_max_index"]) > request_index:
+        return True
+    return _any_moment_closes_request(
+        entry["moments"],
+        request_ts=request_ts,
+        request_index=request_index,
+    )
+
+
+def _merge_closure_moment(
+    moments: list[tuple[datetime, int]],
+    moment: tuple[datetime, int],
+) -> None:
+    """Keep only closure moments undominated in both time and append order."""
+    moment_ts, moment_index = moment
+    for existing_ts, existing_index in moments:
+        if existing_ts >= moment_ts and existing_index >= moment_index:
+            return
+    moments[:] = [
+        (existing_ts, existing_index)
+        for existing_ts, existing_index in moments
+        if not (moment_ts >= existing_ts and moment_index >= existing_index)
+    ]
+    moments.append(moment)
+
+
+def _any_moment_closes_request(
+    moments: Sequence[tuple[datetime, int]],
+    *,
+    request_ts: datetime,
+    request_index: int,
+) -> bool:
+    return any(
+        moment_index > request_index and moment_ts >= request_ts
+        for moment_ts, moment_index in moments
+    )
 
 
 def _request_closed_by_index(
     *,
     request: Mapping[str, Any],
-    request_index: int,
+    request_moment: tuple[datetime, int],
     agent: str,
-    closure_index: Mapping[str, Mapping[str, int]],
+    closure_index: Mapping[str, Mapping[str, Mapping[str, Any]]],
 ) -> bool:
     task_id = _task_id(request)
     closure_keys = []
@@ -927,25 +1013,44 @@ def _request_closed_by_index(
         )
     pr_closure_key = _pr_closure_key_for_event(request)
     if pr_closure_key:
-        task_closures = closure_index.get(pr_closure_key, {})
-        if task_closures:
-            target_agent = agent.lower()
-            if task_closures.get(target_agent, -1) > request_index:
-                return True
-            requester_terminal_agent = _requester_terminal_request_key(request)
-            if task_closures.get(requester_terminal_agent, -1) > request_index:
-                return True
+        closure_keys.append(pr_closure_key)
+    request_ts, request_index = request_moment
+    closer_keys = (agent.lower(), _requester_terminal_request_key(request))
     for closure_key in closure_keys:
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
             continue
-        target_agent = agent.lower()
-        if task_closures.get(target_agent, -1) > request_index:
-            return True
-        requester_terminal_agent = _requester_terminal_request_key(request)
-        if task_closures.get(requester_terminal_agent, -1) > request_index:
-            return True
+        for closer_key in closer_keys:
+            if _entry_closes_request(
+                task_closures.get(closer_key),
+                request_ts=request_ts,
+                request_index=request_index,
+            ):
+                return True
     return False
+
+
+def _closure_occurs_after_request(
+    *,
+    closure_ts: datetime | None,
+    closure_index: int,
+    request_ts: datetime | None,
+    request_index: int,
+) -> bool:
+    """Require a closure to follow the request in BOTH log orders.
+
+    Append order alone would let a delayed WAL/spool replay of a stale
+    closure (old timestamp, appended at the log tail) silently close a
+    request renewed after it; timestamp order alone would let a post-dated
+    closure appended before the request suppress it. When either side has
+    no parseable timestamp the comparison falls back to append order,
+    preserving the legacy behavior for malformed records.
+    """
+    if closure_index <= request_index:
+        return False
+    if closure_ts is None or request_ts is None:
+        return True
+    return closure_ts >= request_ts
 
 
 def _task_closure_key(task_id: str) -> str:
@@ -1254,12 +1359,20 @@ def _is_stale_claim(claim: Claim, *, now_utc: datetime) -> bool:
 
 def _build_idle_protocol_progress_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, int]:
-    progress_index: dict[str, int] = {}
+) -> dict[str, dict[str, Any]]:
+    """Index idle-protocol progress by proposal id.
+
+    Timestamped progress keeps undominated (time, append index) moments and
+    counts only when it follows the proposal in both orders, mirroring the
+    request-closure rule. Progress without a parseable timestamp keeps the
+    legacy append-order behavior, tracked as a maximum append index.
+    """
+    progress_index: dict[str, dict[str, Any]] = {}
     for event_index, event in enumerate(events):
         payload = _payload(event)
         if payload.get("protocol_version") != "idle-protocol.v1":
             continue
+        progress_ts = _parse_utc(_event_ts(event))
         for field in (
             "responds_to",
             "consensus_target_proposal_id",
@@ -1267,16 +1380,21 @@ def _build_idle_protocol_progress_index(
             "rejected_event_id",
         ):
             proposal_id = str(payload.get(field) or "")
-            if proposal_id and event_index > progress_index.get(proposal_id, -1):
-                progress_index[proposal_id] = event_index
+            if not proposal_id:
+                continue
+            _record_closure_entry(
+                progress_index.setdefault(proposal_id, _new_closure_entry()),
+                closure_ts=progress_ts,
+                closure_index=event_index,
+            )
     return progress_index
 
 
 def _idle_protocol_progressed_by_index(
     request: Mapping[str, Any],
     *,
-    request_index: int,
-    progress_index: Mapping[str, int],
+    request_moment: tuple[datetime, int],
+    progress_index: Mapping[str, Mapping[str, Any]],
 ) -> bool:
     payload = _payload(request)
     if payload.get("protocol_version") != "idle-protocol.v1":
@@ -1284,7 +1402,12 @@ def _idle_protocol_progressed_by_index(
     proposal_id = str(payload.get("proposal_id") or "")
     if not proposal_id:
         return False
-    return progress_index.get(proposal_id, -1) > request_index
+    request_ts, request_index = request_moment
+    return _entry_closes_request(
+        progress_index.get(proposal_id),
+        request_ts=request_ts,
+        request_index=request_index,
+    )
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
@@ -1359,7 +1482,7 @@ def _is_rco_agent(agent: str) -> bool:
 def _direct_rco_pass_block_request_closed(
     *,
     request: Mapping[str, Any],
-    request_index: int,
+    request_moment: tuple[datetime, int],
     agent: str,
     events: Sequence[Mapping[str, Any]],
 ) -> bool:
@@ -1367,8 +1490,14 @@ def _direct_rco_pass_block_request_closed(
     request_pr_key = _pr_closure_key_for_event(request)
     requester = _event_agent(request)
     target = agent.lower()
+    request_ts, request_index = request_moment
     for event_index, event in enumerate(events):
-        if event_index <= request_index:
+        if not _closure_occurs_after_request(
+            closure_ts=_parse_utc(_event_ts(event)),
+            closure_index=event_index,
+            request_ts=request_ts,
+            request_index=request_index,
+        ):
             continue
         same_task = bool(request_task_id and _task_id(event) == request_task_id)
         event_pr_key = _pr_closure_key_for_event(event)

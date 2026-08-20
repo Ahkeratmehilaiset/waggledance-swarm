@@ -37,6 +37,7 @@ from tools.bridge_next_action import (  # noqa: E402
     DEFAULT_OPEN_REQUEST_MAX_AGE_HOURS,
     PRIVATE_MARKERS,
     _build_idle_protocol_progress_index,
+    _closure_occurs_after_request,
     _event_agent,
     _event_status,
     _event_ts,
@@ -223,7 +224,7 @@ def _open_requests_for_agent(
 ) -> list[Mapping[str, Any]]:
     current_utc = now_utc.astimezone(timezone.utc)
     requests = [
-        (event_index, event)
+        ((request_ts, event_index), event)
         for event_index, event in enumerate(events)
         if _is_peer_request_like(event)
         and _event_agent(event) != agent
@@ -234,29 +235,38 @@ def _open_requests_for_agent(
     ]
     idle_progress_index = _build_idle_protocol_progress_index(events)
     open_requests: list[Mapping[str, Any]] = []
-    for request_index, request in requests:
+    for request_moment, request in requests:
         task_id = _task_id(request)
-        later_events = events[request_index + 1 :]
+        request_ts, request_index = request_moment
         answered = any(
             _event_agent(event) == agent
             and _task_id(event) == task_id
             and _is_substantive_answer_like(event)
-            for event in later_events
+            and _closure_occurs_after_request(
+                closure_ts=_parse_utc(_event_ts(event)),
+                closure_index=event_index,
+                request_ts=request_ts,
+                request_index=request_index,
+            )
+            for event_index, event in enumerate(events)
         )
         if not answered:
             answered = any(
                 _task_id(event) == task_id
                 and _event_agent(event) == _event_agent(request)
                 and _requester_identity_matches(request, event)
-                and (
-                    _is_closing_event_like(event)
-                    or _is_requester_terminal_closure(event)
+                and _is_requester_terminal_closure(event)
+                and _closure_occurs_after_request(
+                    closure_ts=_parse_utc(_event_ts(event)),
+                    closure_index=event_index,
+                    request_ts=request_ts,
+                    request_index=request_index,
                 )
-                for event in later_events
+                for event_index, event in enumerate(events)
             )
         if not answered and _idle_protocol_progressed_by_index(
             request,
-            request_index=request_index,
+            request_moment=request_moment,
             progress_index=idle_progress_index,
         ):
             answered = True
@@ -294,27 +304,6 @@ def _is_substantive_answer_like(event: Mapping[str, Any]) -> bool:
         "handoff",
         "release",
     }
-
-
-def _is_closing_event_like(event: Mapping[str, Any]) -> bool:
-    event_type = _event_type(event)
-    if event_type not in {"done", "decision", "blocked", "release", "handoff"}:
-        return False
-    tokens = _status_tokens(_event_status(event))
-    return bool(
-        tokens
-        & {
-            "blocked",
-            "closed",
-            "done",
-            "merged",
-            "postmerge",
-            "resolved",
-            "superseded",
-            "validated",
-            "verified",
-        }
-    )
 
 
 def _latest_request_by_task(

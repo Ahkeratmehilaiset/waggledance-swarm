@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     PRIVATE_MARKERS,
+    _closure_occurs_after_request,
     _event_agent,
     _event_recipients,
     _event_status,
@@ -285,7 +286,12 @@ def _open_requests_by_target(
     known_agents = _known_bridge_agents(events)
     open_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
-        _close_answered_requests(open_by_key, event, known_agents=known_agents)
+        _close_answered_requests(
+            open_by_key,
+            event,
+            event_index=index,
+            known_agents=known_agents,
+        )
         if not _is_request_like(event):
             continue
         request_ts = _parse_utc(_event_ts(event))
@@ -383,12 +389,14 @@ def _close_answered_requests(
     open_by_key: dict[tuple[str, str, str], dict[str, Any]],
     event: Mapping[str, Any],
     *,
+    event_index: int,
     known_agents: Sequence[str],
 ) -> None:
     requester_terminal = _is_requester_terminal_closure(event)
     target_answer = _is_answer_like(event)
     if not requester_terminal and not target_answer:
         return
+    closure_ts = _parse_utc(_event_ts(event))
     event_agent = _event_agent(event)
     event_task_key = _task_key(
         _task_id(event),
@@ -401,6 +409,13 @@ def _close_answered_requests(
         same_task = state_task_key == event_task_key
         same_pr = _same_payload_pr(event, state)
         if not same_task and not same_pr:
+            continue
+        if not _closure_occurs_after_request(
+            closure_ts=closure_ts,
+            closure_index=event_index,
+            request_ts=_parse_utc(str(state["ts_utc"])),
+            request_index=int(state["event_index"]),
+        ):
             continue
         if event_agent == target and target_answer:
             del open_by_key[key]

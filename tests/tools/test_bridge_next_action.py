@@ -779,7 +779,7 @@ def test_prior_future_dated_closure_does_not_close_later_appended_request(
     assert report["open_incoming_count"] == 1
 
 
-def test_later_appended_closure_wins_despite_older_timestamp() -> None:
+def test_tail_replayed_closure_with_older_timestamp_keeps_request_open() -> None:
     request = {
         "ts_utc": "2026-06-13T09:01:00Z",
         "agent": "codex-lead-1",
@@ -796,7 +796,38 @@ def test_later_appended_closure_wins_despite_older_timestamp() -> None:
         "type": "decision",
         "task_id": "append-order-request",
         "status": "answered",
-        "message": "Answer appended after the request",
+        "message": "Stale answer replayed onto the log tail",
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[request, closure],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+def test_later_appended_closure_with_equal_timestamp_closes_request() -> None:
+    request = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "append-order-request",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    closure = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "append-order-request",
+        "status": "answered",
+        "message": "Answer at the same clock instant, appended after",
     }
 
     report = recommend_next_action(
@@ -808,6 +839,62 @@ def test_later_appended_closure_wins_despite_older_timestamp() -> None:
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
+
+
+def test_delayed_replay_receipt_does_not_close_renewed_request() -> None:
+    requester_identity = {
+        "agent": "codex-lead-1",
+        "agent_uuid": "uuid-a",
+        "session_id": "session-a",
+    }
+    request = {
+        "ts_utc": "2026-08-20T04:00:00Z",
+        **requester_identity,
+        "to": "fable-5",
+        "type": "wake_request",
+        "task_id": "replay-renewal-request",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    renewal = {
+        "ts_utc": "2026-08-20T04:02:00Z",
+        **requester_identity,
+        "to": "fable-5",
+        "type": "wake_request",
+        "task_id": "replay-renewal-request",
+        "status": "review_requested",
+        "message": "Review re-requested after the first receipt",
+    }
+    replayed_receipt = {
+        "ts_utc": "2026-08-20T04:01:00Z",
+        **requester_identity,
+        "to": "operator",
+        "type": "decision",
+        "task_id": "replay-renewal-request",
+        "status": "autonomous_merge_receipt",
+        "message": "Stale receipt replayed onto the log tail",
+    }
+
+    report = recommend_next_action(
+        agent="fable-5",
+        events=[request, renewal, replayed_receipt],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-08-20T04:05:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "replay-renewal-request"
+    assert report["open_incoming_count"] == 1
+
+    unrenewed_report = recommend_next_action(
+        agent="fable-5",
+        events=[request, replayed_receipt],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-08-20T04:05:00+00:00"),
+    )
+
+    assert unrenewed_report["action"] == "claim_unblocked_work"
+    assert unrenewed_report["open_incoming_count"] == 0
 
 
 def test_same_task_requests_from_distinct_sessions_remain_independent() -> None:
@@ -3611,7 +3698,7 @@ def test_prior_idle_protocol_progress_does_not_close_later_proposal(
     assert report["open_incoming_count"] == 1
 
 
-@pytest.mark.parametrize("progress_ts", ["2026-05-18T05:00:00Z", "not-a-timestamp"])
+@pytest.mark.parametrize("progress_ts", ["2026-05-18T06:00:00Z", "not-a-timestamp"])
 def test_later_idle_protocol_progress_closes_proposal_by_append_order(
     progress_ts: str,
 ) -> None:
@@ -3654,6 +3741,48 @@ def test_later_idle_protocol_progress_closes_proposal_by_append_order(
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
+
+
+def test_tail_replayed_stale_idle_progress_keeps_proposal_open() -> None:
+    proposal = {
+        "ts_utc": "2026-05-18T05:53:31Z",
+        "agent": "claude",
+        "to": "codex",
+        "type": "message",
+        "task_id": "idle-protocol-proposal",
+        "status": "idle_proposal",
+        "message": "proposal",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "event_type": "idle_proposal",
+            "proposal_id": "idle-proposal-round1",
+        },
+    }
+    replayed_progress = {
+        "ts_utc": "2026-05-18T05:00:00Z",
+        "agent": "codex",
+        "to": "claude",
+        "type": "message",
+        "task_id": "idle-protocol-progress",
+        "status": "idle_counter_proposal",
+        "message": "stale progress replayed onto the log tail",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "event_type": "idle_counter_proposal",
+            "proposal_id": "idle-counter-round2",
+            "responds_to": "idle-proposal-round1",
+        },
+    }
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[proposal, replayed_progress],
+        claims=[],
+        now_utc=datetime(2026, 5, 18, 7, 20, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
 
 
 def test_read_events_honors_tail_before_validation(tmp_path: Path) -> None:

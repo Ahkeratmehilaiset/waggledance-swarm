@@ -138,7 +138,7 @@ def test_future_or_invalid_direct_request_cannot_poison_default_clock_or_state(
 
 @pytest.mark.parametrize(
     "closure_ts",
-    ["2026-06-14T11:00:00Z", "2099-06-14T12:05:00Z", "not-a-timestamp"],
+    ["2026-06-14T12:05:00Z", "2099-06-14T12:05:00Z", "not-a-timestamp"],
 )
 @pytest.mark.parametrize("closer", ["target", "requester"])
 def test_later_direct_closure_uses_append_order_not_event_clock(
@@ -183,6 +183,50 @@ def test_later_direct_closure_uses_append_order_not_event_clock(
 
     assert report["direct_pass_block_request_count"] == 0
     assert report["bridge_next_action"]["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize("closer", ["target", "requester"])
+def test_tail_replayed_stale_direct_closure_keeps_request_open(
+    tmp_path: Path,
+    closer: str,
+) -> None:
+    request = _request(agent="codex-lead-1")
+    request.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+    if closer == "target":
+        closure = {
+            "ts_utc": "2026-06-14T11:00:00Z",
+            "agent": "claude-rco-2",
+            "to": "codex-lead-1",
+            "type": "decision",
+            "task_id": "pr1208-rco-pass",
+            "status": "rco_pass",
+            "message": "stale target response replayed onto the log tail",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        }
+    else:
+        closure = {
+            "ts_utc": "2026-06-14T11:00:00Z",
+            "agent": "codex-lead-1",
+            "agent_uuid": "uuid-a",
+            "session_id": "session-a",
+            "to": "claude-rco-2",
+            "type": "done",
+            "task_id": "pr1208-rco-pass",
+            "status": "done",
+            "message": "stale requester closure replayed onto the log tail",
+            "payload": {"pr": 1208, "head": "c" * 40},
+        }
+
+    report = build_rco_readiness_report(
+        agent="claude-rco-2",
+        events=[request, closure],
+        bridge_root=tmp_path,
+        claims=[],
+        now_utc=_now(),
+    )
+
+    assert report["direct_pass_block_request_count"] == 1
+    assert report["bridge_next_action"]["open_incoming_count"] == 1
 
 
 def test_prior_future_direct_closure_does_not_close_later_request(

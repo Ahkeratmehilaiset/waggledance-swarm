@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
     PRIVATE_MARKERS,
+    _closure_occurs_after_request,
     _event_agent,
     _event_recipients,
     _event_status,
@@ -253,7 +254,12 @@ def _open_direct_rco_pass_block_requests(
     current_utc = now_utc.astimezone(timezone.utc)
     open_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
-        _close_direct_requests(open_by_key, event, target_agent=agent)
+        _close_direct_requests(
+            open_by_key,
+            event,
+            event_index=index,
+            target_agent=agent,
+        )
         if not _is_direct_rco_pass_block_request(agent=agent, event=event):
             continue
         event_ts = _parse_utc(_event_ts(event))
@@ -315,16 +321,25 @@ def _close_direct_requests(
     open_by_key: dict[tuple[str, str, str], dict[str, Any]],
     event: Mapping[str, Any],
     *,
+    event_index: int,
     target_agent: str,
 ) -> None:
     event_agent = _event_agent(event)
     event_task = _task_id(event)
     event_pr = _pr_number_for_event(event) or ""
+    closure_ts = _parse_utc(_event_ts(event))
     for key, state in list(open_by_key.items()):
         task_id, pr, _requester_key = key
         same_task = bool(task_id and event_task == task_id)
         same_pr = bool(pr and event_pr == pr)
         if not same_task and not same_pr:
+            continue
+        if not _closure_occurs_after_request(
+            closure_ts=closure_ts,
+            closure_index=event_index,
+            request_ts=_parse_utc(str(state["ts_utc"])),
+            request_index=int(state["event_index"]),
+        ):
             continue
         requester = str(state["requester"])
         if event_agent == target_agent and _is_substantive_rco_response(event):

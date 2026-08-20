@@ -557,7 +557,7 @@ def test_prior_future_dated_closure_does_not_close_later_appended_request(
     assert report["unanswered_count"] == 1
 
 
-def test_later_appended_closure_wins_despite_older_timestamp() -> None:
+def test_tail_replayed_closure_with_older_timestamp_keeps_request_open() -> None:
     request = _request(
         agent="codex-tools-1",
         to="claude-rco-1",
@@ -575,7 +575,62 @@ def test_later_appended_closure_wins_despite_older_timestamp() -> None:
         min_age_minutes=0,
     )
 
+    assert report["unanswered_count"] == 1
+
+
+def test_later_appended_closure_with_later_timestamp_closes_request() -> None:
+    request = _request(
+        agent="codex-tools-1",
+        to="claude-rco-1",
+        ts="2026-06-13T12:08:00Z",
+    )
+    answer = _answer(
+        agent="claude-rco-1",
+        ts="2026-06-13T12:09:00Z",
+        status="answered",
+    )
+
+    report = report_unanswered_requests(
+        events=[request, answer],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
     assert report["unanswered_count"] == 0
+
+
+def test_delayed_replay_receipt_does_not_close_renewed_request() -> None:
+    request = _request(
+        agent="codex-tools-1",
+        to="claude-rco-1",
+        ts="2026-06-13T12:00:00Z",
+    )
+    renewal = _request(
+        agent="codex-tools-1",
+        to="claude-rco-1",
+        ts="2026-06-13T12:02:00Z",
+    )
+    replayed_answer = _answer(
+        agent="claude-rco-1",
+        ts="2026-06-13T12:01:00Z",
+        status="answered",
+    )
+
+    report = report_unanswered_requests(
+        events=[request, renewal, replayed_answer],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert report["unanswered_count"] == 1
+
+    settled = report_unanswered_requests(
+        events=[request, replayed_answer],
+        now_utc=_now(),
+        min_age_minutes=0,
+    )
+
+    assert settled["unanswered_count"] == 0
 
 
 @pytest.mark.parametrize("invalid_pr", [True, 1.5])

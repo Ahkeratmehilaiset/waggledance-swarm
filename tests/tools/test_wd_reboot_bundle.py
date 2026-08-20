@@ -3044,6 +3044,7 @@ foreach ($name in @(
     'Test-WdSupervisorTaskEnvelopeExact',
     'Get-WdSupervisorTaskActivationPlan',
     'Set-WdSupervisorTaskHeld',
+    'Invoke-WdSupervisorTaskBootstrapHeld',
     'Enable-WdSupervisorTaskAfterRestore'
   )) {{
   $functionAst = $ast.Find(
@@ -3171,6 +3172,42 @@ function Get-Date {{
   $script:Clock = $script:Clock.AddSeconds(1)
   return $script:Clock
 }}
+$bootstrap = Invoke-WdSupervisorTaskBootstrapHeld `
+  -TaskName WD-Supervisor `
+  -ExpectedExecutable $expectedExe `
+  -ExpectedArguments $expectedArgs `
+  -ExpectedWorkingDirectory 'C:\\Python' `
+  -ExpectedPrincipalSid $expectedSid `
+  -ExpectedStartBoundary $expectedBoundary `
+  -WaitSeconds 10
+$bootstrapHeld = -not $script:Enabled -and $script:State -eq 'Disabled'
+$bootstrapEnableCalls = $script:EnableCalls
+$bootstrapStartCalls = $script:StartCalls
+$bootstrapDisableCalls = $script:DisableCalls
+$script:Enabled = $false
+$script:State = 'Disabled'
+$script:Result = 9
+$script:LastRun = [DateTime]'2000-01-01T00:00:00Z'
+$bootstrapFailureRejected = $false
+try {{
+  [void](Invoke-WdSupervisorTaskBootstrapHeld `
+    -TaskName WD-Supervisor `
+    -ExpectedExecutable $expectedExe `
+    -ExpectedArguments $expectedArgs `
+    -ExpectedWorkingDirectory 'C:\\Python' `
+    -ExpectedPrincipalSid $expectedSid `
+    -ExpectedStartBoundary $expectedBoundary `
+    -WaitSeconds 10)
+}} catch {{ $bootstrapFailureRejected = $true }}
+$bootstrapFailureHeld = -not $script:Enabled -and $script:State -eq 'Disabled'
+$script:EnableCalls = 0
+$script:DisableCalls = 0
+$script:StartCalls = 0
+$script:StopCalls = 0
+$script:Enabled = $false
+$script:State = 'Disabled'
+$script:Result = 0
+$script:LastRun = [DateTime]'2000-01-01T00:00:00Z'
 $disabledPlan = Get-WdSupervisorTaskActivationPlan (New-FakeTask)
 $first = Enable-WdSupervisorTaskAfterRestore `
   -TaskName WD-Supervisor `
@@ -3300,6 +3337,13 @@ Set-WdSupervisorTaskHeld `
   -ExpectedStartBoundary $expectedBoundary
 $inactiveDidNotStop = $script:StopCalls -eq $stopBeforeInactive
 [pscustomobject]@{{
+  bootstrap_result = [int64]$bootstrap.last_task_result
+  bootstrap_held = $bootstrapHeld
+  bootstrap_enable_calls = $bootstrapEnableCalls
+  bootstrap_start_calls = $bootstrapStartCalls
+  bootstrap_disable_calls = $bootstrapDisableCalls
+  bootstrap_failure_rejected = $bootstrapFailureRejected
+  bootstrap_failure_held = $bootstrapFailureHeld
   disabled_plan = [bool]$disabledPlan.enable_after_restore
   first_changed = [bool]$first.changed
   first_result = [int64]$first.last_task_result
@@ -3337,6 +3381,13 @@ $inactiveDidNotStop = $script:StopCalls -eq $stopBeforeInactive
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload == {
+        "bootstrap_result": 0,
+        "bootstrap_held": True,
+        "bootstrap_enable_calls": 1,
+        "bootstrap_start_calls": 1,
+        "bootstrap_disable_calls": 2,
+        "bootstrap_failure_rejected": True,
+        "bootstrap_failure_held": True,
         "disabled_plan": True,
         "first_changed": True,
         "first_result": 0,
@@ -5519,10 +5570,14 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     tools_validation = launcher.index("-ValidateOnly")
     assert tools_validation < launcher.index("Updating Codex CLI once")
     assert tools_validation < launcher.index("Resolving the current Grok model")
-    assert tools_validation < launcher.index("$supervisorApplyOutput = &")
+    assert tools_validation < launcher.index(
+        "$supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld"
+    )
     supervisor_preflight = launcher.index("$supervisorPreflightOutput = @(")
     whole_fleet_passed = launcher.index("whole-fleet preflight passed")
-    supervisor_apply = launcher.index("$supervisorApplyOutput = &")
+    supervisor_bootstrap = launcher.index(
+        "$supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld"
+    )
     supervisor_verify = launcher.index("$supervisorVerifyOutput = @(")
     cli_receipt = launcher.index(
         "Move-Item -LiteralPath $cliVersionTemporary"
@@ -5544,13 +5599,15 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     completion = launcher.index("Fleet restore complete; run_id=")
     assert supervisor_preflight < whole_fleet_passed < dry_return
     assert dry_return < first_update < cli_receipt
-    assert cli_receipt < supervisor_apply < supervisor_verify
+    assert cli_receipt < supervisor_bootstrap < supervisor_verify
     assert supervisor_verify < tools_wait < grok_resolve < lane_launch
     assert lane_launch < final_lane_verify < final_supervisor_verify
     assert final_supervisor_verify < final_bridge_gate < task_activation < completion
     assert "supervisor report-only preflight returned a conflict" in launcher
     assert "verified legacy visible action" in launcher
-    assert "supervisor post-Apply report returned a conflict" in launcher
+    assert "supervisor post-bootstrap report returned a conflict" in launcher
+    assert "through the Limited WD-Supervisor task" in launcher
+    assert "& ([string]$supervisorPlan.apply_script)" not in launcher
     assert "Tools consumer validation does not match fleet pins" in launcher
     assert "codex-tools-1 is headless and live" in launcher
     assert "-Generation $bundleGeneration" in launcher
@@ -5560,7 +5617,7 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "$progressMessage = ((" in launcher
     assert "Write-Host $progressMessage" in launcher
     assert "ask WD-Supervisor to replace stale generation" in launcher
-    assert "Reconciling five bridge watchers" in launcher
+    assert "Bootstrapping five bridge watchers" in launcher
     assert "supervisor reconciliation conflict" in supervisor
     containment_body = supervisor[
         supervisor.index("function Invoke-TaskContainment") : supervisor.index(

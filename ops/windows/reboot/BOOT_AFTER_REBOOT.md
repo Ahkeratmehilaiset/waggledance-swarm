@@ -34,6 +34,14 @@ can take several minutes. During that bounded wait, `-Auto` prints progress
 every 30 seconds. A readiness record that is present but not attested is a
 launcher/process-identity problem, not a reason to wait silently.
 
+The elevated restore never launches the five bridge watchers or headless Tools
+directly. It demand-starts the exact `RunLevel=Limited` WD-Supervisor task once,
+waits for that scheduled path to finish successfully, and returns the task to
+Disabled/HOLD while the interactive lanes are restored. This keeps every
+supervisor-owned process visible to later Limited supervisor runs and prevents
+an elevated/Limited duplicate-generation race. The task is enabled permanently
+only after the complete fleet and bridge baseline have passed verification.
+
 After the interactive `codex-lead-1` lane has completed its bridge-bootstrap
 handshake, the restore also reconciles exactly one separate Codex prompt-watcher
 window. It targets only the terminal title `codex-lead-1` and runs the bundled,
@@ -61,8 +69,9 @@ merge-driver HOLD before returning that conflict.
 
 The command performs a whole-fleet preflight before opening a window. An exact
 `WD-Supervisor` task held Disabled by a controlled deployment remains Disabled
-through DryRun and is enabled only after a successful Apply has verified the
-entire fleet. Apply updates Codex and Claude Code with their supported `update`
+through DryRun. Apply uses only the bounded Limited bootstrap described above
+before it is enabled after the entire fleet has been verified. Apply updates
+Codex and Claude Code with their supported `update`
 commands before starting a new Tools or interactive agent, resolves the
 authenticated Grok CLI's current provider-default model, and resumes each
 verified persistent C-drive worktree at its current branch and HEAD. The

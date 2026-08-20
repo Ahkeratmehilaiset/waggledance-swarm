@@ -1264,6 +1264,132 @@ function Enable-WdSupervisorTaskAfterRestore {
   }
 }
 
+function Invoke-WdSupervisorTaskBootstrapHeld {
+  param(
+    [Parameter(Mandatory)] [string] $TaskName,
+    [Parameter(Mandatory)] [string] $ExpectedExecutable,
+    [Parameter(Mandatory)] [string] $ExpectedArguments,
+    [Parameter(Mandatory)] [string] $ExpectedWorkingDirectory,
+    [Parameter(Mandatory)] [string] $ExpectedPrincipalSid,
+    [Parameter(Mandatory)] [string] $ExpectedStartBoundary,
+    [ValidateRange(10, 300)] [int] $WaitSeconds = 120
+  )
+
+  $bootstrapFailure = $null
+  $result = $null
+  try {
+    # Auto runs elevated for Task Scheduler mutation, while WD-Supervisor
+    # deliberately runs as the interactive user at RunLevel=Limited. Processes
+    # launched directly by the elevated parent are opaque to the recurring
+    # Limited supervisor, which can then create duplicate exact generations.
+    # Bootstrap through the registered task and return it to HOLD until every
+    # interactive lane has completed its own attested restore.
+    Set-WdSupervisorTaskHeld `
+      -TaskName $TaskName `
+      -ExpectedExecutable $ExpectedExecutable `
+      -ExpectedArguments $ExpectedArguments `
+      -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+      -ExpectedPrincipalSid $ExpectedPrincipalSid `
+      -ExpectedStartBoundary $ExpectedStartBoundary
+
+    $healthStartedUtc = [DateTime]::UtcNow
+    [void](Enable-ScheduledTask `
+        -TaskName $TaskName `
+        -TaskPath '\' `
+        -ErrorAction Stop)
+    $enabledDeadline = (Get-Date).AddSeconds(10)
+    do {
+      $verified = Get-WdSingleScheduledTask -TaskName $TaskName
+      if (
+        [bool]$verified.Settings.Enabled -and
+        [string]$verified.State -cne 'Disabled'
+      ) {
+        break
+      }
+      Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $enabledDeadline)
+    if (
+      -not [bool]$verified.Settings.Enabled -or
+      [string]$verified.State -ceq 'Disabled' -or
+      -not (Test-WdSupervisorTaskEnvelopeExact `
+        -Task $verified `
+        -ExpectedExecutable $ExpectedExecutable `
+        -ExpectedArguments $ExpectedArguments `
+        -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+        -ExpectedPrincipalSid $ExpectedPrincipalSid `
+        -ExpectedStartBoundary $ExpectedStartBoundary)
+    ) {
+      throw 'Tools supervisor bootstrap enable verification failed'
+    }
+
+    [void](Start-ScheduledTask `
+        -TaskName $TaskName `
+        -TaskPath '\' `
+        -ErrorAction Stop)
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    do {
+      Start-Sleep -Milliseconds 250
+      $verified = Get-WdSingleScheduledTask -TaskName $TaskName
+      $taskInfo = Get-ScheduledTaskInfo `
+        -TaskName $TaskName `
+        -TaskPath '\' `
+        -ErrorAction Stop
+      $lastRunUtc = ([DateTime]$taskInfo.LastRunTime).ToUniversalTime()
+      $terminal = [string]$verified.State -ceq 'Ready'
+      $freshRun = $lastRunUtc -ge $healthStartedUtc.AddSeconds(-2)
+    } while ((-not $terminal -or -not $freshRun) -and (Get-Date) -lt $deadline)
+    if (
+      -not $terminal -or
+      -not $freshRun -or
+      [int64]$taskInfo.LastTaskResult -ne 0 -or
+      -not [bool]$verified.Settings.Enabled -or
+      [string]$verified.State -cne 'Ready' -or
+      -not (Test-WdSupervisorTaskEnvelopeExact `
+        -Task $verified `
+        -ExpectedExecutable $ExpectedExecutable `
+        -ExpectedArguments $ExpectedArguments `
+        -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+        -ExpectedPrincipalSid $ExpectedPrincipalSid `
+        -ExpectedStartBoundary $ExpectedStartBoundary)
+    ) {
+      throw (
+        'Tools supervisor Limited bootstrap proof failed: ' +
+        "state=$([string]$verified.State) result=$([string]$taskInfo.LastTaskResult)"
+      )
+    }
+    $result = [pscustomobject]@{
+      state = [string]$verified.State
+      last_run_utc = $lastRunUtc.ToString('o')
+      last_task_result = [int64]$taskInfo.LastTaskResult
+    }
+  } catch {
+    $bootstrapFailure = $_
+  }
+
+  try {
+    Set-WdSupervisorTaskHeld `
+      -TaskName $TaskName `
+      -ExpectedExecutable $ExpectedExecutable `
+      -ExpectedArguments $ExpectedArguments `
+      -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+      -ExpectedPrincipalSid $ExpectedPrincipalSid `
+      -ExpectedStartBoundary $ExpectedStartBoundary
+  } catch {
+    if ($null -ne $bootstrapFailure) {
+      throw (
+        "{0}; bootstrap HOLD containment also failed: {1}" -f
+          $bootstrapFailure.Exception.Message,
+          $_.Exception.Message
+      )
+    }
+    throw
+  }
+  if ($null -ne $bootstrapFailure) {
+    throw $bootstrapFailure
+  }
+  return $result
+}
+
 function Get-AllProcessSnapshots {
   return @(
     Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -3145,13 +3271,18 @@ try {
   }
 
   Write-Host ''
-  Write-Host 'Reconciling five bridge watchers and the Tools consumer first...' -ForegroundColor Cyan
-  $supervisorApplyParameters = [hashtable]$supervisorPlan.apply_parameters
-  $supervisorApplyOutput = & ([string]$supervisorPlan.apply_script) `
-    @supervisorApplyParameters
-  if ($supervisorApplyOutput) {
-    $supervisorApplyOutput | Out-Host
-  }
+  Write-Host 'Bootstrapping five bridge watchers and Tools through the Limited WD-Supervisor task...' -ForegroundColor Cyan
+  $supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld `
+    -TaskName ([string]$toolsConfig.task_name) `
+    -ExpectedExecutable $expectedSupervisorExecutable `
+    -ExpectedArguments $expectedSupervisorArguments `
+    -ExpectedWorkingDirectory 'C:\Python' `
+    -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+    -ExpectedStartBoundary $expectedSupervisorStartBoundary
+  Write-Host (
+    '  Limited bootstrap: last_result={0}; WD-Supervisor returned to Disabled/HOLD' -f
+      [int64]$supervisorBootstrapResult.last_task_result
+  )
   Start-Sleep -Milliseconds 500
   $supervisorVerifyParameters = [hashtable]$supervisorPlan.verify_parameters
   $supervisorVerifyOutput = @(
@@ -3160,7 +3291,7 @@ try {
   if (@($supervisorVerifyOutput | Where-Object {
         [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
       }).Count -gt 0) {
-    throw 'supervisor post-Apply report returned a conflict'
+    throw 'supervisor post-bootstrap report returned a conflict'
   }
   if ($supervisorVerifyOutput) {
     $supervisorVerifyOutput | Out-Host

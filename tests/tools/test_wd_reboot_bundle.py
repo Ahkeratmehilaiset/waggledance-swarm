@@ -453,6 +453,8 @@ $missing = Get-State @()
 
 def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
     launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    assert "$promptWatcherWindowTitle = 'WD-Codex-Prompt-Watcher'" in launcher
+    assert "Codex prompt-watcher window title is not native-argument safe" in launcher
     launch_block = launcher.index(
         "# The UI prompt watcher is intentionally separate from the five bridge"
     )
@@ -461,7 +463,6 @@ def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
     )
     assert handshake_verify < launch_block
     assert "$promptWatcherTargetTitle = 'codex-lead-1'" in launcher
-    assert "$promptWatcherWindowTitle = 'WD Codex Prompt Watcher'" in launcher
     assert "'-AllowAll'" in launcher[launch_block:]
     assert "'-NoAllNighter'" in launcher[launch_block:]
     assert "-TargetTitle $promptWatcherTargetTitle" in launcher[launch_block:]
@@ -1593,6 +1594,15 @@ Assert-WdRecoveryStatePaths `
   -ToolsEnabled $false
 $plans = @([pscustomobject]@{{ action = 'replace'; agent = 'codex-lead-1' }})
 $state = @{{ prepare = 0; report = 0; stop = 0; launch = 0 }}
+$empty = Invoke-WdWatcherFleetPlan `
+  -Plans @() `
+  -Apply `
+  -PrepareAction {{ param($items) $state.prepare += 1 }} `
+  -ReportAction {{ param($item) $state.report += 1 }} `
+  -StopAction {{ param($item) $state.stop += 1 }} `
+  -LaunchAction {{ param($item) $state.launch += 1 }}
+$emptyCallbacks = "$($state.prepare)/$($state.report)/$($state.stop)/$($state.launch)"
+$state = @{{ prepare = 0; report = 0; stop = 0; launch = 0 }}
 $conflicted = Invoke-WdWatcherFleetPlan `
   -Plans $plans `
   -ConflictMessages @('one lane conflicted') `
@@ -1627,6 +1637,8 @@ catch {{ $stopFailed = $true }}
   exact_set = $exactSet
   duplicate_rejected = $duplicateRejected
   disabled_tools_escape_rejected = $disabledToolsEscapeRejected
+  empty = [bool]$empty
+  empty_callbacks = $emptyCallbacks
   conflicted = [bool]$conflicted
   conflict_callbacks = $conflictCallbacks
   replaced = [bool]$replaced
@@ -1645,6 +1657,8 @@ catch {{ $stopFailed = $true }}
         "exact_set": True,
         "duplicate_rejected": True,
         "disabled_tools_escape_rejected": True,
+        "empty": True,
+        "empty_callbacks": "0/0/0/0",
         "conflicted": False,
         "conflict_callbacks": "0/0/0/0",
         "replaced": True,
@@ -4186,6 +4200,11 @@ $functionAst = $ast.Find(
 )
 if ($null -eq $functionAst) {{ throw 'missing Tools wait helper' }}
 . ([scriptblock]::Create($functionAst.Extent.Text))
+$script:hostMessages = [Collections.Generic.List[string]]::new()
+function Write-Host {{
+  param([Parameter(Position=0)] $Object)
+  $script:hostMessages.Add([string]$Object)
+}}
 
 $script:mode = 'converge'
 $script:stateCalls = 0
@@ -4231,12 +4250,32 @@ try {{
   $timeoutFailed = $true
   $timeoutMessage = $_.Exception.Message
 }}
+$timeoutCalls = $script:stateCalls
+$script:mode = 'progress'
+$script:stateCalls = 0
+try {{
+  [void](Wait-WdToolsCurrentProcess `
+      -ToolsConfig ([pscustomobject]@{{
+          readiness_path = 'C:/definitely-missing-wd-tools-readiness.json'
+        }}) `
+      -Generation 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' `
+      -TimeoutSeconds 2 `
+      -ProcessSnapshotAction $snapshotAction `
+      -PollMilliseconds 10 `
+      -ProgressSeconds 1)
+}} catch {{}}
+$progressMessage = @(
+  $script:hostMessages | Where-Object {{
+    $_ -like '  Tools readiness progress:*'
+  }}
+)[0]
 [pscustomobject]@{{
   converged = @($converged.current).Count
   converge_calls = $convergeCalls
   timeout_failed = $timeoutFailed
-  timeout_calls = $script:stateCalls
+  timeout_calls = $timeoutCalls
   timeout_message = $timeoutMessage
+  progress_message = $progressMessage
 }} | ConvertTo-Json -Compress
 """,
         executable=WINDOWS_POWERSHELL,
@@ -4249,6 +4288,11 @@ try {{
         "timeout_message": (
             "Tools supervisor did not establish exactly one current-generation "
             "consumer; current/starting/stale/legacy=0/1/0/0"
+        ),
+        "progress_message": (
+            "  Tools readiness progress: elapsed=1s; "
+            "current/starting/stale/legacy=0/1/0/0; "
+            "record=pending-initial-tick; timeout=2s"
         ),
     }
 
@@ -5513,6 +5557,8 @@ def test_real_launcher_updates_each_cli_once_and_dry_run_returns_first() -> None
     assert "Get-ToolsProcessState" in launcher
     assert "-BundleLauncherScript $bundleToolsLauncher" in launcher
     assert "Tools readiness progress: elapsed=" in launcher
+    assert "$progressMessage = ((" in launcher
+    assert "Write-Host $progressMessage" in launcher
     assert "ask WD-Supervisor to replace stale generation" in launcher
     assert "Reconciling five bridge watchers" in launcher
     assert "supervisor reconciliation conflict" in supervisor

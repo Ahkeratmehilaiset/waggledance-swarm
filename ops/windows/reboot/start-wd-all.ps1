@@ -181,9 +181,12 @@ function Assert-WdFleetPathWithoutReparse {
       throw "fleet safety path ancestor is not a directory: $current"
     }
     $next = Join-Path $current $segment
-    try {
-      $nextItem = Get-Item -LiteralPath $next -Force -ErrorAction Stop
-    } catch {
+    $nextItem = if (Test-Path -LiteralPath $next) {
+      Get-Item -LiteralPath $next -Force -ErrorAction Stop
+    } else {
+      $null
+    }
+    if ($null -eq $nextItem) {
       # Test-Path and Get-Item can both report a dangling reparse point as
       # missing.  Enumerate the already-validated parent only on that path so
       # the link object itself is still inspected.  Existing protected paths
@@ -2036,10 +2039,11 @@ function Wait-WdToolsCurrentProcess {
       } else {
         'pending-initial-tick'
       }
-      Write-Host (
+      $progressMessage = ((
         '  Tools readiness progress: elapsed={0}s; ' +
         'current/starting/stale/legacy={1}/{2}/{3}/{4}; record={5}; ' +
-        'timeout={6}s' -f
+        'timeout={6}s'
+      ) -f
           [int][Math]::Floor(($now - $startedAt).TotalSeconds),
           $current.Count,
           $starting.Count,
@@ -2048,6 +2052,7 @@ function Wait-WdToolsCurrentProcess {
           $readyState,
           $TimeoutSeconds
       )
+      Write-Host $progressMessage
       $nextProgressAt = $now.AddSeconds($ProgressSeconds)
     }
     if ($PollMilliseconds -gt 0) {
@@ -2282,7 +2287,7 @@ $agentLauncherTarget = Join-Path $PSScriptRoot 'start-wd-agent.ps1'
 $agentLauncher = 'C:\Python\start-wd-agent.ps1'
 $promptWatcherScript = Join-Path $PSScriptRoot 'Watch-CodexPrompts.ps1'
 $promptWatcherTargetTitle = 'codex-lead-1'
-$promptWatcherWindowTitle = 'WD Codex Prompt Watcher'
+$promptWatcherWindowTitle = 'WD-Codex-Prompt-Watcher'
 $promptWatcherRecoveryRoot = Split-Path -Parent ([string]$manifest.handshake_root)
 $promptWatcherLogDirectory = Join-Path $promptWatcherRecoveryRoot 'prompt-watchers'
 $promptWatcherLogPath = Join-Path $promptWatcherLogDirectory 'codex-lead-1.log'
@@ -2296,6 +2301,9 @@ if ($promptWatcherWindowTitle.IndexOf(
     [StringComparison]::OrdinalIgnoreCase
   ) -ge 0) {
   throw 'Codex prompt-watcher window title must not contain its target title'
+}
+if ($promptWatcherWindowTitle -cnotmatch '^[A-Za-z0-9._-]+$') {
+  throw 'Codex prompt-watcher window title is not native-argument safe'
 }
 if ($bundleMode -ceq 'deployed') {
   [void](Read-NonEmptyFile `

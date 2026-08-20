@@ -1403,7 +1403,9 @@ function Assert-WdExactWatcherAgentSet {
 
 function Invoke-WdWatcherFleetPlan {
     param(
-        [Parameter(Mandatory)] [object[]] $Plans,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]] $Plans,
         [string[]] $ConflictMessages = @(),
         [switch] $Apply,
         [Parameter(Mandatory)] [scriptblock] $PrepareAction,
@@ -1413,6 +1415,7 @@ function Invoke-WdWatcherFleetPlan {
     )
 
     if ($ConflictMessages.Count -gt 0) { return $false }
+    if ($Plans.Count -eq 0) { return $true }
     if ($Apply) {
         $null = & $PrepareAction $Plans
     }

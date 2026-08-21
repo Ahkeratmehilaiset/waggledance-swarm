@@ -359,6 +359,10 @@ def test_codex_prompt_watcher_is_exact_copy_and_integrity_mapped() -> None:
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="prompt watcher process matching requires Windows path semantics",
+)
 def test_codex_prompt_watcher_state_is_exact_and_fail_closed() -> None:
     launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
     result = _run_powershell(

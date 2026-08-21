@@ -61,6 +61,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
     return [System.IO.Path]::GetFullPath($Path)
@@ -478,6 +482,17 @@ $heartbeatDuringCodex = (
 
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_AGENT = $Agent
+if ([string]::IsNullOrWhiteSpace([string]$env:AGENT_BRIDGE_OWNER_SESSION_ID)) {
+    Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:AGENT_BRIDGE_SESSION_ID -ErrorAction SilentlyContinue
+    $ownerStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+    [void](Initialize-AgentBridgeClaimOwnerContext `
+        -SessionId "consumer-$Agent-$ownerStamp-$PID")
+} else {
+    # A consumer must never launch Codex under a tokenless or malformed
+    # session. The child inherits this exact process-bound owner context.
+    [void](Get-AgentBridgeClaimOwnerContext)
+}
 if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
 if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
 if (@($Capabilities).Count -gt 0) {

@@ -441,6 +441,7 @@ function Assert-ToolsBootstrapIntegrity {
         $expectedFiles[$leaf.ToLowerInvariant()] = $true
     }
     foreach ($requiredLeaf in @(
+            'AgentBridgeSessionIdentity.ps1',
             'BridgeIncrementalReader.ps1',
             'BridgeLogReader.ps1',
             'Send-Liveness.ps1',

@@ -119,7 +119,10 @@ foreach ($definition in @($definitions)) {
                 -not ([string]$state.worktree).Equals(
                     $worktree,
                     [StringComparison]::OrdinalIgnoreCase
-                )
+                ) -or
+                [string]$state.status -cnotmatch '^[a-z][a-z0-9_-]{0,63}$' -or
+                [string]::IsNullOrWhiteSpace([string]$state.task_id) -or
+                [string]::IsNullOrWhiteSpace([string]$state.next_action)
             ) {
                 throw 'state identity mismatch'
             }

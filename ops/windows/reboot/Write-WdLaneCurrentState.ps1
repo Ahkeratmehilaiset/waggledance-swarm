@@ -32,7 +32,7 @@ param(
     [string] $TaskId,
 
     [Parameter(Mandatory)]
-    [ValidateSet('idle', 'claimed', 'working', 'reviewing', 'blocked', 'done')]
+    [ValidatePattern('^[a-z][a-z0-9_-]{0,63}$')]
     [string] $Status,
 
     [string[]] $WriteScope = @(),

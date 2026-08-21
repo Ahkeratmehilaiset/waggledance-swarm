@@ -631,6 +631,7 @@ if (Test-Path -LiteralPath $laneCurrentStatePath -PathType Leaf) {
       [string]$laneCurrentState.branch -cne $actualBranch -or
       [string]$laneCurrentState.head -cnotmatch '^[0-9a-f]{40}$' -or
       [string]::IsNullOrWhiteSpace([string]$laneCurrentState.task_id) -or
+      [string]$laneCurrentState.status -cnotmatch '^[a-z][a-z0-9_-]{0,63}$' -or
       [string]::IsNullOrWhiteSpace([string]$laneCurrentState.next_action)
     ) {
       throw 'compact state identity or required fields do not match this lane'

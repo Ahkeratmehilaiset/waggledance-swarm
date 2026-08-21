@@ -263,6 +263,10 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         in required_bundle_files
     )
     assert (
+        "tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1"
+        in required_bundle_files
+    )
+    assert (
         "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1"
         in required_bundle_files
     )
@@ -553,7 +557,7 @@ def test_lane_current_state_writer_is_compact_atomic_and_git_derived(
             "-TaskId",
             "wd-test-current",
             "-Status",
-            "working",
+            "completed_read_only_with_claim_session_blocker",
             "-WriteScope",
             "tests/tools/test_example.py",
             "-Tests",
@@ -575,10 +579,53 @@ def test_lane_current_state_writer_is_compact_atomic_and_git_derived(
     assert state["schema"] == "wd.lane-current.v1"
     assert state["agent"] == "codex-tools-1"
     assert state["task_id"] == "wd-test-current"
+    assert state["status"] == "completed_read_only_with_claim_session_blocker"
     assert state["branch"]
     assert len(state["head"]) == 40
     assert state["next_action"] == "Run the next exact-head check."
     assert not list((worktree / ".codex-audit").glob("*.tmp"))
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_tools_bootstrap_initializes_process_bound_claim_owner_context() -> None:
+    identity = str(
+        ROOT / ".agent-bridge" / "bin" / "AgentBridgeSessionIdentity.ps1"
+    ).replace("'", "''")
+    result = _run_powershell(
+        f"""
+. '{identity}'
+$session = 'wd-owner-context-test-123'
+$context = Initialize-AgentBridgeClaimOwnerContext -SessionId $session
+[pscustomobject]@{{
+  session_matches = $context.session_id -ceq $session
+  token_is_bounded = $env:AGENT_BRIDGE_OWNER_TOKEN -cmatch '^[0-9a-f]{{64}}$'
+  owner_pid_matches = [int]$context.owner_pid -eq $PID
+  process_start_present = -not [string]::IsNullOrWhiteSpace(
+    [string]$context.owner_process_start_utc
+  )
+}} | ConvertTo-Json -Compress
+"""
+    )
+    assert json.loads(result.stdout) == {
+        "session_matches": True,
+        "token_is_bounded": True,
+        "owner_pid_matches": True,
+        "process_start_present": True,
+    }
+
+    session = (
+        ROOT / ".agent-bridge" / "bin" / "Start-AgentBridgeSession.ps1"
+    ).read_text(encoding="utf-8")
+    consumer = (
+        ROOT / ".agent-bridge" / "bin" / "Start-AgentBridgeConsumerLoop.ps1"
+    ).read_text(encoding="utf-8")
+    wrapper = (REBOOT / "start-wd-tools-consumer.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "Initialize-AgentBridgeClaimOwnerContext -SessionId $RunId" in session
+    assert "$env:AGENT_BRIDGE_AGENT = $Agent" in session
+    assert "Get-AgentBridgeClaimOwnerContext" in consumer
+    assert "'AgentBridgeSessionIdentity.ps1'" in wrapper
 
 
 def test_target_state_is_binary_to_preserve_raw_manifest_hash() -> None:

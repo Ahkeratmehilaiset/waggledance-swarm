@@ -2364,6 +2364,26 @@ if (
 ) {
   throw 'fleet target-state document hash mismatch'
 }
+$parallelPolicy = $manifest.parallel_policy
+if (
+  $null -eq $parallelPolicy -or
+  [string]$parallelPolicy.id -cne 'wd-swarm-parallel-policy-v1' -or
+  [string]$parallelPolicy.capability_effect -cne 'none' -or
+  [string]$parallelPolicy.relative_path -cne 'WD_SWARM_PARALLEL_POLICY_V1.md' -or
+  [string]$parallelPolicy.sha256 -cnotmatch '^[0-9A-F]{64}$'
+) {
+  throw 'fleet parallel-policy manifest is missing or unsafe'
+}
+$parallelPolicyPath = Join-Path $PSScriptRoot (
+  [string]$parallelPolicy.relative_path
+)
+[void](Read-NonEmptyFile -Path $parallelPolicyPath -Label 'fleet parallel policy')
+if (
+  (Get-FileHash -LiteralPath $parallelPolicyPath -Algorithm SHA256).Hash -cne
+    [string]$parallelPolicy.sha256
+) {
+  throw 'fleet parallel-policy document hash mismatch'
+}
 if (@($manifest.lanes).Count -ne 4) {
   throw "fleet manifest must pin exactly four interactive lanes"
 }
@@ -2392,7 +2412,6 @@ if (
   throw 'deployed reboot bundle directory does not match its source commit'
 }
 
-[void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.base_state) -Label 'base reboot state')
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.roles) -Label 'fleet roles')
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.current_handoff) -Label 'current restart handoff')
 $currentPointer = [string]$manifest.state_precedence.current_state_pointer
@@ -3500,7 +3519,7 @@ try {
     Write-Host 'Keeping the existing canonical Codex Lead prompt watcher.'
   }
 
-  $promptWatcherDeadline = (Get-Date).AddSeconds(20)
+  $promptWatcherDeadline = (Get-Date).AddSeconds(45)
   do {
     $promptWatcherFinalState = Get-WdCodexPromptWatcherState `
       -Processes (Get-AllProcessSnapshots) `
@@ -3518,8 +3537,15 @@ try {
     [string]$promptWatcherFinalState.action -cne 'current' -and
     (Get-Date) -lt $promptWatcherDeadline
   )
-  if ([string]$promptWatcherFinalState.action -cne 'current') {
-    throw 'Codex Lead prompt watcher did not reach the exact one-process state'
+  $promptWatcherAvailable = (
+    [string]$promptWatcherFinalState.action -ceq 'current'
+  )
+  if (-not $promptWatcherAvailable) {
+    Write-Warning (
+      'Codex Lead prompt watcher did not reach the exact one-process state. ' +
+      'The four interactive lanes and Tools remain valid; unattended Lead ' +
+      'prompt approval is disabled until a later -Auto run reconciles it.'
+    )
   }
 
   $finalProcesses = Get-AllProcessSnapshots
@@ -3529,9 +3555,12 @@ try {
     -TargetTitle $promptWatcherTargetTitle `
     -LogPath $promptWatcherLogPath `
     -ExpectedExecutable $expectedSupervisorExecutable
-  if ([string]$promptWatcherFinalState.action -cne 'current') {
-    throw "final Codex Lead prompt watcher verification failed: $($promptWatcherFinalState.summary)"
+  if ([string]$promptWatcherFinalState.action -ceq 'conflict') {
+    throw "final Codex Lead prompt watcher verification found an ambiguous process set: $($promptWatcherFinalState.summary)"
   }
+  $promptWatcherAvailable = (
+    [string]$promptWatcherFinalState.action -ceq 'current'
+  )
   foreach ($state in $laneStates) {
     $finalLaneProcesses = @(
       Get-LaneProcesses -Lane $state.lane -Processes $finalProcesses
@@ -3619,10 +3648,16 @@ try {
   Write-Host ("Fleet restore complete; run_id={0}" -f $RunId) -ForegroundColor Green
   Write-Host ("  interactive lanes launched: {0}" -f $(if ($launched.Count) { $launched -join ', ' } else { 'none (all already live)' }))
   Write-Host '  Tools: supervisor-managed'
-  Write-Host (
-    '  Codex Lead prompt watcher: PID {0}; DANGEROUS AllowAll' -f
-      [int]$promptWatcherFinalState.exact[0].ProcessId
-  )
+  if ($promptWatcherAvailable) {
+    Write-Host (
+      '  Codex Lead prompt watcher: PID {0}; DANGEROUS AllowAll' -f
+        [int]$promptWatcherFinalState.exact[0].ProcessId
+    )
+  } else {
+    Write-Warning (
+      'Codex Lead prompt watcher: unavailable; fleet restore still succeeded'
+    )
+  }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
   Write-Host ("  CLI versions: Codex {0} -> {1}; Claude {2} -> {3}" -f $codexVersion, $codexAfterVersion, $claudeVersion, $claudeAfterVersion)
 } finally {

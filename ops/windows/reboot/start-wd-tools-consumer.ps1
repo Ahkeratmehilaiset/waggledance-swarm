@@ -1073,6 +1073,30 @@ if (
 ) {
     throw 'Tools target-state document hash mismatch'
 }
+$parallelPolicy = $configuration.parallel_policy
+if (
+    $null -eq $parallelPolicy -or
+    [string]$parallelPolicy.id -cne 'wd-swarm-parallel-policy-v1' -or
+    [string]$parallelPolicy.capability_effect -cne 'none' -or
+    [string]$parallelPolicy.relative_path -cne 'WD_SWARM_PARALLEL_POLICY_V1.md' -or
+    [string]$parallelPolicy.sha256 -cnotmatch '^[0-9A-F]{64}$'
+) {
+    throw 'Tools parallel-policy manifest is missing or unsafe'
+}
+$parallelPolicyPath = Join-Path $PSScriptRoot (
+    [string]$parallelPolicy.relative_path
+)
+if (
+    -not (Test-Path -LiteralPath $parallelPolicyPath -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $parallelPolicyPath -Algorithm SHA256).Hash -cne
+        [string]$parallelPolicy.sha256
+) {
+    throw 'Tools parallel-policy document hash mismatch'
+}
+$laneStateWriter = Join-Path $PSScriptRoot 'Write-WdLaneCurrentState.ps1'
+if (-not (Test-Path -LiteralPath $laneStateWriter -PathType Leaf)) {
+    throw 'Tools compact-state writer is missing'
+}
 Assert-ToolsBootstrapIntegrity `
     -ScriptRoot $PSScriptRoot `
     -BootstrapRoot $bootstrapRoot `
@@ -1173,6 +1197,9 @@ $validation = [pscustomobject]@{
     baseline_branch = $expectedBranch
     baseline_head = $expectedHead
     target_state_id = [string]$targetState.id
+    parallel_policy_id = [string]$parallelPolicy.id
+    compact_state_path = (Join-Path $worktree '.codex-audit\wd-current-state.json')
+    compact_state_writer = $laneStateWriter
     validated = $true
 }
 if ($ValidateOnly) {

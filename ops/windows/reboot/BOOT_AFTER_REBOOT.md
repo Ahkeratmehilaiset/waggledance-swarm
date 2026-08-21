@@ -57,7 +57,10 @@ DryRun verifies the prompt-watcher script and reports whether it would keep or
 launch the single Lead watcher. A non-canonical Lead watcher or more than one
 watcher targeting `codex-lead-1` is an ambiguous conflict and stops recovery
 before CLI updates or process launches. The prompt watcher is separate from the
-five supervisor-managed real-time bridge watchers.
+five supervisor-managed real-time bridge watchers. Failure to materialize a
+new watcher window after all lane handshakes is non-fatal: the launcher warns,
+leaves unattended Lead prompt approval disabled, and still completes the
+verified fleet restore. A later `-Auto` run reconciles the watcher again.
 
 The DryRun includes the supervisor's byte-inert watcher plan. A single stale
 watcher is replaceable only when its command tuple, identity, runtime root,
@@ -86,10 +89,47 @@ The explicit runtime choices are:
 - RCO1 and RCO2: Claude `sonnet`, effort `max`;
 - Fable: Claude `fable`, effort `max`.
 
-Durable bridge state, handoffs, current Git worktrees, and pushed savepoints
-are the resume substrate; a provider transcript is not the authority. A green
-checkpoint must still be saved with `tools/savepoint.ps1`, because no launcher
-can reconstruct bytes that were never durably written before a power loss.
+Durable bridge state, compact lane checkpoints, current Git worktrees, and
+pushed savepoints are the resume substrate; a provider transcript is not the
+authority. Each lane's first local resume record is
+`<worktree>\.codex-audit\wd-current-state.json`. Lanes update it atomically with
+`C:\Python\Write-WdLaneCurrentState.ps1` after every bounded slice. Large
+Markdown handoffs remain audit history and are read only as fallback when the
+compact state is missing, inconsistent, or insufficient for a named historical
+fact. A green checkpoint must still be saved with `tools/savepoint.ps1`, because
+no launcher can reconstruct bytes that were never durably written before a
+power loss.
+
+The dated `WD_CURRENT_REBOOT_STATE_20260725.md` is retained as historical
+evidence but is no longer a default startup input. Startup reads the current
+pointer, compact lane state, live bridge next action/claims, fleet roles, lane
+prompt, and `WD_SWARM_PARALLEL_POLICY_V1.md` before considering old handoffs.
+
+The parallel policy keeps independent work moving on separate axes: Lead owns
+core integration, Tools owns tooling/tests/docs, RCO1 and RCO2 perform
+independent exact-head reviews, and Fable owns a disjoint producer slice. The
+Lead maintains ready work for each available lane. Same-file edits, promotions,
+merges, deploys, and exact-head dependencies remain serialized. Tools keeps one
+bridge identity but may parallelize read-only discovery and file-disjoint test
+processes inside one tick; only its parent consumer claims work and emits bridge
+events. Existing evidence is reused only when SHA, relevant files, command,
+configuration, and material environment inputs match exactly.
+
+Read-only fleet parallelism/status view after restore:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\Get-WdSwarmParallelStatus.ps1
+```
+
+It reports compact checkpoint health/age, lane task/status, exact-HEAD match,
+pending bridge wake sentinels, runnable lanes, and exact duplicate write-scope
+claims. It never acknowledges traffic or mutates bridge/Git state.
+
+Each Claude lane maintains exactly one lane-specific durable five-minute cron
+backstop and still calls `ScheduleWakeup` on every dynamic `/loop` turn. The
+durable cron re-enters compact-state/bridge processing after a missed dynamic
+wakeup and is refreshed before Claude's seven-day durable-job expiry. It never
+authorizes a duplicate claim.
 
 Before each lane invokes its model, it writes one
 `target_state_manifested` status event and one unaddressed `append_canary` for
@@ -132,9 +172,10 @@ historical records. They do not override a newer handoff or the live bridge.
 Startup state precedence is:
 
 1. live bridge state, read without acknowledging stale events;
-2. newer fleet and per-agent handoffs;
-3. the current reboot pointer;
-4. dated snapshots as historical evidence.
+2. a valid compact per-lane checkpoint;
+3. the current reboot pointer, fleet roles, lane prompt, and parallel policy;
+4. newer fleet and per-agent Markdown handoffs as fallback;
+5. dated snapshots as historical evidence only.
 
 Recovery grants no merge, deploy, signature, canary, runtime-authority, or
 `claim_safe` permission. `WD-BridgeMergeDriverStandingOneShot` is deliberately

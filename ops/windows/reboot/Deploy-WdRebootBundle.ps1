@@ -618,6 +618,8 @@ $sourcePaths[$identityRegistryRelative] = $identityRegistrySource
 foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
+        'Get-WdSwarmParallelStatus.ps1',
+        'Write-WdLaneCurrentState.ps1',
         'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
         'Invoke-WdToolsCodex.ps1',
@@ -629,6 +631,7 @@ foreach ($required in @(
         'Set-WdTaskConsoleContainment.ps1',
         'BOOT_AFTER_REBOOT.md',
         'WD_LOCAL_GPU_GUIDE.md',
+        'WD_SWARM_PARALLEL_POLICY_V1.md',
         'WD_SWARM_TARGET_STATE_V1.md',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
@@ -824,7 +827,10 @@ $dataSpecs = @(
     [pscustomobject]@{ Name = 'wd_supervisor_loop_snapshot.json'; Target = 'wd_supervisor_loop.json' },
     [pscustomobject]@{ Name = 'BOOT_AFTER_REBOOT.md'; Target = 'BOOT_AFTER_REBOOT.md' },
     [pscustomobject]@{ Name = 'Set-WdTaskConsoleContainment.ps1'; Target = 'Set-WdTaskConsoleContainment.ps1' },
-    [pscustomobject]@{ Name = 'WD_LOCAL_GPU_GUIDE.md'; Target = 'WD_LOCAL_GPU_GUIDE.md' }
+    [pscustomobject]@{ Name = 'WD_LOCAL_GPU_GUIDE.md'; Target = 'WD_LOCAL_GPU_GUIDE.md' },
+    [pscustomobject]@{ Name = 'WD_SWARM_PARALLEL_POLICY_V1.md'; Target = 'WD_SWARM_PARALLEL_POLICY_V1.md' },
+    [pscustomobject]@{ Name = 'Write-WdLaneCurrentState.ps1'; Target = 'Write-WdLaneCurrentState.ps1' },
+    [pscustomobject]@{ Name = 'Get-WdSwarmParallelStatus.ps1'; Target = 'Get-WdSwarmParallelStatus.ps1' }
 )
 
 if (-not (Test-Path -LiteralPath $machineFull -PathType Container)) {
@@ -901,8 +907,9 @@ $state = [ordered]@{
     installed_at_utc = [DateTime]::UtcNow.ToString('o')
     precedence = @(
         'live bridge state',
-        'newer per-agent and fleet handoffs',
+        'valid compact per-lane checkpoint',
         'WD_REBOOT_STATE_CURRENT',
+        'newer per-agent and fleet Markdown handoffs as fallback',
         'dated historical reboot snapshots'
     )
 }
@@ -919,9 +926,10 @@ Active bundle: ``$targetRoot``
 Precedence after restart:
 
 1. Live bridge state read without acknowledging stale events.
-2. Newer fleet and per-agent handoffs.
-3. This current bundle pointer.
-4. Dated reboot snapshots as historical evidence only.
+2. A valid compact per-lane checkpoint.
+3. This current bundle pointer, fleet roles, lane prompt, and parallel policy.
+4. Newer fleet and per-agent Markdown handoffs as fallback.
+5. Dated reboot snapshots as historical evidence only.
 
 The reboot path grants no merge, deploy, signature, canary, runtime-authority,
 or ``claim_safe`` permission.  The merge-driver StandingOneShot remains in

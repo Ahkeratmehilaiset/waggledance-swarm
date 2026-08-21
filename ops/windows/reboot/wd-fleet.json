@@ -15,25 +15,34 @@
     "source_image_sha256": "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117",
     "capability_effect": "none"
   },
+  "parallel_policy": {
+    "id": "wd-swarm-parallel-policy-v1",
+    "relative_path": "WD_SWARM_PARALLEL_POLICY_V1.md",
+    "sha256": "11954BE51FED1F2A17573C153B54DA70A4D380C5DF80DC70A4CC24D6D01BD7D6",
+    "capability_effect": "none"
+  },
   "state_precedence": {
     "current_state_pointer": "C:\\Python\\WD_REBOOT_STATE_CURRENT.md",
-    "base_state": "C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md",
+    "historical_base_state": "C:\\Python\\WD_CURRENT_REBOOT_STATE_20260725.md",
     "roles": "C:\\Python\\WD_AGENT_3PACK_ROLES.md",
     "current_handoff": "C:\\Python\\WD_RESTART_HANDOFF.md",
     "gpu_guide": "C:\\Python\\WD_LOCAL_GPU_GUIDE.md",
-    "rule": "The current restart handoff and the lane handoff override conflicting older dated state. None of these files grants new authority."
+    "rule": "Live bridge state overrides a valid compact lane checkpoint; the checkpoint overrides Markdown handoffs, which are fallback and historical evidence. The current pointer and policy define bootstrap, not task authority. None grants new authority."
   },
   "deployment": {
     "manifest_file": "deployment-manifest.json",
     "required_bundle_files": [
       "start-wd-all.ps1",
       "start-wd-agent.ps1",
+      "Get-WdSwarmParallelStatus.ps1",
+      "Write-WdLaneCurrentState.ps1",
       "Watch-CodexPrompts.ps1",
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
       "Resolve-WdGrokModel.ps1",
       "Set-WdTaskConsoleContainment.ps1",
       "WD_LOCAL_GPU_GUIDE.md",
+      "WD_SWARM_PARALLEL_POLICY_V1.md",
       "WD_SWARM_TARGET_STATE_V1.md",
       "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1",
       "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1",

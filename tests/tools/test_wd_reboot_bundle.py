@@ -218,10 +218,18 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117"
     )
     assert hashlib.sha256(target_path.read_bytes()).hexdigest().upper() == target["sha256"]
+    parallel = manifest["parallel_policy"]
+    parallel_path = REBOOT / parallel["relative_path"]
+    assert parallel["id"] == "wd-swarm-parallel-policy-v1"
+    assert parallel["capability_effect"] == "none"
+    assert hashlib.sha256(parallel_path.read_bytes()).hexdigest().upper() == (
+        parallel["sha256"]
+    )
     supervisor = json.loads(
         (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
     )
     assert supervisor["target_state"] == target
+    assert supervisor["parallel_policy"] == parallel
     assert supervisor["recovery_state_root"] == r"C:\Python\wd-reboot-runtime"
     assert supervisor["watchers"]["replacement_conflict_root"] == (
         r"C:\Python\wd-reboot-runtime\watcher-replacement-conflicts"
@@ -238,6 +246,9 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     required_bundle_files = manifest["deployment"]["required_bundle_files"]
     assert "WD_SWARM_TARGET_STATE_V1.md" in required_bundle_files
+    assert "WD_SWARM_PARALLEL_POLICY_V1.md" in required_bundle_files
+    assert "Write-WdLaneCurrentState.ps1" in required_bundle_files
+    assert "Get-WdSwarmParallelStatus.ps1" in required_bundle_files
     assert "Watch-CodexPrompts.ps1" in required_bundle_files
     for relative in required_bundle_files:
         if relative.startswith("tools-bootstrap/.agent-bridge/bin/"):
@@ -469,11 +480,111 @@ def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
     assert "claude-rco-1" not in launcher[launch_block:]
     assert "claude-rco-2" not in launcher[launch_block:]
     assert "codex-tools-1" not in launcher[launch_block:]
+    assert "fleet restore still succeeded" in launcher
+    assert "unattended Lead" in launcher
+    assert "prompt approval is disabled" in launcher
+
+
+def test_compact_state_and_parallel_policy_replace_dated_default_bootstrap() -> None:
+    manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    agent_launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    tools_config = json.loads(
+        (REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8")
+    )
+    tools_prompt = tools_config["tools_consumer"]["prompt"]
+    policy = (REBOOT / "WD_SWARM_PARALLEL_POLICY_V1.md").read_text(
+        encoding="utf-8"
+    )
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+
+    assert "historical_base_state" in manifest["state_precedence"]
+    assert "base_state" not in manifest["state_precedence"]
+    assert "state_precedence.base_state" not in agent_launcher
+    assert "WD_CURRENT_REBOOT_STATE_20260725.md" not in tools_prompt
+    assert "Join-Path $worktree '.codex-audit'" in agent_launcher
+    assert "'wd-current-state.json'" in agent_launcher
+    assert "invalid-fallback-required" in agent_launcher
+    assert "Write-WdLaneCurrentState.ps1" in agent_launcher
+    assert "CronList" in agent_launcher
+    assert "CronCreate" in agent_launcher
+    assert "ScheduleWakeup" in agent_launcher
+    assert "single parent Tools identity" in tools_prompt
+    assert "Child workers never claim bridge work" in policy
+    assert "exact matching SHA" in tools_prompt
+    assert "Name = 'Write-WdLaneCurrentState.ps1'" in deployer
+    assert "Name = 'WD_SWARM_PARALLEL_POLICY_V1.md'" in deployer
+    assert "Name = 'Get-WdSwarmParallelStatus.ps1'" in deployer
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_lane_current_state_writer_is_compact_atomic_and_git_derived(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "lane-state-repo"
+    worktree.mkdir()
+    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "config", "user.name", "WD test"],
+        check=True,
+    )
+    (worktree / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "seed.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "commit", "-q", "-m", "seed"],
+        check=True,
+    )
+    writer = str(REBOOT / "Write-WdLaneCurrentState.ps1")
+    result = subprocess.run(
+        [
+            WINDOWS_POWERSHELL or POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            writer,
+            "-Agent",
+            "codex-tools-1",
+            "-Worktree",
+            str(worktree),
+            "-TaskId",
+            "wd-test-current",
+            "-Status",
+            "working",
+            "-WriteScope",
+            "tests/tools/test_example.py",
+            "-Tests",
+            "pytest-example-pass",
+            "-BridgeEvidence",
+            "event:test-evidence",
+            "-NextAction",
+            "Run the next exact-head check.",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    state_path = worktree / ".codex-audit" / "wd-current-state.json"
+    raw = state_path.read_bytes()
+    state = json.loads(raw.decode("utf-8"))
+    assert len(raw) <= 32768
+    assert state["schema"] == "wd.lane-current.v1"
+    assert state["agent"] == "codex-tools-1"
+    assert state["task_id"] == "wd-test-current"
+    assert state["branch"]
+    assert len(state["head"]) == 40
+    assert state["next_action"] == "Run the next exact-head check."
+    assert not list((worktree / ".codex-audit").glob("*.tmp"))
 
 
 def test_target_state_is_binary_to_preserve_raw_manifest_hash() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
     assert "ops/windows/reboot/WD_SWARM_TARGET_STATE_V1.md binary" in attributes
+    assert "ops/windows/reboot/WD_SWARM_PARALLEL_POLICY_V1.md binary" in attributes
 
 
 def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:

@@ -15,6 +15,7 @@ docs/runs/phase18a_benchmark_externalization_2026_05_05/export_bundle/README.md 
 # The reboot manifest pins this document by raw SHA-256. Keep the committed,
 # worktree, and git-archive bytes identical even with core.autocrlf=true.
 ops/windows/reboot/WD_SWARM_TARGET_STATE_V1.md binary
+ops/windows/reboot/WD_SWARM_PARALLEL_POLICY_V1.md binary
 
 # The reboot bundle carries an exact, hash-verified copy of the operator's
 # Codex prompt watcher. Never rewrite its bytes during checkout.

@@ -1,5 +1,6 @@
 {
   "schema": "wd.supervisor-loop.v2",
+  "bundle_store": "C:\\Python\\wd-reboot-bundles",
   "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
   "recovery_state_root": "C:\\Python\\wd-reboot-runtime",
   "log_path": "C:\\Python\\wd_supervisor.log",

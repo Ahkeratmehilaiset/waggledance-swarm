@@ -2324,6 +2324,43 @@ function Invoke-WdReconciliationUnderDriverHold {
 $configFull = [IO.Path]::GetFullPath($ConfigPath)
 [void](Assert-WdSupervisorPathWithoutReparse `
     -Path $PSScriptRoot -ExpectedType Directory)
+$sourceRehearsal = -not (Test-Path -LiteralPath (
+        Join-Path $PSScriptRoot 'deployment-manifest.json'
+    ) -PathType Leaf)
+if ($sourceRehearsal -and $Apply) {
+    throw 'source-tree supervisor rehearsal cannot Apply'
+}
+
+function Resolve-SupervisorDependencyPath {
+    param(
+        [Parameter(Mandatory)] [string] $RelativePath,
+        [Parameter(Mandatory)] [string] $SourceRoot,
+        [Parameter(Mandatory)] [bool] $SourceMode
+    )
+
+    $normalizedRelative = $RelativePath.Replace('/', '\').TrimStart('\')
+    if ($SourceMode) {
+        $bootstrapPrefix = 'tools-bootstrap\'
+        if (-not $normalizedRelative.StartsWith(
+                $bootstrapPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw "source supervisor dependency is not bootstrap-mapped: $RelativePath"
+        }
+        $normalizedRelative = $normalizedRelative.Substring(
+            $bootstrapPrefix.Length
+        )
+    }
+    $root = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $candidate = [IO.Path]::GetFullPath((Join-Path $root $normalizedRelative))
+    if (-not $candidate.StartsWith(
+            $root + '\',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "supervisor dependency escapes its root: $RelativePath"
+    }
+    return $candidate
+}
 if (-not (Test-Path -LiteralPath $configFull -PathType Leaf)) {
     throw "supervisor configuration not found: $configFull"
 }
@@ -2410,9 +2447,14 @@ if ($toolsEnabled) {
     )
     Assert-SupervisorBundleFileIntegrity `
         -RelativePath 'start-wd-tools-consumer.ps1'
-    $toolsConfig = [IO.Path]::GetFullPath(
+    $configuredToolsConfig = [IO.Path]::GetFullPath(
         (Get-RequiredText $tools 'config_path')
     )
+    $toolsConfig = if ($sourceRehearsal) {
+        $configFull
+    } else {
+        $configuredToolsConfig
+    }
     $toolsConflictPath = [IO.Path]::GetFullPath(
         (Get-RequiredText $tools 'replacement_conflict_path')
     )
@@ -2543,10 +2585,29 @@ $watcherLogReaderRelative = `
 if ([IO.Path]::IsPathRooted($watcherRelative)) {
     throw 'supervisor watcher script must be relative to the reboot bundle'
 }
-$watcherScript = [IO.Path]::GetFullPath(
-    (Join-Path $PSScriptRoot $watcherRelative)
-)
-$bundlePrefix = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
+$watcherGitExecutable = Resolve-WdSupervisorGitApplication `
+    -ConfiguredPath (Get-RequiredText $configuration.watchers 'git_executable')
+$dependencyRoot = if ($sourceRehearsal) {
+    Invoke-WdSupervisorGitCapture `
+        -RepositoryRoot $PSScriptRoot `
+        -Arguments @('rev-parse', '--show-toplevel') `
+        -GitExecutable $watcherGitExecutable
+} else {
+    $PSScriptRoot
+}
+$watcherScript = Resolve-SupervisorDependencyPath `
+    -RelativePath $watcherRelative `
+    -SourceRoot $dependencyRoot `
+    -SourceMode $sourceRehearsal
+$watcherReaderPath = Resolve-SupervisorDependencyPath `
+    -RelativePath $watcherReaderRelative `
+    -SourceRoot $dependencyRoot `
+    -SourceMode $sourceRehearsal
+$watcherLogReaderPath = Resolve-SupervisorDependencyPath `
+    -RelativePath $watcherLogReaderRelative `
+    -SourceRoot $dependencyRoot `
+    -SourceMode $sourceRehearsal
+$bundlePrefix = [IO.Path]::GetFullPath($dependencyRoot).TrimEnd('\') + '\'
 if (-not $watcherScript.StartsWith(
         $bundlePrefix,
         [StringComparison]::OrdinalIgnoreCase
@@ -2568,8 +2629,6 @@ $watcherConflictRoot = [IO.Path]::GetFullPath(
 $watcherSourceRepository = [IO.Path]::GetFullPath(
     (Get-RequiredText $configuration.watchers 'source_repo_root')
 )
-$watcherGitExecutable = Resolve-WdSupervisorGitApplication `
-    -ConfiguredPath (Get-RequiredText $configuration.watchers 'git_executable')
 $watcherTargetGeneration = Resolve-OwnBundleGeneration `
     -ScriptRoot $PSScriptRoot `
     -GitExecutable $watcherGitExecutable
@@ -2622,12 +2681,33 @@ else {
     ) {
         throw 'supervisor watcher dependency set is not exact'
     }
+    foreach ($watcherDependencyPath in @(
+            $watcherReaderPath,
+            $watcherLogReaderPath
+        )) {
+        if (-not (Test-Path -LiteralPath $watcherDependencyPath -PathType Leaf)) {
+            throw "required watcher dependency is missing: $watcherDependencyPath"
+        }
+        [void](Assert-WdSupervisorPathWithoutReparse `
+            -Path $watcherDependencyPath -ExpectedType Leaf)
+    }
     foreach ($watcherDependency in $watcherDependencies) {
         Assert-SupervisorBundleFileIntegrity -RelativePath $watcherDependency
     }
-    $watcherBundleParent = Split-Path -Parent $PSScriptRoot
+    $watcherBundleParent = [IO.Path]::GetFullPath(
+        (Get-RequiredText $configuration 'bundle_store')
+    ).TrimEnd('\')
     [void](Assert-WdSupervisorPathWithoutReparse `
         -Path $watcherBundleParent -ExpectedType Directory)
+    if (
+        -not $sourceRehearsal -and
+        -not $watcherBundleParent.Equals(
+            [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw 'deployed supervisor bundle store differs from its own parent'
+    }
 
     if ($null -eq $configuration.driver_containment) {
         throw 'supervisor configuration has no driver_containment object'
@@ -3141,7 +3221,7 @@ try {
             -Path $eventsPath -ExpectedType Leaf)
         Assert-SupervisorBundleFileIntegrity -RelativePath $watcherReaderRelative
         Assert-SupervisorBundleFileIntegrity -RelativePath $watcherLogReaderRelative
-        . ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot $watcherReaderRelative)))
+        . $watcherReaderPath
         $freshnessResult = Read-BridgeEventTail -Path $eventsPath -MaxLines 80
         if ($freshnessResult.status -in @('BLOCKED', 'RETRY')) {
             throw "bridge freshness snapshot unavailable: $($freshnessResult.reason)"

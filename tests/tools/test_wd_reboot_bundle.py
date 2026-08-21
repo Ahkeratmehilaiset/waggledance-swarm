@@ -239,6 +239,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     assert supervisor["target_state"] == target
     assert supervisor["parallel_policy"] == parallel
+    assert supervisor["bundle_store"] == r"C:\Python\wd-reboot-bundles"
     assert supervisor["recovery_state_root"] == r"C:\Python\wd-reboot-runtime"
     assert supervisor["watchers"]["replacement_conflict_root"] == (
         r"C:\Python\wd-reboot-runtime\watcher-replacement-conflicts"
@@ -875,6 +876,18 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "$rootKillSucceeded" in supervisor
     assert "Tools consumer preflight does not match supervisor generation" in supervisor
     assert "Assert-MachineToolsConfigExact" in supervisor
+    assert "source-tree supervisor rehearsal cannot Apply" in supervisor
+    assert "$toolsConfig = if ($sourceRehearsal)" in supervisor
+    assert "function Resolve-SupervisorDependencyPath" in supervisor
+    assert "source supervisor dependency is not bootstrap-mapped" in supervisor
+    assert ". $watcherReaderPath" in supervisor
+    assert "deployed supervisor bundle store differs from its own parent" in supervisor
+    assert "$configFull" in supervisor[
+        supervisor.index("$toolsConfig = if ($sourceRehearsal)") :
+        supervisor.index("$toolsConflictPath =", supervisor.index(
+            "$toolsConfig = if ($sourceRehearsal)"
+        ))
+    ]
     assert "Assert-WdSupervisorPathWithoutReparse" in supervisor
     assert "& $configuredToolsLauncher" not in supervisor
     assert "'-File', $toolsLauncher" in supervisor

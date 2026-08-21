@@ -268,6 +268,27 @@ def test_unknown_route_counts_in_default_denominator_never_numerator(
     assert narrowed["excluded_unknown_route_count"] == 1
 
 
+def test_unknown_never_counts_as_solver_even_when_explicitly_configured(
+    ledger: LedgerBuilder,
+) -> None:
+    # rco-1 2026-08-21T21:24:49Z finding (rco-2 spot-confirmed): under an
+    # explicit --solver-route-type unknown override, an entry with MISSING
+    # route_type metadata counted toward solver_first_served_total (1/1),
+    # falsifying the docstring's "UNKNOWN_ROUTE_TYPE can never satisfy solver
+    # membership" invariant. The exclusion is now unconditional at the count
+    # site, mirroring the served-side unknown guard.
+    ledger.served("mystery", route_type=None)
+    ledger.receipt("mystery")
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        solver_route_types=("unknown",),
+    )
+    assert report["served_total"] == 1
+    assert report["solver_first_served_total"] == 0
+    assert report["solver_first_served_ratio"] == 0.0
+
+
 def test_unparseable_entry_ts_under_window_rejects(ledger: LedgerBuilder) -> None:
     ledger.served("odd-ts", route_type="solver", ts="not-a-time")
 

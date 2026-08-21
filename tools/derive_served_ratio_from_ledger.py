@@ -201,9 +201,12 @@ def derive_report(
         per_route[route_type] = per_route.get(route_type, 0) + 1
         # Subset invariant: the numerator is counted ONLY inside the served
         # denominator, mirroring RouteTelemetry.solver_first_served_stats.
-        # UNKNOWN_ROUTE_TYPE can never satisfy solver membership (fail-closed
-        # numerator).
-        if route_type in solver_set:
+        # The UNKNOWN_ROUTE_TYPE exclusion is UNCONDITIONAL, mirroring the
+        # served-side guard above: an entry whose route_type metadata is
+        # missing can never be PROVEN solver-first, so it never counts in the
+        # numerator even when the caller explicitly configures
+        # --solver-route-type unknown (fail-closed numerator).
+        if route_type in solver_set and route_type != UNKNOWN_ROUTE_TYPE:
             solver_total += 1
         coverage = terminals.get(str(entry.get("served_id")))
         if coverage == "receipted":

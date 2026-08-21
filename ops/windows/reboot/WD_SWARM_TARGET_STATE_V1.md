@@ -15,6 +15,8 @@ The intended system is a measured, fail-closed swarm in which:
 - authoritative deterministic solvers run before specialist models, and an
   LLM is only an advisory fallback;
 - every served result has append-only MAGMA provenance and a truthful receipt;
+- MAGMA grounds a provenance-bound 4D Persistent World Memory
+  (WaggleWorld/PWM) whose time-indexed derived state remains rebuildable;
 - runtime gaps can propose low-risk solver growth, but admission, review,
   rollback, and operator gates remain mandatory;
 - subdivision, ring messaging, and parent-child hierarchy may increase scale

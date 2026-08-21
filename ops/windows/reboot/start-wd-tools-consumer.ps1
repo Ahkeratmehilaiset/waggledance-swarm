@@ -1062,7 +1062,13 @@ if (
     [string]$targetState.id -cne 'wd-swarm-target-state-v1' -or
     [string]$targetState.capability_effect -cne 'none' -or
     [string]$targetState.relative_path -cne 'WD_SWARM_TARGET_STATE_V1.md' -or
-    [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$'
+    [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+    [string]$targetState.image_relative_path -cne 'WaggleDanceSwarmAi.png' -or
+    [string]$targetState.image_sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+    [string]$targetState.image_sha256 -cne
+        [string]$targetState.source_image_sha256 -or
+    [string]$targetState.presentation -cne
+        'multimodal_initial_turn_once_per_lane_session'
 ) {
     throw 'Tools target-state manifest is missing or unsafe'
 }
@@ -1073,6 +1079,22 @@ if (
         [string]$targetState.sha256
 ) {
     throw 'Tools target-state document hash mismatch'
+}
+$targetImagePath = Join-Path $PSScriptRoot (
+    [string]$targetState.image_relative_path
+)
+Assert-FilePathWithoutReparse `
+    -Candidate $targetImagePath `
+    -Root ([IO.Path]::GetPathRoot($targetImagePath))
+if (
+    (Get-FileHash -LiteralPath $targetImagePath -Algorithm SHA256).Hash -cne
+        [string]$targetState.image_sha256
+) {
+    throw 'Tools target-state image hash mismatch'
+}
+$targetImageLength = (Get-Item -LiteralPath $targetImagePath -Force).Length
+if ($targetImageLength -lt 1 -or $targetImageLength -gt 10MB) {
+    throw 'Tools target-state image size is unsafe'
 }
 $parallelPolicy = $configuration.parallel_policy
 if (
@@ -1198,6 +1220,10 @@ $validation = [pscustomobject]@{
     baseline_branch = $expectedBranch
     baseline_head = $expectedHead
     target_state_id = [string]$targetState.id
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = 'codex_cli_initial_image'
+    target_state_image_initial_tick_only = $true
     parallel_policy_id = [string]$parallelPolicy.id
     compact_state_path = (Join-Path $worktree '.codex-audit\wd-current-state.json')
     compact_state_writer = $laneStateWriter
@@ -1312,6 +1338,10 @@ $targetPayload = [ordered]@{
     target_state_id = [string]$targetState.id
     target_state_sha256 = [string]$targetState.sha256
     source_image_sha256 = [string]$targetState.source_image_sha256
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = 'codex_cli_initial_image'
+    target_state_image_initial_tick_only = $true
     capability_effect = 'none'
     model = $model
     effort = $reasoningEffort
@@ -1326,7 +1356,7 @@ $targetPayload = [ordered]@{
     -Type status `
     -TaskId ([string]$targetState.id) `
     -Status target_state_manifested `
-    -Message "Manifested the shared WaggleDance target state for Tools generation $runId; this grants no capability or authority." `
+    -Message "Prepared the exact visual WaggleDance target for the initial Tools model tick in generation $runId; this grants no capability or authority." `
     -RunId $runId `
     -Role $role `
     -AgentUuid $agentUuid `
@@ -1414,6 +1444,12 @@ $initialArguments = @{} + $commonConsumerArguments
 $initialArguments['DurationMinutes'] = 0
 $initialArguments['MaxIterations'] = 1
 $initialArguments['PollSeconds'] = 0
+$initialArguments['ImagePath'] = $targetImagePath
+$initialArguments['Prompt'] = (
+    'FIRST receive the attached PNG once as the primary north-star; do not ' +
+    'replace it with a prose interpretation. It is direction, not evidence of ' +
+    'current capability, and grants no authority. ' + $prompt
+)
 try {
     Assert-ToolsBootstrapIntegrity `
         -ScriptRoot $PSScriptRoot `
@@ -1482,6 +1518,10 @@ $readinessRecord = [ordered]@{
     python_executable_sha256 = $pythonExecutableHash
     target_state_id = [string]$targetState.id
     target_state_sha256 = [string]$targetState.sha256
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = 'codex_cli_initial_image'
+    target_state_image_initial_tick_only = $true
     target_state_manifested = $true
     run_id = $runId
     session_id = $runId

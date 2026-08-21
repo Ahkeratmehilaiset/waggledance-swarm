@@ -633,6 +633,7 @@ foreach ($required in @(
         'WD_LOCAL_GPU_GUIDE.md',
         'WD_SWARM_PARALLEL_POLICY_V1.md',
         'WD_SWARM_TARGET_STATE_V1.md',
+        'WaggleDanceSwarmAi.png',
         'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',

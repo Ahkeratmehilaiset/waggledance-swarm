@@ -212,10 +212,19 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert manifest["runtime_root"] == r"C:\Python\project2-master\.agent-bridge"
     target = manifest["target_state"]
     target_path = REBOOT / target["relative_path"]
+    target_image_path = REBOOT / target["image_relative_path"]
     assert target["id"] == "wd-swarm-target-state-v1"
     assert target["capability_effect"] == "none"
+    assert target["image_relative_path"] == "WaggleDanceSwarmAi.png"
+    assert target["presentation"] == (
+        "multimodal_initial_turn_once_per_lane_session"
+    )
     assert target["source_image_sha256"] == (
         "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117"
+    )
+    assert target["image_sha256"] == target["source_image_sha256"]
+    assert hashlib.sha256(target_image_path.read_bytes()).hexdigest().upper() == (
+        target["image_sha256"]
     )
     assert hashlib.sha256(target_path.read_bytes()).hexdigest().upper() == target["sha256"]
     parallel = manifest["parallel_policy"]
@@ -246,6 +255,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     required_bundle_files = manifest["deployment"]["required_bundle_files"]
     assert "WD_SWARM_TARGET_STATE_V1.md" in required_bundle_files
+    assert "WaggleDanceSwarmAi.png" in required_bundle_files
     assert "WD_SWARM_PARALLEL_POLICY_V1.md" in required_bundle_files
     assert "Write-WdLaneCurrentState.ps1" in required_bundle_files
     assert "Get-WdSwarmParallelStatus.ps1" in required_bundle_files
@@ -632,6 +642,7 @@ def test_target_state_is_binary_to_preserve_raw_manifest_hash() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
     assert "ops/windows/reboot/WD_SWARM_TARGET_STATE_V1.md binary" in attributes
     assert "ops/windows/reboot/WD_SWARM_PARALLEL_POLICY_V1.md binary" in attributes
+    assert "ops/windows/reboot/WaggleDanceSwarmAi.png binary" in attributes
 
 
 def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
@@ -639,13 +650,16 @@ def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
     bundle_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(REBOOT.glob("*"))
-        if path.is_file()
+        if path.is_file() and path.suffix.lower() != ".png"
     )
     assert "claude-opus-" not in bundle_text.lower()
     assert "'--model', $model" in agent_launcher
     assert "'--effort', $effort" in agent_launcher
     assert "model_reasoning_effort=\"{0}\"" in agent_launcher
     assert "'--dangerously-skip-permissions'" in agent_launcher
+    assert "'--image', $targetImagePath" in agent_launcher
+    assert "FIRST use the Read tool once on the exact PNG" in agent_launcher
+    assert "before any bridge read or work" in agent_launcher
     assert "model_selection = 'explicit'" in agent_launcher
     assert "legacy model labels" in agent_launcher
     assert "target_state_manifested" in agent_launcher
@@ -662,7 +676,11 @@ def test_each_lane_manifests_hash_bound_target_before_model_launch() -> None:
     tools_launcher = (REBOOT / "start-wd-tools-consumer.ps1").read_text(
         encoding="utf-8"
     )
+    consumer = (
+        ROOT / ".agent-bridge" / "bin" / "Start-AgentBridgeConsumerLoop.ps1"
+    ).read_text(encoding="utf-8")
     target = (REBOOT / "WD_SWARM_TARGET_STATE_V1.md").read_text(encoding="utf-8")
+    target_image = REBOOT / "WaggleDanceSwarmAi.png"
 
     assert agent_launcher.count("-Status target_state_manifested `") == 1
     assert tools_launcher.count("-Status target_state_manifested `") == 1
@@ -684,8 +702,22 @@ def test_each_lane_manifests_hash_bound_target_before_model_launch() -> None:
     assert tools_launcher.index("-Status append_canary `") < (
         tools_launcher.index("$initialOutput = @(& $consumerScript")
     )
+    assert hashlib.sha256(target_image.read_bytes()).hexdigest().upper() == (
+        "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117"
+    )
+    assert "'--image', $targetImagePath" in agent_launcher
+    assert "FIRST receive the attached PNG once" in agent_launcher
+    assert "FIRST use the Read tool once on the exact PNG" in agent_launcher
+    assert "$initialArguments['ImagePath'] = $targetImagePath" in tools_launcher
+    assert "$wakeArguments['ImagePath']" not in tools_launcher
+    assert "[string] $ImagePath = ''" in consumer
+    assert "$codexArgs += @('--image', $imageFull)" in consumer
+    assert "target_state_image_initial_turn_only = $true" in agent_launcher
+    assert "target_state_image_initial_tick_only = $true" in tools_launcher
     assert "grants no authority" in target
     assert "flips no" in target
+    assert "4D Persistent World Memory" in target
+    assert "WaggleWorld/PWM" in target
 
 
 def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None:
@@ -4241,6 +4273,9 @@ $config = [pscustomobject]@{{
   python_executable = '{python_executable}'
 }}
 $bundleGeneration = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+$targetState = [pscustomobject]@{{
+  image_sha256 = 'A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117'
+}}
 $processStarted = [DateTimeOffset]::UtcNow.AddSeconds(-1)
 $toolsRunId = 'wd-reboot-codex-tools-1-test-101'
 $codexExecutable = Resolve-ApplicationPath -Name 'codex.cmd'
@@ -4276,6 +4311,9 @@ $ready = [ordered]@{{
   python_executable_sha256 = $pythonHash
   target_state_manifested = $true
   target_state_id = 'wd-swarm-target-state-v1'
+  target_state_image_sha256 = $targetState.image_sha256
+  target_state_image_delivery = 'codex_cli_initial_image'
+  target_state_image_initial_tick_only = $true
   run_id = $toolsRunId
   session_id = $toolsRunId
   append_canary = $true

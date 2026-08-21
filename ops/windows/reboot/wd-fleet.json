@@ -11,8 +11,11 @@
   "target_state": {
     "id": "wd-swarm-target-state-v1",
     "relative_path": "WD_SWARM_TARGET_STATE_V1.md",
-    "sha256": "53C677EA76621DC8B48CA4DD42892CC333F304921EA88F8DD559F292F5E7D828",
+    "sha256": "CCB561D9398CFCB087C392BF52E1A3730D1E8304A32AD65E76C9261473BED57F",
+    "image_relative_path": "WaggleDanceSwarmAi.png",
+    "image_sha256": "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117",
     "source_image_sha256": "A05774DF5EB15FDCE08A850149550C3CD94DC0F952136A5E1C02D37EFBE43117",
+    "presentation": "multimodal_initial_turn_once_per_lane_session",
     "capability_effect": "none"
   },
   "parallel_policy": {
@@ -44,6 +47,7 @@
       "WD_LOCAL_GPU_GUIDE.md",
       "WD_SWARM_PARALLEL_POLICY_V1.md",
       "WD_SWARM_TARGET_STATE_V1.md",
+      "WaggleDanceSwarmAi.png",
       "tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1",
       "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1",
       "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1",

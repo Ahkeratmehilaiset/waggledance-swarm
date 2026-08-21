@@ -55,6 +55,7 @@ param(
     [switch] $DryRun,
 
     [string] $Prompt = '',
+    [string] $ImagePath = '',
     [string] $LogDir = ''
 )
 
@@ -423,6 +424,27 @@ if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-f
     throw 'agent_uuid must be a UUID'
 }
 
+$imageFull = ''
+if (-not [string]::IsNullOrWhiteSpace($ImagePath)) {
+    if (-not [IO.Path]::IsPathRooted($ImagePath)) {
+        throw 'ImagePath must be absolute'
+    }
+    $imageFull = Resolve-FullPath $ImagePath
+    if ([IO.Path]::GetExtension($imageFull) -cne '.png') {
+        throw 'ImagePath must name one PNG file'
+    }
+    if (-not (Test-Path -LiteralPath $imageFull -PathType Leaf)) {
+        throw "ImagePath is missing: $imageFull"
+    }
+    $imageItem = Get-Item -LiteralPath $imageFull -Force -ErrorAction Stop
+    if (($imageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ImagePath must not be a reparse point: $imageFull"
+    }
+    if ($imageItem.Length -lt 1 -or $imageItem.Length -gt 10MB) {
+        throw 'ImagePath size must be between 1 byte and 10 MiB'
+    }
+}
+
 if (-not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
     $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
 }
@@ -511,6 +533,9 @@ $codexArgs = @(
 )
 if ($Model) {
     $codexArgs += @('--model', $Model)
+}
+if ($imageFull) {
+    $codexArgs += @('--image', $imageFull)
 }
 $codexArgs += @('--sandbox', $Sandbox, '-')
 $codexCommandResolved = if ($DryRun) {

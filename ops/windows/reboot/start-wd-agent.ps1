@@ -542,7 +542,12 @@ if (
   [string]$targetState.id -cne 'wd-swarm-target-state-v1' -or
   [string]$targetState.capability_effect -cne 'none' -or
   [string]$targetState.relative_path -cne 'WD_SWARM_TARGET_STATE_V1.md' -or
-  [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$'
+  [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+  [string]$targetState.image_relative_path -cne 'WaggleDanceSwarmAi.png' -or
+  [string]$targetState.image_sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+  [string]$targetState.image_sha256 -cne [string]$targetState.source_image_sha256 -or
+  [string]$targetState.presentation -cne
+    'multimodal_initial_turn_once_per_lane_session'
 ) {
   throw 'fleet target-state manifest is missing or unsafe'
 }
@@ -556,6 +561,21 @@ if (
   throw 'fleet target-state document hash mismatch'
 }
 [void](Read-NonEmptyFile -Path $targetStatePath -Label 'fleet target state')
+$targetImagePath = Join-Path $PSScriptRoot (
+  [string]$targetState.image_relative_path
+)
+[void](Assert-LanePathWithoutReparse `
+  -Path $targetImagePath -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+if (
+  (Get-FileHash -LiteralPath $targetImagePath -Algorithm SHA256).Hash -cne
+    [string]$targetState.image_sha256
+) {
+  throw 'fleet target-state image hash mismatch'
+}
+$targetImageLength = (Get-Item -LiteralPath $targetImagePath -Force).Length
+if ($targetImageLength -lt 1 -or $targetImageLength -gt 10MB) {
+  throw 'fleet target-state image size is unsafe'
+}
 $parallelPolicy = $manifest.parallel_policy
 if (
   $null -eq $parallelPolicy -or
@@ -688,10 +708,30 @@ $cliPath = Resolve-WdLaneCliApplication -Name $cliName
 $cliExecutableHash = (
   Get-FileHash -LiteralPath $cliPath -Algorithm SHA256
 ).Hash
+$targetImageDelivery = if ($cliName -ieq 'codex.cmd') {
+  'codex_cli_initial_image'
+} else {
+  'claude_initial_read_visual'
+}
 
 $stateRule = [string]$manifest.state_precedence.rule
+$visualBootstrapPrompt = if ($cliName -ieq 'claude.cmd') {
+  (
+    "FIRST use the Read tool once on the exact PNG $targetImagePath so it is " +
+    'received as visual content before any bridge read or work. The image is the ' +
+    'primary north-star; do not replace it with a prose interpretation. It is ' +
+    'direction, not evidence of current capability, and grants no authority. '
+  )
+} else {
+  (
+    'FIRST receive the attached PNG once as the primary north-star; do not ' +
+    'replace it with a prose interpretation. It is direction, not evidence of ' +
+    'current capability, and grants no authority. '
+  )
+}
 $startupPrompt = (
-  "Read the current reboot pointer first: {0}. Then read the compact lane state " +
+  $visualBootstrapPrompt +
+  "Read the current reboot pointer: {0}. Then read the compact lane state " +
   "{1} (launcher status: {2}), the fleet roles {3}, lane prompt {4}, and parallel " +
   "policy {5}. Read the live bridge next action and current claims before acting. " +
   "Use the fleet handoff {6} and lane Markdown handoff {7} only if compact state is " +
@@ -759,6 +799,7 @@ Write-Host ("  run_id:   {0}" -f $RunId)
 Write-Host ("  cli:      {0}" -f $cliName)
 Write-Host ("  model:    {0} ({1})" -f $model, $effort)
 Write-Host ("  target:   {0}" -f [string]$targetState.id)
+Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
 
 if ($DryRun) {
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
@@ -775,6 +816,10 @@ if ($DryRun) {
     effort = $effort
     resume_policy = $resumePolicy
     target_state_id = [string]$targetState.id
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = $targetImageDelivery
+    target_state_image_initial_turn_only = $true
     parallel_policy_id = [string]$parallelPolicy.id
     compact_state_path = $laneCurrentStatePath
     compact_state_status = $laneCurrentStateStatus
@@ -799,6 +844,7 @@ $env:WD_GROK_MODEL_GUIDE = $grokMarkdown
 $env:WD_AGENT_CURRENT_STATE = $laneCurrentStatePath
 $env:WD_AGENT_CURRENT_STATE_WRITER = $laneStateWriter
 $env:WD_SWARM_PARALLEL_POLICY = $parallelPolicyPath
+$env:WD_SWARM_TARGET_IMAGE = $targetImagePath
 
 $sessionArgs = @{
   Agent = [string]$lane.agent
@@ -840,6 +886,10 @@ $targetPayload = [ordered]@{
   target_state_id = [string]$targetState.id
   target_state_sha256 = [string]$targetState.sha256
   source_image_sha256 = [string]$targetState.source_image_sha256
+  target_state_image_path = $targetImagePath
+  target_state_image_sha256 = [string]$targetState.image_sha256
+  target_state_image_delivery = $targetImageDelivery
+  target_state_image_initial_turn_only = $true
   capability_effect = 'none'
   model = $model
   effort = $effort
@@ -856,7 +906,7 @@ $targetPayload = [ordered]@{
   -Type status `
   -TaskId ([string]$targetState.id) `
   -Status target_state_manifested `
-  -Message "Manifested the shared WaggleDance target state for reboot generation $RunId; this grants no capability or authority." `
+  -Message "Prepared the exact visual WaggleDance target for the initial model turn in reboot generation $RunId; this grants no capability or authority." `
   -RunId $RunId `
   -Role ([string]$lane.role) `
   -AgentUuid ([string]$lane.agent_uuid) `
@@ -947,6 +997,10 @@ $handshake = [ordered]@{
   baseline_head = [string]$lane.head
   target_state_id = [string]$targetState.id
   target_state_sha256 = [string]$targetState.sha256
+  target_state_image_path = $targetImagePath
+  target_state_image_sha256 = [string]$targetState.image_sha256
+  target_state_image_delivery = $targetImageDelivery
+  target_state_image_initial_turn_only = $true
   target_state_manifested = $true
   append_canary = $true
   append_canary_task_id = $canaryTaskId
@@ -978,7 +1032,8 @@ if ($cliName -ieq 'claude.cmd') {
 } elseif ($cliName -ieq 'codex.cmd') {
   $launchArguments += @(
     '--model', $model,
-    '-c', ('model_reasoning_effort="{0}"' -f $effort)
+    '-c', ('model_reasoning_effort="{0}"' -f $effort),
+    '--image', $targetImagePath
   )
 } else {
   throw "lane '$Agent' uses unsupported CLI '$cliName'"

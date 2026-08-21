@@ -131,14 +131,20 @@ durable cron re-enters compact-state/bridge processing after a missed dynamic
 wakeup and is refreshed before Claude's seven-day durable-job expiry. It never
 authorizes a duplicate claim.
 
-Before each lane invokes its model, it writes one
-`target_state_manifested` status event and one unaddressed `append_canary` for
-that reboot run through the manifest-hashed writer. The canary must complete
-within five seconds. The launcher preserves the frozen canonical prefix and
-requires the pre-existing spool inventory to remain byte-exact before it
-enables and demand-starts `WD-Supervisor`. The hash-anchored target is
-`WD_SWARM_TARGET_STATE_V1.md`; neither event grants capability or authority.
-Failure to append either event prevents that lane from launching.
+Before each lane invokes its model, the launcher verifies
+`WaggleDanceSwarmAi.png` by its pinned hash and delivers that exact image once
+in the lane session's initial model turn. Codex lanes receive it as the native
+initial image input; Claude lanes must use their visual Read tool on the same
+PNG before reading the bridge. The image remains the primary north-star and is
+not replaced by a prose interpretation. It is direction, not evidence of a
+current capability, and grants no capability or authority.
+
+Each lane also writes one `target_state_manifested` status event and one
+unaddressed `append_canary` for that reboot run through the manifest-hashed
+writer. The canary must complete within five seconds. The launcher preserves
+the frozen canonical prefix and requires the pre-existing spool inventory to
+remain byte-exact before it enables and demand-starts `WD-Supervisor`. Failure
+to append either event prevents that lane from launching.
 
 The Grok provider default is the authoritative, non-hard-coded choice available
 to this account after the CLI update. The resolver verifies that it occurs

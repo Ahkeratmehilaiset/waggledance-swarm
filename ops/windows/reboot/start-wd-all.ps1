@@ -1867,6 +1867,18 @@ function Test-LaneGenerationAttestation {
         -Object $handshake `
         -Name 'target_state_manifested') -or
       [string]$handshake.target_state_id -cne 'wd-swarm-target-state-v1' -or
+      [string]$handshake.target_state_image_sha256 -cne
+        [string]$targetState.image_sha256 -or
+      [string]$handshake.target_state_image_delivery -cne $(
+        if ([string]$Lane.cli -ceq 'codex.cmd') {
+          'codex_cli_initial_image'
+        } else {
+          'claude_initial_read_visual'
+        }
+      ) -or
+      -not (Test-WdJsonBooleanTrue `
+        -Object $handshake `
+        -Name 'target_state_image_initial_turn_only') -or
       -not ([string]$handshake.worktree).Equals(
         [string]$Lane.worktree,
         [System.StringComparison]::OrdinalIgnoreCase
@@ -1958,6 +1970,13 @@ function Test-ToolsProcessReadiness {
       -not (Test-WdJsonBooleanTrue `
         -Object $record `
         -Name 'target_state_manifested') -or
+      [string]$record.target_state_image_sha256 -cne
+        [string]$targetState.image_sha256 -or
+      [string]$record.target_state_image_delivery -cne
+        'codex_cli_initial_image' -or
+      -not (Test-WdJsonBooleanTrue `
+        -Object $record `
+        -Name 'target_state_image_initial_tick_only') -or
       [string]$record.run_id -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or
       [string]$record.session_id -cne [string]$record.run_id -or
       -not (Test-WdJsonBooleanTrue -Object $record -Name 'append_canary') -or
@@ -2352,17 +2371,44 @@ if (
   [string]$targetState.id -cne 'wd-swarm-target-state-v1' -or
   [string]$targetState.capability_effect -cne 'none' -or
   [string]$targetState.relative_path -cne 'WD_SWARM_TARGET_STATE_V1.md' -or
-  [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$'
+  [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+  [string]$targetState.image_relative_path -cne 'WaggleDanceSwarmAi.png' -or
+  [string]$targetState.image_sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+  [string]$targetState.image_sha256 -cne
+    [string]$targetState.source_image_sha256 -or
+  [string]$targetState.presentation -cne
+    'multimodal_initial_turn_once_per_lane_session'
 ) {
   throw 'fleet target-state manifest is missing or unsafe'
 }
 $targetStatePath = Join-Path $PSScriptRoot ([string]$targetState.relative_path)
+[void](Assert-WdFleetPathWithoutReparse `
+  -Path $targetStatePath `
+  -TrustedRoot $PSScriptRoot `
+  -ExpectedType Leaf)
 [void](Read-NonEmptyFile -Path $targetStatePath -Label 'fleet target state')
 if (
   (Get-FileHash -LiteralPath $targetStatePath -Algorithm SHA256).Hash -cne
     [string]$targetState.sha256
 ) {
   throw 'fleet target-state document hash mismatch'
+}
+$targetImagePath = Join-Path $PSScriptRoot (
+  [string]$targetState.image_relative_path
+)
+[void](Assert-WdFleetPathWithoutReparse `
+  -Path $targetImagePath `
+  -TrustedRoot $PSScriptRoot `
+  -ExpectedType Leaf)
+if (
+  (Get-FileHash -LiteralPath $targetImagePath -Algorithm SHA256).Hash -cne
+    [string]$targetState.image_sha256
+) {
+  throw 'fleet target-state image hash mismatch'
+}
+$targetImageLength = (Get-Item -LiteralPath $targetImagePath -Force).Length
+if ($targetImageLength -lt 1 -or $targetImageLength -gt 10MB) {
+  throw 'fleet target-state image size is unsafe'
 }
 $parallelPolicy = $manifest.parallel_policy
 if (
@@ -2926,6 +2972,15 @@ if (
   [string]$toolsValidation.model -cne [string]$toolsConfig.model -or
   [string]$toolsValidation.reasoning_effort -cne [string]$toolsConfig.reasoning_effort -or
   [string]$toolsValidation.target_state_id -cne [string]$targetState.id -or
+  -not ([string]$toolsValidation.target_state_image_path).Equals(
+    $targetImagePath,
+    [System.StringComparison]::OrdinalIgnoreCase
+  ) -or
+  [string]$toolsValidation.target_state_image_sha256 -cne
+    [string]$targetState.image_sha256 -or
+  [string]$toolsValidation.target_state_image_delivery -cne
+    'codex_cli_initial_image' -or
+  -not [bool]$toolsValidation.target_state_image_initial_tick_only -or
   -not ([string]$toolsValidation.git_top).Equals(
     [string]$toolsConfig.worktree,
     [System.StringComparison]::OrdinalIgnoreCase
@@ -2948,6 +3003,10 @@ Write-Host (
     $toolsLive.Count,
     $toolsStarting.Count,
     $toolsStale.Count
+)
+Write-Host (
+  "  Visual target: exact PNG will be delivered once in each lane's initial model turn; sha256={0}" -f
+    [string]$targetState.image_sha256
 )
 if ($toolsLive.Count -eq 1) {
   Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
@@ -3427,6 +3486,18 @@ try {
         [string]$handshake.bundle_generation -cne $bundleGeneration -or
         [string]$handshake.target_state_id -cne [string]$targetState.id -or
         [string]$handshake.target_state_sha256 -cne [string]$targetState.sha256 -or
+        [string]$handshake.target_state_image_sha256 -cne
+          [string]$targetState.image_sha256 -or
+        [string]$handshake.target_state_image_delivery -cne $(
+          if ([string]$lane.cli -ceq 'codex.cmd') {
+            'codex_cli_initial_image'
+          } else {
+            'claude_initial_read_visual'
+          }
+        ) -or
+        -not (Test-WdJsonBooleanTrue `
+          -Object $handshake `
+          -Name 'target_state_image_initial_turn_only') -or
         -not ([string]$handshake.worktree).Equals(
           [string]$lane.worktree,
           [System.StringComparison]::OrdinalIgnoreCase

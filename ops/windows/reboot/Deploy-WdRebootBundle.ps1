@@ -431,6 +431,21 @@ foreach (`$key in `$PSBoundParameters.Keys) {
 [CmdletBinding()]
 $parameterBlock
 `$ErrorActionPreference = 'Stop'
+function Set-WdWrapperWindowsPowerShellModulePath {
+    if (`$PSVersionTable.PSEdition -cne 'Desktop') { return }
+    `$roots = [Collections.Generic.List[string]]::new()
+    `$documents = [Environment]::GetFolderPath('MyDocuments')
+    if (-not [string]::IsNullOrWhiteSpace(`$documents)) {
+        [void]`$roots.Add([IO.Path]::Combine(`$documents, 'WindowsPowerShell', 'Modules'))
+    }
+    `$programFiles = [string]`$env:ProgramFiles
+    if (-not [string]::IsNullOrWhiteSpace(`$programFiles)) {
+        [void]`$roots.Add([IO.Path]::Combine(`$programFiles, 'WindowsPowerShell', 'Modules'))
+    }
+    [void]`$roots.Add([IO.Path]::Combine(`$PSHOME, 'Modules'))
+    `$env:PSModulePath = @(`$roots) -join [IO.Path]::PathSeparator
+}
+Set-WdWrapperWindowsPowerShellModulePath
 `$target = '$escapedTarget'
 `$manifestPath = Join-Path (Split-Path -Parent `$target) 'deployment-manifest.json'
 if (-not (Test-Path -LiteralPath `$target -PathType Leaf)) {

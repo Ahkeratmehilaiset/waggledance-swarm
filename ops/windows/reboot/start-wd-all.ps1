@@ -26,6 +26,22 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $script:WdGitExecutable = ''
 
+function Set-WdFleetWindowsPowerShellModulePath {
+  if ($PSVersionTable.PSEdition -cne 'Desktop') { return }
+  $roots = [Collections.Generic.List[string]]::new()
+  $documents = [Environment]::GetFolderPath('MyDocuments')
+  if (-not [string]::IsNullOrWhiteSpace($documents)) {
+    [void]$roots.Add([IO.Path]::Combine($documents, 'WindowsPowerShell', 'Modules'))
+  }
+  $programFiles = [string]$env:ProgramFiles
+  if (-not [string]::IsNullOrWhiteSpace($programFiles)) {
+    [void]$roots.Add([IO.Path]::Combine($programFiles, 'WindowsPowerShell', 'Modules'))
+  }
+  [void]$roots.Add([IO.Path]::Combine($PSHOME, 'Modules'))
+  $env:PSModulePath = @($roots) -join [IO.Path]::PathSeparator
+}
+Set-WdFleetWindowsPowerShellModulePath
+
 function Resolve-WdLauncherMode {
   param(
     [bool] $ApplyRequested,
@@ -3404,6 +3420,7 @@ try {
     $wtArguments = @(
       '-w', 'new',
       'new-tab',
+      '--inheritEnvironment',
       '--title', [string]$state.lane.agent,
       '--suppressApplicationTitle',
       '-d', [string]$state.lane.worktree,
@@ -3566,6 +3583,7 @@ try {
     $promptWatcherArguments = @(
       '-w', 'new',
       'new-tab',
+      '--inheritEnvironment',
       '--title', $promptWatcherWindowTitle,
       '--suppressApplicationTitle',
       '-d', 'C:\Python',

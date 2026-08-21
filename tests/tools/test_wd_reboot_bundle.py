@@ -6223,6 +6223,7 @@ catch {{
 
 def test_deployed_wrappers_preserve_named_parameters() -> None:
     text = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    start_all = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
     assert "ValueFromRemainingArguments" not in text
     assert "& $target @PSBoundParameters" in text
     assert "& `$target @targetParameters" in text
@@ -6231,6 +6232,12 @@ def test_deployed_wrappers_preserve_named_parameters() -> None:
     assert "[switch] $ValidateOnly" in text
     assert "[string] $Generation" in text
     assert "$targetParameters['Agent']" in text
+    assert "Set-WdWrapperWindowsPowerShellModulePath" in text
+    assert text.index("Set-WdWrapperWindowsPowerShellModulePath") < text.index(
+        "Get-FileHash -LiteralPath `$manifestPath"
+    )
+    assert "Set-WdFleetWindowsPowerShellModulePath" in start_all
+    assert start_all.count("'--inheritEnvironment'") == 2
     assert (
         r"C:\Python\start-wd-all.ps1 -Auto'" in text
     )
@@ -6387,6 +6394,31 @@ foreach ($path in @('{fleet_wrapper}', '{agent_wrapper}', '{tools_wrapper}')) {{
     assert "-EncodedCommand" in fleet_wrapper_text
     assert "Start-Transcript -LiteralPath" in fleet_wrapper_text
     assert "Elevated restore failure log" in fleet_wrapper_text
+    assert "Set-WdWrapperWindowsPowerShellModulePath" in fleet_wrapper_text
+    assert fleet_wrapper_text.index(
+        "Set-WdWrapperWindowsPowerShellModulePath"
+    ) < fleet_wrapper_text.index("Get-FileHash -LiteralPath $manifestPath")
+    poisoned_environment = os.environ.copy()
+    poisoned_environment["PSModulePath"] = str(tmp_path / "missing-modules")
+    poisoned = subprocess.run(
+        [
+            WINDOWS_POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            agent_wrapper.replace("''", "'"),
+            "-RunId",
+            "poisoned-module-path",
+            "-DryRun",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=poisoned_environment,
+    )
+    assert poisoned.returncode == 0, poisoned.stderr
+    assert "fable-5" in poisoned.stdout
     result = _run_powershell(
         f"""
 $ErrorActionPreference = 'Stop'

@@ -536,6 +536,10 @@ def test_compact_state_and_parallel_policy_replace_dated_default_bootstrap() -> 
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="lane checkpoint persistence requires a Windows C: worktree",
+)
 def test_lane_current_state_writer_is_compact_atomic_and_git_derived(
     tmp_path: Path,
 ) -> None:

@@ -25,7 +25,10 @@ production window unless the caller supplied explicit boundaries. Receipt
 coverage (receipted / gap / unresolved-pending) is reported alongside the
 ratio so a number derived from an incomplete or holed window cannot read as
 complete. Chain verification failure is a structured rejection, not a partial
-answer.
+answer. So are a nonexistent ledger path (an absent file is no evidence, not
+clean zero evidence) and a second terminal for one served_id (chain
+verification proves hash linkage only, so this tool enforces the
+single-terminal lifecycle rule itself instead of attributing it to the chain).
 """
 from __future__ import annotations
 
@@ -126,6 +129,12 @@ def derive_report(
         raise DerivationRejected("window_start_after_end")
     windowed = start_dt is not None or end_dt is not None
 
+    if not Path(ledger_path).exists():
+        # A missing ledger must not read as a genuinely empty one: an
+        # empty-but-present file is evidence of zero servings, an absent file
+        # is no evidence at all. Without this guard a mistyped --ledger path
+        # reports served_total=0 with evidence_complete=True.
+        raise DerivationRejected("ledger_not_found")
     try:
         entries, torn_tail = read_entries(ledger_path)
     except LedgerCorruptionError as exc:
@@ -141,11 +150,19 @@ def derive_report(
         etype = entry.get("entry_type")
         if etype in (RECEIPT_TERMINAL, GAP_TERMINAL):
             served_id = str(entry.get("served_id"))
-            # First terminal wins; the accounting layer forbids duplicates and
-            # the verified chain cannot carry a conflicting second terminal.
-            terminals.setdefault(
-                served_id,
-                "receipted" if etype == RECEIPT_TERMINAL else "gap",
+            # Chain verification proves hash linkage only -- it does NOT
+            # enforce the single-terminal-per-served_id lifecycle rule, so a
+            # chain-valid ledger CAN carry a second (even conflicting)
+            # terminal. Mirror chat_served_accounting's fail-closed
+            # "second_terminal" semantics: ambiguous coverage evidence
+            # rejects the derivation instead of silently keeping the first
+            # terminal and reporting gapless/evidence_complete.
+            if served_id in terminals:
+                raise DerivationRejected(
+                    f"second_terminal_for_served_id:{served_id}"
+                )
+            terminals[served_id] = (
+                "receipted" if etype == RECEIPT_TERMINAL else "gap"
             )
 
     served_total = 0

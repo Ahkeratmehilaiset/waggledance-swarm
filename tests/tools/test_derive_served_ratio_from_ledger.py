@@ -5,9 +5,10 @@ Locks ``tools/derive_served_ratio_from_ledger.py`` to the exact
 ``RouteTelemetry.solver_first_served_stats`` semantics (numerator counted only
 within the served denominator; empty denominator -> 0.0) while sourcing every
 count from the hash-chained chat-served ledger, and locks the honesty
-boundaries: chain corruption is a structured rejection, unresolved pendings
-and gaps are always visible next to the ratio, and no ``claim_safe`` field is
-ever emitted.
+boundaries: chain corruption, a missing ledger file, and a second terminal
+for one served_id are structured rejections, unresolved pendings and gaps are
+always visible next to the ratio, and no ``claim_safe`` field is ever
+emitted.
 """
 from __future__ import annotations
 
@@ -70,12 +71,25 @@ def ledger(tmp_path: Path) -> LedgerBuilder:
     return LedgerBuilder(tmp_path / "ledger.jsonl")
 
 
-def test_empty_ledger_yields_zero_ratio(tmp_path: Path) -> None:
-    report = derive_report(ledger_path=str(tmp_path / "missing.jsonl"))
+def test_empty_present_ledger_yields_zero_ratio(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    path.write_bytes(b"")
+    report = derive_report(ledger_path=str(path))
     assert report["served_total"] == 0
     assert report["solver_first_served_total"] == 0
     assert report["solver_first_served_ratio"] == 0.0
     assert report["receipt_coverage"] == {"receipted": 0, "gap": 0, "pending": 0}
+
+
+def test_missing_ledger_rejects_not_zero_report(tmp_path: Path) -> None:
+    # rco-2 2026-08-21T20:43:37Z finding (tools-confirmed 20:46:55Z): a
+    # nonexistent --ledger path used to produce the SAME complete zero report
+    # as a real empty ledger, so a path misconfiguration read as a
+    # confirmed-complete measurement of zero servings. An absent file is no
+    # evidence, not clean evidence.
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(ledger_path=str(tmp_path / "missing.jsonl"))
+    assert excinfo.value.reason == "ledger_not_found"
 
 
 def test_basic_ratio_from_receipted_entries(ledger: LedgerBuilder) -> None:
@@ -139,6 +153,34 @@ def test_gap_terminal_breaks_gapless_flag(ledger: LedgerBuilder) -> None:
     assert report["receipt_coverage"] == {"receipted": 0, "gap": 1, "pending": 0}
     assert report["gapless"] is False
     assert report["evidence_complete"] is True
+
+
+def test_conflicting_second_terminal_rejects(ledger: LedgerBuilder) -> None:
+    # rco-2 2026-08-21T20:39:59Z finding: verify_chain checks hash linkage
+    # only, so a chain-VALID ledger can carry receipt+gap terminals for one
+    # served_id; the old silent first-terminal-wins kept "receipted" and
+    # reported gapless=True / evidence_complete=True while a gap terminal
+    # genuinely existed. Any second terminal now rejects, mirroring
+    # chat_served_accounting's "second_terminal" lifecycle rule.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.gap("sol-0")
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(ledger_path=str(ledger.path))
+    assert excinfo.value.reason == "second_terminal_for_served_id:sol-0"
+
+
+def test_duplicate_same_type_terminal_also_rejects(ledger: LedgerBuilder) -> None:
+    # The accounting layer counts ANY second terminal as a lifecycle
+    # violation, not only a conflicting-type one; mirror that exactly.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.receipt("sol-0")
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(ledger_path=str(ledger.path))
+    assert excinfo.value.reason == "second_terminal_for_served_id:sol-0"
 
 
 def test_chain_tamper_is_rejected(ledger: LedgerBuilder, tmp_path: Path) -> None:

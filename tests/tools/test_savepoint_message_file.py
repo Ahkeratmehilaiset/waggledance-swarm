@@ -170,7 +170,7 @@ def test_message_file_round_trips_exact_bytes_and_pushes(
     )
     # The scratch copy handed to ``git commit -F`` is removed again.
     git_dir = Path(_git(repo, "rev-parse", "--absolute-git-dir").strip())
-    assert not (git_dir / "SAVEPOINT_COMMIT_MSG").exists()
+    assert not list(git_dir.glob("SAVEPOINT_COMMIT_MSG*"))
 
 
 @pytest.mark.parametrize("host", POWERSHELL_HOSTS)
@@ -238,7 +238,11 @@ def test_invalid_message_source_fails_before_any_git_work(
     result = _run_savepoint(host, repo, *args, "-SkipTests")
 
     assert result.returncode != 0
-    assert expected_text in (result.stdout + result.stderr)
+    # Windows PowerShell 5.1 word-wraps formatted Write-Error output at an
+    # environment-dependent column when stdout/stderr are redirected, which can
+    # split the phrase across lines; compare on whitespace-normalized text.
+    combined = " ".join((result.stdout + result.stderr).split())
+    assert expected_text in combined, combined
     # Validation happens before the drive/repo/staging/test/commit/push steps:
     # nothing was committed and nothing reached origin.
     assert _commit_count(repo) == 1

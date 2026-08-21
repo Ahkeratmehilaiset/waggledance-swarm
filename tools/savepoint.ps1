@@ -140,13 +140,16 @@ Write-Host "savepoint: committing" -ForegroundColor Cyan
 if ($hasMessageFile) {
     # Hand git an exact BOM-free copy through -F (inside the git dir, next to
     # COMMIT_EDITMSG) so the message bytes never pass through argument parsing
-    # and a caller edit between validation and commit cannot change them.
+    # and a caller edit between validation and commit cannot change them. The
+    # name is PID+GUID suffixed so two concurrent invocations in the same
+    # worktree can never read or delete each other's scratch copy.
     $gitDirRaw = (& git rev-parse --absolute-git-dir)
     if ($LASTEXITCODE -ne 0 -or -not $gitDirRaw) {
         Write-Error "savepoint: could not resolve the git dir for the commit message."
         exit 1
     }
-    $commitMessagePath = Join-Path ([string]$gitDirRaw).Trim() "SAVEPOINT_COMMIT_MSG"
+    $commitMessageName = "SAVEPOINT_COMMIT_MSG.$PID." + [guid]::NewGuid().ToString("N")
+    $commitMessagePath = Join-Path ([string]$gitDirRaw).Trim() $commitMessageName
     [System.IO.File]::WriteAllBytes($commitMessagePath, $messageBytes)
     try {
         & git commit -F $commitMessagePath

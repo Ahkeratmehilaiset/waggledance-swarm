@@ -239,6 +239,42 @@ def test_unparseable_entry_ts_under_window_rejects(ledger: LedgerBuilder) -> Non
     assert excinfo.value.reason == "entry_ts_unparseable_under_window"
 
 
+def test_naive_entry_ts_under_window_rejects_not_typeerror(
+    ledger: LedgerBuilder,
+) -> None:
+    # tools 2026-08-21T10:56:25Z finding: a hash-valid offset-NAIVE ts_utc
+    # under an aware window bound raised an uncaught TypeError at the
+    # comparison instead of the promised structured rejection.
+    ledger.served("naive", route_type="solver", ts="2026-08-21T09:00:00")
+
+    derive_report(ledger_path=str(ledger.path))  # windowless: unaffected
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            window_start="2026-08-21T08:00:00Z",
+        )
+    assert excinfo.value.reason == "entry_ts_unparseable_under_window"
+
+
+def test_naive_window_bound_rejects_as_unparseable(ledger: LedgerBuilder) -> None:
+    ledger.served("sol-0", route_type="solver", ts="2026-08-21T09:00:00Z")
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            window_start="2026-08-21T08:00:00",
+        )
+    assert excinfo.value.reason == "window_start_unparseable"
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            window_end="2026-08-21T10:00:00",
+        )
+    assert excinfo.value.reason == "window_end_unparseable"
+
+
 def test_telemetry_divergence_reported_without_preference() -> None:
     report = {"solver_first_served_ratio": 0.6}
     same = compare_with_telemetry(report, {"solver_first_served_ratio": 0.6})

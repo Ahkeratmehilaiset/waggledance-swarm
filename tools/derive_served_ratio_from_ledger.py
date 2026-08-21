@@ -72,6 +72,11 @@ def _parse_entry_ts(value: object) -> datetime | None:
     Comparison happens on parsed datetimes, never raw strings: raw string
     ordering mis-ranks differing sub-second precisions ('.' sorts before 'Z'),
     the exact defect class fixed on the bridge resolvers in PR #1613/#1614.
+
+    A timezone-NAIVE parse result (a hash-valid token like
+    ``2026-08-21T09:00:00`` with no offset) is treated as unparseable rather
+    than compared: mixing naive and aware datetimes raises TypeError, and
+    guessing an offset would silently place the entry in or out of a window.
     """
     if not isinstance(value, str) or not value:
         return None
@@ -79,6 +84,8 @@ def _parse_entry_ts(value: object) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
+        return None
+    if parsed.tzinfo is None:
         return None
     return parsed
 

@@ -67,11 +67,11 @@ function Get-WdSupervisorInvocationPlan {
   if ($BundleMode -ceq 'source') {
     return [pscustomobject]@{
       preflight_script = $SourceScript
-      preflight_arguments = @('-ConfigPath', $SourceConfig)
+      preflight_parameters = @{ ConfigPath = $SourceConfig }
       apply_script = ''
-      apply_arguments = @()
+      apply_parameters = @{}
       verify_script = ''
-      verify_arguments = @()
+      verify_parameters = @{}
     }
   }
   if ($BundleMode -cne 'deployed') {
@@ -79,11 +79,11 @@ function Get-WdSupervisorInvocationPlan {
   }
   return [pscustomobject]@{
     preflight_script = $DeployedScript
-    preflight_arguments = @()
+    preflight_parameters = @{}
     apply_script = $DeployedScript
-    apply_arguments = @('-Apply')
+    apply_parameters = @{ Apply = $true }
     verify_script = $DeployedScript
-    verify_arguments = @()
+    verify_parameters = @{}
   }
 }
 
@@ -181,9 +181,12 @@ function Assert-WdFleetPathWithoutReparse {
       throw "fleet safety path ancestor is not a directory: $current"
     }
     $next = Join-Path $current $segment
-    try {
-      $nextItem = Get-Item -LiteralPath $next -Force -ErrorAction Stop
-    } catch {
+    $nextItem = if (Test-Path -LiteralPath $next) {
+      Get-Item -LiteralPath $next -Force -ErrorAction Stop
+    } else {
+      $null
+    }
+    if ($null -eq $nextItem) {
       # Test-Path and Get-Item can both report a dangling reparse point as
       # missing.  Enumerate the already-validated parent only on that path so
       # the link object itself is still inspected.  Existing protected paths
@@ -367,40 +370,86 @@ function Assert-WdBridgePrefixPreserved {
 function Get-WdSpoolInventory {
   param([Parameter(Mandatory)] [string] $Path)
 
-  $items = @(
-    Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
-      Sort-Object -Property Name
-  )
-  $rows = New-Object 'System.Collections.Generic.List[object]'
-  foreach ($item in $items) {
-    if ($item.PSIsContainer) {
-      throw "bridge spool contains an unexpected directory: $($item.FullName)"
-    }
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-      throw "bridge spool contains a reparse point: $($item.FullName)"
-    }
-    if (([string]$item.Name).EndsWith(
-        '.pending',
-        [StringComparison]::OrdinalIgnoreCase
-      )) {
-      throw "bridge spool contains a pending WAL: $($item.FullName)"
-    }
-    $before = Get-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
-    $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
-    $after = Get-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
-    if (
-      [int64]$before.Length -ne [int64]$after.Length -or
-      $before.LastWriteTimeUtc -ne $after.LastWriteTimeUtc
-    ) {
-      throw "bridge spool file changed while inventorying: $($item.FullName)"
-    }
-    [void]$rows.Add([pscustomobject]@{
-      name = [string]$item.Name
-      length = [int64]$after.Length
-      sha256 = [string]$hash
-    })
+  $root = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+  if (($rootItem.Attributes -band [IO.FileAttributes]::Directory) -eq 0) {
+    throw "bridge spool is not a directory: $root"
   }
-  return $rows.ToArray()
+  if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "bridge spool is a reparse point: $root"
+  }
+
+  # A production spool contains durable lifecycle directories such as
+  # archive, delivered, quarantine, replayed, and superseded. Walk each
+  # directory only after proving that the directory object is not a reparse
+  # point; Get-ChildItem -Recurse would cross a link before we could reject it.
+  $pendingDirectories = New-Object 'System.Collections.Generic.Queue[string]'
+  $pendingDirectories.Enqueue($root)
+  $rows = New-Object 'System.Collections.Generic.List[object]'
+  while ($pendingDirectories.Count -gt 0) {
+    $directory = $pendingDirectories.Dequeue()
+    $directoryItem = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+    if (
+      ($directoryItem.Attributes -band [IO.FileAttributes]::Directory) -eq 0 -or
+      ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    ) {
+      throw "bridge spool directory changed before inventory: $directory"
+    }
+    $items = @(
+      Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop |
+        Sort-Object -Property Name
+    )
+    foreach ($item in $items) {
+      $fullName = [IO.Path]::GetFullPath([string]$item.FullName)
+      if (-not $fullName.StartsWith(
+          ($root + '\'),
+          [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "bridge spool item escaped its root: $fullName"
+      }
+      $relativePath = $fullName.Substring($root.Length + 1)
+      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "bridge spool contains a reparse point: $fullName"
+      }
+      # A .pending entry directly under spool is an active/uncommitted WAL and
+      # must block restore. Lifecycle directories may legitimately preserve
+      # quarantined .pending artifacts as immutable evidence; inventory and
+      # hash those like every other nested file.
+      if ($directory.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
+          ([string]$item.Name).EndsWith(
+          '.pending',
+          [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "bridge spool contains a pending WAL: $fullName"
+      }
+      if ($item.PSIsContainer) {
+        [void]$rows.Add([pscustomobject]@{
+          path = $relativePath
+          kind = 'directory'
+          length = [int64]0
+          sha256 = ''
+        })
+        $pendingDirectories.Enqueue($fullName)
+        continue
+      }
+      $before = Get-Item -LiteralPath $fullName -Force -ErrorAction Stop
+      $hash = (Get-FileHash -LiteralPath $fullName -Algorithm SHA256).Hash
+      $after = Get-Item -LiteralPath $fullName -Force -ErrorAction Stop
+      if (
+        [int64]$before.Length -ne [int64]$after.Length -or
+        $before.LastWriteTimeUtc -ne $after.LastWriteTimeUtc
+      ) {
+        throw "bridge spool file changed while inventorying: $fullName"
+      }
+      [void]$rows.Add([pscustomobject]@{
+        path = $relativePath
+        kind = 'file'
+        length = [int64]$after.Length
+        sha256 = [string]$hash
+      })
+    }
+  }
+  return @($rows.ToArray() | Sort-Object -Property path)
 }
 
 function Assert-WdSpoolInventoryExact {
@@ -415,7 +464,8 @@ function Assert-WdSpoolInventoryExact {
   }
   for ($index = 0; $index -lt $Baseline.Count; $index++) {
     if (
-      [string]$current[$index].name -cne [string]$Baseline[$index].name -or
+      [string]$current[$index].path -cne [string]$Baseline[$index].path -or
+      [string]$current[$index].kind -cne [string]$Baseline[$index].kind -or
       [int64]$current[$index].length -ne [int64]$Baseline[$index].length -or
       [string]$current[$index].sha256 -cne [string]$Baseline[$index].sha256
     ) {
@@ -747,6 +797,33 @@ function Resolve-WdNpmNativeApplication {
       [StringComparison]::OrdinalIgnoreCase
     )) {
     throw "$Name did not resolve to its trusted npm-native application"
+  }
+  return $candidate
+}
+
+function Resolve-WdNpmUpdateShim {
+  param([Parameter(Mandatory)] [ValidateSet('codex.cmd', 'claude.cmd')] [string] $Name)
+
+  $roamingRoot = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ApplicationData
+  )
+  if ([string]::IsNullOrWhiteSpace($roamingRoot)) {
+    throw 'roaming application-data root is unavailable'
+  }
+  $candidate = [IO.Path]::GetFullPath((Join-Path $roamingRoot ("npm\{0}" -f $Name)))
+  [void](Assert-WdFleetPathWithoutReparse `
+      -Path $candidate `
+      -TrustedRoot ([IO.Path]::GetPathRoot($candidate)) `
+      -ExpectedType Leaf)
+  $command = Get-Command `
+    -Name $candidate `
+    -CommandType Application `
+    -ErrorAction Stop
+  if (-not ([IO.Path]::GetFullPath([string]$command.Source)).Equals(
+      $candidate,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw "$Name did not resolve to its trusted npm update shim"
   }
   return $candidate
 }
@@ -1187,6 +1264,132 @@ function Enable-WdSupervisorTaskAfterRestore {
   }
 }
 
+function Invoke-WdSupervisorTaskBootstrapHeld {
+  param(
+    [Parameter(Mandatory)] [string] $TaskName,
+    [Parameter(Mandatory)] [string] $ExpectedExecutable,
+    [Parameter(Mandatory)] [string] $ExpectedArguments,
+    [Parameter(Mandatory)] [string] $ExpectedWorkingDirectory,
+    [Parameter(Mandatory)] [string] $ExpectedPrincipalSid,
+    [Parameter(Mandatory)] [string] $ExpectedStartBoundary,
+    [ValidateRange(10, 300)] [int] $WaitSeconds = 120
+  )
+
+  $bootstrapFailure = $null
+  $result = $null
+  try {
+    # Auto runs elevated for Task Scheduler mutation, while WD-Supervisor
+    # deliberately runs as the interactive user at RunLevel=Limited. Processes
+    # launched directly by the elevated parent are opaque to the recurring
+    # Limited supervisor, which can then create duplicate exact generations.
+    # Bootstrap through the registered task and return it to HOLD until every
+    # interactive lane has completed its own attested restore.
+    Set-WdSupervisorTaskHeld `
+      -TaskName $TaskName `
+      -ExpectedExecutable $ExpectedExecutable `
+      -ExpectedArguments $ExpectedArguments `
+      -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+      -ExpectedPrincipalSid $ExpectedPrincipalSid `
+      -ExpectedStartBoundary $ExpectedStartBoundary
+
+    $healthStartedUtc = [DateTime]::UtcNow
+    [void](Enable-ScheduledTask `
+        -TaskName $TaskName `
+        -TaskPath '\' `
+        -ErrorAction Stop)
+    $enabledDeadline = (Get-Date).AddSeconds(10)
+    do {
+      $verified = Get-WdSingleScheduledTask -TaskName $TaskName
+      if (
+        [bool]$verified.Settings.Enabled -and
+        [string]$verified.State -cne 'Disabled'
+      ) {
+        break
+      }
+      Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $enabledDeadline)
+    if (
+      -not [bool]$verified.Settings.Enabled -or
+      [string]$verified.State -ceq 'Disabled' -or
+      -not (Test-WdSupervisorTaskEnvelopeExact `
+        -Task $verified `
+        -ExpectedExecutable $ExpectedExecutable `
+        -ExpectedArguments $ExpectedArguments `
+        -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+        -ExpectedPrincipalSid $ExpectedPrincipalSid `
+        -ExpectedStartBoundary $ExpectedStartBoundary)
+    ) {
+      throw 'Tools supervisor bootstrap enable verification failed'
+    }
+
+    [void](Start-ScheduledTask `
+        -TaskName $TaskName `
+        -TaskPath '\' `
+        -ErrorAction Stop)
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    do {
+      Start-Sleep -Milliseconds 250
+      $verified = Get-WdSingleScheduledTask -TaskName $TaskName
+      $taskInfo = Get-ScheduledTaskInfo `
+        -TaskName $TaskName `
+        -TaskPath '\' `
+        -ErrorAction Stop
+      $lastRunUtc = ([DateTime]$taskInfo.LastRunTime).ToUniversalTime()
+      $terminal = [string]$verified.State -ceq 'Ready'
+      $freshRun = $lastRunUtc -ge $healthStartedUtc.AddSeconds(-2)
+    } while ((-not $terminal -or -not $freshRun) -and (Get-Date) -lt $deadline)
+    if (
+      -not $terminal -or
+      -not $freshRun -or
+      [int64]$taskInfo.LastTaskResult -ne 0 -or
+      -not [bool]$verified.Settings.Enabled -or
+      [string]$verified.State -cne 'Ready' -or
+      -not (Test-WdSupervisorTaskEnvelopeExact `
+        -Task $verified `
+        -ExpectedExecutable $ExpectedExecutable `
+        -ExpectedArguments $ExpectedArguments `
+        -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+        -ExpectedPrincipalSid $ExpectedPrincipalSid `
+        -ExpectedStartBoundary $ExpectedStartBoundary)
+    ) {
+      throw (
+        'Tools supervisor Limited bootstrap proof failed: ' +
+        "state=$([string]$verified.State) result=$([string]$taskInfo.LastTaskResult)"
+      )
+    }
+    $result = [pscustomobject]@{
+      state = [string]$verified.State
+      last_run_utc = $lastRunUtc.ToString('o')
+      last_task_result = [int64]$taskInfo.LastTaskResult
+    }
+  } catch {
+    $bootstrapFailure = $_
+  }
+
+  try {
+    Set-WdSupervisorTaskHeld `
+      -TaskName $TaskName `
+      -ExpectedExecutable $ExpectedExecutable `
+      -ExpectedArguments $ExpectedArguments `
+      -ExpectedWorkingDirectory $ExpectedWorkingDirectory `
+      -ExpectedPrincipalSid $ExpectedPrincipalSid `
+      -ExpectedStartBoundary $ExpectedStartBoundary
+  } catch {
+    if ($null -ne $bootstrapFailure) {
+      throw (
+        "{0}; bootstrap HOLD containment also failed: {1}" -f
+          $bootstrapFailure.Exception.Message,
+          $_.Exception.Message
+      )
+    }
+    throw
+  }
+  if ($null -ne $bootstrapFailure) {
+    throw $bootstrapFailure
+  }
+  return $result
+}
+
 function Get-AllProcessSnapshots {
   return @(
     Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -1196,6 +1399,115 @@ function Get-AllProcessSnapshots {
         $_.Name -match '^(powershell|pwsh)\.exe$'
       }
   )
+}
+
+function Test-WdCommandLineSwitchSequenceExact {
+  param(
+    [AllowEmptyString()] [string] $CommandLine,
+    [Parameter(Mandatory)] [string[]] $Expected
+  )
+
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+  $actual = @(
+    [regex]::Matches(
+      $CommandLine,
+      '(?i)(?:^|\s)-([a-z][a-z0-9-]*)(?=\s|$)'
+    ) | ForEach-Object { [string]$_.Groups[1].Value.ToLowerInvariant() }
+  )
+  if ($actual.Count -ne $Expected.Count) { return $false }
+  for ($index = 0; $index -lt $Expected.Count; $index++) {
+    if ($actual[$index] -cne $Expected[$index].ToLowerInvariant()) {
+      return $false
+    }
+  }
+  return $true
+}
+
+function Get-WdCodexPromptWatcherState {
+  param(
+    [AllowEmptyCollection()] [object[]] $Processes,
+    [Parameter(Mandatory)] [string] $WatcherScript,
+    [Parameter(Mandatory)] [string] $TargetTitle,
+    [Parameter(Mandatory)] [string] $LogPath,
+    [Parameter(Mandatory)] [string] $ExpectedExecutable
+  )
+
+  $watcherFull = [IO.Path]::GetFullPath($WatcherScript)
+  $logFull = [IO.Path]::GetFullPath($LogPath)
+  $executableFull = [IO.Path]::GetFullPath($ExpectedExecutable)
+  $watcherMarker = [IO.Path]::GetFileName($watcherFull)
+  $candidates = @(
+    $Processes | Where-Object {
+      $commandLine = [string]$_.CommandLine
+      $commandLine.IndexOf(
+        $watcherMarker,
+        [StringComparison]::OrdinalIgnoreCase
+      ) -ge 0 -and
+      (Test-NamedCommandLineArgument `
+        -CommandLine $commandLine `
+        -Name 'TabTitle' `
+        -Value $TargetTitle)
+    }
+  )
+  $expectedSwitches = @(
+    'noprofile',
+    'executionpolicy',
+    'file',
+    'allowall',
+    'noallnighter',
+    'tabtitle',
+    'logpath'
+  )
+  $exact = @(
+    $candidates | Where-Object {
+      $commandLine = [string]$_.CommandLine
+      $executablePath = [string]$_.ExecutablePath
+      -not [string]::IsNullOrWhiteSpace($executablePath) -and
+      ([IO.Path]::GetFullPath($executablePath)).Equals(
+        $executableFull,
+        [StringComparison]::OrdinalIgnoreCase
+      ) -and
+      (Test-NamedCommandLineArgument `
+        -CommandLine $commandLine `
+        -Name 'ExecutionPolicy' `
+        -Value 'Bypass') -and
+      (Test-NamedCommandLineArgument `
+        -CommandLine $commandLine `
+        -Name 'File' `
+        -Value $watcherFull) -and
+      (Test-NamedCommandLineArgument `
+        -CommandLine $commandLine `
+        -Name 'TabTitle' `
+        -Value $TargetTitle) -and
+      (Test-NamedCommandLineArgument `
+        -CommandLine $commandLine `
+        -Name 'LogPath' `
+        -Value $logFull) -and
+      (Test-WdCommandLineSwitchSequenceExact `
+        -CommandLine $commandLine `
+        -Expected $expectedSwitches)
+    }
+  )
+
+  $action = if ($candidates.Count -eq 0) {
+    'launch'
+  } elseif ($candidates.Count -eq 1 -and $exact.Count -eq 1) {
+    'current'
+  } else {
+    'conflict'
+  }
+  return [pscustomobject]@{
+    action = $action
+    candidates = @($candidates)
+    exact = @($exact)
+    summary = switch ($action) {
+      'launch' { 'would launch one canonical Lead prompt watcher' }
+      'current' { "one canonical Lead prompt watcher is already running (PID $([int]$exact[0].ProcessId))" }
+      default {
+        "ambiguous Lead prompt watcher set: candidates=$($candidates.Count) exact=$($exact.Count)"
+      }
+    }
+  }
 }
 
 function Get-LaneProcesses {
@@ -1555,6 +1867,18 @@ function Test-LaneGenerationAttestation {
         -Object $handshake `
         -Name 'target_state_manifested') -or
       [string]$handshake.target_state_id -cne 'wd-swarm-target-state-v1' -or
+      [string]$handshake.target_state_image_sha256 -cne
+        [string]$targetState.image_sha256 -or
+      [string]$handshake.target_state_image_delivery -cne $(
+        if ([string]$Lane.cli -ceq 'codex.cmd') {
+          'codex_cli_initial_image'
+        } else {
+          'claude_initial_read_visual'
+        }
+      ) -or
+      -not (Test-WdJsonBooleanTrue `
+        -Object $handshake `
+        -Name 'target_state_image_initial_turn_only') -or
       -not ([string]$handshake.worktree).Equals(
         [string]$Lane.worktree,
         [System.StringComparison]::OrdinalIgnoreCase
@@ -1646,6 +1970,13 @@ function Test-ToolsProcessReadiness {
       -not (Test-WdJsonBooleanTrue `
         -Object $record `
         -Name 'target_state_manifested') -or
+      [string]$record.target_state_image_sha256 -cne
+        [string]$targetState.image_sha256 -or
+      [string]$record.target_state_image_delivery -cne
+        'codex_cli_initial_image' -or
+      -not (Test-WdJsonBooleanTrue `
+        -Object $record `
+        -Name 'target_state_image_initial_tick_only') -or
       [string]$record.run_id -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or
       [string]$record.session_id -cne [string]$record.run_id -or
       -not (Test-WdJsonBooleanTrue -Object $record -Name 'append_canary') -or
@@ -1716,9 +2047,18 @@ function Get-ToolsProcessState {
   param(
     [Parameter(Mandatory)] $ToolsConfig,
     [Parameter(Mandatory)] [string] $Generation,
-    [Parameter(Mandatory)] [object[]] $Processes
+    [Parameter(Mandatory)] [object[]] $Processes,
+    [string] $BundleLauncherScript = ''
   )
-  $launcher = Resolve-NormalizedPath -Path ([string]$ToolsConfig.launcher_script)
+  $launcherScripts = @(
+    Resolve-NormalizedPath -Path ([string]$ToolsConfig.launcher_script)
+  )
+  if (-not [string]::IsNullOrWhiteSpace($BundleLauncherScript)) {
+    $bundleLauncher = Resolve-NormalizedPath -Path $BundleLauncherScript
+    if ($bundleLauncher -notin $launcherScripts) {
+      $launcherScripts += $bundleLauncher
+    }
+  }
   $configPath = Resolve-NormalizedPath -Path ([string]$ToolsConfig.config_path)
   $generation = $Generation.ToLowerInvariant()
   if ($Generation -cne $generation -or $generation -cnotmatch '^[0-9a-f]{40}$') {
@@ -1730,10 +2070,12 @@ function Get-ToolsProcessState {
     $Processes | Where-Object {
       $commandLine = [string]$_.CommandLine
       [string]$_.Name -match '^(?i:powershell|pwsh)\.exe$' -and
-      (Test-NamedCommandLineArgument `
-        -CommandLine $commandLine `
-        -Name 'File' `
-        -Value $launcher)
+      @($launcherScripts | Where-Object {
+          Test-NamedCommandLineArgument `
+            -CommandLine $commandLine `
+            -Name 'File' `
+            -Value $_
+        }).Count -eq 1
     }
   )
   $generationWrappers = @(
@@ -1792,8 +2134,10 @@ function Wait-WdToolsCurrentProcess {
     [Parameter(Mandatory)] $ToolsConfig,
     [Parameter(Mandatory)] [string] $Generation,
     [Parameter(Mandatory)] [int] $TimeoutSeconds,
+    [string] $BundleLauncherScript = '',
     [scriptblock] $ProcessSnapshotAction = { Get-AllProcessSnapshots },
-    [int] $PollMilliseconds = 500
+    [int] $PollMilliseconds = 500,
+    [int] $ProgressSeconds = 30
   )
 
   if ($TimeoutSeconds -lt 0) {
@@ -1802,14 +2146,20 @@ function Wait-WdToolsCurrentProcess {
   if ($PollMilliseconds -lt 0) {
     throw 'Tools readiness poll interval cannot be negative'
   }
+  if ($ProgressSeconds -lt 1) {
+    throw 'Tools readiness progress interval must be positive'
+  }
 
-  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $startedAt = Get-Date
+  $deadline = $startedAt.AddSeconds($TimeoutSeconds)
+  $nextProgressAt = $startedAt.AddSeconds($ProgressSeconds)
   do {
     $processes = @(& $ProcessSnapshotAction)
     $state = Get-ToolsProcessState `
       -ToolsConfig $ToolsConfig `
       -Generation $Generation `
-      -Processes $processes
+      -Processes $processes `
+      -BundleLauncherScript $BundleLauncherScript
     $current = @($state.current)
     $starting = @($state.starting)
     $stale = @($state.stale)
@@ -1824,6 +2174,31 @@ function Wait-WdToolsCurrentProcess {
     }
     if ((Get-Date) -ge $deadline) {
       break
+    }
+    $now = Get-Date
+    if ($now -ge $nextProgressAt) {
+      $readyState = if (Test-Path `
+          -LiteralPath ([string]$ToolsConfig.readiness_path) `
+          -PathType Leaf) {
+        'present-but-not-yet-attested'
+      } else {
+        'pending-initial-tick'
+      }
+      $progressMessage = ((
+        '  Tools readiness progress: elapsed={0}s; ' +
+        'current/starting/stale/legacy={1}/{2}/{3}/{4}; record={5}; ' +
+        'timeout={6}s'
+      ) -f
+          [int][Math]::Floor(($now - $startedAt).TotalSeconds),
+          $current.Count,
+          $starting.Count,
+          $stale.Count,
+          $legacy.Count,
+          $readyState,
+          $TimeoutSeconds
+      )
+      Write-Host $progressMessage
+      $nextProgressAt = $now.AddSeconds($ProgressSeconds)
     }
     if ($PollMilliseconds -gt 0) {
       Start-Sleep -Milliseconds $PollMilliseconds
@@ -1996,17 +2371,64 @@ if (
   [string]$targetState.id -cne 'wd-swarm-target-state-v1' -or
   [string]$targetState.capability_effect -cne 'none' -or
   [string]$targetState.relative_path -cne 'WD_SWARM_TARGET_STATE_V1.md' -or
-  [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$'
+  [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+  [string]$targetState.image_relative_path -cne 'WaggleDanceSwarmAi.png' -or
+  [string]$targetState.image_sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+  [string]$targetState.image_sha256 -cne
+    [string]$targetState.source_image_sha256 -or
+  [string]$targetState.presentation -cne
+    'multimodal_initial_turn_once_per_lane_session'
 ) {
   throw 'fleet target-state manifest is missing or unsafe'
 }
 $targetStatePath = Join-Path $PSScriptRoot ([string]$targetState.relative_path)
+[void](Assert-WdFleetPathWithoutReparse `
+  -Path $targetStatePath `
+  -TrustedRoot $PSScriptRoot `
+  -ExpectedType Leaf)
 [void](Read-NonEmptyFile -Path $targetStatePath -Label 'fleet target state')
 if (
   (Get-FileHash -LiteralPath $targetStatePath -Algorithm SHA256).Hash -cne
     [string]$targetState.sha256
 ) {
   throw 'fleet target-state document hash mismatch'
+}
+$targetImagePath = Join-Path $PSScriptRoot (
+  [string]$targetState.image_relative_path
+)
+[void](Assert-WdFleetPathWithoutReparse `
+  -Path $targetImagePath `
+  -TrustedRoot $PSScriptRoot `
+  -ExpectedType Leaf)
+if (
+  (Get-FileHash -LiteralPath $targetImagePath -Algorithm SHA256).Hash -cne
+    [string]$targetState.image_sha256
+) {
+  throw 'fleet target-state image hash mismatch'
+}
+$targetImageLength = (Get-Item -LiteralPath $targetImagePath -Force).Length
+if ($targetImageLength -lt 1 -or $targetImageLength -gt 10MB) {
+  throw 'fleet target-state image size is unsafe'
+}
+$parallelPolicy = $manifest.parallel_policy
+if (
+  $null -eq $parallelPolicy -or
+  [string]$parallelPolicy.id -cne 'wd-swarm-parallel-policy-v1' -or
+  [string]$parallelPolicy.capability_effect -cne 'none' -or
+  [string]$parallelPolicy.relative_path -cne 'WD_SWARM_PARALLEL_POLICY_V1.md' -or
+  [string]$parallelPolicy.sha256 -cnotmatch '^[0-9A-F]{64}$'
+) {
+  throw 'fleet parallel-policy manifest is missing or unsafe'
+}
+$parallelPolicyPath = Join-Path $PSScriptRoot (
+  [string]$parallelPolicy.relative_path
+)
+[void](Read-NonEmptyFile -Path $parallelPolicyPath -Label 'fleet parallel policy')
+if (
+  (Get-FileHash -LiteralPath $parallelPolicyPath -Algorithm SHA256).Hash -cne
+    [string]$parallelPolicy.sha256
+) {
+  throw 'fleet parallel-policy document hash mismatch'
 }
 if (@($manifest.lanes).Count -ne 4) {
   throw "fleet manifest must pin exactly four interactive lanes"
@@ -2036,7 +2458,6 @@ if (
   throw 'deployed reboot bundle directory does not match its source commit'
 }
 
-[void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.base_state) -Label 'base reboot state')
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.roles) -Label 'fleet roles')
 [void](Read-NonEmptyFile -Path ([string]$manifest.state_precedence.current_handoff) -Label 'current restart handoff')
 $currentPointer = [string]$manifest.state_precedence.current_state_pointer
@@ -2051,10 +2472,30 @@ if (
 }
 
 $resolver = Join-Path $PSScriptRoot 'Resolve-WdGrokModel.ps1'
+$taskConsoleContainment = Join-Path $PSScriptRoot 'Set-WdTaskConsoleContainment.ps1'
+$scheduledTaskRegistration = Join-Path $PSScriptRoot 'Register-WdScheduledTasks.ps1'
 $agentLauncherTarget = Join-Path $PSScriptRoot 'start-wd-agent.ps1'
 $agentLauncher = 'C:\Python\start-wd-agent.ps1'
+$promptWatcherScript = Join-Path $PSScriptRoot 'Watch-CodexPrompts.ps1'
+$promptWatcherTargetTitle = 'codex-lead-1'
+$promptWatcherWindowTitle = 'WD-Codex-Prompt-Watcher'
+$promptWatcherRecoveryRoot = Split-Path -Parent ([string]$manifest.handshake_root)
+$promptWatcherLogDirectory = Join-Path $promptWatcherRecoveryRoot 'prompt-watchers'
+$promptWatcherLogPath = Join-Path $promptWatcherLogDirectory 'codex-lead-1.log'
 [void](Read-NonEmptyFile -Path $resolver -Label 'Grok model resolver')
+[void](Read-NonEmptyFile -Path $taskConsoleContainment -Label 'scheduled-task console containment')
+[void](Read-NonEmptyFile -Path $scheduledTaskRegistration -Label 'supervisor task registration')
 [void](Read-NonEmptyFile -Path $agentLauncherTarget -Label 'per-lane launcher target')
+[void](Read-NonEmptyFile -Path $promptWatcherScript -Label 'Codex Lead prompt watcher')
+if ($promptWatcherWindowTitle.IndexOf(
+    $promptWatcherTargetTitle,
+    [StringComparison]::OrdinalIgnoreCase
+  ) -ge 0) {
+  throw 'Codex prompt-watcher window title must not contain its target title'
+}
+if ($promptWatcherWindowTitle -cnotmatch '^[A-Za-z0-9._-]+$') {
+  throw 'Codex prompt-watcher window title is not native-argument safe'
+}
 if ($bundleMode -ceq 'deployed') {
   [void](Read-NonEmptyFile `
     -Path $agentLauncher `
@@ -2174,17 +2615,21 @@ foreach ($lane in @($manifest.lanes)) {
 
 $codexPath = Resolve-ApplicationPath -Name 'codex.cmd'
 $claudePath = Resolve-ApplicationPath -Name 'claude.cmd'
+$codexUpdatePath = Resolve-WdNpmUpdateShim -Name 'codex.cmd'
+$claudeUpdatePath = Resolve-WdNpmUpdateShim -Name 'claude.cmd'
 $wtPath = Resolve-ApplicationPath -Name 'wt.exe'
 $codexHash = (Get-FileHash -LiteralPath $codexPath -Algorithm SHA256).Hash
 $claudeHash = (Get-FileHash -LiteralPath $claudePath -Algorithm SHA256).Hash
+$codexUpdateHash = (Get-FileHash -LiteralPath $codexUpdatePath -Algorithm SHA256).Hash
+$claudeUpdateHash = (Get-FileHash -LiteralPath $claudeUpdatePath -Algorithm SHA256).Hash
 Write-Host '  Codex version probe:'
 $codexVersion = Invoke-CheckedNative -Path $codexPath -Arguments @('--version') -Label 'codex version probe'
 Write-Host '  Codex update command probe:'
-[void](Invoke-CheckedNative -Path $codexPath -Arguments @('update', '--help') -Label 'codex update help')
+[void](Invoke-CheckedNative -Path $codexUpdatePath -Arguments @('update', '--help') -Label 'codex update help')
 Write-Host '  Claude Code version probe:'
 $claudeVersion = Invoke-CheckedNative -Path $claudePath -Arguments @('--version') -Label 'claude version probe'
 Write-Host '  Claude Code update command probe:'
-[void](Invoke-CheckedNative -Path $claudePath -Arguments @('update', '--help') -Label 'claude update help')
+[void](Invoke-CheckedNative -Path $claudeUpdatePath -Arguments @('update', '--help') -Label 'claude update help')
 
 $containment = $manifest.merge_driver_containment
 $standingTask = Get-ScheduledTask `
@@ -2239,6 +2684,10 @@ $expectedSupervisorExecutable = [IO.Path]::Combine(
   'powershell.exe'
 )
 $expectedSupervisorArguments = (
+  '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass ' +
+  '-File "{0}" -Apply' -f [string]$toolsConfig.supervisor_script
+)
+$legacySupervisorArguments = (
   '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
   '-File "{0}" -Apply' -f [string]$toolsConfig.supervisor_script
 )
@@ -2249,18 +2698,56 @@ $expectedSupervisorPrincipalSid = [string](
   [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 )
 $expectedSupervisorStartBoundary = [string]$supervisorTask.Triggers[0].StartBoundary
-if (-not (Test-WdSupervisorTaskEnvelopeExact `
-    -Task $supervisorTask `
-    -ExpectedExecutable $expectedSupervisorExecutable `
-    -ExpectedArguments $expectedSupervisorArguments `
-    -ExpectedWorkingDirectory 'C:\Python' `
-    -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
-    -ExpectedStartBoundary $expectedSupervisorStartBoundary
-  )) {
+$supervisorEnvelopeIsHidden = Test-WdSupervisorTaskEnvelopeExact `
+  -Task $supervisorTask `
+  -ExpectedExecutable $expectedSupervisorExecutable `
+  -ExpectedArguments $expectedSupervisorArguments `
+  -ExpectedWorkingDirectory 'C:\Python' `
+  -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+  -ExpectedStartBoundary $expectedSupervisorStartBoundary
+$supervisorEnvelopeIsLegacy = Test-WdSupervisorTaskEnvelopeExact `
+  -Task $supervisorTask `
+  -ExpectedExecutable $expectedSupervisorExecutable `
+  -ExpectedArguments $legacySupervisorArguments `
+  -ExpectedWorkingDirectory 'C:\Python' `
+  -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+  -ExpectedStartBoundary $expectedSupervisorStartBoundary
+if (-not $supervisorEnvelopeIsHidden -and -not $supervisorEnvelopeIsLegacy) {
   throw 'Tools supervisor action is not the exact stable registered tuple'
+}
+$preflightSupervisorArguments = if ($supervisorEnvelopeIsHidden) {
+  $expectedSupervisorArguments
+} else {
+  Write-Warning 'WD-Supervisor uses the verified legacy visible action; Apply will replace it with the hidden exact tuple before activation'
+  $legacySupervisorArguments
 }
 $supervisorTaskActivation = Get-WdSupervisorTaskActivationPlan -Task $supervisorTask
 Write-Host ("  WD-Supervisor activation: {0}" -f [string]$supervisorTaskActivation.summary)
+
+$leadPromptWatcherLane = @(
+  $laneStates | Where-Object {
+    [string]$_.lane.agent -ceq $promptWatcherTargetTitle -and
+    [string]$_.lane.cli -ceq 'codex.cmd'
+  }
+)
+if ($leadPromptWatcherLane.Count -ne 1) {
+  throw 'Codex prompt watcher requires exactly one interactive codex-lead-1 lane'
+}
+$promptWatcherState = Get-WdCodexPromptWatcherState `
+  -Processes $processes `
+  -WatcherScript $promptWatcherScript `
+  -TargetTitle $promptWatcherTargetTitle `
+  -LogPath $promptWatcherLogPath `
+  -ExpectedExecutable $expectedSupervisorExecutable
+if ([string]$promptWatcherState.action -ceq 'conflict') {
+  throw "Codex Lead prompt watcher conflict: $($promptWatcherState.summary)"
+}
+Write-Host (
+  '  Codex Lead prompt watcher: {0}; DANGEROUS AllowAll, strict title={1}, log={2}' -f
+    [string]$promptWatcherState.summary,
+    $promptWatcherTargetTitle,
+    $promptWatcherLogPath
+)
 
 $toolsSnapshotPath = if ($bundleMode -ceq 'source') {
   $bundleToolsConfig
@@ -2401,7 +2888,8 @@ if (Test-Path -LiteralPath $toolsConflictPath -PathType Leaf) {
 $toolsProcessState = Get-ToolsProcessState `
   -ToolsConfig $toolsConfig `
   -Generation $bundleGeneration `
-  -Processes $processes
+  -Processes $processes `
+  -BundleLauncherScript $bundleToolsLauncher
 $toolsLive = @($toolsProcessState.current)
 $toolsStarting = @($toolsProcessState.starting)
 $toolsStale = @($toolsProcessState.stale)
@@ -2484,6 +2972,15 @@ if (
   [string]$toolsValidation.model -cne [string]$toolsConfig.model -or
   [string]$toolsValidation.reasoning_effort -cne [string]$toolsConfig.reasoning_effort -or
   [string]$toolsValidation.target_state_id -cne [string]$targetState.id -or
+  -not ([string]$toolsValidation.target_state_image_path).Equals(
+    $targetImagePath,
+    [System.StringComparison]::OrdinalIgnoreCase
+  ) -or
+  [string]$toolsValidation.target_state_image_sha256 -cne
+    [string]$targetState.image_sha256 -or
+  [string]$toolsValidation.target_state_image_delivery -cne
+    'codex_cli_initial_image' -or
+  -not [bool]$toolsValidation.target_state_image_initial_tick_only -or
   -not ([string]$toolsValidation.git_top).Equals(
     [string]$toolsConfig.worktree,
     [System.StringComparison]::OrdinalIgnoreCase
@@ -2507,6 +3004,10 @@ Write-Host (
     $toolsStarting.Count,
     $toolsStale.Count
 )
+Write-Host (
+  "  Visual target: exact PNG will be delivered once in each lane's initial model turn; sha256={0}" -f
+    [string]$targetState.image_sha256
+)
 if ($toolsLive.Count -eq 1) {
   Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
 }
@@ -2525,16 +3026,25 @@ if ($grokPreflightObjects.Count -eq 0) {
 }
 Write-Host ("    model: {0}" -f [string]$grokPreflightObjects[-1].Model)
 
+Write-Host '  Scheduled-task console/HOLD preflight:'
+$taskConsolePreflight = @(& $taskConsoleContainment)
+if ($taskConsolePreflight.Count -ne 1 -or
+    [string]$taskConsolePreflight[0].schema -cne
+      'wd.task-console-containment.v1') {
+  throw 'scheduled-task console containment returned no exact preflight record'
+}
+$taskConsolePreflight[0] | Format-List | Out-Host
+
 $supervisorPlan = Get-WdSupervisorInvocationPlan `
   -BundleMode $bundleMode `
   -SourceScript (Join-Path $PSScriptRoot 'wd_supervisor.ps1') `
   -SourceConfig $bundleToolsConfig `
   -DeployedScript ([string]$toolsConfig.supervisor_script)
 $supervisorPreflightScript = [string]$supervisorPlan.preflight_script
-$supervisorPreflightArguments = @($supervisorPlan.preflight_arguments)
+$supervisorPreflightParameters = [hashtable]$supervisorPlan.preflight_parameters
 Write-Host '  Supervisor byte-inert watcher/Tools preflight:'
 $supervisorPreflightOutput = @(
-  & $supervisorPreflightScript @supervisorPreflightArguments
+  & $supervisorPreflightScript @supervisorPreflightParameters
 )
 if (@($supervisorPreflightOutput | Where-Object {
       [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
@@ -2643,7 +3153,8 @@ try {
   $lockedToolsState = Get-ToolsProcessState `
     -ToolsConfig $toolsConfig `
     -Generation $bundleGeneration `
-    -Processes $lockedProcesses
+    -Processes $lockedProcesses `
+    -BundleLauncherScript $bundleToolsLauncher
   foreach ($category in @('current', 'starting', 'stale', 'legacy')) {
     if (-not (Test-WdProcessIdentitySetExact `
         -Expected @($toolsProcessState.$category) `
@@ -2658,7 +3169,7 @@ try {
     -not (Test-WdSupervisorTaskEnvelopeExact `
       -Task $lockedSupervisorTask `
       -ExpectedExecutable $expectedSupervisorExecutable `
-      -ExpectedArguments $expectedSupervisorArguments `
+      -ExpectedArguments $preflightSupervisorArguments `
       -ExpectedWorkingDirectory 'C:\Python' `
       -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
       -ExpectedStartBoundary $expectedSupervisorStartBoundary) -or
@@ -2703,12 +3214,67 @@ try {
     }
   }
 
+  Write-Host 'Applying scheduled-task console containment and merge-driver HOLD...' -ForegroundColor Cyan
+  $taskConsoleApply = @(& $taskConsoleContainment -Apply)
+  if ($taskConsoleApply.Count -ne 1 -or
+      [string]$taskConsoleApply[0].schema -cne
+        'wd.task-console-containment.v1' -or
+      -not [bool]$taskConsoleApply[0].applied) {
+    throw 'scheduled-task console containment did not return an applied record'
+  }
+  $taskConsoleApply[0] | Format-List | Out-Host
+
+  Write-Host 'Registering the exact hidden WD-Supervisor action...' -ForegroundColor Cyan
+  & $scheduledTaskRegistration `
+    -Apply `
+    -SupervisorScript ([string]$toolsConfig.supervisor_script)
+  $registeredSupervisorTask = Get-WdSingleScheduledTask `
+    -TaskName ([string]$toolsConfig.task_name)
+  if (
+    -not (Test-WdSupervisorTaskEnvelopeExact `
+      -Task $registeredSupervisorTask `
+      -ExpectedExecutable $expectedSupervisorExecutable `
+      -ExpectedArguments $expectedSupervisorArguments `
+      -ExpectedWorkingDirectory 'C:\Python' `
+      -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+      -ExpectedStartBoundary $expectedSupervisorStartBoundary) -or
+    [bool]$registeredSupervisorTask.Settings.Enabled -ne
+      [bool]$supervisorTask.Settings.Enabled
+  ) {
+    throw 'WD-Supervisor hidden action registration postcondition failed'
+  }
+
   if (-not $SkipCliUpdate) {
     Write-Host ''
+    $codexUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'codex.cmd'
+    if (
+      -not $codexUpdateCurrentPath.Equals(
+        $codexUpdatePath,
+        [StringComparison]::OrdinalIgnoreCase
+      ) -or
+      (Get-FileHash -LiteralPath $codexUpdateCurrentPath -Algorithm SHA256).Hash -cne
+        $codexUpdateHash
+    ) {
+      throw 'Codex npm update shim changed after preflight'
+    }
     Write-Host 'Updating Codex CLI once...' -ForegroundColor Cyan
-    [void](Invoke-CheckedNative -Path $codexPath -Arguments @('update') -Label 'codex update')
+    # Do not ask the native codex.exe to replace its own locked image on
+    # Windows. The trusted npm shim runs the same updater through Node without
+    # holding codex.exe open, avoiding deterministic EBUSY/exit-code 1.
+    [void](Invoke-CheckedNative -Path $codexUpdateCurrentPath -Arguments @('update') -Label 'codex update')
+    $claudeUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'claude.cmd'
+    if (
+      -not $claudeUpdateCurrentPath.Equals(
+        $claudeUpdatePath,
+        [StringComparison]::OrdinalIgnoreCase
+      ) -or
+      (Get-FileHash -LiteralPath $claudeUpdateCurrentPath -Algorithm SHA256).Hash -cne
+        $claudeUpdateHash
+    ) {
+      throw 'Claude Code npm update shim changed after preflight'
+    }
     Write-Host 'Updating Claude Code once...' -ForegroundColor Cyan
-    [void](Invoke-CheckedNative -Path $claudePath -Arguments @('update') -Label 'claude update')
+    [void](Invoke-CheckedNative -Path $claudeUpdateCurrentPath -Arguments @('update') -Label 'claude update')
   }
   $codexAfterPath = Resolve-ApplicationPath -Name 'codex.cmd'
   $claudeAfterPath = Resolve-ApplicationPath -Name 'claude.cmd'
@@ -2756,6 +3322,7 @@ try {
       before = $codexVersion
       after = $codexAfterVersion
       executable = $codexAfterPath
+      update_executable = $codexUpdatePath
       before_sha256 = $codexHash
       after_sha256 = $codexAfterHash
       update_command = 'codex update'
@@ -2764,6 +3331,7 @@ try {
       before = $claudeVersion
       after = $claudeAfterVersion
       executable = $claudeAfterPath
+      update_executable = $claudeUpdatePath
       before_sha256 = $claudeHash
       after_sha256 = $claudeAfterHash
       update_command = 'claude update'
@@ -2781,22 +3349,27 @@ try {
   }
 
   Write-Host ''
-  Write-Host 'Reconciling five bridge watchers and the Tools consumer first...' -ForegroundColor Cyan
-  $supervisorApplyArguments = @($supervisorPlan.apply_arguments)
-  $supervisorApplyOutput = & ([string]$supervisorPlan.apply_script) `
-    @supervisorApplyArguments
-  if ($supervisorApplyOutput) {
-    $supervisorApplyOutput | Out-Host
-  }
+  Write-Host 'Bootstrapping five bridge watchers and Tools through the Limited WD-Supervisor task...' -ForegroundColor Cyan
+  $supervisorBootstrapResult = Invoke-WdSupervisorTaskBootstrapHeld `
+    -TaskName ([string]$toolsConfig.task_name) `
+    -ExpectedExecutable $expectedSupervisorExecutable `
+    -ExpectedArguments $expectedSupervisorArguments `
+    -ExpectedWorkingDirectory 'C:\Python' `
+    -ExpectedPrincipalSid $expectedSupervisorPrincipalSid `
+    -ExpectedStartBoundary $expectedSupervisorStartBoundary
+  Write-Host (
+    '  Limited bootstrap: last_result={0}; WD-Supervisor returned to Disabled/HOLD' -f
+      [int64]$supervisorBootstrapResult.last_task_result
+  )
   Start-Sleep -Milliseconds 500
-  $supervisorVerifyArguments = @($supervisorPlan.verify_arguments)
+  $supervisorVerifyParameters = [hashtable]$supervisorPlan.verify_parameters
   $supervisorVerifyOutput = @(
-    & ([string]$supervisorPlan.verify_script) @supervisorVerifyArguments
+    & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
   )
   if (@($supervisorVerifyOutput | Where-Object {
         [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
       }).Count -gt 0) {
-    throw 'supervisor post-Apply report returned a conflict'
+    throw 'supervisor post-bootstrap report returned a conflict'
   }
   if ($supervisorVerifyOutput) {
     $supervisorVerifyOutput | Out-Host
@@ -2806,7 +3379,8 @@ try {
   $toolsNowState = Wait-WdToolsCurrentProcess `
     -ToolsConfig $toolsConfig `
     -Generation $bundleGeneration `
-    -TimeoutSeconds ([int]$toolsConfig.wait_seconds)
+    -TimeoutSeconds ([int]$toolsConfig.wait_seconds) `
+    -BundleLauncherScript $bundleToolsLauncher
   Write-ToolsReadinessWarning -ToolsConfig $toolsConfig
 
   Write-Host 'Resolving the current Grok model...' -ForegroundColor Cyan
@@ -2912,6 +3486,18 @@ try {
         [string]$handshake.bundle_generation -cne $bundleGeneration -or
         [string]$handshake.target_state_id -cne [string]$targetState.id -or
         [string]$handshake.target_state_sha256 -cne [string]$targetState.sha256 -or
+        [string]$handshake.target_state_image_sha256 -cne
+          [string]$targetState.image_sha256 -or
+        [string]$handshake.target_state_image_delivery -cne $(
+          if ([string]$lane.cli -ceq 'codex.cmd') {
+            'codex_cli_initial_image'
+          } else {
+            'claude_initial_read_visual'
+          }
+        ) -or
+        -not (Test-WdJsonBooleanTrue `
+          -Object $handshake `
+          -Name 'target_state_image_initial_turn_only') -or
         -not ([string]$handshake.worktree).Equals(
           [string]$lane.worktree,
           [System.StringComparison]::OrdinalIgnoreCase
@@ -2949,7 +3535,103 @@ try {
     }
   }
 
+  # The UI prompt watcher is intentionally separate from the five bridge
+  # watchers. Start it only after every newly launched interactive lane has
+  # completed and passed its bridge-bootstrap handshake.
+  $promptWatcherApplyState = Get-WdCodexPromptWatcherState `
+    -Processes (Get-AllProcessSnapshots) `
+    -WatcherScript $promptWatcherScript `
+    -TargetTitle $promptWatcherTargetTitle `
+    -LogPath $promptWatcherLogPath `
+    -ExpectedExecutable $expectedSupervisorExecutable
+  if ([string]$promptWatcherApplyState.action -ceq 'conflict') {
+    throw "Codex Lead prompt watcher conflict before launch: $($promptWatcherApplyState.summary)"
+  }
+  if ([string]$promptWatcherApplyState.action -ceq 'launch') {
+    [void](Assert-WdFleetPathWithoutReparse `
+        -Path $promptWatcherRecoveryRoot `
+        -TrustedRoot ([IO.Path]::GetPathRoot($promptWatcherRecoveryRoot)) `
+        -ExpectedType Directory)
+    if (-not (Test-Path -LiteralPath $promptWatcherLogDirectory -PathType Container)) {
+      [void](New-Item `
+          -ItemType Directory `
+          -Path $promptWatcherLogDirectory `
+          -Force `
+          -ErrorAction Stop)
+    }
+    [void](Assert-WdFleetPathWithoutReparse `
+        -Path $promptWatcherLogDirectory `
+        -TrustedRoot ([IO.Path]::GetPathRoot($promptWatcherLogDirectory)) `
+        -ExpectedType Directory)
+    $promptWatcherArguments = @(
+      '-w', 'new',
+      'new-tab',
+      '--title', $promptWatcherWindowTitle,
+      '--suppressApplicationTitle',
+      '-d', 'C:\Python',
+      $expectedSupervisorExecutable,
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', $promptWatcherScript,
+      '-AllowAll',
+      '-NoAllNighter',
+      '-TabTitle', $promptWatcherTargetTitle,
+      '-LogPath', $promptWatcherLogPath
+    )
+    Write-Host (
+      "Launching DANGEROUS AllowAll prompt watcher for $promptWatcherTargetTitle..."
+    ) -ForegroundColor Yellow
+    [void](Start-Process `
+        -FilePath $wtPath `
+        -ArgumentList $promptWatcherArguments `
+        -PassThru `
+        -ErrorAction Stop)
+  } else {
+    Write-Host 'Keeping the existing canonical Codex Lead prompt watcher.'
+  }
+
+  $promptWatcherDeadline = (Get-Date).AddSeconds(45)
+  do {
+    $promptWatcherFinalState = Get-WdCodexPromptWatcherState `
+      -Processes (Get-AllProcessSnapshots) `
+      -WatcherScript $promptWatcherScript `
+      -TargetTitle $promptWatcherTargetTitle `
+      -LogPath $promptWatcherLogPath `
+      -ExpectedExecutable $expectedSupervisorExecutable
+    if ([string]$promptWatcherFinalState.action -ceq 'conflict') {
+      throw "Codex Lead prompt watcher conflict after launch: $($promptWatcherFinalState.summary)"
+    }
+    if ([string]$promptWatcherFinalState.action -cne 'current') {
+      Start-Sleep -Milliseconds 250
+    }
+  } while (
+    [string]$promptWatcherFinalState.action -cne 'current' -and
+    (Get-Date) -lt $promptWatcherDeadline
+  )
+  $promptWatcherAvailable = (
+    [string]$promptWatcherFinalState.action -ceq 'current'
+  )
+  if (-not $promptWatcherAvailable) {
+    Write-Warning (
+      'Codex Lead prompt watcher did not reach the exact one-process state. ' +
+      'The four interactive lanes and Tools remain valid; unattended Lead ' +
+      'prompt approval is disabled until a later -Auto run reconciles it.'
+    )
+  }
+
   $finalProcesses = Get-AllProcessSnapshots
+  $promptWatcherFinalState = Get-WdCodexPromptWatcherState `
+    -Processes $finalProcesses `
+    -WatcherScript $promptWatcherScript `
+    -TargetTitle $promptWatcherTargetTitle `
+    -LogPath $promptWatcherLogPath `
+    -ExpectedExecutable $expectedSupervisorExecutable
+  if ([string]$promptWatcherFinalState.action -ceq 'conflict') {
+    throw "final Codex Lead prompt watcher verification found an ambiguous process set: $($promptWatcherFinalState.summary)"
+  }
+  $promptWatcherAvailable = (
+    [string]$promptWatcherFinalState.action -ceq 'current'
+  )
   foreach ($state in $laneStates) {
     $finalLaneProcesses = @(
       Get-LaneProcesses -Lane $state.lane -Processes $finalProcesses
@@ -2966,7 +3648,8 @@ try {
   $finalToolsState = Get-ToolsProcessState `
     -ToolsConfig $toolsConfig `
     -Generation $bundleGeneration `
-    -Processes $finalProcesses
+    -Processes $finalProcesses `
+    -BundleLauncherScript $bundleToolsLauncher
   if (
     @($finalToolsState.current).Count -ne 1 -or
     @($finalToolsState.starting).Count -ne 0 -or
@@ -2977,7 +3660,7 @@ try {
   }
 
   $finalSupervisorOutput = @(
-    & ([string]$supervisorPlan.verify_script) @supervisorVerifyArguments
+    & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
   )
   if (@($finalSupervisorOutput | Where-Object {
         [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
@@ -2998,7 +3681,7 @@ try {
     -ExpectedStartBoundary $expectedSupervisorStartBoundary
   try {
     $postActivationSupervisorOutput = @(
-      & ([string]$supervisorPlan.verify_script) @supervisorVerifyArguments
+      & ([string]$supervisorPlan.verify_script) @supervisorVerifyParameters
     )
     if (@($postActivationSupervisorOutput | Where-Object {
           [string]$_ -cmatch '(^|\s)CONFLICT(\s|$)'
@@ -3036,6 +3719,16 @@ try {
   Write-Host ("Fleet restore complete; run_id={0}" -f $RunId) -ForegroundColor Green
   Write-Host ("  interactive lanes launched: {0}" -f $(if ($launched.Count) { $launched -join ', ' } else { 'none (all already live)' }))
   Write-Host '  Tools: supervisor-managed'
+  if ($promptWatcherAvailable) {
+    Write-Host (
+      '  Codex Lead prompt watcher: PID {0}; DANGEROUS AllowAll' -f
+        [int]$promptWatcherFinalState.exact[0].ProcessId
+    )
+  } else {
+    Write-Warning (
+      'Codex Lead prompt watcher: unavailable; fleet restore still succeeded'
+    )
+  }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
   Write-Host ("  CLI versions: Codex {0} -> {1}; Claude {2} -> {3}" -f $codexVersion, $codexAfterVersion, $claudeVersion, $claudeAfterVersion)
 } finally {

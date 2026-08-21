@@ -55,11 +55,16 @@ param(
     [switch] $DryRun,
 
     [string] $Prompt = '',
+    [string] $ImagePath = '',
     [string] $LogDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
 
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
@@ -419,6 +424,27 @@ if ($AgentUuid -and $AgentUuid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-f
     throw 'agent_uuid must be a UUID'
 }
 
+$imageFull = ''
+if (-not [string]::IsNullOrWhiteSpace($ImagePath)) {
+    if (-not [IO.Path]::IsPathRooted($ImagePath)) {
+        throw 'ImagePath must be absolute'
+    }
+    $imageFull = Resolve-FullPath $ImagePath
+    if ([IO.Path]::GetExtension($imageFull) -cne '.png') {
+        throw 'ImagePath must name one PNG file'
+    }
+    if (-not (Test-Path -LiteralPath $imageFull -PathType Leaf)) {
+        throw "ImagePath is missing: $imageFull"
+    }
+    $imageItem = Get-Item -LiteralPath $imageFull -Force -ErrorAction Stop
+    if (($imageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ImagePath must not be a reparse point: $imageFull"
+    }
+    if ($imageItem.Length -lt 1 -or $imageItem.Length -gt 10MB) {
+        throw 'ImagePath size must be between 1 byte and 10 MiB'
+    }
+}
+
 if (-not $AgentUuid -and $env:AGENT_BRIDGE_AGENT_UUID) {
     $AgentUuid = [string]$env:AGENT_BRIDGE_AGENT_UUID
 }
@@ -478,6 +504,17 @@ $heartbeatDuringCodex = (
 
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
 $env:AGENT_BRIDGE_AGENT = $Agent
+if ([string]::IsNullOrWhiteSpace([string]$env:AGENT_BRIDGE_OWNER_SESSION_ID)) {
+    Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:AGENT_BRIDGE_SESSION_ID -ErrorAction SilentlyContinue
+    $ownerStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+    [void](Initialize-AgentBridgeClaimOwnerContext `
+        -SessionId "consumer-$Agent-$ownerStamp-$PID")
+} else {
+    # A consumer must never launch Codex under a tokenless or malformed
+    # session. The child inherits this exact process-bound owner context.
+    [void](Get-AgentBridgeClaimOwnerContext)
+}
 if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
 if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
 if (@($Capabilities).Count -gt 0) {
@@ -496,6 +533,9 @@ $codexArgs = @(
 )
 if ($Model) {
     $codexArgs += @('--model', $Model)
+}
+if ($imageFull) {
+    $codexArgs += @('--image', $imageFull)
 }
 $codexArgs += @('--sandbox', $Sandbox, '-')
 $codexCommandResolved = if ($DryRun) {

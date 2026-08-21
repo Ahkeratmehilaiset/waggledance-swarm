@@ -208,6 +208,7 @@ param(
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
+    [switch] $Auto,
     [switch] $Apply,
     [switch] $DryRun
 )
@@ -262,7 +263,154 @@ param(
         }
     }
 
-    $targetInvocation = if ($FixedAgent) {
+    $targetInvocation = if ($WrapperKind -ceq 'fleet') {
+@'
+if ($Auto -and ($Apply -or $DryRun)) {
+    throw 'Auto cannot be combined with Apply or DryRun'
+}
+$targetParameters = @{}
+foreach ($key in $PSBoundParameters.Keys) {
+    if ($key -notin @('Auto', 'Apply', 'DryRun')) {
+        $targetParameters[$key] = $PSBoundParameters[$key]
+    }
+}
+function Test-WdWrapperAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator
+        )
+    }
+    finally {
+        $identity.Dispose()
+    }
+}
+function ConvertTo-WdSingleQuotedLiteral {
+    param([AllowEmptyString()] [string] $Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+if ($Auto -and -not (Test-WdWrapperAdministrator)) {
+    $elevationHost = [IO.Path]::Combine(
+        [Environment]::SystemDirectory,
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe'
+    )
+    if (-not (Test-Path -LiteralPath $elevationHost -PathType Leaf)) {
+        throw "stable Windows PowerShell elevation host is missing: $elevationHost"
+    }
+    $commandParts = New-Object 'System.Collections.Generic.List[string]'
+    [void]$commandParts.Add('&')
+    [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
+    [void]$commandParts.Add('-Auto')
+    foreach ($name in @('ManifestPath', 'RunId')) {
+        if ($targetParameters.ContainsKey($name)) {
+            [void]$commandParts.Add("-$name")
+            [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
+        }
+    }
+    if ($targetParameters.ContainsKey('HandshakeTimeoutSeconds')) {
+        [void]$commandParts.Add('-HandshakeTimeoutSeconds')
+        [void]$commandParts.Add(([int]$targetParameters['HandshakeTimeoutSeconds']).ToString(
+            [Globalization.CultureInfo]::InvariantCulture
+        ))
+    }
+    if ([bool]$targetParameters['SkipCliUpdate']) {
+        [void]$commandParts.Add('-SkipCliUpdate')
+    }
+    $elevationLogRoot = Join-Path (
+        Split-Path -Parent $PSCommandPath
+    ) 'wd-reboot-runtime\elevated-auto'
+    if (-not (Test-Path -LiteralPath $elevationLogRoot)) {
+        [void](New-Item -ItemType Directory -Path $elevationLogRoot -Force)
+    }
+    $elevationLogRootItem = Get-Item -LiteralPath $elevationLogRoot -Force
+    if (
+        -not $elevationLogRootItem.PSIsContainer -or
+        ($elevationLogRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    ) {
+        throw "automatic restore log root is not a trusted directory: $elevationLogRoot"
+    }
+    $elevationLogPath = Join-Path $elevationLogRoot (
+        'auto-{0}-{1}-{2}.log' -f
+            [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'),
+            $PID,
+            [Guid]::NewGuid().ToString('N')
+    )
+    $restoreCommand = $commandParts -join ' '
+    $loggedCommand = @(
+        '$ErrorActionPreference = ''Stop''',
+        '$restoreExitCode = 0',
+        '$transcriptStarted = $false',
+        'try {',
+        ("  Start-Transcript -LiteralPath {0} -Force | Out-Null" -f
+            (ConvertTo-WdSingleQuotedLiteral -Value $elevationLogPath)),
+        '  $transcriptStarted = $true',
+        ("  {0}" -f $restoreCommand),
+        '}',
+        'catch {',
+        '  $restoreExitCode = 1',
+        '  [Console]::Error.WriteLine(($_ | Out-String))',
+        '}',
+        'finally {',
+        '  if ($transcriptStarted) { Stop-Transcript | Out-Null }',
+        '}',
+        'exit $restoreExitCode'
+    ) -join [Environment]::NewLine
+    $encodedCommand = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($loggedCommand)
+    )
+    Write-Host 'Automatic restore needs Administrator rights for Task Scheduler; requesting one UAC elevation...' -ForegroundColor Yellow
+    try {
+        $elevated = Start-Process `
+            -FilePath $elevationHost `
+            -Verb RunAs `
+            -ArgumentList @(
+                '-NoLogo',
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-EncodedCommand', $encodedCommand
+            ) `
+            -Wait `
+            -PassThru `
+            -ErrorAction Stop
+    }
+    catch {
+        throw "automatic Administrator elevation was declined or failed: $($_.Exception.Message)"
+    }
+    if ([int]$elevated.ExitCode -ne 0) {
+        Write-Host "Elevated restore failure log: $elevationLogPath" -ForegroundColor Yellow
+        if (Test-Path -LiteralPath $elevationLogPath -PathType Leaf) {
+            Get-Content -LiteralPath $elevationLogPath -Tail 120 |
+                ForEach-Object { Write-Host ([string]$_) }
+        }
+        throw (
+            "elevated automatic restore failed with exit code {0}; log={1}" -f
+                [int]$elevated.ExitCode,
+                $elevationLogPath
+        )
+    }
+    Write-Host "Elevated restore log: $elevationLogPath"
+    return
+}
+if ($Auto) {
+    Write-Host 'Running byte-inert fleet preflight before automatic restore...'
+    $dryRunParameters = @{} + $targetParameters
+    $dryRunParameters['DryRun'] = $true
+    & $target @dryRunParameters
+    Write-Host 'Preflight passed; applying the verified fleet restore...'
+    $applyParameters = @{} + $targetParameters
+    $applyParameters['Apply'] = $true
+    & $target @applyParameters
+}
+else {
+    if ($Apply) { $targetParameters['Apply'] = $true }
+    if ($DryRun) { $targetParameters['DryRun'] = $true }
+    & $target @targetParameters
+}
+'@
+    } elseif ($FixedAgent) {
         $escapedAgent = $FixedAgent.Replace("'", "''")
 @"
 `$targetParameters = @{}
@@ -470,6 +618,9 @@ $sourcePaths[$identityRegistryRelative] = $identityRegistrySource
 foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
+        'Get-WdSwarmParallelStatus.ps1',
+        'Write-WdLaneCurrentState.ps1',
+        'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
         'Invoke-WdToolsCodex.ps1',
         'wd-fleet.json',
@@ -477,8 +628,13 @@ foreach ($required in @(
         'wd_supervisor_loop.json',
         'Resolve-WdGrokModel.ps1',
         'Register-WdScheduledTasks.ps1',
+        'Set-WdTaskConsoleContainment.ps1',
         'BOOT_AFTER_REBOOT.md',
+        'WD_LOCAL_GPU_GUIDE.md',
+        'WD_SWARM_PARALLEL_POLICY_V1.md',
         'WD_SWARM_TARGET_STATE_V1.md',
+        'WaggleDanceSwarmAi.png',
+        'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1',
@@ -671,7 +827,12 @@ $dataSpecs = @(
     # Replace the legacy opaque-command snapshot too, so no machine-local
     # reboot artifact retains a dead, versioned WindowsApps executable.
     [pscustomobject]@{ Name = 'wd_supervisor_loop_snapshot.json'; Target = 'wd_supervisor_loop.json' },
-    [pscustomobject]@{ Name = 'BOOT_AFTER_REBOOT.md'; Target = 'BOOT_AFTER_REBOOT.md' }
+    [pscustomobject]@{ Name = 'BOOT_AFTER_REBOOT.md'; Target = 'BOOT_AFTER_REBOOT.md' },
+    [pscustomobject]@{ Name = 'Set-WdTaskConsoleContainment.ps1'; Target = 'Set-WdTaskConsoleContainment.ps1' },
+    [pscustomobject]@{ Name = 'WD_LOCAL_GPU_GUIDE.md'; Target = 'WD_LOCAL_GPU_GUIDE.md' },
+    [pscustomobject]@{ Name = 'WD_SWARM_PARALLEL_POLICY_V1.md'; Target = 'WD_SWARM_PARALLEL_POLICY_V1.md' },
+    [pscustomobject]@{ Name = 'Write-WdLaneCurrentState.ps1'; Target = 'Write-WdLaneCurrentState.ps1' },
+    [pscustomobject]@{ Name = 'Get-WdSwarmParallelStatus.ps1'; Target = 'Get-WdSwarmParallelStatus.ps1' }
 )
 
 if (-not (Test-Path -LiteralPath $machineFull -PathType Container)) {
@@ -748,8 +909,9 @@ $state = [ordered]@{
     installed_at_utc = [DateTime]::UtcNow.ToString('o')
     precedence = @(
         'live bridge state',
-        'newer per-agent and fleet handoffs',
+        'valid compact per-lane checkpoint',
         'WD_REBOOT_STATE_CURRENT',
+        'newer per-agent and fleet Markdown handoffs as fallback',
         'dated historical reboot snapshots'
     )
 }
@@ -766,9 +928,10 @@ Active bundle: ``$targetRoot``
 Precedence after restart:
 
 1. Live bridge state read without acknowledging stale events.
-2. Newer fleet and per-agent handoffs.
-3. This current bundle pointer.
-4. Dated reboot snapshots as historical evidence only.
+2. A valid compact per-lane checkpoint.
+3. This current bundle pointer, fleet roles, lane prompt, and parallel policy.
+4. Newer fleet and per-agent Markdown handoffs as fallback.
+5. Dated reboot snapshots as historical evidence only.
 
 The reboot path grants no merge, deploy, signature, canary, runtime-authority,
 or ``claim_safe`` permission.  The merge-driver StandingOneShot remains in
@@ -853,7 +1016,7 @@ catch {
 Write-Host ''
 Write-Host 'WD reboot bundle installed and verified.' -ForegroundColor Green
 Write-Host 'One-line restore:'
-Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Apply'
+Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -Auto'
 if ($backedUp) {
     Write-Host "Previous machine-local launchers were backed up to: $backupRoot"
 }

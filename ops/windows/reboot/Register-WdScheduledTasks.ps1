@@ -27,12 +27,10 @@ if (-not (Test-Path -LiteralPath $SupervisorScript -PathType Leaf)) {
 }
 
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-if (-not $task.Settings.Enabled) {
-    throw "$TaskName is disabled; refusing to silently change its operating state"
-}
+$originalEnabled = [bool]$task.Settings.Enabled
 
 $arguments = (
-    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
+    '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass ' +
     '-File "{0}" -Apply' -f $SupervisorScript
 )
 $desiredAction = New-ScheduledTaskAction `
@@ -56,6 +54,7 @@ try {
     }
     $actual = $actions[0]
     if (
+        [bool]$verified.Settings.Enabled -ne $originalEnabled -or
         [string]$actual.Execute -cne $stablePowerShell -or
         [string]$actual.Arguments -cne $arguments -or
         [string]$actual.WorkingDirectory -cne 'C:\Python'
@@ -73,6 +72,10 @@ catch {
     $registrationFailure = $_
     try {
         [void](Set-ScheduledTask -TaskName $TaskName -Action $originalActions)
+        $restored = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ([bool]$restored.Settings.Enabled -ne $originalEnabled) {
+            throw "$TaskName enabled state changed while restoring its original action"
+        }
     }
     catch {
         throw (
@@ -83,4 +86,7 @@ catch {
     }
     throw $registrationFailure
 }
-Write-Host "$TaskName now uses the stable Windows PowerShell path." -ForegroundColor Green
+Write-Host (
+    "$TaskName now uses the stable hidden Windows PowerShell path; " +
+    "enabled=$originalEnabled was preserved."
+) -ForegroundColor Green

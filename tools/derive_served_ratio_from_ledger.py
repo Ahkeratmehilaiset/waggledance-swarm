@@ -26,9 +26,12 @@ coverage (receipted / gap / unresolved-pending) is reported alongside the
 ratio so a number derived from an incomplete or holed window cannot read as
 complete. Chain verification failure is a structured rejection, not a partial
 answer. So are a nonexistent ledger path (an absent file is no evidence, not
-clean zero evidence) and a second terminal for one served_id (chain
-verification proves hash linkage only, so this tool enforces the
-single-terminal lifecycle rule itself instead of attributing it to the chain).
+clean zero evidence) and any per-served_id lifecycle violation -- a duplicate
+pending, a terminal without a pending, or a second terminal. Chain
+verification proves hash linkage only, so this tool walks the ledger in order
+and enforces the same lifecycle rule as ``chat_served_accounting`` itself
+instead of attributing it to the chain: one logical serve is never counted
+twice and an orphan terminal is never silently ignored.
 """
 from __future__ import annotations
 
@@ -56,6 +59,12 @@ from waggledance.core.magma.chat_served_ledger import (  # noqa: E402
 REPORT_SCHEMA = "wd.served_ratio_from_ledger.v1"
 DEFAULT_SOLVER_ROUTE_TYPES = ("solver",)
 UNKNOWN_ROUTE_TYPE = "unknown"
+
+# Per-served_id lifecycle states for the ordered ledger walk (mirrors the
+# state tokens of ``chat_served_accounting.derive_coverage``).
+LIFECYCLE_PENDING = "pending"
+LIFECYCLE_RECEIPTED = "receipted"
+LIFECYCLE_GAP = "gap"
 
 EXIT_OK = 0
 EXIT_REJECTED = 3
@@ -102,6 +111,28 @@ def _entry_route_type(entry: Mapping[str, Any]) -> str:
     return UNKNOWN_ROUTE_TYPE
 
 
+def lifecycle_violation(state: str | None, entry_type: object) -> str | None:
+    """Per-served_id lifecycle rule as a pure predicate; ``None`` means ok.
+
+    Mirrors ``chat_served_accounting._lifecycle_violation`` (the bc3 rule)
+    verbatim: exactly one ``served_pending`` per served_id, then at most one
+    terminal, never a terminal before its pending, and no unknown entry
+    types. ``state`` is the served_id's state BEFORE ``entry_type`` is applied
+    (``None`` when unseen).
+    """
+    if entry_type == SERVED_PENDING:
+        if state is not None:
+            return "duplicate_pending"
+    elif entry_type in (RECEIPT_TERMINAL, GAP_TERMINAL):
+        if state is None:
+            return "terminal_without_pending"
+        if state in (LIFECYCLE_RECEIPTED, LIFECYCLE_GAP):
+            return "second_terminal"
+    else:
+        return "unknown_entry_type"
+    return None
+
+
 def derive_report(
     *,
     ledger_path: str,
@@ -145,25 +176,33 @@ def derive_report(
             f"chain_invalid:index={chain.broken_at}:reason={chain.reason}"
         )
 
-    terminals: dict[str, str] = {}
+    # ONE ordered lifecycle walk over the whole ledger, mirroring
+    # chat_served_accounting.derive_coverage. Chain verification proves hash
+    # linkage only -- it does NOT enforce the per-served_id lifecycle rule, so
+    # a chain-valid ledger CAN carry a duplicate pending for one served_id
+    # (one logical serve counted twice), a terminal with no pending (an
+    # orphan that would be silently ignored), or a second (even conflicting)
+    # terminal. Terminals used to be collected independently of pendings,
+    # which is exactly how the first two shapes slipped past the
+    # second-terminal guard (codex-lead-1 2026-08-22T04:30:52Z finding).
+    # Every violation is a fail-closed rejection, never a partial answer.
+    lifecycle: dict[str, str] = {}
     for entry in entries:
+        served_id = str(entry.get("served_id"))
         etype = entry.get("entry_type")
-        if etype in (RECEIPT_TERMINAL, GAP_TERMINAL):
-            served_id = str(entry.get("served_id"))
-            # Chain verification proves hash linkage only -- it does NOT
-            # enforce the single-terminal-per-served_id lifecycle rule, so a
-            # chain-valid ledger CAN carry a second (even conflicting)
-            # terminal. Mirror chat_served_accounting's fail-closed
-            # "second_terminal" semantics: ambiguous coverage evidence
-            # rejects the derivation instead of silently keeping the first
-            # terminal and reporting gapless/evidence_complete.
-            if served_id in terminals:
-                raise DerivationRejected(
-                    f"second_terminal_for_served_id:{served_id}"
-                )
-            terminals[served_id] = (
-                "receipted" if etype == RECEIPT_TERMINAL else "gap"
-            )
+        violation = lifecycle_violation(lifecycle.get(served_id), etype)
+        if violation == "unknown_entry_type":
+            # Defensive: verify_chain already rejects non-well-formed entry
+            # types, but the walk must never count what it cannot classify.
+            raise DerivationRejected(f"unknown_entry_type:{etype}")
+        if violation is not None:
+            raise DerivationRejected(f"{violation}_for_served_id:{served_id}")
+        if etype == SERVED_PENDING:
+            lifecycle[served_id] = LIFECYCLE_PENDING
+        elif etype == RECEIPT_TERMINAL:
+            lifecycle[served_id] = LIFECYCLE_RECEIPTED
+        else:
+            lifecycle[served_id] = LIFECYCLE_GAP
 
     served_total = 0
     solver_total = 0
@@ -208,10 +247,13 @@ def derive_report(
         # --solver-route-type unknown (fail-closed numerator).
         if route_type in solver_set and route_type != UNKNOWN_ROUTE_TYPE:
             solver_total += 1
-        coverage = terminals.get(str(entry.get("served_id")))
-        if coverage == "receipted":
+        # The walk above guarantees exactly one pending per served_id, so
+        # served_total counts DISTINCT served_ids (the canonical denominator)
+        # and coverage is that served_id's final lifecycle state.
+        coverage = lifecycle.get(str(entry.get("served_id")))
+        if coverage == LIFECYCLE_RECEIPTED:
             receipted += 1
-        elif coverage == "gap":
+        elif coverage == LIFECYCLE_GAP:
             gap += 1
         else:
             pending += 1

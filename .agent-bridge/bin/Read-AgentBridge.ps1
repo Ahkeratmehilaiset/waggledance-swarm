@@ -35,6 +35,42 @@ if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
 }
 
+# Deliver previously accepted queued rows before evaluating canonical ACK
+# state. This helper is confined to accepted-v1 and cannot fall back to the
+# historical legacy spool backlog.
+$acceptedDrain = Join-Path $PSScriptRoot 'Drain-AcceptedBridgeQueue.ps1'
+$acceptedDrainHealthy = $false
+if (Test-Path -LiteralPath $acceptedDrain -PathType Leaf) {
+    try {
+        $acceptedDrainSummary = (& $acceptedDrain `
+            -BridgeRoot $bridgeRoot -ReceiptJson) |
+            ConvertFrom-Json -ErrorAction Stop
+        if ([int64]$acceptedDrainSummary.failed -gt 0) {
+            throw "accepted-v1 drain failed for $($acceptedDrainSummary.failed) WAL(s)"
+        }
+        if ([int64]$acceptedDrainSummary.pending_skipped -gt 0) {
+            throw (
+                'accepted-v1 drain retained {0} pending WAL(s)' -f
+                [int64]$acceptedDrainSummary.pending_skipped
+            )
+        }
+        if (
+            [string]$acceptedDrainSummary.schema -cne
+                'waggledance.bridge.accepted-queue-drain.v1'
+        ) {
+            throw 'accepted-v1 drain returned an unsupported receipt'
+        }
+        $acceptedDrainHealthy = $true
+    } catch {
+        Write-Warning (
+            'Read-AgentBridge: accepted-v1 drain retained queued WALs: ' +
+            $_.Exception.Message
+        )
+    }
+} else {
+    Write-Warning "Read-AgentBridge: accepted-v1 drain helper missing: $acceptedDrain"
+}
+
 # R15: opportunistic stale-claim sweep on every read. Cheap (only
 # walks the small active-claims dir). The sweep emits its own
 # release/stale_lease events that downstream readers see.
@@ -144,7 +180,7 @@ function Send-ReceivedAck {
 
     $taskId = [string]$RequestEvent.task_id
     $requestTs = [string]$RequestEvent.ts_utc
-    if (-not $taskId -or -not $requestTs) { return $false }
+    if (-not $taskId -or -not $requestTs) { return 'not_applicable' }
 
     $alreadyAcked = @(
         $AllEvents |
@@ -159,7 +195,8 @@ function Send-ReceivedAck {
             } |
             Select-Object -First 1
     )
-    if ($alreadyAcked.Count -gt 0) { return $true }
+    if ($alreadyAcked.Count -gt 0) { return 'existing' }
+    if (-not $acceptedDrainHealthy) { return 'drain_unhealthy' }
 
     $payloadJson = ([ordered]@{
         request_ts_utc = $requestTs
@@ -171,16 +208,40 @@ function Send-ReceivedAck {
     $message = "received {0}/{1} from {2}" -f `
         [string]$RequestEvent.type, [string]$RequestEvent.status, [string]$RequestEvent.agent
 
-    & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
-        -Agent $AgentName `
-        -To ([string]$RequestEvent.agent) `
-        -Type message `
-        -Status received `
-        -TaskId $taskId `
-        -Message $message `
-        -PayloadJson $payloadJson | Out-Null
-
-    return $true
+    $ackOutput = @(
+        & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
+            -Agent $AgentName `
+            -To ([string]$RequestEvent.agent) `
+            -Type message `
+            -Status received `
+            -TaskId $taskId `
+            -Message $message `
+            -PayloadJson $payloadJson
+    )
+    $ackEvents = @($ackOutput | Where-Object {
+        $_ -is [psobject] -and
+        [string]$_.task_id -ceq $taskId -and
+        [string]$_.status -ceq 'received'
+    })
+    if ($ackEvents.Count -ne 1) {
+        throw "received ACK writer returned no unique event for task $taskId"
+    }
+    $deliveryProperty = $ackEvents[0].PSObject.Properties['_bridge_delivery']
+    if ($null -eq $deliveryProperty -or $null -eq $deliveryProperty.Value) {
+        throw "received ACK writer returned no delivery receipt for task $taskId"
+    }
+    $delivery = $deliveryProperty.Value
+    if (
+        [string]$delivery.delivery_status -ceq 'canonical' -and
+        $delivery.canonical_durable -is [bool] -and
+        $delivery.canonical_durable -eq $true
+    ) {
+        return 'canonical'
+    }
+    if ([string]$delivery.delivery_status -ceq 'queued') {
+        return 'queued'
+    }
+    throw "received ACK returned unsupported delivery status for task $taskId"
 }
 
 function Get-BridgeEventTimestampSafe {
@@ -335,8 +396,14 @@ if ($Agent -and -not $NoContinuity) {
                         continue
                     }
                     $receivedSuffix = ''
-                    if ($receivedByTask.ContainsKey($taskId) -and $receivedByTask[$taskId]) {
-                        $receivedSuffix = ' (received)'
+                    if ($receivedByTask.ContainsKey($taskId)) {
+                        $receivedSuffix = switch ([string]$receivedByTask[$taskId]) {
+                            'existing' { ' (received)' }
+                            'canonical' { ' (received)' }
+                            'queued' { ' (ack queued)' }
+                            'drain_unhealthy' { ' (ack deferred)' }
+                            default { '' }
+                        }
                     }
                     Write-Host ("  OPEN {0}{1}: {2}/{3} from {4}: {5}" -f `
                         $taskId, $receivedSuffix, $req.type, $req.status, $req.agent, $req.message) `

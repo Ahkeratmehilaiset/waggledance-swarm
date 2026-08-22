@@ -43,7 +43,7 @@
 .PARAMETER Force
     Override the safety check. RESTRICTED: only operator/system
     agents may use -Force. Claude/Codex passing -Force is rejected.
-    Override emits a decision/override audit event.
+    Override emits a pre-execution decision/override_requested audit event.
 
 .EXAMPLE
     .\.agent-bridge\bin\Invoke-BridgeGit.ps1 -Agent claude -- status
@@ -224,38 +224,72 @@ if ($Agent -notin @('operator','system')) {
     exit 2
 }
 
-# Operator/system override: emit audit event then run.
-Write-Warning "OVERRIDE: operator/system -Force engaged. Running $verb anyway."
+# Operator/system override: record the request canonically, then run. The event
+# is deliberately pre-execution truth: a queued copy must never claim that a
+# Git mutation happened when this guard rejected it.
+Write-Warning (
+    'OVERRIDE REQUEST: operator/system -Force requested; validating a ' +
+    "canonical pre-execution audit before running $verb."
+)
 
 $writeAgentEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
-if (Test-Path -LiteralPath $writeAgentEvent) {
-    $blockedBy = @(
-        $blocking | ForEach-Object {
-            [pscustomobject]@{
-                task_id = [string]$_.task_id
-                agent   = [string]$_.agent
-            }
+if (-not (Test-Path -LiteralPath $writeAgentEvent -PathType Leaf)) {
+    Write-Error -Message "REJECTED: canonical override audit writer is missing: $writeAgentEvent" `
+        -Category ResourceUnavailable -ErrorAction Continue
+    exit 2
+}
+$blockedBy = @(
+    $blocking | ForEach-Object {
+        [pscustomobject]@{
+            task_id = [string]$_.task_id
+            agent   = [string]$_.agent
         }
-    )
-    $payload = [pscustomobject]@{
-        override_reason = 'force_by_privileged_agent'
-        verb            = $verb
-        git_args        = @($GitArgs)
-        blocked_by      = $blockedBy
     }
-    $payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
-    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-    $taskId = "bridge-git-override-$stamp"
-    $msg = "git $verb override by $Agent over $($blocking.Count) active claim(s)"
+)
+$payload = [pscustomobject]@{
+    override_reason = 'force_by_privileged_agent'
+    audit_phase     = 'pre_execution_request'
+    action_performed_at_event_time = $false
+    canonical_audit_required = $true
+    verb            = $verb
+    git_args        = @($GitArgs)
+    blocked_by      = $blockedBy
+}
+$payloadJson = ($payload | ConvertTo-Json -Depth 6 -Compress)
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+$taskId = "bridge-git-override-$stamp"
+$msg = (
+    "git $verb override requested by $Agent over " +
+    "$($blocking.Count) active claim(s); no Git action had run at audit time"
+)
+$auditOutput = @(
     & $writeAgentEvent `
         -Agent $Agent `
         -Type decision `
-        -Status override `
+        -Status override_requested `
         -Severity medium `
         -TaskId $taskId `
         -Message $msg `
-        -PayloadJson $payloadJson `
-        | Out-Null
+        -PayloadJson $payloadJson
+)
+$auditEvents = @($auditOutput | Where-Object {
+    $_ -is [psobject] -and [string]$_.task_id -ceq $taskId
+})
+$auditDelivery = $null
+if ($auditEvents.Count -eq 1) {
+    $auditProperty = $auditEvents[0].PSObject.Properties['_bridge_delivery']
+    if ($null -ne $auditProperty) { $auditDelivery = $auditProperty.Value }
+}
+if (
+    $auditEvents.Count -ne 1 -or
+    $null -eq $auditDelivery -or
+    [string]$auditDelivery.delivery_status -cne 'canonical' -or
+    $auditDelivery.canonical_durable -isnot [bool] -or
+    $auditDelivery.canonical_durable -ne $true
+) {
+    Write-Error -Message 'REJECTED: privileged git override audit was not canonically durable' `
+        -Category WriteError -ErrorAction Continue
+    exit 2
 }
 
 Invoke-GitAndExit -ArgsToGit $GitArgs

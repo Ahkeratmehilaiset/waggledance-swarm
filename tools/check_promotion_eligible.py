@@ -55,6 +55,10 @@ from tools.bridge_event_taxonomy import (  # noqa: E402
     BLOCK_BY_TYPE as AUTHORITY_BLOCK_BY_TYPE,
     RCO_GATED_TYPES as AUTHORITY_RCO_GATED_TYPES,
 )
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+    check_accepted_queue_complete,
+)
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
     DEFAULT_CHARTER_PATH,
     evaluate_diff_content,
@@ -205,11 +209,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    events_path = (
-        args.events
-        or resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
-    )
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
     try:
+        if (
+            args.events is not None
+            and not bridge_events_path_matches_root(
+                bridge_root=bridge_root,
+                events_path=events_path,
+            )
+        ):
+            raise PromotionEligibilityError(
+                _invalid_report(
+                    "invalid_input",
+                    "--events must equal <bridge-root>/shared/events.jsonl",
+                )
+            )
+        accepted_queue_preflight = check_accepted_queue_complete(
+            bridge_root=bridge_root,
+            events_path=events_path,
+        )
         pr_status = _read_pr_status_fail_closed(args.pr_status_file)
         events = _read_events_fail_closed(events_path)
         prior_approved_diff_text = None
@@ -231,6 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             rco_agents=args.rco_agent,
             author_agent=args.author_agent,
             from_agent=args.from_agent,
+            accepted_queue_preflight=accepted_queue_preflight,
         )
     except (OSError, json.JSONDecodeError, UnicodeError) as exc:
         report = _invalid_report("invalid_input", exc.__class__.__name__)
@@ -265,6 +285,7 @@ def evaluate_promotion_eligibility(
     rco_agents: Sequence[str] | None = None,
     author_agent: str = "",
     from_agent: str = "promotion-pipeline",
+    accepted_queue_preflight: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return whether the PR snapshot is eligible for autonomous promotion."""
     try:
@@ -281,6 +302,7 @@ def evaluate_promotion_eligibility(
             rco_agents=rco_agents,
             author_agent=author_agent,
             from_agent=from_agent,
+            accepted_queue_preflight=accepted_queue_preflight,
         )
     except PromotionEligibilityError as exc:
         return exc.report
@@ -300,6 +322,7 @@ def _evaluate_promotion_eligibility(
     rco_agents: Sequence[str] | None,
     author_agent: str,
     from_agent: str,
+    accepted_queue_preflight: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     _validate_direct_inputs(
         pr_status=pr_status,
@@ -313,6 +336,25 @@ def _evaluate_promotion_eligibility(
     prior_approved_head = _optional_sha(prior_approved_head, "prior_approved_head")
     author_agent = _required_agent_id(author_agent, "author_agent")
     from_agent = _required_agent_id(from_agent, "from_agent")
+    if accepted_queue_preflight is not None and not isinstance(
+        accepted_queue_preflight, Mapping
+    ):
+        raise PromotionEligibilityError(
+            _invalid_report(
+                "invalid_input",
+                "accepted_queue_preflight must be an object or null",
+            )
+        )
+    accepted_queue_gate = (
+        dict(accepted_queue_preflight)
+        if accepted_queue_preflight is not None
+        else {
+            "ok": False,
+            "complete": False,
+            "decision": "accepted_queue_not_checked",
+            "errors": ["accepted queue preflight was not supplied"],
+        }
+    )
     configured_rco_agent_set = _configured_rco_agents(rco_agents)
     rco_agent_set = _eligible_rco_agents(
         configured_rco_agent_set,
@@ -461,6 +503,14 @@ def _evaluate_promotion_eligibility(
             else "unknown"
         )
         reasons.append(f"unresolved peer bridge block: agent={agent} status={status}")
+    if not (
+        accepted_queue_gate.get("ok") is True
+        and accepted_queue_gate.get("complete") is True
+    ):
+        reasons.append(
+            "accepted bridge queue is not fully visible in canonical history: "
+            + str(accepted_queue_gate.get("decision", "unknown"))
+        )
     if not rco_pass_gate["ok"]:
         reasons.append("missing exact-head RCO_PASS from recognized non-author RCO")
     if not bridge_consensus_gate["ok"]:
@@ -501,6 +551,7 @@ def _evaluate_promotion_eligibility(
             "snapshot_state": snapshot_state_gate,
             "base": base_gate,
             "peer_veto": dict(peer_gate),
+            "accepted_queue": accepted_queue_gate,
             "rco_pass": rco_pass_gate,
             "bridge_consensus": bridge_consensus_gate,
             "hex_promotion_acceptance": hex_acceptance_gate,

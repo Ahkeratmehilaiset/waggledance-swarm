@@ -39,6 +39,10 @@ from tools.idle_consensus_artifact import (  # noqa: E402
     write_idle_consensus_artifact,
 )
 from tools.bridge_pr_author import resolve_bridge_pr_author  # noqa: E402
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+    check_accepted_queue_complete,
+)
 from tools.pr_status_snapshot import (  # noqa: E402
     PrStatusSnapshotError,
     build_pr_status_snapshot,
@@ -107,6 +111,7 @@ LEAD_STALL_NON_SUBSTANTIVE_STATUSES = frozenset(
 Runner = Callable[[Sequence[str]], Any]
 ArtifactWriter = Callable[[], Mapping[str, Any]]
 MergeVerifier = Callable[[int, str, str], Mapping[str, Any]]
+AcceptedQueueChecker = Callable[..., Mapping[str, Any]]
 
 
 class AutoMergeGateError(ValueError):
@@ -210,10 +215,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    events_path = args.events
-    if events_path is None:
-        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
+
+    def accepted_queue_checker(**_: object) -> Mapping[str, Any]:
+        return check_accepted_queue_complete(
+            bridge_root=bridge_root,
+            events_path=events_path,
+        )
+
     try:
+        if (
+            args.events is not None
+            and not bridge_events_path_matches_root(
+                bridge_root=bridge_root,
+                events_path=events_path,
+            )
+        ):
+            raise _invalid(
+                "invalid_input",
+                "--events must equal <bridge-root>/shared/events.jsonl",
+            )
         status_text = args.pr_status_file.read_bytes().decode(
             "utf-8-sig",
             errors="strict",
@@ -239,6 +261,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             require_bridge_consensus=args.require_bridge_consensus,
             standing_consensus_sign=args.standing_consensus_sign,
             allow_lead_stall_failover=args.allow_lead_stall_failover,
+            accepted_queue_checker=accepted_queue_checker,
             artifact_writer=_cli_artifact_writer(args, events_path),
         )
     except (OSError, UnicodeError) as exc:
@@ -291,6 +314,7 @@ def evaluate_auto_merge_gate(
     runner: Runner | None = None,
     merge_verifier: MergeVerifier | None = None,
     artifact_writer: ArtifactWriter | None = None,
+    accepted_queue_checker: AcceptedQueueChecker | None = None,
 ) -> dict[str, Any]:
     """Evaluate and optionally apply the final idle auto-merge gate."""
     _validate_evaluate_inputs(
@@ -315,6 +339,7 @@ def evaluate_auto_merge_gate(
         runner=runner,
         merge_verifier=merge_verifier,
         artifact_writer=artifact_writer,
+        accepted_queue_checker=accepted_queue_checker,
     )
     _assert_no_private_markers(
         {
@@ -336,6 +361,10 @@ def evaluate_auto_merge_gate(
     if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
 
+    accepted_queue_preflight = _accepted_queue_preflight(
+        events_path=events_path,
+        checker=accepted_queue_checker,
+    )
     events = _read_bridge_events(events_path) if events_path is not None else []
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = (
@@ -451,6 +480,14 @@ def evaluate_auto_merge_gate(
         blockers.append("bridge events path is required before merge")
     if apply and not bridge_task_id.strip():
         blockers.append("bridge task id is required before merge")
+    if not (
+        accepted_queue_preflight.get("ok") is True
+        and accepted_queue_preflight.get("complete") is True
+    ):
+        blockers.append(
+            "accepted bridge queue is not fully visible in canonical history: "
+            + str(accepted_queue_preflight.get("decision", "unknown"))
+        )
     if not bool(bridge_peer_gate.get("clear_to_merge", False)):
         latest_block = bridge_peer_gate.get("latest_blocking_event")
         if isinstance(latest_block, Mapping):
@@ -540,6 +577,7 @@ def evaluate_auto_merge_gate(
         diff_gate=_gate_to_dict(diff_gate),
         base_gate=base_gate,
         bridge_consensus=bridge_consensus,
+        accepted_queue_preflight=accepted_queue_preflight,
     )
     base["author_resolution"] = author_resolution
     if blockers:
@@ -632,6 +670,7 @@ def evaluate_auto_merge_gate(
             lead_stall_failover_threshold_seconds=(
                 lead_stall_failover_threshold_seconds
             ),
+            accepted_queue_checker=accepted_queue_checker,
         )
         apply_recheck["fresh_gate"] = fresh_gate
         if fresh_gate.get("ok") is not True:
@@ -947,6 +986,7 @@ def _base_report(
     diff_gate: Mapping[str, Any],
     base_gate: Mapping[str, Any],
     bridge_consensus: Mapping[str, Any],
+    accepted_queue_preflight: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "decision": "auto_merge_gate",
@@ -970,6 +1010,7 @@ def _base_report(
         "bridge_peer_gate": dict(bridge_peer_gate),
         "rco_pass_gate": dict(rco_pass_gate),
         "bridge_consensus": dict(bridge_consensus),
+        "accepted_queue_preflight": dict(accepted_queue_preflight),
         "rate_gate": dict(rate_gate),
         "gh_command": list(command),
     }
@@ -2224,6 +2265,43 @@ def _is_consensus_clear(status: str, *, event_type: str = "") -> bool:
     return _bridge_is_clear_status(status)
 
 
+def _accepted_queue_preflight(
+    *,
+    events_path: Path | None,
+    checker: AcceptedQueueChecker | None,
+) -> dict[str, Any]:
+    if events_path is None:
+        return {
+            "ok": False,
+            "complete": False,
+            "decision": "accepted_queue_events_path_missing",
+            "errors": ["bridge events path is required for accepted queue proof"],
+        }
+    bridge_root = (
+        events_path.parent.parent
+        if events_path.name == "events.jsonl" and events_path.parent.name == "shared"
+        else events_path.parent
+    )
+    run = check_accepted_queue_complete if checker is None else checker
+    try:
+        report = run(bridge_root=bridge_root, events_path=events_path)
+    except Exception as exc:  # noqa: BLE001 - a gate checker always fails closed
+        return {
+            "ok": False,
+            "complete": False,
+            "decision": "accepted_queue_preflight_exception",
+            "errors": [f"{type(exc).__name__}: accepted queue preflight failed"],
+        }
+    if not isinstance(report, Mapping):
+        return {
+            "ok": False,
+            "complete": False,
+            "decision": "accepted_queue_preflight_invalid_result",
+            "errors": ["accepted queue preflight must return an object"],
+        }
+    return dict(report)
+
+
 def _bridge_peer_gate(
     *,
     events: Sequence[Mapping[str, Any]],
@@ -2325,6 +2403,7 @@ def _validate_evaluate_inputs(
     runner: object,
     merge_verifier: object,
     artifact_writer: object,
+    accepted_queue_checker: object,
 ) -> None:
     if not isinstance(pr_status, Mapping):
         raise _invalid("invalid_pr_status", "pr_status must be an object")
@@ -2362,6 +2441,7 @@ def _validate_evaluate_inputs(
         ("runner", runner),
         ("merge_verifier", merge_verifier),
         ("artifact_writer", artifact_writer),
+        ("accepted_queue_checker", accepted_queue_checker),
     ):
         if value is not None and not callable(value):
             raise _invalid(

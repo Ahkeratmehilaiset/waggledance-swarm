@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -112,6 +113,11 @@ def test_close_emits_event_that_clears_open_rco(tmp_path: Path) -> None:
     )
     assert result["ok"] is True
     assert result["emitted"] is True
+    assert result["queued"] is False
+    assert result["delivery_status"] == "canonical"
+    assert result["canonical_durable"] is True
+    assert result["retained_wal_path"] is None
+    assert result["retained_wal_sha256"] is None
     assert result["decision"] == "closed"
     assert result["proposed_event"]["type"] == "decision"
     assert result["proposed_event"]["status"] == "rco_closed_postmerge"
@@ -188,7 +194,52 @@ def test_dry_run_does_not_write(tmp_path: Path) -> None:
     assert events_path.read_text(encoding="utf-8") == before
 
 
-def test_writer_failure_maps_to_typed_close_decision_without_sidecars(
+def test_queued_close_exposes_receipt_without_reporting_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_opening_handoff("task-queued", "2026-05-20T18:00:00Z")],
+    )
+    events_path = bridge_root / "shared" / "events.jsonl"
+    before = events_path.read_bytes()
+    wal_path = bridge_root / "spool" / "pending-append-test.jsonl"
+    wal_sha256 = "b" * 64
+
+    monkeypatch.setattr(
+        closer,
+        "write_bridge_event",
+        lambda **kwargs: SimpleNamespace(
+            events_path=kwargs["events_path"],
+            delivery_status="queued",
+            canonical_durable=False,
+            retained_wal_path=wal_path,
+            retained_wal_sha256=wal_sha256,
+        ),
+    )
+
+    result = close_bridge_rco_request(
+        task_id="task-queued",
+        pr_number=9,
+        from_agent="claude",
+        bridge_root=bridge_root,
+        now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
+        emit=True,
+    )
+
+    assert result["emitted"] is False
+    assert result["queued"] is True
+    assert result["decision"] == "queued"
+    assert result["delivery_status"] == "queued"
+    assert result["canonical_durable"] is False
+    assert result["retained_wal_path"] == str(wal_path)
+    assert result["retained_wal_sha256"] == wal_sha256
+    assert "events_path" not in result
+    assert events_path.read_bytes() == before
+
+
+def test_mutex_timeout_queues_close_without_reporting_closed_or_sidecars(
     tmp_path: Path,
 ) -> None:
     bridge_root = _seed_bridge(
@@ -198,22 +249,28 @@ def test_writer_failure_maps_to_typed_close_decision_without_sidecars(
     events_path = bridge_root / "shared" / "events.jsonl"
     before = events_path.read_bytes()
 
-    with pytest.raises(CloseRcoError) as excinfo:
-        close_bridge_rco_request(
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        result = close_bridge_rco_request(
             task_id="task-write-fail",
             pr_number=8,
             from_agent="claude",
             bridge_root=bridge_root,
             now_utc=datetime(2026, 5, 21, 6, 0, tzinfo=timezone.utc),
             emit=True,
-            writer_backend=_PortableTestBackend(mutex_outcomes=["timeout"]),
+            writer_backend=_PortableTestBackend(mutex_outcomes=["clean", "timeout"]),
         )
 
-    assert excinfo.value.decision == "bridge_write_failed"
+    assert result["decision"] == "queued"
+    assert result["emitted"] is False
+    assert result["queued"] is True
+    assert result["delivery_status"] == "queued"
+    assert result["canonical_durable"] is False
+    assert result["retained_wal_sha256"]
+    assert Path(result["retained_wal_path"]).exists()
     assert events_path.read_bytes() == before
     assert not (bridge_root / "outbox").exists()
     assert not (bridge_root / "shared" / "last_claude.json").exists()
-    assert len(list((bridge_root / "spool").glob("failed-append-*.jsonl"))) == 1
+    assert len(list((bridge_root / "spool" / "accepted-v1" / "ready").glob("*.jsonl"))) == 1
 
 
 def test_invalid_from_agent_fails_before_wal_or_canonical_mutation(

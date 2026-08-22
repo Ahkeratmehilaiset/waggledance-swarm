@@ -13,6 +13,11 @@ AGENT_UUIDS = {
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
+CLEAR_ACCEPTED_QUEUE = {
+    "ok": True,
+    "complete": True,
+    "decision": "accepted_queue_absent",
+}
 
 
 def _status() -> dict:
@@ -63,6 +68,7 @@ def _evaluate(events: list[dict], *, author_agent: str = "fable-5") -> dict:
         head=HEAD,
         origin_main_sha=BASE,
         author_agent=author_agent,
+        accepted_queue_preflight=CLEAR_ACCEPTED_QUEUE,
     )
 
 

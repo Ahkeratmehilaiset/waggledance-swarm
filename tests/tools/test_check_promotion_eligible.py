@@ -31,6 +31,12 @@ AGENT_UUIDS = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
+CLEAR_ACCEPTED_QUEUE = {
+    "ok": True,
+    "complete": True,
+    "decision": "accepted_queue_complete",
+    "errors": [],
+}
 
 
 def _status(**overrides: object) -> dict:
@@ -127,6 +133,7 @@ def _evaluate(
     rco_agents: object = None,
     author_agent: str = "fable-5",
     from_agent: object = "promotion-pipeline",
+    accepted_queue_preflight: object = CLEAR_ACCEPTED_QUEUE,
 ) -> dict:
     return evaluate_promotion_eligibility(
         pr_status=_status() if status is None else status,
@@ -141,6 +148,7 @@ def _evaluate(
         rco_agents=rco_agents,
         author_agent=author_agent,
         from_agent=from_agent,
+        accepted_queue_preflight=accepted_queue_preflight,
     )
 
 
@@ -179,6 +187,24 @@ def test_all_gates_pass_with_rco1() -> None:
         ]
         == "bridge_consensus_verified"
     )
+
+
+def test_unresolved_accepted_queue_makes_promotion_ineligible() -> None:
+    report = _evaluate(
+        accepted_queue_preflight={
+            "ok": True,
+            "complete": False,
+            "decision": "accepted_queue_incomplete",
+            "errors": [],
+        }
+    )
+
+    assert report["eligible"] is False
+    assert report["would_promote"] is False
+    assert report["would_undraft"] is False
+    assert report["would_merge"] is False
+    assert report["gate_results"]["accepted_queue"]["complete"] is False
+    assert any("accepted bridge queue" in reason for reason in report["reasons"])
 
 
 def test_rco2_can_satisfy_recognized_rco_slot() -> None:
@@ -1892,7 +1918,10 @@ def test_cli_strict_json_inputs_fail_closed(
 def test_cli_returns_zero_only_when_eligible(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text(json.dumps(_status()), encoding="utf-8")
-    events_path = _events_path(tmp_path, _full_events())
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    events_path = _events_path(shared, _full_events())
 
     result = subprocess.run(
         [
@@ -1902,6 +1931,8 @@ def test_cli_returns_zero_only_when_eligible(tmp_path: Path) -> None:
             str(status_path),
             "--events",
             str(events_path),
+            "--bridge-root",
+            str(bridge_root),
             "--task-id",
             TASK,
             "--head",
@@ -1976,7 +2007,10 @@ def test_cli_returns_three_when_not_eligible(tmp_path: Path) -> None:
         json.dumps(_status(checks=[{"name": "unified", "state": "pending"}])),
         encoding="utf-8",
     )
-    events_path = _events_path(tmp_path, _full_events())
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    events_path = _events_path(shared, _full_events())
 
     result = subprocess.run(
         [
@@ -1986,6 +2020,8 @@ def test_cli_returns_three_when_not_eligible(tmp_path: Path) -> None:
             str(status_path),
             "--events",
             str(events_path),
+            "--bridge-root",
+            str(bridge_root),
             "--task-id",
             TASK,
             "--head",

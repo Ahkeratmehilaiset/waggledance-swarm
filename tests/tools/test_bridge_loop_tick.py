@@ -22,10 +22,10 @@ from tools.bridge_loop_tick import (
     WAKEUP_IN_FLIGHT,
     WAKEUP_QUIET,
     _git_ref_sha,
-    build_loop_tick,
+    build_loop_tick as _build_loop_tick_impl,
     build_pr_status_snapshot_fn,
     emit_peer_activation_event,
-    evaluate_merge_ready,
+    evaluate_merge_ready as _evaluate_merge_ready_impl,
     main,
     materialize_peer_activation_event,
     my_unmerged_rco_passes,
@@ -46,6 +46,22 @@ AGENT_UUIDS = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
+CLEAR_ACCEPTED_QUEUE = {
+    "ok": True,
+    "complete": True,
+    "decision": "accepted_queue_complete",
+    "errors": [],
+}
+
+
+def evaluate_merge_ready(*args, **kwargs):
+    kwargs.setdefault("accepted_queue_preflight", CLEAR_ACCEPTED_QUEUE)
+    return _evaluate_merge_ready_impl(*args, **kwargs)
+
+
+def build_loop_tick(*args, **kwargs):
+    kwargs.setdefault("accepted_queue_preflight", CLEAR_ACCEPTED_QUEUE)
+    return _build_loop_tick_impl(*args, **kwargs)
 
 
 def _with_agent_uuid(event: dict) -> dict:
@@ -371,6 +387,11 @@ def test_cli_emit_peer_activation_uses_runtime_bridge_root_env(
     assert exit_code == 0
     report = json.loads(capsys.readouterr().out)
     assert report["peer_activation"]["emitted"] is True
+    assert report["peer_activation"]["queued"] is False
+    assert report["peer_activation"]["delivery_status"] == "canonical"
+    assert report["peer_activation"]["canonical_durable"] is True
+    assert report["peer_activation"]["retained_wal_path"] is None
+    assert report["peer_activation"]["retained_wal_sha256"] is None
     assert str(runtime_bridge) in report["peer_activation"]["emitted_path"]
     events = [
         json.loads(line)
@@ -380,6 +401,65 @@ def test_cli_emit_peer_activation_uses_runtime_bridge_root_env(
     assert events[-1]["agent"] == "codex-tools-1"
     assert events[-1]["to"] == "codex-lead-1"
     assert events[-1]["status"] == "scout_requested"
+
+
+def test_cli_peer_activation_queued_is_not_reported_emitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    now = datetime.now(timezone.utc)
+    events_path = _events_file(
+        bridge_root,
+        [
+            _finding("codex-lead-1", _format_z(now - timedelta(minutes=40))),
+            _heartbeat("codex-lead-1", _format_z(now - timedelta(minutes=5))),
+        ],
+    )
+    before = events_path.read_bytes()
+    inbox = tmp_path / "operator_inbox"
+    inbox.mkdir()
+    wal_path = bridge_root / "spool" / "pending-append-test.jsonl"
+    wal_sha256 = "a" * 64
+
+    def queued_write(**kwargs):
+        return SimpleNamespace(
+            events_path=kwargs["events_path"],
+            delivery_status="queued",
+            canonical_durable=False,
+            retained_wal_path=wal_path,
+            retained_wal_sha256=wal_sha256,
+        )
+
+    monkeypatch.setattr("tools.bridge_loop_tick.write_bridge_event", queued_write)
+
+    exit_code = main(
+        [
+            "--agent",
+            "codex-tools-1",
+            "--bridge-root",
+            str(bridge_root),
+            "--events",
+            str(events_path),
+            "--inbox-dir",
+            str(inbox),
+            "--emit-peer-activation",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    activation = report["peer_activation"]
+    assert activation["emitted"] is False
+    assert activation["queued"] is True
+    assert activation["delivery_status"] == "queued"
+    assert activation["canonical_durable"] is False
+    assert activation["retained_wal_path"] == str(wal_path)
+    assert activation["retained_wal_sha256"] == wal_sha256
+    assert "emitted_path" not in activation
+    assert events_path.read_bytes() == before
 
 
 def test_cli_custom_events_write_failure_preserves_typed_decision(
@@ -420,8 +500,8 @@ def test_cli_custom_events_write_failure_preserves_typed_decision(
 
     assert exit_code == 1
     report = json.loads(capsys.readouterr().out)
-    assert report["decision"] == "bridge_write_failed"
-    assert "non-canonical" in report["errors"][0]
+    assert report["decision"] == "bridge_loop_tick_error"
+    assert "--events must equal" in report["errors"][0]
     assert not bridge_root.exists()
 
 
@@ -563,6 +643,32 @@ def test_merge_ready_when_green_clean_headmatch():
         "head_sha": HEAD,
         "canonical_task_id": "t1",
     }
+
+
+def test_merge_ready_refuses_unresolved_accepted_queue():
+    events = [
+        _rco_request("t1", ts="2026-05-22T13:00:00Z"),
+        _rco_pass("t1", pr=900, head=HEAD, ts="2026-05-22T13:30:00Z"),
+        *_three_identity_consensus("t1", pr=900, head=HEAD),
+    ]
+    queue_gate = {
+        "ok": True,
+        "complete": False,
+        "decision": "accepted_queue_incomplete",
+        "errors": [],
+    }
+
+    result = evaluate_merge_ready(
+        _candidate(),
+        events=events,
+        agent="claude",
+        snapshot_fn=lambda pr: _green_snapshot(pr),
+        accepted_queue_preflight=queue_gate,
+    )
+
+    assert result["ready"] is False
+    assert "accepted_queue_unresolved" in result["blockers"]
+    assert result["accepted_queue_preflight"] == queue_gate
 
 
 def test_merge_ready_with_short_approved_head_prefix():
@@ -829,6 +935,27 @@ def test_loop_tick_merge_ready_short_wakeup(tmp_path):
     assert report["recommended_wakeup_seconds"] == WAKEUP_ACT_NOW
 
 
+def test_loop_tick_surfaces_accepted_queue_preflight(tmp_path):
+    queue_gate = {
+        "ok": False,
+        "complete": False,
+        "decision": "accepted_queue_receipt_invalid",
+        "errors": ["invalid receipt"],
+    }
+
+    report = build_loop_tick(
+        agent="claude",
+        events=[],
+        claims=[],
+        inbox_dir=tmp_path,
+        now_utc=NOW,
+        snapshot_fn=None,
+        accepted_queue_preflight=queue_gate,
+    )
+
+    assert report["accepted_queue_preflight"] == queue_gate
+
+
 def test_loop_tick_caps_pr_snapshot_checks_to_recent_candidates(tmp_path):
     events = [
         _rco_pass("old", pr=100, head=HEAD, ts="2026-05-22T13:00:00Z"),
@@ -1033,7 +1160,7 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
         now_utc=NOW,
     )
 
-    events_path = emit_peer_activation_event(
+    write_result = emit_peer_activation_event(
         bridge_root=tmp_path,
         agent="codex",
         event_spec=rec["bridge_event"],
@@ -1041,6 +1168,9 @@ def test_emit_peer_activation_writes_valid_bridge_event(tmp_path):
         writer_backend=_PortableTestBackend(),
     )
 
+    events_path = write_result.events_path
+    assert write_result.delivery_status == "canonical"
+    assert write_result.canonical_durable is True
     line = events_path.read_text(encoding="utf-8").strip()
     event = json.loads(line)
     assert event["agent"] == "codex"

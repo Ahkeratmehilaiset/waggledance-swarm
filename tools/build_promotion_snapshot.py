@@ -29,6 +29,10 @@ from tools.check_promotion_eligible import (  # noqa: E402
     evaluate_promotion_eligibility,
 )
 from tools.bridge_pr_author import resolve_bridge_pr_author  # noqa: E402
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+    check_accepted_queue_complete,
+)
 from tools.pr_status_snapshot import (  # noqa: E402
     PrStatusSnapshotError,
     build_pr_status_snapshot,
@@ -171,11 +175,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _bridge_root_for_events(events_path: Path) -> Path:
+    return (
+        events_path.parent.parent
+        if events_path.name == "events.jsonl" and events_path.parent.name == "shared"
+        else events_path.parent
+    )
+
+
 def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
     args = build_parser().parse_args(argv)
-    events_path = args.events
-    if events_path is None:
-        events_path = resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
     report = build_promotion_snapshot(
         repo=args.repo,
         pr_number=args.pr_number,
@@ -189,6 +200,7 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
         prior_approved_diff_file=args.prior_approved_diff_file,
         rco_agents=args.rco_agent,
         runner=runner,
+        bridge_root=bridge_root,
     )
 
     if args.json:
@@ -219,9 +231,17 @@ def build_promotion_snapshot(
     prior_approved_diff_file: Path | None = None,
     rco_agents: Sequence[str] | None = None,
     runner: Runner | None = None,
+    bridge_root: Path | None = None,
 ) -> dict[str, Any]:
     """Return a dry-run report and never execute promotion commands."""
     try:
+        if bridge_root is not None and not bridge_events_path_matches_root(
+            bridge_root=bridge_root,
+            events_path=events_path,
+        ):
+            raise PromotionSnapshotError(
+                "events_path must equal <bridge_root>/shared/events.jsonl"
+            )
         (
             repo,
             task_id,
@@ -243,6 +263,14 @@ def build_promotion_snapshot(
             prior_approved_diff_file=prior_approved_diff_file,
             rco_agents=rco_agents,
             runner=runner,
+        )
+        accepted_queue_preflight = check_accepted_queue_complete(
+            bridge_root=(
+                _bridge_root_for_events(events_path)
+                if bridge_root is None
+                else bridge_root
+            ),
+            events_path=events_path,
         )
         events = _read_events_fail_closed(events_path)
         if _find_private_marker(events) is not None:
@@ -322,6 +350,7 @@ def build_promotion_snapshot(
             ),
             author_agent=author_agent,
             from_agent=from_agent,
+            accepted_queue_preflight=accepted_queue_preflight,
         )
         return _report(
             repo=repo,

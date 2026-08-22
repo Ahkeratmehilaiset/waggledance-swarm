@@ -362,6 +362,75 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
     assert report["apply_recheck"]["ok"] is True
 
 
+def test_unresolved_accepted_queue_blocks_an_otherwise_ready_plan(
+    tmp_path: Path,
+) -> None:
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        accepted_queue_checker=lambda **kwargs: {
+            "ok": True,
+            "complete": False,
+            "decision": "accepted_queue_incomplete",
+            "errors": [],
+        },
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "operator_review_required"
+    assert report["accepted_queue_preflight"]["complete"] is False
+    assert any("accepted bridge queue" in reason for reason in report["reasons"])
+
+
+def test_fresh_apply_recheck_sees_new_accepted_queue_item(
+    tmp_path: Path,
+) -> None:
+    runner_calls: list[list[str]] = []
+    preflight_calls: list[int] = []
+    runner = _canonical_apply_runner(runner_calls)
+
+    def accepted_queue_checker(**kwargs) -> dict:
+        preflight_calls.append(len(preflight_calls) + 1)
+        if len(preflight_calls) == 1:
+            return {
+                "ok": True,
+                "complete": True,
+                "decision": "accepted_queue_complete",
+                "errors": [],
+            }
+        return {
+            "ok": True,
+            "complete": False,
+            "decision": "accepted_queue_incomplete",
+            "errors": [],
+        }
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        apply=True,
+        runner=runner,
+        accepted_queue_checker=accepted_queue_checker,
+    )
+
+    assert preflight_calls == [1, 2]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner_calls)
+    assert report["decision"] == "operator_review_required"
+    assert report["apply_recheck"]["fresh_gate"][
+        "accepted_queue_preflight"
+    ]["complete"] is False
+
+
 def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
     calls: list[list[str]] = []
     events_path = _events_path(tmp_path, [_rco_pass()])

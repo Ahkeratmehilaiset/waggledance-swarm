@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -16,6 +18,8 @@ import tools.bridge_event_writer as bridge_writer
 from tools.bridge_event_writer import (
     APPEND_MUTEX_NAME,
     APPEND_MUTEX_TIMEOUT_MS,
+    QUEUE_PUBLICATION_MUTEX_NAME,
+    QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS,
     CHECKPOINT_SUFFIX,
     BridgeEventWriteError,
     WindowsAppendV1Backend,
@@ -52,6 +56,22 @@ def _rows(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _event_bytes(index: int = 1, *, agent: str = "codex") -> bytes:
+    return (
+        json.dumps(
+            _event(index, agent=agent),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _accepted_files(root: Path, state: str) -> list[Path]:
+    return list((root / "spool" / "accepted-v1" / state).glob("bridge-wal-v1-*.jsonl"))
+
+
 def test_lexical_guard_refuses_custom_target_before_creation(tmp_path: Path) -> None:
     root = tmp_path / "bridge-never-created"
     custom = tmp_path / "custom-events.jsonl"
@@ -66,6 +86,145 @@ def test_lexical_guard_refuses_custom_target_before_creation(tmp_path: Path) -> 
 
     assert not root.exists()
     assert not custom.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics required")
+def test_windows_writer_rejects_accepted_queue_spool_junction(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required to create a test junction")
+    root = tmp_path / "bridge"
+    outside = tmp_path / "outside-spool"
+    root.mkdir()
+    outside.mkdir()
+    environment = os.environ.copy()
+    environment["WD_TEST_QUEUE_LINK"] = os.fspath(root / "spool")
+    environment["WD_TEST_QUEUE_TARGET"] = os.fspath(outside)
+    subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:WD_TEST_QUEUE_LINK "
+            "-Target $env:WD_TEST_QUEUE_TARGET | Out-Null",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    with pytest.raises(BridgeEventWriteError, match="reparse point"):
+        write_bridge_event(bridge_root=root, event=_event())
+
+    assert list(outside.iterdir()) == []
+    assert not _canonical(root).exists()
+
+    ancestor_container = tmp_path / "ancestor-container"
+    ancestor_outside = tmp_path / "ancestor-outside"
+    ancestor_container.mkdir()
+    ancestor_outside.mkdir()
+    ancestor_link = ancestor_container / "parent-link"
+    environment["WD_TEST_QUEUE_LINK"] = os.fspath(ancestor_link)
+    environment["WD_TEST_QUEUE_TARGET"] = os.fspath(ancestor_outside)
+    subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:WD_TEST_QUEUE_LINK "
+            "-Target $env:WD_TEST_QUEUE_TARGET | Out-Null",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    missing_root = ancestor_link / "missing-bridge"
+
+    with pytest.raises(BridgeEventWriteError, match="reparse point"):
+        write_bridge_event(bridge_root=missing_root, event=_event(2))
+
+    assert not (ancestor_outside / "missing-bridge").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="portable symlink coverage runs off Windows")
+def test_injected_writer_queues_without_following_canonical_parent_symlink(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bridge"
+    outside = tmp_path / "outside-shared"
+    root.mkdir()
+    outside.mkdir()
+    (root / "shared").symlink_to(outside, target_is_directory=True)
+
+    with pytest.warns(RuntimeWarning, match="symbolic link"):
+        result = write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            write_sidecars=False,
+            backend=_PortableTestBackend(),
+        )
+
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_path.parent == root / "spool" / "accepted-v1" / "ready"
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction semantics required")
+def test_windows_writer_queues_without_following_shared_junction(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required to create a test junction")
+    root = tmp_path / "bridge"
+    outside = tmp_path / "outside-shared"
+    root.mkdir()
+    outside.mkdir()
+    environment = os.environ.copy()
+    environment["WD_TEST_QUEUE_LINK"] = os.fspath(root / "shared")
+    environment["WD_TEST_QUEUE_TARGET"] = os.fspath(outside)
+    subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:WD_TEST_QUEUE_LINK "
+            "-Target $env:WD_TEST_QUEUE_TARGET | Out-Null",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    with pytest.warns(RuntimeWarning, match="reparse point"):
+        result = write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            write_sidecars=False,
+        )
+
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_path.parent == root / "spool" / "accepted-v1" / "ready"
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -120,15 +279,42 @@ def test_production_backend_fails_closed_off_windows_before_creation(
 
 
 class _WalObservationBackend(_PortableTestBackend):
+    saw_publication_fence_before_pending = False
     saw_durable_pending_before_wait = False
 
     def acquire_mutex(self, name: str, timeout_ms: int):
-        if self.mutex_acquisitions == 0:
-            pending = list(self._root.glob("spool/.*.pending"))
+        if name == QUEUE_PUBLICATION_MUTEX_NAME:
+            assert _accepted_files(self._root, "pending") == []
+            self.saw_publication_fence_before_pending = True
+        elif name == APPEND_MUTEX_NAME and not self.saw_durable_pending_before_wait:
+            pending = _accepted_files(self._root, "pending")
             assert len(pending) == 1
-            assert pending[0].read_bytes().endswith(b"\n")
+            assert pending[0].read_bytes() == _event_bytes()
             self.saw_durable_pending_before_wait = True
         return super().acquire_mutex(name, timeout_ms)
+
+
+class _AcceptedPublishObservationBackend(_PortableTestBackend):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.accepted_publications: list[tuple[bool, bool]] = []
+
+    def move(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        replace: bool,
+        write_through: bool,
+    ) -> None:
+        if destination.parent.name == "ready":
+            self.accepted_publications.append((replace, write_through))
+        super().move(
+            source,
+            destination,
+            replace=replace,
+            write_through=write_through,
+        )
 
 
 def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
@@ -144,17 +330,29 @@ def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
         backend=backend,
     )
 
+    assert backend.saw_publication_fence_before_pending is True
     assert backend.saw_durable_pending_before_wait is True
     assert backend.mutex_requests == [
+        (
+            QUEUE_PUBLICATION_MUTEX_NAME,
+            QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS,
+        ),
         (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
         (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
     ]
+    assert QUEUE_PUBLICATION_MUTEX_NAME == (
+        r"Global\WaggleDanceBridgeAcceptedQueuePublicationV1"
+    )
+    assert QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS == 10_000
     assert APPEND_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
     assert APPEND_MUTEX_TIMEOUT_MS == 10_000
+    assert result.delivery_status == "canonical"
     assert result.canonical_durable is True
     assert result.checkpoint_advanced is True
     assert result.retained_wal_path is None
-    assert list((root / "spool").iterdir()) == []
+    assert result.retained_wal_sha256 is None
+    assert _accepted_files(root, "pending") == []
+    assert _accepted_files(root, "ready") == []
     assert _rows(_canonical(root)) == [_event()]
     raw = _canonical(root).read_bytes()
     assert raw.endswith(b"\n")
@@ -164,24 +362,68 @@ def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
     assert not Path(os.fspath(outbox) + CHECKPOINT_SUFFIX).exists()
 
 
-@pytest.mark.parametrize("outcome", ["timeout", "abandoned"])
-def test_unclean_mutex_never_mutates_canonical_and_promotes_wal(
+@pytest.mark.parametrize("outcome", ["error", "timeout", "abandoned"])
+def test_publication_fence_failure_precedes_wal_acceptance(
     tmp_path: Path,
     outcome: str,
 ) -> None:
     root = tmp_path / "bridge"
     backend = _PortableTestBackend(mutex_outcomes=[outcome])
 
-    with pytest.raises(BridgeEventWriteError) as excinfo:
+    with pytest.raises(
+        BridgeEventWriteError,
+        match="accepted queue publication fence",
+    ):
         write_bridge_event(bridge_root=root, event=_event(), backend=backend)
+
+    assert not root.exists()
+    assert backend.mutex_requests == [
+        (
+            QUEUE_PUBLICATION_MUTEX_NAME,
+            QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS,
+        )
+    ]
+
+
+@pytest.mark.parametrize("outcome", ["error", "timeout", "abandoned"])
+def test_unclean_mutex_returns_verified_queued_delivery_without_sidecars(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    root = tmp_path / "bridge"
+    backend = _AcceptedPublishObservationBackend(
+        mutex_outcomes=["clean", outcome]
+    )
+
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        result = write_bridge_event(bridge_root=root, event=_event(), backend=backend)
 
     assert not _canonical(root).exists()
     assert not (root / "shared").exists()
-    assert excinfo.value.wal_path is not None
-    assert excinfo.value.wal_path.name.startswith("failed-append-")
-    assert excinfo.value.wal_path.read_bytes().endswith(b"\n")
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.checkpoint_advanced is False
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.parent == root / "spool" / "accepted-v1" / "ready"
+    assert re.fullmatch(r"bridge-wal-v1-[0-9a-f]{32}\.jsonl", result.retained_wal_path.name)
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert re.fullmatch(r"[0-9a-f]{64}", result.retained_wal_sha256)
+    assert result.outbox_written is False
+    assert result.last_file_written is False
+    assert not (root / "outbox").exists()
+    assert not (root / "shared" / "last_codex.json").exists()
+    assert _accepted_files(root, "pending") == []
+    assert _accepted_files(root, "ready") == [result.retained_wal_path]
+    marker = result.retained_wal_path.parent / (
+        f".{result.retained_wal_path.name}.pending-recovery-blocked"
+    )
+    marker_record = json.loads(marker.read_text("utf-8"))
+    assert marker_record["wal_leaf"] == result.retained_wal_path.name
+    assert marker_record["expected_sha256"] == result.retained_wal_sha256
+    assert backend.accepted_publications == [(False, True), (False, True)]
     if outcome == "abandoned":
-        assert "dirty ownership" in str(excinfo.value)
+        assert any("dirty ownership" in warning for warning in result.warning_messages)
 
 
 def test_checkpoint_has_exact_order_schema_decimal_lengths_identity_and_tail_sha(
@@ -384,17 +626,23 @@ def test_full_scan_refuses_invalid_utf8_and_preserves_canonical(tmp_path: Path) 
     original = b'{"old":"\xff"}\n'
     events.write_bytes(original)
 
-    with pytest.raises(BridgeEventWriteError) as excinfo:
-        write_bridge_event(
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        result = write_bridge_event(
             bridge_root=root,
             event=_event(),
-            write_sidecars=False,
             backend=_PortableTestBackend(),
         )
 
     assert events.read_bytes() == original
-    assert excinfo.value.wal_path is not None
-    assert excinfo.value.wal_path.is_file()
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert result.outbox_written is False
+    assert result.last_file_written is False
+    assert not (root / "outbox").exists()
+    assert not (root / "shared" / "last_codex.json").exists()
 
 
 class _PartialFailureFile:
@@ -419,20 +667,264 @@ class _PartialFailureBackend(_PortableTestBackend):
         return _PartialFailureFile(super().open_or_create_shared_read(path))
 
 
-def test_preflush_partial_append_rolls_back_and_promotes_wal(tmp_path: Path) -> None:
+def test_preflush_partial_append_rolls_back_and_returns_queued_delivery(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "bridge"
 
-    with pytest.raises(BridgeEventWriteError) as excinfo:
-        write_bridge_event(
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        result = write_bridge_event(
             bridge_root=root,
             event=_event(),
-            write_sidecars=False,
             backend=_PartialFailureBackend(),
         )
 
     assert _canonical(root).read_bytes() == b""
-    assert excinfo.value.wal_path is not None
-    assert excinfo.value.wal_path.is_file()
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.checkpoint_advanced is False
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert result.outbox_written is False
+    assert result.last_file_written is False
+    assert not (root / "outbox").exists()
+    assert not (root / "shared" / "last_codex.json").exists()
+
+
+class _RollbackFailureFile(_PartialFailureFile):
+    def truncate(self, length: int) -> None:
+        raise OSError("simulated rollback failure")
+
+
+class _RollbackFailureBackend(_PortableTestBackend):
+    def open_or_create_shared_read(self, path: Path):
+        return _RollbackFailureFile(super().open_or_create_shared_read(path))
+
+
+def test_append_rollback_uncertainty_returns_recovery_queued_delivery(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bridge"
+
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        result = write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            backend=_RollbackFailureBackend(),
+        )
+
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.parent == root / "spool" / "accepted-v1" / "ready"
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert any("ROLLBACK FAILED" in warning for warning in result.warning_messages)
+    assert _accepted_files(root, "pending") == []
+    assert not (root / "outbox").exists()
+    assert not (root / "shared" / "last_codex.json").exists()
+
+
+class _AcceptedPublicationUncertaintyBackend(_PortableTestBackend):
+    def __init__(self, mode: str) -> None:
+        super().__init__(mutex_outcomes=["clean", "timeout"])
+        self.mode = mode
+
+    def move(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        replace: bool,
+        write_through: bool,
+    ) -> None:
+        if (
+            destination.parent.name == "ready"
+            and destination.name.startswith("bridge-wal-v1-")
+            and self.mode == "promotion"
+        ):
+            raise OSError("simulated accepted WAL promotion failure")
+        super().move(
+            source,
+            destination,
+            replace=replace,
+            write_through=write_through,
+        )
+
+def test_ready_publication_failure_returns_accepted_pending_queue(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bridge"
+
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        result = write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            backend=_AcceptedPublicationUncertaintyBackend("promotion"),
+        )
+
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.parent.name == "pending"
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
+    assert not _canonical(root).exists()
+    assert not (root / "shared").exists()
+    assert not (root / "outbox").exists()
+    assert not (root / "shared" / "last_codex.json").exists()
+    assert _accepted_files(root, "ready") == []
+    marker = root / "spool" / "accepted-v1" / "ready" / (
+        f".{result.retained_wal_path.name}.pending-recovery-blocked"
+    )
+    assert json.loads(marker.read_text("utf-8"))["expected_sha256"] == (
+        result.retained_wal_sha256
+    )
+
+
+class _PendingReadbackMismatchFile:
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.path = inner.path
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def read_at(self, offset: int, count: int) -> bytes:
+        payload = self._inner.read_at(offset, count)
+        return payload[:-1] + b"x" if payload else payload
+
+
+class _PendingReadbackMismatchBackend(_PortableTestBackend):
+    def create_new(self, path: Path, *, hidden: bool):
+        return _PendingReadbackMismatchFile(
+            super().create_new(path, hidden=hidden)
+        )
+
+
+class _UnexcludablePendingMismatchBackend(_PendingReadbackMismatchBackend):
+    def move(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        replace: bool,
+        write_through: bool,
+    ) -> None:
+        if source.parent.name == "pending" and destination.parent.name == "quarantine":
+            raise OSError("simulated unaccepted quarantine failure")
+        super().move(
+            source,
+            destination,
+            replace=replace,
+            write_through=write_through,
+        )
+
+    def delete(self, path: Path) -> None:
+        if path.parent.name == "pending":
+            raise OSError("simulated unaccepted delete failure")
+        super().delete(path)
+
+
+def test_unverified_pending_wal_is_excluded_before_hard_error(tmp_path: Path) -> None:
+    root = tmp_path / "bridge"
+
+    with pytest.raises(BridgeEventWriteError, match="excluded from automatic replay"):
+        write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            backend=_PendingReadbackMismatchBackend(),
+        )
+
+    assert not _canonical(root).exists()
+    assert _accepted_files(root, "pending") == []
+    assert _accepted_files(root, "ready") == []
+    quarantine = root / "spool" / "accepted-v1" / "quarantine"
+    assert len(list(quarantine.glob("unaccepted-bridge-wal-v1-*.jsonl"))) == 1
+
+
+def test_acceptance_unknown_markerless_pending_never_auto_replays(tmp_path: Path) -> None:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is required for the accepted queue smoke")
+    root = tmp_path / "bridge"
+
+    with pytest.raises(BridgeEventWriteError, match="acceptance is unknown"):
+        write_bridge_event(
+            bridge_root=root,
+            event=_event(),
+            backend=_UnexcludablePendingMismatchBackend(),
+        )
+
+    pending = _accepted_files(root, "pending")
+    assert len(pending) == 1
+    marker = root / "spool" / "accepted-v1" / "ready" / (
+        f".{pending[0].name}.pending-recovery-blocked"
+    )
+    assert not marker.exists()
+    source_bin = Path(__file__).parents[2] / ".agent-bridge" / "bin"
+    isolated_bin = tmp_path / "isolated-bin"
+    isolated_bin.mkdir()
+    mutex_suffix = hashlib.sha256(os.fspath(tmp_path).encode()).hexdigest()[:16]
+    replacements = {
+        r"Global\WaggleDanceBridgeAcceptedQueuePublicationV1": (
+            rf"Local\WaggleDanceBridgeAcceptedQueuePublicationV1-{mutex_suffix}"
+        ),
+        r"Global\WaggleDanceBridgeAppendV1": (
+            rf"Local\WaggleDanceBridgeAppendV1-{mutex_suffix}"
+        ),
+        r"Global\WaggleDanceBridgeSpoolReplayV1": (
+            rf"Local\WaggleDanceBridgeSpoolReplayV1-{mutex_suffix}"
+        ),
+    }
+    for script_name in (
+        "Drain-AcceptedBridgeQueue.ps1",
+        "Restore-BridgeSpool.ps1",
+    ):
+        script_text = (source_bin / script_name).read_text(encoding="utf-8")
+        for original, replacement in replacements.items():
+            if original in script_text:
+                script_text = script_text.replace(original, replacement)
+        assert rf"Local\WaggleDanceBridgeAppendV1-{mutex_suffix}" in script_text
+        assert (
+            rf"Local\WaggleDanceBridgeAcceptedQueuePublicationV1-{mutex_suffix}"
+            in script_text
+        )
+        if script_name == "Restore-BridgeSpool.ps1":
+            assert (
+                rf"Local\WaggleDanceBridgeSpoolReplayV1-{mutex_suffix}"
+                in script_text
+            )
+        (isolated_bin / script_name).write_text(script_text, encoding="utf-8")
+    drain = isolated_bin / "Drain-AcceptedBridgeQueue.ps1"
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            os.fspath(drain),
+            "-BridgeRoot",
+            os.fspath(root),
+            "-PendingMinAgeSeconds",
+            "0",
+            "-ReceiptJson",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    receipt = json.loads(completed.stdout)
+    assert receipt["pending_promoted"] == 0
+    assert receipt["pending_failed"] == 1
+    assert receipt["drained"] == 0
+    assert receipt["failed"] == 1
+    assert pending[0].is_file()
+    assert not _canonical(root).exists()
 
 
 class _AfterCanonicalCheckpointFailureBackend(_PortableTestBackend):
@@ -467,9 +959,13 @@ def test_postflush_checkpoint_failure_returns_success_and_retains_wal(
         )
 
     assert result.canonical_durable is True
+    assert result.delivery_status == "canonical"
     assert result.checkpoint_advanced is False
     assert result.retained_wal_path is not None
     assert result.retained_wal_path.is_file()
+    assert result.retained_wal_path.parent == root / "spool" / "accepted-v1" / "ready"
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
     assert _rows(_canonical(root)) == [_event()]
 
 
@@ -496,7 +992,7 @@ def test_warning_filter_cannot_turn_postflush_success_into_retryable_failure(
 
 class _WalCleanupFailureBackend(_PortableTestBackend):
     def delete(self, path: Path) -> None:
-        if path.name.endswith(".pending"):
+        if path.parent.name == "pending" and path.parent.parent.name == "accepted-v1":
             raise OSError("simulated WAL cleanup failure")
         super().delete(path)
 
@@ -515,8 +1011,12 @@ def test_postflush_wal_cleanup_failure_returns_success_and_retains_wal(
         )
 
     assert result.canonical_durable is True
+    assert result.delivery_status == "canonical"
     assert result.retained_wal_path is not None
     assert result.retained_wal_path.is_file()
+    assert result.retained_wal_path.parent == root / "spool" / "accepted-v1" / "ready"
+    assert result.retained_wal_path.read_bytes() == _event_bytes()
+    assert result.retained_wal_sha256 == hashlib.sha256(_event_bytes()).hexdigest()
     assert _rows(_canonical(root)) == [_event()]
 
 
@@ -524,7 +1024,9 @@ def test_sidecar_uses_fresh_clean_mutex_and_failure_is_best_effort(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "bridge"
-    backend = _PortableTestBackend(mutex_outcomes=["clean", "abandoned"])
+    backend = _PortableTestBackend(
+        mutex_outcomes=["clean", "clean", "abandoned"]
+    )
 
     with pytest.warns(RuntimeWarning, match="auxiliary outbox append was skipped"):
         result = write_bridge_event(
@@ -536,7 +1038,7 @@ def test_sidecar_uses_fresh_clean_mutex_and_failure_is_best_effort(
     assert result.canonical_durable is True
     assert result.outbox_written is False
     assert result.last_file_written is True
-    assert backend.mutex_acquisitions == 2
+    assert backend.mutex_acquisitions == 3
     assert not (root / "outbox").exists()
     assert json.loads((root / "shared" / "last_codex.json").read_text("utf-8")) == _event()
 
@@ -554,7 +1056,7 @@ def test_sidecars_can_be_disabled_for_canonical_only_callers(tmp_path: Path) -> 
 
     assert result.outbox_written is False
     assert result.last_file_written is False
-    assert backend.mutex_acquisitions == 1
+    assert backend.mutex_acquisitions == 2
     assert not (root / "outbox").exists()
     assert not (root / "shared" / "last_codex.json").exists()
 
@@ -662,6 +1164,47 @@ def test_windows_python_and_powershell_writers_handoff_on_same_contract(
         "powershell-append-v1-handoff",
         "python-append-v1-2",
     ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows hard-link semantics required")
+def test_windows_writer_queues_without_mutating_hardlinked_canonical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "bridge"
+    shared = root / "shared"
+    shared.mkdir(parents=True)
+    sentinel = tmp_path / "outside-sentinel.jsonl"
+    original = _event_bytes(9)
+    sentinel.write_bytes(original)
+    os.link(sentinel, _canonical(root))
+    mutex_suffix = hashlib.sha256(os.fspath(tmp_path).encode()).hexdigest()[:16]
+    monkeypatch.setattr(
+        bridge_writer,
+        "APPEND_MUTEX_NAME",
+        rf"Local\WaggleDanceBridgeAppendV1-{mutex_suffix}",
+    )
+    monkeypatch.setattr(
+        bridge_writer,
+        "QUEUE_PUBLICATION_MUTEX_NAME",
+        rf"Local\WaggleDanceBridgeAcceptedQueuePublicationV1-{mutex_suffix}",
+    )
+
+    with pytest.warns(RuntimeWarning, match="plain single-link"):
+        result = write_bridge_event(
+            bridge_root=root,
+            event=_event(10),
+            write_sidecars=False,
+            backend=WindowsAppendV1Backend(),
+        )
+
+    assert result.delivery_status == "queued"
+    assert result.canonical_durable is False
+    assert any("plain single-link" in item for item in result.warning_messages)
+    assert sentinel.read_bytes() == original
+    assert _canonical(root).read_bytes() == original
+    assert result.retained_wal_path is not None
+    assert result.retained_wal_path.is_file()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows kernel32 concurrency probe")

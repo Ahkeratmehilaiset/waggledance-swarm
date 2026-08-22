@@ -28,6 +28,12 @@ AGENT_UUIDS = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "fable-5": "f8b1e5c0-3d2a-4e6b-9c1f-7a0d5e2b4c80",
 }
+CLEAR_ACCEPTED_QUEUE = {
+    "ok": True,
+    "complete": True,
+    "decision": "accepted_queue_complete",
+    "errors": [],
+}
 
 
 def _status(**overrides: object) -> dict:
@@ -79,7 +85,12 @@ def _full_events() -> list[dict]:
     ]
 
 
-def _report(*, status: dict | None = None, events: list[dict] | None = None) -> dict:
+def _report(
+    *,
+    status: dict | None = None,
+    events: list[dict] | None = None,
+    accepted_queue_preflight: dict | None = CLEAR_ACCEPTED_QUEUE,
+) -> dict:
     return build_promotion_driver_lag_report(
         pr_status=status or _status(),
         events=events if events is not None else _full_events(),
@@ -87,6 +98,7 @@ def _report(*, status: dict | None = None, events: list[dict] | None = None) -> 
         head=HEAD,
         origin_main_sha=BASE,
         author_agent="fable-5",
+        accepted_queue_preflight=accepted_queue_preflight,
     )
 
 
@@ -125,6 +137,23 @@ def test_open_nondraft_eligible_pr_reports_merge_only_pending() -> None:
     assert report["driver_action_required"] is True
     assert report["required_driver_actions"] == ["merge"]
     assert report["lag_reason"] == "driver_action_pending"
+
+
+def test_unresolved_accepted_queue_suppresses_driver_action() -> None:
+    report = _report(
+        accepted_queue_preflight={
+            "ok": True,
+            "complete": False,
+            "decision": "accepted_queue_incomplete",
+            "errors": [],
+        }
+    )
+
+    assert report["decision"] == "promotion_driver_lag_absent"
+    assert report["driver_action_required"] is False
+    assert report["required_driver_actions"] == []
+    assert report["promotion"]["eligible"] is False
+    assert report["promotion"]["gate_ok"]["accepted_queue"] is False
 
 
 def test_nonclean_raw_merge_state_fails_closed() -> None:
@@ -265,7 +294,10 @@ def test_invalid_verifier_input_is_fail_closed() -> None:
 def test_cli_outputs_json_report_without_writing(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text(json.dumps(_status(), sort_keys=True), encoding="utf-8")
-    events_path = _events_path(tmp_path, _full_events())
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    events_path = _events_path(shared, _full_events())
 
     result = subprocess.run(
         [
@@ -275,6 +307,8 @@ def test_cli_outputs_json_report_without_writing(tmp_path: Path) -> None:
             str(status_path),
             "--events",
             str(events_path),
+            "--bridge-root",
+            str(bridge_root),
             "--task-id",
             TASK,
             "--head",

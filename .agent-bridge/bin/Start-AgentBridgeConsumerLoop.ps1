@@ -555,6 +555,27 @@ while ($true) {
     if ($endTime -and (Get-Date) -ge $endTime) { break }
 
     $iteration += 1
+    $acceptedDrainError = ''
+    if (-not $DryRun) {
+        $acceptedDrain = Join-Path $PSScriptRoot 'Drain-AcceptedBridgeQueue.ps1'
+        if (-not (Test-Path -LiteralPath $acceptedDrain -PathType Leaf)) {
+            $acceptedDrainError = "accepted-v1 drain helper missing: $acceptedDrain"
+        } else {
+            try {
+                $acceptedDrainSummary = (& $acceptedDrain `
+                    -BridgeRoot $runtimeFull -ReceiptJson) |
+                    ConvertFrom-Json -ErrorAction Stop
+                if ([int64]$acceptedDrainSummary.failed -gt 0) {
+                    throw (
+                        "accepted-v1 drain failed for " +
+                        "$($acceptedDrainSummary.failed) WAL(s)"
+                    )
+                }
+            } catch {
+                $acceptedDrainError = $_.Exception.Message
+            }
+        }
+    }
     $wakeRaw = @(& $testWake -Agent $Agent -RuntimeRoot $runtimeFull)
     $wakeConsumed = $false
     foreach ($item in $wakeRaw) {
@@ -672,6 +693,7 @@ while ($true) {
         heartbeat_job_id  = if ($null -ne $heartbeatJob) { [string]$heartbeatJob.Id } else { '' }
         heartbeat_error   = $heartbeatError
         status_event_error = $statusEventError
+        accepted_drain_error = $acceptedDrainError
     }
 
     if ($MaxIterations -gt 0 -and $iteration -ge $MaxIterations) { break }

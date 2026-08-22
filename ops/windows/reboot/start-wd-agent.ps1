@@ -302,8 +302,15 @@ function Assert-LaneBootstrapIntegrity {
     }
     $expectedFiles[$leaf.ToLowerInvariant()] = $true
   }
-  if (-not $expectedFiles.ContainsKey('start-agentbridgesession.ps1')) {
-    throw 'lane bootstrap manifest is missing Start-AgentBridgeSession.ps1'
+  foreach ($requiredLeaf in @(
+      'Drain-AcceptedBridgeQueue.ps1',
+      'Restore-BridgeSpool.ps1',
+      'Start-AgentBridgeSession.ps1',
+      'Write-AgentEvent.ps1'
+    )) {
+    if (-not $expectedFiles.ContainsKey($requiredLeaf.ToLowerInvariant())) {
+      throw "lane bootstrap manifest is missing required helper: $requiredLeaf"
+    }
   }
   $actualFiles = @(Get-ChildItem -LiteralPath $BootstrapRoot -File)
   if ($actualFiles.Count -ne $expectedFiles.Count) {
@@ -529,11 +536,15 @@ $bootstrapRoot = if ($sourceTreeMode) {
   Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin'
 }
 $bootstrapRoot = Resolve-NormalizedPath -Path $bootstrapRoot
+$drainer = Join-Path $bootstrapRoot 'Drain-AcceptedBridgeQueue.ps1'
+$replayer = Join-Path $bootstrapRoot 'Restore-BridgeSpool.ps1'
 $starter = Join-Path $bootstrapRoot 'Start-AgentBridgeSession.ps1'
 $writer = Join-Path $bootstrapRoot 'Write-AgentEvent.ps1'
 Assert-LaneBootstrapIntegrity `
   -ScriptRoot $PSScriptRoot `
   -BootstrapRoot $bootstrapRoot
+[void](Read-NonEmptyFile -Path $drainer -Label "lane '$Agent' accepted queue drainer")
+[void](Read-NonEmptyFile -Path $replayer -Label "lane '$Agent' targeted replayer")
 [void](Read-NonEmptyFile -Path $starter -Label "lane '$Agent' bridge starter")
 [void](Read-NonEmptyFile -Path $writer -Label "lane '$Agent' bridge writer")
 $targetState = $manifest.target_state
@@ -901,19 +912,40 @@ $targetPayload = [ordered]@{
   resumed_branch = $actualBranch
   resumed_head = $actualHead
 } | ConvertTo-Json -Compress
-& $writer `
-  -Agent $Agent `
-  -Type status `
-  -TaskId ([string]$targetState.id) `
-  -Status target_state_manifested `
-  -Message "Prepared the exact visual WaggleDance target for the initial model turn in reboot generation $RunId; this grants no capability or authority." `
-  -RunId $RunId `
-  -Role ([string]$lane.role) `
-  -AgentUuid ([string]$lane.agent_uuid) `
-  -SessionId $RunId `
-  -Capabilities @($lane.capabilities | ForEach-Object { [string]$_ }) `
-  -PayloadJson $targetPayload |
-  Out-Host
+$targetOutput = @(
+  & $writer `
+    -Agent $Agent `
+    -Type status `
+    -TaskId ([string]$targetState.id) `
+    -Status target_state_manifested `
+    -Message "Prepared the exact visual WaggleDance target for the initial model turn in reboot generation $RunId; this grants no capability or authority." `
+    -RunId $RunId `
+    -Role ([string]$lane.role) `
+    -AgentUuid ([string]$lane.agent_uuid) `
+    -SessionId $RunId `
+    -Capabilities @($lane.capabilities | ForEach-Object { [string]$_ }) `
+    -PayloadJson $targetPayload
+)
+$targetEvents = @($targetOutput | Where-Object {
+  $_ -is [psobject] -and [string]$_.status -ceq 'target_state_manifested'
+})
+$targetDelivery = $null
+if ($targetEvents.Count -eq 1) {
+  $targetDeliveryProperty = $targetEvents[0].PSObject.Properties['_bridge_delivery']
+  if ($null -ne $targetDeliveryProperty) {
+    $targetDelivery = $targetDeliveryProperty.Value
+  }
+}
+if (
+  $targetEvents.Count -ne 1 -or
+  $null -eq $targetDelivery -or
+  [string]$targetDelivery.delivery_status -cne 'canonical' -or
+  $targetDelivery.canonical_durable -isnot [bool] -or
+  $targetDelivery.canonical_durable -ne $true
+) {
+  throw "target-state manifest event was not canonically durable for $Agent"
+}
+$targetOutput | Out-Host
 Assert-LaneBootstrapIntegrity `
   -ScriptRoot $PSScriptRoot `
   -BootstrapRoot $bootstrapRoot
@@ -924,6 +956,8 @@ $canaryPayload = [ordered]@{
   generation = $bundleGeneration
   target_state_id = [string]$targetState.id
   manifest_writer = 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
+  audit_phase = 'canonical_append_probe'
+  success_requires_canonical_delivery = $true
 } | ConvertTo-Json -Compress
 $canaryStartedUtc = [DateTimeOffset]::UtcNow
 $canaryOutput = @(
@@ -932,7 +966,7 @@ $canaryOutput = @(
     -Type status `
     -TaskId $canaryTaskId `
     -Status append_canary `
-    -Message "Verified the manifest-hashed canonical writer for $Agent generation $RunId." `
+    -Message "Canonical append canary attempted with the manifest-hashed writer for $Agent generation $RunId; success requires its canonical delivery receipt." `
     -To '' `
     -RunId $RunId `
     -Role ([string]$lane.role) `
@@ -947,6 +981,13 @@ $canaryEvents = @(
     $_ -is [psobject] -and [string]$_.status -ceq 'append_canary'
   }
 )
+$canaryDelivery = $null
+if ($canaryEvents.Count -eq 1) {
+  $canaryDeliveryProperty = $canaryEvents[0].PSObject.Properties['_bridge_delivery']
+  if ($null -ne $canaryDeliveryProperty) {
+    $canaryDelivery = $canaryDeliveryProperty.Value
+  }
+}
 $canaryLatencyMs = [int64][Math]::Ceiling(
   ($canaryCompletedUtc - $canaryStartedUtc).TotalMilliseconds
 )
@@ -959,6 +1000,10 @@ if (
   [string]$canaryEvents[0].task_id -cne $canaryTaskId -or
   [string]$canaryEvents[0].to -cne '' -or
   [int]$canaryEvents[0].pid -ne $PID -or
+  $null -eq $canaryDelivery -or
+  [string]$canaryDelivery.delivery_status -cne 'canonical' -or
+  $canaryDelivery.canonical_durable -isnot [bool] -or
+  $canaryDelivery.canonical_durable -ne $true -or
   $canaryLatencyMs -gt 5000
 ) {
   throw "manifest-writer append canary failed for $Agent"

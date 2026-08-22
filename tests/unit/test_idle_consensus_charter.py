@@ -69,6 +69,8 @@ ADVERSARIAL_GATE_FILE_DENYLIST_ENTRIES = {
     "tools/idle_consensus_to_pr.py",
     "tools/check_promotion_eligible.py",
     "tests/tools/test_check_promotion_eligible.py",
+    "tools/bridge_accepted_queue_preflight.py",
+    "tests/tools/test_bridge_accepted_queue_preflight.py",
 }
 MAGMA_PROVENANCE_FILE_DENYLIST_ENTRIES = {
     "tools/verify_magma_receipt.py",

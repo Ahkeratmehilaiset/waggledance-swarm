@@ -134,13 +134,131 @@ def test_emit_bridge_event_invokes_writer_with_authoritative_payload(tmp_path: P
 
     def runner(command: list[str]) -> SimpleNamespace:
         calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    **event,
+                    "_bridge_delivery": {
+                        "schema": "waggledance.bridge.delivery-receipt.v1",
+                        "accepted": True,
+                        "delivery_status": "canonical",
+                        "canonical_durable": True,
+                        "retained_wal_path": None,
+                        "retained_wal_sha256": None,
+                    },
+                }
+            ),
+        )
 
     report = emit_bridge_event(event, bridge_root=tmp_path, run_id="run-1", runner=runner)
 
-    assert report == {"returncode": 0}
+    assert report == {
+        "returncode": 0,
+        "delivery_status": "canonical",
+        "canonical_durable": True,
+        "retained_wal_path": None,
+        "retained_wal_sha256": None,
+    }
     command = calls[0]
     payload = json.loads(command[command.index("-PayloadJson") + 1])
     assert command[command.index("-Type") + 1] == "wake_request"
     assert command[command.index("-RunId") + 1] == "run-1"
+    assert "-ReceiptJson" in command
+    assert command[command.index("-WarningAction") + 1] == "SilentlyContinue"
     assert payload["head"] == HEAD
+
+
+def test_emit_bridge_event_reports_queued_receipt_without_claiming_canonical(
+    tmp_path: Path,
+) -> None:
+    writer = tmp_path / "bin" / "Write-AgentEvent.ps1"
+    writer.parent.mkdir()
+    writer.write_text("# test writer\n", encoding="utf-8")
+    event = build_pr_review_wake_event(
+        pr_number=1505,
+        agent="codex-lead-1",
+        task_id="codex-lead-1/phase2e",
+        to="claude-rco-1",
+        runner=_runner(_payload()),
+    )
+    wal_path = tmp_path / "spool" / "accepted-v1" / "ready" / (
+        "bridge-wal-v1-" + "1" * 32 + ".jsonl"
+    )
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    **event,
+                    "_bridge_delivery": {
+                        "schema": "waggledance.bridge.delivery-receipt.v1",
+                        "accepted": True,
+                        "delivery_status": "queued",
+                        "canonical_durable": False,
+                        "retained_wal_path": str(wal_path),
+                        "retained_wal_sha256": "a" * 64,
+                    },
+                }
+            ),
+        )
+
+    report = emit_bridge_event(event, bridge_root=tmp_path, runner=runner)
+
+    assert report == {
+        "returncode": 0,
+        "delivery_status": "queued",
+        "canonical_durable": False,
+        "retained_wal_path": str(wal_path),
+        "retained_wal_sha256": "a" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        {
+            "schema": "waggledance.bridge.delivery-receipt.v1",
+            "accepted": True,
+            "delivery_status": "canonical",
+            "canonical_durable": False,
+            "retained_wal_path": None,
+            "retained_wal_sha256": None,
+        },
+        {
+            "schema": "waggledance.bridge.delivery-receipt.v1",
+            "accepted": True,
+            "delivery_status": "queued",
+            "canonical_durable": False,
+            "retained_wal_path": None,
+            "retained_wal_sha256": None,
+        },
+    ],
+)
+def test_emit_bridge_event_rejects_inconsistent_delivery_receipt(
+    tmp_path: Path,
+    delivery: dict[str, object],
+) -> None:
+    writer = tmp_path / "bin" / "Write-AgentEvent.ps1"
+    writer.parent.mkdir()
+    writer.write_text("# test writer\n", encoding="utf-8")
+    event = build_pr_review_wake_event(
+        pr_number=1505,
+        agent="codex-lead-1",
+        task_id="codex-lead-1/phase2e",
+        to="claude-rco-1",
+        runner=_runner(_payload()),
+    )
+
+    def runner(command: list[str]) -> SimpleNamespace:
+        del command
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({**event, "_bridge_delivery": delivery}),
+        )
+
+    with pytest.raises(PrBridgeWakeError) as excinfo:
+        emit_bridge_event(event, bridge_root=tmp_path, runner=runner)
+
+    assert excinfo.value.report["decision"] == "invalid_writer_receipt"

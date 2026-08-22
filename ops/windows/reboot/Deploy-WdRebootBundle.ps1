@@ -652,6 +652,8 @@ foreach ($required in @(
         'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1',
+        'tools-bootstrap/.agent-bridge/bin/Restore-BridgeSpool.ps1',
         'tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1',
         'tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeConsumerLoop.ps1',
         'tools-bootstrap/.agent-bridge/bin/Start-AgentBridgeSession.ps1',

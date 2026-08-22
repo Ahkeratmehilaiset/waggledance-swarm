@@ -23,6 +23,10 @@ from tools.check_promotion_eligible import (  # noqa: E402
     DEFAULT_RCO_AGENTS,
     evaluate_promotion_eligibility,
 )
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+    check_accepted_queue_complete,
+)
 from waggledance.core.idle_consensus_charter import DEFAULT_CHARTER_PATH  # noqa: E402
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
@@ -82,11 +86,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    events_path = (
-        args.events
-        or resolve_bridge_root(args.bridge_root) / "shared" / "events.jsonl"
-    )
+    bridge_root = resolve_bridge_root(args.bridge_root)
+    events_path = args.events or bridge_root / "shared" / "events.jsonl"
     try:
+        if (
+            args.events is not None
+            and not bridge_events_path_matches_root(
+                bridge_root=bridge_root,
+                events_path=events_path,
+            )
+        ):
+            raise ValueError(
+                "--events must equal <bridge-root>/shared/events.jsonl"
+            )
+        accepted_queue_preflight = check_accepted_queue_complete(
+            bridge_root=bridge_root,
+            events_path=events_path,
+        )
         pr_status = _read_json_object(args.pr_status_file, "pr status file")
         events = _read_jsonl_objects(events_path, "events")
         prior_approved_diff_text = None
@@ -107,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             rco_agents=args.rco_agent,
             author_agent=args.author_agent,
             from_agent=args.from_agent,
+            accepted_queue_preflight=accepted_queue_preflight,
         )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         report = _invalid_report(str(exc))
@@ -132,6 +149,7 @@ def build_promotion_driver_lag_report(
     rco_agents: Sequence[str] | None = None,
     author_agent: str,
     from_agent: str = "promotion-driver-lag-report",
+    accepted_queue_preflight: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a diff-free report describing pending promotion-driver work."""
     try:
@@ -151,6 +169,7 @@ def build_promotion_driver_lag_report(
         rco_agents=rco_agents,
         author_agent=author_agent,
         from_agent=from_agent,
+        accepted_queue_preflight=accepted_queue_preflight,
     )
     if promotion.get("decision") == "invalid_input":
         return _invalid_report("; ".join(map(str, promotion.get("errors", []))))
@@ -285,9 +304,17 @@ def _promotion_summary(promotion: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(gate_results, Mapping):
         for name, gate in gate_results.items():
             if isinstance(gate, Mapping):
-                gate_ok[str(name)] = bool(
-                    gate.get("ok", gate.get("allowed", gate.get("clear_to_merge")))
-                )
+                if name == "accepted_queue":
+                    gate_ok[str(name)] = (
+                        gate.get("ok") is True and gate.get("complete") is True
+                    )
+                else:
+                    gate_ok[str(name)] = bool(
+                        gate.get(
+                            "ok",
+                            gate.get("allowed", gate.get("clear_to_merge")),
+                        )
+                    )
     return {
         "eligible": bool(promotion.get("eligible")),
         "decision": str(promotion.get("decision", "")),

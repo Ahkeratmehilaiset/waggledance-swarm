@@ -181,20 +181,34 @@ foreach ($role in $Roles) {
 
     # Emit the per-role bridge event
     $msg = "[$role] $($verdict.summary) - verdict=$($verdict.verdict) findings=$($verdict.findings_count)"
-    & $writeEvent `
-        -Agent $Agent `
-        -Type 'message' `
-        -Status 'answered' `
-        -To 'operator' `
-        -Severity 'low' `
-        -Message $msg `
-        -TaskId $subTaskId | Out-Null
+    $roleEventOutput = @(
+        & $writeEvent `
+            -Agent $Agent `
+            -Type 'message' `
+            -Status 'answered' `
+            -To 'operator' `
+            -Severity 'low' `
+            -Message $msg `
+            -TaskId $subTaskId
+    )
+    $roleEvent = @($roleEventOutput | Where-Object {
+        $_ -is [psobject] -and [string]$_.task_id -ceq $subTaskId
+    }) | Select-Object -First 1
+    if ($null -ne $roleEvent) {
+        $roleDeliveryProperty = $roleEvent.PSObject.Properties['_bridge_delivery']
+        if ($null -ne $roleDeliveryProperty) {
+            $verdict['event_delivery'] = $roleDeliveryProperty.Value
+        }
+    }
 
     $verdictsByRole[$role] = $verdict
 }
 
 # ── Optional synthesis pass ──────────────────────────────────────
 
+$synthesisEmitted = $false
+$synthesisQueued = $false
+$synthesisDelivery = $null
 if ($Synthesis -eq 'on') {
     # Identify disagreements: any role with verdict not in {approve}
     $disagreements = @()
@@ -221,14 +235,31 @@ if ($Synthesis -eq 'on') {
     $subTaskRefs = ($Roles | ForEach-Object { "$baseTaskId-$_" }) -join ', '
 
     $msg = "$synthSummary | refs=[$subTaskRefs]"
-    & $writeEvent `
-        -Agent $Agent `
-        -Type 'message' `
-        -Status 'answered' `
-        -To 'operator' `
-        -Severity 'low' `
-        -Message $msg `
-        -TaskId $synthTaskId | Out-Null
+    $synthesisOutput = @(
+        & $writeEvent `
+            -Agent $Agent `
+            -Type 'message' `
+            -Status 'answered' `
+            -To 'operator' `
+            -Severity 'low' `
+            -Message $msg `
+            -TaskId $synthTaskId
+    )
+    $synthesisEvent = @($synthesisOutput | Where-Object {
+        $_ -is [psobject] -and [string]$_.task_id -ceq $synthTaskId
+    }) | Select-Object -First 1
+    if ($null -ne $synthesisEvent) {
+        $synthesisProperty = $synthesisEvent.PSObject.Properties['_bridge_delivery']
+        if ($null -ne $synthesisProperty) {
+            $synthesisDelivery = $synthesisProperty.Value
+            $synthesisEmitted = (
+                [string]$synthesisDelivery.delivery_status -ceq 'canonical' -and
+                $synthesisDelivery.canonical_durable -is [bool] -and
+                $synthesisDelivery.canonical_durable -eq $true
+            )
+            $synthesisQueued = [string]$synthesisDelivery.delivery_status -ceq 'queued'
+        }
+    }
 }
 
 # ── Emit a structured result on the pipeline ─────────────────────
@@ -238,7 +269,9 @@ if ($Synthesis -eq 'on') {
     roles              = $Roles
     base_task_id       = $baseTaskId
     verdicts_by_role   = $verdictsByRole
-    synthesis_emitted  = ($Synthesis -eq 'on')
+    synthesis_emitted  = $synthesisEmitted
+    synthesis_queued    = $synthesisQueued
+    synthesis_delivery  = $synthesisDelivery
     output_dir         = $OutputDir
     dry_run            = [bool]$DryRun
 }

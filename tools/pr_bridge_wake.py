@@ -76,9 +76,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 bridge_root=args.bridge_root,
                 run_id=args.run_id,
             )
+            delivery_status = str(writer_report["delivery_status"])
+            delivery_decision = {
+                "canonical": "emitted",
+                "queued": "queued",
+                "suppressed": "suppressed",
+            }[delivery_status]
             report = {
-                "decision": "emitted",
+                "decision": delivery_decision,
                 "ok": True,
+                "emitted": delivery_status == "canonical",
+                "queued": delivery_status == "queued",
+                "suppressed": delivery_status == "suppressed",
                 "event": event,
                 "writer": writer_report,
             }
@@ -232,6 +241,9 @@ def emit_bridge_event(
         str(event["message"]),
         "-PayloadJson",
         payload,
+        "-ReceiptJson",
+        "-WarningAction",
+        "SilentlyContinue",
     ]
     if run_id:
         command.extend(["-RunId", run_id])
@@ -247,7 +259,77 @@ def emit_bridge_event(
                 "exit_code": 1,
             }
         )
-    return {"returncode": return_code}
+    try:
+        written_event = json.loads(str(getattr(result, "stdout", "")))
+        delivery = written_event["_bridge_delivery"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise PrBridgeWakeError(
+            {
+                "decision": "invalid_writer_receipt",
+                "ok": False,
+                "errors": ["Write-AgentEvent.ps1 did not return a delivery receipt"],
+                "exit_code": 1,
+            }
+        ) from exc
+    if not isinstance(written_event, Mapping) or any(
+        written_event.get(field) != event.get(field)
+        for field in ("agent", "type", "task_id", "status", "to", "message", "payload")
+    ):
+        raise PrBridgeWakeError(
+            {
+                "decision": "invalid_writer_receipt",
+                "ok": False,
+                "errors": ["Write-AgentEvent.ps1 receipt does not bind the submitted event"],
+                "exit_code": 1,
+            }
+        )
+    if (
+        not isinstance(delivery, Mapping)
+        or delivery.get("schema") != "waggledance.bridge.delivery-receipt.v1"
+        or delivery.get("delivery_status") not in {"canonical", "queued", "suppressed"}
+        or delivery.get("accepted") is not True
+    ):
+        raise PrBridgeWakeError(
+            {
+                "decision": "invalid_writer_receipt",
+                "ok": False,
+                "errors": ["Write-AgentEvent.ps1 returned an invalid delivery receipt"],
+                "exit_code": 1,
+            }
+        )
+    delivery_status = str(delivery["delivery_status"])
+    canonical_durable = delivery.get("canonical_durable") is True
+    if (
+        (delivery_status == "canonical" and not canonical_durable)
+        or (delivery_status in {"queued", "suppressed"} and canonical_durable)
+        or (
+            delivery_status == "queued"
+            and (
+                not isinstance(delivery.get("retained_wal_path"), str)
+                or not delivery.get("retained_wal_path")
+                or not isinstance(delivery.get("retained_wal_sha256"), str)
+                or re.fullmatch(
+                    r"[0-9a-f]{64}", str(delivery.get("retained_wal_sha256"))
+                )
+                is None
+            )
+        )
+    ):
+        raise PrBridgeWakeError(
+            {
+                "decision": "invalid_writer_receipt",
+                "ok": False,
+                "errors": ["Write-AgentEvent.ps1 returned an inconsistent delivery receipt"],
+                "exit_code": 1,
+            }
+        )
+    return {
+        "returncode": return_code,
+        "delivery_status": delivery_status,
+        "canonical_durable": canonical_durable,
+        "retained_wal_path": delivery.get("retained_wal_path"),
+        "retained_wal_sha256": delivery.get("retained_wal_sha256"),
+    }
 
 
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:

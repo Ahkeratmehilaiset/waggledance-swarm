@@ -54,7 +54,12 @@ from tools.bridge_next_action import (  # noqa: E402
 from tools.bridge_event_writer import (  # noqa: E402
     AppendV1Backend,
     BridgeEventWriteError,
+    BridgeWriteResult,
     write_bridge_event,
+)
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+    check_accepted_queue_complete,
 )
 from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
@@ -522,8 +527,8 @@ def emit_peer_activation_event(
     now_utc: datetime,
     events_path: Path | None = None,
     writer_backend: AppendV1Backend | None = None,
-) -> Path:
-    """Durably append one validated peer-activation handoff."""
+) -> BridgeWriteResult:
+    """Submit one validated peer-activation handoff and return its receipt."""
 
     event = materialize_peer_activation_event(
         agent=agent,
@@ -537,7 +542,7 @@ def emit_peer_activation_event(
         write_sidecars=True,
         backend=writer_backend,
     )
-    return result.events_path
+    return result
 
 
 def my_unmerged_rco_passes(
@@ -694,6 +699,7 @@ def evaluate_merge_ready(
     events: Sequence[Mapping[str, Any]],
     agent: str,
     snapshot_fn: SnapshotFn | None,
+    accepted_queue_preflight: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Decide whether one rco_pass'd candidate is ready for me to merge now.
 
@@ -711,6 +717,22 @@ def evaluate_merge_ready(
         "ready": False,
         "blockers": [],
     }
+    accepted_queue_gate = (
+        dict(accepted_queue_preflight)
+        if isinstance(accepted_queue_preflight, Mapping)
+        else {
+            "ok": False,
+            "complete": False,
+            "decision": "accepted_queue_not_checked",
+            "errors": ["accepted queue preflight was not supplied"],
+        }
+    )
+    result["accepted_queue_preflight"] = accepted_queue_gate
+    if not (
+        accepted_queue_gate.get("ok") is True
+        and accepted_queue_gate.get("complete") is True
+    ):
+        result["blockers"].append("accepted_queue_unresolved")
 
     preflight = check_bridge_clear_to_merge(
         events=events, task_id=task, merging_agent=agent, pr_number=pr
@@ -834,6 +856,7 @@ def build_loop_tick(
     now_utc: datetime | None = None,
     snapshot_fn: SnapshotFn | None = None,
     max_merge_ready_checks: int | None = None,
+    accepted_queue_preflight: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Aggregate one read-only loop tick for ``agent``."""
     next_action_report = recommend_next_action(
@@ -848,7 +871,11 @@ def build_loop_tick(
     )
     merge_ready = [
         evaluate_merge_ready(
-            candidate, events=events, agent=agent, snapshot_fn=snapshot_fn
+            candidate,
+            events=events,
+            agent=agent,
+            snapshot_fn=snapshot_fn,
+            accepted_queue_preflight=accepted_queue_preflight,
         )
         for candidate in candidates_to_check
     ]
@@ -884,6 +911,16 @@ def build_loop_tick(
         "merge_ready_checked_count": len(candidates_to_check),
         "merge_ready_deferred_count": len(deferred_candidates),
         "merge_ready_deferred": list(deferred_candidates),
+        "accepted_queue_preflight": (
+            dict(accepted_queue_preflight)
+            if isinstance(accepted_queue_preflight, Mapping)
+            else {
+                "ok": False,
+                "complete": False,
+                "decision": "accepted_queue_not_checked",
+                "errors": ["accepted queue preflight was not supplied"],
+            }
+        ),
         "open_operator_packs": packs["open"],
         "invalid_operator_packs": packs["invalid"],
         "peer_activation": peer_activation,
@@ -961,6 +998,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
+        if (
+            args.events is not None
+            and not bridge_events_path_matches_root(
+                bridge_root=bridge_root,
+                events_path=events_path,
+            )
+        ):
+            raise ValueError(
+                "--events must equal <bridge-root>/shared/events.jsonl"
+            )
+        accepted_queue_preflight = check_accepted_queue_complete(
+            bridge_root=bridge_root,
+            events_path=events_path,
+        )
         events = read_events(events_path)
         claims = list_claims(bridge_root=bridge_root)
         now_utc = datetime.now(timezone.utc)
@@ -976,6 +1027,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.check_prs and args.max_pr_checks > 0
                 else None
             ),
+            accepted_queue_preflight=accepted_queue_preflight,
         )
         peer_activation = report.get("peer_activation", {})
         if (
@@ -984,15 +1036,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             and peer_activation.get("needed")
             and isinstance(peer_activation.get("bridge_event"), Mapping)
         ):
-            event_path = emit_peer_activation_event(
+            write_result = emit_peer_activation_event(
                 bridge_root=bridge_root,
                 agent=args.agent,
                 event_spec=peer_activation["bridge_event"],
                 now_utc=now_utc,
                 events_path=events_path,
             )
-            peer_activation["emitted"] = True
-            peer_activation["emitted_path"] = str(event_path)
+            canonical = (
+                write_result.delivery_status == "canonical"
+                and write_result.canonical_durable
+            )
+            peer_activation.update(
+                {
+                    "emitted": canonical,
+                    "queued": write_result.delivery_status == "queued",
+                    "delivery_status": write_result.delivery_status,
+                    "canonical_durable": write_result.canonical_durable,
+                    "retained_wal_path": (
+                        str(write_result.retained_wal_path)
+                        if write_result.retained_wal_path is not None
+                        else None
+                    ),
+                    "retained_wal_sha256": write_result.retained_wal_sha256,
+                }
+            )
+            if canonical:
+                peer_activation["emitted_path"] = str(write_result.events_path)
     except BridgeEventWriteError as exc:
         report = {
             "ok": False,
@@ -1026,6 +1096,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"peer activation needed: {peer_activation.get('peer')} {task}")
             if peer_activation.get("emitted"):
                 print(f"peer activation emitted: {peer_activation.get('emitted_path')}")
+            elif peer_activation.get("queued"):
+                print(
+                    "peer activation queued: "
+                    f"{peer_activation.get('retained_wal_path')}"
+                )
         print(f"open operator packs: {len(report['open_operator_packs'])}")
         print(
             f"recommended wakeup: {report['recommended_wakeup_seconds']}s "

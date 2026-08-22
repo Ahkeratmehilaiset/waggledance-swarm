@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from tools.idle_consensus_auto_merge import (  # noqa: E402
     AutoMergeGateError,
     evaluate_auto_merge_gate,
@@ -34,6 +33,10 @@ from waggledance.core.magma.receipt_bundle import (  # noqa: E402
     ReceiptBundleEntry,
     write_receipt_bundle,
 )
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+)
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
 class BridgeConsensusMergeReceiptError(ValueError):
@@ -49,7 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
         description="Write a verified MAGMA receipt for a bridge-consensus merge.",
     )
     parser.add_argument("--pr-status-file", type=Path, required=True)
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument("--events", type=Path, default=None)
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Runtime bridge root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT, AGENT_BRIDGE_ROOT, then repo .agent-bridge."
+        ),
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--expected-base-sha", default="")
@@ -65,11 +77,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        bridge_root = resolve_bridge_root(args.bridge_root)
+        events_path = (
+            args.events
+            if args.events is not None
+            else bridge_root / "shared" / "events.jsonl"
+        )
+        if (
+            args.events is not None
+            and not bridge_events_path_matches_root(
+                bridge_root=bridge_root,
+                events_path=events_path,
+            )
+        ):
+            raise ValueError(
+                "--events must equal <bridge-root>/shared/events.jsonl"
+            )
         pr_status = json.loads(args.pr_status_file.read_text(encoding="utf-8"))
         now_utc = _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
         report = write_bridge_consensus_merge_receipt(
             pr_status=pr_status,
-            events_path=args.events,
+            events_path=events_path,
             out_dir=args.out_dir,
             expected_head=args.expected_head,
             expected_base_sha=args.expected_base_sha,
@@ -79,16 +107,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             bridge_task_id=args.bridge_task_id,
             now_utc=now_utc,
         )
-    except (json.JSONDecodeError, OSError) as exc:
+    except BridgeConsensusMergeReceiptError as exc:
+        report = exc.report
+        exit_code = int(report.get("exit_code", 2))
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
         report = {
             "decision": "invalid_input",
             "ok": False,
             "errors": [exc.__class__.__name__],
         }
         exit_code = 2
-    except BridgeConsensusMergeReceiptError as exc:
-        report = exc.report
-        exit_code = int(report.get("exit_code", 2))
     else:
         exit_code = 0
 

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -387,6 +388,11 @@ def test_emit_appends_bridge_event_outbox_and_last_file(tmp_path: Path) -> None:
     emitted = json.loads(events_path.read_text(encoding="utf-8").splitlines()[-1])
 
     assert report["emitted"] is True
+    assert report["queued"] is False
+    assert report["delivery_status"] == "canonical"
+    assert report["canonical_durable"] is True
+    assert report["retained_wal_path"] is None
+    assert report["retained_wal_sha256"] is None
     assert outbox_path.exists()
     assert last_path.exists()
     assert emitted["status"] == "idle_proposal"
@@ -394,6 +400,43 @@ def test_emit_appends_bridge_event_outbox_and_last_file(tmp_path: Path) -> None:
     assert "auto_execute" not in emitted["payload"]
     validate_event(emitted)
     assert _is_substantive_agent_message(emitted) is True
+
+
+def test_queued_activation_exposes_receipt_without_reporting_emitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    events_path = bridge_root / "shared" / "events.jsonl"
+    wal_path = bridge_root / "spool" / "pending-append-test.jsonl"
+    wal_sha256 = "c" * 64
+
+    monkeypatch.setattr(
+        activator,
+        "write_bridge_event",
+        lambda **kwargs: SimpleNamespace(
+            events_path=kwargs["events_path"],
+            delivery_status="queued",
+            canonical_durable=False,
+            retained_wal_path=wal_path,
+            retained_wal_sha256=wal_sha256,
+        ),
+    )
+
+    report = _activate(tmp_path, _proposal(), emit=True)
+
+    assert report["emitted"] is False
+    assert report["queued"] is True
+    assert report["decision"] == "queued"
+    assert report["delivery_status"] == "queued"
+    assert report["canonical_durable"] is False
+    assert report["retained_wal_path"] == str(wal_path)
+    assert report["retained_wal_sha256"] == wal_sha256
+    assert "event_path" not in report
+    assert events_path.exists()
+    assert events_path.read_text(encoding="utf-8") == "".join(
+        json.dumps(event, sort_keys=True) + "\n" for event in _base_events()
+    )
 
 
 def test_receipt_out_dir_writes_verified_bundle_without_bridge_emit(
@@ -615,11 +658,11 @@ class _CanonicalOpenFailureBackend(_PortableTestBackend):
         return super().open_or_create_shared_read(path)
 
 
-def test_shared_append_failure_is_typed_and_creates_no_sidecars(
+def test_shared_append_failure_queues_without_reporting_emitted_or_sidecars(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ActivationError) as excinfo:
-        _activate(
+    with pytest.warns(RuntimeWarning, match="accepted into the durable replay queue"):
+        report = _activate(
             tmp_path,
             _proposal(),
             emit=True,
@@ -627,11 +670,17 @@ def test_shared_append_failure_is_typed_and_creates_no_sidecars(
         )
 
     bridge_root = tmp_path / "bridge"
-    assert excinfo.value.report["decision"] == "bridge_write_failed"
+    assert report["decision"] == "queued"
+    assert report["emitted"] is False
+    assert report["queued"] is True
+    assert report["delivery_status"] == "queued"
+    assert report["canonical_durable"] is False
+    assert report["retained_wal_sha256"]
+    assert Path(report["retained_wal_path"]).exists()
     _assert_no_emitted_idle_event(tmp_path)
     assert not (bridge_root / "shared" / "last_codex.json").exists()
     assert not (bridge_root / "outbox" / "codex" / "2026-05-17.jsonl").exists()
-    assert len(list((bridge_root / "spool").glob("failed-append-*.jsonl"))) == 1
+    assert len(list((bridge_root / "spool" / "accepted-v1" / "ready").glob("*.jsonl"))) == 1
 
 
 def test_round_two_continues_after_prior_idle_event_even_when_bridge_is_active(

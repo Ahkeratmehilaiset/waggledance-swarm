@@ -49,6 +49,11 @@ mklink /j .agent-bridge\shared C:\Python\project2-master\.agent-bridge\shared
 :: repeat for work_queue / outbox / inbox
 ```
 
+Accepted-target replay supports this documented `shared` junction layout. It
+pins both the junction entry and its resolved target, then binds
+`events.jsonl` to that pinned target before repair or append; it does not
+silently follow a retargeted link.
+
 When `AGENT_BRIDGE_RUNTIME_ROOT` is **set**, the scripts use it
 unconditionally — they create the root directory if it doesn't
 exist (first-run bootstrap) and fail loudly on malformed paths.
@@ -67,6 +72,165 @@ The smoke test creates a fresh non-existing temp dir, points the
 env var there, exercises Write/Read/Claim/Release/Status, and
 verifies state lands under the temp dir (NOT under the worktree).
 10/10 pass on a healthy bridge.
+
+### Canonical and queued delivery
+
+`Write-AgentEvent.ps1` returns the submitted event with a transport-only
+`_bridge_delivery` receipt. The receipt is added after the canonical JSONL row
+has been serialized, so it never changes the event bytes. Callers that need
+canonical visibility (for example a reboot append canary or a privileged Git
+override audit) must require both:
+
+```text
+delivery_status = canonical
+canonical_durable = true
+```
+
+`accepted=true` and exit code 0 mean only that the writer reached a terminal
+transport disposition and the caller must not blindly resubmit the event. They
+are never evidence of canonical visibility by themselves:
+
+| `delivery_status` | `accepted` | `canonical_durable` | Caller meaning |
+|---|---:|---:|---|
+| `canonical` | `true` | `true` | The exact row is durably visible in the canonical log. |
+| `queued` | `true` | `false` | The exact row is durably retained for replay; do not claim canonical effects or generate a replacement event. |
+| `suppressed` | `true` | `false` | The writer intentionally suppressed a duplicate; do not retry it as a new event. |
+
+A thrown/nonzero write without a success receipt is not retry permission: its
+error and any named recovery artifact must be inspected before another event is
+created.
+
+Direct canonical and auxiliary append targets are opened without following the
+final reparse point and must be plain files with exactly one hard-link name.
+The direct canonical writer additionally pins a plain, no-delete directory
+chain from the volume root through `shared`; an ancestor reparse point fails the
+direct append closed. Unsafe aliases leave the already-accepted event queued for
+explicit, hash-bound recovery rather than mutating the alias target.
+
+If a clean AppendV1 write cannot complete after the exact event row has been
+flushed durably, the writer publishes that row with write-through semantics to
+the isolated queue below and returns `delivery_status=queued` with exit code 0:
+
+```text
+spool/accepted-v1/pending/bridge-wal-v1-<guid>.jsonl
+spool/accepted-v1/ready/bridge-wal-v1-<guid>.jsonl
+spool/accepted-v1/ready/.bridge-wal-v1-<guid>.jsonl.pending-recovery-blocked
+spool/accepted-v1/replayed/
+spool/accepted-v1/quarantine/
+```
+
+A queued receipt carries the case-exact `wal_leaf`, exact-byte lowercase
+`retained_wal_sha256`, and diagnostic `retained_wal_path`. It is accepted for
+delivery but is not yet canonical: `canonical_durable=false`, and neither the
+outbox nor `last_<agent>.json` sidecar is written. Callers must not report a
+queued row as emitted, delivered, closed, or as a successful canonical canary.
+They must not retry the writer with a newly generated timestamp; doing so would
+create a second legitimate byte-distinct event.
+
+Replay one `ready` accepted row by leaf and digest only:
+
+```powershell
+.\.agent-bridge\bin\Restore-BridgeSpool.ps1 `
+  -AcceptedWalLeaf 'bridge-wal-v1-0123456789abcdef0123456789abcdef.jsonl' `
+  -ExpectedWalSha256 '<64-lowercase-hex>'
+```
+
+If a queued receipt retains the leaf in `pending`, route it through
+`Drain-AcceptedBridgeQueue.ps1`; direct targeted replay intentionally accepts
+only `ready` or already-`replayed` leaves. The normal pending age gate applies.
+`-PendingMinAgeSeconds 0` is reserved for explicit operator recovery and tests,
+not routine polling.
+
+`Drain-AcceptedBridgeQueue.ps1` performs that hash-bound operation and isolates
+a failed leaf from the rest. Automatic recovery requires the producer's
+durable digest marker for both `pending` and `ready` leaves; the drainer never
+creates authority by hashing an unbound WAL. Under a nonblocking AppendV1
+lease, an age-qualified, closed `pending` leaf may be promoted to `ready`.
+Young, live, or mutex-busy pending leaves are reported as skipped. Malformed,
+markerless, hard-linked, or digest-mismatched leaves and markers fail visibly
+and remain untouched. WALs and producer markers are validated through pinned,
+plain, single-link read leases. The drainer removes a marker by its leased file
+handle only after exact targeted replay succeeds, so cleanup cannot reopen and
+delete a substituted path. This remains crash-safe. If an operator invokes
+`Restore-BridgeSpool.ps1` directly, a later drain verifies the matching
+`replayed` leaf before clearing its marker.
+Session startup, interactive reads, and consumer iterations call this
+accepted-only drain. It never enumerates the root historical backlog.
+
+Merge, draft-promotion, idle-consensus, and loop-readiness gates also run the
+drainer with `-DryRun -ReceiptJson` before trusting canonical bridge history.
+Exit code zero is not sufficient: the receipt schema, root and pending paths,
+dry-run counters, result statuses, and cross-counter invariants must all match
+the exact v1 contract. Any young, active, mutex-busy, malformed, failed,
+unknown, or otherwise ambiguous accepted state holds the gate.
+
+For the machine preflight, the drainer validates retained ready WAL bytes and
+their producer markers once, then reports `canonical_proof_deferred`; it does
+not launch one full canonical replay scan per ready leaf. The Python gate hashes
+canonical history once per stability pass and resolves all reported digests in
+that shared snapshot. Ordinary dry-run and mutating drain invocations retain
+their targeted replay behavior.
+
+The preflight never overlays accepted rows into the authority stream. A
+retained one-row WAL is considered visibility-complete only when its exact
+SHA-256 already exists as a complete newline-terminated byte row in
+`shared/events.jsonl`. This exact-byte proof is required even for
+`already_delivered`, `pending_would_promote`, and orphan-marker cleanup results.
+Thus a queued approval or clear cannot grant authority, while a retained exact
+duplicate cannot hide or relatch a veto that is already canonical. A valid but
+unresolved receipt is a policy hold; an invalid or unavailable receipt is a
+preflight failure. Both refuse autonomous merge or promotion.
+
+Every Python or PowerShell canonical writer acquires
+`Global\WaggleDanceBridgeAcceptedQueuePublicationV1` before creating any
+accepted-v1 directory, pending WAL, or producer marker, and holds it until
+canonical delivery or verified queue publication and cleanup settle. Mutating
+accepted drain and accepted-target replay use the same fence. The total order
+is PublicationV1 -> SpoolReplayV1 -> AppendV1, released in reverse; writer and
+drain-pending paths omit ReplayV1. Dry-run drain/replay and `-LegacyBulk` do not
+mutate accepted-v1 and therefore skip PublicationV1.
+
+The final stability pass acquires PublicationV1 and AppendV1, then holds a
+write/delete-denying handle on canonical history while it scans accepted-v1 a
+last time. PublicationV1 also covers the final empty-queue observation, where
+no canonical duplicate proof is required. This prevents an ordinary writer or
+mutating drainer from creating queue authority behind the final observation.
+Busy or abandoned ownership and any canonical or queue change fail closed.
+
+The in-process exact-byte exception requires a plain canonical parent chain.
+The explicitly supported, handle-pinned Windows `shared` junction remains valid
+for targeted replay, but a retained accepted-v1 item is conservatively held by
+the Python merge/promotion preflight under that topology. Drain the retained
+item through the pinned replayer before retrying the gate; the preflight does
+not claim equivalent junction-pinning authority for its duplicate exception.
+
+This preflight is a fail-closed point-in-time gate, not an atomic exclusion
+lock shared with merge execution. It repeats absence, queue-inventory, and
+whole-canonical-stream checks to detect changes during the observation. A
+caller that can perform an external merge must still serialize or repeat the
+gate immediately at its action boundary; a finite sequence of observations
+cannot prevent a new producer from publishing immediately afterward.
+
+Accepted-v1 queue path components from the configured bridge root through
+`spool/accepted-v1` and its state directories must be plain directories. Writers
+and the drainer reject pre-existing reparse ancestors and hold no-delete
+directory leases across WAL and marker mutations to pin against rename/delete
+substitution. This is separate from the explicitly supported, pinned `shared`
+junction used for canonical targeted replay.
+
+Historical root-level `failed-append-*.jsonl` artifacts remain operator-review
+evidence. Replaying them is an explicit maintenance operation:
+
+```powershell
+.\.agent-bridge\bin\Restore-BridgeSpool.ps1 -LegacyBulk
+```
+
+The replayer deduplicates exact UTF-8 JSONL row bytes only. It deliberately does
+not infer retry identity from timestamps or semantic fields: heartbeats,
+liveness events, and wake requests may legitimately repeat with identical
+content. A crash after WAL flush but before the caller receives its receipt is
+still ambiguous without a caller-owned stable idempotency key; accepted-v1
+transport identity does not pretend to solve that separate problem.
 
 ### Dedicated worktrees (R23.2)
 
@@ -186,11 +350,14 @@ operation lock / lease for TOCTOU).
      continuity section that marks incoming requests to you as `OPEN`
      or `answered`, and outgoing requests you sent as `WAITING-FOR-*`
      or `answered-by-*`, based on matching `task_id` values.
-   - A normal read automatically emits `message/received` for each
-     latest incoming request-like event. This proves "seen by the
-     receiving agent" without pretending the request is complete.
-     Use `-NoAckReceived` only for audits that must not mutate bridge
-     runtime state.
+   - A normal read submits `message/received` for each latest incoming
+     request-like event. Canonical delivery proves "seen by the receiving
+     agent" without pretending the request is complete. If delivery is queued,
+     the reader reports `(ack queued)`; if accepted recovery is busy, skipped,
+     or unhealthy, it reports `(ack deferred)` and does not mint another ACK.
+     `-NoAckReceived` suppresses only creation of new received ACKs. A read may
+     still drain accepted delivery and sweep stale claims; use a copied runtime
+     snapshot when an audit must be fully non-mutating.
 
 2. Claim write work before editing.
    - A write task must have an active claim with `write_scope`.
@@ -540,7 +707,7 @@ rather than guessing whose turn it is.
 
 ## Received ACK Protocol (added 2026-05-09)
 
-`Read-AgentBridge.ps1 -Agent <agent>` records a lightweight received
+`Read-AgentBridge.ps1 -Agent <agent>` submits a lightweight received
 acknowledgement for each latest incoming request-like event by writing:
 
 - `type`: `message`
@@ -548,6 +715,10 @@ acknowledgement for each latest incoming request-like event by writing:
 - `task_id`: the original request's exact `task_id`
 - `to`: the original sender
 - `payload.request_ts_utc`: the timestamp of the request being acked
+
+The ACK becomes bridge evidence only when canonical. A queued ACK is accepted
+for later exact targeted replay and is reported as queued, while an unhealthy
+or incomplete accepted-queue drain defers new ACK creation to avoid duplicates.
 
 This separates three states that used to collapse together:
 

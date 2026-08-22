@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import tools.write_bridge_consensus_merge_receipt as receipt_tool
 from tools.bridge_pr_author import github_pr_git_identity_evidence
 from tools.verify_magma_receipt import verify_manifest
 from tools.write_bridge_consensus_merge_receipt import (
@@ -25,6 +26,81 @@ AGENT_UUIDS = {
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
+
+
+def _main_args(tmp_path: Path, status_path: Path) -> list[str]:
+    return [
+        "--pr-status-file",
+        str(status_path),
+        "--out-dir",
+        str(tmp_path / "receipt"),
+        "--expected-head",
+        HEAD,
+        "--expected-base-sha",
+        BASE,
+        "--consensus-proposal-id",
+        TASK,
+        "--json",
+    ]
+
+
+def test_cli_default_events_uses_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text("{}", encoding="utf-8")
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    captured: dict[str, Path] = {}
+
+    def fake_write(**kwargs):
+        captured["events_path"] = kwargs["events_path"]
+        return {
+            "ok": True,
+            "decision": "bridge_consensus_merge_receipt_written",
+            "receipt_bundle_path": "receipt/manifest.json",
+        }
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+    monkeypatch.setattr(
+        receipt_tool,
+        "write_bridge_consensus_merge_receipt",
+        fake_write,
+    )
+
+    exit_code = receipt_tool.main(_main_args(tmp_path, status_path))
+
+    assert exit_code == 0
+    assert captured["events_path"] == bridge_root / "shared" / "events.jsonl"
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_cli_mismatched_events_fails_before_receipt_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text("{}", encoding="utf-8")
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    outside = tmp_path / "snapshot" / "events.jsonl"
+    outside.parent.mkdir()
+    outside.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        receipt_tool,
+        "write_bridge_consensus_merge_receipt",
+        lambda **kwargs: pytest.fail("receipt writer must not be called"),
+    )
+
+    exit_code = receipt_tool.main(
+        _main_args(tmp_path, status_path)
+        + ["--bridge-root", str(bridge_root), "--events", str(outside)]
+    )
+
+    assert exit_code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "invalid_input"
 
 
 def test_writes_verified_bridge_consensus_merge_receipt(tmp_path: Path) -> None:

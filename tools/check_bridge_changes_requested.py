@@ -61,6 +61,9 @@ from tools.bridge_event_taxonomy import (  # noqa: E402
     BLOCK_BY_TYPE as _TAXONOMY_BLOCK_BY_TYPE,
     RCO_GATED_TYPES as _TAXONOMY_RCO_GATED_TYPES,
 )
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    check_accepted_queue_complete,
+)
 
 # Recognized RCO set per CLAUDE.md Rule 9a / the bridge-consensus contract. Defined
 # locally (NOT imported) because ``tools.check_rco_pass_present`` imports THIS module
@@ -271,6 +274,40 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     bridge_root = resolve_bridge_root(args.bridge_root)
     events_path = bridge_root / "shared" / "events.jsonl"
+    queue_preflight = check_accepted_queue_complete(
+        bridge_root=bridge_root,
+        events_path=events_path,
+    )
+    if not (
+        queue_preflight.get("ok") is True
+        and queue_preflight.get("complete") is True
+    ):
+        valid_but_incomplete = queue_preflight.get("ok") is True
+        result = {
+            "ok": valid_but_incomplete,
+            "clear_to_merge": False,
+            "decision": (
+                "accepted_queue_incomplete"
+                if valid_but_incomplete
+                else "accepted_queue_preflight_failed"
+            ),
+            "error": "; ".join(
+                str(error) for error in queue_preflight.get("errors", [])
+            ),
+            "latest_blocking_event": None,
+            "accepted_queue_preflight": queue_preflight,
+        }
+        if args.json:
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(
+                "BLOCKED: accepted bridge queue is not fully visible in "
+                "canonical history",
+                file=sys.stderr,
+            )
+            for error in queue_preflight.get("errors", []):
+                print(str(error), file=sys.stderr)
+        return 3 if valid_but_incomplete else 2
     if not events_path.exists():
         result = {
             "ok": False,
@@ -303,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         author_agent=args.author_agent,
         pr_number=args.pr_number,
     )
+    result["accepted_queue_preflight"] = queue_preflight
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:

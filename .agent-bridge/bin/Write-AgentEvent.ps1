@@ -15,7 +15,8 @@ param(
     [string] $AgentUuid = '',
     [string] $SessionId = '',
     [string[]] $Capabilities = @(),
-    [string] $PayloadJson = '{}'
+    [string] $PayloadJson = '{}',
+    [switch] $ReceiptJson
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +55,15 @@ Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
 Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 Assert-NoPrivateMarker -Label 'payload' -Value $PayloadJson
+
+function Write-BridgeWarning {
+    param([Parameter(Mandatory)] [string] $Message)
+    # -ReceiptJson is a machine-readable stdout contract. Diagnostics that are
+    # material to delivery are carried inside warning_messages instead.
+    if (-not $ReceiptJson) {
+        Write-Warning -WarningAction Continue -Message $Message
+    }
+}
 
 function Resolve-BridgeMetadataString {
     param([string] $Explicit, [string] $EnvName)
@@ -474,8 +484,10 @@ function Assert-AgentUuidMatchesIdentityRegistry {
     }
 }
 
-# R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
-# (create root if missing, fail loud on malformed path).
+# R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT and fail
+# loudly on malformed paths. The accepted-WAL directory lease chain creates a
+# missing root component-by-component so an ancestor junction cannot redirect
+# eager recursive creation.
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
     [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
 } else {
@@ -484,9 +496,6 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Assert-AgentUuidMatchesIdentityRegistry -RepoRoot $repoRoot
 Assert-AgentUuidMatchesProfile -BridgeRoot $bridgeRoot
-if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
-    [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)
-}
 $sharedDir = Join-Path $bridgeRoot 'shared'
 $outboxDir = Join-Path (Join-Path $bridgeRoot 'outbox') $Agent
 
@@ -616,10 +625,54 @@ function Test-OpenOperatorBridgeFollowNudgeDuplicate {
 }
 
 $eventsPath = Join-Path $sharedDir 'events.jsonl'
+
+function New-BridgeDeliveryReceipt {
+    param(
+        [Parameter(Mandatory)] [ValidateSet('canonical','queued','suppressed')]
+        [string] $DeliveryStatus,
+        [Parameter(Mandatory)] [bool] $CanonicalDurable,
+        [bool] $CheckpointAdvanced = $false,
+        [string] $WalId = '',
+        [string] $WalLeaf = '',
+        [string] $RetainedWalPath = '',
+        [string] $RetainedWalSha256 = '',
+        [string[]] $WarningMessages = @()
+    )
+
+    return [pscustomobject][ordered]@{
+        schema = 'waggledance.bridge.delivery-receipt.v1'
+        accepted = $true
+        delivery_status = $DeliveryStatus
+        canonical_durable = $CanonicalDurable
+        events_path = $eventsPath
+        checkpoint_advanced = $CheckpointAdvanced
+        wal_id = if ($WalId) { $WalId } else { $null }
+        wal_leaf = if ($WalLeaf) { $WalLeaf } else { $null }
+        retained_wal_path = if ($RetainedWalPath) { $RetainedWalPath } else { $null }
+        retained_wal_sha256 = if ($RetainedWalSha256) { $RetainedWalSha256 } else { $null }
+        outbox_written = $false
+        last_file_written = $false
+        warning_messages = @($WarningMessages)
+    }
+}
+
+function Write-BridgeEventResult {
+    param([Parameter(Mandatory)] $Delivery)
+
+    $event['_bridge_delivery'] = $Delivery
+    if ($ReceiptJson) {
+        $event | ConvertTo-Json -Depth 16 -Compress
+    } else {
+        [pscustomobject]$event
+    }
+}
+
 if (Test-OpenOperatorBridgeFollowNudgeDuplicate -Path $eventsPath -Candidate $event) {
     $event['suppressed_duplicate'] = $true
     $event['suppressed_reason'] = 'open_operator_bridge_follow_nudge_without_target_activity'
-    [pscustomobject]$event
+    $suppressedDelivery = New-BridgeDeliveryReceipt `
+        -DeliveryStatus suppressed -CanonicalDurable $false
+    Write-BridgeEventResult -Delivery $suppressedDelivery
     return
 }
 
@@ -643,18 +696,167 @@ function New-BridgeV1Mutex {
     return New-Object System.Threading.Mutex($false, $Name)
 }
 
+function Open-BridgeAcceptedQueueDirectoryLease {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Label
+    )
+
+    Initialize-BridgeAppendV1Native
+    $handle = [WaggleDance.BridgeAppendV1Native]::CreateFileW(
+        [System.IO.Path]::GetFullPath($Path),
+        [uint32]2147483648,
+        [uint32]3,
+        [IntPtr]::Zero,
+        [uint32]3,
+        [uint32]35651584,
+        [IntPtr]::Zero
+    )
+    if ($handle.IsInvalid) {
+        $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $handle.Dispose()
+        $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+        throw "$Label lease failed: $nativeCode ($($nativeError.Message))"
+    }
+    try {
+        $information = New-Object WaggleDance.BridgeByHandleFileInformation
+        if (-not [WaggleDance.BridgeAppendV1Native]::GetFileInformationByHandle(
+            $handle.DangerousGetHandle(),
+            [ref]$information
+        )) {
+            $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+            throw "$Label identity failed: $nativeCode ($($nativeError.Message))"
+        }
+        if (
+            ($information.FileAttributes -band
+                [uint32][System.IO.FileAttributes]::Directory) -eq 0 -or
+            ($information.FileAttributes -band
+                [uint32][System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+            throw "$Label must be a plain directory, not a reparse point"
+        }
+        return $handle
+    } catch {
+        $handle.Dispose()
+        throw
+    }
+}
+
+function Close-BridgeAcceptedQueueDirectoryLeases {
+    param([AllowNull()] $Leases)
+
+    if ($null -eq $Leases) { return }
+    if ($Leases -isnot [System.Collections.IList]) {
+        $Leases = @($Leases)
+    }
+    for ($index = $Leases.Count - 1; $index -ge 0; $index--) {
+        if ($null -ne $Leases[$index]) {
+            try { $Leases[$index].Dispose() }
+            catch {
+                Write-BridgeWarning -Message (
+                    "bridge directory lease close failed: " +
+                    $_.Exception.Message
+                )
+            }
+        }
+    }
+}
+
+function Open-BridgePlainDirectoryChain {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Label
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if (-not $pathRoot) {
+        throw "$Label path is not rooted: $Path"
+    }
+    $directoryPaths = New-Object 'System.Collections.Generic.List[string]'
+    $directoryPaths.Add($pathRoot)
+    $cursor = $pathRoot
+    $relativePath = $fullPath.Substring($pathRoot.Length)
+    foreach ($segment in @($relativePath -split '[\\/]' | Where-Object { $_ })) {
+        $cursor = Join-Path $cursor $segment
+        $directoryPaths.Add($cursor)
+    }
+    $directoryLeases = New-Object 'System.Collections.Generic.List[object]'
+    try {
+        foreach ($directory in $directoryPaths) {
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+                [void](New-Item -ItemType Directory -Path $directory -ErrorAction Stop)
+            }
+            $directoryLeases.Add((Open-BridgeAcceptedQueueDirectoryLease `
+                -Path $directory -Label "$Label $directory"))
+        }
+        return @($directoryLeases.ToArray())
+    } catch {
+        Close-BridgeAcceptedQueueDirectoryLeases -Leases $directoryLeases
+        throw
+    }
+}
+
 function New-BridgeCanonicalSpoolPaths {
     $spoolDir = Join-Path $bridgeRoot 'spool'
-    if (-not (Test-Path -LiteralPath $spoolDir -PathType Container)) {
-        [void](New-Item -ItemType Directory -Path $spoolDir -Force)
+    $acceptedDir = Join-Path $spoolDir 'accepted-v1'
+    $pendingDir = Join-Path $acceptedDir 'pending'
+    $readyDir = Join-Path $acceptedDir 'ready'
+    $quarantineDir = Join-Path $acceptedDir 'quarantine'
+    $replayedDir = Join-Path $acceptedDir 'replayed'
+    $fullBridgeRoot = [System.IO.Path]::GetFullPath($bridgeRoot)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullBridgeRoot)
+    $directoryPaths = New-Object 'System.Collections.Generic.List[string]'
+    $directoryPaths.Add($pathRoot)
+    $cursor = $pathRoot
+    $relativeRoot = $fullBridgeRoot.Substring($pathRoot.Length)
+    foreach ($segment in @($relativeRoot -split '[\\/]' | Where-Object { $_ })) {
+        $cursor = Join-Path $cursor $segment
+        $directoryPaths.Add($cursor)
     }
-    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfff')
-    $nonce = [guid]::NewGuid().ToString('N')
-    $finalName = "failed-append-$Agent-$stamp-$PID-$nonce.jsonl"
+    foreach ($directory in @(
+        $spoolDir,
+        $acceptedDir,
+        $pendingDir,
+        $readyDir,
+        $quarantineDir,
+        $replayedDir
+    )) {
+        $directoryPaths.Add([System.IO.Path]::GetFullPath($directory))
+    }
+    $directoryLeases = New-Object 'System.Collections.Generic.List[object]'
+    $seenDirectories = New-Object 'System.Collections.Generic.HashSet[string]' `
+        ([System.StringComparer]::OrdinalIgnoreCase)
+    try {
+        foreach ($directory in $directoryPaths) {
+            $fullDirectory = [System.IO.Path]::GetFullPath($directory)
+            if (-not $seenDirectories.Add($fullDirectory)) { continue }
+            if (-not (Test-Path -LiteralPath $fullDirectory -PathType Container)) {
+                [void](New-Item -ItemType Directory `
+                    -Path $fullDirectory -ErrorAction Stop)
+            }
+            $directoryLeases.Add((Open-BridgeAcceptedQueueDirectoryLease `
+                -Path $fullDirectory -Label "accepted queue directory $fullDirectory"))
+        }
+    } catch {
+        Close-BridgeAcceptedQueueDirectoryLeases -Leases $directoryLeases
+        throw
+    }
+    $walId = [guid]::NewGuid().ToString('N')
+    $finalName = "bridge-wal-v1-$walId.jsonl"
     return [pscustomobject]@{
         SpoolDir = $spoolDir
-        FinalPath = Join-Path $spoolDir $finalName
-        PendingPath = Join-Path $spoolDir (".$finalName.pending")
+        AcceptedDir = $acceptedDir
+        PendingDir = $pendingDir
+        ReadyDir = $readyDir
+        QuarantineDir = $quarantineDir
+        ReplayedDir = $replayedDir
+        DirectoryLeases = @($directoryLeases.ToArray())
+        WalId = $walId
+        WalLeaf = $finalName
+        FinalPath = Join-Path $readyDir $finalName
+        PendingPath = Join-Path $pendingDir $finalName
     }
 }
 
@@ -663,6 +865,7 @@ function Open-PendingCanonicalWalLease {
 
     $paths = New-BridgeCanonicalSpoolPaths
     $lease = $null
+    $keepDirectoryLeases = $false
     try {
         $lease = New-Object System.IO.FileStream(
             $paths.PendingPath,
@@ -670,20 +873,111 @@ function Open-PendingCanonicalWalLease {
             [System.IO.FileAccess]::ReadWrite,
             [System.IO.FileShare]::None
         )
-        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-            $attributes = [System.IO.File]::GetAttributes($paths.PendingPath)
-            [System.IO.File]::SetAttributes(
-                $paths.PendingPath,
-                ($attributes -bor [System.IO.FileAttributes]::Hidden)
-            )
-        }
         $lease.Write($Bytes, 0, $Bytes.Length)
         $lease.Flush($true)
+        if ([int64]$lease.Length -ne [int64]$Bytes.Length) {
+            throw 'durable pending WAL length changed during writeback verification'
+        }
+        [void]$lease.Seek(0, [System.IO.SeekOrigin]::Begin)
+        [byte[]]$verifiedBytes = New-Object byte[] $Bytes.Length
+        $verifiedOffset = 0
+        while ($verifiedOffset -lt $verifiedBytes.Length) {
+            $verifiedRead = $lease.Read(
+                $verifiedBytes,
+                $verifiedOffset,
+                $verifiedBytes.Length - $verifiedOffset
+            )
+            if ($verifiedRead -le 0) {
+                throw 'durable pending WAL ended during writeback verification'
+            }
+            $verifiedOffset += $verifiedRead
+        }
+        if ([Environment]::GetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_PENDING_WRITEBACK_FAILURE',
+            'Process'
+        ) -eq '1') {
+            throw 'simulated durable pending WAL writeback verification failure'
+        }
+        if (-not (Test-BridgeExactBytesEqual -Left $verifiedBytes -Right $Bytes)) {
+            throw 'durable pending WAL writeback verification mismatch'
+        }
+        $paths | Add-Member -NotePropertyName Bytes -NotePropertyValue $Bytes
+        $paths | Add-Member -NotePropertyName Sha256 -NotePropertyValue (
+            Get-BridgeSha256Hex -Bytes $Bytes
+        )
         $paths | Add-Member -NotePropertyName Lease -NotePropertyValue $lease
+        $paths | Add-Member -NotePropertyName MarkerPath -NotePropertyValue (
+            Join-Path $paths.ReadyDir (
+                ".{0}.pending-recovery-blocked" -f $paths.WalLeaf
+            )
+        )
+        [void](Ensure-BridgeAcceptedWalDigestMarker -Wal $paths)
         $lease = $null
+        $keepDirectoryLeases = $true
         return $paths
+    } catch {
+        $openError = $_.Exception.Message
+        if ($null -ne $lease) {
+            try { $lease.Dispose() } catch {}
+            $lease = $null
+        }
+        $excludedPath = ''
+        if (Test-Path -LiteralPath $paths.PendingPath -PathType Leaf) {
+            try {
+                if (-not (Test-Path -LiteralPath $paths.QuarantineDir -PathType Container)) {
+                    [void](New-Item -ItemType Directory `
+                        -Path $paths.QuarantineDir -Force -ErrorAction Stop)
+                }
+                $excludedPath = Join-Path $paths.QuarantineDir `
+                    ("unaccepted-{0}" -f $paths.WalLeaf)
+                $forcedExclusion = [Environment]::GetEnvironmentVariable(
+                    'AGENT_BRIDGE_TEST_UNACCEPTED_EXCLUSION_FAILURE',
+                    'Process'
+                )
+                $excluded = if ($forcedExclusion -in @('All', 'Move')) {
+                    $false
+                } else {
+                    [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
+                        $paths.PendingPath,
+                        $excludedPath,
+                        [uint32]0x00000008
+                    )
+                }
+                if (-not $excluded) {
+                    $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                    throw "write-through exclusion failed with Win32 error $nativeCode"
+                }
+            } catch {
+                $exclusionError = $_.Exception.Message
+                try {
+                    if ([Environment]::GetEnvironmentVariable(
+                        'AGENT_BRIDGE_TEST_UNACCEPTED_EXCLUSION_FAILURE',
+                        'Process'
+                    ) -in @('All', 'Delete')) {
+                        throw 'simulated unaccepted pending delete failure'
+                    }
+                    Remove-Item -LiteralPath $paths.PendingPath `
+                        -Force -ErrorAction Stop
+                } catch {}
+                if (Test-Path -LiteralPath $paths.PendingPath) {
+                    throw (
+                        'pending WAL acceptance is unknown and blind retry is unsafe at ' +
+                        "$($paths.PendingPath): $openError; exclusion failed: " +
+                        $exclusionError
+                    )
+                }
+            }
+        }
+        throw (
+            'could not establish an accepted pending bridge WAL; candidate was ' +
+            "excluded from automatic replay at ${excludedPath}: $openError"
+        )
     } finally {
         if ($null -ne $lease) { $lease.Dispose() }
+        if (-not $keepDirectoryLeases) {
+            Close-BridgeAcceptedQueueDirectoryLeases `
+                -Leases $paths.DirectoryLeases
+        }
     }
 }
 
@@ -695,18 +989,251 @@ function Close-PendingCanonicalWalLease {
     }
 }
 
+function Test-BridgeAcceptedWalDigestMarker {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] $Wal
+    )
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if (
+            $item.PSIsContainer -or
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        ) {
+            return $false
+        }
+        [byte[]]$markerBytes = [System.IO.File]::ReadAllBytes($Path)
+        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $markerText = $strictUtf8.GetString($markerBytes)
+        $marker = $markerText | ConvertFrom-Json -ErrorAction Stop
+        return (
+            $marker -is [System.Management.Automation.PSCustomObject] -and
+            [string]$marker.schema -ceq
+                'waggledance.bridge.accepted-pending-block.v1' -and
+            [string]$marker.wal_leaf -ceq [string]$Wal.WalLeaf -and
+            [string]$marker.expected_sha256 -ceq [string]$Wal.Sha256
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-BridgeAcceptedWalDigestMarker {
+    param([Parameter(Mandatory)] $Wal)
+
+    Initialize-BridgeAppendV1Native
+    $markerPath = Join-Path $Wal.ReadyDir (
+        ".{0}.pending-recovery-blocked" -f $Wal.WalLeaf
+    )
+    if (Test-Path -LiteralPath $markerPath) {
+        if (Test-BridgeAcceptedWalDigestMarker -Path $markerPath -Wal $Wal) {
+            return $markerPath
+        }
+        throw 'accepted WAL digest marker collides with different authority'
+    }
+    if (-not (Test-Path -LiteralPath $Wal.QuarantineDir -PathType Container)) {
+        [void](New-Item -ItemType Directory `
+            -Path $Wal.QuarantineDir -Force -ErrorAction Stop)
+    }
+    $temporaryPath = Join-Path $Wal.QuarantineDir (
+        'digest-marker-{0}.tmp' -f [guid]::NewGuid().ToString('N')
+    )
+    $marker = [ordered]@{
+        schema = 'waggledance.bridge.accepted-pending-block.v1'
+        wal_leaf = [string]$Wal.WalLeaf
+        expected_sha256 = [string]$Wal.Sha256
+        created_at_utc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Compress
+    [byte[]]$markerBytes = (
+        New-Object System.Text.UTF8Encoding($false, $true)
+    ).GetBytes($marker + [string][char]10)
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $stream.Write($markerBytes, 0, $markerBytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        $markerPublished = [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
+            $temporaryPath,
+            $markerPath,
+            [uint32]0x00000008
+        )
+        if (-not $markerPublished) {
+            # Last-error state is thread-local and may be overwritten by any
+            # filesystem probe. Preserve the MoveFileExW failure before
+            # checking whether a concurrent writer published the same marker.
+            $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if (Test-BridgeAcceptedWalDigestMarker -Path $markerPath -Wal $Wal) {
+                return $markerPath
+            }
+            throw "write-through accepted WAL digest publication failed with Win32 error $nativeCode"
+        }
+        return $markerPath
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Promote-PendingCanonicalWal {
     param([Parameter(Mandatory)] $Wal)
 
-    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-        $attributes = [System.IO.File]::GetAttributes($Wal.PendingPath)
-        [System.IO.File]::SetAttributes(
-            $Wal.PendingPath,
-            ($attributes -band (-bnot [System.IO.FileAttributes]::Hidden))
+    Initialize-BridgeAppendV1Native
+    try {
+        [void](Ensure-BridgeAcceptedWalDigestMarker -Wal $Wal)
+    } catch {
+        throw (
+            'accepted WAL digest authority is unavailable; queued success is ' +
+            "unsafe even if pending bytes remain: $($_.Exception.Message)"
         )
     }
-    [System.IO.File]::Move($Wal.PendingPath, $Wal.FinalPath)
+    $forcedPublicationFailure = [Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_ACCEPTED_PUBLICATION_FAILURE',
+        'Process'
+    ) -in @('1', $Wal.WalLeaf)
+    if ([Environment]::GetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_ACCEPTED_PUBLICATION_COLLISION',
+        'Process'
+    ) -in @('1', $Wal.WalLeaf)) {
+        [System.IO.File]::WriteAllBytes(
+            $Wal.FinalPath,
+            [byte[]](98, 97, 100, 10)
+        )
+    }
+    $published = if ($forcedPublicationFailure) {
+        $false
+    } else {
+        [WaggleDance.BridgeAppendV1Native]::MoveFileExW(
+            $Wal.PendingPath,
+            $Wal.FinalPath,
+            [uint32]0x00000008
+        )
+    }
+    if (-not $published) {
+        $nativeCode = if ($forcedPublicationFailure) {
+            5
+        } else {
+            [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        }
+        $recoveryPath = Get-BridgeExactWalRecoveryPath -Wal $Wal
+        if ($recoveryPath) {
+            return $recoveryPath
+        }
+        $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+        throw "write-through accepted WAL publication lost recovery state: $nativeCode ($($nativeError.Message))"
+    }
+    # The exact bytes and digest were verified through the exclusive pending
+    # lease before it closed. The write-through, no-replace rename is the
+    # publication/acceptance point; a consumer may archive ready immediately.
     return $Wal.FinalPath
+}
+
+function Get-BridgeWalRecoveryPath {
+    param([Parameter(Mandatory)] $Wal)
+
+    if (Test-Path -LiteralPath $Wal.FinalPath -PathType Leaf) {
+        return $Wal.FinalPath
+    }
+    if (Test-Path -LiteralPath $Wal.PendingPath -PathType Leaf) {
+        return $Wal.PendingPath
+    }
+    $replayedPath = Join-Path $Wal.ReplayedDir $Wal.WalLeaf
+    if (Test-Path -LiteralPath $replayedPath -PathType Leaf) {
+        return $replayedPath
+    }
+    return ''
+}
+
+function Test-BridgeExactWalRecoveryCandidate {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] $Wal
+    )
+
+    Initialize-BridgeAppendV1Native
+    $handle = [WaggleDance.BridgeAppendV1Native]::CreateFileW(
+        $Path,
+        [uint32]2147483648,
+        [uint32]1,
+        [IntPtr]::Zero,
+        [uint32]3,
+        [uint32]2097152,
+        [IntPtr]::Zero
+    )
+    if ($handle.IsInvalid) {
+        $handle.Dispose()
+        return $false
+    }
+    $stream = $null
+    try {
+        $information = New-Object WaggleDance.BridgeByHandleFileInformation
+        if (-not [WaggleDance.BridgeAppendV1Native]::GetFileInformationByHandle(
+            $handle.DangerousGetHandle(),
+            [ref]$information
+        )) {
+            return $false
+        }
+        if (
+            $information.NumberOfLinks -ne 1 -or
+            ($information.FileAttributes -band
+                [uint32][System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($information.FileAttributes -band
+                [uint32][System.IO.FileAttributes]::Directory) -ne 0
+        ) {
+            return $false
+        }
+        $stream = New-Object System.IO.FileStream(
+            $handle,
+            [System.IO.FileAccess]::Read
+        )
+        $handle = $null
+        if ([int64]$stream.Length -ne [int64]$Wal.Bytes.Length) {
+            return $false
+        }
+        [byte[]]$candidateBytes = New-Object byte[] $Wal.Bytes.Length
+        $offset = 0
+        while ($offset -lt $candidateBytes.Length) {
+            $read = $stream.Read(
+                $candidateBytes,
+                $offset,
+                $candidateBytes.Length - $offset
+            )
+            if ($read -le 0) { return $false }
+            $offset += $read
+        }
+        return (
+            (Test-BridgeExactBytesEqual -Left $candidateBytes -Right $Wal.Bytes) -and
+            (Get-BridgeSha256Hex -Bytes $candidateBytes) -ceq [string]$Wal.Sha256
+        )
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $handle) { $handle.Dispose() }
+    }
+}
+
+function Get-BridgeExactWalRecoveryPath {
+    param([Parameter(Mandatory)] $Wal)
+
+    $replayedPath = Join-Path $Wal.ReplayedDir $Wal.WalLeaf
+    foreach ($candidatePath in @(
+        $Wal.PendingPath,
+        $Wal.FinalPath,
+        $replayedPath
+    )) {
+        if (Test-BridgeExactWalRecoveryCandidate -Path $candidatePath -Wal $Wal) {
+            return $candidatePath
+        }
+    }
+    return ''
 }
 
 function Invoke-BridgeBeforeAppendTestHook {
@@ -737,6 +1264,7 @@ function Initialize-BridgeAppendV1Native {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace WaggleDance {
     [StructLayout(LayoutKind.Sequential)]
@@ -754,6 +1282,17 @@ namespace WaggleDance {
     }
 
     public static class BridgeAppendV1Native {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern SafeFileHandle CreateFileW(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile
+        );
+
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetFileInformationByHandle(
@@ -771,6 +1310,58 @@ namespace WaggleDance {
     }
 }
 '@
+}
+
+function Open-BridgePlainSingleLinkMutationStream {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Label
+    )
+
+    Initialize-BridgeAppendV1Native
+    $handle = [WaggleDance.BridgeAppendV1Native]::CreateFileW(
+        $Path,
+        [uint32]3221225472,
+        [uint32]1,
+        [IntPtr]::Zero,
+        [uint32]4,
+        [uint32]2097280,
+        [IntPtr]::Zero
+    )
+    if ($handle.IsInvalid) {
+        $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $handle.Dispose()
+        $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+        throw "$Label open failed: $nativeCode ($($nativeError.Message))"
+    }
+    try {
+        $information = New-Object WaggleDance.BridgeByHandleFileInformation
+        if (-not [WaggleDance.BridgeAppendV1Native]::GetFileInformationByHandle(
+            $handle.DangerousGetHandle(),
+            [ref]$information
+        )) {
+            $nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            $nativeError = New-Object System.ComponentModel.Win32Exception($nativeCode)
+            throw "$Label identity failed: $nativeCode ($($nativeError.Message))"
+        }
+        if (
+            $information.NumberOfLinks -ne 1 -or
+            ($information.FileAttributes -band
+                [uint32][System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($information.FileAttributes -band
+                [uint32][System.IO.FileAttributes]::Directory) -ne 0
+        ) {
+            throw "$Label must be a plain single-link file"
+        }
+        $stream = New-Object System.IO.FileStream(
+            $handle,
+            [System.IO.FileAccess]::ReadWrite
+        )
+        $handle = $null
+        return $stream
+    } finally {
+        if ($null -ne $handle) { $handle.Dispose() }
+    }
 }
 
 function Get-BridgeAppendCheckpointPath {
@@ -1142,23 +1733,15 @@ function Invoke-BridgeCanonicalTransactionalAppend {
     if (-not $AppendMutexOwned) {
         throw 'refusing transactional bridge append without AppendV1 ownership'
     }
-    # Gate the platform before creating shared/ or opening/creating the
-    # canonical path. On unsupported platforms the already-durable pending WAL
-    # may be retained, but no canonical path or parent is touched.
+    # Gate the platform before opening or creating the canonical leaf. The
+    # caller already holds the plain canonical-parent chain acquired after its
+    # pre-acceptance native gate and clean AppendV1 ownership.
     Initialize-BridgeAppendV1Native
-    $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-        [void](New-Item -ItemType Directory -Path $parent -Force)
-    }
     $stream = $null
     $preAppendLength = [int64]0
     try {
-        $stream = New-Object System.IO.FileStream(
-            $Path,
-            [System.IO.FileMode]::OpenOrCreate,
-            [System.IO.FileAccess]::ReadWrite,
-            [System.IO.FileShare]::Read
-        )
+        $stream = Open-BridgePlainSingleLinkMutationStream `
+            -Path $Path -Label 'canonical bridge append target'
         $preAppendLength = [int64]$stream.Length
         $checkpointPath = Get-BridgeAppendCheckpointPath -Path $Path
         $fileIdentity = Get-BridgeOpenFileIdentity -Stream $stream
@@ -1242,13 +1825,52 @@ function Add-CanonicalLineWithWal {
     if ($lineBytes.Length -eq 0 -or $lineBytes[$lineBytes.Length - 1] -ne 10) {
         throw 'bridge WAL row must be non-empty strict UTF-8 ending in LF'
     }
+    # Platform capability is a pre-acceptance gate. An unsupported runtime
+    # must not leave a WAL that no local accepted-v1 drainer can consume.
+    Initialize-BridgeAppendV1Native
+    $publicationMutex = $null
+    $publicationAcquired = $false
+    $publicationDirtyAbandoned = $false
     $mutex = $null
     $acquired = $false
     $dirtyAbandoned = $false
     $Path = $eventsPath
-    $wal = Open-PendingCanonicalWalLease -Bytes $lineBytes
-    $mutexError = ''
+    $wal = $null
     try {
+        try {
+            $publicationMutex = New-BridgeV1Mutex `
+                -Name 'Global\WaggleDanceBridgeAcceptedQueuePublicationV1' `
+                -Purpose QueuePublication
+            if ($null -eq $publicationMutex) {
+                throw 'accepted queue publication mutex construction returned null'
+            }
+            try { $publicationAcquired = $publicationMutex.WaitOne(10000) }
+            catch [System.Threading.AbandonedMutexException] {
+                $publicationAcquired = $true
+                $publicationDirtyAbandoned = $true
+            }
+        } catch {
+            throw (
+                'could not acquire accepted queue publication fence before WAL ' +
+                "creation: $($_.Exception.Message)"
+            )
+        }
+        if (-not $publicationAcquired) {
+            throw 'accepted queue publication fence timed out before WAL creation'
+        }
+        if ($publicationDirtyAbandoned) {
+            throw (
+                'accepted queue publication fence was abandoned; refusing WAL ' +
+                'creation under dirty ownership'
+            )
+        }
+
+        # Publication ownership begins before the producer creates accepted-v1
+        # state and remains held until canonical delivery or queue publication
+        # and cleanup have reached a settled durable outcome.
+        $wal = Open-PendingCanonicalWalLease -Bytes $lineBytes
+        $mutexError = ''
+        try {
         try {
             $mutex = New-BridgeV1Mutex `
                 -Name 'Global\WaggleDanceBridgeAppendV1' -Purpose Append
@@ -1270,19 +1892,31 @@ function Add-CanonicalLineWithWal {
             Close-PendingCanonicalWalLease -Wal $wal
             try { $spoolPath = Promote-PendingCanonicalWal -Wal $wal }
             catch {
+                $recoveryPath = Get-BridgeWalRecoveryPath -Wal $wal
                 throw (
-                    "could not acquire clean AppendV1 ($mutexError); pending WAL " +
-                    "retained at $($wal.PendingPath): $($_.Exception.Message)"
+                    "could not acquire clean AppendV1 ($mutexError); accepted WAL " +
+                    "publication was not verified; recovery_path=${recoveryPath}: " +
+                    "$($_.Exception.Message)"
                 )
             }
-            throw (
-                "could not acquire clean AppendV1 for bridge event: $Path " +
-                "(reason: $mutexError; event durably spooled to $spoolPath)"
+            $warning = (
+                "clean AppendV1 unavailable for bridge event; accepted WAL " +
+                "queued at $spoolPath (reason: $mutexError)"
             )
+            Write-BridgeWarning -Message $warning
+            return New-BridgeDeliveryReceipt `
+                -DeliveryStatus queued -CanonicalDurable $false `
+                -WalId $wal.WalId -WalLeaf $wal.WalLeaf `
+                -RetainedWalPath $spoolPath -RetainedWalSha256 $wal.Sha256 `
+                -WarningMessages @($warning)
         }
 
         try {
             Close-PendingCanonicalWalLease -Wal $wal
+            $canonicalDirectoryLeases = @(Open-BridgePlainDirectoryChain `
+                -Path (Split-Path -Parent $Path) `
+                -Label 'canonical bridge directory')
+            $wal.DirectoryLeases = @($wal.DirectoryLeases) + $canonicalDirectoryLeases
             Invoke-BridgeBeforeAppendTestHook -PendingPath $wal.PendingPath
             $appendResult = Invoke-BridgeCanonicalTransactionalAppend `
                 -Path $Path -Bytes $lineBytes -AppendMutexOwned $acquired
@@ -1299,13 +1933,20 @@ function Add-CanonicalLineWithWal {
             try {
                 $spoolPath = Promote-PendingCanonicalWal -Wal $wal
             } catch {
+                $recoveryPath = Get-BridgeWalRecoveryPath -Wal $wal
                 throw (
                     "bridge append failed ($appendError); WAL promotion failed " +
-                    "and pending WAL was retained at $($wal.PendingPath): " +
+                    "or could not be verified; recovery_path=${recoveryPath}: " +
                     "$($_.Exception.Message)"
                 )
             }
-            throw "bridge append failed; WAL promoted to $spoolPath ($appendError)"
+            $warning = "bridge append failed; accepted WAL queued at $spoolPath ($appendError)"
+            Write-BridgeWarning -Message $warning
+            return New-BridgeDeliveryReceipt `
+                -DeliveryStatus queued -CanonicalDurable $false `
+                -WalId $wal.WalId -WalLeaf $wal.WalLeaf `
+                -RetainedWalPath $spoolPath -RetainedWalSha256 $wal.Sha256 `
+                -WarningMessages @($warning)
         }
 
         if (-not $appendResult.CheckpointAdvanced) {
@@ -1318,14 +1959,19 @@ function Add-CanonicalLineWithWal {
                 # The closed pending WAL is still durable and discoverable by
                 # the replayer. Promotion is a liveness aid, not authorization
                 # to claim the already-durable canonical append failed.
-                $retainedPath = $wal.PendingPath
+                $retainedPath = Get-BridgeExactWalRecoveryPath -Wal $wal
             }
-            Write-Warning -WarningAction Continue -Message (
+            Write-BridgeWarning -Message (
                 'canonical bridge append is durable; validation checkpoint ' +
                 "advance failed and redundant WAL was retained at $retainedPath " +
                 "($($appendResult.CheckpointError))"
             )
-            return
+            return New-BridgeDeliveryReceipt `
+                -DeliveryStatus canonical -CanonicalDurable $true `
+                -CheckpointAdvanced $false -WalId $wal.WalId `
+                -WalLeaf $wal.WalLeaf -RetainedWalPath $retainedPath `
+                -RetainedWalSha256 $wal.Sha256 `
+                -WarningMessages @($appendResult.CheckpointError)
         }
 
         try {
@@ -1341,36 +1987,80 @@ function Add-CanonicalLineWithWal {
                 $script:bridgeWalCleanupFailureInjected = $true
                 throw 'simulated durable WAL cleanup failure'
             }
+            [System.IO.File]::Delete($wal.MarkerPath)
+            if (Test-Path -LiteralPath $wal.MarkerPath) {
+                throw 'accepted WAL digest marker still exists after removal'
+            }
             [System.IO.File]::Delete($wal.PendingPath)
             if (Test-Path -LiteralPath $wal.PendingPath) {
                 throw 'pending WAL still exists after removal'
             }
         } catch {
             $cleanupError = $_.Exception.Message
-            $spoolPath = $wal.PendingPath
-            try { $spoolPath = Promote-PendingCanonicalWal -Wal $wal } catch {}
-            Write-Warning -WarningAction Continue -Message (
+            $spoolPath = Get-BridgeExactWalRecoveryPath -Wal $wal
+            try { $spoolPath = Promote-PendingCanonicalWal -Wal $wal }
+            catch {
+                $spoolPath = Get-BridgeExactWalRecoveryPath -Wal $wal
+            }
+            Write-BridgeWarning -Message (
                 "bridge append is durable but WAL cleanup failed; retained at " +
                 "$spoolPath ($cleanupError)"
             )
-            return
+            return New-BridgeDeliveryReceipt `
+                -DeliveryStatus canonical -CanonicalDurable $true `
+                -CheckpointAdvanced $true -WalId $wal.WalId `
+                -WalLeaf $wal.WalLeaf -RetainedWalPath $spoolPath `
+                -RetainedWalSha256 $wal.Sha256 `
+                -WarningMessages @($cleanupError)
         }
-        return
-    } finally {
-        if ($null -ne $wal -and $null -ne $wal.Lease) {
-            $wal.Lease.Dispose()
-            $wal.Lease = $null
-        }
-        if ($null -ne $mutex) {
-            if ($acquired) {
-                try { $mutex.ReleaseMutex() }
+        return New-BridgeDeliveryReceipt `
+            -DeliveryStatus canonical -CanonicalDurable $true `
+            -CheckpointAdvanced $true
+        } finally {
+            if ($null -ne $wal -and $null -ne $wal.Lease) {
+                $wal.Lease.Dispose()
+                $wal.Lease = $null
+            }
+            if ($null -ne $mutex) {
+                if ($acquired) {
+                    try { $mutex.ReleaseMutex() }
+                    catch {
+                        Write-BridgeWarning -Message (
+                            "canonical AppendV1 release failed: $($_.Exception.Message)"
+                        )
+                    }
+                }
+                try { $mutex.Dispose() }
                 catch {
-                    Write-Warning -WarningAction Continue -Message (
-                        "canonical AppendV1 release failed: $($_.Exception.Message)"
+                    Write-BridgeWarning -Message (
+                        "canonical AppendV1 dispose failed: $($_.Exception.Message)"
                     )
                 }
             }
-            $mutex.Dispose()
+            if ($null -ne $wal -and $wal.PSObject.Properties['DirectoryLeases']) {
+                Close-BridgeAcceptedQueueDirectoryLeases `
+                    -Leases $wal.DirectoryLeases
+                $wal.DirectoryLeases = @()
+            }
+        }
+    } finally {
+        if ($null -ne $publicationMutex) {
+            if ($publicationAcquired) {
+                try { $publicationMutex.ReleaseMutex() }
+                catch {
+                    Write-BridgeWarning -Message (
+                        'accepted queue publication fence release failed: ' +
+                        $_.Exception.Message
+                    )
+                }
+            }
+            try { $publicationMutex.Dispose() }
+            catch {
+                Write-BridgeWarning -Message (
+                    'accepted queue publication fence dispose failed: ' +
+                    $_.Exception.Message
+                )
+            }
         }
     }
 }
@@ -1395,12 +2085,8 @@ function Invoke-BridgeAuxiliaryTransactionalAppend {
     $stream = $null
     $preAppendLength = [int64]0
     try {
-        $stream = New-Object System.IO.FileStream(
-            $Path,
-            [System.IO.FileMode]::OpenOrCreate,
-            [System.IO.FileAccess]::ReadWrite,
-            [System.IO.FileShare]::Read
-        )
+        $stream = Open-BridgePlainSingleLinkMutationStream `
+            -Path $Path -Label 'auxiliary bridge append target'
         $preAppendLength = [int64]$stream.Length
         if ($preAppendLength -gt 0) {
             [void]$stream.Seek(-1, [System.IO.SeekOrigin]::End)
@@ -1460,10 +2146,10 @@ function Add-AuxiliaryLineBestEffort {
             throw 'auxiliary bridge row must be non-empty strict UTF-8 ending in LF'
         }
     } catch {
-        Write-Warning -WarningAction Continue -Message (
+        Write-BridgeWarning -Message (
             "auxiliary outbox row was skipped: $($_.Exception.Message)"
         )
-        return
+        return $false
     }
 
     $mutex = $null
@@ -1488,39 +2174,40 @@ function Add-AuxiliaryLineBestEffort {
             if ($dirtyAbandoned) {
                 $mutexError = 'AppendV1 was abandoned; dirty ownership cannot mutate the outbox'
             }
-            Write-Warning -WarningAction Continue -Message (
+            Write-BridgeWarning -Message (
                 "auxiliary outbox append was skipped: $mutexError"
             )
-            return
+            return $false
         }
         try {
             Invoke-BridgeAuxiliaryTransactionalAppend `
                 -Path $Path -Bytes $lineBytes -AppendMutexOwned $acquired
         } catch {
-            Write-Warning -WarningAction Continue -Message (
+            Write-BridgeWarning -Message (
                 'canonical bridge event is durable; auxiliary outbox append ' +
                 "was skipped: $($_.Exception.Message)"
             )
-            return
+            return $false
         }
     } finally {
         if ($null -ne $mutex) {
             if ($acquired) {
                 try { $mutex.ReleaseMutex() }
                 catch {
-                    Write-Warning -WarningAction Continue -Message (
+                    Write-BridgeWarning -Message (
                         "auxiliary AppendV1 release failed: $($_.Exception.Message)"
                     )
                 }
             }
             try { $mutex.Dispose() }
             catch {
-                Write-Warning -WarningAction Continue -Message (
+                Write-BridgeWarning -Message (
                     "auxiliary AppendV1 dispose failed: $($_.Exception.Message)"
                 )
             }
         }
     }
+    return $true
 }
 
 function Write-JsonAtomic {
@@ -1558,18 +2245,23 @@ $outboxPath = Join-Path $outboxDir $dateName
 # Only shared/events.jsonl owns replay WAL and validation-checkpoint state.
 # Once it is durable, the per-agent outbox is an auxiliary best-effort copy:
 # its failure must not invite a blind retry of the canonical event.
-Add-CanonicalLineWithWal -Line $line
-Add-AuxiliaryLineBestEffort -Path $outboxPath -Line $line
+$delivery = Add-CanonicalLineWithWal -Line $line
+if ($delivery.delivery_status -ceq 'canonical') {
+    $delivery.outbox_written = [bool](
+        Add-AuxiliaryLineBestEffort -Path $outboxPath -Line $line
+    )
 
-$lastPath = Join-Path $sharedDir ("last_{0}.json" -f $Agent)
-try {
-    Write-JsonAtomic -Path $lastPath -Json ($event | ConvertTo-Json -Depth 12)
-} catch {
-    # last_<agent>.json is an optimization for quick status reads; the
-    # canonical bridge record is already appended to shared/events.jsonl
-    # and the per-agent outbox above. Do not fail the event write because
-    # Windows had the last-file open during atomic replace.
-    Write-Warning $_.Exception.Message
+    $lastPath = Join-Path $sharedDir ("last_{0}.json" -f $Agent)
+    try {
+        Write-JsonAtomic -Path $lastPath -Json ($event | ConvertTo-Json -Depth 12)
+        $delivery.last_file_written = $true
+    } catch {
+        # last_<agent>.json is an optimization for quick status reads; the
+        # canonical bridge record is already appended to shared/events.jsonl
+        # and the per-agent outbox above. Do not fail the event write because
+        # Windows had the last-file open during atomic replace.
+        Write-BridgeWarning -Message $_.Exception.Message
+    }
 }
 
-[pscustomobject]$event
+Write-BridgeEventResult -Delivery $delivery

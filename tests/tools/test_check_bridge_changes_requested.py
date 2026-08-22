@@ -18,6 +18,7 @@ from tools.check_bridge_changes_requested import (  # noqa: E402
     check_bridge_clear_to_merge,
     _read_events,
 )
+import tools.check_bridge_changes_requested as bridge_check_tool  # noqa: E402
 import waggledance.core.bridge_identity_registry as identity_registry_module  # noqa: E402
 
 AGENT_UUIDS = {
@@ -1560,6 +1561,82 @@ def test_cli_smoke_returns_exit_0_when_clear(tmp_path: Path) -> None:
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["clear_to_merge"] is True
+
+
+def test_cli_refuses_valid_but_unresolved_accepted_queue(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge_root = _seed_bridge(
+        tmp_path,
+        [_event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested")],
+    )
+    monkeypatch.setattr(
+        bridge_check_tool,
+        "check_accepted_queue_complete",
+        lambda **kwargs: {
+            "ok": True,
+            "complete": False,
+            "decision": "accepted_queue_incomplete",
+            "errors": [],
+            "unresolved": [
+                {"status": "dry_run", "sha256": "a" * 64}
+            ],
+        },
+    )
+
+    exit_code = bridge_check_tool.main(
+        [
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 3
+    assert payload["clear_to_merge"] is False
+    assert payload["decision"] == "accepted_queue_incomplete"
+
+
+def test_cli_fails_closed_when_accepted_queue_preflight_is_invalid(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bridge_root = _seed_bridge(tmp_path, [])
+    monkeypatch.setattr(
+        bridge_check_tool,
+        "check_accepted_queue_complete",
+        lambda **kwargs: {
+            "ok": False,
+            "complete": False,
+            "decision": "accepted_queue_receipt_invalid",
+            "errors": ["invalid receipt"],
+        },
+    )
+
+    exit_code = bridge_check_tool.main(
+        [
+            "--task-id",
+            "T",
+            "--from-agent",
+            "claude",
+            "--bridge-root",
+            str(bridge_root),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert payload["clear_to_merge"] is False
+    assert payload["decision"] == "accepted_queue_preflight_failed"
 
 
 def test_cli_accepts_utf8_bom_events_file(tmp_path: Path) -> None:

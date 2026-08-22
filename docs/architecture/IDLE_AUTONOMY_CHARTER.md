@@ -68,6 +68,7 @@ An autonomous merge **must refuse** to modify files matching any denylist entry.
 * `tools/idle_consensus_to_pr.py` (the promotion gate that applies this charter — self-modification banned)
 * `tools/merge_with_bridge_receipt.py` (receipt-bound merge executor — self-modification banned)
 * `tools/check_bridge_changes_requested.py` (RCO-veto preflight — self-modification banned)
+* `tools/bridge_accepted_queue_preflight.py` (accepted-queue visibility preflight — self-modification banned)
 * `tools/check_rco_pass_present.py` (RCO-pass verifier — self-modification banned)
 * `tools/check_promotion_eligible.py` (promotion-eligibility verdict gate — self-modification banned)
 * `tools/write_bridge_consensus_merge_receipt.py` (bridge-consensus merge receipt writer — self-modification banned)
@@ -116,6 +117,7 @@ latch. Narrow patterns only; ordinary docs/architecture/** stays allowlist-clean
 * `tests/tools/test_verify_bridge_consensus_conformance.py` (bridge-consensus conformance manifest anchor — self-modification banned; prevents allowlist-clean edits from dropping required fail-closed consensus cases)
 * `tests/tools/verify_bridge_consensus_conformance_corpus.json` (bridge-consensus conformance corpus anchor — self-modification banned; prevents allowlist-clean edits from weakening required fail-closed consensus cases)
 * `tests/tools/test_check_promotion_eligible.py` (promotion-eligibility conformance anchor — self-modification banned; prevents an autonomous gate-and-test weakening)
+* `tests/tools/test_bridge_accepted_queue_preflight.py` (accepted-queue visibility conformance anchor — self-modification banned; prevents an autonomous gate-and-test weakening)
 * `tests/tools/test_standing_consensus_sign_class.py` (9b standing-consensus-sign conformance anchor — self-modification banned; locks the (a)-refused / (b)-admitted / missing-element-refused fail-closed cases)
 * `tests/tools/test_bridge_event_writer.py` (canonical Python bridge-event writer conformance anchor — self-modification banned; prevents an autonomous writer-and-test weakening)
 * `tests/security/p4c_corpus/validate_p4c_corpus.py` (P4c adversarial-corpus validator anchor — self-consistent-tamper guarded; an auto-merged edit could weaken the content-derived re-derivation / coverage enforcement — rco-1 #1392. Corpus CASE additions stay allowlist-clean so the corpus can be extended; only the validator anchor is protected.)
@@ -152,7 +154,7 @@ Even within allowlisted file paths, an autonomous merge **must refuse** if the d
 
 ## Parallel conditions for autonomous merge
 
-All seven conditions must hold. Failure of any one downgrades the PR to operator-review-required.
+All eight conditions must hold. Failure of any one downgrades the PR to operator-review-required.
 
 1. **Consensus**: soft or hard convergence reached in an idle-protocol instance (`waggledance/core/idle_protocol.detect_idle_convergence` returns `soft_convergence` or `hard_convergence`).
 2. **CI green**: all required GitHub status checks pass.
@@ -161,6 +163,7 @@ All seven conditions must hold. Failure of any one downgrades the PR to operator
 5. **Mergeable clean**: GitHub reports `mergeable: clean` (no conflicts).
 6. **Allowlist match**: every changed file path in the diff matches an allowlist entry.
 7. **No denylist hit**: no changed file path matches the file denylist and no diff content matches the code-pattern denylist.
+8. **Accepted queue visibility**: every retained accepted-v1 WAL or recovery marker is either absent or proven to be the exact same complete byte row already present in canonical bridge history. Any unresolved, changing, malformed, unavailable, or timed-out queue state blocks autonomous promotion and merge.
 
 ## Bridge-consensus approval path (2026-05-29)
 
@@ -181,7 +184,7 @@ lands in Track T0b). In summary, a bridge consensus requires **all** of:
   exact head also blocks (silence never default-allows);
 * **head-exact binding** — all three approvals bind to the exact head SHA; any
   re-push invalidates them and requires re-consensus;
-* the seven parallel conditions above, plus a **MAGMA receipt** recording the
+* the eight parallel conditions above, plus a **MAGMA receipt** recording the
   three identities + head SHA + `RCO_PASS` reference, re-derivable by a consumer.
 
 This path governs **MERGE only**. It does **not** authorize the Stage-2 cutover,

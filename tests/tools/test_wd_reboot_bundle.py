@@ -281,6 +281,14 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
         "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1"
         in required_bundle_files
     )
+    assert (
+        "tools-bootstrap/.agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1"
+        in required_bundle_files
+    )
+    assert (
+        "tools-bootstrap/.agent-bridge/bin/Restore-BridgeSpool.ps1"
+        in required_bundle_files
+    )
     tools_supervisor = manifest["tools_supervisor"]
     assert tools_supervisor["worktree"] == TOOLS_WORKTREE
     assert tools_supervisor["branch"] == TOOLS_BRANCH
@@ -691,10 +699,24 @@ def test_each_lane_manifests_hash_bound_target_before_model_launch() -> None:
     target = (REBOOT / "WD_SWARM_TARGET_STATE_V1.md").read_text(encoding="utf-8")
     target_image = REBOOT / "WaggleDanceSwarmAi.png"
 
+    for required_helper in (
+        "Drain-AcceptedBridgeQueue.ps1",
+        "Restore-BridgeSpool.ps1",
+    ):
+        assert required_helper in agent_launcher
+        assert required_helper in tools_launcher
     assert agent_launcher.count("-Status target_state_manifested `") == 1
     assert tools_launcher.count("-Status target_state_manifested `") == 1
+    assert "target-state manifest event was not canonically durable" in agent_launcher
+    assert "target-state manifest event was not canonically durable" in tools_launcher
     assert agent_launcher.count("-Status append_canary `") == 1
     assert tools_launcher.count("-Status append_canary `") == 1
+    assert "Properties['_bridge_delivery']" in agent_launcher
+    assert "Properties['_bridge_delivery']" in tools_launcher
+    assert "delivery_status -cne 'canonical'" in agent_launcher
+    assert "delivery_status -cne 'canonical'" in tools_launcher
+    assert "canonical_durable -ne $true" in agent_launcher
+    assert "canonical_durable -ne $true" in tools_launcher
     assert agent_launcher.index("-Status target_state_manifested `") < (
         agent_launcher.index("model_selection = 'explicit'")
     )
@@ -6032,6 +6054,14 @@ def test_deployer_requires_clean_pushed_commit_before_machine_writes() -> None:
     )
     assert (
         "'tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1'"
+        in text
+    )
+    assert (
+        "'tools-bootstrap/.agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1'"
+        in text
+    )
+    assert (
+        "'tools-bootstrap/.agent-bridge/bin/Restore-BridgeSpool.ps1'"
         in text
     )
     assert "'tools-bootstrap/configs/bridge_identity_registry.json'" in text

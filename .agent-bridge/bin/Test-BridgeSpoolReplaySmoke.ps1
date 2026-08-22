@@ -18,6 +18,7 @@ function Add-Check {
 
 $tempRoot = Join-Path $env:TEMP "bridge-spool-replay-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $replayScript = Join-Path $PSScriptRoot 'Restore-BridgeSpool.ps1'
+$drainScript = Join-Path $PSScriptRoot 'Drain-AcceptedBridgeQueue.ps1'
 $writerScript = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
 $previousRuntimeRoot = [Environment]::GetEnvironmentVariable(
     'AGENT_BRIDGE_RUNTIME_ROOT',
@@ -67,6 +68,10 @@ $previousCanonicalScanReady = [Environment]::GetEnvironmentVariable(
     'AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY',
     'Process'
 )
+$previousPendingVerifyFailure = [Environment]::GetEnvironmentVariable(
+    'AGENT_BRIDGE_TEST_PENDING_VERIFY_FAILURE',
+    'Process'
+)
 
 function New-TestBridgeRoot {
     param([Parameter(Mandatory)] [string] $Name)
@@ -89,6 +94,85 @@ function Write-TestWal {
     )
     $encoding = New-Object System.Text.UTF8Encoding($false, $true)
     [System.IO.File]::WriteAllText($Path, ($Text + [char]10), $encoding)
+}
+
+function Write-TestAcceptedWal {
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] [string] $WalId,
+        [Parameter(Mandatory)] [string] $Text,
+        [switch] $Pending
+    )
+
+    $acceptedDir = Join-Path (Join-Path $Root 'spool') 'accepted-v1'
+    foreach ($name in @('pending', 'ready', 'replayed', 'quarantine')) {
+        [void](New-Item -ItemType Directory `
+            -Path (Join-Path $acceptedDir $name) -Force)
+    }
+    $leaf = "bridge-wal-v1-$WalId.jsonl"
+    $path = if ($Pending) {
+        Join-Path (Join-Path $acceptedDir 'pending') $leaf
+    } else {
+        Join-Path (Join-Path $acceptedDir 'ready') $leaf
+    }
+    Write-TestWal -Path $path -Text $Text
+    $sha256 = (Get-FileHash `
+        -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $markerPath = Join-Path (Join-Path $acceptedDir 'ready') `
+        ".${leaf}.pending-recovery-blocked"
+    $marker = [ordered]@{
+        schema = 'waggledance.bridge.accepted-pending-block.v1'
+        wal_leaf = $leaf
+        expected_sha256 = $sha256
+        created_at_utc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Compress
+    Write-TestWal -Path $markerPath -Text $marker
+    return [pscustomobject]@{
+        Leaf = $leaf
+        Path = $path
+        Sha256 = $sha256
+        MarkerPath = $markerPath
+        ReplayedPath = Join-Path (Join-Path $acceptedDir 'replayed') $leaf
+    }
+}
+
+function Get-TestAcceptedWalFiles {
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] [ValidateSet('pending', 'ready', 'replayed')]
+        [string] $State
+    )
+
+    $directory = Join-Path `
+        (Join-Path (Join-Path $Root 'spool') 'accepted-v1') $State
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return
+    }
+    Get-ChildItem -LiteralPath $directory `
+        -Filter 'bridge-wal-v1-*.jsonl' -File -Force `
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -cmatch '^bridge-wal-v1-[0-9a-f]{32}\.jsonl$'
+        } |
+        Sort-Object Name
+}
+
+function Invoke-TestAcceptedReceiptReplay {
+    param(
+        [Parameter(Mandatory)] [string] $ReplayScript,
+        [Parameter(Mandatory)] [string] $Root,
+        [Parameter(Mandatory)] $Delivery
+    )
+
+    if (
+        -not [string]$Delivery.wal_leaf -or
+        -not [string]$Delivery.retained_wal_sha256
+    ) {
+        throw 'test delivery receipt does not identify a retained accepted WAL'
+    }
+    & $ReplayScript -BridgeRoot $Root `
+        -AcceptedWalLeaf ([string]$Delivery.wal_leaf) `
+        -ExpectedWalSha256 ([string]$Delivery.retained_wal_sha256)
 }
 
 function Stop-ProcessAfterMutexAcquisition {
@@ -136,19 +220,30 @@ try {
     $isolationId = [guid]::NewGuid().ToString('N')
     $isolatedBin = Join-Path $tempRoot 'isolated-bin'
     [void](New-Item -ItemType Directory -Path $isolatedBin -Force)
+    $isolatedPublicationName = (
+        "Local\WaggleDanceBridgeAcceptedQueuePublicationV1-$isolationId"
+    )
     $isolatedAppendName = "Local\WaggleDanceBridgeAppendV1-$isolationId"
     $isolatedReplayName = "Local\WaggleDanceBridgeSpoolReplayV1-$isolationId"
     $isolatedWriter = Join-Path $isolatedBin 'Write-AgentEvent.ps1'
     $isolatedReplay = Join-Path $isolatedBin 'Restore-BridgeSpool.ps1'
+    $isolatedDrain = Join-Path $isolatedBin 'Drain-AcceptedBridgeQueue.ps1'
     $raceReplay = Join-Path $isolatedBin 'Restore-BridgeSpool-Race.ps1'
     $enumerationReplay = Join-Path $isolatedBin 'Restore-BridgeSpool-Enumeration.ps1'
     $leaseReplay = Join-Path $isolatedBin 'Restore-BridgeSpool-Lease.ps1'
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     $writerSource = [System.IO.File]::ReadAllText($writerScript).Replace(
+        'Global\WaggleDanceBridgeAcceptedQueuePublicationV1',
+        $isolatedPublicationName
+    ).Replace(
         'Global\WaggleDanceBridgeAppendV1',
         $isolatedAppendName
     )
     $replaySource = [System.IO.File]::ReadAllText($replayScript)
+    $replaySource = $replaySource.Replace(
+        'Global\WaggleDanceBridgeAcceptedQueuePublicationV1',
+        $isolatedPublicationName
+    )
     $replaySource = $replaySource.Replace(
         'Global\WaggleDanceBridgeAppendV1',
         $isolatedAppendName
@@ -157,8 +252,30 @@ try {
         'Global\WaggleDanceBridgeSpoolReplayV1',
         $isolatedReplayName
     )
+    $drainSource = [System.IO.File]::ReadAllText($drainScript)
+    if (-not $drainSource.Contains(
+        'Global\WaggleDanceBridgeAcceptedQueuePublicationV1'
+    )) {
+        throw 'drain smoke could not locate the queue publication fence'
+    }
+    $drainSource = $drainSource.Replace(
+        'Global\WaggleDanceBridgeAcceptedQueuePublicationV1',
+        $isolatedPublicationName
+    )
+    if (-not $drainSource.Contains('Global\WaggleDanceBridgeAppendV1')) {
+        throw 'drain smoke could not locate the AppendV1 coordination mutex'
+    }
+    $drainSource = $drainSource.Replace(
+        'Global\WaggleDanceBridgeAppendV1',
+        $isolatedAppendName
+    )
     [System.IO.File]::WriteAllText($isolatedWriter, $writerSource, $utf8)
     [System.IO.File]::WriteAllText($isolatedReplay, $replaySource, $utf8)
+    [System.IO.File]::WriteAllText(
+        $isolatedDrain,
+        $drainSource,
+        $utf8
+    )
     $appendWaitNeedle = 'try { $appendAcquired = $appendMutex.WaitOne(10000) }'
     if (-not $replaySource.Contains($appendWaitNeedle)) {
         throw 'race smoke could not locate the outer append mutex wait'
@@ -191,7 +308,7 @@ try {
         $utf8
     )
     $leaseBarrierNeedle = `
-        '    # Initial AppendV1 ownership covers WAL discovery/recovery and canonical'
+        '    # Initial AppendV1 ownership covers exact accepted-target selection or'
     if (-not $replaySource.Contains($leaseBarrierNeedle)) {
         throw 'lease smoke could not locate the post-AppendV1 acquisition point'
     }
@@ -230,8 +347,695 @@ Start-Sleep -Seconds 60
 '@
     [System.IO.File]::WriteAllText($abandonHelper, $abandonSource, $utf8)
 
+    # Accepted-target replay is opt-in, exact-leaf only, and independent from
+    # malformed historical backlog in the legacy spool root.
+    $noModeRoot = New-TestBridgeRoot -Name 'accepted-no-mode'
+    $noModeLegacy = Join-Path (Join-Path $noModeRoot 'spool') `
+        'failed-append-malformed-history.jsonl'
+    Write-TestWal -Path $noModeLegacy -Text '{not-json'
+    $noModeLegacyHash = (Get-FileHash `
+        -LiteralPath $noModeLegacy -Algorithm SHA256).Hash
+    $noModeError = ''
+    try { & $isolatedReplay -BridgeRoot $noModeRoot | Out-Null }
+    catch { $noModeError = $_.Exception.Message }
+    Add-Check -Name 'replay mode is required and no mode never scans legacy' -Passed (
+        ($noModeError -match 'replay mode is required') -and
+        (Test-Path -LiteralPath $noModeLegacy -PathType Leaf) -and
+        $noModeLegacyHash -ceq (Get-FileHash `
+            -LiteralPath $noModeLegacy -Algorithm SHA256).Hash
+    ) -Detail "error=$noModeError"
+
+    $acceptedRoot = New-TestBridgeRoot -Name 'accepted-target-only'
+    $acceptedLegacy = Join-Path (Join-Path $acceptedRoot 'spool') `
+        'failed-append-unrelated-malformed.jsonl'
+    Write-TestWal -Path $acceptedLegacy -Text '{still-not-json'
+    $acceptedLegacyHash = (Get-FileHash `
+        -LiteralPath $acceptedLegacy -Algorithm SHA256).Hash
+    $acceptedEvent = '{"ts_utc":"2026-08-20T10:00:00Z","agent":"smoke-1","type":"message","task_id":"accepted-target-only","status":"info","message":"accepted-target-only"}'
+    $acceptedWal = Write-TestAcceptedWal -Root $acceptedRoot `
+        -WalId '11111111111111111111111111111111' -Text $acceptedEvent
+    $acceptedOut = & $isolatedReplay -BridgeRoot $acceptedRoot `
+        -AcceptedWalLeaf $acceptedWal.Leaf `
+        -ExpectedWalSha256 $acceptedWal.Sha256
+    $acceptedEvents = Join-Path $acceptedRoot 'shared/events.jsonl'
+    Add-Check -Name 'target replay ignores unrelated malformed legacy backlog' -Passed (
+        ($acceptedOut -match 'replayed=1 deduped=0 failed=0') -and
+        (Test-Path -LiteralPath $acceptedLegacy -PathType Leaf) -and
+        $acceptedLegacyHash -ceq (Get-FileHash `
+            -LiteralPath $acceptedLegacy -Algorithm SHA256).Hash -and
+        (-not (Test-Path -LiteralPath $acceptedWal.Path)) -and
+        (Test-Path -LiteralPath $acceptedWal.ReplayedPath -PathType Leaf) -and
+        [System.IO.File]::ReadAllText($acceptedEvents) -ceq
+            ($acceptedEvent + [char]10)
+    ) -Detail "out=$acceptedOut"
+
+    $acceptedCanonicalHash = (Get-FileHash `
+        -LiteralPath $acceptedEvents -Algorithm SHA256).Hash
+    $alreadyDeliveredOut = & $isolatedReplay -BridgeRoot $acceptedRoot `
+        -AcceptedWalLeaf $acceptedWal.Leaf `
+        -ExpectedWalSha256 $acceptedWal.Sha256
+    Add-Check -Name 'matching replayed leaf is explicit already-delivered no-op' -Passed (
+        ($alreadyDeliveredOut -match 'already delivered') -and
+        $acceptedCanonicalHash -ceq (Get-FileHash `
+            -LiteralPath $acceptedEvents -Algorithm SHA256).Hash
+    ) -Detail "out=$alreadyDeliveredOut"
+    $archivedMismatchError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $acceptedRoot `
+            -AcceptedWalLeaf $acceptedWal.Leaf `
+            -ExpectedWalSha256 ('0' * 64) | Out-Null
+    } catch { $archivedMismatchError = $_.Exception.Message }
+    Add-Check -Name 'replayed-leaf hash mismatch fails closed' -Passed (
+        ($archivedMismatchError -match 'archived accepted WAL SHA-256 mismatch') -and
+        $acceptedCanonicalHash -ceq (Get-FileHash `
+            -LiteralPath $acceptedEvents -Algorithm SHA256).Hash
+    ) -Detail "error=$archivedMismatchError"
+
+    $acceptedExactRoot = New-TestBridgeRoot -Name 'accepted-exact-dedup'
+    $acceptedExactEvent = '{"ts_utc":"2026-08-20T10:01:00Z","agent":"smoke-1","type":"message","task_id":"accepted-exact","status":"info","message":"accepted-exact"}'
+    $acceptedExactEvents = Join-Path $acceptedExactRoot 'shared/events.jsonl'
+    Write-TestWal -Path $acceptedExactEvents -Text $acceptedExactEvent
+    $acceptedExactBefore = (Get-FileHash `
+        -LiteralPath $acceptedExactEvents -Algorithm SHA256).Hash
+    $acceptedExactWal = Write-TestAcceptedWal -Root $acceptedExactRoot `
+        -WalId '22222222222222222222222222222222' `
+        -Text $acceptedExactEvent
+    $acceptedExactOut = & $isolatedReplay -BridgeRoot $acceptedExactRoot `
+        -AcceptedWalLeaf $acceptedExactWal.Leaf `
+        -ExpectedWalSha256 $acceptedExactWal.Sha256
+    Add-Check -Name 'accepted target exact bytes deduplicate and archive' -Passed (
+        ($acceptedExactOut -match 'replayed=0 deduped=1 failed=0') -and
+        $acceptedExactBefore -ceq (Get-FileHash `
+            -LiteralPath $acceptedExactEvents -Algorithm SHA256).Hash -and
+        (-not (Test-Path -LiteralPath $acceptedExactWal.Path)) -and
+        (Test-Path -LiteralPath $acceptedExactWal.ReplayedPath -PathType Leaf)
+    ) -Detail "out=$acceptedExactOut"
+
+    $acceptedDistinctRoot = New-TestBridgeRoot -Name 'accepted-byte-distinct'
+    $acceptedDistinctEvents = Join-Path $acceptedDistinctRoot 'shared/events.jsonl'
+    $acceptedDistinctFirst = '{"ts_utc":"2026-08-20T10:02:00Z","pid":101,"agent":"smoke-1","type":"message","task_id":"accepted-distinct","status":"info","message":"same-signal"}'
+    $acceptedDistinctSecond = '{"ts_utc":"2026-08-20T10:03:00Z","pid":202,"agent":"smoke-1","type":"message","task_id":"accepted-distinct","status":"info","message":"same-signal"}'
+    Write-TestWal -Path $acceptedDistinctEvents -Text $acceptedDistinctFirst
+    $acceptedDistinctWal = Write-TestAcceptedWal `
+        -Root $acceptedDistinctRoot `
+        -WalId '33333333333333333333333333333333' `
+        -Text $acceptedDistinctSecond
+    $acceptedDistinctOut = & $isolatedReplay `
+        -BridgeRoot $acceptedDistinctRoot `
+        -AcceptedWalLeaf $acceptedDistinctWal.Leaf `
+        -ExpectedWalSha256 $acceptedDistinctWal.Sha256
+    $acceptedDistinctLines = @(
+        [System.IO.File]::ReadAllLines($acceptedDistinctEvents)
+    )
+    Add-Check -Name 'byte-distinct same-semantic accepted event survives' -Passed (
+        ($acceptedDistinctOut -match 'replayed=1 deduped=0 failed=0') -and
+        $acceptedDistinctLines.Count -eq 2 -and
+        $acceptedDistinctLines[0] -ceq $acceptedDistinctFirst -and
+        $acceptedDistinctLines[1] -ceq $acceptedDistinctSecond
+    ) -Detail "out=$acceptedDistinctOut lines=$($acceptedDistinctLines.Count)"
+
+    $acceptedHashRoot = New-TestBridgeRoot -Name 'accepted-hash-fail-closed'
+    $acceptedHashWal = Write-TestAcceptedWal -Root $acceptedHashRoot `
+        -WalId '44444444444444444444444444444444' `
+        -Text $acceptedEvent.Replace('accepted-target-only', 'accepted-hash')
+    $acceptedHashError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $acceptedHashRoot `
+            -AcceptedWalLeaf $acceptedHashWal.Leaf `
+            -ExpectedWalSha256 ('f' * 64) | Out-Null
+    } catch { $acceptedHashError = $_.Exception.Message }
+    $acceptedHashEvents = Join-Path $acceptedHashRoot 'shared/events.jsonl'
+    Add-Check -Name 'ready target hash mismatch is fail closed' -Passed (
+        ($acceptedHashError -match 'accepted WAL SHA-256 mismatch') -and
+        (Test-Path -LiteralPath $acceptedHashWal.Path -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path $acceptedHashEvents) -eq 0
+    ) -Detail "error=$acceptedHashError"
+
+    $acceptedPathError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $acceptedHashRoot `
+            -AcceptedWalLeaf '../bridge-wal-v1-44444444444444444444444444444444.jsonl' `
+            -ExpectedWalSha256 $acceptedHashWal.Sha256 | Out-Null
+    } catch { $acceptedPathError = $_.Exception.Message }
+    Add-Check -Name 'accepted target path input is anchored and fail closed' -Passed (
+        ($acceptedPathError -match 'accepted WAL leaf must match') -and
+        (Test-Path -LiteralPath $acceptedHashWal.Path -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path $acceptedHashEvents) -eq 0
+    ) -Detail "error=$acceptedPathError"
+
+    $acceptedArchiveCollisionRoot = New-TestBridgeRoot `
+        -Name 'accepted-archive-collision'
+    $acceptedArchiveCollisionWal = Write-TestAcceptedWal `
+        -Root $acceptedArchiveCollisionRoot `
+        -WalId '45454545454545454545454545454545' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'accepted-archive-collision'
+        )
+    Write-TestWal -Path $acceptedArchiveCollisionWal.ReplayedPath `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'different-archive-authority'
+        )
+    $acceptedArchiveCollisionBefore = (Get-FileHash `
+        -LiteralPath $acceptedArchiveCollisionWal.ReplayedPath `
+        -Algorithm SHA256).Hash
+    $acceptedArchiveCollisionError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $acceptedArchiveCollisionRoot `
+            -AcceptedWalLeaf $acceptedArchiveCollisionWal.Leaf `
+            -ExpectedWalSha256 $acceptedArchiveCollisionWal.Sha256 | Out-Null
+    } catch { $acceptedArchiveCollisionError = $_.Exception.Message }
+    Add-Check -Name 'different accepted archive authority fails before append' -Passed (
+        ($acceptedArchiveCollisionError -match
+            'archive leaf collides with different bytes') -and
+        (Test-Path -LiteralPath $acceptedArchiveCollisionWal.Path -PathType Leaf) -and
+        $acceptedArchiveCollisionBefore -ceq (Get-FileHash `
+            -LiteralPath $acceptedArchiveCollisionWal.ReplayedPath `
+            -Algorithm SHA256).Hash -and
+        (Get-BridgeTestFileLength -Path (Join-Path `
+            $acceptedArchiveCollisionRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail "error=$acceptedArchiveCollisionError"
+
+    $canonicalHardlinkRoot = New-TestBridgeRoot -Name 'canonical-hardlink'
+    $canonicalHardlinkEvents = Join-Path `
+        $canonicalHardlinkRoot 'shared/events.jsonl'
+    $canonicalHardlinkSentinel = Join-Path `
+        $tempRoot 'canonical-hardlink-outside-sentinel.jsonl'
+    $canonicalHardlinkSeed = '{"ts_utc":"2026-08-20T10:04:00Z","agent":"sentinel","type":"status","status":"info","message":"outside-sentinel"}'
+    Write-TestWal -Path $canonicalHardlinkSentinel -Text $canonicalHardlinkSeed
+    [void](New-Item -ItemType HardLink -Path $canonicalHardlinkEvents `
+        -Target $canonicalHardlinkSentinel)
+    $canonicalHardlinkBefore = (Get-FileHash `
+        -LiteralPath $canonicalHardlinkSentinel -Algorithm SHA256).Hash
+    $canonicalHardlinkWal = Write-TestAcceptedWal `
+        -Root $canonicalHardlinkRoot `
+        -WalId '55555555555555555555555555555555' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'canonical-hardlink'
+        )
+    $canonicalHardlinkError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $canonicalHardlinkRoot `
+            -AcceptedWalLeaf $canonicalHardlinkWal.Leaf `
+            -ExpectedWalSha256 $canonicalHardlinkWal.Sha256 | Out-Null
+    } catch { $canonicalHardlinkError = $_.Exception.Message }
+    Add-Check -Name 'target replay rejects hard-linked canonical destination' -Passed (
+        ($canonicalHardlinkError -match 'exactly one hard-link name') -and
+        (Test-Path -LiteralPath $canonicalHardlinkWal.Path -PathType Leaf) -and
+        (-not (Test-Path -LiteralPath $canonicalHardlinkWal.ReplayedPath)) -and
+        (-not (Test-Path -LiteralPath `
+            "$canonicalHardlinkEvents.append-v1-validation.json")) -and
+        $canonicalHardlinkBefore -ceq (Get-FileHash `
+            -LiteralPath $canonicalHardlinkSentinel -Algorithm SHA256).Hash -and
+        $canonicalHardlinkBefore -ceq (Get-FileHash `
+            -LiteralPath $canonicalHardlinkEvents -Algorithm SHA256).Hash
+    ) -Detail "error=$canonicalHardlinkError"
+
+    $directHardlinkRoot = New-TestBridgeRoot -Name 'writer-canonical-hardlink'
+    $directHardlinkEvents = Join-Path $directHardlinkRoot 'shared/events.jsonl'
+    $directHardlinkSentinel = Join-Path `
+        $tempRoot 'writer-hardlink-outside-sentinel.jsonl'
+    Write-TestWal -Path $directHardlinkSentinel -Text $canonicalHardlinkSeed
+    [void](New-Item -ItemType HardLink -Path $directHardlinkEvents `
+        -Target $directHardlinkSentinel)
+    $directHardlinkBefore = (Get-FileHash `
+        -LiteralPath $directHardlinkSentinel -Algorithm SHA256).Hash
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $directHardlinkRoot, 'Process'
+    )
+    $directHardlinkResult = & $isolatedWriter `
+        -Agent 'smoke-1' -Type status -Status open `
+        -Message 'writer-hardlink-guard' -PayloadJson '{}'
+    $directHardlinkDelivery = $directHardlinkResult._bridge_delivery
+    Add-Check -Name 'writer queues without mutating hard-linked canonical' -Passed (
+        [string]$directHardlinkDelivery.delivery_status -ceq 'queued' -and
+        $directHardlinkDelivery.canonical_durable -eq $false -and
+        (@($directHardlinkDelivery.warning_messages) -join ' ') -match
+            'plain single-link' -and
+        $directHardlinkBefore -ceq (Get-FileHash `
+            -LiteralPath $directHardlinkSentinel -Algorithm SHA256).Hash -and
+        $directHardlinkBefore -ceq (Get-FileHash `
+            -LiteralPath $directHardlinkEvents -Algorithm SHA256).Hash -and
+        (Test-Path -LiteralPath `
+            ([string]$directHardlinkDelivery.retained_wal_path) -PathType Leaf)
+    ) -Detail "delivery=$($directHardlinkDelivery | ConvertTo-Json -Compress)"
+
+    $canonicalJunctionRoot = New-TestBridgeRoot -Name 'canonical-shared-junction'
+    $canonicalJunctionPath = Join-Path $canonicalJunctionRoot 'shared'
+    $canonicalJunctionTarget = Join-Path $tempRoot 'canonical-junction-target'
+    Remove-Item -LiteralPath $canonicalJunctionPath -Force
+    [void](New-Item -ItemType Directory -Path $canonicalJunctionTarget -Force)
+    [void](New-Item -ItemType Junction -Path $canonicalJunctionPath `
+        -Target $canonicalJunctionTarget)
+    $canonicalJunctionWal = Write-TestAcceptedWal `
+        -Root $canonicalJunctionRoot `
+        -WalId '56565656565656565656565656565656' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'canonical-shared-junction'
+        )
+    $canonicalJunctionOut = & $isolatedReplay `
+        -BridgeRoot $canonicalJunctionRoot `
+        -AcceptedWalLeaf $canonicalJunctionWal.Leaf `
+        -ExpectedWalSha256 $canonicalJunctionWal.Sha256
+    $canonicalJunctionEvents = Join-Path $canonicalJunctionTarget 'events.jsonl'
+    Add-Check -Name 'target replay safely follows pinned shared junction' -Passed (
+        ($canonicalJunctionOut -match 'replayed=1 deduped=0 failed=0') -and
+        (Test-Path -LiteralPath $canonicalJunctionEvents -PathType Leaf) -and
+        ([System.IO.File]::ReadAllText($canonicalJunctionEvents) -match
+            'canonical-shared-junction') -and
+        (-not (Test-Path -LiteralPath $canonicalJunctionWal.Path)) -and
+        (Test-Path -LiteralPath $canonicalJunctionWal.ReplayedPath -PathType Leaf)
+    ) -Detail "out=$canonicalJunctionOut"
+
+    $targetAncestorOutsideParent = Join-Path $tempRoot `
+        'target-replay-ancestor-outside'
+    $targetAncestorOutsideRoot = New-TestBridgeRoot `
+        -Name 'target-replay-ancestor-outside\bridge'
+    $targetAncestorWal = Write-TestAcceptedWal `
+        -Root $targetAncestorOutsideRoot `
+        -WalId '57575757575757575757575757575757' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'target-replay-ancestor-junction'
+        )
+    $targetAncestorWalHash = (Get-FileHash `
+        -LiteralPath $targetAncestorWal.Path -Algorithm SHA256).Hash
+    $targetAncestorMarkerHash = (Get-FileHash `
+        -LiteralPath $targetAncestorWal.MarkerPath -Algorithm SHA256).Hash
+    $targetAncestorContainer = Join-Path $tempRoot `
+        'target-replay-ancestor-container'
+    [void](New-Item -ItemType Directory -Path $targetAncestorContainer -Force)
+    $targetAncestorLink = Join-Path $targetAncestorContainer 'parent-link'
+    [void](New-Item -ItemType Junction -Path $targetAncestorLink `
+        -Target $targetAncestorOutsideParent)
+    $targetAncestorLexicalRoot = Join-Path $targetAncestorLink 'bridge'
+    $targetAncestorError = ''
+    try {
+        & $isolatedReplay -BridgeRoot $targetAncestorLexicalRoot `
+            -AcceptedWalLeaf $targetAncestorWal.Leaf `
+            -ExpectedWalSha256 $targetAncestorWal.Sha256 | Out-Null
+    } catch { $targetAncestorError = $_.Exception.Message }
+    Add-Check -Name 'target replay rejects a BridgeRoot ancestor junction' `
+        -Passed (
+            ($targetAncestorError -match 'must not be a reparse point') -and
+            (Test-Path -LiteralPath $targetAncestorWal.Path -PathType Leaf) -and
+            $targetAncestorWalHash -ceq (Get-FileHash `
+                -LiteralPath $targetAncestorWal.Path -Algorithm SHA256).Hash -and
+            $targetAncestorMarkerHash -ceq (Get-FileHash `
+                -LiteralPath $targetAncestorWal.MarkerPath `
+                -Algorithm SHA256).Hash -and
+            (-not (Test-Path -LiteralPath $targetAncestorWal.ReplayedPath)) -and
+            (Get-BridgeTestFileLength -Path (Join-Path `
+                $targetAncestorOutsideRoot 'shared/events.jsonl')) -eq 0
+        ) -Detail "error=$targetAncestorError"
+
+    # Accepted queue producers and the drainer reject a reparse ancestor before
+    # creating, moving, deleting, or replaying anything through it.
+    $queueJunctionRoot = Join-Path $tempRoot 'accepted-queue-junction-root'
+    [void](New-Item -ItemType Directory `
+        -Path (Join-Path $queueJunctionRoot 'shared') -Force)
+    $queueJunctionOutside = New-TestBridgeRoot `
+        -Name 'accepted-queue-junction-outside'
+    $queueJunctionWal = Write-TestAcceptedWal `
+        -Root $queueJunctionOutside `
+        -WalId 'adadadadadadadadadadadadadadadad' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'accepted-queue-junction'
+        )
+    $queueJunctionMarkerHash = (Get-FileHash `
+        -LiteralPath $queueJunctionWal.MarkerPath -Algorithm SHA256).Hash
+    $queueJunctionWalHash = (Get-FileHash `
+        -LiteralPath $queueJunctionWal.Path -Algorithm SHA256).Hash
+    [void](New-Item -ItemType Junction `
+        -Path (Join-Path $queueJunctionRoot 'spool') `
+        -Target (Join-Path $queueJunctionOutside 'spool'))
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $queueJunctionRoot, 'Process'
+    )
+    $queueJunctionWriterError = ''
+    try {
+        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
+            -Message 'accepted-queue-junction-writer' -PayloadJson '{}' |
+            Out-Null
+    } catch { $queueJunctionWriterError = $_.Exception.Message }
+    $queueJunctionDrainError = ''
+    try {
+        & $isolatedDrain -BridgeRoot $queueJunctionRoot `
+            -PendingMinAgeSeconds 0 -ReceiptJson | Out-Null
+    } catch { $queueJunctionDrainError = $_.Exception.Message }
+    $queueEmptyJunctionRoot = Join-Path $tempRoot `
+        'accepted-queue-empty-junction-root'
+    $queueEmptyJunctionOutside = Join-Path $tempRoot `
+        'accepted-queue-empty-junction-outside'
+    [void](New-Item -ItemType Directory -Path $queueEmptyJunctionRoot -Force)
+    [void](New-Item -ItemType Directory -Path $queueEmptyJunctionOutside -Force)
+    [void](New-Item -ItemType Junction `
+        -Path (Join-Path $queueEmptyJunctionRoot 'spool') `
+        -Target $queueEmptyJunctionOutside)
+    $queueEmptyJunctionDrainError = ''
+    try {
+        & $isolatedDrain -BridgeRoot $queueEmptyJunctionRoot `
+            -ReceiptJson | Out-Null
+    } catch { $queueEmptyJunctionDrainError = $_.Exception.Message }
+    $queueAncestorContainer = Join-Path $tempRoot `
+        'accepted-queue-ancestor-container'
+    $queueAncestorOutside = Join-Path $tempRoot `
+        'accepted-queue-ancestor-outside'
+    [void](New-Item -ItemType Directory -Path $queueAncestorContainer -Force)
+    [void](New-Item -ItemType Directory -Path $queueAncestorOutside -Force)
+    $queueAncestorLink = Join-Path $queueAncestorContainer 'parent-link'
+    [void](New-Item -ItemType Junction -Path $queueAncestorLink `
+        -Target $queueAncestorOutside)
+    $queueMissingBridgeRoot = Join-Path $queueAncestorLink 'missing-bridge'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $queueMissingBridgeRoot, 'Process'
+    )
+    $queueMissingRootWriterError = ''
+    try {
+        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
+            -Message 'accepted-queue-missing-root-junction' -PayloadJson '{}' |
+            Out-Null
+    } catch { $queueMissingRootWriterError = $_.Exception.Message }
+    Add-Check -Name 'accepted queue rejects a spool junction before mutation' -Passed (
+        ($queueJunctionWriterError -match 'reparse point') -and
+        ($queueJunctionDrainError -match 'reparse point') -and
+        ($queueEmptyJunctionDrainError -match 'reparse point') -and
+        ($queueMissingRootWriterError -match 'reparse point') -and
+        (-not (Test-Path -LiteralPath `
+            (Join-Path $queueAncestorOutside 'missing-bridge'))) -and
+        (Get-FileHash -LiteralPath $queueJunctionWal.Path `
+            -Algorithm SHA256).Hash -ceq $queueJunctionWalHash -and
+        (Get-FileHash -LiteralPath $queueJunctionWal.MarkerPath `
+            -Algorithm SHA256).Hash -ceq $queueJunctionMarkerHash -and
+        (Get-BridgeTestFileLength -Path (Join-Path `
+            $queueJunctionRoot 'shared/events.jsonl')) -eq 0 -and
+        @(Get-TestAcceptedWalFiles `
+            -Root $queueJunctionOutside -State ready).Count -eq 1 -and
+        @(Get-TestAcceptedWalFiles `
+            -Root $queueJunctionOutside -State pending).Count -eq 0
+    ) -Detail (
+        "writer=$queueJunctionWriterError drain=$queueJunctionDrainError " +
+        "empty=$queueEmptyJunctionDrainError missing=$queueMissingRootWriterError"
+    )
+
+    # The queue drainer isolates a malformed ready leaf, drains later valid
+    # leaves, and intentionally leaves accepted pending plus legacy backlog.
+    $drainRoot = New-TestBridgeRoot -Name 'accepted-drain-isolation'
+    $drainLegacy = Join-Path (Join-Path $drainRoot 'spool') `
+        'failed-append-drain-malformed.jsonl'
+    Write-TestWal -Path $drainLegacy -Text '{legacy-malformed'
+    $drainFirst = Write-TestAcceptedWal -Root $drainRoot `
+        -WalId '66666666666666666666666666666666' `
+        -Text $acceptedEvent.Replace('accepted-target-only', 'drain-first')
+    $drainMalformed = Write-TestAcceptedWal -Root $drainRoot `
+        -WalId '77777777777777777777777777777777' -Text '{ready-malformed'
+    $drainLast = Write-TestAcceptedWal -Root $drainRoot `
+        -WalId '88888888888888888888888888888888' `
+        -Text $acceptedEvent.Replace('accepted-target-only', 'drain-last')
+    $drainPending = Write-TestAcceptedWal -Root $drainRoot `
+        -WalId '99999999999999999999999999999999' `
+        -Text $acceptedEvent.Replace('accepted-target-only', 'drain-pending') `
+        -Pending
+    $drainReceiptText = & $isolatedDrain -BridgeRoot $drainRoot -ReceiptJson
+    $drainReceipt = $drainReceiptText | ConvertFrom-Json
+    $drainLines = @([System.IO.File]::ReadAllLines(
+        (Join-Path $drainRoot 'shared/events.jsonl')
+    ))
+    Add-Check -Name 'accepted queue drain isolates failures and ignores pending and legacy' -Passed (
+        [string]$drainReceipt.schema -ceq
+            'waggledance.bridge.accepted-queue-drain.v1' -and
+        [int]$drainReceipt.ready_seen -eq 3 -and
+        [int]$drainReceipt.drained -eq 2 -and
+        [int]$drainReceipt.failed -eq 1 -and
+        $drainLines.Count -eq 2 -and
+        (-not (Test-Path -LiteralPath $drainFirst.Path)) -and
+        (Test-Path -LiteralPath $drainMalformed.Path -PathType Leaf) -and
+        (-not (Test-Path -LiteralPath $drainLast.Path)) -and
+        (Test-Path -LiteralPath $drainPending.Path -PathType Leaf) -and
+        (Test-Path -LiteralPath $drainLegacy -PathType Leaf)
+    ) -Detail "receipt=$drainReceiptText"
+
+    $invalidLeafRoot = New-TestBridgeRoot -Name 'accepted-invalid-leaves'
+    $invalidPendingDir = Join-Path `
+        (Join-Path (Join-Path $invalidLeafRoot 'spool') 'accepted-v1') 'pending'
+    $invalidReadyDir = Join-Path `
+        (Join-Path (Join-Path $invalidLeafRoot 'spool') 'accepted-v1') 'ready'
+    [void](New-Item -ItemType Directory -Path $invalidPendingDir -Force)
+    [void](New-Item -ItemType Directory -Path $invalidReadyDir -Force)
+    $invalidPendingLeaf = Join-Path $invalidPendingDir `
+        'bridge-wal-v1-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD.jsonl'
+    $invalidReadyLeaf = Join-Path $invalidReadyDir 'unexpected-ready.tmp'
+    Write-TestWal -Path $invalidPendingLeaf -Text $acceptedEvent
+    Write-TestWal -Path $invalidReadyLeaf -Text $acceptedEvent
+    $invalidLeafText = & $isolatedDrain -BridgeRoot $invalidLeafRoot -ReceiptJson
+    $invalidLeafReceipt = $invalidLeafText | ConvertFrom-Json
+    Add-Check -Name 'malformed accepted leaves fail visibly and remain untouched' -Passed (
+        [int]$invalidLeafReceipt.failed -eq 2 -and
+        [int]$invalidLeafReceipt.pending_failed -eq 1 -and
+        (Test-Path -LiteralPath $invalidPendingLeaf -PathType Leaf) -and
+        (Test-Path -LiteralPath $invalidReadyLeaf -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path `
+            (Join-Path $invalidLeafRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail "receipt=$invalidLeafText"
+
+    # A pre-acceptance crash/failure may leave a strict pending-shaped row but
+    # no durable producer digest. The drainer must never mint authority for it.
+    $pendingOnlyRoot = New-TestBridgeRoot -Name 'accepted-pending-only'
+    $pendingOnlyAccepted = Join-Path `
+        (Join-Path $pendingOnlyRoot 'spool') 'accepted-v1'
+    $pendingOnlyDir = Join-Path $pendingOnlyAccepted 'pending'
+    [void](New-Item -ItemType Directory -Path $pendingOnlyDir -Force)
+    $pendingOnlyLeaf = `
+        'bridge-wal-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jsonl'
+    $pendingOnlyPath = Join-Path $pendingOnlyDir $pendingOnlyLeaf
+    $pendingOnlyEvent = $acceptedEvent.Replace(
+        'accepted-target-only',
+        'pending-only-python-crash'
+    )
+    Write-TestWal -Path $pendingOnlyPath -Text $pendingOnlyEvent
+    $pendingOnlyDryRunText = & $isolatedDrain -BridgeRoot $pendingOnlyRoot `
+        -PendingMinAgeSeconds 0 -DryRun -ReceiptJson
+    $pendingOnlyDryRun = $pendingOnlyDryRunText | ConvertFrom-Json
+    $pendingOnlyText = & $isolatedDrain -BridgeRoot $pendingOnlyRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $pendingOnlyReceipt = $pendingOnlyText | ConvertFrom-Json
+    Add-Check -Name 'markerless pending WAL never gains replay authority' -Passed (
+        [int]$pendingOnlyDryRun.pending_promoted -eq 0 -and
+        [int]$pendingOnlyDryRun.pending_failed -eq 1 -and
+        [int]$pendingOnlyDryRun.failed -eq 1 -and
+        @($pendingOnlyDryRun.results | Where-Object {
+            [string]$_.status -ceq 'pending_would_promote'
+        }).Count -eq 0 -and
+        [int]$pendingOnlyReceipt.pending_seen -eq 1 -and
+        [int]$pendingOnlyReceipt.pending_promoted -eq 0 -and
+        [int]$pendingOnlyReceipt.pending_failed -eq 1 -and
+        [int]$pendingOnlyReceipt.drained -eq 0 -and
+        [int]$pendingOnlyReceipt.failed -eq 1 -and
+        (Test-Path -LiteralPath `
+            (Join-Path $pendingOnlyAccepted 'ready') -PathType Container) -and
+        (Test-Path -LiteralPath $pendingOnlyPath -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path `
+            (Join-Path $pendingOnlyRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail "dryRun=$pendingOnlyDryRunText receipt=$pendingOnlyText"
+
+    $pendingMismatchRoot = New-TestBridgeRoot `
+        -Name 'accepted-pending-marker-mismatch'
+    $pendingMismatchWal = Write-TestAcceptedWal `
+        -Root $pendingMismatchRoot `
+        -WalId 'abababababababababababababababab' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'pending-marker-mismatch'
+        ) -Pending
+    $pendingMismatchMarker = [ordered]@{
+        schema = 'waggledance.bridge.accepted-pending-block.v1'
+        wal_leaf = $pendingMismatchWal.Leaf
+        expected_sha256 = ('0' * 64)
+        created_at_utc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Compress
+    Write-TestWal -Path $pendingMismatchWal.MarkerPath `
+        -Text $pendingMismatchMarker
+    $pendingMismatchDryRunText = & $isolatedDrain `
+        -BridgeRoot $pendingMismatchRoot `
+        -PendingMinAgeSeconds 0 -DryRun -ReceiptJson
+    $pendingMismatchDryRun = $pendingMismatchDryRunText | ConvertFrom-Json
+    Add-Check -Name 'dry run rejects a pending digest mismatch' -Passed (
+        [int]$pendingMismatchDryRun.pending_promoted -eq 0 -and
+        [int]$pendingMismatchDryRun.pending_failed -eq 1 -and
+        [int]$pendingMismatchDryRun.failed -eq 1 -and
+        @($pendingMismatchDryRun.results | Where-Object {
+            [string]$_.status -ceq 'pending_would_promote'
+        }).Count -eq 0 -and
+        (Test-Path -LiteralPath $pendingMismatchWal.Path -PathType Leaf) -and
+        (Test-Path -LiteralPath `
+            $pendingMismatchWal.MarkerPath -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path (Join-Path `
+            $pendingMismatchRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail "dryRun=$pendingMismatchDryRunText"
+
+    $markerlessReadyRoot = New-TestBridgeRoot -Name 'accepted-ready-markerless'
+    $markerlessReadyDir = Join-Path (Join-Path `
+        (Join-Path $markerlessReadyRoot 'spool') 'accepted-v1') 'ready'
+    [void](New-Item -ItemType Directory -Path $markerlessReadyDir -Force)
+    $markerlessReadyPath = Join-Path $markerlessReadyDir `
+        'bridge-wal-v1-acacacacacacacacacacacacacacacac.jsonl'
+    Write-TestWal -Path $markerlessReadyPath -Text $acceptedEvent.Replace(
+        'accepted-target-only',
+        'markerless-ready'
+    )
+    $markerlessReadyText = & $isolatedDrain `
+        -BridgeRoot $markerlessReadyRoot -ReceiptJson
+    $markerlessReadyReceipt = $markerlessReadyText | ConvertFrom-Json
+    Add-Check -Name 'markerless ready WAL never gains replay authority' -Passed (
+        [int]$markerlessReadyReceipt.ready_seen -eq 1 -and
+        [int]$markerlessReadyReceipt.drained -eq 0 -and
+        [int]$markerlessReadyReceipt.failed -eq 1 -and
+        (Test-Path -LiteralPath $markerlessReadyPath -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path (Join-Path `
+            $markerlessReadyRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail "receipt=$markerlessReadyText"
+
+    # A durable recovery marker is resumable while the exact pending leaf is
+    # still present and no ready path exists.
+    $moveRetryRoot = New-TestBridgeRoot -Name 'accepted-pending-move-retry'
+    $moveRetryWal = Write-TestAcceptedWal -Root $moveRetryRoot `
+        -WalId 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'pending-move-retry'
+        ) -Pending
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_PENDING_MOVE_FAILURE', '1', 'Process'
+    )
+    try {
+        $moveRetryFirstText = & $isolatedDrain -BridgeRoot $moveRetryRoot `
+            -PendingMinAgeSeconds 0 -ReceiptJson
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_PENDING_MOVE_FAILURE', $null, 'Process'
+        )
+    }
+    $moveRetryFirst = $moveRetryFirstText | ConvertFrom-Json
+    $moveRetryMarker = Join-Path `
+        (Join-Path (Join-Path (Join-Path $moveRetryRoot 'spool') `
+        'accepted-v1') 'ready') `
+        ".$($moveRetryWal.Leaf).pending-recovery-blocked"
+    $moveRetryPendingAndMarkerBefore = (
+        (Test-Path -LiteralPath $moveRetryWal.Path -PathType Leaf) -and
+        (Test-Path -LiteralPath $moveRetryMarker -PathType Leaf)
+    )
+    $moveRetrySecondText = & $isolatedDrain -BridgeRoot $moveRetryRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $moveRetrySecond = $moveRetrySecondText | ConvertFrom-Json
+    Add-Check -Name 'pending publication failure resumes from bound marker' -Passed (
+        [int]$moveRetryFirst.pending_failed -eq 1 -and
+        $moveRetryPendingAndMarkerBefore -and
+        (-not (Test-Path -LiteralPath $moveRetryWal.Path)) -and
+        [int]$moveRetrySecond.pending_promoted -eq 1 -and
+        [int]$moveRetrySecond.drained -eq 1 -and
+        [int]$moveRetrySecond.failed -eq 0 -and
+        (-not (Test-Path -LiteralPath $moveRetryMarker)) -and
+        ([System.IO.File]::ReadAllText(
+            (Join-Path $moveRetryRoot 'shared/events.jsonl')
+        ) -match 'pending-move-retry')
+    ) -Detail "first=$moveRetryFirstText second=$moveRetrySecondText"
+
+    # A post-move verification failure leaves a durable expected digest. A
+    # later drain can resume only when the ready bytes match that prior digest.
+    $blockedReadyRoot = New-TestBridgeRoot -Name 'accepted-blocked-ready'
+    $blockedReadyWal = Write-TestAcceptedWal -Root $blockedReadyRoot `
+        -WalId 'cccccccccccccccccccccccccccccccc' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'blocked-post-move-verification'
+        ) -Pending
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_PENDING_VERIFY_FAILURE', '1', 'Process'
+    )
+    try {
+        $blockedFirstText = & $isolatedDrain -BridgeRoot $blockedReadyRoot `
+            -PendingMinAgeSeconds 0 -ReceiptJson
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_PENDING_VERIFY_FAILURE', $null, 'Process'
+        )
+    }
+    $blockedFirst = $blockedFirstText | ConvertFrom-Json
+    $blockedCanonicalBefore = Get-BridgeTestFileLength -Path `
+        (Join-Path $blockedReadyRoot 'shared/events.jsonl')
+    $blockedReadyPath = Join-Path `
+        (Join-Path (Join-Path `
+            (Join-Path $blockedReadyRoot 'spool') 'accepted-v1') 'ready') `
+        $blockedReadyWal.Leaf
+    $blockedReadyExistsBefore = Test-Path `
+        -LiteralPath $blockedReadyPath -PathType Leaf
+    $blockedMarkerPath = Join-Path (Split-Path -Parent $blockedReadyPath) (
+        ".$($blockedReadyWal.Leaf).pending-recovery-blocked"
+    )
+    $blockedMarkerExistsBefore = Test-Path `
+        -LiteralPath $blockedMarkerPath -PathType Leaf
+    $blockedSecondText = & $isolatedDrain -BridgeRoot $blockedReadyRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $blockedSecond = $blockedSecondText | ConvertFrom-Json
+    Add-Check -Name 'failed pending verification resumes by persisted digest' -Passed (
+        [int]$blockedFirst.pending_failed -eq 1 -and
+        [int]$blockedFirst.ready_seen -eq 0 -and
+        [int]$blockedFirst.drained -eq 0 -and
+        $blockedCanonicalBefore -eq 0 -and
+        $blockedReadyExistsBefore -and
+        $blockedMarkerExistsBefore -and
+        [int]$blockedSecond.ready_seen -eq 1 -and
+        [int]$blockedSecond.drained -eq 1 -and
+        [int]$blockedSecond.failed -eq 0 -and
+        (-not (Test-Path -LiteralPath $blockedReadyPath)) -and
+        (-not (Test-Path -LiteralPath $blockedMarkerPath)) -and
+        (Test-Path -LiteralPath $blockedReadyWal.ReplayedPath -PathType Leaf) -and
+        ([System.IO.File]::ReadAllText(
+            (Join-Path $blockedReadyRoot 'shared/events.jsonl')
+        ) -match 'blocked-post-move-verification')
+    ) -Detail "first=$blockedFirstText second=$blockedSecondText"
+
+    $blockedMismatchRoot = New-TestBridgeRoot -Name 'accepted-blocked-mismatch'
+    $blockedMismatchWal = Write-TestAcceptedWal -Root $blockedMismatchRoot `
+        -WalId 'ffffffffffffffffffffffffffffffff' `
+        -Text $acceptedEvent.Replace(
+            'accepted-target-only',
+            'blocked-digest-mismatch'
+        ) -Pending
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_PENDING_VERIFY_FAILURE', '1', 'Process'
+    )
+    try {
+        $blockedMismatchFirstText = & $isolatedDrain `
+            -BridgeRoot $blockedMismatchRoot -PendingMinAgeSeconds 0 -ReceiptJson
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_PENDING_VERIFY_FAILURE', $null, 'Process'
+        )
+    }
+    $blockedMismatchReady = Join-Path `
+        (Join-Path (Join-Path (Join-Path $blockedMismatchRoot 'spool') `
+            'accepted-v1') 'ready') $blockedMismatchWal.Leaf
+    [System.IO.File]::AppendAllText($blockedMismatchReady, 'tampered')
+    $blockedMismatchSecondText = & $isolatedDrain `
+        -BridgeRoot $blockedMismatchRoot -PendingMinAgeSeconds 0 -ReceiptJson
+    $blockedMismatchSecond = $blockedMismatchSecondText | ConvertFrom-Json
+    Add-Check -Name 'persisted pending digest blocks changed ready bytes' -Passed (
+        [int]$blockedMismatchSecond.drained -eq 0 -and
+        [int]$blockedMismatchSecond.failed -eq 1 -and
+        (Test-Path -LiteralPath $blockedMismatchReady -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path `
+            (Join-Path $blockedMismatchRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail (
+        "first=$blockedMismatchFirstText second=$blockedMismatchSecondText"
+    )
+
     # 1. Empty spool -> no-op
-    $out = & $isolatedReplay -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
     Add-Check -Name 'empty spool is a no-op' -Passed ($out -match 'nothing to replay')
 
     # 2. A valid spooled event replays into the shared log and archives
@@ -239,7 +1043,7 @@ Start-Sleep -Seconds 60
     $spoolFile = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-fable-5-20260702T100000000-1234.jsonl'
     Write-TestWal -Path $spoolFile -Text $event
 
-    $out = & $isolatedReplay -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
     Add-Check -Name 'replay reports one replayed' -Passed ($out -match 'replayed=1 deduped=0 failed=0')
     $logged = Get-Content -LiteralPath $eventsPath -Raw -Encoding UTF8
     Add-Check -Name 'event appended to shared log' -Passed ($logged -match 'spool-replay-smoke')
@@ -249,7 +1053,7 @@ Start-Sleep -Seconds 60
     )
 
     # 3. Idempotent rerun -> nothing to replay
-    $out = & $isolatedReplay -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
     Add-Check -Name 'rerun is a no-op' -Passed ($out -match 'nothing to replay')
 
     # An existing same-name archive is immutable. Preserve both records under
@@ -274,7 +1078,7 @@ Start-Sleep -Seconds 60
     )
     $archiveCollisionOldHash = (Get-FileHash `
         -LiteralPath $archiveCollisionExisting -Algorithm SHA256).Hash
-    $archiveCollisionOut = & $isolatedReplay -BridgeRoot $archiveCollisionRoot
+    $archiveCollisionOut = & $isolatedReplay -BridgeRoot $archiveCollisionRoot -LegacyBulk
     $archiveCollisionOldHashAfter = (Get-FileHash `
         -LiteralPath $archiveCollisionExisting -Algorithm SHA256).Hash
     $archiveCollisionCopies = @(
@@ -313,7 +1117,7 @@ Start-Sleep -Seconds 60
     Write-TestWal -Path $badFile -Text '{not json'
     $before = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($eventsPath))
     $badError = ''
-    try { & $isolatedReplay -BridgeRoot $tempRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk 3>$null | Out-Null }
     catch { $badError = $_.Exception.Message }
     $after = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($eventsPath))
     Add-Check -Name 'malformed file fails loud and is kept' -Passed (
@@ -333,7 +1137,7 @@ Start-Sleep -Seconds 60
     # The spooled FAILED attempt: same signal, OLDER ts + different pid.
     Write-TestWal -Path $dupSpool -Text '{"ts_utc":"2026-07-02T10:00:01Z","agent":"fable-5","type":"message","task_id":"spool-replay-smoke","status":"info","message":"dup-signal"}'
     $before = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $isolatedReplay -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
     $after = (Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'distinct same-semantic records both survive' -Passed (
         ($out -match 'replayed=1 deduped=0') -and ($after -eq ($before + 1)) -and
@@ -344,7 +1148,7 @@ Start-Sleep -Seconds 60
         'failed-append-fable-5-exact-duplicate.jsonl'
     Write-TestWal -Path $exactSpool -Text $retryCopy
     $before = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $isolatedReplay -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
     $after = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'exact WAL record dedups idempotently' -Passed (
         ($out -match 'replayed=0 deduped=1') -and
@@ -360,7 +1164,7 @@ Start-Sleep -Seconds 60
         $utf8
     )
     $before = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
-    $out = & $isolatedReplay -BridgeRoot $tempRoot
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
     $after = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     Add-Check -Name 'exact duplicate rows inside one WAL append once' -Passed (
         ($out -match 'replayed=1 deduped=1') -and
@@ -372,7 +1176,7 @@ Start-Sleep -Seconds 60
     $noAgent = Join-Path (Join-Path $tempRoot 'spool') 'failed-append-x-20260702T120000000-5.jsonl'
     Write-TestWal -Path $noAgent -Text '{"ts_utc":"2026-07-02T12:00:00Z","type":"message","task_id":"t","status":"info"}'
     $noAgentError = ''
-    try { & $isolatedReplay -BridgeRoot $tempRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk 3>$null | Out-Null }
     catch { $noAgentError = $_.Exception.Message }
     Add-Check -Name 'missing-core-field WAL fails loud and is kept' -Passed (
         ($noAgentError -match 'missing core field') -and
@@ -391,7 +1195,7 @@ Start-Sleep -Seconds 60
         if (-not $guardAcquired) {
             Add-Check -Name 'concurrent replay guard setup' -Passed $false -Detail 'could not acquire replay mutex'
         } else {
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $isolatedReplay -BridgeRoot $tempRoot
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk
             Add-Check -Name 'concurrent replay guard keeps file' -Passed (
                 ($out -match 'already running') -and (Test-Path -LiteralPath $guardFile)
             ) -Detail "out=$out"
@@ -406,13 +1210,13 @@ Start-Sleep -Seconds 60
 
     # 8. DryRun neither appends nor archives
     Write-TestWal -Path $spoolFile -Text $event
-    $out = & $isolatedReplay -BridgeRoot $tempRoot -DryRun
+    $out = & $isolatedReplay -BridgeRoot $tempRoot -LegacyBulk -DryRun
     Add-Check -Name 'dry run lists but keeps file' -Passed (
         (($out -match 'would archive as exact duplicate') -or ($out -match 'would replay')) -and (Test-Path -LiteralPath $spoolFile)
     )
 
-    # 9. Mutex construction failures are hard failures. The writer durably
-    #    publishes a spool; the replayer leaves its existing spool untouched.
+    # 9. Mutex construction failure is accepted only after a verified ready
+    #    WAL publication. The queued receipt drives exact targeted recovery.
     $constructionWriterRoot = New-TestBridgeRoot -Name 'construction-writer'
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_RUNTIME_ROOT', $constructionWriterRoot, 'Process'
@@ -421,9 +1225,11 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'Append', 'Process'
     )
     $writerConstructionError = ''
+    $writerConstructionResult = $null
     try {
-        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
-            -Message 'construction-failure-writer' -PayloadJson '{}' | Out-Null
+        $writerConstructionResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type status -Status open `
+            -Message 'construction-failure-writer' -PayloadJson '{}' 3>$null
     } catch {
         $writerConstructionError = $_.Exception.Message
     }
@@ -431,24 +1237,244 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
     )
     $constructionWriterEvents = Join-Path $constructionWriterRoot 'shared/events.jsonl'
-    $constructionWriterSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $constructionWriterRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -ErrorAction SilentlyContinue
-    )
-    $constructionPending = @(
-        Get-ChildItem -LiteralPath (Join-Path $constructionWriterRoot 'spool') `
-            -Filter '.*.pending' -File -Force -ErrorAction SilentlyContinue
-    )
+    $constructionDelivery = $writerConstructionResult._bridge_delivery
+    $constructionWriterSpools = @(Get-TestAcceptedWalFiles `
+        -Root $constructionWriterRoot -State ready)
+    $constructionPending = @(Get-TestAcceptedWalFiles `
+        -Root $constructionWriterRoot -State pending)
     $constructionSpoolText = if ($constructionWriterSpools.Count -eq 1) {
         [System.IO.File]::ReadAllText($constructionWriterSpools[0].FullName)
     } else { '' }
-    Add-Check -Name 'writer construction failure spools without canonical append' -Passed (
-        ($writerConstructionError -match 'construction failure') -and
-        (Get-BridgeTestFileLength -Path $constructionWriterEvents) -eq 0 -and
+    $constructionReadyHash = if ($constructionWriterSpools.Count -eq 1) {
+        (Get-FileHash -LiteralPath $constructionWriterSpools[0].FullName `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else { '' }
+    $constructionCanonicalBefore = Get-BridgeTestFileLength `
+        -Path $constructionWriterEvents
+    $constructionRecovery = if ($null -ne $constructionDelivery) {
+        Invoke-TestAcceptedReceiptReplay -ReplayScript $isolatedReplay `
+            -Root $constructionWriterRoot -Delivery $constructionDelivery
+    } else { '' }
+    Add-Check -Name 'writer construction failure returns queued receipt and recovers' -Passed (
+        (-not $writerConstructionError) -and
+        [string]$constructionDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$constructionDelivery.canonical_durable -and
+        -not [bool]$constructionDelivery.outbox_written -and
+        -not [bool]$constructionDelivery.last_file_written -and
+        $constructionCanonicalBefore -eq 0 -and
         $constructionWriterSpools.Count -eq 1 -and
         $constructionPending.Count -eq 0 -and
-        $constructionSpoolText -match 'construction-failure-writer'
-    ) -Detail "error=$writerConstructionError spools=$($constructionWriterSpools.Count)"
+        [string]$constructionDelivery.retained_wal_path -ceq
+            $constructionWriterSpools[0].FullName -and
+        [string]$constructionDelivery.retained_wal_sha256 -ceq
+            $constructionReadyHash -and
+        $constructionSpoolText -match 'construction-failure-writer' -and
+        ($constructionRecovery -match 'replayed=1 deduped=0 failed=0') -and
+        ([System.IO.File]::ReadAllText($constructionWriterEvents) -match
+            'construction-failure-writer')
+    ) -Detail (
+        "error=$writerConstructionError ready=$($constructionWriterSpools.Count) " +
+        "delivery=$($constructionDelivery.delivery_status) recovery=$constructionRecovery"
+    )
+
+    $deferredPublishRoot = New-TestBridgeRoot -Name 'deferred-ready-publication'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $deferredPublishRoot, 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'Append', 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_ACCEPTED_PUBLICATION_FAILURE', '1', 'Process'
+    )
+    try {
+        $deferredPublishResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type status -Status open `
+            -Message 'deferred-ready-publication' -PayloadJson '{}' 3>$null
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
+        )
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_ACCEPTED_PUBLICATION_FAILURE', $null, 'Process'
+        )
+    }
+    $deferredPublishDelivery = $deferredPublishResult._bridge_delivery
+    $deferredPendingBefore = @(Get-TestAcceptedWalFiles `
+        -Root $deferredPublishRoot -State pending)
+    $deferredDrainText = & $isolatedDrain -BridgeRoot $deferredPublishRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $deferredDrain = $deferredDrainText | ConvertFrom-Json
+    Add-Check -Name 'ready publication failure remains accepted pending and drains' -Passed (
+        [string]$deferredPublishDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$deferredPublishDelivery.canonical_durable -and
+        $deferredPendingBefore.Count -eq 1 -and
+        [string]$deferredPublishDelivery.retained_wal_path -ceq
+            $deferredPendingBefore[0].FullName -and
+        [int]$deferredDrain.pending_promoted -eq 1 -and
+        [int]$deferredDrain.drained -eq 1 -and
+        [int]$deferredDrain.failed -eq 0 -and
+        ([System.IO.File]::ReadAllText(
+            (Join-Path $deferredPublishRoot 'shared/events.jsonl')
+        ) -match 'deferred-ready-publication')
+    ) -Detail "delivery=$deferredPublishDelivery drain=$deferredDrainText"
+
+    $collisionPublishRoot = New-TestBridgeRoot -Name 'wrong-ready-collision'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $collisionPublishRoot, 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'Append', 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_ACCEPTED_PUBLICATION_COLLISION', '1', 'Process'
+    )
+    try {
+        $collisionPublishResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type status -Status open `
+            -Message 'wrong-ready-collision' -PayloadJson '{}' 3>$null
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
+        )
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_ACCEPTED_PUBLICATION_COLLISION', $null, 'Process'
+        )
+    }
+    $collisionPublishDelivery = $collisionPublishResult._bridge_delivery
+    $collisionPending = @(Get-TestAcceptedWalFiles `
+        -Root $collisionPublishRoot -State pending)
+    $collisionReady = @(Get-TestAcceptedWalFiles `
+        -Root $collisionPublishRoot -State ready)
+    $collisionPendingHash = if ($collisionPending.Count -eq 1) {
+        (Get-FileHash -LiteralPath $collisionPending[0].FullName `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else { '' }
+    $collisionReadyHash = if ($collisionReady.Count -eq 1) {
+        (Get-FileHash -LiteralPath $collisionReady[0].FullName `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else { '' }
+    if ($collisionReady.Count -eq 1) {
+        Remove-Item -LiteralPath $collisionReady[0].FullName -Force
+    }
+    $collisionDrainText = & $isolatedDrain -BridgeRoot $collisionPublishRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $collisionDrain = $collisionDrainText | ConvertFrom-Json
+    Add-Check -Name 'wrong ready collision never authorizes queued receipt' -Passed (
+        [string]$collisionPublishDelivery.delivery_status -ceq 'queued' -and
+        $collisionPending.Count -eq 1 -and
+        $collisionReady.Count -eq 1 -and
+        [string]$collisionPublishDelivery.retained_wal_path -ceq
+            $collisionPending[0].FullName -and
+        [string]$collisionPublishDelivery.retained_wal_sha256 -ceq
+            $collisionPendingHash -and
+        $collisionReadyHash -cne $collisionPendingHash -and
+        [int]$collisionDrain.pending_promoted -eq 1 -and
+        [int]$collisionDrain.drained -eq 1 -and
+        [int]$collisionDrain.failed -eq 0 -and
+        ([System.IO.File]::ReadAllText(
+            (Join-Path $collisionPublishRoot 'shared/events.jsonl')
+        ) -match 'wrong-ready-collision')
+    ) -Detail (
+        "delivery=$collisionPublishDelivery readyHash=$collisionReadyHash " +
+        "pendingHash=$collisionPendingHash drain=$collisionDrainText"
+    )
+
+    $unacceptedRoot = New-TestBridgeRoot -Name 'unaccepted-pending-exclusion'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $unacceptedRoot, 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_PENDING_WRITEBACK_FAILURE', '1', 'Process'
+    )
+    $unacceptedError = ''
+    try {
+        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
+            -Message 'unaccepted-pending-exclusion' -PayloadJson '{}' | Out-Null
+    } catch { $unacceptedError = $_.Exception.Message }
+    finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_PENDING_WRITEBACK_FAILURE', $null, 'Process'
+        )
+    }
+    $unacceptedPending = @(Get-TestAcceptedWalFiles `
+        -Root $unacceptedRoot -State pending)
+    $unacceptedReady = @(Get-TestAcceptedWalFiles `
+        -Root $unacceptedRoot -State ready)
+    $unacceptedQuarantine = @(
+        Get-ChildItem -LiteralPath (Join-Path `
+            (Join-Path (Join-Path $unacceptedRoot 'spool') 'accepted-v1') `
+            'quarantine') -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -cmatch '^unaccepted-bridge-wal-v1-' }
+    )
+    & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
+        -Message 'unaccepted-pending-exclusion' -PayloadJson '{}' | Out-Null
+    $unacceptedDrainText = & $isolatedDrain -BridgeRoot $unacceptedRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $unacceptedLines = @(
+        Get-Content -LiteralPath (Join-Path $unacceptedRoot 'shared/events.jsonl') |
+            Where-Object { $_ -match 'unaccepted-pending-exclusion' }
+    )
+    Add-Check -Name 'unverified pending candidate is excluded before retry' -Passed (
+        ($unacceptedError -match 'excluded from automatic replay') -and
+        $unacceptedPending.Count -eq 0 -and
+        $unacceptedReady.Count -eq 0 -and
+        $unacceptedQuarantine.Count -eq 1 -and
+        $unacceptedLines.Count -eq 1 -and
+        (($unacceptedDrainText | ConvertFrom-Json).drained -eq 0)
+    ) -Detail (
+        "error=$unacceptedError quarantine=$($unacceptedQuarantine.Count) " +
+        "drain=$unacceptedDrainText lines=$($unacceptedLines.Count)"
+    )
+
+    $unknownAcceptanceRoot = New-TestBridgeRoot `
+        -Name 'unknown-acceptance-markerless'
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_RUNTIME_ROOT', $unknownAcceptanceRoot, 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_PENDING_WRITEBACK_FAILURE', '1', 'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_UNACCEPTED_EXCLUSION_FAILURE', 'All', 'Process'
+    )
+    $unknownAcceptanceError = ''
+    try {
+        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
+            -Message 'unknown-acceptance-markerless' -PayloadJson '{}' |
+            Out-Null
+    } catch { $unknownAcceptanceError = $_.Exception.Message }
+    finally {
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_PENDING_WRITEBACK_FAILURE', $null, 'Process'
+        )
+        [Environment]::SetEnvironmentVariable(
+            'AGENT_BRIDGE_TEST_UNACCEPTED_EXCLUSION_FAILURE', $null, 'Process'
+        )
+    }
+    $unknownAcceptancePending = @(Get-TestAcceptedWalFiles `
+        -Root $unknownAcceptanceRoot -State pending)
+    $unknownAcceptanceReady = @(Get-TestAcceptedWalFiles `
+        -Root $unknownAcceptanceRoot -State ready)
+    $unknownAcceptanceDrainText = & $isolatedDrain `
+        -BridgeRoot $unknownAcceptanceRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $unknownAcceptanceDrain = $unknownAcceptanceDrainText | ConvertFrom-Json
+    Add-Check -Name 'markerless acceptance-unknown WAL never auto-replays' -Passed (
+        ($unknownAcceptanceError -match 'acceptance is unknown') -and
+        $unknownAcceptancePending.Count -eq 1 -and
+        $unknownAcceptanceReady.Count -eq 0 -and
+        [int]$unknownAcceptanceDrain.pending_promoted -eq 0 -and
+        [int]$unknownAcceptanceDrain.pending_failed -eq 1 -and
+        [int]$unknownAcceptanceDrain.drained -eq 0 -and
+        [int]$unknownAcceptanceDrain.failed -eq 1 -and
+        (Test-Path -LiteralPath `
+            $unknownAcceptancePending[0].FullName -PathType Leaf) -and
+        (Get-BridgeTestFileLength -Path (Join-Path `
+            $unknownAcceptanceRoot 'shared/events.jsonl')) -eq 0
+    ) -Detail (
+        "error=$unknownAcceptanceError drain=$unknownAcceptanceDrainText"
+    )
 
     $constructionReplayRoot = New-TestBridgeRoot -Name 'construction-replay'
     $constructionReplaySpool = Join-Path `
@@ -460,7 +1486,7 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'SpoolReplay', 'Process'
     )
     $replayConstructionError = ''
-    try { & $isolatedReplay -BridgeRoot $constructionReplayRoot | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $constructionReplayRoot -LegacyBulk | Out-Null }
     catch { $replayConstructionError = $_.Exception.Message }
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
@@ -475,7 +1501,7 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', 'Append', 'Process'
     )
     $innerConstructionError = ''
-    try { & $isolatedReplay -BridgeRoot $constructionReplayRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $constructionReplayRoot -LegacyBulk 3>$null | Out-Null }
     catch { $innerConstructionError = $_.Exception.Message }
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE', $null, 'Process'
@@ -503,7 +1529,7 @@ Start-Sleep -Seconds 60
         [System.IO.File]::ReadAllBytes($enumerationEvents)
     )
     $enumerationError = ''
-    try { & $enumerationReplay -BridgeRoot $enumerationRoot | Out-Null }
+    try { & $enumerationReplay -BridgeRoot $enumerationRoot -LegacyBulk | Out-Null }
     catch { $enumerationError = $_.Exception.Message }
     $enumerationAfter = [Convert]::ToBase64String(
         [System.IO.File]::ReadAllBytes($enumerationEvents)
@@ -537,7 +1563,7 @@ Start-Sleep -Seconds 60
             [System.IO.File]::ReadAllBytes($caseEvents)
         )
         $caseError = ''
-        try { & $isolatedReplay -BridgeRoot $caseRoot | Out-Null }
+        try { & $isolatedReplay -BridgeRoot $caseRoot -LegacyBulk | Out-Null }
         catch { $caseError = $_.Exception.Message }
         $caseAfter = [Convert]::ToBase64String(
             [System.IO.File]::ReadAllBytes($caseEvents)
@@ -587,15 +1613,15 @@ Start-Sleep -Seconds 60
                     -ErrorAction SilentlyContinue
                 try {
                     & $ScriptPath -Agent 'smoke-1' -Type status -Status open `
-                        -Message 'timeout-writer' -PayloadJson '{}' | Out-Null
-                    'unexpected-success'
-                } catch { $_.Exception.Message }
+                        -Message 'timeout-writer' -PayloadJson '{}' `
+                        -ReceiptJson
+                } catch { "ERROR: $($_.Exception.Message)" }
             } -ArgumentList $isolatedWriter, $timeoutWriterRoot
             $replayJob = Start-Job -ScriptBlock {
                 param($ScriptPath, $Root)
                 Remove-Item Env:AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE `
                     -ErrorAction SilentlyContinue
-                try { & $ScriptPath -BridgeRoot $Root 3>$null | Out-String }
+                try { & $ScriptPath -BridgeRoot $Root -LegacyBulk 3>$null | Out-String }
                 catch { $_.Exception.Message }
             } -ArgumentList $isolatedReplay, $timeoutReplayRoot
             @($writerJob, $replayJob) | Wait-Job | Out-Null
@@ -611,21 +1637,39 @@ Start-Sleep -Seconds 60
             if ($null -ne $job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
         }
     }
-    $timeoutWriterSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $timeoutWriterRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -ErrorAction SilentlyContinue
-    )
-    Add-Check -Name 'append mutex held over ten seconds is fail closed' -Passed (
+    $timeoutWriterReceipt = $null
+    try { $timeoutWriterReceipt = $timeoutWriterOutput | ConvertFrom-Json }
+    catch {}
+    $timeoutWriterDelivery = if ($null -ne $timeoutWriterReceipt) {
+        $timeoutWriterReceipt._bridge_delivery
+    } else { $null }
+    $timeoutWriterSpools = @(Get-TestAcceptedWalFiles `
+        -Root $timeoutWriterRoot -State ready)
+    $timeoutWriterCanonicalBefore = Get-BridgeTestFileLength `
+        -Path (Join-Path $timeoutWriterRoot 'shared/events.jsonl')
+    $timeoutWriterRecovery = if ($null -ne $timeoutWriterDelivery) {
+        Invoke-TestAcceptedReceiptReplay -ReplayScript $isolatedReplay `
+            -Root $timeoutWriterRoot -Delivery $timeoutWriterDelivery
+    } else { '' }
+    Add-Check -Name 'append mutex timeout queues durably and target-recovers' -Passed (
         $holdAcquired -and $timeoutElapsed.TotalSeconds -ge 9.5 -and
-        (Get-BridgeTestFileLength -Path (Join-Path $timeoutWriterRoot 'shared/events.jsonl')) -eq 0 -and
+        $timeoutWriterCanonicalBefore -eq 0 -and
         $timeoutWriterSpools.Count -eq 1 -and
-        $timeoutWriterOutput -match 'mutex timeout' -and
+        [string]$timeoutWriterDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$timeoutWriterDelivery.canonical_durable -and
+        -not [bool]$timeoutWriterDelivery.outbox_written -and
+        -not [bool]$timeoutWriterDelivery.last_file_written -and
+        ([string]$timeoutWriterDelivery.warning_messages -match 'mutex timeout') -and
+        ($timeoutWriterRecovery -match 'replayed=1 deduped=0 failed=0') -and
+        ([System.IO.File]::ReadAllText(
+            (Join-Path $timeoutWriterRoot 'shared/events.jsonl')
+        ) -match 'timeout-writer') -and
         (Get-BridgeTestFileLength -Path (Join-Path $timeoutReplayRoot 'shared/events.jsonl')) -eq 0 -and
         (Test-Path -LiteralPath $timeoutReplaySpool) -and
         $timeoutReplayOutput -match 'append mutex unavailable'
     ) -Detail (
         "elapsed=$($timeoutElapsed.TotalSeconds) writer=$timeoutWriterOutput " +
-        "replay=$timeoutReplayOutput"
+        "writerRecovery=$timeoutWriterRecovery replay=$timeoutReplayOutput"
     )
 
     # 12. Deterministic TOCTOU regression: the parent owns AppendV1, the
@@ -654,7 +1698,7 @@ Start-Sleep -Seconds 60
                 $env:AGENT_BRIDGE_TEST_APPEND_WAIT_READY = $ReadyPath
                 Remove-Item Env:AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE `
                     -ErrorAction SilentlyContinue
-                try { & $ScriptPath -BridgeRoot $Root 3>$null | Out-String }
+                try { & $ScriptPath -BridgeRoot $Root -LegacyBulk 3>$null | Out-String }
                 catch { $_.Exception.Message }
             } -ArgumentList $raceReplay, $raceRoot, $raceReady
             for ($attempt = 0; $attempt -lt 400; $attempt++) {
@@ -713,6 +1757,7 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_RUNTIME_ROOT', $abandonedWriterRoot, 'Process'
     )
     $abandonedWriterError = ''
+    $abandonedWriterResult = $null
     $appendSentinel = New-Object System.Threading.Mutex($false, $isolatedAppendName)
     try {
         $appendAbandoned = Stop-ProcessAfterMutexAcquisition `
@@ -720,30 +1765,36 @@ Start-Sleep -Seconds 60
             -ReadyPath $appendReady
         if ($appendAbandoned) {
             try {
-                & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
-                    -Message 'abandoned-writer' -PayloadJson '{}' | Out-Null
+                $abandonedWriterResult = & $isolatedWriter `
+                    -Agent 'smoke-1' -Type status -Status open `
+                    -Message 'abandoned-writer' -PayloadJson '{}' 3>$null
             } catch { $abandonedWriterError = $_.Exception.Message }
         }
     } finally {
         $appendSentinel.Dispose()
     }
     $abandonedWriterEvents = Join-Path $abandonedWriterRoot 'shared/events.jsonl'
-    $abandonedWriterSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $abandonedWriterRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -ErrorAction SilentlyContinue
-    )
+    $abandonedWriterDelivery = $abandonedWriterResult._bridge_delivery
+    $abandonedWriterSpools = @(Get-TestAcceptedWalFiles `
+        -Root $abandonedWriterRoot -State ready)
     $abandonedWriterDirtyCheckpoint = Test-Path -LiteralPath `
         "$abandonedWriterEvents.append-v1-validation.json" -PathType Leaf
     $abandonedWriterRecovered = ''
-    if ($abandonedWriterSpools.Count -eq 1) {
-        $abandonedWriterRecovered = & $isolatedReplay -BridgeRoot $abandonedWriterRoot
+    if ($null -ne $abandonedWriterDelivery) {
+        $abandonedWriterRecovered = Invoke-TestAcceptedReceiptReplay `
+            -ReplayScript $isolatedReplay -Root $abandonedWriterRoot `
+            -Delivery $abandonedWriterDelivery
     }
-    Add-Check -Name 'writer rejects dirty abandoned append ownership then recovers' -Passed (
+    Add-Check -Name 'writer queues on dirty abandoned ownership then recovers' -Passed (
         $appendAbandoned -and
-        ($abandonedWriterError -match 'dirty ownership') -and
+        (-not $abandonedWriterError) -and
+        [string]$abandonedWriterDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$abandonedWriterDelivery.canonical_durable -and
+        ([string]$abandonedWriterDelivery.warning_messages -match
+            'dirty ownership') -and
         (-not $abandonedWriterDirtyCheckpoint) -and
         $abandonedWriterSpools.Count -eq 1 -and
-        ($abandonedWriterRecovered -match 'replayed=1') -and
+        ($abandonedWriterRecovered -match 'replayed=1 deduped=0 failed=0') -and
         (Get-BridgeTestFileLength -Path $abandonedWriterEvents) -gt 0 -and
         ([System.IO.File]::ReadAllText($abandonedWriterEvents) -match 'abandoned-writer')
     ) -Detail (
@@ -764,7 +1815,7 @@ Start-Sleep -Seconds 60
             -Name $isolatedAppendName -HelperPath $abandonHelper `
             -ReadyPath $replayAppendReady
         $abandonedAppendDirtyOut = if ($replayAppendAbandoned) {
-            & $isolatedReplay -BridgeRoot $abandonedAppendReplayRoot
+            & $isolatedReplay -BridgeRoot $abandonedAppendReplayRoot -LegacyBulk
         } else { '' }
     } finally {
         $replayAppendSentinel.Dispose()
@@ -775,7 +1826,7 @@ Start-Sleep -Seconds 60
         ((Join-Path $abandonedAppendReplayRoot 'shared/events.jsonl') +
             '.append-v1-validation.json') -PathType Leaf
     $abandonedAppendCleanOut = if ($replayAppendAbandoned) {
-        & $isolatedReplay -BridgeRoot $abandonedAppendReplayRoot
+        & $isolatedReplay -BridgeRoot $abandonedAppendReplayRoot -LegacyBulk
     } else { '' }
     Add-Check -Name 'replayer rejects dirty abandoned append ownership then recovers' -Passed (
         $replayAppendAbandoned -and
@@ -803,7 +1854,7 @@ Start-Sleep -Seconds 60
             -Name $isolatedReplayName -HelperPath $abandonHelper `
             -ReadyPath $replayReady
         $abandonedReplayOut = if ($replayAbandoned) {
-            & $isolatedReplay -BridgeRoot $abandonedReplayRoot
+            & $isolatedReplay -BridgeRoot $abandonedReplayRoot -LegacyBulk
         } else { '' }
     } finally {
         $replaySentinel.Dispose()
@@ -830,7 +1881,7 @@ Start-Sleep -Seconds 60
                 [System.IO.FileAttributes]::Hidden)
         )
     }
-    $pendingOut = & $isolatedReplay -BridgeRoot $pendingRoot
+    $pendingOut = & $isolatedReplay -BridgeRoot $pendingRoot -LegacyBulk
     $pendingArchive = Join-Path `
         (Join-Path $pendingSpoolDir 'replayed') `
         (Split-Path -Leaf $pendingFinal)
@@ -852,7 +1903,7 @@ Start-Sleep -Seconds 60
         $utf8.GetBytes('{"agent":"smoke-1"')
     )
     $partialPendingError = ''
-    try { & $isolatedReplay -BridgeRoot $partialPendingRoot | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $partialPendingRoot -LegacyBulk | Out-Null }
     catch { $partialPendingError = $_.Exception.Message }
     Add-Check -Name 'partial orphan pending WAL fails closed unchanged' -Passed (
         ($partialPendingError -match 'does not end with LF') -and
@@ -870,7 +1921,7 @@ Start-Sleep -Seconds 60
     $collisionEvent = '{"ts_utc":"2026-07-02T18:10:00Z","agent":"smoke-1","type":"message","task_id":"pending-collision","status":"info","message":"exact-collision"}'
     Write-TestWal -Path $exactCollisionFinal -Text $collisionEvent
     Write-TestWal -Path $exactCollisionPending -Text $collisionEvent
-    $exactCollisionOut = & $isolatedReplay -BridgeRoot $exactCollisionRoot
+    $exactCollisionOut = & $isolatedReplay -BridgeRoot $exactCollisionRoot -LegacyBulk
     $exactCollisionArchives = @(
         Get-ChildItem -LiteralPath `
             (Join-Path $exactCollisionSpoolDir 'replayed') -File -Force |
@@ -897,7 +1948,7 @@ Start-Sleep -Seconds 60
     Write-TestWal -Path $differentCollisionPending -Text `
         $collisionEvent.Replace('exact-collision', 'different-collision')
     $differentCollisionError = ''
-    try { & $isolatedReplay -BridgeRoot $differentCollisionRoot | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $differentCollisionRoot -LegacyBulk | Out-Null }
     catch { $differentCollisionError = $_.Exception.Message }
     Add-Check -Name 'different pending final collision is a hard failure' -Passed (
         ($differentCollisionError -match 'collides with different final') -and
@@ -907,7 +1958,7 @@ Start-Sleep -Seconds 60
             (Join-Path $differentCollisionRoot 'shared/events.jsonl')) -eq 0
     ) -Detail "error=$differentCollisionError"
 
-    # 15. A durable hidden pending WAL exists before canonical append. The
+    # 15. A durable accepted-v1 pending WAL exists before canonical append. The
     #     bounded hook pauses after clean ownership and before FileStream write.
     $beforeAppendRoot = New-TestBridgeRoot -Name 'wal-before-canonical'
     $beforeAppendReady = Join-Path $tempRoot 'wal-before-canonical.ready'
@@ -926,9 +1977,13 @@ Start-Sleep -Seconds 60
     } -ArgumentList $isolatedWriter, $beforeAppendRoot, $beforeAppendReady
     $beforeAppendReached = $false
     $beforeAppendPending = ''
-    $beforeAppendHidden = $false
+    $beforeAppendInAcceptedPending = $false
     $beforeAppendBytesValid = $false
     $beforeAppendOutput = ''
+    $beforeAppendDrainText = ''
+    $beforeAppendDrain = $null
+    $beforeAppendSharedRenameBlocked = $false
+    $beforeAppendSharedRenameError = ''
     try {
         for ($attempt = 0; $attempt -lt 400; $attempt++) {
             if (Test-Path -LiteralPath $beforeAppendReady -PathType Leaf) {
@@ -939,14 +1994,35 @@ Start-Sleep -Seconds 60
             Start-Sleep -Milliseconds 25
         }
         if ($beforeAppendReached) {
+            $beforeAppendShared = Join-Path $beforeAppendRoot 'shared'
+            $beforeAppendSharedSwap = Join-Path $beforeAppendRoot 'shared.swap'
+            try {
+                [System.IO.Directory]::Move(
+                    $beforeAppendShared,
+                    $beforeAppendSharedSwap
+                )
+            } catch {
+                $beforeAppendSharedRenameBlocked = $true
+                $beforeAppendSharedRenameError = $_.Exception.Message
+            } finally {
+                if (
+                    (Test-Path -LiteralPath $beforeAppendSharedSwap -PathType Container) -and
+                    -not (Test-Path -LiteralPath $beforeAppendShared)
+                ) {
+                    [System.IO.Directory]::Move(
+                        $beforeAppendSharedSwap,
+                        $beforeAppendShared
+                    )
+                }
+            }
             $beforeAppendPending = [System.IO.File]::ReadAllText($beforeAppendReady)
             if (Test-Path -LiteralPath $beforeAppendPending -PathType Leaf) {
-                $beforeAppendAttributes = [System.IO.File]::GetAttributes(
-                    $beforeAppendPending
-                )
-                $beforeAppendHidden = (
-                    [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
-                    (($beforeAppendAttributes -band [System.IO.FileAttributes]::Hidden) -ne 0)
+                $beforeAppendInAcceptedPending = [string]::Equals(
+                    [System.IO.Path]::GetDirectoryName($beforeAppendPending),
+                    [System.IO.Path]::GetFullPath((Join-Path `
+                        (Join-Path (Join-Path $beforeAppendRoot 'spool') `
+                            'accepted-v1') 'pending')),
+                    [StringComparison]::OrdinalIgnoreCase
                 )
                 [byte[]]$beforeAppendBytes = [System.IO.File]::ReadAllBytes(
                     $beforeAppendPending
@@ -955,6 +2031,10 @@ Start-Sleep -Seconds 60
                     $beforeAppendBytes.Length -gt 0 -and
                     $beforeAppendBytes[$beforeAppendBytes.Length - 1] -eq 10
                 )
+                $beforeAppendDrainText = & $isolatedDrain `
+                    -BridgeRoot $beforeAppendRoot `
+                    -PendingMinAgeSeconds 0 -DryRun -ReceiptJson
+                $beforeAppendDrain = $beforeAppendDrainText | ConvertFrom-Json
             }
         }
         [System.IO.File]::WriteAllText($beforeAppendRelease, 'release')
@@ -966,21 +2046,27 @@ Start-Sleep -Seconds 60
         }
         Remove-Job -Job $beforeAppendJob -Force -ErrorAction SilentlyContinue
     }
-    $beforeAppendSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $beforeAppendRoot 'spool') `
-            -File -Force -ErrorAction SilentlyContinue
-    )
-    Add-Check -Name 'writer has durable hidden WAL before canonical append' -Passed (
-        $beforeAppendReached -and $beforeAppendHidden -and
-        $beforeAppendBytesValid -and
+    $beforeAppendPendingAfter = @(Get-TestAcceptedWalFiles `
+        -Root $beforeAppendRoot -State pending)
+    $beforeAppendReadyAfter = @(Get-TestAcceptedWalFiles `
+        -Root $beforeAppendRoot -State ready)
+    Add-Check -Name 'writer has durable accepted WAL before canonical append' -Passed (
+        $beforeAppendReached -and $beforeAppendInAcceptedPending -and
+        $beforeAppendBytesValid -and $beforeAppendSharedRenameBlocked -and
+        $null -ne $beforeAppendDrain -and
+        [int]$beforeAppendDrain.pending_skipped -eq 1 -and
+        [string]$beforeAppendDrain.results[0].status -ceq 'pending_append_busy' -and
         ($beforeAppendOutput -match 'success') -and
         (Get-BridgeTestFileLength -Path `
             (Join-Path $beforeAppendRoot 'shared/events.jsonl')) -gt 0 -and
-        $beforeAppendSpools.Count -eq 0
+        $beforeAppendPendingAfter.Count -eq 0 -and
+        $beforeAppendReadyAfter.Count -eq 0
     ) -Detail (
-        "reached=$beforeAppendReached hidden=$beforeAppendHidden " +
-        "bytes=$beforeAppendBytesValid out=$beforeAppendOutput " +
-        "spools=$($beforeAppendSpools.Count)"
+        "reached=$beforeAppendReached acceptedPending=$beforeAppendInAcceptedPending " +
+        "bytes=$beforeAppendBytesValid renameBlocked=$beforeAppendSharedRenameBlocked " +
+        "renameError=$beforeAppendSharedRenameError out=$beforeAppendOutput " +
+        "drain=$beforeAppendDrainText pending=$($beforeAppendPendingAfter.Count) " +
+        "ready=$($beforeAppendReadyAfter.Count)"
     )
 
     # 16. Writer and replayer both roll a partial FileStream append back to the
@@ -999,9 +2085,11 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES', '11', 'Process'
     )
     $writerRollbackError = ''
+    $writerRollbackResult = $null
     try {
-        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
-            -Message 'writer-partial-rollback' -PayloadJson '{}' | Out-Null
+        $writerRollbackResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type status -Status open `
+            -Message 'writer-partial-rollback' -PayloadJson '{}' 3>$null
     } catch { $writerRollbackError = $_.Exception.Message }
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES', $null, 'Process'
@@ -1009,23 +2097,24 @@ Start-Sleep -Seconds 60
     $writerRollbackAfter = [Convert]::ToBase64String(
         [System.IO.File]::ReadAllBytes($writerRollbackEvents)
     )
-    $writerRollbackSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $writerRollbackRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -Force
-    )
-    $writerRollbackPending = @(
-        Get-ChildItem -LiteralPath (Join-Path $writerRollbackRoot 'spool') `
-            -Filter '.*.pending' -File -Force
-    )
-    $writerRollbackRecovery = if ($writerRollbackSpools.Count -eq 1) {
-        & $isolatedReplay -BridgeRoot $writerRollbackRoot
+    $writerRollbackDelivery = $writerRollbackResult._bridge_delivery
+    $writerRollbackSpools = @(Get-TestAcceptedWalFiles `
+        -Root $writerRollbackRoot -State ready)
+    $writerRollbackPending = @(Get-TestAcceptedWalFiles `
+        -Root $writerRollbackRoot -State pending)
+    $writerRollbackRecovery = if ($null -ne $writerRollbackDelivery) {
+        Invoke-TestAcceptedReceiptReplay -ReplayScript $isolatedReplay `
+            -Root $writerRollbackRoot -Delivery $writerRollbackDelivery
     } else { '' }
-    Add-Check -Name 'writer partial append rolls back exactly and retains WAL' -Passed (
-        ($writerRollbackError -match 'rolled back') -and
+    Add-Check -Name 'writer partial append rolls back, queues, and recovers' -Passed (
+        (-not $writerRollbackError) -and
+        [string]$writerRollbackDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$writerRollbackDelivery.canonical_durable -and
+        ([string]$writerRollbackDelivery.warning_messages -match 'rolled back') -and
         $writerRollbackBefore -ceq $writerRollbackAfter -and
         $writerRollbackSpools.Count -eq 1 -and
         $writerRollbackPending.Count -eq 0 -and
-        ($writerRollbackRecovery -match 'replayed=1')
+        ($writerRollbackRecovery -match 'replayed=1 deduped=0 failed=0')
     ) -Detail (
         "error=$writerRollbackError spools=$($writerRollbackSpools.Count) " +
         "pending=$($writerRollbackPending.Count) recovery=$writerRollbackRecovery"
@@ -1045,14 +2134,14 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES', '13', 'Process'
     )
     $replayRollbackDirtyOut = & $isolatedReplay `
-        -BridgeRoot $replayRollbackRoot 3>$null
+        -BridgeRoot $replayRollbackRoot -LegacyBulk 3>$null
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES', $null, 'Process'
     )
     $replayRollbackAfter = [Convert]::ToBase64String(
         [System.IO.File]::ReadAllBytes($replayRollbackEvents)
     )
-    $replayRollbackCleanOut = & $isolatedReplay -BridgeRoot $replayRollbackRoot
+    $replayRollbackCleanOut = & $isolatedReplay -BridgeRoot $replayRollbackRoot -LegacyBulk
     Add-Check -Name 'replayer partial append rolls back exactly and retains WAL' -Passed (
         ($replayRollbackDirtyOut -match 'failed=1') -and
         $replayRollbackBefore -ceq $replayRollbackAfter -and
@@ -1096,7 +2185,7 @@ Start-Sleep -Seconds 60
         $tornPrefixBytes + $tornFirstRowBytes + $tornFragment
     )
     [System.IO.File]::WriteAllBytes($tornEvents, $tornCanonicalBytes)
-    $tornOut = & $isolatedReplay -BridgeRoot $tornRoot 3>$null
+    $tornOut = & $isolatedReplay -BridgeRoot $tornRoot -LegacyBulk 3>$null
     [byte[]]$tornExpected = [byte[]]($tornPrefixBytes + $tornWalBytes)
     $tornQuarantine = @(
         Get-ChildItem -LiteralPath `
@@ -1129,7 +2218,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllBytes($unboundEvents, $unboundBytes)
     $unboundBefore = [Convert]::ToBase64String($unboundBytes)
     $unboundError = ''
-    try { & $isolatedReplay -BridgeRoot $unboundRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $unboundRoot -LegacyBulk 3>$null | Out-Null }
     catch { $unboundError = $_.Exception.Message }
     $unboundQuarantine = @(
         Get-ChildItem -LiteralPath `
@@ -1156,7 +2245,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllBytes($interiorEvents, $interiorBytes)
     $interiorBefore = [Convert]::ToBase64String($interiorBytes)
     $interiorError = ''
-    try { & $isolatedReplay -BridgeRoot $interiorRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $interiorRoot -LegacyBulk 3>$null | Out-Null }
     catch { $interiorError = $_.Exception.Message }
     $interiorQuarantine = @(
         Get-ChildItem -LiteralPath `
@@ -1185,7 +2274,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllBytes($blankTornEvents, $blankTornBytes)
     $blankTornBefore = [Convert]::ToBase64String($blankTornBytes)
     $blankTornError = ''
-    try { & $isolatedReplay -BridgeRoot $blankTornRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $blankTornRoot -LegacyBulk 3>$null | Out-Null }
     catch { $blankTornError = $_.Exception.Message }
     $blankTornArchiveFiles = @(
         Get-ChildItem -LiteralPath (Join-Path $blankTornRoot 'spool') `
@@ -1212,7 +2301,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllBytes($plainBlankEvents, $plainBlankBytes)
     $plainBlankBefore = [Convert]::ToBase64String($plainBlankBytes)
     $plainBlankError = ''
-    try { & $isolatedReplay -BridgeRoot $plainBlankRoot 3>$null | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $plainBlankRoot -LegacyBulk 3>$null | Out-Null }
     catch { $plainBlankError = $_.Exception.Message }
     $plainBlankArchiveFiles = @(
         Get-ChildItem -LiteralPath (Join-Path $plainBlankRoot 'spool') `
@@ -1240,7 +2329,7 @@ Start-Sleep -Seconds 60
     [System.IO.File]::WriteAllBytes($invalidCanonicalEvents, $invalidUtf8Row)
     Write-TestWal -Path $invalidCanonicalSpool -Text $event
     $invalidCanonicalError = ''
-    try { & $isolatedReplay -BridgeRoot $invalidCanonicalRoot | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $invalidCanonicalRoot -LegacyBulk | Out-Null }
     catch { $invalidCanonicalError = $_.Exception.Message }
     $invalidCanonicalPassed = (
         ($invalidCanonicalError -match 'not strict UTF-8') -and
@@ -1255,7 +2344,7 @@ Start-Sleep -Seconds 60
         'failed-append-smoke-1-invalid-final.jsonl'
     [System.IO.File]::WriteAllBytes($invalidFinalPath, $invalidUtf8Row)
     $invalidFinalError = ''
-    try { & $isolatedReplay -BridgeRoot $invalidFinalRoot | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $invalidFinalRoot -LegacyBulk | Out-Null }
     catch { $invalidFinalError = $_.Exception.Message }
     $invalidFinalPassed = (
         ($invalidFinalError -match 'WAL is not strict UTF-8') -and
@@ -1269,7 +2358,7 @@ Start-Sleep -Seconds 60
         '.failed-append-smoke-1-invalid-pending.jsonl.pending'
     [System.IO.File]::WriteAllBytes($invalidPendingPath, $invalidUtf8Row)
     $invalidPendingError = ''
-    try { & $isolatedReplay -BridgeRoot $invalidPendingRoot | Out-Null }
+    try { & $isolatedReplay -BridgeRoot $invalidPendingRoot -LegacyBulk | Out-Null }
     catch { $invalidPendingError = $_.Exception.Message }
     $invalidPendingPassed = (
         ($invalidPendingError -match 'WAL is not strict UTF-8') -and
@@ -1285,16 +2374,21 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_RUNTIME_ROOT', $invalidWriterRoot, 'Process'
     )
     $invalidWriterError = ''
+    $invalidWriterResult = $null
     try {
-        & $isolatedWriter -Agent 'smoke-1' -Type status -Status open `
-            -Message 'invalid-utf8-writer' -PayloadJson '{}' | Out-Null
+        $invalidWriterResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type status -Status open `
+            -Message 'invalid-utf8-writer' -PayloadJson '{}' 3>$null
     } catch { $invalidWriterError = $_.Exception.Message }
-    $invalidWriterSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $invalidWriterRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -Force
-    )
+    $invalidWriterDelivery = $invalidWriterResult._bridge_delivery
+    $invalidWriterSpools = @(Get-TestAcceptedWalFiles `
+        -Root $invalidWriterRoot -State ready)
     $invalidWriterPassed = (
-        ($invalidWriterError -match 'not strict UTF-8') -and
+        (-not $invalidWriterError) -and
+        [string]$invalidWriterDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$invalidWriterDelivery.canonical_durable -and
+        ([string]$invalidWriterDelivery.warning_messages -match
+            'not strict UTF-8') -and
         [Convert]::ToBase64String(
             [System.IO.File]::ReadAllBytes($invalidWriterEvents)
         ) -ceq [Convert]::ToBase64String($invalidUtf8Row) -and
@@ -1352,134 +2446,45 @@ Start-Sleep -Seconds 60
         "spools=$($splitUtf8Spools.Count) lines=$($splitUtf8Lines.Count)"
     )
 
-    # 19. A replayer that already owns AppendV1 skips a writer's actively
-    #     leased pending WAL. The writer then acquires cleanly and emits once.
+    # 19. The age-gated pending sweeper skips a live writer lease. Once the
+    #     lease is gone, it publishes write-through to ready and target-drains.
     $activeLeaseRoot = New-TestBridgeRoot -Name 'active-pending-lease'
-    $activeLeaseReady = Join-Path $tempRoot 'active-pending-lease.ready'
-    $activeLeaseRelease = "$activeLeaseReady.release"
-    $activeReplayJob = Start-Job -ScriptBlock {
-        param($ScriptPath, $Root, $ReadyPath)
-        $env:AGENT_BRIDGE_TEST_AFTER_APPEND_READY = $ReadyPath
-        Remove-Item Env:AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES `
-            -ErrorAction SilentlyContinue
-        try { & $ScriptPath -BridgeRoot $Root 3>$null | Out-String }
-        catch { "ERROR: $($_.Exception.Message)" }
-    } -ArgumentList $leaseReplay, $activeLeaseRoot, $activeLeaseReady
-    $activeReplayReady = $false
-    $activeWriterJob = $null
-    $activePendingPath = ''
-    $activePendingHidden = $false
-    $activePendingLocked = $false
-    $activeReplayOutput = ''
-    $activeWriterOutput = ''
+    $activePendingEvent = '{"ts_utc":"2026-08-20T12:00:00Z","agent":"smoke-1","type":"message","task_id":"active-pending-once","status":"info","message":"active-pending-once"}'
+    $activePendingWal = Write-TestAcceptedWal -Root $activeLeaseRoot `
+        -WalId 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' `
+        -Text $activePendingEvent -Pending
+    $activePendingLease = New-Object System.IO.FileStream(
+        $activePendingWal.Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
     try {
-        for ($attempt = 0; $attempt -lt 400; $attempt++) {
-            if (Test-Path -LiteralPath $activeLeaseReady -PathType Leaf) {
-                $activeReplayReady = $true
-                break
-            }
-            if ($activeReplayJob.State -in @('Completed', 'Failed', 'Stopped')) { break }
-            Start-Sleep -Milliseconds 25
-        }
-        if ($activeReplayReady) {
-            $activeWriterJob = Start-Job -ScriptBlock {
-                param($ScriptPath, $Root)
-                $env:AGENT_BRIDGE_RUNTIME_ROOT = $Root
-                Remove-Item Env:AGENT_BRIDGE_TEST_BEFORE_APPEND_READY `
-                    -ErrorAction SilentlyContinue
-                Remove-Item Env:AGENT_BRIDGE_TEST_APPEND_FAILURE_AFTER_BYTES `
-                    -ErrorAction SilentlyContinue
-                try {
-                    & $ScriptPath -Agent 'smoke-1' -Type status -Status open `
-                        -Message 'active-pending-once' -PayloadJson '{}' | Out-Null
-                    'success'
-                } catch { "ERROR: $($_.Exception.Message)" }
-            } -ArgumentList $isolatedWriter, $activeLeaseRoot
-            for ($attempt = 0; $attempt -lt 400; $attempt++) {
-                $activePendingFiles = @(
-                    Get-ChildItem -LiteralPath (Join-Path $activeLeaseRoot 'spool') `
-                        -Filter '.*.pending' -File -Force -ErrorAction SilentlyContinue
-                )
-                if ($activePendingFiles.Count -eq 1) {
-                    $activePendingPath = $activePendingFiles[0].FullName
-                    break
-                }
-                if ($activeWriterJob.State -in @('Completed', 'Failed', 'Stopped')) { break }
-                Start-Sleep -Milliseconds 25
-            }
-            if ($activePendingPath) {
-                if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
-                    $activePendingHidden = $true
-                } else {
-                    for ($attributeAttempt = 0; $attributeAttempt -lt 100; $attributeAttempt++) {
-                        $activeAttributes = [System.IO.File]::GetAttributes(
-                            $activePendingPath
-                        )
-                        if (
-                            ($activeAttributes -band [System.IO.FileAttributes]::Hidden) -ne 0
-                        ) {
-                            $activePendingHidden = $true
-                            break
-                        }
-                        Start-Sleep -Milliseconds 10
-                    }
-                }
-                $probe = $null
-                try {
-                    $probe = [System.IO.File]::Open(
-                        $activePendingPath,
-                        [System.IO.FileMode]::Open,
-                        [System.IO.FileAccess]::Read,
-                        [System.IO.FileShare]::ReadWrite
-                    )
-                } catch {
-                    $activePendingLocked = $true
-                } finally {
-                    if ($null -ne $probe) { $probe.Dispose() }
-                }
-            }
-        }
-        [System.IO.File]::WriteAllText($activeLeaseRelease, 'release')
-        $activeReplayJob | Wait-Job | Out-Null
-        $activeReplayOutput = @(Receive-Job -Job $activeReplayJob) -join ' '
-        if ($null -ne $activeWriterJob) {
-            $activeWriterJob | Wait-Job | Out-Null
-            $activeWriterOutput = @(Receive-Job -Job $activeWriterJob) -join ' '
-        }
+        $activeDrainText = & $isolatedDrain -BridgeRoot $activeLeaseRoot `
+            -PendingMinAgeSeconds 0 -ReceiptJson
     } finally {
-        if (-not (Test-Path -LiteralPath $activeLeaseRelease)) {
-            [System.IO.File]::WriteAllText($activeLeaseRelease, 'release')
-        }
-        foreach ($job in @($activeReplayJob, $activeWriterJob)) {
-            if ($null -ne $job) {
-                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-            }
-        }
+        $activePendingLease.Dispose()
     }
+    $activeDrain = $activeDrainText | ConvertFrom-Json
+    $orphanDrainText = & $isolatedDrain -BridgeRoot $activeLeaseRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $orphanDrain = $orphanDrainText | ConvertFrom-Json
     $activeLeaseEvents = Join-Path $activeLeaseRoot 'shared/events.jsonl'
-    $activeLeaseLines = @(
-        if (Test-Path -LiteralPath $activeLeaseEvents) {
-            Get-Content -LiteralPath $activeLeaseEvents -Encoding UTF8
-        }
-    )
-    $activeLeaseSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $activeLeaseRoot 'spool') `
-            -File -Force -ErrorAction SilentlyContinue
-    )
-    Add-Check -Name 'replayer skips active pending lease and writer emits once' -Passed (
-        $activeReplayReady -and $activePendingHidden -and
-        $activePendingLocked -and
-        ($activeReplayOutput -match 'active pending WAL lease skipped') -and
-        ($activeWriterOutput -match 'success') -and
+    $activeLeaseLines = @([System.IO.File]::ReadAllLines($activeLeaseEvents))
+    Add-Check -Name 'pending sweeper skips live lease then recovers orphan once' -Passed (
+        [int]$activeDrain.pending_seen -eq 1 -and
+        [int]$activeDrain.pending_skipped -eq 1 -and
+        [int]$activeDrain.pending_promoted -eq 0 -and
+        [string]$activeDrain.results[0].status -ceq 'pending_active' -and
+        [int]$orphanDrain.pending_seen -eq 1 -and
+        [int]$orphanDrain.pending_promoted -eq 1 -and
+        [int]$orphanDrain.drained -eq 1 -and
+        [int]$orphanDrain.failed -eq 0 -and
         $activeLeaseLines.Count -eq 1 -and
-        ($activeLeaseLines[0] -match 'active-pending-once') -and
-        $activeLeaseSpools.Count -eq 0
-    ) -Detail (
-        "ready=$activeReplayReady hidden=$activePendingHidden " +
-        "locked=$activePendingLocked lines=$($activeLeaseLines.Count) " +
-        "replay=$activeReplayOutput writer=$activeWriterOutput " +
-        "spools=$($activeLeaseSpools.Count)"
-    )
+        $activeLeaseLines[0] -ceq $activePendingEvent -and
+        (-not (Test-Path -LiteralPath $activePendingWal.Path)) -and
+        (Test-Path -LiteralPath $activePendingWal.ReplayedPath -PathType Leaf)
+    ) -Detail "active=$activeDrainText orphan=$orphanDrainText"
 
     # 20. The validation checkpoint is a bounded, non-authoritative cache.
     #     Bootstrap scans once; a matching identity/length/tail takes the fast
@@ -1714,23 +2719,30 @@ Start-Sleep -Seconds 60
         'Process'
     )
     $updateFailureError = ''
+    $updateFailureResult = $null
     try {
-        & $isolatedWriter -Agent 'smoke-1' -Type message -Status info `
+        $updateFailureResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type message -Status info `
             -TaskId 'checkpoint-update-failure' `
             -Message 'checkpoint-update-failure-once' -PayloadJson '{}' `
-            3>$null | Out-Null
+            3>$null
     } catch { $updateFailureError = $_.Exception.Message }
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_CHECKPOINT_UPDATE_FAILURE', $null, 'Process'
     )
     $updateFailureLines = @([System.IO.File]::ReadAllLines($updateFailureEvents))
-    $updateFailureSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $updateFailureRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -Force
-    )
-    $updateFailureReplay = & $isolatedReplay -BridgeRoot $updateFailureRoot
+    $updateFailureDelivery = $updateFailureResult._bridge_delivery
+    $updateFailureSpools = @(Get-TestAcceptedWalFiles `
+        -Root $updateFailureRoot -State ready)
+    $updateFailureReplay = if ($null -ne $updateFailureDelivery) {
+        Invoke-TestAcceptedReceiptReplay -ReplayScript $isolatedReplay `
+            -Root $updateFailureRoot -Delivery $updateFailureDelivery
+    } else { '' }
     Add-Check -Name 'checkpoint update failure returns success retains WAL and exact-dedups' -Passed (
         (-not $updateFailureError) -and
+        [string]$updateFailureDelivery.delivery_status -ceq 'canonical' -and
+        [bool]$updateFailureDelivery.canonical_durable -and
+        -not [bool]$updateFailureDelivery.checkpoint_advanced -and
         @($updateFailureLines | Where-Object {
             $_ -match 'checkpoint-update-failure-once'
         }).Count -eq 1 -and
@@ -1752,22 +2764,29 @@ Start-Sleep -Seconds 60
         'AGENT_BRIDGE_TEST_WAL_CLEANUP_FAILURE', 'Once', 'Process'
     )
     $cleanupFailureError = ''
+    $cleanupFailureResult = $null
     try {
-        & $isolatedWriter -Agent 'smoke-1' -Type message -Status info `
+        $cleanupFailureResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type message -Status info `
             -TaskId 'wal-cleanup-failure' -Message 'wal-cleanup-failure-once' `
-            -PayloadJson '{}' 3>$null | Out-Null
+            -PayloadJson '{}' 3>$null
     } catch { $cleanupFailureError = $_.Exception.Message }
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_WAL_CLEANUP_FAILURE', $null, 'Process'
     )
     $cleanupFailureLines = @([System.IO.File]::ReadAllLines($cleanupFailureEvents))
-    $cleanupFailureSpools = @(
-        Get-ChildItem -LiteralPath (Join-Path $cleanupFailureRoot 'spool') `
-            -Filter 'failed-append-*.jsonl' -File -Force
-    )
-    $cleanupFailureReplay = & $isolatedReplay -BridgeRoot $cleanupFailureRoot
+    $cleanupFailureDelivery = $cleanupFailureResult._bridge_delivery
+    $cleanupFailureSpools = @(Get-TestAcceptedWalFiles `
+        -Root $cleanupFailureRoot -State ready)
+    $cleanupFailureReplay = if ($null -ne $cleanupFailureDelivery) {
+        Invoke-TestAcceptedReceiptReplay -ReplayScript $isolatedReplay `
+            -Root $cleanupFailureRoot -Delivery $cleanupFailureDelivery
+    } else { '' }
     Add-Check -Name 'post-flush WAL cleanup failure returns success and exact-dedups' -Passed (
         (-not $cleanupFailureError) -and
+        [string]$cleanupFailureDelivery.delivery_status -ceq 'canonical' -and
+        [bool]$cleanupFailureDelivery.canonical_durable -and
+        [bool]$cleanupFailureDelivery.checkpoint_advanced -and
         @($cleanupFailureLines | Where-Object {
             $_ -match 'wal-cleanup-failure-once'
         }).Count -eq 1 -and
@@ -1827,7 +2846,7 @@ Start-Sleep -Seconds 60
     $auxiliaryBeforeReplay = [Convert]::ToBase64String(
         [System.IO.File]::ReadAllBytes($auxiliaryFailureEvents)
     )
-    $auxiliaryReplayOutput = & $isolatedReplay -BridgeRoot $auxiliaryFailureRoot
+    $auxiliaryReplayOutput = & $isolatedReplay -BridgeRoot $auxiliaryFailureRoot -LegacyBulk
     $auxiliaryAfterReplay = [Convert]::ToBase64String(
         [System.IO.File]::ReadAllBytes($auxiliaryFailureEvents)
     )
@@ -1853,10 +2872,34 @@ Start-Sleep -Seconds 60
         "outbox=$($auxiliaryOutboxLines.Count) replay=$auxiliaryReplayOutput"
     )
 
-    # Unsupported-platform refusal must occur before either implementation can
-    # create shared/ or OpenOrCreate the canonical file. This Windows-hosted
-    # static ordering assertion covers the otherwise unreachable platform path.
+    # Unsupported-platform refusal must precede accepted WAL creation. A clean
+    # writer must then lease the canonical parent before the test hook and leaf
+    # open. This Windows-hosted static assertion covers the otherwise
+    # unreachable unsupported-platform path and guards the call ordering.
     $writerGateSource = [System.IO.File]::ReadAllText($writerScript)
+    $writerAddStart = $writerGateSource.IndexOf(
+        'function Add-CanonicalLineWithWal'
+    )
+    $writerAddNativeGate = $writerGateSource.IndexOf(
+        '    Initialize-BridgeAppendV1Native',
+        $writerAddStart
+    )
+    $writerWalOpen = $writerGateSource.IndexOf(
+        '    $wal = Open-PendingCanonicalWalLease -Bytes $lineBytes',
+        $writerAddStart
+    )
+    $writerCanonicalLease = $writerGateSource.IndexOf(
+        '            $canonicalDirectoryLeases = @(Open-BridgePlainDirectoryChain',
+        $writerAddStart
+    )
+    $writerBeforeAppendHook = $writerGateSource.IndexOf(
+        '            Invoke-BridgeBeforeAppendTestHook',
+        $writerAddStart
+    )
+    $writerCanonicalInvoke = $writerGateSource.IndexOf(
+        '            $appendResult = Invoke-BridgeCanonicalTransactionalAppend',
+        $writerAddStart
+    )
     $writerCanonicalStart = $writerGateSource.IndexOf(
         'function Invoke-BridgeCanonicalTransactionalAppend'
     )
@@ -1864,12 +2907,8 @@ Start-Sleep -Seconds 60
         '    Initialize-BridgeAppendV1Native',
         $writerCanonicalStart
     )
-    $writerParentCreate = $writerGateSource.IndexOf(
-        '    $parent = Split-Path -Parent $Path',
-        $writerCanonicalStart
-    )
     $writerOpenCreate = $writerGateSource.IndexOf(
-        '[System.IO.FileMode]::OpenOrCreate',
+        '$stream = Open-BridgePlainSingleLinkMutationStream',
         $writerCanonicalStart
     )
     $replayGateSource = [System.IO.File]::ReadAllText($replayScript)
@@ -1888,11 +2927,16 @@ Start-Sleep -Seconds 60
         '[System.IO.FileMode]::OpenOrCreate',
         $replayAppendStart
     )
-    Add-Check -Name 'native gate precedes canonical parent and file creation' -Passed (
+    Add-Check -Name 'native gate and parent lease precede canonical file creation' -Passed (
+        $writerAddStart -ge 0 -and
+        $writerAddNativeGate -gt $writerAddStart -and
+        $writerAddNativeGate -lt $writerWalOpen -and
+        $writerWalOpen -lt $writerCanonicalLease -and
+        $writerCanonicalLease -lt $writerBeforeAppendHook -and
+        $writerBeforeAppendHook -lt $writerCanonicalInvoke -and
         $writerCanonicalStart -ge 0 -and
         $writerNativeGate -gt $writerCanonicalStart -and
-        $writerNativeGate -lt $writerParentCreate -and
-        $writerParentCreate -lt $writerOpenCreate -and
+        $writerNativeGate -lt $writerOpenCreate -and
         $replayAppendStart -ge 0 -and
         $replayNativeGate -gt $replayAppendStart -and
         $replayNativeGate -lt $replayParentCreate -and
@@ -1905,13 +2949,15 @@ Start-Sleep -Seconds 60
             'Add-AuxiliaryLineBestEffort -Path $outboxPath -Line $line'
         )
     ) -Detail (
-        "writer=$writerCanonicalStart/$writerNativeGate/" +
-        "$writerParentCreate/$writerOpenCreate replay=$replayAppendStart/" +
+        "writerAdd=$writerAddStart/$writerAddNativeGate/$writerWalOpen/" +
+        "$writerCanonicalLease/$writerBeforeAppendHook/$writerCanonicalInvoke " +
+        "writerLeaf=$writerCanonicalStart/$writerNativeGate/$writerOpenCreate " +
+        "replay=$replayAppendStart/" +
         "$replayNativeGate/$replayParentCreate/$replayOpenCreate"
     )
 
     # 22. Kill a writer after canonical Flush(true) but before checkpoint
-    #     advance. The hidden pending WAL survives and replay exact-dedups it.
+    #     advance. The accepted pending orphan is swept and exact-deduped.
     $crashRoot = New-TestBridgeRoot -Name 'crash-before-checkpoint'
     $crashEvents = Join-Path $crashRoot 'shared/events.jsonl'
     $crashReady = Join-Path $tempRoot 'crash-before-checkpoint.ready'
@@ -1953,29 +2999,32 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
             $crashProcess.WaitForExit()
         }
     }
-    $crashPending = @(
-        Get-ChildItem -LiteralPath (Join-Path $crashRoot 'spool') `
-            -Filter '.*.pending' -File -Force -ErrorAction SilentlyContinue
-    )
+    $crashPending = @(Get-TestAcceptedWalFiles `
+        -Root $crashRoot -State pending)
     $crashLinesBeforeReplay = if (Test-Path -LiteralPath $crashEvents) {
         @([System.IO.File]::ReadAllLines($crashEvents))
     } else { @() }
-    $crashFirstReplay = & $isolatedReplay -BridgeRoot $crashRoot
-    $crashSecondReplay = & $isolatedReplay -BridgeRoot $crashRoot
+    $crashFirstReplay = & $isolatedDrain -BridgeRoot $crashRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $crashSecondReplay = & $isolatedDrain -BridgeRoot $crashRoot `
+        -PendingMinAgeSeconds 0 -ReceiptJson
+    $crashFirstReceipt = $crashFirstReplay | ConvertFrom-Json
+    $crashSecondReceipt = $crashSecondReplay | ConvertFrom-Json
     $crashLinesAfterReplay = @([System.IO.File]::ReadAllLines($crashEvents))
-    Add-Check -Name 'crash after canonical flush retains pending WAL and exact-dedups' -Passed (
+    Add-Check -Name 'crash after canonical flush sweeps orphan and exact-dedups' -Passed (
         $crashReached -and
         $crashPending.Count -eq 1 -and
         @($crashLinesBeforeReplay | Where-Object {
             $_ -match 'crash-before-checkpoint-once'
         }).Count -eq 1 -and
-        (
-            ($crashFirstReplay -match 'replayed=0 deduped=1 failed=0') -or
-            (
-                ($crashFirstReplay -match 'dirty abandoned') -and
-                ($crashSecondReplay -match 'replayed=0 deduped=1 failed=0')
-            )
-        ) -and
+        [int]$crashFirstReceipt.pending_promoted -eq 1 -and
+        (($crashFirstReplay + $crashSecondReplay) -match
+            'replayed=0 deduped=1 failed=0') -and
+        ([int]$crashFirstReceipt.drained -eq 1 -or
+            [int]$crashSecondReceipt.drained -eq 1) -and
+        @(Get-TestAcceptedWalFiles -Root $crashRoot -State pending).Count -eq 0 -and
+        @(Get-TestAcceptedWalFiles -Root $crashRoot -State ready).Count -eq 0 -and
+        @(Get-TestAcceptedWalFiles -Root $crashRoot -State replayed).Count -eq 1 -and
         @($crashLinesAfterReplay | Where-Object {
             $_ -match 'crash-before-checkpoint-once'
         }).Count -eq 1
@@ -2014,7 +3063,7 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
         $equalOriginalBytes.Length - 1
     )
     Write-TestWal -Path $equalReplaySpool -Text $equalEventText
-    $equalReplayOutput = & $isolatedReplay -BridgeRoot $equalReplayRoot 3>$null
+    $equalReplayOutput = & $isolatedReplay -BridgeRoot $equalReplayRoot -LegacyBulk 3>$null
     [byte[]]$equalFinalBytes = [System.IO.File]::ReadAllBytes($equalReplayEvents)
     $equalCheckpointObject = Get-Content -LiteralPath $equalReplayCheckpoint -Raw |
         ConvertFrom-Json
@@ -2025,24 +3074,40 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
         'AGENT_BRIDGE_TEST_FAIL_ON_FULL_VALIDATION', '1', 'Process'
     )
     $equalCheckpointMissError = ''
+    $equalCheckpointMissResult = $null
     try {
-        & $isolatedWriter -Agent 'smoke-1' -Type message -Status info `
+        $equalCheckpointMissResult = & $isolatedWriter `
+            -Agent 'smoke-1' -Type message -Status info `
             -TaskId 'equal-checkpoint-miss' -Message 'equal-checkpoint-miss' `
-            -PayloadJson '{}' | Out-Null
+            -PayloadJson '{}' 3>$null
     } catch { $equalCheckpointMissError = $_.Exception.Message }
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_FAIL_ON_FULL_VALIDATION', $null, 'Process'
     )
+    $equalCheckpointMissDelivery = $equalCheckpointMissResult._bridge_delivery
+    $equalCheckpointMissRecovery = if (
+        $null -ne $equalCheckpointMissDelivery
+    ) {
+        Invoke-TestAcceptedReceiptReplay -ReplayScript $isolatedReplay `
+            -Root $equalReplayRoot -Delivery $equalCheckpointMissDelivery
+    } else { '' }
     Add-Check -Name 'equal-byte truncate replay durably invalidates checkpoint' -Passed (
         ($equalReplayOutput -match 'replayed=1 deduped=0 failed=0') -and
         [Convert]::ToBase64String($equalOriginalBytes) -ceq
             [Convert]::ToBase64String($equalFinalBytes) -and
         [string]$equalCheckpointObject.schema -ceq `
             'waggledance.bridge.append-v1-validation-invalidated' -and
-        ($equalCheckpointMissError -match 'full canonical validation')
+        (-not $equalCheckpointMissError) -and
+        [string]$equalCheckpointMissDelivery.delivery_status -ceq 'queued' -and
+        -not [bool]$equalCheckpointMissDelivery.canonical_durable -and
+        -not [bool]$equalCheckpointMissDelivery.outbox_written -and
+        -not [bool]$equalCheckpointMissDelivery.last_file_written -and
+        ([string]$equalCheckpointMissDelivery.warning_messages -match
+            'full canonical validation') -and
+        ($equalCheckpointMissRecovery -match 'replayed=1 deduped=0 failed=0')
     ) -Detail (
         "replay=$equalReplayOutput schema=$($equalCheckpointObject.schema) " +
-        "miss=$equalCheckpointMissError"
+        "miss=$equalCheckpointMissError recovery=$equalCheckpointMissRecovery"
     )
 
     # Invalidation failure occurs before replayer mutation and retains the WAL.
@@ -2064,7 +3129,7 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
         'AGENT_BRIDGE_TEST_CHECKPOINT_INVALIDATION_FAILURE', '1', 'Process'
     )
     $invalidateFailureOutput = & $isolatedReplay `
-        -BridgeRoot $invalidateFailureRoot 3>$null
+        -BridgeRoot $invalidateFailureRoot -LegacyBulk 3>$null
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_CHECKPOINT_INVALIDATION_FAILURE', $null, 'Process'
     )
@@ -2095,7 +3160,7 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
         $env:AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY = $ReadyPath
         Remove-Item Env:AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE `
             -ErrorAction SilentlyContinue
-        try { & $ScriptPath -BridgeRoot $Root 3>$null | Out-String }
+        try { & $ScriptPath -BridgeRoot $Root -LegacyBulk 3>$null | Out-String }
         catch { "ERROR: $($_.Exception.Message)" }
     } -ArgumentList $isolatedReplay, $scanRoot, $scanReady
     $scanReached = $false
@@ -2241,6 +3306,11 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_TEST_CANONICAL_SCAN_READY',
         $previousCanonicalScanReady,
+        'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        'AGENT_BRIDGE_TEST_PENDING_VERIFY_FAILURE',
+        $previousPendingVerifyFailure,
         'Process'
     )
     if (Test-Path -LiteralPath $tempRoot) {

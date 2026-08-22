@@ -26,7 +26,6 @@ from tools.idle_consensus_auto_merge import (  # noqa: E402
     AutoMergeGateError,
     evaluate_auto_merge_gate,
 )
-from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
 from tools.pr_status_snapshot import (  # noqa: E402
     PrStatusSnapshotError,
     build_pr_status_snapshot,
@@ -35,6 +34,10 @@ from tools.write_bridge_consensus_merge_receipt import (  # noqa: E402
     BridgeConsensusMergeReceiptError,
     write_bridge_consensus_merge_receipt,
 )
+from tools.bridge_accepted_queue_preflight import (  # noqa: E402
+    bridge_events_path_matches_root,
+)
+from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -46,7 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pr_number", type=int)
     parser.add_argument("--repo", default="")
-    parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS_PATH)
+    parser.add_argument("--events", type=Path, default=None)
+    parser.add_argument(
+        "--bridge-root",
+        type=Path,
+        default=None,
+        help=(
+            "Runtime bridge root used when --events is omitted. Defaults to "
+            "AGENT_BRIDGE_RUNTIME_ROOT, AGENT_BRIDGE_ROOT, then repo .agent-bridge."
+        ),
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--expected-base-sha", required=True)
@@ -71,11 +83,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        bridge_root = resolve_bridge_root(args.bridge_root)
+        events_path = (
+            args.events
+            if args.events is not None
+            else bridge_root / "shared" / "events.jsonl"
+        )
+        if (
+            args.events is not None
+            and not bridge_events_path_matches_root(
+                bridge_root=bridge_root,
+                events_path=events_path,
+            )
+        ):
+            raise ValueError(
+                "--events must equal <bridge-root>/shared/events.jsonl"
+            )
         now_utc = _parse_utc(args.now) if args.now else None
         report = merge_with_bridge_receipt(
             pr_number=args.pr_number,
             repo=args.repo,
-            events_path=args.events,
+            events_path=events_path,
             out_dir=args.out_dir,
             expected_head=args.expected_head,
             expected_base_sha=args.expected_base_sha,

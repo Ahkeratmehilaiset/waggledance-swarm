@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -91,6 +92,36 @@ def _run_bridge_script(
     )
 
 
+def _accepted_wal_marker_function(root: Path) -> str:
+    source = (
+        root / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
+    ).read_text(encoding="utf-8")
+    start = source.index("function Ensure-BridgeAcceptedWalDigestMarker")
+    end = source.index("function Promote-PendingCanonicalWal", start)
+    return source[start:end]
+
+
+def test_accepted_wal_marker_captures_native_error_before_probe() -> None:
+    root = Path(__file__).resolve().parents[2]
+    function = _accepted_wal_marker_function(root)
+    move = function.index("[WaggleDance.BridgeAppendV1Native]::MoveFileExW")
+    capture = function.index(
+        "[Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+        move,
+    )
+    probe = function.index("Test-BridgeAcceptedWalDigestMarker", move)
+
+    assert move < capture < probe
+
+
+def test_accepted_wal_marker_publication_preserves_no_replace_authority() -> None:
+    root = Path(__file__).resolve().parents[2]
+    function = _accepted_wal_marker_function(root)
+
+    assert "[uint32]0x00000008" in function
+    assert "[uint32]0x00000001" not in function
+
+
 def _grok_freshness_payload(**overrides: object) -> str:
     freshness: dict[str, object] = {
         "freshness_ok": True,
@@ -154,7 +185,7 @@ def test_task_id_required_events_fail_before_runtime_write(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="exercises the non-Windows fence")
-def test_non_windows_append_fails_closed_and_retains_wal(tmp_path: Path) -> None:
+def test_non_windows_append_fails_before_wal_acceptance(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     runtime_root = tmp_path / "bridge-runtime"
 
@@ -173,12 +204,148 @@ def test_non_windows_append_fails_closed_and_retains_wal(tmp_path: Path) -> None
     assert "Windows file identity" in completed.stderr
     assert "refusing an unfenced append" in completed.stderr
     assert not (runtime_root / "shared" / "events.jsonl").exists()
-    assert not list((runtime_root / "spool").glob("*.pending"))
-    spool_files = list((runtime_root / "spool").glob("failed-append-*.jsonl"))
-    assert len(spool_files) == 1
-    line = spool_files[0].read_text(encoding="utf-8").strip()
-    assert json.loads(line)["message"] == "unsupported platform fence"
-    validate_event_line(line)
+    assert not (runtime_root / "spool").exists()
+
+
+@WINDOWS_APPEND_V1
+def test_mutex_failure_returns_verified_queued_receipt_without_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    monkeypatch.setenv("AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE", "Append")
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "queued-receipt",
+        "-Status",
+        "info",
+        "-Message",
+        "accepted for targeted replay",
+        "-ReceiptJson",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    event = json.loads(completed.stdout)
+    receipt = event["_bridge_delivery"]
+    assert receipt["schema"] == "waggledance.bridge.delivery-receipt.v1"
+    assert receipt["accepted"] is True
+    assert receipt["delivery_status"] == "queued"
+    assert receipt["canonical_durable"] is False
+    assert receipt["checkpoint_advanced"] is False
+    assert receipt["outbox_written"] is False
+    assert receipt["last_file_written"] is False
+    assert len(receipt["retained_wal_sha256"]) == 64
+    ready = runtime_root / "spool" / "accepted-v1" / "ready"
+    wal_path = ready / receipt["wal_leaf"]
+    assert Path(receipt["retained_wal_path"]) == wal_path
+    assert wal_path.read_bytes().endswith(b"\n")
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+    assert not (runtime_root / "outbox").exists()
+    assert not (runtime_root / "shared" / "last_smoke-1.json").exists()
+
+
+@WINDOWS_APPEND_V1
+def test_publication_fence_failure_precedes_powershell_wal_acceptance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    monkeypatch.setenv(
+        "AGENT_BRIDGE_TEST_MUTEX_CONSTRUCTION_FAILURE",
+        "QueuePublication",
+    )
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "publication-fence-failure",
+        "-Status",
+        "info",
+        "-Message",
+        "must fail before accepted queue creation",
+        "-ReceiptJson",
+    )
+
+    assert completed.returncode != 0
+    assert "publication fence before WAL creation" in completed.stderr
+    assert not (runtime_root / "spool" / "accepted-v1").exists()
+    assert not (runtime_root / "shared" / "events.jsonl").exists()
+
+
+@WINDOWS_APPEND_V1
+def test_writer_queues_without_following_shared_junction(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+    outside = tmp_path / "outside-shared"
+    runtime_root.mkdir()
+    outside.mkdir()
+    environment = os.environ.copy()
+    environment["WD_TEST_SHARED_LINK"] = str(runtime_root / "shared")
+    environment["WD_TEST_SHARED_TARGET"] = str(outside)
+    subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:WD_TEST_SHARED_LINK "
+            "-Target $env:WD_TEST_SHARED_TARGET | Out-Null",
+        ],
+        cwd=root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "smoke-1",
+        "-Type",
+        "message",
+        "-TaskId",
+        "shared-junction-receipt",
+        "-Status",
+        "info",
+        "-Message",
+        "must queue without following shared junction",
+        "-ReceiptJson",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    event = json.loads(completed.stdout)
+    receipt = event["_bridge_delivery"]
+    assert receipt["accepted"] is True
+    assert receipt["delivery_status"] == "queued"
+    assert receipt["canonical_durable"] is False
+    assert any("reparse point" in warning for warning in receipt["warning_messages"])
+    assert len(receipt["retained_wal_sha256"]) == 64
+    retained_path = Path(receipt["retained_wal_path"])
+    retained_bytes = retained_path.read_bytes()
+    assert retained_path.parent == runtime_root / "spool" / "accepted-v1" / "ready"
+    assert hashlib.sha256(retained_bytes).hexdigest() == receipt["retained_wal_sha256"]
+    assert retained_bytes.endswith(b"\n")
+    assert not (runtime_root / "outbox").exists()
+    assert not (outside / "events.jsonl").exists()
+    assert not (outside / "events.jsonl.append-v1-validation.json").exists()
+    assert not (outside / "last_smoke-1.json").exists()
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -236,9 +403,16 @@ def test_task_scoped_event_with_task_id_writes_valid_event(tmp_path: Path) -> No
         "claude",
         "-Message",
         "valid handoff",
+        "-ReceiptJson",
     )
 
     assert completed.returncode == 0, completed.stderr
+    emitted = json.loads(completed.stdout)
+    receipt = emitted["_bridge_delivery"]
+    assert receipt["schema"] == "waggledance.bridge.delivery-receipt.v1"
+    assert receipt["accepted"] is True
+    assert receipt["delivery_status"] == "canonical"
+    assert receipt["canonical_durable"] is True
     events_path = runtime_root / "shared" / "events.jsonl"
     line = events_path.read_text(encoding="utf-8").strip()
     event = json.loads(line)

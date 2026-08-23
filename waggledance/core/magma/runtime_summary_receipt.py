@@ -57,6 +57,16 @@ def _require_optional_literal_bool(value: object, field: str) -> bool | None:
     return value
 
 
+def _require_derived_value(
+    payload: Mapping[str, Any],
+    field: str,
+    expected: str,
+) -> None:
+    value = payload.get(field)
+    if type(value) is not str or value != expected:
+        raise ValueError(f"runtime summary {field} mismatch")
+
+
 def build_handle_query_runtime_summary(
     *,
     query: str,
@@ -268,6 +278,20 @@ def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
         payload.get("verifier_passed"),
         "verifier_passed",
     )
+    expected_gate = _actual_gate(
+        approved=payload["approved"],
+        executed=payload["executed"],
+        needs_approval=payload["needs_approval"],
+    )
+    _require_derived_value(payload, "actual_gate", expected_gate)
+    _require_derived_value(payload, "expected_gate", expected_gate)
+    expected_verdict = _verdict(
+        approved=payload["approved"],
+        executed=payload["executed"],
+        needs_approval=payload["needs_approval"],
+        verifier_passed=payload.get("verifier_passed"),
+    )
+    _require_derived_value(payload, "verdict", expected_verdict)
     _validate_solver_trace_payload(payload)
 
 

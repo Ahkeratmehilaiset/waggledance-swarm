@@ -174,6 +174,38 @@ def test_runtime_summary_receipt_boundary_rejects_non_literal_booleans(
     assert not out_dir.exists()
 
 
+@pytest.mark.parametrize(
+    ("mutations", "mismatch_field"),
+    [
+        ({"approved": False}, "actual_gate"),
+        ({"actual_gate": "review"}, "actual_gate"),
+        ({"expected_gate": "review"}, "expected_gate"),
+        ({"verdict": "review"}, "verdict"),
+    ],
+)
+def test_runtime_summary_receipt_boundary_rejects_derived_evidence_mismatch(
+    tmp_path: Path,
+    mutations: dict[str, object],
+    mismatch_field: str,
+) -> None:
+    summary = _summary()
+    summary.update(mutations)
+    out_dir = tmp_path / f"bad-{mismatch_field}"
+
+    with pytest.raises(
+        ValueError,
+        match=rf"runtime summary {mismatch_field} mismatch",
+    ):
+        write_runtime_summary_receipt_bundle(
+            out_dir=out_dir,
+            summary_payload=summary,
+            now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+            verify_manifest=verify_manifest,
+        )
+
+    assert not out_dir.exists()
+
+
 def test_runtime_summary_receipt_bundle_writes_and_verifies(tmp_path: Path) -> None:
     out_dir = tmp_path / "runtime-summary"
 

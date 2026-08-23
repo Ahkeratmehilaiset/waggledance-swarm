@@ -133,11 +133,12 @@ def _first_served_route_hop(
 ) -> str | None:
     """Return the first route stage that SERVED the query, in trace order.
 
-    A stage "serves" when: ``hot_cache`` hit, a ``deterministic_solver`` /
-    ``hybrid_retrieval_8_cell`` / ``hex_neighbor_assist_7_cell`` stage answered,
-    or the terminal ``orchestrator_llm_fallback`` is reached. Pre-processing
-    stages cannot serve. Strict bool checks only (no truthy coercion). Read-only:
-    derives a label from the already-sanitized trace; changes no behavior.
+    A stage "serves" when: ``hot_cache`` hit, ``deterministic_solver`` or
+    ``hex_neighbor_assist_7_cell`` answered, authoritative
+    ``hybrid_retrieval_8_cell`` answered, or the terminal
+    ``orchestrator_llm_fallback`` is reached. Pre-processing stages cannot
+    serve. Strict bool checks only (no truthy coercion). Read-only: derives a
+    label from the already-sanitized trace; changes no behavior.
     """
     if not trace:
         return None
@@ -149,6 +150,11 @@ def _first_served_route_hop(
             continue
         if stage == "hot_cache":
             served = event.get("hit") is True
+        elif stage == "hybrid_retrieval_8_cell":
+            served = (
+                event.get("answered") is True
+                and event.get("authoritative") is True
+            )
         elif stage == "orchestrator_llm_fallback":
             served = True
         else:

@@ -206,6 +206,29 @@ def test_runtime_summary_receipt_boundary_rejects_derived_evidence_mismatch(
     assert not out_dir.exists()
 
 
+@pytest.mark.parametrize("field", ["actual_gate", "expected_gate", "verdict"])
+def test_runtime_summary_receipt_boundary_rejects_derived_objects_without_truthiness(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    summary = _summary()
+    summary[field] = _ExplosiveBool()
+    out_dir = tmp_path / f"object-{field}"
+
+    with pytest.raises(
+        ValueError,
+        match=rf"runtime summary {field} must be a non-empty string",
+    ):
+        write_runtime_summary_receipt_bundle(
+            out_dir=out_dir,
+            summary_payload=summary,
+            now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+            verify_manifest=verify_manifest,
+        )
+
+    assert not out_dir.exists()
+
+
 def test_runtime_summary_receipt_bundle_writes_and_verifies(tmp_path: Path) -> None:
     out_dir = tmp_path / "runtime-summary"
 

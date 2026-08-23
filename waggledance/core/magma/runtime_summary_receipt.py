@@ -270,8 +270,11 @@ def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
         "decision_reason_digest",
         "solver_call_trace_digest",
     ):
-        if not payload.get(key):
-            raise ValueError(f"runtime summary missing required field: {key}")
+        value = payload.get(key)
+        if type(value) is not str or not value:
+            raise ValueError(
+                f"runtime summary {key} must be a non-empty string"
+            )
     for key in ("approved", "executed", "needs_approval"):
         _require_literal_bool(payload.get(key), key)
     _require_optional_literal_bool(

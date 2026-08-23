@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from enum import IntEnum
 import json
@@ -13,6 +14,7 @@ from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.runtime_summary_receipt import (
     EVALUATION_VERSION_V1,
     PAYLOAD_VERSION,
+    _validate_summary_payload,
     build_handle_query_runtime_summary,
     write_runtime_summary_receipt_bundle,
 )
@@ -26,6 +28,33 @@ class _BooleanInt(IntEnum):
 class _ExplosiveBool:
     def __bool__(self) -> bool:
         raise AssertionError("boolean coercion must not run")
+
+
+class _ToggleMapping(Mapping[str, object]):
+    def __init__(
+        self,
+        payload: dict[str, object],
+        field: str,
+        first: bool,
+        second: bool,
+    ) -> None:
+        self._payload = payload
+        self._field = field
+        self._values = (first, second)
+        self.field_reads = 0
+
+    def __getitem__(self, key: str) -> object:
+        if key == self._field:
+            value = self._values[min(self.field_reads, 1)]
+            self.field_reads += 1
+            return value
+        return self._payload[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._payload)
+
+    def __len__(self) -> int:
+        return len(self._payload)
 
 
 def _summary(
@@ -119,6 +148,37 @@ def test_runtime_summary_accepts_literal_boolean_contract(
 
     assert summary["actual_gate"] == actual_gate
     assert summary["verdict"] == verdict
+
+
+@pytest.mark.parametrize(
+    ("field", "first", "second", "actual_gate", "verdict"),
+    [
+        ("approved", True, False, "allow", "pass"),
+        ("approved", False, True, "refuse", "refuse"),
+        ("executed", True, False, "allow", "pass"),
+        ("executed", False, True, "review", "review"),
+        ("needs_approval", True, False, "require_approval", "review"),
+        ("needs_approval", False, True, "allow", "pass"),
+        ("verifier_passed", True, False, "allow", "pass"),
+        ("verifier_passed", False, True, "allow", "review"),
+    ],
+)
+def test_runtime_summary_validation_uses_each_boolean_snapshot_once(
+    field: str,
+    first: bool,
+    second: bool,
+    actual_gate: str,
+    verdict: str,
+) -> None:
+    summary = _summary(**{field: first})
+    summary["actual_gate"] = actual_gate
+    summary["expected_gate"] = actual_gate
+    summary["verdict"] = verdict
+    payload = _ToggleMapping(summary, field, first, second)
+
+    _validate_summary_payload(payload)
+
+    assert payload.field_reads == 1
 
 
 @pytest.mark.parametrize("field", ["approved", "executed", "needs_approval"])

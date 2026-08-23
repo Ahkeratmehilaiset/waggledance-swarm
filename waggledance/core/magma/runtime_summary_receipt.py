@@ -275,24 +275,28 @@ def _validate_summary_payload(payload: Mapping[str, Any]) -> None:
             raise ValueError(
                 f"runtime summary {key} must be a non-empty string"
             )
-    for key in ("approved", "executed", "needs_approval"):
-        _require_literal_bool(payload.get(key), key)
-    _require_optional_literal_bool(
+    approved = _require_literal_bool(payload.get("approved"), "approved")
+    executed = _require_literal_bool(payload.get("executed"), "executed")
+    needs_approval = _require_literal_bool(
+        payload.get("needs_approval"),
+        "needs_approval",
+    )
+    verifier_passed = _require_optional_literal_bool(
         payload.get("verifier_passed"),
         "verifier_passed",
     )
     expected_gate = _actual_gate(
-        approved=payload["approved"],
-        executed=payload["executed"],
-        needs_approval=payload["needs_approval"],
+        approved=approved,
+        executed=executed,
+        needs_approval=needs_approval,
     )
     _require_derived_value(payload, "actual_gate", expected_gate)
     _require_derived_value(payload, "expected_gate", expected_gate)
     expected_verdict = _verdict(
-        approved=payload["approved"],
-        executed=payload["executed"],
-        needs_approval=payload["needs_approval"],
-        verifier_passed=payload.get("verifier_passed"),
+        approved=approved,
+        executed=executed,
+        needs_approval=needs_approval,
+        verifier_passed=verifier_passed,
     )
     _require_derived_value(payload, "verdict", expected_verdict)
     _validate_solver_trace_payload(payload)

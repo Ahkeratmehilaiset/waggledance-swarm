@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import IntEnum
 import json
 from pathlib import Path
 
@@ -17,7 +18,24 @@ from waggledance.core.magma.runtime_summary_receipt import (
 )
 
 
-def _summary(secret_query: str = "private query marker DO_NOT_LEAK") -> dict:
+class _BooleanInt(IntEnum):
+    FALSE = 0
+    TRUE = 1
+
+
+class _ExplosiveBool:
+    def __bool__(self) -> bool:
+        raise AssertionError("boolean coercion must not run")
+
+
+def _summary(
+    secret_query: str = "private query marker DO_NOT_LEAK",
+    *,
+    approved: object = True,
+    executed: object = True,
+    needs_approval: object = False,
+    verifier_passed: object = True,
+) -> dict:
     return build_handle_query_runtime_summary(
         query=secret_query,
         context={"operator_note": "context secret DO_NOT_LEAK"},
@@ -26,14 +44,14 @@ def _summary(secret_query: str = "private query marker DO_NOT_LEAK") -> dict:
         quality_path="gold",
         capability_id="detect.fixture",
         action_id="action123",
-        approved=True,
-        executed=True,
-        needs_approval=False,
+        approved=approved,
+        executed=executed,
+        needs_approval=needs_approval,
         decision_reason="Read-only auto-approved",
         elapsed_ms=12.345,
         snapshot_id="snap123",
         case_id="case:autonomy_runtime:fixture123",
-        verifier_passed=True,
+        verifier_passed=verifier_passed,
         verifier_confidence=0.8,
         result_keys=["intent", "approved", "result"],
         solver_call_trace=[
@@ -82,6 +100,78 @@ def test_runtime_summary_payload_is_sanitized_and_digest_bound() -> None:
     assert summary["solver_call_trace_digest"] == sha256_digest(
         {"solver_call_trace": summary["solver_call_trace"]}
     )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "actual_gate", "verdict"),
+    [
+        ({"approved": False}, "refuse", "refuse"),
+        ({"executed": False}, "review", "review"),
+        ({"needs_approval": True}, "require_approval", "review"),
+        ({"verifier_passed": False}, "allow", "review"),
+        ({"verifier_passed": None}, "allow", "pass"),
+    ],
+)
+def test_runtime_summary_accepts_literal_boolean_contract(
+    overrides, actual_gate, verdict
+) -> None:
+    summary = _summary(**overrides)
+
+    assert summary["actual_gate"] == actual_gate
+    assert summary["verdict"] == verdict
+
+
+@pytest.mark.parametrize("field", ["approved", "executed", "needs_approval"])
+@pytest.mark.parametrize(
+    "value",
+    ["false", "true", 0, 1, None, _BooleanInt.FALSE, _BooleanInt.TRUE, _ExplosiveBool()],
+)
+def test_runtime_summary_builder_rejects_non_literal_boolean_fields(
+    field, value
+) -> None:
+    with pytest.raises(ValueError, match=rf"runtime summary {field} must be"):
+        _summary(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["false", "true", 0, 1, _BooleanInt.FALSE, _BooleanInt.TRUE, _ExplosiveBool()],
+)
+def test_runtime_summary_builder_rejects_non_literal_verifier_result(value) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime summary verifier_passed must be",
+    ):
+        _summary(verifier_passed=value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("approved", "false"),
+        ("executed", 1),
+        ("needs_approval", _BooleanInt.FALSE),
+        ("verifier_passed", _ExplosiveBool()),
+    ],
+)
+def test_runtime_summary_receipt_boundary_rejects_non_literal_booleans(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    summary = _summary()
+    summary[field] = value
+    out_dir = tmp_path / f"bad-{field}"
+
+    with pytest.raises(ValueError, match=rf"runtime summary {field} must be"):
+        write_runtime_summary_receipt_bundle(
+            out_dir=out_dir,
+            summary_payload=summary,
+            now_utc=datetime(2026, 5, 23, 3, 0, tzinfo=timezone.utc),
+            verify_manifest=verify_manifest,
+        )
+
+    assert not out_dir.exists()
 
 
 def test_runtime_summary_receipt_bundle_writes_and_verifies(tmp_path: Path) -> None:

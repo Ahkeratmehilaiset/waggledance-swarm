@@ -579,6 +579,7 @@ class HexNeighborAssist:
         else:
             # Sequential fallback — limit to 1 neighbor, budget 10s max
             selected = selected[:1]
+            trace.neighbor_cells_consulted = [c.id for c in selected]
             seq_budget_s = max(self._neighbor_budget_ms / 1000.0, 0.001)
             budget_recorded = False
             for cell in selected:

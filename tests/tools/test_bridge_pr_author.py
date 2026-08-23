@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+from collections.abc import Iterator
 from copy import deepcopy
 
 import pytest
@@ -13,6 +14,7 @@ from tools.bridge_pr_author import (
 )
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
+PRIOR_HEAD = "0123456789abcdef0123456789abcdef01234567"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 TASK = "codex-lead-1/unified-author-fixture"
 PATHS = ["tools/one.py", "tests/tools/test_one.py"]
@@ -21,6 +23,19 @@ REGISTRY = {
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
     "claude-rco-1": "2b2f6ff9-06c2-4ec8-b526-f10071ce7103",
 }
+
+
+class _ToggleScopeList(list[str]):
+    def __init__(self, first: list[str], second: list[str]) -> None:
+        super().__init__()
+        self._first = first
+        self._second = second
+        self.reads = 0
+
+    def __iter__(self) -> Iterator[str]:
+        self.reads += 1
+        values = self._first if self.reads == 1 else self._second
+        return iter(values)
 
 
 def _git_material(*, commit_name: str = "Jani") -> tuple[list[dict], dict]:
@@ -148,6 +163,196 @@ def test_multiple_canonical_claim_owners_never_use_first_or_last() -> None:
     assert "multiple canonical claim owners" in report["reasons"][0]
 
 
+def test_exact_task_claim_with_disjoint_scope_cannot_become_an_owner() -> None:
+    review_artifact = _claim(
+        "codex-tools-1",
+        scope=["docs/runs/pr-review.md"],
+    )
+
+    report = _resolve(events=[_claim(), review_artifact])
+
+    assert report["ok"] is True
+    assert report["author_agent"] == "codex-lead-1"
+    assert report["canonical_owner_candidates"] == ["codex-lead-1"]
+    assert report["claim_event_indexes"] == [0]
+    assert report["ignored_irrelevant_claim_indexes"] == [1]
+
+
+def test_case_variant_exact_scope_cannot_hide_a_second_owner() -> None:
+    case_variant_contributor = _claim(
+        "codex-tools-1",
+        scope=["Tools/one.py"],
+    )
+
+    report = _resolve(events=[_claim(), case_variant_contributor])
+
+    assert report["ok"] is False
+    assert report["canonical_owner_candidates"] == [
+        "codex-lead-1",
+        "codex-tools-1",
+    ]
+    assert "multiple canonical claim owners" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "scope"),
+    [
+        ("docs/Straße.py", "docs/STRASSE.py"),
+        ("docs/İ.py", "docs/i\u0307.py"),
+    ],
+)
+def test_non_ascii_path_evidence_fails_closed_before_case_normalization(
+    changed_path: str,
+    scope: str,
+) -> None:
+    report = _resolve(
+        events=[_claim(scope=[scope])],
+        changed_paths=[changed_path],
+    )
+
+    assert report["ok"] is False
+    assert report["decision"] == "invalid_author_evidence"
+    assert "ASCII repository path" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["tools/bridge_pr_autho?.py", "tools/[b]ridge_pr_author.py"],
+)
+def test_powershell_wildcard_scope_cannot_hide_a_second_owner(
+    scope: str,
+) -> None:
+    changed_path = "tools/bridge_pr_author.py"
+    report = _resolve(
+        events=[
+            _claim(scope=[changed_path]),
+            _claim("codex-tools-1", scope=[scope]),
+        ],
+        changed_paths=[changed_path],
+    )
+
+    assert report["ok"] is False
+    assert "wildcard" in report["reasons"][0]
+
+
+def test_windows_short_name_scope_cannot_hide_a_second_owner() -> None:
+    changed_path = "waggledance/core/one.py"
+    report = _resolve(
+        events=[
+            _claim(scope=[changed_path]),
+            _claim("codex-tools-1", scope=["WAGGLE~1/core/one.py"]),
+        ],
+        changed_paths=[changed_path],
+    )
+
+    assert report["ok"] is False
+    assert "canonical repository path" in report["reasons"][0]
+
+
+def test_scope_sequence_is_frozen_before_glob_disjoint_analysis() -> None:
+    toggling_scope = _ToggleScopeList(
+        ["tools/*.py"],
+        ["docs/runs/pr-review-*.md"],
+    )
+    foreign_claim = _claim("codex-tools-1", scope=toggling_scope)
+
+    report = _resolve(events=[_claim(), foreign_claim])
+
+    assert report["ok"] is False
+    assert "wildcard" in report["reasons"][0]
+    assert toggling_scope.reads == 1
+
+
+def test_malformed_docs_glob_is_ignored_only_when_provably_disjoint() -> None:
+    review_artifact = _claim(
+        "codex-tools-1",
+        scope=["docs/runs/pr-review-*.md"],
+    )
+
+    report = _resolve(events=[_claim(), review_artifact])
+
+    assert report["ok"] is True
+    assert report["author_agent"] == "codex-lead-1"
+    assert report["claim_event_indexes"] == [0]
+    assert report["ignored_irrelevant_claim_indexes"] == [1]
+
+
+def test_empty_scope_or_malformed_payload_is_ignored_when_disjoint() -> None:
+    empty_scope = _claim("codex-tools-1", scope=[])
+    malformed_payload = _claim(
+        "codex-tools-1",
+        scope=["docs/runs/pr-review.md"],
+    )
+    malformed_payload["payload"] = False
+    malformed_head = _claim(
+        "codex-tools-1",
+        scope=["docs/runs/pr-review-head.md"],
+        payload={"head": "not-a-sha"},
+    )
+
+    report = _resolve(
+        events=[_claim(), empty_scope, malformed_payload, malformed_head]
+    )
+
+    assert report["ok"] is True
+    assert report["author_agent"] == "codex-lead-1"
+    assert report["claim_event_indexes"] == [0]
+    assert report["ignored_irrelevant_claim_indexes"] == [1, 2, 3]
+
+
+def test_disagreeing_scope_declarations_are_ignored_when_both_disjoint() -> None:
+    review_artifact = _claim(
+        "codex-tools-1",
+        scope=["docs/runs/review-a.md"],
+        payload={"write_scope": ["docs/runs/review-b.md"]},
+    )
+
+    report = _resolve(events=[_claim(), review_artifact])
+
+    assert report["ok"] is True
+    assert report["claim_event_indexes"] == [0]
+    assert report["ignored_irrelevant_claim_indexes"] == [1]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        pytest.param(["tools/*.py"], id="overlapping-directory"),
+        pytest.param(["Tools/*.py"], id="case-folded-overlap"),
+        pytest.param(["tools./*.py"], id="windows-dot-alias"),
+        pytest.param(["*.md"], id="no-static-directory-prefix"),
+        pytest.param(
+            ["docs/../reviews/*.md"],
+            id="unsafe-static-directory-prefix",
+        ),
+        pytest.param(
+            ["docs/*.md/../tools/*.py"],
+            id="unsafe-suffix-traversal",
+        ),
+        pytest.param(
+            ["docs/reviews/*.md/"],
+            id="trailing-slash",
+        ),
+        pytest.param(
+            ["docs/runs/pr-review-*.md", "tools/one.py"],
+            id="disjoint-glob-with-overlapping-entry",
+        ),
+    ],
+)
+def test_malformed_scope_glob_that_may_overlap_fails_closed(
+    scope: list[str],
+) -> None:
+    report = _resolve(
+        events=[_claim(), _claim("codex-tools-1", scope=scope)]
+    )
+
+    assert report["ok"] is False
+    assert any(
+        fragment in report["reasons"][0]
+        for fragment in ("wildcard", "canonical repository path")
+    )
+
+
 def test_noncanonical_contributor_claim_binding_pr_routes_review() -> None:
     contributor = _claim(
         "codex-tools-1",
@@ -163,11 +368,144 @@ def test_noncanonical_contributor_claim_binding_pr_routes_review() -> None:
     assert "non-canonical contributor claim" in report["reasons"][0]
 
 
-def test_claim_payload_with_other_exact_head_is_conflicting_evidence() -> None:
-    report = _resolve(events=[_claim(payload={"head": "0" * 40})])
+def test_prior_head_claim_by_current_owner_is_historical_evidence() -> None:
+    historical = _claim(payload={"head": PRIOR_HEAD})
+
+    forward = _resolve(events=[_claim(), historical])
+    reverse = _resolve(events=[historical, _claim()])
+
+    assert forward["ok"] is reverse["ok"] is True
+    assert forward["author_agent"] == reverse["author_agent"] == "codex-lead-1"
+    assert forward["claim_event_indexes"] == [0]
+    assert forward["ignored_irrelevant_claim_indexes"] == [1]
+    assert reverse["claim_event_indexes"] == [1]
+    assert reverse["ignored_irrelevant_claim_indexes"] == [0]
+
+
+def test_prior_head_claim_never_fills_current_head_scope_coverage() -> None:
+    current = _claim(scope=["tools/one.py"])
+    historical = _claim(
+        scope=["tests/tools/test_one.py"],
+        payload={"head": PRIOR_HEAD},
+    )
+
+    report = _resolve(events=[current, historical])
 
     assert report["ok"] is False
-    assert "conflicting structured binding" in report["reasons"][0]
+    assert report["covered_paths"] == ["tools/one.py"]
+    assert report["uncovered_paths"] == ["tests/tools/test_one.py"]
+
+
+def test_foreign_prior_head_claim_remains_contributor_evidence() -> None:
+    historical = _claim(
+        "codex-tools-1",
+        scope=["tools/one.py"],
+        payload={"head": PRIOR_HEAD},
+    )
+
+    report = _resolve(events=[_claim(), historical])
+
+    assert report["ok"] is False
+    assert report["contributor_claim_agents"] == ["codex-tools-1"]
+    assert report["claim_event_indexes"] == [0, 1]
+    assert "historical contributor claim" in report["reasons"][0]
+
+
+def test_current_and_historical_contributors_are_both_reported() -> None:
+    current_contributor = _claim(
+        "codex-tools-1",
+        task_id="codex-tools-1/contributor",
+        scope=["tools/one.py"],
+        payload={"pr": 1551},
+    )
+    historical_contributor = _claim(
+        "claude-rco-1",
+        scope=["tests/tools/test_one.py"],
+        payload={"head": PRIOR_HEAD},
+    )
+
+    report = _resolve(
+        events=[_claim(), current_contributor, historical_contributor]
+    )
+
+    assert report["ok"] is False
+    assert report["contributor_claim_agents"] == [
+        "claude-rco-1",
+        "codex-tools-1",
+    ]
+    assert report["claim_event_indexes"] == [0, 1, 2]
+    assert report["ignored_irrelevant_claim_indexes"] == []
+    assert any("non-canonical contributor" in reason for reason in report["reasons"])
+    assert any("historical contributor" in reason for reason in report["reasons"])
+
+
+def test_claim_errors_do_not_suppress_foreign_historical_evidence() -> None:
+    invalid_current_claim = _claim(
+        "codex-tools-1",
+        scope=["tools/one.py"],
+        payload={"head": "not-a-sha"},
+    )
+    historical_contributor = _claim(
+        "claude-rco-1",
+        scope=["tests/tools/test_one.py"],
+        payload={"head": PRIOR_HEAD},
+    )
+
+    report = _resolve(
+        events=[_claim(), invalid_current_claim, historical_contributor]
+    )
+
+    assert report["ok"] is False
+    assert report["contributor_claim_agents"] == ["claude-rco-1"]
+    assert report["claim_event_indexes"] == [0, 2]
+    assert report["ignored_irrelevant_claim_indexes"] == []
+    assert any("head binding" in reason for reason in report["reasons"])
+    assert any("historical contributor" in reason for reason in report["reasons"])
+
+
+def test_only_prior_head_claims_cannot_establish_current_owner() -> None:
+    report = _resolve(events=[_claim(payload={"head": PRIOR_HEAD})])
+
+    assert report["ok"] is False
+    assert report["canonical_owner_candidates"] == []
+    assert report["ignored_irrelevant_claim_indexes"] == [0]
+    assert "no valid UUID-bound canonical write claim" in report["reasons"][0]
+
+
+def test_mixed_current_and_prior_head_aliases_fail_closed() -> None:
+    report = _resolve(
+        events=[
+            _claim(
+                payload={"head": HEAD, "exact_head": PRIOR_HEAD},
+            )
+        ]
+    )
+
+    assert report["ok"] is False
+    assert "mixed" in report["reasons"][0]
+
+
+def test_distinct_prior_head_aliases_fail_closed() -> None:
+    report = _resolve(
+        events=[
+            _claim(
+                payload={"head": PRIOR_HEAD, "exact_head": "f" * 40},
+            )
+        ]
+    )
+
+    assert report["ok"] is False
+    assert "mixed" in report["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-a-sha", HEAD.upper(), f" {HEAD}", False, 0, {}],
+)
+def test_malformed_claim_head_binding_fails_closed(value: object) -> None:
+    report = _resolve(events=[_claim(payload={"head": value})])
+
+    assert report["ok"] is False
     assert "head" in report["reasons"][0]
 
 
@@ -325,6 +663,8 @@ def test_padded_asserted_author_never_normalizes_into_authority() -> None:
         "tools//one.py",
         "tools/./one.py",
         "tools/../tools/one.py",
+        "tools./one.py",
+        "tools /one.py",
         r"tools\one.py",
     ],
 )

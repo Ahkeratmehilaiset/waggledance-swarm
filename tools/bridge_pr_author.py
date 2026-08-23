@@ -213,6 +213,7 @@ def resolve_bridge_pr_author(
 
         canonical_claims: list[dict[str, Any]] = []
         contributor_claims: list[dict[str, Any]] = []
+        historical_claims: list[dict[str, Any]] = []
         claim_errors: list[str] = []
         irrelevant_claim_indexes: list[int] = []
         for index, event in enumerate(events):
@@ -238,37 +239,78 @@ def resolve_bridge_pr_author(
                 continue
             if classification["kind"] == "canonical":
                 canonical_claims.append(classification)
-            else:
+            elif classification["kind"] == "contributor":
                 contributor_claims.append(classification)
+            else:
+                historical_claims.append(classification)
 
-        base_report["ignored_irrelevant_claim_indexes"] = irrelevant_claim_indexes
-        base_report["claim_event_indexes"] = [
-            int(item["index"]) for item in (*canonical_claims, *contributor_claims)
-        ]
-        if claim_errors:
-            return _refusal(base_report, *claim_errors)
+        historical_claim_indexes = {
+            int(item["index"]) for item in historical_claims
+        }
+        base_report["ignored_irrelevant_claim_indexes"] = sorted(
+            set(irrelevant_claim_indexes) | historical_claim_indexes
+        )
+        base_report["claim_event_indexes"] = sorted(
+            int(item["index"])
+            for item in (*canonical_claims, *contributor_claims)
+        )
         owners = sorted({str(item["agent"]) for item in canonical_claims})
         base_report["canonical_owner_candidates"] = owners
-        if contributor_claims:
-            agents = sorted({str(item["agent"]) for item in contributor_claims})
-            base_report["contributor_claim_agents"] = agents
-            return _refusal(
-                base_report,
-                "non-canonical contributor claim(s) bind this PR: "
-                + ", ".join(agents),
+        current_contributor_agents = sorted(
+            {str(item["agent"]) for item in contributor_claims}
+        )
+        base_report["contributor_claim_agents"] = current_contributor_agents
+
+        foreign_historical_agents: list[str] = []
+        if len(owners) == 1:
+            provisional_owner = owners[0]
+            foreign_historical_agents = sorted(
+                {
+                    str(item["agent"])
+                    for item in historical_claims
+                    if item["agent"] != provisional_owner
+                }
+            )
+            foreign_historical_indexes = {
+                int(item["index"])
+                for item in historical_claims
+                if item["agent"] != provisional_owner
+            }
+            base_report["ignored_irrelevant_claim_indexes"] = sorted(
+                set(base_report["ignored_irrelevant_claim_indexes"])
+                - foreign_historical_indexes
+            )
+            base_report["claim_event_indexes"] = sorted(
+                set(base_report["claim_event_indexes"])
+                | foreign_historical_indexes
+            )
+            base_report["contributor_claim_agents"] = sorted(
+                set(current_contributor_agents)
+                | set(foreign_historical_agents)
             )
 
+        refusal_reasons = list(claim_errors)
+        if current_contributor_agents:
+            refusal_reasons.append(
+                "non-canonical contributor claim(s) bind this PR: "
+                + ", ".join(current_contributor_agents)
+            )
         if not owners:
-            return _refusal(
-                base_report,
+            refusal_reasons.append(
                 "no valid UUID-bound canonical write claim covers this PR",
             )
-        if len(owners) != 1:
-            return _refusal(
-                base_report,
+        elif len(owners) != 1:
+            refusal_reasons.append(
                 "multiple canonical claim owners require operator review: "
-                + ", ".join(owners),
+                + ", ".join(owners)
             )
+        if foreign_historical_agents:
+            refusal_reasons.append(
+                "historical contributor claim(s) bind a prior PR head: "
+                + ", ".join(foreign_historical_agents)
+            )
+        if refusal_reasons:
+            return _refusal(base_report, *refusal_reasons)
         owner = owners[0]
 
         covered = {
@@ -369,12 +411,9 @@ def _classify_claim(
     event_task_value = event.get("task_id", "")
     event_task = event_task_value if type(event_task_value) is str else ""
     payload_raw = event.get("payload", {})
-    payload = payload_raw if isinstance(payload_raw, Mapping) else None
+    payload_is_mapping = isinstance(payload_raw, Mapping)
+    payload = payload_raw if payload_is_mapping else {}
     exact_task = event_task == task_id
-    if payload is None:
-        if exact_task:
-            return _invalid_claim(index, "canonical claim payload must be an object")
-        return {"kind": "irrelevant", "index": index}
 
     payload_task_matches = _payload_exact_match(
         payload, _TASK_PAYLOAD_KEYS, {task_id, head_ref_name}
@@ -383,9 +422,8 @@ def _classify_claim(
         payload, _BRANCH_PAYLOAD_KEYS, {head_ref_name}
     )
     payload_pr_matches = _payload_int_match(payload, _PR_PAYLOAD_KEYS, pr_number)
-    payload_head_matches = _payload_exact_match(
-        payload, _HEAD_PAYLOAD_KEYS, {head_sha}
-    )
+    head_binding, head_binding_reason = _claim_head_binding(payload, head_sha)
+    payload_head_matches = head_binding == "current"
     relevant = (
         exact_task
         or payload_task_matches
@@ -396,6 +434,22 @@ def _classify_claim(
     if not relevant:
         return {"kind": "irrelevant", "index": index}
 
+    try:
+        covered, disjoint = _claim_scope_coverage(
+            event,
+            payload,
+            changed_paths,
+        )
+    except ValueError as exc:
+        return _invalid_claim(index, str(exc))
+    if disjoint:
+        return {"kind": "irrelevant", "index": index}
+
+    if not payload_is_mapping:
+        return _invalid_claim(index, "canonical claim payload must be an object")
+    if head_binding == "invalid":
+        return _invalid_claim(index, head_binding_reason)
+
     conflicts: list[str] = []
     conflicts.extend(
         _payload_conflicts(payload, _TASK_PAYLOAD_KEYS, {task_id, head_ref_name})
@@ -403,7 +457,6 @@ def _classify_claim(
     conflicts.extend(
         _payload_conflicts(payload, _BRANCH_PAYLOAD_KEYS, {head_ref_name})
     )
-    conflicts.extend(_payload_conflicts(payload, _HEAD_PAYLOAD_KEYS, {head_sha}))
     conflicts.extend(_payload_int_conflicts(payload, _PR_PAYLOAD_KEYS, pr_number))
     if (
         type(event_task_value) is not str
@@ -443,15 +496,13 @@ def _classify_claim(
             index,
             f"claim identity binding is {binding} for {agent}",
         )
-    try:
-        scope = _claim_scope(event, payload)
-    except ValueError as exc:
-        return _invalid_claim(index, str(exc))
-    covered = sorted(
-        path
-        for path in changed_paths
-        if any(_scope_covers_path(scope_entry, path) for scope_entry in scope)
-    )
+    if head_binding == "historical":
+        return {
+            "kind": "historical",
+            "index": index,
+            "agent": agent,
+            "covered_paths": covered,
+        }
     if not exact_task:
         if not covered:
             return {"kind": "irrelevant", "index": index}
@@ -469,35 +520,200 @@ def _classify_claim(
     }
 
 
-def _claim_scope(
-    event: Mapping[str, Any], payload: Mapping[str, Any]
-) -> tuple[str, ...]:
-    top_present = "write_scope" in event
-    payload_present = "write_scope" in payload
-    top = (
-        _normalize_repo_paths(
-            event.get("write_scope"),
-            "claim write_scope",
-            allow_wildcard=True,
-        )
-        if top_present
-        else ()
-    )
-    nested = (
-        _normalize_repo_paths(
-            payload.get("write_scope"),
+def _claim_scope_coverage(
+    event: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    changed_paths: Sequence[str],
+) -> tuple[list[str], bool]:
+    missing = object()
+    top_raw = event.get("write_scope", missing)
+    nested_raw = payload.get("write_scope", missing)
+    if top_raw is not missing:
+        top_raw = _freeze_claim_scope_value(top_raw, "claim write_scope")
+    if nested_raw is not missing:
+        nested_raw = _freeze_claim_scope_value(
+            nested_raw,
             "claim payload.write_scope",
-            allow_wildcard=True,
         )
-        if payload_present
-        else ()
-    )
+    top_present = top_raw is not missing
+    payload_present = nested_raw is not missing
+    raw_scopes = [
+        value for value in (top_raw, nested_raw) if value is not missing
+    ]
+
+    try:
+        top = (
+            _normalize_repo_paths(
+                top_raw,
+                "claim write_scope",
+                allow_wildcard=True,
+            )
+            if top_present
+            else ()
+        )
+        nested = (
+            _normalize_repo_paths(
+                nested_raw,
+                "claim payload.write_scope",
+                allow_wildcard=True,
+            )
+            if payload_present
+            else ()
+        )
+    except ValueError:
+        if _malformed_glob_scopes_prove_disjoint(raw_scopes, changed_paths):
+            return [], True
+        raise
+
     if top and nested and set(top) != set(nested):
+        candidate_scope = tuple(dict.fromkeys((*top, *nested)))
+        if not any(
+            _scope_covers_path(scope_entry, path)
+            for scope_entry in candidate_scope
+            for path in changed_paths
+        ):
+            return [], True
         raise ValueError("claim top-level and payload write_scope disagree")
+
     scope = top or nested
     if not scope:
-        raise ValueError("claim write_scope must cover at least one repository path")
-    return scope
+        return [], True
+    covered = sorted(
+        path
+        for path in changed_paths
+        if any(_scope_covers_path(scope_entry, path) for scope_entry in scope)
+    )
+    return covered, not covered
+
+
+def _freeze_claim_scope_value(value: object, field: str) -> object:
+    if not isinstance(value, Sequence) or isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return value
+    try:
+        return tuple(value)
+    except Exception as exc:
+        raise ValueError(f"{field} must be a stable list of repository paths") from exc
+
+
+def _malformed_glob_scopes_prove_disjoint(
+    raw_scopes: Sequence[object],
+    changed_paths: Sequence[str],
+) -> bool:
+    """Conservatively prove malformed glob scopes cannot touch this PR.
+
+    Claim producers historically accepted path globs while this resolver did
+    not.  Only a canonical static directory prefix can prove such a malformed
+    entry irrelevant.  The proof deliberately over-approximates the glob: any
+    changed path under that directory makes the claim invalid rather than
+    silently ignored.
+    """
+
+    saw_malformed_glob = False
+    for raw_scope in raw_scopes:
+        if not isinstance(raw_scope, Sequence) or isinstance(
+            raw_scope, (str, bytes, bytearray)
+        ):
+            return False
+        for item in raw_scope:
+            if type(item) is not str or item != item.strip():
+                return False
+            if (
+                "\\" in item
+                or not item
+                or item.startswith("/")
+                or item.endswith("/")
+                or "//" in item
+            ):
+                return False
+            if any(
+                ord(character) < 32 or ord(character) > 127
+                for character in item
+            ):
+                return False
+            if any(character in item for character in ':<>"|?[]'):
+                return False
+            parts = item.split("/")
+            if any(
+                part in {"", ".", ".."}
+                or part.endswith((".", " "))
+                or _looks_like_windows_short_name(part)
+                for part in parts
+            ):
+                return False
+            if "*" not in item:
+                try:
+                    exact_scope = _normalize_repo_paths(
+                        [item],
+                        "claim write_scope",
+                        allow_wildcard=True,
+                    )
+                except ValueError:
+                    return False
+                if any(
+                    _scope_covers_path(exact_scope[0], path)
+                    for path in changed_paths
+                ):
+                    return False
+                continue
+            if item == "*":
+                return False
+
+            saw_malformed_glob = True
+            static_prefix = item.split("*", 1)[0]
+            separator = static_prefix.rfind("/")
+            if separator <= 0:
+                return False
+            directory = static_prefix[:separator]
+            try:
+                canonical_directory = _normalize_repo_paths(
+                    [directory],
+                    "claim write_scope static directory",
+                    allow_wildcard=False,
+                )[0]
+            except ValueError:
+                return False
+            folded_directory = canonical_directory.lower()
+            if any(
+                path.lower() == folded_directory
+                or path.lower().startswith(folded_directory + "/")
+                or folded_directory.startswith(path.lower() + "/")
+                for path in changed_paths
+            ):
+                return False
+    return saw_malformed_glob
+
+
+def _claim_head_binding(
+    payload: Mapping[str, Any],
+    expected_head_sha: str,
+) -> tuple[str, str]:
+    bindings: list[tuple[str, str]] = []
+    missing = object()
+    for key in _HEAD_PAYLOAD_KEYS:
+        value = payload.get(key, missing)
+        if value is missing:
+            continue
+        if type(value) is not str or not SHA_RE.fullmatch(value):
+            return (
+                "invalid",
+                f"claim head binding {key} must be an exact lowercase SHA-1",
+            )
+        bindings.append((key, value))
+    if not bindings:
+        return "headless", ""
+
+    distinct = {value for _, value in bindings}
+    if len(distinct) != 1:
+        return (
+            "invalid",
+            "claim has mixed current/stale head aliases",
+        )
+    bound_head = next(iter(distinct))
+    if bound_head == expected_head_sha:
+        return "current", ""
+    return "historical", ""
 
 
 def _classify_git_identities(
@@ -741,6 +957,21 @@ def _validated_registry(
     return registry
 
 
+def _looks_like_windows_short_name(segment: str) -> bool:
+    stem, separator, extension = segment.partition(".")
+    if separator and (not 1 <= len(extension) <= 3 or "." in extension):
+        return False
+    prefix, tilde, ordinal = stem.rpartition("~")
+    return bool(
+        tilde
+        and 1 <= len(prefix) <= 6
+        and ordinal
+        and ordinal.isascii()
+        and ordinal.isdigit()
+        and not ordinal.startswith("0")
+    )
+
+
 def _normalize_repo_paths(
     value: object,
     field: str,
@@ -767,6 +998,10 @@ def _normalize_repo_paths(
             raise ValueError(f"{field} item {index} must not be empty")
         if path.startswith("/") or any(ord(character) < 32 for character in path):
             raise ValueError(f"{field} item {index} is not a safe repository path")
+        if any(ord(character) > 127 for character in path):
+            raise ValueError(
+                f"{field} item {index} must be an ASCII repository path"
+            )
         if path == "*" and allow_wildcard:
             candidate = path
         else:
@@ -776,10 +1011,22 @@ def _normalize_repo_paths(
                 )
             if "*" in path:
                 raise ValueError(f"{field} item {index} contains a wildcard")
+            if any(marker in path for marker in ("?", "[", "]")):
+                raise ValueError(f"{field} item {index} contains a wildcard")
             pure = PurePosixPath(path)
-            if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+            if pure.is_absolute() or any(
+                part in {"", ".", ".."} for part in pure.parts
+            ):
                 raise ValueError(f"{field} item {index} is not a safe repository path")
-            if ":" in path:
+            if any(
+                part.endswith((".", " "))
+                or _looks_like_windows_short_name(part)
+                for part in pure.parts
+            ):
+                raise ValueError(
+                    f"{field} item {index} is not a canonical repository path"
+                )
+            if any(character in path for character in ':<>"|'):
                 raise ValueError(f"{field} item {index} is not a repository path")
             candidate = pure.as_posix()
             if candidate != path:
@@ -793,7 +1040,13 @@ def _normalize_repo_paths(
 
 
 def _scope_covers_path(scope: str, path: str) -> bool:
-    return scope == "*" or scope == path or path.startswith(scope + "/")
+    folded_scope = scope.lower()
+    folded_path = path.lower()
+    return (
+        scope == "*"
+        or folded_scope == folded_path
+        or folded_path.startswith(folded_scope + "/")
+    )
 
 
 def _payload_exact_match(

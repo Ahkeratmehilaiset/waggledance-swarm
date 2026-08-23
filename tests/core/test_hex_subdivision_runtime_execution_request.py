@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from collections import UserDict
+
+import pytest
+
 from waggledance.core.hex_topology.canary_mirror import (
     build_canary_route_comparison,
 )
@@ -25,6 +29,27 @@ from waggledance.core.hex_topology.subdivision_runtime_execution_request import 
     build_subdivision_runtime_execution_request,
 )
 from waggledance.core.magma.canonical import sha256_digest
+
+
+_MALFORMED_METADATA_CLAIMS = (
+    ("operator_approval", 1),
+    ("live_runtime_execution_authorized", "true"),
+    ("live_runtime_commit_authorized", 0),
+    ("runtime_authority_granted", None),
+    ("runtime_topology_mutation_applied", []),
+    ("routing_influence_applied", {}),
+    ("transport_performed", "false"),
+    ("claim_safe_upgrade", 1.0),
+    ("runtime_commit_performed", "yes"),
+    ("runtime_executor_invoked", [False]),
+)
+
+
+class _LyingClaimMetadata(dict):
+    def get(self, key, default=None):
+        if key in {"operator_approval", "runtime_executor_invoked"}:
+            return False
+        return super().get(key, default)
 
 
 def _topology() -> dict:
@@ -266,3 +291,96 @@ def test_execution_request_rejects_bad_request_timestamp():
     assert request["ok"] is False
     assert "request_timestamp_utc" in request["blockers"]
     assert request["transport_performed"] is False
+
+
+@pytest.mark.parametrize(("field", "malformed_value"), _MALFORMED_METADATA_CLAIMS)
+def test_execution_request_rejects_malformed_runtime_claim_flags(
+    field: str,
+    malformed_value: object,
+):
+    application = _ready_application()
+    metadata = {
+        **_request_metadata(application),
+        field: malformed_value,
+    }
+
+    request = build_subdivision_runtime_execution_request(
+        runtime_application=application,
+        request_metadata=metadata,
+    )
+
+    assert request["ok"] is False
+    assert "request_contains_no_runtime_claim" in request["blockers"]
+    if field == "operator_approval":
+        assert "request_contains_no_operator_approval" in request["blockers"]
+    assert request["request_metadata"][field] == malformed_value
+    assert request["runtime_executor_invoked"] is False
+
+
+def test_execution_request_accepts_explicit_literal_false_claim_flags():
+    application = _ready_application()
+    metadata = {
+        **_request_metadata(application),
+        **{field: False for field, _ in _MALFORMED_METADATA_CLAIMS},
+    }
+
+    request = build_subdivision_runtime_execution_request(
+        runtime_application=application,
+        request_metadata=metadata,
+    )
+
+    assert request["ok"] is True
+    assert request["blockers"] == []
+    assert request["guardrails"]["request_contains_no_runtime_claim"] is True
+
+
+def test_execution_request_accepts_absent_claim_flags():
+    application = _ready_application()
+    metadata = _request_metadata(application)
+    for field, _ in _MALFORMED_METADATA_CLAIMS:
+        metadata.pop(field, None)
+
+    request = build_subdivision_runtime_execution_request(
+        runtime_application=application,
+        request_metadata=metadata,
+    )
+
+    assert request["ok"] is True
+    assert request["blockers"] == []
+
+
+def test_execution_request_freezes_mapping_before_claim_flag_checks():
+    application = _ready_application()
+    metadata = _LyingClaimMetadata(
+        {
+            **_request_metadata(application),
+            "operator_approval": 1,
+            "runtime_executor_invoked": 1,
+        }
+    )
+
+    request = build_subdivision_runtime_execution_request(
+        runtime_application=application,
+        request_metadata=metadata,
+    )
+
+    assert type(request["request_metadata"]) is dict
+    assert request["request_metadata"]["operator_approval"] == 1
+    assert request["request_metadata"]["runtime_executor_invoked"] == 1
+    assert request["ok"] is False
+    assert "request_contains_no_operator_approval" in request["blockers"]
+    assert "request_contains_no_runtime_claim" in request["blockers"]
+
+
+def test_execution_request_accepts_generic_mapping_metadata():
+    application = _ready_application()
+    metadata = UserDict(_request_metadata(application))
+
+    request = build_subdivision_runtime_execution_request(
+        runtime_application=application,
+        request_metadata=metadata,
+    )
+
+    assert request["ok"] is True
+    assert type(request["request_metadata"]) is dict
+    assert request["request_metadata"] == dict(metadata)

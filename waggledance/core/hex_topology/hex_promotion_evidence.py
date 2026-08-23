@@ -116,6 +116,17 @@ def build_promotion_evidence_record(
     target_state = str(commit_application.get("target_state") or "unknown")
     if not is_conforming_token(target_state):
         target_state = "unknown"
+    blockers = commit_application.get("blockers")
+    if not isinstance(blockers, list):
+        raise PromotionEvidenceError("commit_application.blockers must be a list")
+    runtime_authority_flags: dict[str, bool] = {}
+    for flag in _RUNTIME_AUTHORITY_FLAGS:
+        value = commit_application.get(flag)
+        if type(value) is not bool:
+            raise PromotionEvidenceError(
+                f"commit_application.{flag} must be a literal bool"
+            )
+        runtime_authority_flags[flag] = value
     record = {
         "schema_version": PROMOTION_EVIDENCE_SCHEMA,
         "transition_id": transition_id,
@@ -125,10 +136,8 @@ def build_promotion_evidence_record(
         "parent_cell_id": parent_cell_id,
         "target_state": target_state,
         "commit_candidate_prepared": commit_application.get("commit_candidate_prepared") is True,
-        "blocker_count": len(list(commit_application.get("blockers") or [])),
-        "runtime_authority_flags": {
-            flag: bool(commit_application.get(flag)) for flag in _RUNTIME_AUTHORITY_FLAGS
-        },
+        "blocker_count": len(blockers),
+        "runtime_authority_flags": runtime_authority_flags,
     }
     record[_HASH_FIELD] = compute_record_hash(record)
     reason = wellformed_reason(record)                      # anti-drift builder self-check

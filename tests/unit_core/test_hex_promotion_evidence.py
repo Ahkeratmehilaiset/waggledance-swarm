@@ -17,6 +17,11 @@ _TS = "2026-07-04T17:00:00Z"
 _DIGEST = "sha256:" + "ab" * 32
 
 
+class _ExplosiveBool:
+    def __bool__(self) -> bool:
+        raise AssertionError("boolean coercion must not run")
+
+
 def _ready_application(**overrides):
     app = {
         "application_digest": _DIGEST,
@@ -123,6 +128,31 @@ def test_build_rejects_missing_application_digest() -> None:
         H.build_promotion_evidence_record(
             transition_id="t1", prev_hash=H.GENESIS_PREV_HASH, ts_utc=_TS,
             commit_application=_ready_application(application_digest="not-a-digest"))
+
+
+@pytest.mark.parametrize("missing_field", ["blockers", *H._RUNTIME_AUTHORITY_FLAGS])
+def test_build_rejects_missing_complete_evidence_field(missing_field: str) -> None:
+    application = _ready_application()
+    del application[missing_field]
+
+    with pytest.raises(H.PromotionEvidenceError):
+        _record(application)
+
+
+@pytest.mark.parametrize("bad_blockers", [None, (), {}, "", 0])
+def test_build_rejects_non_list_blockers(bad_blockers: object) -> None:
+    with pytest.raises(H.PromotionEvidenceError):
+        _record(_ready_application(blockers=bad_blockers))
+
+
+@pytest.mark.parametrize("flag", H._RUNTIME_AUTHORITY_FLAGS)
+@pytest.mark.parametrize("bad_value", [None, 0, 1, "false", _ExplosiveBool()])
+def test_build_rejects_non_literal_runtime_authority_flags(
+    flag: str,
+    bad_value: object,
+) -> None:
+    with pytest.raises(H.PromotionEvidenceError):
+        _record(_ready_application(**{flag: bad_value}))
 
 
 # --- hash-chained ledger ---------------------------------------------------------

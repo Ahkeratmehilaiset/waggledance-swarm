@@ -579,7 +579,7 @@ class HexNeighborAssist:
         else:
             # Sequential fallback — limit to 1 neighbor, budget 10s max
             selected = selected[:1]
-            trace.neighbor_cells_consulted = [c.id for c in selected]
+            trace.neighbor_cells_consulted = []
             seq_budget_s = max(self._neighbor_budget_ms / 1000.0, 0.001)
             budget_recorded = False
             for cell in selected:
@@ -596,6 +596,7 @@ class HexNeighborAssist:
                     trace_id=trace.trace_id,
                     neighbor_cell=cell.id,
                 )
+                trace.neighbor_cells_consulted.append(cell.id)
                 try:
                     agents = self._registry.get_cell_agents(cell.id)
                     if not agents or not self._llm:
@@ -657,7 +658,9 @@ class HexNeighborAssist:
         trace.neighbor_responses = responses
 
         with self._lock:
-            self._metrics.neighbors_consulted_total += len(selected)
+            self._metrics.neighbors_consulted_total += len(
+                trace.neighbor_cells_consulted
+            )
 
         return responses
 

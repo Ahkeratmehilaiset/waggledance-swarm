@@ -1417,6 +1417,361 @@ function Get-AllProcessSnapshots {
   )
 }
 
+function Get-WdPromptWatcherProcessSnapshots {
+  # Watcher conflict discovery is intentionally host-agnostic. Lane discovery
+  # remains limited to the supported powershell/pwsh hosts above.
+  return @(
+    Get-CimInstance Win32_Process -ErrorAction Stop |
+      Where-Object {
+        $_.ProcessId -ne $PID -and
+        -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
+      }
+  )
+}
+
+function Initialize-WdRebootCommandLineParser {
+  if ('WaggleDance.WdRebootCommandLineV1.NativeMethods' -as [type]) {
+    return
+  }
+  Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace WaggleDance.WdRebootCommandLineV1
+{
+    public static class NativeMethods
+    {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CommandLineToArgvW(
+            string commandLine,
+            out int argumentCount);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
+        public static string[] Split(string commandLine)
+        {
+            int argumentCount;
+            IntPtr memory = CommandLineToArgvW(commandLine, out argumentCount);
+            if (memory == IntPtr.Zero)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            try
+            {
+                string[] arguments = new string[argumentCount];
+                for (int index = 0; index < argumentCount; index++)
+                {
+                    IntPtr item = Marshal.ReadIntPtr(memory, index * IntPtr.Size);
+                    arguments[index] = Marshal.PtrToStringUni(item);
+                }
+                return arguments;
+            }
+            finally
+            {
+                LocalFree(memory);
+            }
+        }
+    }
+}
+'@
+}
+
+function ConvertFrom-WdRebootWindowsCommandLine {
+  param([AllowEmptyString()] [string] $CommandLine)
+
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return @() }
+  Initialize-WdRebootCommandLineParser
+  return @(
+    [WaggleDance.WdRebootCommandLineV1.NativeMethods]::Split($CommandLine)
+  )
+}
+
+function Test-WdPromptWatcherPathArgument {
+  param(
+    [AllowEmptyString()] [string] $Actual,
+    [Parameter(Mandatory)] [string] $Expected
+  )
+
+  try {
+    $actualText = [string]$Actual
+    $isAbsoluteDrivePath = $actualText -match '^[A-Za-z]:[\\/]'
+    $isAbsoluteUncPath = $actualText -match
+      '^[\\/]{2}[^\\/]+[\\/][^\\/]+'
+    if (-not ($isAbsoluteDrivePath -or $isAbsoluteUncPath)) {
+      return $false
+    }
+    return ([IO.Path]::GetFullPath($Actual)).Equals(
+      [IO.Path]::GetFullPath($Expected),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Test-WdPromptWatcherCommandLineCandidate {
+  param(
+    [AllowEmptyString()] [string] $CommandLine,
+    [Parameter(Mandatory)] [string] $WatcherFileName
+  )
+
+  $arguments = @()
+  try {
+    $arguments = @(
+      ConvertFrom-WdRebootWindowsCommandLine -CommandLine $CommandLine
+    )
+    foreach ($argument in $arguments) {
+      try {
+        if ([IO.Path]::GetFileName([string]$argument).Equals(
+            $WatcherFileName,
+            [StringComparison]::OrdinalIgnoreCase
+          )) {
+          return $true
+        }
+      } catch {
+      }
+    }
+  } catch {
+    # An unparseable process that still names the watcher is ambiguous and must
+    # block a duplicate launch rather than disappear from candidate discovery.
+  }
+  $riskTexts = @($CommandLine)
+  if ($arguments.Count -gt 0) {
+    $riskTexts += ($arguments -join ' ')
+  }
+  $encodedSwitchPattern = '^(?i:[-/](?:e|ec|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand))$'
+  for ($index = 0; $index -lt $arguments.Count; $index++) {
+    $encodedValue = ''
+    $encodedArgument = [string]$arguments[$index]
+    if (
+      $encodedArgument -match $encodedSwitchPattern -and
+      $index -lt ($arguments.Count - 1)
+    ) {
+      $encodedValue = [string]$arguments[$index + 1]
+    } elseif ($encodedArgument -match
+        '^(?i:[-/](?:e|ec|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)):(.+)$') {
+      $encodedValue = [string]$matches[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($encodedValue)) { continue }
+    try {
+      $decoded = [Text.Encoding]::Unicode.GetString(
+        [Convert]::FromBase64String($encodedValue)
+      )
+      if (-not [string]::IsNullOrWhiteSpace($decoded)) {
+        $riskTexts += $decoded
+      }
+    } catch {
+      # A malformed opaque command is not enough by itself to identify this
+      # watcher. Other visible risk signals below still fail closed.
+    }
+  }
+  foreach ($riskText in $riskTexts) {
+    if ($riskText.IndexOf(
+        'Watch-CodexPrompts',
+        [StringComparison]::OrdinalIgnoreCase
+      ) -ge 0) {
+      return $true
+    }
+    $targetsLead = $riskText.IndexOf(
+      'codex-lead-1',
+      [StringComparison]::OrdinalIgnoreCase
+    ) -ge 0
+    $autoApproves = $riskText -match
+      '(?i)(?:^|[\s"''])(?:-{1,2}|/)(?:a|al|all|allo|allow|allowa|allowal|allowall|y|ye|yes|yest|yesto|yestoa|yestoal|yestoall)(?::(?:\$?true|1))?(?=[\s"'']|$)'
+    if ($targetsLead -and $autoApproves) { return $true }
+  }
+  # A parseable alternate host form such as `powershell -Command "&
+  # '...\Watch-CodexPrompts.ps1' ..."` keeps the script path inside one
+  # argument. It is not canonical, but it is still a conflicting watcher and
+  # must block a duplicate launch.
+  return $CommandLine.IndexOf(
+    $WatcherFileName,
+    [StringComparison]::OrdinalIgnoreCase
+  ) -ge 0
+}
+
+function Test-WdCodexPromptWatcherCommandLineExact {
+  param(
+    [AllowEmptyString()] [string] $CommandLine,
+    [Parameter(Mandatory)] [string] $ExpectedExecutable,
+    [Parameter(Mandatory)] [string] $WatcherScript,
+    [Parameter(Mandatory)] [string] $TargetTitle,
+    [Parameter(Mandatory)] [string] $LogPath,
+    [Parameter(Mandatory)] [string] $WakeRuntimeRoot,
+    [Parameter(Mandatory)] [int] $WakeCooldownSeconds,
+    [Parameter(Mandatory)] [int] $MinUserIdleSeconds,
+    [Parameter(Mandatory)] [int] $LeadProcessId,
+    [Parameter(Mandatory)] [string] $LeadProcessStartUtc,
+    [Parameter(Mandatory)] [string] $ReadyPath
+  )
+
+  try {
+    $arguments = @(ConvertFrom-WdRebootWindowsCommandLine -CommandLine $CommandLine)
+  } catch {
+    return $false
+  }
+  if ($arguments.Count -ne 25) { return $false }
+  if (
+    -not (Test-WdPromptWatcherPathArgument -Actual $arguments[0] -Expected $ExpectedExecutable) -or
+    [string]$arguments[1] -cne '-NoProfile' -or
+    [string]$arguments[2] -cne '-ExecutionPolicy' -or
+    [string]$arguments[3] -cne 'Bypass' -or
+    [string]$arguments[4] -cne '-File' -or
+    -not (Test-WdPromptWatcherPathArgument -Actual $arguments[5] -Expected $WatcherScript) -or
+    [string]$arguments[6] -cne '-AllowAll' -or
+    [string]$arguments[7] -cne '-NoAllNighter' -or
+    [string]$arguments[8] -cne '-TabTitle' -or
+    [string]$arguments[9] -cne $TargetTitle -or
+    [string]$arguments[10] -cne '-LogPath' -or
+    -not (Test-WdPromptWatcherPathArgument -Actual $arguments[11] -Expected $LogPath) -or
+    [string]$arguments[12] -cne '-ContinueOnWake' -or
+    [string]$arguments[13] -cne '-WakeRuntimeRoot' -or
+    -not (Test-WdPromptWatcherPathArgument -Actual $arguments[14] -Expected $WakeRuntimeRoot) -or
+    [string]$arguments[15] -cne '-WakeCooldownSeconds' -or
+    [string]$arguments[16] -cne [string]$WakeCooldownSeconds -or
+    [string]$arguments[17] -cne '-MinUserIdleSeconds' -or
+    [string]$arguments[18] -cne [string]$MinUserIdleSeconds -or
+    [string]$arguments[19] -cne '-LeadProcessId' -or
+    [string]$arguments[20] -cne [string]$LeadProcessId -or
+    [string]$arguments[21] -cne '-LeadProcessStartUtc' -or
+    [string]$arguments[22] -cne $LeadProcessStartUtc -or
+    [string]$arguments[23] -cne '-ReadyPath' -or
+    -not (Test-WdPromptWatcherPathArgument -Actual $arguments[24] -Expected $ReadyPath)
+  ) {
+    return $false
+  }
+  return $true
+}
+
+function ConvertTo-WdProcessStartUtcText {
+  param(
+    [Parameter(Mandatory)] $Process,
+    [switch] $RequireLive
+  )
+
+  $snapshotStart = $null
+  try {
+    $snapshotValue = $Process.CreationDate
+    $snapshotDate = if ($snapshotValue -is [DateTime]) {
+      [DateTime]$snapshotValue
+    } else {
+      [DateTime]::Parse(
+        [string]$snapshotValue,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+      )
+    }
+    $snapshotStart = $snapshotDate.ToUniversalTime()
+  } catch {
+  }
+  try {
+    $liveProcess = Get-Process `
+      -Id ([int]$Process.ProcessId) `
+      -ErrorAction Stop
+    $liveStart = $liveProcess.StartTime.ToUniversalTime()
+    if (
+      $RequireLive -and
+      ($null -eq $snapshotStart -or
+        [Math]::Abs(($liveStart - $snapshotStart).TotalMilliseconds) -gt 100)
+    ) {
+      return ''
+    }
+    return $liveStart.ToString(
+      'o',
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+  } catch {
+    if ($RequireLive) { return '' }
+  }
+  if ($null -ne $snapshotStart) {
+    return $snapshotStart.ToString(
+      'o',
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+  }
+  return ''
+}
+
+function Test-WdLiveProcessGeneration {
+  param(
+    [Parameter(Mandatory)] [int] $ProcessId,
+    [Parameter(Mandatory)] [string] $ExpectedStartUtc
+  )
+
+  if ($ProcessId -le 0 -or [string]::IsNullOrWhiteSpace($ExpectedStartUtc)) {
+    return $false
+  }
+  try {
+    $expected = ConvertTo-UtcDateTimeOffset `
+      -Value $ExpectedStartUtc `
+      -Label 'expected live process start'
+    $live = Get-Process -Id $ProcessId -ErrorAction Stop
+    $actual = [DateTimeOffset]$live.StartTime.ToUniversalTime()
+    return $actual.UtcDateTime.Ticks -eq $expected.UtcDateTime.Ticks
+  } catch {
+    return $false
+  }
+}
+
+function Test-WdCodexPromptWatcherReadyRecord {
+  param(
+    [Parameter(Mandatory)] [string] $Path,
+    [Parameter(Mandatory)] $WatcherProcess,
+    [Parameter(Mandatory)] [int] $LeadProcessId,
+    [Parameter(Mandatory)] [string] $LeadProcessStartUtc,
+    [Parameter(Mandatory)] [string] $TargetTitle,
+    [Parameter(Mandatory)] [string] $WakeRuntimeRoot
+  )
+
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (
+      ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($item.PSObject.Properties['LinkType'] -and $null -ne $item.LinkType) -or
+      $item.Length -gt 4096
+    ) {
+      return $false
+    }
+    $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 |
+      ConvertFrom-Json -ErrorAction Stop
+    $watcherStartUtc = ConvertTo-WdProcessStartUtcText `
+      -Process $WatcherProcess `
+      -RequireLive
+    if ([string]::IsNullOrWhiteSpace($watcherStartUtc)) { return $false }
+    $createdUtc = ConvertTo-UtcDateTimeOffset `
+      -Value ([string]$record.created_at_utc) `
+      -Label 'prompt watcher ready creation'
+    $watcherStart = ConvertTo-UtcDateTimeOffset `
+      -Value $watcherStartUtc `
+      -Label 'prompt watcher process start'
+    if (
+      [int]$record.schema_version -ne 1 -or
+      [string]$record.status -cne 'ready' -or
+      [int]$record.watcher_pid -ne [int]$WatcherProcess.ProcessId -or
+      [string]$record.watcher_process_start_utc -cne $watcherStartUtc -or
+      [int]$record.lead_process_id -ne $LeadProcessId -or
+      [string]$record.lead_process_start_utc -cne $LeadProcessStartUtc -or
+      [string]$record.tab_title -cne $TargetTitle -or
+      [string]$record.tab_runtime_id -cnotmatch '^\d+(?:\.\d+)+$' -or
+      [int64]$record.window_handle -le 0 -or
+      -not ([IO.Path]::GetFullPath([string]$record.wake_runtime_root)).Equals(
+        [IO.Path]::GetFullPath($WakeRuntimeRoot),
+        [StringComparison]::OrdinalIgnoreCase
+      ) -or
+      $createdUtc -lt $watcherStart -or
+      $createdUtc -gt [DateTimeOffset]::UtcNow.AddSeconds(30)
+    ) {
+      return $false
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Test-WdCommandLineSwitchSequenceExact {
   param(
     [AllowEmptyString()] [string] $CommandLine,
@@ -1445,36 +1800,31 @@ function Get-WdCodexPromptWatcherState {
     [Parameter(Mandatory)] [string] $WatcherScript,
     [Parameter(Mandatory)] [string] $TargetTitle,
     [Parameter(Mandatory)] [string] $LogPath,
-    [Parameter(Mandatory)] [string] $ExpectedExecutable
+    [Parameter(Mandatory)] [string] $WakeRuntimeRoot,
+    [Parameter(Mandatory)] [int] $WakeCooldownSeconds,
+    [Parameter(Mandatory)] [int] $MinUserIdleSeconds,
+    [Parameter(Mandatory)] [int] $LeadProcessId,
+    [Parameter(Mandatory)] [string] $LeadProcessStartUtc,
+    [Parameter(Mandatory)] [string] $ReadyPath,
+    [Parameter(Mandatory)] [string] $ExpectedExecutable,
+    [ValidateRange(10, 300)] [int] $StartingGraceSeconds = 60
   )
 
   $watcherFull = [IO.Path]::GetFullPath($WatcherScript)
   $logFull = [IO.Path]::GetFullPath($LogPath)
+  $wakeRuntimeFull = [IO.Path]::GetFullPath($WakeRuntimeRoot)
+  $readyFull = [IO.Path]::GetFullPath($ReadyPath)
   $executableFull = [IO.Path]::GetFullPath($ExpectedExecutable)
   $watcherMarker = [IO.Path]::GetFileName($watcherFull)
   $candidates = @(
     $Processes | Where-Object {
       $commandLine = [string]$_.CommandLine
-      $commandLine.IndexOf(
-        $watcherMarker,
-        [StringComparison]::OrdinalIgnoreCase
-      ) -ge 0 -and
-      (Test-NamedCommandLineArgument `
+      Test-WdPromptWatcherCommandLineCandidate `
         -CommandLine $commandLine `
-        -Name 'TabTitle' `
-        -Value $TargetTitle)
+        -WatcherFileName $watcherMarker
     }
   )
-  $expectedSwitches = @(
-    'noprofile',
-    'executionpolicy',
-    'file',
-    'allowall',
-    'noallnighter',
-    'tabtitle',
-    'logpath'
-  )
-  $exact = @(
+  $commandExact = @(
     $candidates | Where-Object {
       $commandLine = [string]$_.CommandLine
       $executablePath = [string]$_.ExecutablePath
@@ -1483,25 +1833,57 @@ function Get-WdCodexPromptWatcherState {
         $executableFull,
         [StringComparison]::OrdinalIgnoreCase
       ) -and
-      (Test-NamedCommandLineArgument `
+      (Test-WdCodexPromptWatcherCommandLineExact `
         -CommandLine $commandLine `
-        -Name 'ExecutionPolicy' `
-        -Value 'Bypass') -and
-      (Test-NamedCommandLineArgument `
-        -CommandLine $commandLine `
-        -Name 'File' `
-        -Value $watcherFull) -and
-      (Test-NamedCommandLineArgument `
-        -CommandLine $commandLine `
-        -Name 'TabTitle' `
-        -Value $TargetTitle) -and
-      (Test-NamedCommandLineArgument `
-        -CommandLine $commandLine `
-        -Name 'LogPath' `
-        -Value $logFull) -and
-      (Test-WdCommandLineSwitchSequenceExact `
-        -CommandLine $commandLine `
-        -Expected $expectedSwitches)
+        -ExpectedExecutable $executableFull `
+        -WatcherScript $watcherFull `
+        -TargetTitle $TargetTitle `
+        -LogPath $logFull `
+        -WakeRuntimeRoot $wakeRuntimeFull `
+        -WakeCooldownSeconds $WakeCooldownSeconds `
+        -MinUserIdleSeconds $MinUserIdleSeconds `
+        -LeadProcessId $LeadProcessId `
+        -LeadProcessStartUtc $LeadProcessStartUtc `
+        -ReadyPath $readyFull)
+    }
+  )
+  $leadGenerationLive = Test-WdLiveProcessGeneration `
+    -ProcessId $LeadProcessId `
+    -ExpectedStartUtc $LeadProcessStartUtc
+  $exact = @(
+    $commandExact | Where-Object {
+      $leadGenerationLive -and
+      (Test-WdCodexPromptWatcherReadyRecord `
+          -Path $readyFull `
+          -WatcherProcess $_ `
+          -LeadProcessId $LeadProcessId `
+          -LeadProcessStartUtc $LeadProcessStartUtc `
+          -TargetTitle $TargetTitle `
+          -WakeRuntimeRoot $wakeRuntimeFull)
+    }
+  )
+  $freshCommandExact = @(
+    $commandExact | Where-Object {
+      $processStartText = ConvertTo-WdProcessStartUtcText `
+        -Process $_ `
+        -RequireLive
+      if ([string]::IsNullOrWhiteSpace($processStartText)) {
+        return $false
+      }
+      try {
+        $processStart = ConvertTo-UtcDateTimeOffset `
+          -Value $processStartText `
+          -Label 'prompt watcher live process start'
+        $ageSeconds = (
+          [DateTimeOffset]::UtcNow - $processStart
+        ).TotalSeconds
+        return (
+          $ageSeconds -ge -5 -and
+          $ageSeconds -le $StartingGraceSeconds
+        )
+      } catch {
+        return $false
+      }
     }
   )
 
@@ -1509,18 +1891,29 @@ function Get-WdCodexPromptWatcherState {
     'launch'
   } elseif ($candidates.Count -eq 1 -and $exact.Count -eq 1) {
     'current'
+  } elseif (
+    $candidates.Count -eq 1 -and
+    $commandExact.Count -eq 1 -and
+    $freshCommandExact.Count -eq 1 -and
+    $leadGenerationLive
+  ) {
+    'starting'
   } else {
     'conflict'
   }
   return [pscustomobject]@{
     action = $action
     candidates = @($candidates)
+    command_exact = @($commandExact)
+    fresh_command_exact = @($freshCommandExact)
+    lead_generation_live = $leadGenerationLive
     exact = @($exact)
     summary = switch ($action) {
       'launch' { 'would launch one canonical Lead prompt watcher' }
       'current' { "one canonical Lead prompt watcher is already running (PID $([int]$exact[0].ProcessId))" }
+      'starting' { "one canonical Lead prompt watcher is waiting for its readiness marker (PID $([int]$commandExact[0].ProcessId))" }
       default {
-        "ambiguous Lead prompt watcher set: candidates=$($candidates.Count) exact=$($exact.Count)"
+        "ambiguous Lead prompt watcher set: candidates=$($candidates.Count) command_exact=$($commandExact.Count) ready=$($exact.Count)"
       }
     }
   }
@@ -2498,6 +2891,16 @@ $promptWatcherWindowTitle = 'WD-Codex-Prompt-Watcher'
 $promptWatcherRecoveryRoot = Split-Path -Parent ([string]$manifest.handshake_root)
 $promptWatcherLogDirectory = Join-Path $promptWatcherRecoveryRoot 'prompt-watchers'
 $promptWatcherLogPath = Join-Path $promptWatcherLogDirectory 'codex-lead-1.log'
+$promptWatcherReadyPath = Join-Path `
+  $promptWatcherLogDirectory `
+  'codex-lead-1.ready.json'
+$promptWatcherWakeRuntimeRoot = Resolve-NormalizedPath `
+  -Path ([string]$manifest.runtime_root)
+$promptWatcherWakeSentinelPath = Join-Path `
+  $promptWatcherWakeRuntimeRoot `
+  'wake_codex-lead-1'
+$promptWatcherWakeCooldownSeconds = 300
+$promptWatcherMinUserIdleSeconds = 60
 [void](Read-NonEmptyFile -Path $resolver -Label 'Grok model resolver')
 [void](Read-NonEmptyFile -Path $taskConsoleContainment -Label 'scheduled-task console containment')
 [void](Read-NonEmptyFile -Path $scheduledTaskRegistration -Label 'supervisor task registration')
@@ -2749,19 +3152,38 @@ $leadPromptWatcherLane = @(
 if ($leadPromptWatcherLane.Count -ne 1) {
   throw 'Codex prompt watcher requires exactly one interactive codex-lead-1 lane'
 }
+$promptWatcherLeadProcessId = 0
+$promptWatcherLeadProcessStartUtc = ''
+$leadPromptWatcherLive = @($leadPromptWatcherLane[0].live)
+if ($leadPromptWatcherLive.Count -eq 1) {
+  $promptWatcherLeadProcessId = [int]$leadPromptWatcherLive[0].ProcessId
+  $promptWatcherLeadProcessStartUtc = ConvertTo-WdProcessStartUtcText `
+    -Process $leadPromptWatcherLive[0] `
+    -RequireLive
+  if ([string]::IsNullOrWhiteSpace($promptWatcherLeadProcessStartUtc)) {
+    throw 'Codex prompt watcher could not bind the live Lead process generation'
+  }
+}
 $promptWatcherState = Get-WdCodexPromptWatcherState `
-  -Processes $processes `
+  -Processes (Get-WdPromptWatcherProcessSnapshots) `
   -WatcherScript $promptWatcherScript `
   -TargetTitle $promptWatcherTargetTitle `
   -LogPath $promptWatcherLogPath `
+  -WakeRuntimeRoot $promptWatcherWakeRuntimeRoot `
+  -WakeCooldownSeconds $promptWatcherWakeCooldownSeconds `
+  -MinUserIdleSeconds $promptWatcherMinUserIdleSeconds `
+  -LeadProcessId $promptWatcherLeadProcessId `
+  -LeadProcessStartUtc $promptWatcherLeadProcessStartUtc `
+  -ReadyPath $promptWatcherReadyPath `
   -ExpectedExecutable $expectedSupervisorExecutable
 if ([string]$promptWatcherState.action -ceq 'conflict') {
   throw "Codex Lead prompt watcher conflict: $($promptWatcherState.summary)"
 }
 Write-Host (
-  '  Codex Lead prompt watcher: {0}; DANGEROUS AllowAll, strict title={1}, log={2}' -f
+  '  Codex Lead prompt watcher: {0}; DANGEROUS AllowAll, strict title={1}, wake={2}, log={3}' -f
     [string]$promptWatcherState.summary,
     $promptWatcherTargetTitle,
+    $promptWatcherWakeSentinelPath,
     $promptWatcherLogPath
 )
 
@@ -3555,14 +3977,47 @@ try {
   # The UI prompt watcher is intentionally separate from the five bridge
   # watchers. Start it only after every newly launched interactive lane has
   # completed and passed its bridge-bootstrap handshake.
+  $promptWatcherProcessSnapshot = Get-AllProcessSnapshots
+  $promptWatcherCandidateSnapshot = Get-WdPromptWatcherProcessSnapshots
+  $promptWatcherLeadLive = @(
+    Get-LaneProcesses `
+      -Lane $leadPromptWatcherLane[0].lane `
+      -Processes $promptWatcherProcessSnapshot
+  )
+  if (
+    $promptWatcherLeadLive.Count -ne 1 -or
+    -not (Test-LaneGenerationAttestation `
+      -Lane $leadPromptWatcherLane[0].lane `
+      -Process $promptWatcherLeadLive[0])
+  ) {
+    throw 'Codex prompt watcher requires one attested live Lead process generation'
+  }
+  $promptWatcherLeadProcessId = [int]$promptWatcherLeadLive[0].ProcessId
+  $promptWatcherLeadProcessStartUtc = ConvertTo-WdProcessStartUtcText `
+    -Process $promptWatcherLeadLive[0] `
+    -RequireLive
+  if ([string]::IsNullOrWhiteSpace($promptWatcherLeadProcessStartUtc)) {
+    throw 'Codex prompt watcher could not read the attested Lead process start time'
+  }
   $promptWatcherApplyState = Get-WdCodexPromptWatcherState `
-    -Processes (Get-AllProcessSnapshots) `
+    -Processes $promptWatcherCandidateSnapshot `
     -WatcherScript $promptWatcherScript `
     -TargetTitle $promptWatcherTargetTitle `
     -LogPath $promptWatcherLogPath `
+    -WakeRuntimeRoot $promptWatcherWakeRuntimeRoot `
+    -WakeCooldownSeconds $promptWatcherWakeCooldownSeconds `
+    -MinUserIdleSeconds $promptWatcherMinUserIdleSeconds `
+    -LeadProcessId $promptWatcherLeadProcessId `
+    -LeadProcessStartUtc $promptWatcherLeadProcessStartUtc `
+    -ReadyPath $promptWatcherReadyPath `
     -ExpectedExecutable $expectedSupervisorExecutable
   if ([string]$promptWatcherApplyState.action -ceq 'conflict') {
     throw "Codex Lead prompt watcher conflict before launch: $($promptWatcherApplyState.summary)"
+  }
+  if (-not (Test-WdLiveProcessGeneration `
+          -ProcessId $promptWatcherLeadProcessId `
+          -ExpectedStartUtc $promptWatcherLeadProcessStartUtc)) {
+    throw 'Codex Lead process generation ended before prompt-watcher reconciliation'
   }
   if ([string]$promptWatcherApplyState.action -ceq 'launch') {
     [void](Assert-WdFleetPathWithoutReparse `
@@ -3594,7 +4049,14 @@ try {
       '-AllowAll',
       '-NoAllNighter',
       '-TabTitle', $promptWatcherTargetTitle,
-      '-LogPath', $promptWatcherLogPath
+      '-LogPath', $promptWatcherLogPath,
+      '-ContinueOnWake',
+      '-WakeRuntimeRoot', $promptWatcherWakeRuntimeRoot,
+      '-WakeCooldownSeconds', ([string]$promptWatcherWakeCooldownSeconds),
+      '-MinUserIdleSeconds', ([string]$promptWatcherMinUserIdleSeconds),
+      '-LeadProcessId', ([string]$promptWatcherLeadProcessId),
+      '-LeadProcessStartUtc', $promptWatcherLeadProcessStartUtc,
+      '-ReadyPath', $promptWatcherReadyPath
     )
     Write-Host (
       "Launching DANGEROUS AllowAll prompt watcher for $promptWatcherTargetTitle..."
@@ -3610,11 +4072,22 @@ try {
 
   $promptWatcherDeadline = (Get-Date).AddSeconds(45)
   do {
+    if (-not (Test-WdLiveProcessGeneration `
+            -ProcessId $promptWatcherLeadProcessId `
+            -ExpectedStartUtc $promptWatcherLeadProcessStartUtc)) {
+      throw 'Codex Lead process generation ended while waiting for prompt-watcher readiness'
+    }
     $promptWatcherFinalState = Get-WdCodexPromptWatcherState `
-      -Processes (Get-AllProcessSnapshots) `
+      -Processes (Get-WdPromptWatcherProcessSnapshots) `
       -WatcherScript $promptWatcherScript `
       -TargetTitle $promptWatcherTargetTitle `
       -LogPath $promptWatcherLogPath `
+      -WakeRuntimeRoot $promptWatcherWakeRuntimeRoot `
+      -WakeCooldownSeconds $promptWatcherWakeCooldownSeconds `
+      -MinUserIdleSeconds $promptWatcherMinUserIdleSeconds `
+      -LeadProcessId $promptWatcherLeadProcessId `
+      -LeadProcessStartUtc $promptWatcherLeadProcessStartUtc `
+      -ReadyPath $promptWatcherReadyPath `
       -ExpectedExecutable $expectedSupervisorExecutable
     if ([string]$promptWatcherFinalState.action -ceq 'conflict') {
       throw "Codex Lead prompt watcher conflict after launch: $($promptWatcherFinalState.summary)"
@@ -3630,19 +4103,33 @@ try {
     [string]$promptWatcherFinalState.action -ceq 'current'
   )
   if (-not $promptWatcherAvailable) {
-    Write-Warning (
-      'Codex Lead prompt watcher did not reach the exact one-process state. ' +
-      'The four interactive lanes and Tools remain valid; unattended Lead ' +
-      'prompt approval is disabled until a later -Auto run reconciles it.'
-    )
+    if ([string]$promptWatcherFinalState.action -ceq 'launch') {
+      Write-Warning (
+        'No Lead prompt-watcher process materialized. The fleet restore still ' +
+        'succeeded, but unattended Lead prompt approval and wake continuation ' +
+        'are unavailable.'
+      )
+    } else {
+      throw (
+        'a canonical Lead prompt-watcher process remained unattested; the ' +
+        'launcher will not claim that approvals are disabled or terminate an ' +
+        'unowned process; operator reconciliation is required'
+      )
+    }
   }
 
   $finalProcesses = Get-AllProcessSnapshots
   $promptWatcherFinalState = Get-WdCodexPromptWatcherState `
-    -Processes $finalProcesses `
+    -Processes (Get-WdPromptWatcherProcessSnapshots) `
     -WatcherScript $promptWatcherScript `
     -TargetTitle $promptWatcherTargetTitle `
     -LogPath $promptWatcherLogPath `
+    -WakeRuntimeRoot $promptWatcherWakeRuntimeRoot `
+    -WakeCooldownSeconds $promptWatcherWakeCooldownSeconds `
+    -MinUserIdleSeconds $promptWatcherMinUserIdleSeconds `
+    -LeadProcessId $promptWatcherLeadProcessId `
+    -LeadProcessStartUtc $promptWatcherLeadProcessStartUtc `
+    -ReadyPath $promptWatcherReadyPath `
     -ExpectedExecutable $expectedSupervisorExecutable
   if ([string]$promptWatcherFinalState.action -ceq 'conflict') {
     throw "final Codex Lead prompt watcher verification found an ambiguous process set: $($promptWatcherFinalState.summary)"

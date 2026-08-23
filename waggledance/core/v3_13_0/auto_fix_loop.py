@@ -455,7 +455,7 @@ class AutoFixLoop:
         # Route through WriteRCOGate. WRT-003 will block here unless
         # peer RCO + scope policy approve.
         gate_result = self.route_intent_through_gate(intent)
-        if not gate_result.get("approved"):
+        if gate_result.get("approved") is not True:
             audit_ref = self.emit_magma_event({
                 "event_type": "auto_fix_loop.repair_denied",
                 "instance_id": self.instance_id,
@@ -474,7 +474,7 @@ class AutoFixLoop:
             )
 
         exec_result = self.execute_repair(intent)
-        if exec_result.get("success"):
+        if exec_result.get("success") is True:
             audit_ref = self.emit_magma_event({
                 "event_type": "auto_fix_loop.repair_applied",
                 "instance_id": self.instance_id,

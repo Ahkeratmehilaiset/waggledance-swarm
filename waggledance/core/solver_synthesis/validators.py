@@ -137,16 +137,24 @@ def _case_name(case: object, index: int) -> str:
 
 
 def _count_cases(cases: list[dict] | None) -> CountedGateResult:
+    """Count passed cases and name the failures from ONE read per case.
+
+    Each case's verdict is evaluated exactly once and frozen before
+    the count and the failure list are derived from it, so a stateful
+    or mutating mapping cannot answer ``True`` to the counter and
+    ``False`` to the failure list (or vice versa) and leave
+    ``passed == total`` next to a non-empty failure list.
+    """
     cases = list(cases or [])
-    total = len(cases)
-    passed = sum(1 for case in cases if _case_passed(case))
-    failures = tuple(
-        _case_name(case, index)
-        for index, case in enumerate(cases)
-        if not _case_passed(case)
-    )
-    return CountedGateResult(passed=passed, total=total,
-                                  failures=failures)
+    passed = 0
+    failures: list[str] = []
+    for index, case in enumerate(cases):
+        if _case_passed(case):
+            passed += 1
+        else:
+            failures.append(_case_name(case, index))
+    return CountedGateResult(passed=passed, total=len(cases),
+                                  failures=tuple(failures))
 
 
 def run_property_tests(c: SolverCandidate,

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 from typing import Any, Callable, Mapping, Sequence
@@ -22,6 +24,8 @@ if str(ROOT) not in sys.path:
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_STATUS_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 GH_JSON_FIELDS = "number,headRefName,headRefOid,url"
+BRIDGE_RUNTIME_ROOT_ENV = "AGENT_BRIDGE_RUNTIME_ROOT"
+BRIDGE_WRITER_RELATIVE_PATH = Path("bin") / "Write-AgentEvent.ps1"
 Runner = Callable[[Sequence[str]], Any]
 
 
@@ -206,10 +210,7 @@ def emit_bridge_event(
     run_id: str = "",
     runner: Runner | None = None,
 ) -> dict[str, Any]:
-    root = Path(bridge_root) if bridge_root is not None else ROOT / ".agent-bridge"
-    writer = root / "bin" / "Write-AgentEvent.ps1"
-    if not writer.exists():
-        raise _invalid("missing_writer", f"Write-AgentEvent.ps1 not found at {writer}")
+    writer = _resolve_bridge_writer(bridge_root)
     payload = json.dumps(event["payload"], sort_keys=True, separators=(",", ":"))
     command = [
         "powershell",
@@ -248,6 +249,115 @@ def emit_bridge_event(
             }
         )
     return {"returncode": return_code}
+
+
+def _resolve_bridge_writer(bridge_root: Path | None) -> Path:
+    runtime_root_is_set = BRIDGE_RUNTIME_ROOT_ENV in os.environ
+    if runtime_root_is_set:
+        runtime_value = os.environ[BRIDGE_RUNTIME_ROOT_ENV]
+        if not runtime_value.strip():
+            raise _invalid(
+                "invalid_bridge_root",
+                f"{BRIDGE_RUNTIME_ROOT_ENV} must be a non-empty absolute path",
+            )
+        root = Path(runtime_value)
+        runtime_key = _lexical_path_key(root, source=BRIDGE_RUNTIME_ROOT_ENV)
+        if bridge_root is not None:
+            explicit_root = Path(bridge_root)
+            explicit_key = _lexical_path_key(explicit_root, source="bridge_root")
+            if explicit_key != runtime_key:
+                raise _invalid(
+                    "ambiguous_bridge_root",
+                    "bridge_root conflicts with AGENT_BRIDGE_RUNTIME_ROOT",
+                )
+    elif bridge_root is not None:
+        root = Path(bridge_root)
+        _lexical_path_key(root, source="bridge_root")
+    else:
+        root = ROOT / ".agent-bridge"
+        _lexical_path_key(root, source="source bridge root")
+
+    return _validate_bridge_writer(root)
+
+
+def _lexical_path_key(path: Path, *, source: str) -> str:
+    if not path.is_absolute() or ".." in path.parts:
+        raise _invalid(
+            "invalid_bridge_root",
+            f"{source} must be an absolute path without parent traversal",
+        )
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _validate_bridge_writer(root: Path) -> Path:
+    try:
+        root_stat = root.lstat()
+    except FileNotFoundError as exc:
+        raise _invalid("missing_writer", f"bridge root does not exist: {root}") from exc
+    except OSError as exc:
+        raise _invalid("invalid_bridge_root", f"cannot inspect bridge root: {exc}") from exc
+    if not stat.S_ISDIR(root_stat.st_mode) or _is_reparse_point(root_stat):
+        raise _invalid(
+            "unsafe_writer_path",
+            f"bridge root must be an ordinary directory: {root}",
+        )
+
+    writer = root / BRIDGE_WRITER_RELATIVE_PATH
+    writer_bin = writer.parent
+    try:
+        bin_stat = writer_bin.lstat()
+        writer_stat = writer.lstat()
+    except FileNotFoundError as exc:
+        raise _invalid(
+            "missing_writer",
+            f"Write-AgentEvent.ps1 not found at {writer}",
+        ) from exc
+    except OSError as exc:
+        raise _invalid("unsafe_writer_path", f"cannot inspect bridge writer: {exc}") from exc
+
+    if not stat.S_ISDIR(bin_stat.st_mode) or _is_reparse_point(bin_stat):
+        raise _invalid(
+            "unsafe_writer_path",
+            f"bridge writer bin must be an ordinary directory: {writer_bin}",
+        )
+    if not stat.S_ISREG(writer_stat.st_mode) or _is_reparse_point(writer_stat):
+        raise _invalid(
+            "unsafe_writer_path",
+            f"bridge writer must be an ordinary file: {writer}",
+        )
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_bin = writer_bin.resolve(strict=True)
+        resolved_writer = writer.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise _invalid("unsafe_writer_path", f"cannot resolve bridge writer: {exc}") from exc
+
+    expected_bin = resolved_root / "bin"
+    expected_writer = expected_bin / "Write-AgentEvent.ps1"
+    if (
+        _path_key(resolved_root) != _path_key(root)
+        or _path_key(resolved_bin) != _path_key(expected_bin)
+        or _path_key(resolved_writer) != _path_key(expected_writer)
+        or not resolved_writer.is_relative_to(resolved_root)
+    ):
+        raise _invalid(
+            "unsafe_writer_path",
+            f"bridge writer escapes its exact root boundary: {writer}",
+        )
+    return resolved_writer
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _is_reparse_point(path_stat: os.stat_result) -> bool:
+    if stat.S_ISLNK(path_stat.st_mode):
+        return True
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    file_attributes = getattr(path_stat, "st_file_attributes", 0)
+    return bool(reparse_flag and file_attributes & reparse_flag)
 
 
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:

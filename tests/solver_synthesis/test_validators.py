@@ -171,6 +171,113 @@ def test_run_regression_tests_counts_passed_and_failures():
     assert r.failures == ("r2",)
 
 
+# --- counted gates: literal-True fail-closed rule -------------------
+#
+# 2026-08-23 product-integrity fix (lead assignment): the counted
+# gates used ``bool(t.get("passed", False))`` / ``not t.get(...)``,
+# so any truthy stand-in for a boolean — the string "false" from a
+# JSON-ish harness, "true", 1, "no" — counted as a PASSED case with an
+# empty failure list and validate_candidate promoted the candidate to
+# ``pass_all_gates``. Only the literal ``True`` may count as passed.
+
+class _ExplosiveBool:
+    """Object whose truthiness must never be consulted."""
+
+    def __bool__(self) -> bool:  # pragma: no cover - must not run
+        raise AssertionError("truthiness of a passed value was coerced")
+
+
+_NOT_LITERAL_TRUE = [
+    pytest.param("false", id="str-false"),
+    pytest.param("true", id="str-true"),
+    pytest.param("True", id="str-True"),
+    pytest.param("no", id="str-no"),
+    pytest.param(1, id="int-1"),
+    pytest.param(1.0, id="float-1"),
+    pytest.param(0, id="int-0"),
+    pytest.param(None, id="none"),
+    pytest.param([True], id="list-true"),
+    pytest.param({"passed": True}, id="nested-dict"),
+    pytest.param(object(), id="object"),
+    pytest.param(_ExplosiveBool(), id="explosive-bool"),
+]
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+@pytest.mark.parametrize("value", _NOT_LITERAL_TRUE)
+def test_counted_gate_rejects_every_non_literal_true_passed_value(gate, value):
+    r = gate(_candidate(), [{"name": "p1", "passed": value}])
+    assert r.passed == 0
+    assert r.total == 1
+    assert r.failures == ("p1",)
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+def test_counted_gate_missing_passed_key_is_a_failure(gate):
+    r = gate(_candidate(), [{"name": "p1"}])
+    assert r.passed == 0
+    assert r.total == 1
+    assert r.failures == ("p1",)
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+def test_counted_gate_literal_true_still_counts_beside_truthy_stand_ins(gate):
+    r = gate(_candidate(), [
+        {"name": "p1", "passed": True},
+        {"name": "p2", "passed": "true"},
+        {"name": "p3", "passed": 1},
+    ])
+    assert r.passed == 1
+    assert r.total == 3
+    assert r.failures == ("p2", "p3")
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+def test_counted_gate_non_mapping_entries_are_named_failures(gate):
+    r = gate(_candidate(), [None, "passed", 42, {"name": "ok", "passed": True}])
+    assert r.passed == 1
+    assert r.total == 4
+    assert r.failures == ("<malformed:0>", "<malformed:1>", "<malformed:2>")
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1],
+                         ids=["str-false", "str-true", "int-1"])
+def test_validate_candidate_truthy_property_passed_is_property_test_failed(value):
+    """The exact lead reproduction: passed:"false" previously yielded
+    1/1 and pass_all_gates."""
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[{"name": "prop1", "passed": value}],
+        regression_input=[],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert report.verdict == "property_test_failed"
+    assert report.property_tests.passed == 0
+    assert report.property_tests.total == 1
+    assert report.property_tests.failures == ("prop1",)
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1],
+                         ids=["str-false", "str-true", "int-1"])
+def test_validate_candidate_truthy_regression_passed_is_regression_detected(value):
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[{"name": "prop1", "passed": True}],
+        regression_input=[{"name": "reg1", "passed": value}],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert report.verdict == "regression_detected"
+    assert report.regression.passed == 0
+    assert report.regression.total == 1
+    assert report.regression.failures == ("reg1",)
+
+
 # --- evaluate_shadow ------------------------------------------------
 
 def test_evaluate_shadow_clamps_concordance_to_unit_interval():

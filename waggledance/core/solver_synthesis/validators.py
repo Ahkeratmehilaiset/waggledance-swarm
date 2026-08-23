@@ -7,6 +7,7 @@ agnostic: same outputs on CPU and (future) GPU batch backends.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from . import SOLVER_SYNTHESIS_SCHEMA_VERSION
@@ -114,6 +115,40 @@ def semantic_validate(c: SolverCandidate) -> GateResult:
     return GateResult(passed=not errors, errors=tuple(errors))
 
 
+def _case_passed(case: object) -> bool:
+    """Fail-closed pass predicate for a pre-computed test case.
+
+    Only a mapping whose ``"passed"`` value is the literal ``True``
+    counts as passed. Truthy stand-ins (``"false"``, ``"true"``,
+    ``1``, non-empty containers), non-bool objects, a missing key and
+    non-mapping entries are all treated as failures. The value is
+    compared by identity, so no ``__bool__`` / truthiness coercion
+    path is ever taken.
+    """
+    if not isinstance(case, Mapping):
+        return False
+    return case.get("passed") is True
+
+
+def _case_name(case: object, index: int) -> str:
+    if isinstance(case, Mapping):
+        return str(case.get("name", ""))
+    return f"<malformed:{index}>"
+
+
+def _count_cases(cases: list[dict] | None) -> CountedGateResult:
+    cases = list(cases or [])
+    total = len(cases)
+    passed = sum(1 for case in cases if _case_passed(case))
+    failures = tuple(
+        _case_name(case, index)
+        for index, case in enumerate(cases)
+        if not _case_passed(case)
+    )
+    return CountedGateResult(passed=passed, total=total,
+                                  failures=failures)
+
+
 def run_property_tests(c: SolverCandidate,
                             tests: list[dict] | None = None
                             ) -> CountedGateResult:
@@ -121,31 +156,22 @@ def run_property_tests(c: SolverCandidate,
     {name, predicate, expected} dicts. We don't evaluate Python here;
     we rely on test results having been pre-computed by an external
     harness OR fall back to recording {passed=total} for an empty
-    test list (vacuously true)."""
-    tests = tests or []
-    total = len(tests)
-    passed = sum(1 for t in tests if bool(t.get("passed", False)))
-    failures = tuple(
-        str(t.get("name", "")) for t in tests if not t.get("passed", False)
-    )
-    return CountedGateResult(passed=passed, total=total,
-                                  failures=failures)
+    test list (vacuously true).
+
+    A case counts as passed only when its ``"passed"`` value is the
+    literal ``True`` (see ``_case_passed``); anything else is a
+    named failure, so a harness emitting ``passed: "false"`` can
+    never yield ``pass_all_gates``.
+    """
+    return _count_cases(tests)
 
 
 def run_regression_tests(c: SolverCandidate,
                                 pinned_cases: list[dict] | None = None
                                 ) -> CountedGateResult:
     """Same shape as property tests; tracks regressions on previously-
-    accepted cases."""
-    pinned_cases = pinned_cases or []
-    total = len(pinned_cases)
-    passed = sum(1 for t in pinned_cases if bool(t.get("passed", False)))
-    failures = tuple(
-        str(t.get("name", "")) for t in pinned_cases
-        if not t.get("passed", False)
-    )
-    return CountedGateResult(passed=passed, total=total,
-                                  failures=failures)
+    accepted cases. Same literal-``True`` fail-closed rule."""
+    return _count_cases(pinned_cases)
 
 
 def evaluate_shadow(c: SolverCandidate,

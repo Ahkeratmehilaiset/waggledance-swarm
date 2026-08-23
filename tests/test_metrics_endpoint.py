@@ -246,12 +246,13 @@ def test_metrics_body_contains_runtime_receipt_coverage_metrics():
                     "failure_total": 1,
                     "verifier_ok_total": 1,
                     "verifier_not_ok_total": 1,
+                    "verified_receipt_query_total": 1,
                     "receipt_count_total": 2,
                     "last_solver_trace_count": 1,
                     "last_result_present": True,
                     "last_verifier_ok": True,
                     "last_receipt_count": 1,
-                    "coverage_ratio": 0.5,
+                    "coverage_ratio": 0.25,
                     "solver_trace_presence_ratio": 0.75,
                     "verifier_ok_ratio": 0.5,
                     "deterministic_route_attempt_total": 4,
@@ -278,7 +279,7 @@ def test_metrics_body_contains_runtime_receipt_coverage_metrics():
 
     assert "waggledance_runtime_receipt_metrics_up 1.0" in body
     assert "waggledance_runtime_receipt_sink_configured 1.0" in body
-    assert "waggledance_runtime_receipt_coverage_ratio 0.5" in body
+    assert "waggledance_runtime_receipt_coverage_ratio 0.25" in body
     assert (
         "waggledance_runtime_receipt_solver_trace_presence_ratio 0.75"
         in body
@@ -291,7 +292,13 @@ def test_metrics_body_contains_runtime_receipt_coverage_metrics():
     assert "waggledance_runtime_receipt_failure_total 1.0" in body
     assert "waggledance_runtime_receipt_verifier_ok_total 1.0" in body
     assert "waggledance_runtime_receipt_verifier_not_ok_total 1.0" in body
+    assert "waggledance_runtime_receipt_verified_query_total 1.0" in body
     assert "waggledance_runtime_receipt_receipt_count_total 2.0" in body
+    assert (
+        "strictly verified, nonzero receipt count in this process; "
+        "operational data only, not named-window or claim-safe evidence"
+        in body
+    )
     assert "waggledance_runtime_receipt_last_verifier_ok 1.0" in body
     assert "waggledance_runtime_receipt_last_receipt_count 1.0" in body
     assert "waggledance_runtime_receipt_verifier_ok_ratio 0.5" in body

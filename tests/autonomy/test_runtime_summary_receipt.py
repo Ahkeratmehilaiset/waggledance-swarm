@@ -145,6 +145,7 @@ def test_handle_query_emits_opt_in_runtime_summary_receipt(tmp_path: Path) -> No
     assert metrics["failure_total"] == 0
     assert metrics["verifier_ok_total"] == 1
     assert metrics["verifier_not_ok_total"] == 0
+    assert metrics["verified_receipt_query_total"] == 1
     assert metrics["receipt_count_total"] == 1
     assert metrics["last_verifier_ok"] is True
     assert metrics["last_receipt_count"] == 1
@@ -208,11 +209,119 @@ def test_handle_query_runtime_receipt_verifier_not_ok_metrics() -> None:
     assert metrics["failure_total"] == 0
     assert metrics["verifier_ok_total"] == 0
     assert metrics["verifier_not_ok_total"] == 1
+    assert metrics["verified_receipt_query_total"] == 0
     assert metrics["receipt_count_total"] == 0
     assert metrics["last_result_present"] is True
     assert metrics["last_verifier_ok"] is False
     assert metrics["last_receipt_count"] == 0
+    assert metrics["coverage_ratio"] == 0.0
     assert metrics["verifier_ok_ratio"] == 0.0
+
+
+def test_runtime_receipt_coverage_requires_verified_nonzero_top_level_count(
+    tmp_path: Path,
+) -> None:
+    runtime, _reports = _runtime_with_receipt_sink(tmp_path)
+    runtime.runtime_receipt_sink = lambda _summary: {
+        "receipt_count": 0,
+        "verifier_report": {"ok": True, "receipt_count": 1},
+    }
+
+    runtime.handle_query("verified but empty receipt result")
+
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["success_total"] == 1
+    assert metrics["verifier_ok_total"] == 1
+    assert metrics["verified_receipt_query_total"] == 0
+    assert metrics["receipt_count_total"] == 0
+    assert metrics["coverage_ratio"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "receipt_result",
+    [
+        {"verifier_report": {"ok": True, "receipt_count": 1}},
+        {"receipt_count": "1", "verifier_report": {"ok": True}},
+        {"receipt_count": True, "verifier_report": {"ok": True}},
+        {"receipt_count": 1.5, "verifier_report": {"ok": True}},
+        {"receipt_count": -1, "verifier_report": {"ok": True}},
+    ],
+)
+def test_runtime_receipt_coverage_rejects_missing_or_malformed_top_level_count(
+    tmp_path: Path,
+    receipt_result: dict,
+) -> None:
+    runtime, _reports = _runtime_with_receipt_sink(tmp_path)
+    runtime.runtime_receipt_sink = lambda _summary: receipt_result
+
+    runtime.handle_query("malformed receipt count")
+
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["success_total"] == 1
+    assert metrics["verifier_ok_total"] == 1
+    assert metrics["verified_receipt_query_total"] == 0
+    assert metrics["receipt_count_total"] == 0
+    assert metrics["coverage_ratio"] == 0.0
+
+
+def test_runtime_receipt_coverage_requires_literal_verifier_true(
+    tmp_path: Path,
+) -> None:
+    runtime, _reports = _runtime_with_receipt_sink(tmp_path)
+    runtime.runtime_receipt_sink = lambda _summary: {
+        "receipt_count": 1,
+        "verifier_report": {"ok": "true", "receipt_count": 1},
+    }
+
+    runtime.handle_query("malformed verifier ok")
+
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["success_total"] == 1
+    assert metrics["verifier_ok_total"] == 0
+    assert metrics["verifier_not_ok_total"] == 1
+    assert metrics["verified_receipt_query_total"] == 0
+    assert metrics["receipt_count_total"] == 0
+    assert metrics["coverage_ratio"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "receipt_result",
+    [
+        {
+            "receipt_count": 2,
+            "verifier_report": {"ok": True, "receipt_count": 0},
+        },
+        {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": 2},
+        },
+        {"receipt_count": 1, "verifier_report": {"ok": True}},
+        {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": "1"},
+        },
+        {
+            "receipt_count": 1,
+            "verifier_report": {"ok": True, "receipt_count": True},
+        },
+    ],
+)
+def test_runtime_receipt_coverage_rejects_missing_malformed_or_mismatched_verifier_count(
+    tmp_path: Path,
+    receipt_result: dict,
+) -> None:
+    runtime, _reports = _runtime_with_receipt_sink(tmp_path)
+    runtime.runtime_receipt_sink = lambda _summary: receipt_result
+
+    runtime.handle_query("contradictory verifier receipt count")
+
+    metrics = runtime.runtime_receipt_metrics_snapshot()
+    assert metrics["success_total"] == 1
+    assert metrics["verifier_ok_total"] == 1
+    assert metrics["verified_receipt_query_total"] == 0
+    assert metrics["receipt_count_total"] == 0
+    assert metrics["last_receipt_count"] == 0
+    assert metrics["coverage_ratio"] == 0.0
 
 
 def test_runtime_receipt_metrics_prefer_top_level_receipt_count(
@@ -296,6 +405,7 @@ def test_handle_query_without_runtime_receipt_sink_records_default_off_metrics()
     assert metrics["failure_total"] == 0
     assert metrics["verifier_ok_total"] == 0
     assert metrics["verifier_not_ok_total"] == 0
+    assert metrics["verified_receipt_query_total"] == 0
     assert metrics["receipt_count_total"] == 0
     assert metrics["last_verifier_ok"] is False
     assert metrics["last_receipt_count"] == 0

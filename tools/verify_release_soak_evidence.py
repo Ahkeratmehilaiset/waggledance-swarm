@@ -18,10 +18,48 @@ if str(ROOT) not in sys.path:
 from tools.collect_soak_evidence import (
     DEFAULT_EVIDENCE_ROOT,
     DEFAULT_RELEASE_NOTES,
+    FINAL_PIP_AUDIT_REPORTS,
+    PRIVACY_PRECHECK,
     build_soak_evidence,
+)
+from tools.release_security_attestation import (
+    evaluate_audited_lock_pins,
+    evaluate_privacy_attestation,
 )
 
 _MISSING = object()
+
+_ATTESTATION_CLAIM_FIELDS = ("profile_s_smoke", "security_privacy_gate")
+
+
+def _security_attestation_blockers(
+    actual: dict[str, Any],
+    expected: dict[str, Any],
+    evidence_root: Path,
+) -> list[str]:
+    """Fail-closed attestation blockers, active only under a pass claim.
+
+    When neither the actual evidence nor the rebuilt expected evidence
+    claims ``profile_s_smoke`` or ``security_privacy_gate`` pass, this
+    returns no blockers and legacy behavior is unchanged.
+    """
+    claims_pass = any(
+        actual.get(field) == "pass" or expected.get(field) == "pass"
+        for field in _ATTESTATION_CLAIM_FIELDS
+    )
+    if not claims_pass:
+        return []
+    blockers = list(
+        evaluate_privacy_attestation(evidence_root / PRIVACY_PRECHECK)
+    )
+    audited_report = None
+    for name in FINAL_PIP_AUDIT_REPORTS:
+        candidate = evidence_root / name
+        if candidate.exists():
+            audited_report = candidate
+            break
+    blockers.extend(evaluate_audited_lock_pins(audited_report))
+    return blockers
 
 
 def _parse_timestamp(value: object) -> dt.datetime:
@@ -88,6 +126,10 @@ def build_report(
         if actual_value != expected_value:
             mismatched_fields.append(field)
             blockers.append(f"field_mismatch:{field}")
+
+    blockers.extend(
+        _security_attestation_blockers(actual, expected, evidence_root)
+    )
 
     return {
         "schema_version": "waggledance.release_soak_verifier.v1",

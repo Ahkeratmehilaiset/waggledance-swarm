@@ -23,6 +23,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Direct-script invocations put tools/ (not the repo root) on sys.path;
+# without the root the lazy canonical-verifier import degrades the gate to
+# soak_reproducibility_verifier_unavailable. Mirror the bootstrap the
+# verifier itself uses so the canonical verifier is always importable.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 
 SCHEMA_VERSION = "waggledance.release_soak.v1"
 

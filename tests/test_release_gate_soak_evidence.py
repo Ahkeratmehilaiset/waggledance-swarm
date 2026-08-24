@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from tools.check_release_gate import evaluate_release_gate
 
@@ -336,6 +339,43 @@ def test_release_gate_holds_when_reproducibility_report_malformed(
     repro = result["soak_evidence_diagnostics"]["soak_reproducibility"]
     assert repro["verified"] is False
     assert repro["report_malformed"] is True
+
+
+def test_release_gate_cli_direct_script_reaches_canonical_verifier() -> None:
+    # Direct-script invocation puts tools/ on sys.path (not the repo root);
+    # the gate must still import the canonical verifier and surface real
+    # field mismatches - never degrade to verifier_unavailable.
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path("tools") / "check_release_gate.py"),
+            "--release-readiness",
+            "docs/release/RELEASE_READINESS.md",
+            "--soak-evidence",
+            "docs/runs/release_soak_evidence/v3.12.0.json",
+            "--today",
+            "2026-08-24",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    result = json.loads(completed.stdout)
+    assert result["decision"] == "hold"
+    assert (
+        "soak_reproducibility_verifier_unavailable"
+        not in result["blockers"]
+    )
+    assert "soak_evidence_not_reproducible" in result["blockers"]
+    assert any(
+        blocker.startswith("field_mismatch:")
+        for blocker in result["blockers"]
+    )
+    repro = result["soak_evidence_diagnostics"]["soak_reproducibility"]
+    assert repro["available"] is True
+    assert repro["verified"] is False
 
 
 def test_release_gate_skips_reproducibility_for_structurally_invalid_paths(

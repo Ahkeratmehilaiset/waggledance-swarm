@@ -44,7 +44,30 @@ def _hold_evidence() -> dict[str, object]:
     return evidence
 
 
-def test_hold_release_gate_is_recorded_without_release_mutation(tmp_path) -> None:
+def _pin_verifier_verified(monkeypatch) -> None:
+    """Pin the reproducibility verifier to verified=True.
+
+    These tests own the readonly-recheck read-only contract over synthetic
+    evidence; the release gate now also requires local-artifact
+    reproducibility, which synthetic fixtures cannot satisfy.
+    Reproducibility behavior itself is covered by
+    tests/test_release_gate_soak_evidence.py.
+    """
+    monkeypatch.setattr(
+        "tools.verify_release_soak_evidence.build_report",
+        lambda **_kwargs: {
+            "schema_version": "waggledance.release_soak_verifier.v1",
+            "verified": True,
+            "blockers": [],
+            "mismatched_fields": [],
+        },
+    )
+
+
+def test_hold_release_gate_is_recorded_without_release_mutation(
+    tmp_path, monkeypatch
+) -> None:
+    _pin_verifier_verified(monkeypatch)
     evidence_path = tmp_path / "release_soak_evidence.json"
     evidence_path.write_text(json.dumps(_hold_evidence()), encoding="utf-8")
 
@@ -78,7 +101,8 @@ def test_hold_release_gate_is_recorded_without_release_mutation(tmp_path) -> Non
     assert report["gate"]["target_version"] == "v3.12.0"
 
 
-def test_passing_gate_is_still_read_only(tmp_path) -> None:
+def test_passing_gate_is_still_read_only(tmp_path, monkeypatch) -> None:
+    _pin_verifier_verified(monkeypatch)
     evidence_path = tmp_path / "release_soak_evidence.json"
     evidence_path.write_text(json.dumps(_valid_evidence()), encoding="utf-8")
 
@@ -134,7 +158,10 @@ def test_strict_exit_code_reports_blocked_hold(tmp_path) -> None:
     assert strict_exit_code(report) == STRICT_BLOCKED_EXIT_CODE
 
 
-def test_cli_strict_returns_blocked_after_writing_report(tmp_path, capsys) -> None:
+def test_cli_strict_returns_blocked_after_writing_report(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    _pin_verifier_verified(monkeypatch)
     evidence_path = tmp_path / "release_soak_evidence.json"
     output = tmp_path / "release_gate_readonly_recheck.json"
     evidence_path.write_text(json.dumps(_hold_evidence()), encoding="utf-8")
@@ -166,7 +193,10 @@ def test_cli_strict_returns_blocked_after_writing_report(tmp_path, capsys) -> No
     assert all(value is False for value in disk_report["release_boundary"].values())
 
 
-def test_cli_strict_passes_without_release_mutation(tmp_path, capsys) -> None:
+def test_cli_strict_passes_without_release_mutation(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    _pin_verifier_verified(monkeypatch)
     evidence_path = tmp_path / "release_soak_evidence.json"
     output = tmp_path / "release_gate_readonly_recheck.json"
     evidence_path.write_text(json.dumps(_valid_evidence()), encoding="utf-8")

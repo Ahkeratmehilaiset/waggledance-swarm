@@ -3569,6 +3569,14 @@ dHlfcmV2aWV3IiwiYWR2ZXJzYXJpYWxfcmV2aWV3IiwiYnJpZGdlX2V2ZW50Iiwid29ya19xdWV1ZSJd
                     '"agent":"claude-rco-2"', '"agent":"claude-rco-x"'
                 ) + [char]13 + [char]10
             )
+        },
+        [pscustomobject]@{
+            # Identical content but LF-terminated (no CR): the no-LF
+            # digest diverges, so the dual-digest gate blocks it.
+            Name = 'lf-terminated waived content'
+            Root = 'adv-type-lf-variant'
+            WalId = ('9a' * 16)
+            Bytes = $bareCrUtf8.GetBytes($advNormalized + [char]10)
         }
     )
     foreach ($advCase in $advTypeBlockCases) {

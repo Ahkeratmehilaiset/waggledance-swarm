@@ -1385,6 +1385,9 @@ $legacyBareCrEventFingerprints = @(
 $legacyAdversarialTypeRowSha256 = (
     '7f77f0892c3a3832e6b528acfae930049d34bdbb20ce4a430c3d977612ccea9b'
 )
+$legacyAdversarialTypeRowNoLfSha256 = (
+    'dd8f93ce51aa52da8fb84cc986c4ba77bc0318eed5ecbc06c8fb80f856acccff'
+)
 $legacyAdversarialTypeFingerprint = @(
     'claude-rco-2',
     'rco2-v8-typo-type-probe',
@@ -1401,6 +1404,32 @@ function Test-BridgeLegacyAdversarialTypeRow {
         [Parameter(Mandatory)] [System.Text.UTF8Encoding] $StrictUtf8
     )
 
+    # Exact type prefilter: the waiver considers only the one pinned
+    # adversarial type; every other shape failure rethrows immediately.
+    if (
+        -not ($EventObject -is [System.Management.Automation.PSCustomObject])
+    ) {
+        return $false
+    }
+    $typeProperty = $EventObject.PSObject.Properties['type']
+    if (
+        $null -eq $typeProperty -or
+        -not ($typeProperty.Value -is [string]) -or
+        ([string]$typeProperty.Value) -cne
+        $legacyAdversarialTypeFingerprint[3]
+    ) {
+        return $false
+    }
+    # Dual digest: the exact line without its LF (retaining the CR) and
+    # the full physical row including the LF must both match, so a
+    # terminator byte-variant of the same content can never ride.
+    [byte[]]$noLfBytes = $StrictUtf8.GetBytes($ExactLine)
+    if (
+        (Get-BridgeSha256Hex -Bytes $noLfBytes) -cne
+        $legacyAdversarialTypeRowNoLfSha256
+    ) {
+        return $false
+    }
     [byte[]]$physicalBytes = $StrictUtf8.GetBytes($ExactLine + [char]10)
     if (
         (Get-BridgeSha256Hex -Bytes $physicalBytes) -cne
@@ -1408,8 +1437,15 @@ function Test-BridgeLegacyAdversarialTypeRow {
     ) {
         return $false
     }
+    # Re-run every shape rule EXCEPT known-type membership: the waiver
+    # skips only that one check, never the structural validation.
+    foreach ($field in @('type', 'agent', 'task_id', 'status')) {
+        $property = $EventObject.PSObject.Properties[$field]
+        if ($null -eq $property) { return $false }
+        if (-not ($property.Value -is [string])) { return $false }
+    }
     if (
-        -not ($EventObject -is [System.Management.Automation.PSCustomObject])
+        [string]$EventObject.agent -cnotmatch '^[a-z][a-z0-9_-]{1,32}$'
     ) {
         return $false
     }

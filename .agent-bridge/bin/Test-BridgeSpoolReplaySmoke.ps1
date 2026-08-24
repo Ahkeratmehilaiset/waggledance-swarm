@@ -3505,6 +3505,92 @@ dmVudF90YWlsXzNfcGFzc2VkIiwicnVudGltZV9hdXRob3JpdHlfdXNlZCI6ZmFsc2V9fQ0K
             -not (Test-Path -LiteralPath $caseWal.ReplayedPath -PathType Leaf)
         ) -Detail "err=$caseError"
     }
+
+    # --- historical adversarial-type waiver (canonical LF row 58240) ---
+    # Exact physical bytes of the deliberate 2026-08-09 type-validation
+    # probe row; the only shape-invalid row in the live log.
+    $advTypePhysicalBase64 = @'
+eyJ0c191dGMiOiIyMDI2LTA4LTA5VDIzOjI0OjM5LjE1NDY2MzhaIiwiYWdlbnQiOiJjbGF1ZGUtcmNvLTIiLCJ0eXBlIjoidG90
+YWxseS1ib2d1cy10eXBvLXR5cGUiLCJ0YXNrX2lkIjoicmNvMi12OC10eXBvLXR5cGUtcHJvYmUiLCJzdGF0dXMiOiJ0ZXN0X3By
+b2JlIiwic2V2ZXJpdHkiOiIiLCJ0byI6IiIsIm1lc3NhZ2UiOiJhZHZlcnNhcmlhbCBwcm9iZSBhZ2FpbnN0IHY4IHBhdGNoZWQg
+d3JpdGVyIiwicGF0aHMiOltdLCJ3cml0ZV9zY29wZSI6W10sInJ1bl9pZCI6IndkLXJlYm9vdC0yMDI2MDgwOFQxMzU5MjNaIiwi
+cGlkIjo0MTkyMCwiY3dkIjoiQzpcXFB5dGhvblxccHJvamVjdDJcXC5hZ2VudC1icmlkZ2VcXGJpbiIsInBheWxvYWQiOnt9LCJy
+b2xlIjoicmNvLXNlY3VyaXR5IiwiYWdlbnRfdXVpZCI6Ijc2NzM5OTk3LTAwNTgtNDFhMi04NTE0LTc4ZmYyOTU1MzdhYSIsInNl
+c3Npb25faWQiOiJ3ZC1yZWJvb3QtMjAyNjA4MDhUMTM1OTIzWiIsImNhcGFiaWxpdGllcyI6WyJyY29fcmV2aWV3Iiwic2VjdXJp
+dHlfcmV2aWV3IiwiYWR2ZXJzYXJpYWxfcmV2aWV3IiwiYnJpZGdlX2V2ZW50Iiwid29ya19xdWV1ZSJdfQ0K
+'@
+    [byte[]]$advTypePhysical = [Convert]::FromBase64String(
+        ($advTypePhysicalBase64 -replace '\s', '')
+    )
+    $advTypeText = $bareCrUtf8.GetString($advTypePhysical)
+    $advNormalized = $advTypeText.Substring(0, $advTypeText.Length - 2)
+
+    $advPassRoot = New-TestBareCrCanonical -Name 'adv-type-waived-pass' `
+        -RowBytes $advTypePhysical -BulkRows 2
+    $advPassWal = Write-TestAcceptedWal -Root $advPassRoot `
+        -WalId ('12' * 16) `
+        -Text ($bareCrTemplate.Replace('INDEX', 'adv-wal'))
+    $advPassOut = & $isolatedReplay -BridgeRoot $advPassRoot `
+        -AcceptedWalLeaf $advPassWal.Leaf `
+        -ExpectedWalSha256 $advPassWal.Sha256
+    Add-Check -Name 'waived adversarial-type row replays' -Passed (
+        ($advPassOut -match 'replayed=1 deduped=0 failed=0') -and
+        (Test-Path -LiteralPath $advPassWal.ReplayedPath -PathType Leaf)
+    ) -Detail "out=$advPassOut"
+
+    $advTypeBlockCases = @(
+        [pscustomobject]@{
+            # One-digit ts drift: digest and fingerprint both diverge.
+            Name = 'one-byte digest drift'
+            Root = 'adv-type-drift'
+            WalId = ('34' * 16)
+            Bytes = $bareCrUtf8.GetBytes(
+                $advNormalized.Replace(
+                    '23:24:39.1546638', '23:24:39.1546639'
+                ) + [char]13 + [char]10
+            )
+        },
+        [pscustomobject]@{
+            Name = 'different unknown type'
+            Root = 'adv-type-other'
+            WalId = ('56' * 16)
+            Bytes = $bareCrUtf8.GetBytes(
+                $bareCrTemplate.Replace('INDEX', 'other-type').Replace(
+                    '"type":"status"', '"type":"other-bogus-type"'
+                ) + [char]13 + [char]10
+            )
+        },
+        [pscustomobject]@{
+            Name = 'agent-field drift'
+            Root = 'adv-type-agent'
+            WalId = ('78' * 16)
+            Bytes = $bareCrUtf8.GetBytes(
+                $advNormalized.Replace(
+                    '"agent":"claude-rco-2"', '"agent":"claude-rco-x"'
+                ) + [char]13 + [char]10
+            )
+        }
+    )
+    foreach ($advCase in $advTypeBlockCases) {
+        $advRoot = New-TestBareCrCanonical -Name $advCase.Root `
+            -RowBytes $advCase.Bytes -BulkRows 2
+        $advEvents = Join-Path $advRoot 'shared/events.jsonl'
+        $advBefore = Get-BridgeTestFileLength -Path $advEvents
+        $advWal = Write-TestAcceptedWal -Root $advRoot `
+            -WalId $advCase.WalId `
+            -Text ($bareCrTemplate.Replace('INDEX', 'adv-blocked'))
+        $advErr = ''
+        try {
+            & $isolatedReplay -BridgeRoot $advRoot `
+                -AcceptedWalLeaf $advWal.Leaf `
+                -ExpectedWalSha256 $advWal.Sha256 | Out-Null
+        } catch { $advErr = $_.Exception.Message }
+        Add-Check -Name "unwaived adversarial-type row fails closed: $($advCase.Name)" -Passed (
+            ($advErr -match 'unknown event type') -and
+            ((Get-BridgeTestFileLength -Path $advEvents) -eq $advBefore) -and
+            -not (Test-Path -LiteralPath $advWal.ReplayedPath -PathType Leaf)
+        ) -Detail "err=$advErr"
+    }
 } finally {
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_RUNTIME_ROOT', $previousRuntimeRoot, 'Process'

@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
 
 AXIS_B_SCHEMA_VERSION = "waggledance.axis_b_hex_eval.v1"
 AXIS_B_TARGET_VERSION = "v3.12.0"
-AXIS_B_BENCHMARK_ID = None
+AXIS_B_BENCHMARK_ID = "v3.12-axis-b-hex-aligned-eval"
 AXIS_B_CELLS = (
     "bee_ops",
     "environment",
@@ -200,8 +200,17 @@ def _row_coherent(row: object, cell: str) -> bool:
         return False
     expected_pos = _rounded_ratio(counts["pos_correct"], counts["pos_total"])
     expected_neg = _rounded_ratio(counts["neg_correct"], counts["neg_total"])
+    # file_score is rounded ONCE from the raw count ratios, mirroring
+    # the producer; averaging the already-rounded pos/neg scores would
+    # false-block truthful rows (e.g. pos_correct=10: producer 0.8333,
+    # double-rounded 0.8334).
     expected_file = round(
-        (expected_pos + expected_neg) / 2, _SCORE_DECIMALS
+        (
+            counts["pos_correct"] / counts["pos_total"]
+            + counts["neg_correct"] / counts["neg_total"]
+        )
+        / 2,
+        _SCORE_DECIMALS,
     )
     if float(scores["pos_score"]) != expected_pos:
         return False
@@ -419,12 +428,16 @@ def evaluate_axis_b_attestation(
             value = loaded.get(key)
             if type(value) is not int or value != expected:
                 aggregates_coherent = False
+        # Quality mirrors the producer exactly: the rounded mean of the
+        # already-reported (and revalidated) per-row file_score values,
+        # NOT a symmetric micro-ratio formula - the two rounding paths
+        # genuinely diverge on heterogeneous rows.
         expected_quality = round(
-            (
-                micro_pos / micro_pos_total
-                + micro_neg / micro_neg_total
+            sum(
+                float(rows_by_cell[cell]["file_score"])
+                for cell in AXIS_B_CELLS
             )
-            / 2,
+            / len(AXIS_B_CELLS),
             _SCORE_DECIMALS,
         )
         reported_quality = loaded.get("quality")

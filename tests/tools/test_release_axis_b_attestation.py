@@ -32,7 +32,8 @@ def _write_sources(tmp_path) -> None:
 
 def _row(cell: str, pos_correct: int = 6) -> dict:
     pos_score = round(pos_correct / 15, 4)
-    file_score = round((pos_score + 1.0) / 2, 4)
+    # file_score rounds ONCE from raw ratios, mirroring the producer.
+    file_score = round((pos_correct / 15 + 1.0) / 2, 4)
     return {
         "cell": cell,
         "file": f"{cell}.yaml",
@@ -54,7 +55,7 @@ def _clean_report(tmp_path, **overrides) -> dict:
     report = {
         "schema_version": "waggledance.axis_b_hex_eval.v1",
         "target_version": "v3.12.0",
-        "benchmark_id": None,
+        "benchmark_id": "v3.12-axis-b-hex-aligned-eval",
         "result": "pass",
         "blockers": [],
         "quality": 0.9,
@@ -218,6 +219,77 @@ def test_row_shape_defects_block(tmp_path, mutate) -> None:
     assert "axis_b_metrics_incoherent" in blockers
 
 
+def _double_rounded_file_score(pos_correct: int) -> float:
+    """The rejected path: average the already-rounded pos/neg scores."""
+    return round((round(pos_correct / 15, 4) + 1.0) / 2, 4)
+
+
+@pytest.mark.parametrize("pos_correct", [10, 11, 13])
+def test_rounding_boundary_rows_pass(tmp_path, pos_correct: int) -> None:
+    # Boundary positions above the quality floor where the producer's
+    # single rounding of the raw ratios differs from averaging the
+    # pre-rounded scores (e.g. 10 => producer 0.8333 vs 0.8334). Each
+    # truthful report must survive.
+    _write_sources(tmp_path)
+    rows = [_row(cell, pos_correct=pos_correct) for cell in AXIS_B_CELLS]
+    file_score = rows[0]["file_score"]
+    assert file_score != _double_rounded_file_score(pos_correct)
+    report = _clean_report(
+        tmp_path,
+        per_file=rows,
+        micro_pos=pos_correct * len(AXIS_B_CELLS),
+        quality=file_score,
+    )
+    blockers = _evaluate(tmp_path, report)
+
+    assert blockers == []
+
+
+@pytest.mark.parametrize("pos_correct", [2, 5])
+def test_rounding_boundary_rows_below_floor_stay_coherent(
+    tmp_path, pos_correct: int
+) -> None:
+    # The same divergence exists below the quality floor. Those reports
+    # are blocked on the floor, but must never be called incoherent -
+    # that would misattribute a real quality shortfall to metric drift.
+    _write_sources(tmp_path)
+    rows = [_row(cell, pos_correct=pos_correct) for cell in AXIS_B_CELLS]
+    file_score = rows[0]["file_score"]
+    assert file_score != _double_rounded_file_score(pos_correct)
+    report = _clean_report(
+        tmp_path,
+        per_file=rows,
+        micro_pos=pos_correct * len(AXIS_B_CELLS),
+        quality=file_score,
+    )
+    blockers = _evaluate(tmp_path, report)
+
+    assert "axis_b_metrics_incoherent" not in blockers
+
+
+def test_quality_mirrors_mean_of_file_scores_not_micro(tmp_path) -> None:
+    # Heterogeneous rows where the two rounding paths diverge:
+    # 6 rows at pos_correct=10 (file_score 0.8333) + 1 at 12 (0.9).
+    # Producer quality = round(mean(reported), 4) = 0.8428, while the
+    # symmetric micro formula would give 0.8429.
+    _write_sources(tmp_path)
+    rows = [
+        _row(cell, pos_correct=(12 if index == 6 else 10))
+        for index, cell in enumerate(AXIS_B_CELLS)
+    ]
+    base = dict(
+        per_file=rows,
+        micro_pos=6 * 10 + 12,
+    )
+
+    passing = _clean_report(tmp_path, **base, quality=0.8428)
+    assert _evaluate(tmp_path, passing) == []
+
+    micro_style = _clean_report(tmp_path, **base, quality=0.8429)
+    blockers = _evaluate(tmp_path, micro_style)
+    assert "axis_b_metrics_incoherent" in blockers
+
+
 def test_quality_below_floor_blocks(tmp_path) -> None:
     _write_sources(tmp_path)
     # pos_correct=8 per cell: micro 56/105 -> quality
@@ -280,8 +352,9 @@ def test_corpus_or_threshold_drift_blocks(tmp_path, mutate) -> None:
         {"schema_version": "waggledance.axis_b_hex_eval.v2"},
         {"target_version": "v3.13.0"},
         {"benchmark_id": "other"},
+        {"benchmark_id": None},
     ],
-    ids=["result", "blockers", "schema", "target", "benchmark"],
+    ids=["result", "blockers", "schema", "target", "benchmark", "benchmark-null"],
 )
 def test_non_pass_or_identity_drift_blocks(tmp_path, overrides) -> None:
     _write_sources(tmp_path)

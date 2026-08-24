@@ -1344,6 +1344,134 @@ function Join-BridgeWalRowBytes {
     }
 }
 
+# Parity with tools/bridge_next_action.py: the append-only canonical
+# log's LF row 44000 contains one historical bare-CR separator joining
+# two otherwise-valid events. Compatibility binds BOTH digests: the
+# normalized digest (final CR stripped, mirroring the Python reader)
+# and the full physical-row digest including the historical CRLF
+# terminator, so an LF-terminated byte-variant of the same content can
+# never ride the waiver. Every other bare-CR row stays fail-closed.
+$legacyBareCrRowSha256 = (
+    '53f863ac93dd977504346feddc382ccd65bafceb4aeaad2bba1765712190a0d3'
+)
+$legacyBareCrRowPhysicalSha256 = (
+    '207a8e5cba836e2e3e63b777b537b18d397bc58f01613d2034fa7b899395c0bd'
+)
+$legacyBareCrEventFingerprints = @(
+    @(
+        'codex-lead-1',
+        ('production-liveness-reactivation-scout-2026-07-01-' +
+            'codex-tools-1-since-20260701t161039z'),
+        '2026-07-01T16:45:30.4576368Z',
+        'test',
+        'attention'
+    ),
+    @(
+        'codex-lead-1',
+        ('production-liveness-reactivation-scout-2026-07-01-' +
+            'codex-tools-1-since-20260701t161039z'),
+        '2026-07-01T16:46:54.4324612Z',
+        'message',
+        'bridge_log_repair_note'
+    )
+)
+
+function Add-BridgeLegacyBareCrRowKeys {
+    param(
+        [Parameter(Mandatory)] [string] $ExactLine,
+        [Parameter(Mandatory)] [string] $NormalizedLine,
+        [Parameter(Mandatory)] [string] $Label,
+        [Parameter(Mandatory)] [int] $LineNumber,
+        [Parameter(Mandatory)] [System.Text.UTF8Encoding] $StrictUtf8,
+        [Parameter(Mandatory)] [AllowEmptyCollection()]
+        [System.Collections.Generic.HashSet[string]] $Keys
+    )
+
+    [byte[]]$normalizedBytes = $StrictUtf8.GetBytes($NormalizedLine)
+    $digest = Get-BridgeSha256Hex -Bytes $normalizedBytes
+    if ($digest -cne $legacyBareCrRowSha256) {
+        throw (
+            "$Label has an unwaived bare-CR row at line ${LineNumber}: " +
+            'only the known historical row (normalized SHA-256 ' +
+            "$legacyBareCrRowSha256) is accepted"
+        )
+    }
+    # The normalized digest alone would also match an LF-terminated
+    # byte-variant of the same content ({A}CR{B}LF). The waiver binds
+    # the exact physical bytes including the historical CRLF terminator.
+    [byte[]]$physicalBytes = $StrictUtf8.GetBytes($ExactLine + [char]10)
+    $physicalDigest = Get-BridgeSha256Hex -Bytes $physicalBytes
+    if ($physicalDigest -cne $legacyBareCrRowPhysicalSha256) {
+        throw (
+            "$Label has an unwaived bare-CR row at line ${LineNumber}: " +
+            'physical bytes do not match the known historical row ' +
+            "(SHA-256 $legacyBareCrRowPhysicalSha256)"
+        )
+    }
+    $fragments = $NormalizedLine.Split([char]13)
+    if (
+        $fragments.Count -ne 2 -or
+        $fragments[0] -ceq '' -or
+        $fragments[1] -ceq ''
+    ) {
+        throw (
+            "$Label known historical bare-CR row at line $LineNumber " +
+            'must contain exactly two non-empty fragments'
+        )
+    }
+    for ($fragmentIndex = 0; $fragmentIndex -lt 2; $fragmentIndex++) {
+        $fragment = [string]$fragments[$fragmentIndex]
+        try { $eventObject = $fragment | ConvertFrom-Json -ErrorAction Stop }
+        catch {
+            throw (
+                "$Label known historical bare-CR row fragment " +
+                "$($fragmentIndex + 1) at line $LineNumber is malformed: " +
+                $_.Exception.Message
+            )
+        }
+        Assert-BridgeEventObjectShape -Object $eventObject -Label (
+            "$Label bare-CR fragment $($fragmentIndex + 1) " +
+            "at line $LineNumber"
+        )
+        [string[]]$expected = $legacyBareCrEventFingerprints[$fragmentIndex]
+        [string[]]$actual = foreach ($name in @(
+            'agent', 'task_id', 'ts_utc', 'type', 'status'
+        )) {
+            if ($name -ceq 'ts_utc') {
+                # ConvertFrom-Json converts ISO-8601 strings to DateTime
+                # objects whose culture-dependent restringification would
+                # false-mismatch the pinned fingerprint; bind the raw JSON
+                # text instead, exactly as the Python contract does.
+                $tsMatch = [regex]::Match(
+                    $fragment, '"ts_utc"\s*:\s*"([^"]*)"'
+                )
+                if ($tsMatch.Success) { $tsMatch.Groups[1].Value } else { '' }
+            } else {
+                $property = $eventObject.PSObject.Properties[$name]
+                if ($null -eq $property) { '' } else { [string]$property.Value }
+            }
+        }
+        for ($fieldIndex = 0; $fieldIndex -lt 5; $fieldIndex++) {
+            if ($actual[$fieldIndex] -cne $expected[$fieldIndex]) {
+                throw (
+                    "$Label known historical bare-CR row event " +
+                    "fingerprints do not match at line $LineNumber"
+                )
+            }
+        }
+        $fragmentText = if ($fragmentIndex -eq 0) {
+            # The first fragment's exact on-disk terminator is the bare CR.
+            $fragment + [char]13
+        } else {
+            # The physical digest gate above guarantees the historical
+            # CRLF terminator on the second fragment.
+            $fragment + [char]13 + [char]10
+        }
+        [byte[]]$fragmentBytes = $StrictUtf8.GetBytes($fragmentText)
+        [void]$Keys.Add((Get-BridgeSha256Hex -Bytes $fragmentBytes))
+    }
+}
+
 function Add-BridgeCanonicalKeysFromBytes {
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes,
@@ -1365,6 +1493,22 @@ function Add-BridgeCanonicalKeysFromBytes {
         $jsonLine = $exactLine
         if ($jsonLine.EndsWith([string][char]13)) {
             $jsonLine = $jsonLine.Substring(0, $jsonLine.Length - 1)
+        }
+        if ($jsonLine.IndexOf([char]13) -ge 0) {
+            # The canonical log's LF row 44000 carries one historical
+            # bare-CR separator joining two otherwise-valid events; an
+            # LF-only split hands both to ConvertFrom-Json as one string,
+            # which fails as additional text after the first value. Parity
+            # with tools/bridge_next_action.py: ONLY that exact waived row
+            # (normalized digest plus ordered event fingerprints) is
+            # accepted, keyed fragment-by-fragment over its exact
+            # historical terminator bytes; every other bare-CR row stays
+            # fail-closed. The live file is never normalized or mutated.
+            Add-BridgeLegacyBareCrRowKeys `
+                -ExactLine $exactLine -NormalizedLine $jsonLine `
+                -Label $Label -LineNumber ($index + 1) `
+                -StrictUtf8 $strictUtf8 -Keys $Keys
+            continue
         }
         if ([string]::IsNullOrWhiteSpace($jsonLine)) {
             throw "$Label has a blank or whitespace-only row at line $($index + 1)"

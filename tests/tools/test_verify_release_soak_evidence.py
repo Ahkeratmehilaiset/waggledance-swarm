@@ -49,6 +49,7 @@ _FINAL_PRIVACY_TEXT = "# v3.12.0 final privacy receipt\n\n87 passed\nSMOKE_OK\n"
         ("187 passed suffix", False),
         ("0 passed", False),
         ("eighty passed", False),
+        ("1" * 5000 + " passed", False),
     ],
     ids=[
         "floor-74",
@@ -59,6 +60,7 @@ _FINAL_PRIVACY_TEXT = "# v3.12.0 final privacy receipt\n\n87 passed\nSMOKE_OK\n"
         "trailing-suffix",
         "zero",
         "non-integer",
+        "hostile-very-long-count",
     ],
 )
 def test_privacy_passed_line_floor(tmp_path, passed_line, accepted) -> None:

@@ -34,7 +34,11 @@ if str(ROOT) not in sys.path:
 
 PRIVACY_REQUIRED_EXACT_LINES = ("SMOKE_OK",)
 PRIVACY_PASSED_COUNT_FLOOR = 74
-_PRIVACY_PASSED_LINE_PATTERN = re.compile(r"^([1-9][0-9]*) passed$")
+# The capture is bounded to nine digits: real suite counts fit easily,
+# and a hostile arbitrarily-long digit string must fail the match (same
+# stable blocker) instead of reaching int() and tripping Python's
+# integer-digit limit with an exception.
+_PRIVACY_PASSED_LINE_PATTERN = re.compile(r"^([1-9][0-9]{0,8}) passed$")
 NON_FINAL_MARKERS = (
     "not final",
     "not-final",

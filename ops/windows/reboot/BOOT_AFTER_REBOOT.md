@@ -45,22 +45,72 @@ only after the complete fleet and bridge baseline have passed verification.
 After the interactive `codex-lead-1` lane has completed its bridge-bootstrap
 handshake, the restore also reconciles exactly one separate Codex prompt-watcher
 window. It targets only the terminal title `codex-lead-1` and runs the bundled,
-hash-verified `Watch-CodexPrompts.ps1` with `-AllowAll -NoAllNighter`. This is
-intentionally dangerous: `-AllowAll` bypasses both that script's command
-allowlist and denylist and can approve any Codex command prompt it recognizes
-after the desktop-idle guard permits input. Keep the prompt-watcher window open
-only while this unattended behavior is intended. Claude lanes already use
+hash-verified `Watch-CodexPrompts.ps1` with `-AllowAll -NoAllNighter` and the
+canonical `-ContinueOnWake` tuple. This is intentionally dangerous: `-AllowAll`
+bypasses both that script's command allowlist and denylist and can approve any
+Codex command prompt it recognizes after the desktop-idle guard permits input.
+Keep the prompt-watcher window open only while this unattended behavior is
+intended.
+
+`-ContinueOnWake` closes a separate delivery gap: the watcher consumes
+`<runtime-root>\wake_codex-lead-1` only for one case-sensitive exact Lead tab
+whose UI Automation generation and native window handle were pinned at watcher
+startup. The watcher is also bound to the exact Lead process ID and start time;
+it exits and removes only its own readiness record if either the terminal or
+Lead process generation ends. It requires the empty Codex input marker, rejects
+an active turn or confirmation prompt, requires at least 60 seconds of operator
+idle time, and enforces a 300-second retry cooldown. The only continuation is
+one fixed, provenance-bearing message containing `jatka`, the exact current-task
+boundary, and an explicit statement that it grants no new authority; the path
+never sends `/clear`. The message specifically rejects merge, deployment,
+undraft, signature, allowlist, driver, destructive-action, and inferred operator
+authority. A permission prompt deferred by the desktop-idle guard is retried
+after the guard permits input instead of being cached forever. In this pinned
+Lead mode, every permission attempt rechecks the exact Lead process, tab runtime
+ID, HWND, foreground window, prompt command, and operator idle state immediately
+before one fixed `y`-plus-Enter sequence; it never steals focus for an approval.
+
+The wake path holds a singleton lock and atomically moves one sentinel generation
+to an in-flight file before sending. Success removes only that claimed
+generation, so a newer concurrently written canonical sentinel remains. The
+generation is consumed only after a positive UI receipt on the pinned Lead tab:
+an active turn, a newly appeared confirmation prompt, or an increase in the
+exact provenance-message transcript count followed by the empty input surface.
+A typed-but-unsubmitted message and an unchanged empty input surface are not
+receipts. Failure retains the in-flight generation for retry after the
+cooldown. That bound assumes a monotonically advancing UTC clock; clock rollback
+fails closed and can delay retry beyond 300 seconds. Claude lanes already use
 `--dangerously-skip-permissions`, and headless Tools uses approval policy
-`never`; neither receives a UI prompt watcher.
+`never`; neither receives a UI prompt watcher or this continuation path.
 
 DryRun verifies the prompt-watcher script and reports whether it would keep or
-launch the single Lead watcher. A non-canonical Lead watcher or more than one
-watcher targeting `codex-lead-1` is an ambiguous conflict and stops recovery
-before CLI updates or process launches. The prompt watcher is separate from the
-five supervisor-managed real-time bridge watchers. Failure to materialize a
-new watcher window after all lane handshakes is non-fatal: the launcher warns,
-leaves unattended Lead prompt approval disabled, and still completes the
-verified fleet restore. A later `-Auto` run reconciles the watcher again.
+launch the single Lead watcher without claiming, renaming, or deleting a wake
+sentinel and without selecting or focusing a terminal tab. A launched watcher
+publishes an atomic readiness record only after it owns the singleton lock and
+has pinned its watcher process, Lead process, tab runtime ID, and HWND. The
+launcher reports it as current only when that record attests the exact command
+tuple and the recorded PID/start still matches a live process. A command-exact
+process may remain in `starting` only for a bounded startup grace; an older
+unattested process is a conflict. A legacy watcher missing the exact wake root,
+cooldown, idle, Lead PID/start, or readiness-path tuple is also a conflict.
+Candidate discovery includes processes naming the `Watch-CodexPrompts` stem and
+visible or decoded PowerShell commands that name `codex-lead-1` with recognized
+auto-approval switches, including unambiguous abbreviations. More than one such
+candidate stops recovery before CLI updates or process launches. A wholly
+custom opaque process that hides all of those markers cannot be attributed by
+the launcher and must not be run alongside this watcher. The prompt watcher is
+separate from the five
+supervisor-managed real-time bridge watchers. Failure to materialize a new
+watcher window after all lane handshakes is non-fatal: the launcher warns,
+leaves unattended Lead prompt approval and wake continuation disabled, and still
+completes the verified fleet restore. If a command-exact process materializes
+but never attests readiness, the launcher fails instead of claiming that its
+dangerous behavior is disabled, and it never terminates an unowned process. A
+later `-Auto` run reconciles a genuinely missing watcher again.
+
+An already-running legacy watcher is deliberately not replaced in place. Close
+only the exact, independently verified legacy watcher process and rerun `-Auto`;
+the launcher will neither kill it nor start a duplicate beside it.
 
 The DryRun includes the supervisor's byte-inert watcher plan. A single stale
 watcher is replaceable only when its command tuple, identity, runtime root,

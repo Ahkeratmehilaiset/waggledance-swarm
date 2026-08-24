@@ -349,7 +349,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
 def test_codex_prompt_watcher_is_exact_copy_and_integrity_mapped() -> None:
     watcher = REBOOT / "Watch-CodexPrompts.ps1"
     assert hashlib.sha256(watcher.read_bytes()).hexdigest().upper() == (
-        "71A623531DA29DC8DAB5BE491AA2FB6773D99A610CDB2AC0DE4FA707E52C4CAB"
+        "47356852B3DDAAA078964E5BE73BCDAD9CB2720E995064DE7496CE93F9D03F2A"
     )
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "ops/windows/reboot/Watch-CodexPrompts.ps1 binary" in attributes
@@ -364,6 +364,26 @@ def test_codex_prompt_watcher_is_exact_copy_and_integrity_mapped() -> None:
         runbook,
     )
     assert "neither receives a UI prompt watcher" in runbook
+    assert "`-ContinueOnWake` closes a separate delivery gap" in runbook
+    assert "provenance-bearing message containing `jatka`" in runbook
+    assert "grants no new authority" in runbook
+    assert "never sends `/clear`" in runbook
+    assert re.search(
+        r"at least 60 seconds of operator\s+idle time",
+        runbook,
+    )
+    assert "300-second retry cooldown" in runbook
+    assert "newer concurrently written canonical sentinel remains" in runbook
+    assert "exact Lead process ID and start time" in runbook
+    assert "positive UI receipt on the pinned Lead tab" in runbook
+    assert re.search(
+        r"an unchanged empty input surface are not\s+receipts",
+        runbook,
+        re.IGNORECASE,
+    )
+    assert "clock rollback" in runbook
+    assert "without selecting or focusing a terminal tab" in runbook
+    assert "publishes an atomic readiness record" in runbook
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
@@ -382,8 +402,17 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 )
 if ($errors.Count) {{ throw 'launcher parse failed' }}
 foreach ($name in @(
+    'ConvertTo-UtcDateTimeOffset',
     'Test-NamedCommandLineArgument',
     'Test-WdCommandLineSwitchSequenceExact',
+    'Initialize-WdRebootCommandLineParser',
+    'ConvertFrom-WdRebootWindowsCommandLine',
+    'Test-WdPromptWatcherPathArgument',
+    'Test-WdPromptWatcherCommandLineCandidate',
+    'Test-WdCodexPromptWatcherCommandLineExact',
+    'ConvertTo-WdProcessStartUtcText',
+    'Test-WdLiveProcessGeneration',
+    'Test-WdCodexPromptWatcherReadyRecord',
     'Get-WdCodexPromptWatcherState'
   )) {{
   $functionAst = $ast.Find(
@@ -399,23 +428,56 @@ foreach ($name in @(
 }}
 $watcher = 'C:\bundle generation\Watch-CodexPrompts.ps1'
 $log = 'C:\Python\wd-reboot-runtime\prompt-watchers\codex-lead-1.log'
+$wakeRoot = 'C:\Python\project2-master\.agent-bridge'
 $hostPath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$watcherPid = $PID
+$watcherTestProcess = Get-Process -Id $PID -ErrorAction Stop
+$watcherStart = $watcherTestProcess.StartTime.ToUniversalTime().ToString('o')
+$leadPid = $PID
+$leadStart = $watcherStart
+$ready = Join-Path ([IO.Path]::GetTempPath()) (
+  'wd-prompt-ready-' + [guid]::NewGuid().ToString('N') + '.json'
+)
+@{{
+  schema_version = 1
+  status = 'ready'
+  watcher_pid = $watcherPid
+  watcher_process_start_utc = $watcherStart
+  lead_process_id = $leadPid
+  lead_process_start_utc = $leadStart
+  tab_title = 'codex-lead-1'
+  tab_runtime_id = '42.1.2'
+  window_handle = 4242
+  wake_runtime_root = $wakeRoot
+  created_at_utc = [DateTime]::UtcNow.ToString('o')
+}} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ready -Encoding UTF8
 $canonicalCommand = (
+  '"' + $hostPath + '" -NoProfile -ExecutionPolicy Bypass ' +
+  '-File "' + $watcher + '" -AllowAll -NoAllNighter ' +
+  '-TabTitle codex-lead-1 -LogPath "' + $log + '" ' +
+  '-ContinueOnWake -WakeRuntimeRoot "' + $wakeRoot + '" ' +
+  '-WakeCooldownSeconds 300 -MinUserIdleSeconds 60 ' +
+  '-LeadProcessId ' + $leadPid + ' -LeadProcessStartUtc ' + $leadStart + ' ' +
+  '-ReadyPath "' + $ready + '"'
+)
+$legacyCommand = (
   '"' + $hostPath + '" -NoProfile -ExecutionPolicy Bypass ' +
   '-File "' + $watcher + '" -AllowAll -NoAllNighter ' +
   '-TabTitle codex-lead-1 -LogPath "' + $log + '"'
 )
 $canonical = [pscustomobject]@{{
-  ProcessId = 101
+  ProcessId = $watcherPid
   Name = 'powershell.exe'
   ExecutablePath = $hostPath
   CommandLine = $canonicalCommand
+  CreationDate = [datetime]$watcherStart
 }}
 $canonical2 = [pscustomobject]@{{
-  ProcessId = 102
+  ProcessId = $watcherPid
   Name = 'powershell.exe'
   ExecutablePath = $hostPath
   CommandLine = $canonicalCommand
+  CreationDate = [datetime]$watcherStart
 }}
 $loose = [pscustomobject]@{{
   ProcessId = 103
@@ -434,6 +496,126 @@ $extraUnsafe = [pscustomobject]@{{
   ExecutablePath = $hostPath
   CommandLine = $canonicalCommand + ' -MinUserIdleSeconds 0'
 }}
+$legacy = [pscustomobject]@{{
+  ProcessId = 107
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $legacyCommand
+}}
+$wrongWakeRoot = [pscustomobject]@{{
+  ProcessId = 108
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    $wakeRoot,
+    'C:\Python\other-runtime\.agent-bridge'
+  )
+}}
+$relativeFile = [pscustomobject]@{{
+  ProcessId = 121
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '"' + $watcher + '"',
+    '"Watch-CodexPrompts.ps1"'
+  )
+}}
+$relativeLog = [pscustomobject]@{{
+  ProcessId = 122
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '"' + $log + '"',
+    '"codex-lead-1.log"'
+  )
+}}
+$relativeWake = [pscustomobject]@{{
+  ProcessId = 123
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '"' + $wakeRoot + '"',
+    '".agent-bridge"'
+  )
+}}
+$relativeReady = [pscustomobject]@{{
+  ProcessId = 124
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '"' + $ready + '"',
+    '"codex-lead-1.ready.json"'
+  )
+}}
+$unsafeIdle = [pscustomobject]@{{
+  ProcessId = 109
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-MinUserIdleSeconds 60',
+    '-MinUserIdleSeconds 0'
+  )
+}}
+$wrongCooldown = [pscustomobject]@{{
+  ProcessId = 110
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-WakeCooldownSeconds 300',
+    '-WakeCooldownSeconds 1'
+  )
+}}
+$slashNoExit = [pscustomobject]@{{
+  ProcessId = 111
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '"' + $hostPath + '"',
+    '"' + $hostPath + '" /NoExit'
+  )
+}}
+$wrongTitleCase = [pscustomobject]@{{
+  ProcessId = 112
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-TabTitle codex-lead-1',
+    '-TabTitle CODEX-LEAD-1'
+  )
+}}
+$colonTitle = [pscustomobject]@{{
+  ProcessId = 115
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-TabTitle codex-lead-1',
+    '-TabTitle:codex-lead-1'
+  )
+}}
+$abbreviatedTitle = [pscustomobject]@{{
+  ProcessId = 116
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-TabTitle codex-lead-1',
+    '-Tab codex-lead-1'
+  )
+}}
+$positionalNoise = [pscustomobject]@{{
+  ProcessId = 113
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand + ' stray'
+}}
+$wrongLeadGeneration = [pscustomobject]@{{
+  ProcessId = 114
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace(
+    '-LeadProcessId ' + $leadPid,
+    '-LeadProcessId 2147483646'
+  )
+}}
 $wrongHost = [pscustomobject]@{{
   ProcessId = 105
   Name = 'powershell.exe'
@@ -449,29 +631,145 @@ $otherLane = [pscustomobject]@{{
     '-TabTitle claude-rco-1'
   )
 }}
+$commandHost = [pscustomobject]@{{
+  ProcessId = 117
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    '"' + $hostPath + '" -NoProfile -Command "& ''' + $watcher +
+    ''' -AllowAll -TabTitle codex-lead-1"'
+  )
+}}
+$renamedWatcher = $watcher.Replace(
+  'Watch-CodexPrompts.ps1',
+  'Watch-CodexPrompts-legacy.ps1'
+)
+$renamedWatcherProcess = [pscustomobject]@{{
+  ProcessId = 118
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand.Replace($watcher, $renamedWatcher)
+}}
+$encodedWatcherText = (
+  "& '$renamedWatcher' -AllowAll -TabTitle codex-lead-1"
+)
+$encodedWatcherCommand = [Convert]::ToBase64String(
+  [Text.Encoding]::Unicode.GetBytes($encodedWatcherText)
+)
+$encodedWatcherProcess = [pscustomobject]@{{
+  ProcessId = 119
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    '"' + $hostPath + '" -NoProfile -EncodedCommand ' +
+    $encodedWatcherCommand
+  )
+}}
+$abbreviatedRenamedWatcher = [pscustomobject]@{{
+  ProcessId = 120
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    '"' + $hostPath + '" -NoProfile -File "C:\old\prompt.ps1" ' +
+    '-A -T codex-lead-1'
+  )
+}}
+$quotedAbbreviatedWatcher = [pscustomobject]@{{
+  ProcessId = 125
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = (
+    '"' + $hostPath + '" -NoProfile -File "C:\old\prompt.ps1" ' +
+    '"-A" "-T" codex-lead-1'
+  )
+}}
+$alternatePowerShellHost = [pscustomobject]@{{
+  ProcessId = 126
+  Name = 'powershell_ise.exe'
+  ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell_ise.exe'
+  CommandLine = $canonicalCommand
+}}
+$staleExact = [pscustomobject]@{{
+  ProcessId = 2147483646
+  Name = 'powershell.exe'
+  ExecutablePath = $hostPath
+  CommandLine = $canonicalCommand
+  CreationDate = [datetime]$watcherStart
+}}
 function Get-State([object[]]$Processes) {{
   Get-WdCodexPromptWatcherState `
     -Processes $Processes `
     -WatcherScript $watcher `
     -TargetTitle codex-lead-1 `
     -LogPath $log `
+    -WakeRuntimeRoot $wakeRoot `
+    -WakeCooldownSeconds 300 `
+    -MinUserIdleSeconds 60 `
+    -LeadProcessId $leadPid `
+    -LeadProcessStartUtc $leadStart `
+    -ReadyPath $ready `
     -ExpectedExecutable $hostPath
 }}
 $current = Get-State @($canonical)
 $duplicate = Get-State @($canonical, $canonical2)
 $looseState = Get-State @($loose)
+$relativeFileState = Get-State @($relativeFile)
+$relativeLogState = Get-State @($relativeLog)
+$relativeWakeState = Get-State @($relativeWake)
+$relativeReadyState = Get-State @($relativeReady)
 $extraState = Get-State @($extraUnsafe)
 $hostState = Get-State @($wrongHost)
 $otherState = Get-State @($otherLane)
+$legacyState = Get-State @($legacy)
+$wrongWakeState = Get-State @($wrongWakeRoot)
+$unsafeIdleState = Get-State @($unsafeIdle)
+$wrongCooldownState = Get-State @($wrongCooldown)
+$slashState = Get-State @($slashNoExit)
+$titleCaseState = Get-State @($wrongTitleCase)
+$colonTitleState = Get-State @($colonTitle)
+$abbreviatedTitleState = Get-State @($abbreviatedTitle)
+$positionalState = Get-State @($positionalNoise)
+$wrongLeadState = Get-State @($wrongLeadGeneration)
+$commandHostState = Get-State @($commandHost)
+$renamedWatcherState = Get-State @($renamedWatcherProcess)
+$encodedWatcherState = Get-State @($encodedWatcherProcess)
+$abbreviatedRenamedState = Get-State @($abbreviatedRenamedWatcher)
+$quotedAbbreviatedState = Get-State @($quotedAbbreviatedWatcher)
+$alternateHostState = Get-State @($alternatePowerShellHost)
+$staleExactState = Get-State @($staleExact)
 $missing = Get-State @()
+Remove-Item -LiteralPath $ready -Force
+$notReady = Get-State @($canonical)
 [pscustomobject]@{{
   current = [string]$current.action
   current_exact = @($current.exact).Count
   duplicate = [string]$duplicate.action
   loose = [string]$looseState.action
+  relative_file = [string]$relativeFileState.action
+  relative_log = [string]$relativeLogState.action
+  relative_wake = [string]$relativeWakeState.action
+  relative_ready = [string]$relativeReadyState.action
   extra = [string]$extraState.action
   wrong_host = [string]$hostState.action
   other_lane = [string]$otherState.action
+  legacy = [string]$legacyState.action
+  wrong_wake_root = [string]$wrongWakeState.action
+  unsafe_idle = [string]$unsafeIdleState.action
+  wrong_cooldown = [string]$wrongCooldownState.action
+  slash_no_exit = [string]$slashState.action
+  wrong_title_case = [string]$titleCaseState.action
+  colon_title = [string]$colonTitleState.action
+  abbreviated_title = [string]$abbreviatedTitleState.action
+  positional_noise = [string]$positionalState.action
+  wrong_lead_generation = [string]$wrongLeadState.action
+  command_host = [string]$commandHostState.action
+  renamed_watcher = [string]$renamedWatcherState.action
+  encoded_watcher = [string]$encodedWatcherState.action
+  abbreviated_renamed = [string]$abbreviatedRenamedState.action
+  quoted_abbreviated = [string]$quotedAbbreviatedState.action
+  alternate_host = [string]$alternateHostState.action
+  stale_exact = [string]$staleExactState.action
+  not_ready = [string]$notReady.action
   missing = [string]$missing.action
 }} | ConvertTo-Json -Compress
 """,
@@ -482,9 +780,31 @@ $missing = Get-State @()
         "current_exact": 1,
         "duplicate": "conflict",
         "loose": "conflict",
+        "relative_file": "conflict",
+        "relative_log": "conflict",
+        "relative_wake": "conflict",
+        "relative_ready": "conflict",
         "extra": "conflict",
         "wrong_host": "conflict",
-        "other_lane": "launch",
+        "other_lane": "conflict",
+        "legacy": "conflict",
+        "wrong_wake_root": "conflict",
+        "unsafe_idle": "conflict",
+        "wrong_cooldown": "conflict",
+        "slash_no_exit": "conflict",
+        "wrong_title_case": "conflict",
+        "colon_title": "conflict",
+        "abbreviated_title": "conflict",
+        "positional_noise": "conflict",
+        "wrong_lead_generation": "conflict",
+        "command_host": "conflict",
+        "renamed_watcher": "conflict",
+        "encoded_watcher": "conflict",
+        "abbreviated_renamed": "conflict",
+        "quoted_abbreviated": "conflict",
+        "alternate_host": "conflict",
+        "stale_exact": "conflict",
+        "not_ready": "starting",
         "missing": "launch",
     }
 
@@ -503,13 +823,519 @@ def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
     assert "$promptWatcherTargetTitle = 'codex-lead-1'" in launcher
     assert "'-AllowAll'" in launcher[launch_block:]
     assert "'-NoAllNighter'" in launcher[launch_block:]
+    assert "'-ContinueOnWake'" in launcher[launch_block:]
+    assert "'-WakeRuntimeRoot'" in launcher[launch_block:]
+    assert "'-LeadProcessId'" in launcher[launch_block:]
+    assert "'-LeadProcessStartUtc'" in launcher[launch_block:]
+    assert "'-ReadyPath'" in launcher[launch_block:]
+    assert "$promptWatcherWakeCooldownSeconds = 300" in launcher
+    assert "$promptWatcherMinUserIdleSeconds = 60" in launcher
+    assert (
+        "'-WakeCooldownSeconds', ([string]$promptWatcherWakeCooldownSeconds)"
+        in launcher[launch_block:]
+    )
+    assert (
+        "'-MinUserIdleSeconds', ([string]$promptWatcherMinUserIdleSeconds)"
+        in launcher[launch_block:]
+    )
+    assert "$promptWatcherWakeRuntimeRoot = Resolve-NormalizedPath" in launcher
+    assert "-Path ([string]$manifest.runtime_root)" in launcher
+    assert "$promptWatcherWakeSentinelPath = Join-Path" in launcher
+    assert "Join-Path $runtimeRoot 'wake_codex-lead-1'" not in launcher
+    assert "function Get-WdPromptWatcherProcessSnapshots" in launcher
+    assert launcher.count("-Processes (Get-WdPromptWatcherProcessSnapshots)") >= 3
     assert "-TargetTitle $promptWatcherTargetTitle" in launcher[launch_block:]
     assert "claude-rco-1" not in launcher[launch_block:]
     assert "claude-rco-2" not in launcher[launch_block:]
     assert "codex-tools-1" not in launcher[launch_block:]
     assert "fleet restore still succeeded" in launcher
     assert "unattended Lead" in launcher
-    assert "prompt approval is disabled" in launcher
+    assert "prompt approval and wake continuation" in launcher
+    assert "are unavailable." in launcher
+
+
+def test_codex_prompt_watcher_wake_path_is_hard_coded_and_fail_closed() -> None:
+    watcher = (REBOOT / "Watch-CodexPrompts.ps1").read_text(encoding="utf-8")
+    wake_sender = watcher[
+        watcher.index("function Send-WdWakeContinue") : watcher.index(
+            "function Test-PromptStillPresent"
+        )
+    ]
+    permission_sender = watcher[
+        watcher.index("function Send-WdLeadPermissionYesEnter") : watcher.index(
+            "function Send-YesEnter"
+        )
+    ]
+    transaction = watcher[
+        watcher.index("function Invoke-WdWakeSentinelTransaction") : watcher.index(
+            "function Get-AllTerminalWindows"
+        )
+    ]
+    wake_loop = watcher[watcher.index("# Permission prompts always win.") :]
+
+    assert "ContinueOnWake is restricted to exact TabTitle codex-lead-1" in watcher
+    assert "ContinueOnWake requires MinUserIdleSeconds >= 60" in watcher
+    assert "[IO.FileShare]::None" in watcher
+    wake_prompt_match = re.search(
+        r"\$script:WdBridgeWakePrompt = '([^']+)'", watcher
+    )
+    assert wake_prompt_match is not None
+    wake_prompt = wake_prompt_match.group(1)
+    assert wake_prompt.startswith("AUTOMATED BRIDGE WAKE: jatka")
+    assert "grants no new authority" in wake_prompt
+    assert "assume an operator decision" in wake_prompt
+    assert "remain blocked" in wake_prompt
+    assert not set(wake_prompt).intersection("+^%~(){}[]")
+    fixed_send = "$script:WdBridgeWakePrompt + '{ENTER}'"
+    assert fixed_send in wake_sender
+    assert wake_sender.rindex("Get-UserIdleSeconds") < wake_sender.index(
+        "[System.Windows.Forms.SendKeys]::SendWait("
+    )
+    assert "SendWait('jatka')" not in wake_sender
+    assert "SendWait('{ENTER}')" not in wake_sender
+    assert "[System.Windows.Forms.SendKeys]::SendWait('y{ENTER}')" in permission_sender
+    assert "Force-Foreground" not in permission_sender
+    assert permission_sender.rindex("Get-UserIdleSeconds") < permission_sender.index(
+        "SendWait('y{ENTER}')"
+    )
+    assert "Test-WdProcessGeneration" in permission_sender
+    assert "ExpectedRuntimeId" in permission_sender
+    assert "ExpectedWindowHandle" in permission_sender
+    assert "$consecutiveDismissalReceipts = 0" in permission_sender
+    assert "$consecutiveDismissalReceipts++" in permission_sender
+    assert "$consecutiveDismissalReceipts -ge 2" in permission_sender
+    assert "if ($ContinueOnWake)" in watcher
+    assert "/clear" not in wake_sender.lower()
+    assert "Ask Codex to do anything" in watcher
+    assert "esc to interrupt" in watcher
+    assert "confirmation_prompt_active" in watcher
+    assert "operator_active_or_unknown" in watcher
+    assert "Get-WdWakeIdentityDisposition" in watcher
+    assert "[IO.File]::Move($SentinelPath, $InflightPath)" in transaction
+    assert "[IO.File]::Delete($InflightPath)" in transaction
+    assert "[IO.File]::Delete($SentinelPath)" not in transaction
+    assert "if ($DryRun)" in transaction
+    assert wake_loop.index("if ($DryRun -and $wakeDisposition") < wake_loop.index(
+        "-SelectTab"
+    )
+    assert "$deferredPromptCommand" in watcher
+    assert "$promptRetryAfterUtc" in watcher
+    assert watcher.rindex("Send-WdLeadPermissionYesEnter") < watcher.index(
+        "if ($ContinueOnWake -and $null -eq $targetCmd)"
+    )
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_codex_prompt_watcher_wake_safety_and_transaction_semantics() -> None:
+    watcher = str(REBOOT / "Watch-CodexPrompts.ps1").replace("'", "''")
+    result = _run_powershell(
+        rf"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{watcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'watcher parse failed' }}
+foreach ($name in @(
+    'ConvertTo-WdWakeUtc',
+    'Get-WdWakeFileUtc',
+    'Assert-WdWakePathIsPlainOrMissing',
+    'Test-WdWakeCooldownElapsed',
+    'Write-WdUtf8TextAtomic',
+    'Write-WdWakeAttemptUtc',
+    'Get-WdWakeSafetyDisposition',
+    'Get-WdWakeIdentityDisposition',
+    'Get-WdWakeSubmitReceiptDisposition',
+    'Get-WdLeadPermissionReceiptDisposition',
+    'Repair-WdWakeInflight',
+    'Invoke-WdWakeSentinelTransaction'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+function Get-Disposition(
+  [int]$Count = 1,
+  [bool]$Generation = $true,
+  [int64]$Hwnd = 42,
+  [bool]$InputReady = $true,
+  [bool]$Busy = $false,
+  [bool]$Confirmation = $false,
+  $Idle = 60,
+  [int64]$ExpectedHwnd = 42
+) {{
+  Get-WdWakeSafetyDisposition `
+    -ExactTabCount $Count `
+    -TabGenerationMatches $Generation `
+    -WindowHandle $Hwnd `
+    -InputSurfaceReady $InputReady `
+    -CodexBusy $Busy `
+    -ConfirmationPromptActive $Confirmation `
+    -UserIdleSeconds $Idle `
+    -MinimumUserIdleSeconds 60 `
+    -ExpectedWindowHandle $ExpectedHwnd
+}}
+function Get-IdentityDisposition(
+  [int]$Count = 1,
+  [bool]$Generation = $true,
+  [int64]$Hwnd = 42,
+  $Idle = 60,
+  [int64]$ExpectedHwnd = 42
+) {{
+  Get-WdWakeIdentityDisposition `
+    -ExactTabCount $Count `
+    -TabGenerationMatches $Generation `
+    -WindowHandle $Hwnd `
+    -UserIdleSeconds $Idle `
+    -MinimumUserIdleSeconds 60 `
+    -ExpectedWindowHandle $ExpectedHwnd
+}}
+function Get-ReceiptDisposition(
+  [int]$Count = 1,
+  [bool]$Generation = $true,
+  [int64]$Hwnd = 42,
+  [bool]$Complete = $true,
+  [bool]$InputReady = $false,
+  [bool]$Busy = $false,
+  [bool]$Confirmation = $false,
+  [bool]$EchoAdvanced = $false,
+  [int64]$ExpectedHwnd = 42
+) {{
+  Get-WdWakeSubmitReceiptDisposition `
+    -ExactTabCount $Count `
+    -TabGenerationMatches $Generation `
+    -WindowHandle $Hwnd `
+    -ExpectedWindowHandle $ExpectedHwnd `
+    -SnapshotComplete $Complete `
+    -InputSurfaceReady $InputReady `
+    -CodexBusy $Busy `
+    -ConfirmationPromptActive $Confirmation `
+    -ContinueEchoAdvanced $EchoAdvanced
+}}
+function Get-PermissionReceiptDisposition(
+  [int]$Count = 1,
+  [bool]$Generation = $true,
+  [int64]$Hwnd = 42,
+  [bool]$Complete = $true,
+  [bool]$Confirmation = $false,
+  [AllowEmptyString()] [string]$Prompt = '',
+  [string]$Expected = 'git status',
+  [bool]$TextChanged = $false,
+  [int64]$ExpectedHwnd = 42
+) {{
+  Get-WdLeadPermissionReceiptDisposition `
+    -ExactTabCount $Count `
+    -TabGenerationMatches $Generation `
+    -WindowHandle $Hwnd `
+    -ExpectedWindowHandle $ExpectedHwnd `
+    -SnapshotComplete $Complete `
+    -ConfirmationPromptActive $Confirmation `
+    -PromptCommand $Prompt `
+    -ExpectedCommand $Expected `
+    -VisibleTextChanged $TextChanged
+}}
+function Set-Stamp([string]$Path, [string]$Stamp) {{
+  [IO.File]::WriteAllText($Path, $Stamp, (New-Object Text.UTF8Encoding($false)))
+}}
+
+$root = Join-Path ([IO.Path]::GetTempPath()) ('wd-wake-test-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $root -ErrorAction Stop)
+$sentinel = Join-Path $root 'wake_codex-lead-1'
+$inflight = Join-Path $root 'wake_codex-lead-1.continue-inflight'
+$attempt = Join-Path $root 'wake_codex-lead-1.continue-last-attempt'
+$sentCount = 0
+try {{
+  $now = [DateTimeOffset]::Parse('2026-08-23T13:00:00Z')
+  Set-Stamp $sentinel '2026-08-23T12:59:00Z'
+  $success = Invoke-WdWakeSentinelTransaction `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -CooldownSeconds 300 -NowUtc $now -SendAction {{ $script:sentCount++; $true }}
+  $successClean = -not (Test-Path -LiteralPath $sentinel) -and
+    -not (Test-Path -LiteralPath $inflight)
+
+  Set-Stamp $sentinel '2026-08-23T13:05:59Z'
+  $concurrent = Invoke-WdWakeSentinelTransaction `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -CooldownSeconds 300 -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:06:00Z')) `
+    -SendAction {{
+      $script:sentCount++
+      Set-Stamp $sentinel '2026-08-23T13:06:01Z'
+      $true
+    }}
+  $concurrentPreserved = (
+    (Get-Content -LiteralPath $sentinel -Raw).Trim() -ceq
+      '2026-08-23T13:06:01Z'
+  ) -and -not (Test-Path -LiteralPath $inflight)
+
+  Remove-Item -LiteralPath $sentinel -Force
+  Set-Stamp $sentinel '2026-08-23T13:11:59Z'
+  $failed = Invoke-WdWakeSentinelTransaction `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -CooldownSeconds 300 -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:12:00Z')) `
+    -SendAction {{ $script:sentCount++; $false }}
+  $failedDurable = (Test-Path -LiteralPath $inflight) -and
+    -not (Test-Path -LiteralPath $sentinel)
+  $duringCooldown = Invoke-WdWakeSentinelTransaction `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -CooldownSeconds 300 -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:13:00Z')) `
+    -SendAction {{ $script:sentCount++; $true }}
+  $afterCooldown = Invoke-WdWakeSentinelTransaction `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -CooldownSeconds 300 -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:18:00Z')) `
+    -SendAction {{ $script:sentCount++; $true }}
+
+  Set-Stamp $sentinel '2026-08-23T13:23:59Z'
+  $attemptBefore = (Get-Content -LiteralPath $attempt -Raw).Trim()
+  $dryRun = Invoke-WdWakeSentinelTransaction `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -CooldownSeconds 300 -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:24:00Z')) `
+    -SendAction {{ $script:sentCount++; $true }} -DryRun
+  $dryRunUnchanged = (Test-Path -LiteralPath $sentinel) -and
+    -not (Test-Path -LiteralPath $inflight) -and
+    ((Get-Content -LiteralPath $attempt -Raw).Trim() -ceq $attemptBefore)
+
+  Remove-Item -LiteralPath $sentinel -Force
+  Remove-Item -LiteralPath $attempt -Force
+  Set-Stamp $inflight '2026-08-23T13:29:59Z'
+  $missingAttempt = Repair-WdWakeInflight `
+    -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+    -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:30:00Z')) `
+    -CooldownSeconds 300
+  $missingAttemptRecovered = (Test-Path -LiteralPath $sentinel) -and
+    -not (Test-Path -LiteralPath $inflight)
+
+  Set-Stamp $sentinel 'not-a-timestamp'
+  $malformedRejected = $false
+  try {{
+    [void](Invoke-WdWakeSentinelTransaction `
+      -SentinelPath $sentinel -InflightPath $inflight -AttemptPath $attempt `
+      -CooldownSeconds 300 `
+      -NowUtc ([DateTimeOffset]::Parse('2026-08-23T13:31:00Z')) `
+      -SendAction {{ $script:sentCount++; $true }})
+  }} catch {{
+    $malformedRejected = $true
+  }}
+
+  [pscustomobject]@{{
+    ready = Get-Disposition
+    no_tab = Get-Disposition -Count 0
+    duplicate_tab = Get-Disposition -Count 2
+    runtime_changed = Get-Disposition -Generation $false
+    no_hwnd = Get-Disposition -Hwnd 0
+    hwnd_changed = Get-Disposition -Hwnd 43
+    no_input = Get-Disposition -InputReady $false
+    busy = Get-Disposition -Busy $true
+    confirmation = Get-Disposition -Confirmation $true
+    idle_unknown = Get-Disposition -Idle $null
+    idle_short = Get-Disposition -Idle 59
+    idle_boundary = Get-Disposition -Idle 60
+    identity_ready = Get-IdentityDisposition
+    identity_idle_unknown = Get-IdentityDisposition -Idle $null
+    identity_hwnd_changed = Get-IdentityDisposition -Hwnd 43
+    submitted_busy = Get-ReceiptDisposition -Busy $true
+    submitted_input_ready = Get-ReceiptDisposition -InputReady $true
+    submitted_confirmation = Get-ReceiptDisposition -Confirmation $true
+    submitted_typed_only = Get-ReceiptDisposition -EchoAdvanced $true
+    submitted_echo_complete = Get-ReceiptDisposition `
+      -EchoAdvanced $true -InputReady $true
+    submitted_pending = Get-ReceiptDisposition
+    receipt_snapshot_incomplete = Get-ReceiptDisposition -Complete $false
+    permission_same = Get-PermissionReceiptDisposition `
+      -Confirmation $true -Prompt 'git status' -TextChanged $true
+    permission_unresolved = Get-PermissionReceiptDisposition `
+      -Confirmation $true -Prompt '' -TextChanged $true
+    permission_next = Get-PermissionReceiptDisposition `
+      -Confirmation $true -Prompt 'git log' -TextChanged $true
+    permission_unchanged = Get-PermissionReceiptDisposition
+    permission_dismissed = Get-PermissionReceiptDisposition -TextChanged $true
+    permission_incomplete = Get-PermissionReceiptDisposition `
+      -Complete $false -TextChanged $true
+    rollback_cooldown = Test-WdWakeCooldownElapsed `
+      -LastAttemptUtc '2026-08-23T13:00:00Z' `
+      -NowUtc ([DateTimeOffset]::Parse('2026-08-23T12:59:59Z')) `
+      -CooldownSeconds 300
+    success = [string]$success
+    success_clean = $successClean
+    concurrent = [string]$concurrent
+    concurrent_preserved = $concurrentPreserved
+    failed = [string]$failed
+    failed_durable = $failedDurable
+    during_cooldown = [string]$duringCooldown
+    after_cooldown = [string]$afterCooldown
+    dry_run = [string]$dryRun
+    dry_run_unchanged = $dryRunUnchanged
+    missing_attempt = [string]$missingAttempt
+    missing_attempt_recovered = $missingAttemptRecovered
+    malformed_rejected = $malformedRejected
+    send_count = $sentCount
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}}
+""",
+        executable=WINDOWS_POWERSHELL or POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "ready": "ready",
+        "no_tab": "exact_tab_required",
+        "duplicate_tab": "exact_tab_required",
+        "runtime_changed": "tab_generation_changed",
+        "no_hwnd": "window_handle_missing",
+        "hwnd_changed": "window_generation_changed",
+        "no_input": "codex_input_surface_missing",
+        "busy": "codex_turn_active",
+        "confirmation": "confirmation_prompt_active",
+        "idle_unknown": "operator_active_or_unknown",
+        "idle_short": "operator_active_or_unknown",
+        "idle_boundary": "ready",
+        "identity_ready": "ready",
+        "identity_idle_unknown": "operator_active_or_unknown",
+        "identity_hwnd_changed": "window_generation_changed",
+        "submitted_busy": "submitted_confirmed",
+        "submitted_input_ready": "submitted_transition_pending",
+        "submitted_confirmation": "submitted_confirmed",
+        "submitted_typed_only": "submitted_transition_pending",
+        "submitted_echo_complete": "submitted_confirmed",
+        "submitted_pending": "submitted_transition_pending",
+        "receipt_snapshot_incomplete": "snapshot_incomplete",
+        "permission_same": "original_prompt_present",
+        "permission_unresolved": "original_prompt_unresolved",
+        "permission_next": "next_prompt_candidate",
+        "permission_unchanged": "post_state_unconfirmed",
+        "permission_dismissed": "dismissal_candidate",
+        "permission_incomplete": "snapshot_incomplete",
+        "rollback_cooldown": False,
+        "success": "sent",
+        "success_clean": True,
+        "concurrent": "sent",
+        "concurrent_preserved": True,
+        "failed": "send_failed_inflight_retained",
+        "failed_durable": True,
+        "during_cooldown": "inflight_cooldown",
+        "after_cooldown": "sent",
+        "dry_run": "dry_run_ready",
+        "dry_run_unchanged": True,
+        "missing_attempt": "inflight_restored_without_attempt",
+        "missing_attempt_recovered": True,
+        "malformed_rejected": True,
+        "send_count": 4,
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_codex_prompt_watcher_generation_and_ready_record_ownership() -> None:
+    watcher = str(REBOOT / "Watch-CodexPrompts.ps1").replace("'", "''")
+    result = _run_powershell(
+        rf"""
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{watcher}', [ref]$tokens, [ref]$errors
+)
+if ($errors.Count) {{ throw 'watcher parse failed' }}
+foreach ($name in @(
+    'ConvertTo-WdWakeUtc',
+    'Get-WdProcessStartUtc',
+    'Test-WdProcessGeneration',
+    'Assert-WdWakePathIsPlainOrMissing',
+    'Write-WdUtf8TextAtomic',
+    'Write-WdPromptWatcherReadyRecord',
+    'Remove-WdOwnPromptWatcherReadyRecord'
+  )) {{
+  $functionAst = $ast.Find(
+    {{
+      param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }},
+    $true
+  )
+  if ($null -eq $functionAst) {{ throw "missing function: $name" }}
+  . ([scriptblock]::Create($functionAst.Extent.Text))
+}}
+function Write-Log {{ param($Message, $Level) }}
+
+$root = Join-Path ([IO.Path]::GetTempPath()) (
+  'wd-ready-test-' + [guid]::NewGuid().ToString('N')
+)
+[void](New-Item -ItemType Directory -Path $root -ErrorAction Stop)
+$ready = Join-Path $root 'codex-lead-1.ready.json'
+$process = Get-Process -Id $PID -ErrorAction Stop
+$processStart = $process.StartTime.ToUniversalTime().ToString('o')
+$wrongProcessStart = $process.StartTime.ToUniversalTime().AddTicks(1).ToString('o')
+try {{
+  Write-WdPromptWatcherReadyRecord `
+    -Path $ready `
+    -WatcherProcessStartUtc $processStart `
+    -ExpectedLeadProcessId 222 `
+    -ExpectedLeadProcessStartUtc '2026-08-23T11:00:00.0000000Z' `
+    -ExactTabTitle 'codex-lead-1' `
+    -TabRuntimeId '42.1.2' `
+    -WindowHandle 4242 `
+    -WakeRoot 'C:\Python\project2-master\.agent-bridge'
+  $record = Get-Content -LiteralPath $ready -Raw -Encoding UTF8 |
+    ConvertFrom-Json -ErrorAction Stop
+  $recordValid = (
+    [int]$record.watcher_pid -eq $PID -and
+    [string]$record.watcher_process_start_utc -ceq $processStart -and
+    [int]$record.lead_process_id -eq 222 -and
+    [string]$record.tab_runtime_id -ceq '42.1.2' -and
+    [int64]$record.window_handle -eq 4242
+  )
+  Remove-WdOwnPromptWatcherReadyRecord `
+    -Path $ready `
+    -WatcherProcessStartUtc $processStart
+  $ownRemoved = -not (Test-Path -LiteralPath $ready)
+
+  Write-WdPromptWatcherReadyRecord `
+    -Path $ready `
+    -WatcherProcessStartUtc $wrongProcessStart `
+    -ExpectedLeadProcessId 222 `
+    -ExpectedLeadProcessStartUtc '2026-08-23T11:00:00.0000000Z' `
+    -ExactTabTitle 'codex-lead-1' `
+    -TabRuntimeId '42.1.2' `
+    -WindowHandle 4242 `
+    -WakeRoot 'C:\Python\project2-master\.agent-bridge'
+  Remove-WdOwnPromptWatcherReadyRecord `
+    -Path $ready `
+    -WatcherProcessStartUtc $processStart
+  $replacementPreserved = Test-Path -LiteralPath $ready -PathType Leaf
+
+  [pscustomobject]@{{
+    exact_generation = Test-WdProcessGeneration `
+      -ProcessId $PID -ExpectedStartUtc $processStart
+    wrong_generation = Test-WdProcessGeneration `
+      -ProcessId $PID -ExpectedStartUtc $wrongProcessStart
+    missing_process = Test-WdProcessGeneration `
+      -ProcessId 2147483647 -ExpectedStartUtc $processStart
+    malformed_generation = Test-WdProcessGeneration `
+      -ProcessId $PID -ExpectedStartUtc 'not-a-timestamp'
+    record_valid = $recordValid
+    own_removed = $ownRemoved
+    replacement_preserved = $replacementPreserved
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}}
+""",
+        executable=WINDOWS_POWERSHELL or POWERSHELL,
+    )
+    assert json.loads(result.stdout) == {
+        "exact_generation": True,
+        "wrong_generation": False,
+        "missing_process": False,
+        "malformed_generation": False,
+        "record_valid": True,
+        "own_removed": True,
+        "replacement_preserved": True,
+    }
 
 
 def test_compact_state_and_parallel_policy_replace_dated_default_bootstrap() -> None:

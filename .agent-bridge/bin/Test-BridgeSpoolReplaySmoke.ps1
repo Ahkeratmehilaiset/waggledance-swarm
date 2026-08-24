@@ -3249,6 +3249,215 @@ $env:AGENT_BRIDGE_TEST_AFTER_CANONICAL_BEFORE_CHECKPOINT = $ReadyPath
         "writerError=$scanWriterError lines=$($scanLines.Count) " +
         "spools=$($scanRemainingSpools.Count) replay=$scanReplayOutput"
     )
+
+    # --- historical bare-CR waiver parity (canonical LF row 44000) ---
+    # The live canonical log contains exactly one bare-CR separator, at
+    # byte offset 44217311 inside LF row 44000, joining two valid
+    # events. Only that exact row (normalized SHA-256 53f863ac...) may
+    # pass the canonical scan; every other bare-CR row fails closed.
+    # These are the exact physical bytes of the waived row.
+    $bareCrPhysicalBase64 = @'
+eyJ0c191dGMiOiIyMDI2LTA3LTAxVDE2OjQ1OjMwLjQ1NzYzNjhaIiwiYWdlbnQiOiJjb2RleC1sZWFkLTEiLCJ0YXNrX2lkIjoi
+cHJvZHVjdGlvbi1saXZlbmVzcy1yZWFjdGl2YXRpb24tc2NvdXQtMjAyNi0wNy0wMS1jb2RleC10b29scy0xLXNpbmNlLTIwMjYw
+NzAxdDE2MTAzOXoiLCJzZXZlcml0eSI6Im1lZGl1bSIsInBhdGhzIjpbXSwid3JpdGVfc2NvcGUiOltdLCJydW5faWQiOiJjb2Rl
+eC1sZWFkLTEtMjAyNjA2MjVUMjA0MTExWiIsInBpZCI6MzQ4MDgsImN3ZCI6IkM6XFxQeXRob25cXHdhZ2dsZWRhbmNlLWFnZW50
+LXdvcmt0cmVlc1xcY29kZXgtbGVhZC0xLXdhZ2dsZWRhbmNlLWNvZGV4LWxlYWQtMS1jb2RleC1sZWFkLTEtc2Vzc2lvbi0yMDI2
+MDYyNXQyMDQxMDF6Iiwicm9sZSI6ImxlYWQtaW1wbCIsImFnZW50X3V1aWQiOiJkM2M5ZDFkMS05NmE5LTRlYjgtYThlMi02ZjA1
+ZjlkMWExMDEiLCJzZXNzaW9uX2lkIjoiY29kZXgtbGVhZC0xLTIwMjYwNjI1VDIwNDExMVoiLCJjYXBhYmlsaXRpZXMiOlsiaW1w
+bGVtZW50YXRpb24iLCJ0ZXN0cyIsImRvY3MiLCJicmlkZ2VfZXZlbnQiLCJ3b3JrX3F1ZXVlIl0sInR5cGUiOiJ0ZXN0Iiwic3Rh
+dHVzIjoiYXR0ZW50aW9uIiwidG8iOiJvcGVyYXRvcixjb2RleC10b29scy0xIiwibWVzc2FnZSI6InByb2R1Y3Rpb24gbGl2ZW5l
+c3MgZGlhZ25vc3RpY3MgZm9yIGNvZGV4LXRvb2xzLTE6IHVuYW5zd2VyZWQ9MSBicmlkZ2UtdmlzaWJsZSByZXF1ZXN0IGZyb20g
+Y2xhdWRlLXJjby0xIHJlbWFpbnM7IHdha2VfZGVsaXZlcnlfb2s7IGludmFsaWRfbW9kZWxfcHJvY2Vzc2VzPTAuIE5vIHJlc3Rh
+cnQgYXV0aG9yaXR5IHVzZWQ7IHBlZXIgc2hvdWxkIGFjay9jbG9zZSB0aGUgMjAyNi0wNy0wMVQxNjoxM1ogZGVjaXNpb24gaWYg
+YWN0aXZlLiIsInBheWxvYWQiOnsiZGlhZ25vc3RpYyI6InByb2R1Y3Rpb25fbGl2ZW5lc3NfcmVhY3RpdmF0aW9uX3Njb3V0Iiwi
+dGFyZ2V0X2FnZW50IjoiY29kZXgtdG9vbHMtMSIsImxpdmVuZXNzX2VwaXNvZGUiOiJzaW5jZS0yMDI2MDcwMXQxNjEwMzl6Iiwi
+cmVzdWx0cyI6eyJ1bmFuc3dlcmVkX2JyaWRnZV9yZXF1ZXN0cyI6eyJvayI6dHJ1ZSwiZGVjaXNpb24iOiJ1bmFuc3dlcmVkX2Jy
+aWRnZV9yZXF1ZXN0c19yZXBvcnQiLCJ1bmFuc3dlcmVkX2NvdW50IjoxLCJicmlkZ2VfdmlzaWJsZV9yZXF1ZXN0X2NvdW50Ijox
+LCJldmVudHNfY2hlY2tlZCI6NTAwMDAsIm9sZGVzdF9hZ2VfbWludXRlcyI6MjkuNjU4LCJyZXF1ZXN0ZXIiOiJjbGF1ZGUtcmNv
+LTEiLCJyZXF1ZXN0X3Rhc2tfaWQiOiJyY28tbGFuZS1mYWlsb3Zlci1zY291dC0yMDI2LTA3LTAxLWNsYXVkZS1yY28tMi1zaW5j
+ZS0yMDI2MDcwMXQxNTEzMzl6IiwicmVxdWVzdF9zdGF0dXMiOiJyY28yX2xhbmVfdmVyaWZpZWRfYWxpdmVfYWxsX21vb3Rfbm9f
+cmVzdGFydF9uZWVkZWQiLCJyZXF1ZXN0X3RzX3V0YyI6IjIwMjYtMDctMDFUMTY6MTM6MDMuMDI2MTg4M1oifSwid2FrZV9kZWxp
+dmVyeSI6eyJvayI6dHJ1ZSwiZGVjaXNpb24iOiJ3YWtlX2RlbGl2ZXJ5X29rIiwic3RhbGxlZF9jb3VudCI6MCwiZGVsaXZlcnlf
+ZXNjYWxhdGlvbl9yZXF1aXJlZCI6ZmFsc2UsImV2ZW50c19jaGVja2VkIjo1MDAwMH0sImFnZW50X2NsaV9tb2RlbF9wcm9iZSI6
+eyJvayI6dHJ1ZSwiZGVjaXNpb24iOiJub19pbnZhbGlkX21vZGVsX3Byb2Nlc3Nlc19vYnNlcnZlZCIsImludmFsaWRfbW9kZWxf
+cHJvY2Vzc19jb3VudCI6MCwibWlzc2luZ19tb2RlbF9wcm9jZXNzX2NvdW50IjoyLCJtb2RlbGVkX21vZGVsX3Byb2Nlc3NfY291
+bnQiOjQsIm9ic2VydmVkX21vZGVsX2lkcyI6WyJjbGF1ZGUtb3B1cy00LTgiXSwiY2xhaW1fc2FmZSI6ZmFsc2UsImNsYWltX2dh
+dGVfc2F0aXNmaWVkIjpmYWxzZSwibnVkZ2VfcmV0cnlfcmVjb21tZW5kZWQiOnRydWUsIm9wZXJhdG9yX2FjdGlvbiI6ImNvbnRp
+bnVlX2JyaWRnZV9saXZlbmVzc19kaWFnbm9zaXMifX0sInNhZmVfbmV4dCI6ImNvZGV4LXRvb2xzLTEgc2hvdWxkIGFja25vd2xl
+ZGdlIG9yIGNsb3NlIHRoZSBjbGF1ZGUtcmNvLTEgMjAyNi0wNy0wMVQxNjoxM1ogZGVjaXNpb24gaWYgYWN0aXZlOyBubyB3YWtl
+LWRlbGl2ZXJ5IHN0YWxsIG9yIGludmFsaWQgbW9kZWwgcHJvY2VzcyB3YXMgb2JzZXJ2ZWQuIiwicnVudGltZV9hdXRob3JpdHlf
+dXNlZCI6ZmFsc2UsInNvdXJjZSI6InRvb2xzL2FnZW50X25leHRfdGFzay5weSBwcm9kdWN0aW9uX2xpdmVuZXNzX3JlYWN0aXZh
+dGlvbl9zY291dCJ9fQ17InRzX3V0YyI6IjIwMjYtMDctMDFUMTY6NDY6NTQuNDMyNDYxMloiLCJhZ2VudCI6ImNvZGV4LWxlYWQt
+MSIsInRhc2tfaWQiOiJwcm9kdWN0aW9uLWxpdmVuZXNzLXJlYWN0aXZhdGlvbi1zY291dC0yMDI2LTA3LTAxLWNvZGV4LXRvb2xz
+LTEtc2luY2UtMjAyNjA3MDF0MTYxMDM5eiIsInBhdGhzIjpbXSwid3JpdGVfc2NvcGUiOltdLCJydW5faWQiOiJjb2RleC1sZWFk
+LTEtMjAyNjA2MjVUMjA0MTExWiIsInBpZCI6MjA3MzYsImN3ZCI6IkM6XFxQeXRob25cXHdhZ2dsZWRhbmNlLWFnZW50LXdvcmt0
+cmVlc1xcY29kZXgtbGVhZC0xLXdhZ2dsZWRhbmNlLWNvZGV4LWxlYWQtMS1jb2RleC1sZWFkLTEtc2Vzc2lvbi0yMDI2MDYyNXQy
+MDQxMDF6Iiwicm9sZSI6ImxlYWQtaW1wbCIsImFnZW50X3V1aWQiOiJkM2M5ZDFkMS05NmE5LTRlYjgtYThlMi02ZjA1ZjlkMWEx
+MDEiLCJzZXNzaW9uX2lkIjoiY29kZXgtbGVhZC0xLTIwMjYwNjI1VDIwNDExMVoiLCJjYXBhYmlsaXRpZXMiOlsiaW1wbGVtZW50
+YXRpb24iLCJ0ZXN0cyIsImRvY3MiLCJicmlkZ2VfZXZlbnQiLCJ3b3JrX3F1ZXVlIl0sInR5cGUiOiJtZXNzYWdlIiwic3RhdHVz
+IjoiYnJpZGdlX2xvZ19yZXBhaXJfbm90ZSIsInNldmVyaXR5IjoibG93IiwidG8iOiJvcGVyYXRvciIsIm1lc3NhZ2UiOiJCcmlk
+Z2UgaHlnaWVuZSBub3RlOiByZW1vdmVkIG9uZSBhY2NpZGVudGFsIHRyYWlsaW5nIG51bGwgSlNPTkwgbGluZSBjcmVhdGVkIGR1
+cmluZyB0aGlzIGRpYWdub3N0aWMgZXZlbnQgYXBwZW5kOyB0YWlsIHZhbGlkYXRpb24gcGFzc2VkIGFmdGVyd2FyZCBiZWZvcmUg
+ZmluYWwgZG9uZSBldmVudC4iLCJwYXlsb2FkIjp7InJlcGFpcmVkX2xpbmVfY29udGVudCI6Im51bGwiLCJyZXBhaXJfc2NvcGUi
+OiJ0cmFpbGluZyBtYWxmb3JtZWQgbGluZSBvbmx5IiwicG9zdF9yZXBhaXJfdmFsaWRhdGlvbiI6InZhbGlkYXRlX2JyaWRnZV9l
+dmVudF90YWlsXzNfcGFzc2VkIiwicnVudGltZV9hdXRob3JpdHlfdXNlZCI6ZmFsc2V9fQ0K
+'@
+    [byte[]]$bareCrPhysical = [Convert]::FromBase64String(
+        ($bareCrPhysicalBase64 -replace '\s', '')
+    )
+    $bareCrUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $bareCrText = $bareCrUtf8.GetString($bareCrPhysical)
+    $bareCrNormalized = $bareCrText.Substring(0, $bareCrText.Length - 2)
+    $bareCrFragments = $bareCrNormalized.Split([char]13)
+    $bareCrTemplate = (
+        '{"ts_utc":"2026-08-24T15:00:00Z","agent":"smoke-1",' +
+        '"type":"status","task_id":"bare-cr-bulk","status":"info",' +
+        '"message":"bulk row INDEX"}'
+    )
+
+    function New-TestBareCrCanonical {
+        param(
+            [Parameter(Mandatory)] [string] $Name,
+            [Parameter(Mandatory)] [byte[]] $RowBytes,
+            [Parameter(Mandatory)] [int] $BulkRows
+        )
+        $root = New-TestBridgeRoot -Name $Name
+        $events = Join-Path (Join-Path $root 'shared') 'events.jsonl'
+        $builder = New-Object System.Text.StringBuilder
+        for ($rowIndex = 1; $rowIndex -le $BulkRows; $rowIndex++) {
+            [void]$builder.Append(
+                $bareCrTemplate.Replace('INDEX', [string]$rowIndex)
+            )
+            [void]$builder.Append([char]10)
+        }
+        $stream = [System.IO.File]::Create($events)
+        try {
+            [byte[]]$bulkBytes = $bareCrUtf8.GetBytes($builder.ToString())
+            $stream.Write($bulkBytes, 0, $bulkBytes.Length)
+            $stream.Write($RowBytes, 0, $RowBytes.Length)
+            [byte[]]$crlfRow = $bareCrUtf8.GetBytes(
+                $bareCrTemplate.Replace('INDEX', 'crlf-tail') +
+                [char]13 + [char]10
+            )
+            $stream.Write($crlfRow, 0, $crlfRow.Length)
+        } finally {
+            $stream.Dispose()
+        }
+        return $root
+    }
+
+    $bareCrPassRoot = New-TestBareCrCanonical -Name 'bare-cr-waived-pass' `
+        -RowBytes $bareCrPhysical -BulkRows 43999
+    $bareCrPassEvents = Join-Path $bareCrPassRoot 'shared/events.jsonl'
+    $bareCrPassBefore = Get-BridgeTestFileLength -Path $bareCrPassEvents
+    $bareCrPassWal = Write-TestAcceptedWal -Root $bareCrPassRoot `
+        -WalId ('a' * 32) `
+        -Text ($bareCrTemplate.Replace('INDEX', 'wal-after-waiver'))
+    $bareCrPassOut = & $isolatedReplay -BridgeRoot $bareCrPassRoot `
+        -AcceptedWalLeaf $bareCrPassWal.Leaf `
+        -ExpectedWalSha256 $bareCrPassWal.Sha256
+    $bareCrPassAfter = Get-BridgeTestFileLength -Path $bareCrPassEvents
+    $bareCrPassRowBytes = [int64](
+        $bareCrUtf8.GetBytes(
+            $bareCrTemplate.Replace('INDEX', 'wal-after-waiver')
+        ).Length + 1
+    )
+    Add-Check -Name 'waived historical bare-CR row replays at actual scale' -Passed (
+        ($bareCrPassOut -match 'replayed=1 deduped=0 failed=0') -and
+        ($bareCrPassAfter -eq $bareCrPassBefore + $bareCrPassRowBytes) -and
+        (Test-Path -LiteralPath $bareCrPassWal.ReplayedPath -PathType Leaf)
+    ) -Detail (
+        "out=$bareCrPassOut before=$bareCrPassBefore after=$bareCrPassAfter"
+    )
+
+    # A WAL row byte-identical to the waived row's second fragment plus
+    # its historical CRLF terminator must deduplicate, proving the
+    # fragment keys are derived over exact on-disk terminator bytes.
+    $bareCrDedupWal = Write-TestAcceptedWal -Root $bareCrPassRoot `
+        -WalId ('b' * 32) `
+        -Text ($bareCrFragments[1] + [char]13)
+    $bareCrDedupOut = & $isolatedReplay -BridgeRoot $bareCrPassRoot `
+        -AcceptedWalLeaf $bareCrDedupWal.Leaf `
+        -ExpectedWalSha256 $bareCrDedupWal.Sha256
+    $bareCrDedupAfter = Get-BridgeTestFileLength -Path $bareCrPassEvents
+    Add-Check -Name 'waived fragment key deduplicates byte-exactly' -Passed (
+        ($bareCrDedupOut -match 'replayed=0 deduped=1 failed=0') -and
+        ($bareCrDedupAfter -eq $bareCrPassAfter)
+    ) -Detail "out=$bareCrDedupOut after=$bareCrDedupAfter"
+
+    $bareCrBlockCases = @(
+        [pscustomobject]@{
+            Name = 'one-byte digest drift'
+            Root = 'bare-cr-drift'
+            WalId = ('c' * 32)
+            Bytes = $bareCrUtf8.GetBytes(
+                $bareCrNormalized.Replace('"pid":34808', '"pid":34809') +
+                [char]13 + [char]10
+            )
+        },
+        [pscustomobject]@{
+            Name = 'swapped fragment order'
+            Root = 'bare-cr-swapped'
+            WalId = ('d' * 32)
+            Bytes = $bareCrUtf8.GetBytes(
+                ($bareCrFragments[1] + [char]13 + $bareCrFragments[0]) +
+                [char]13 + [char]10
+            )
+        },
+        [pscustomobject]@{
+            Name = 'three-fragment row'
+            Root = 'bare-cr-triple'
+            WalId = ('e' * 32)
+            Bytes = $bareCrUtf8.GetBytes(
+                (
+                    $bareCrFragments[0] + [char]13 +
+                    $bareCrFragments[0] + [char]13 +
+                    $bareCrFragments[1]
+                ) + [char]13 + [char]10
+            )
+        },
+        [pscustomobject]@{
+            Name = 'different valid event pair'
+            Root = 'bare-cr-alien'
+            WalId = ('f' * 32)
+            Bytes = $bareCrUtf8.GetBytes(
+                (
+                    $bareCrTemplate.Replace('INDEX', 'alien-one') +
+                    [char]13 +
+                    $bareCrTemplate.Replace('INDEX', 'alien-two')
+                ) + [char]13 + [char]10
+            )
+        },
+        [pscustomobject]@{
+            # Identical waived content but LF-terminated: the normalized
+            # digest matches, so only the physical digest gate blocks it.
+            Name = 'lf-terminated waived content'
+            Root = 'bare-cr-lf-variant'
+            WalId = ('0' * 32)
+            Bytes = $bareCrUtf8.GetBytes($bareCrNormalized + [char]10)
+        }
+    )
+    foreach ($bareCrCase in $bareCrBlockCases) {
+        $caseRoot = New-TestBareCrCanonical -Name $bareCrCase.Root `
+            -RowBytes $bareCrCase.Bytes -BulkRows 2
+        $caseEvents = Join-Path $caseRoot 'shared/events.jsonl'
+        $caseBefore = Get-BridgeTestFileLength -Path $caseEvents
+        $caseWal = Write-TestAcceptedWal -Root $caseRoot `
+            -WalId $bareCrCase.WalId `
+            -Text ($bareCrTemplate.Replace('INDEX', 'blocked-wal'))
+        $caseError = ''
+        try {
+            & $isolatedReplay -BridgeRoot $caseRoot `
+                -AcceptedWalLeaf $caseWal.Leaf `
+                -ExpectedWalSha256 $caseWal.Sha256 | Out-Null
+        } catch { $caseError = $_.Exception.Message }
+        Add-Check -Name "unwaived bare-CR row fails closed: $($bareCrCase.Name)" -Passed (
+            ($caseError -match 'unwaived bare-CR row') -and
+            ((Get-BridgeTestFileLength -Path $caseEvents) -eq $caseBefore) -and
+            (Test-Path -LiteralPath $caseWal.Path -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $caseWal.ReplayedPath -PathType Leaf)
+        ) -Detail "err=$caseError"
+    }
 } finally {
     [Environment]::SetEnvironmentVariable(
         'AGENT_BRIDGE_RUNTIME_ROOT', $previousRuntimeRoot, 'Process'

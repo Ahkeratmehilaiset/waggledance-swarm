@@ -135,6 +135,11 @@ def evaluate_bandit_source_attestation(
                 continue
             normalized = _normalized_py_path(key)
             if normalized is None:
+                # Non-string, non-.py, or __pycache__ inventory entries
+                # are out of scope for a source attestation: their
+                # presence makes the inventory untrusted rather than
+                # being silently ignored.
+                inventory_trustworthy = False
                 continue
             if normalized in scanned:
                 # Two raw keys collapsing to one normalized path (e.g.

@@ -91,6 +91,23 @@ def test_duplicate_normalized_alias_is_unbound(tmp_path) -> None:
     assert "bandit_scanned_paths_unbound" in blockers
 
 
+def test_invalid_inventory_key_alongside_clean_set_is_unbound(
+    tmp_path,
+) -> None:
+    # An otherwise exact inventory plus one out-of-scope entry (non-.py
+    # here) must fail closed instead of the entry being silently skipped.
+    files = _write_source_tree(tmp_path)
+    report = _clean_report(files)
+    report["metrics"]["waggledance/notes.txt"] = {"SEVERITY.HIGH": 0}
+    report_path = _write_report(tmp_path, report)
+
+    blockers = evaluate_bandit_source_attestation(
+        report_path, tmp_path, COMMIT
+    )
+
+    assert "bandit_scanned_paths_unbound" in blockers
+
+
 def test_malformed_per_file_metric_value_is_unbound(tmp_path) -> None:
     files = _write_source_tree(tmp_path)
     report = _clean_report(files)

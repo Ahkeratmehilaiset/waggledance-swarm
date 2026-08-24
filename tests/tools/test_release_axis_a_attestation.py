@@ -23,7 +23,18 @@ COMMIT = "d204299440af5b1c2d3e4f5a6b7c8d9e0f1a2b3c"
 DESCRIPTORS_PER_FAMILY = dict(AXIS_A_DESCRIPTORS_PER_FAMILY)
 DESCRIPTORS_PER_HEX_CELL = dict(AXIS_A_DESCRIPTORS_PER_HEX_CELL)
 
-NOT_FINITE = ["NaN", "Infinity", float("nan"), float("inf"), True, "0.5", None]
+NOT_FINITE = [
+    "NaN",
+    "Infinity",
+    float("nan"),
+    float("inf"),
+    True,
+    "0.5",
+    None,
+    # Huge JSON integers overflow float(); they must block, not crash.
+    10**1000,
+    -(10**1000),
+]
 
 
 def _lf_sha256(path) -> str:

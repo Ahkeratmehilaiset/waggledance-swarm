@@ -129,7 +129,13 @@ def _append_once(blockers: list[str], blocker: str) -> None:
 
 def _is_strict_finite_number(value: object) -> bool:
     if type(value) is int:
-        return True
+        # A huge JSON integer (e.g. 10**1000) overflows float(); it must
+        # fold into a blocker, never raise, so probe the conversion here
+        # where every later float() call is guarded by this check.
+        try:
+            return math.isfinite(float(value))
+        except OverflowError:
+            return False
     if type(value) is float:
         return math.isfinite(value)
     return False

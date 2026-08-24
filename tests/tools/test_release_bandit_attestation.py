@@ -82,9 +82,17 @@ def test_duplicate_normalized_alias_is_unbound(tmp_path) -> None:
     files = _write_source_tree(tmp_path)
     report = _clean_report(files)
     # The same file under both separators collapses to one normalized
-    # path: an ambiguous inventory must fail closed.
-    report["metrics"]["core/gamma.py"] = {"SEVERITY.HIGH": 0}
-    report["metrics"]["core\\gamma.py"] = {"SEVERITY.HIGH": 0}
+    # path: an ambiguous inventory must fail closed. Both entries carry
+    # clean strict-zero counts so the duplicate branch itself is what
+    # blocks, not per-file metric validation.
+    report["metrics"]["core/gamma.py"] = {
+        "SEVERITY.HIGH": 0,
+        "SEVERITY.MEDIUM": 0,
+    }
+    report["metrics"]["core\\gamma.py"] = {
+        "SEVERITY.HIGH": 0,
+        "SEVERITY.MEDIUM": 0,
+    }
     report_path = _write_report(tmp_path, report)
 
     blockers = evaluate_bandit_source_attestation(
@@ -99,9 +107,14 @@ def test_invalid_inventory_key_alongside_clean_set_is_unbound(
 ) -> None:
     # An otherwise exact inventory plus one out-of-scope entry (non-.py
     # here) must fail closed instead of the entry being silently skipped.
+    # The entry carries clean strict-zero counts so the invalid-key
+    # branch itself is what blocks, not per-file metric validation.
     files = _write_source_tree(tmp_path)
     report = _clean_report(files)
-    report["metrics"]["waggledance/notes.txt"] = {"SEVERITY.HIGH": 0}
+    report["metrics"]["waggledance/notes.txt"] = {
+        "SEVERITY.HIGH": 0,
+        "SEVERITY.MEDIUM": 0,
+    }
     report_path = _write_report(tmp_path, report)
 
     blockers = evaluate_bandit_source_attestation(

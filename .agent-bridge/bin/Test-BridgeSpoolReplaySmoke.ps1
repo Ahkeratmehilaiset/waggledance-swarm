@@ -3385,6 +3385,39 @@ dmVudF90YWlsXzNfcGFzc2VkIiwicnVudGltZV9hdXRob3JpdHlfdXNlZCI6ZmFsc2V9fQ0K
         ($bareCrDedupAfter -eq $bareCrPassAfter)
     ) -Detail "out=$bareCrDedupOut after=$bareCrDedupAfter"
 
+    # Negative key-exactness proofs: nearby byte-variants of the waived
+    # fragments must NOT collide with the terminator-exact keys.
+    # Fragment B with a plain LF terminator is not B+CRLF: it appends.
+    $bareCrLfWal = Write-TestAcceptedWal -Root $bareCrPassRoot `
+        -WalId ('ab' * 16) -Text $bareCrFragments[1]
+    $bareCrLfOut = & $isolatedReplay -BridgeRoot $bareCrPassRoot `
+        -AcceptedWalLeaf $bareCrLfWal.Leaf `
+        -ExpectedWalSha256 $bareCrLfWal.Sha256
+    $bareCrLfAfter = Get-BridgeTestFileLength -Path $bareCrPassEvents
+    $bareCrLfRowBytes = [int64](
+        $bareCrUtf8.GetBytes($bareCrFragments[1]).Length + 1
+    )
+    Add-Check -Name 'fragment B with LF terminator does not dedup B+CRLF key' -Passed (
+        ($bareCrLfOut -match 'replayed=1 deduped=0 failed=0') -and
+        ($bareCrLfAfter -eq $bareCrDedupAfter + $bareCrLfRowBytes)
+    ) -Detail "out=$bareCrLfOut after=$bareCrLfAfter"
+
+    # Fragment A with a CRLF terminator is not the bare-CR key A+CR: it
+    # appends as an ordinary CRLF row.
+    $bareCrCrlfWal = Write-TestAcceptedWal -Root $bareCrPassRoot `
+        -WalId ('cd' * 16) -Text ($bareCrFragments[0] + [char]13)
+    $bareCrCrlfOut = & $isolatedReplay -BridgeRoot $bareCrPassRoot `
+        -AcceptedWalLeaf $bareCrCrlfWal.Leaf `
+        -ExpectedWalSha256 $bareCrCrlfWal.Sha256
+    $bareCrCrlfAfter = Get-BridgeTestFileLength -Path $bareCrPassEvents
+    $bareCrCrlfRowBytes = [int64](
+        $bareCrUtf8.GetBytes($bareCrFragments[0] + [char]13).Length + 1
+    )
+    Add-Check -Name 'fragment A with CRLF terminator does not dedup A+CR key' -Passed (
+        ($bareCrCrlfOut -match 'replayed=1 deduped=0 failed=0') -and
+        ($bareCrCrlfAfter -eq $bareCrLfAfter + $bareCrCrlfRowBytes)
+    ) -Detail "out=$bareCrCrlfOut after=$bareCrCrlfAfter"
+
     $bareCrBlockCases = @(
         [pscustomobject]@{
             Name = 'one-byte digest drift'
@@ -3435,6 +3468,20 @@ dmVudF90YWlsXzNfcGFzc2VkIiwicnVudGltZV9hdXRob3JpdHlfdXNlZCI6ZmFsc2V9fQ0K
             Root = 'bare-cr-lf-variant'
             WalId = ('0' * 32)
             Bytes = $bareCrUtf8.GetBytes($bareCrNormalized + [char]10)
+        },
+        [pscustomobject]@{
+            # Arbitrary interior bare CR inside an LF-terminated element
+            # (no trailing CR at all) must also fail closed.
+            Name = 'arbitrary interior CR with LF terminator'
+            Root = 'bare-cr-interior-lf'
+            WalId = ('ef' * 16)
+            Bytes = $bareCrUtf8.GetBytes(
+                (
+                    $bareCrTemplate.Replace('INDEX', 'interior-lf-one') +
+                    [char]13 +
+                    $bareCrTemplate.Replace('INDEX', 'interior-lf-two')
+                ) + [char]10
+            )
         }
     )
     foreach ($bareCrCase in $bareCrBlockCases) {

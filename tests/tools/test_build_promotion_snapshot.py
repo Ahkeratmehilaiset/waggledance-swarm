@@ -618,6 +618,32 @@ def test_builds_eligible_dry_run_snapshot_from_gh_and_bridge_claim(
     assert report["would_execute"] is False
 
 
+def test_unresolved_accepted_queue_removes_promotion_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        promotion_snapshot_tool,
+        "check_accepted_queue_complete",
+        lambda **kwargs: {
+            "ok": True,
+            "complete": False,
+            "decision": "accepted_queue_incomplete",
+            "errors": [],
+        },
+    )
+
+    report = _build(tmp_path)
+
+    assert report["eligible"] is False
+    assert report["queue_route"] != "autonomous_promotion_ready"
+    assert report["undraft_cmd"] == []
+    assert report["merge_cmd"] == []
+    assert report["eligibility"]["gate_results"]["accepted_queue"][
+        "complete"
+    ] is False
+
+
 def test_build_uses_canonical_rename_source_and_target_paths(
     tmp_path: Path,
 ) -> None:
@@ -1071,7 +1097,10 @@ def test_mixed_registered_and_unregistered_rco_config_fails_closed(
 
 
 def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
-    eligible_events = _events_path(tmp_path, _events())
+    bridge_root = tmp_path / ".agent-bridge"
+    shared = bridge_root / "shared"
+    shared.mkdir(parents=True)
+    eligible_events = _events_path(shared, _events())
     eligible = main(
         [
             "--repo",
@@ -1080,6 +1109,8 @@ def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
             str(PR),
             "--events",
             str(eligible_events),
+            "--bridge-root",
+            str(bridge_root),
             "--origin-main-sha",
             BASE,
             "--json",
@@ -1090,7 +1121,7 @@ def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
     assert eligible == 0
     assert json.loads(capsys.readouterr().out)["eligible"] is True
 
-    missing_claim_events = _events_path(tmp_path, _events(include_claim=False))
+    missing_claim_events = _events_path(shared, _events(include_claim=False))
     invalid = main(
         [
             "--repo",
@@ -1099,6 +1130,8 @@ def test_cli_exit_codes_follow_eligibility(tmp_path: Path, capsys) -> None:
             str(PR),
             "--events",
             str(missing_claim_events),
+            "--bridge-root",
+            str(bridge_root),
             "--origin-main-sha",
             BASE,
             "--json",
@@ -1144,7 +1177,7 @@ def test_cli_default_events_uses_runtime_bridge_root_env(
     assert json.loads(capsys.readouterr().out)["eligible"] is True
 
 
-def test_cli_explicit_events_overrides_runtime_bridge_root_env(
+def test_cli_explicit_events_cannot_override_runtime_bridge_root_env(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -1179,5 +1212,7 @@ def test_cli_explicit_events_overrides_runtime_bridge_root_env(
         runner=_runner(),
     )
 
-    assert result == 0
-    assert json.loads(capsys.readouterr().out)["eligible"] is True
+    assert result == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "invalid_input"
+    assert "events_path must equal" in report["errors"][0]

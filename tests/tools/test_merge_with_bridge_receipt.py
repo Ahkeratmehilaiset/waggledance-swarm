@@ -34,6 +34,71 @@ def _trusted_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(merge_tool, "_utc_now", lambda: NOW)
 
 
+def _main_args(tmp_path: Path) -> list[str]:
+    return [
+        "1174",
+        "--repo",
+        "example/repo",
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--expected-head",
+        HEAD,
+        "--expected-base-sha",
+        BASE,
+        "--consensus-proposal-id",
+        TASK,
+        "--json",
+    ]
+
+
+def test_cli_default_events_uses_runtime_bridge_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    captured: dict[str, Path] = {}
+
+    def fake_merge(**kwargs):
+        captured["events_path"] = kwargs["events_path"]
+        return {"ok": True, "decision": "merge_receipt_ready", "exit_code": 0}
+
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(bridge_root))
+    monkeypatch.setattr(merge_tool, "merge_with_bridge_receipt", fake_merge)
+
+    exit_code = merge_tool.main(_main_args(tmp_path))
+
+    assert exit_code == 0
+    assert captured["events_path"] == bridge_root / "shared" / "events.jsonl"
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_cli_mismatched_events_fails_before_merge_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge_root = tmp_path / "runtime" / ".agent-bridge"
+    outside = tmp_path / "snapshot" / "events.jsonl"
+    outside.parent.mkdir()
+    outside.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        merge_tool,
+        "merge_with_bridge_receipt",
+        lambda **kwargs: pytest.fail("merge runner must not be called"),
+    )
+
+    exit_code = merge_tool.main(
+        _main_args(tmp_path)
+        + ["--bridge-root", str(bridge_root), "--events", str(outside)]
+    )
+
+    assert exit_code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "invalid_input"
+    assert report["gh_merge_attempted"] is False
+
+
 def test_dry_run_writes_receipt_without_attempting_merge(tmp_path: Path) -> None:
     calls, runner = _runner()
 

@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_event_writer import (
     AppendV1Backend,
     BridgeEventWriteError,
+    BridgeWriteResult,
     write_bridge_event,
 )
 from tools.idle_check import (
@@ -150,6 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(report["decision"])
         if report.get("emitted"):
             print(f"event: {report['event_path']}")
+        elif report.get("queued"):
+            print(f"event queued in: {report['retained_wal_path']}")
         else:
             print("dry-run: pass --emit to append the bridge event")
     return 0
@@ -327,7 +330,7 @@ def activate_idle_protocol(
             ) from exc
     if emit:
         try:
-            event_path = _append_bridge_event(
+            write_result = _append_bridge_event(
                 bridge_root,
                 bridge_event,
                 events_path=events_path,
@@ -342,8 +345,28 @@ def activate_idle_protocol(
                     "exit_code": 2,
                 },
             ) from exc
-        report["emitted"] = True
-        report["event_path"] = str(event_path)
+        canonical = (
+            write_result.delivery_status == "canonical"
+            and write_result.canonical_durable
+        )
+        report.update(
+            {
+                "emitted": canonical,
+                "queued": write_result.delivery_status == "queued",
+                "delivery_status": write_result.delivery_status,
+                "canonical_durable": write_result.canonical_durable,
+                "retained_wal_path": (
+                    str(write_result.retained_wal_path)
+                    if write_result.retained_wal_path is not None
+                    else None
+                ),
+                "retained_wal_sha256": write_result.retained_wal_sha256,
+            }
+        )
+        if canonical:
+            report["event_path"] = str(write_result.events_path)
+        elif report["queued"]:
+            report["decision"] = "queued"
     return report
 
 
@@ -849,7 +872,7 @@ def _append_bridge_event(
     *,
     events_path: Path | None = None,
     writer_backend: AppendV1Backend | None = None,
-) -> Path:
+) -> BridgeWriteResult:
     result = write_bridge_event(
         bridge_root=bridge_root,
         events_path=events_path,
@@ -857,7 +880,7 @@ def _append_bridge_event(
         write_sidecars=True,
         backend=writer_backend,
     )
-    return result.events_path
+    return result
 
 
 def _parse_utc(value: str) -> datetime:

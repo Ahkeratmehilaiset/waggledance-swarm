@@ -444,6 +444,8 @@ function Assert-ToolsBootstrapIntegrity {
             'AgentBridgeSessionIdentity.ps1',
             'BridgeIncrementalReader.ps1',
             'BridgeLogReader.ps1',
+            'Drain-AcceptedBridgeQueue.ps1',
+            'Restore-BridgeSpool.ps1',
             'Send-Liveness.ps1',
             'Start-AgentBridgeConsumerLoop.ps1',
             'Start-AgentBridgeSession.ps1',
@@ -1351,19 +1353,40 @@ $targetPayload = [ordered]@{
     resumed_branch = $actualBranch
     resumed_head = $actualHead
 } | ConvertTo-Json -Compress
-& $writer `
-    -Agent $agent `
-    -Type status `
-    -TaskId ([string]$targetState.id) `
-    -Status target_state_manifested `
-    -Message "Prepared the exact visual WaggleDance target for the initial Tools model tick in generation $runId; this grants no capability or authority." `
-    -RunId $runId `
-    -Role $role `
-    -AgentUuid $agentUuid `
-    -SessionId $runId `
-    -Capabilities $capabilities `
-    -PayloadJson $targetPayload |
-    Out-Host
+$targetOutput = @(
+    & $writer `
+        -Agent $agent `
+        -Type status `
+        -TaskId ([string]$targetState.id) `
+        -Status target_state_manifested `
+        -Message "Prepared the exact visual WaggleDance target for the initial Tools model tick in generation $runId; this grants no capability or authority." `
+        -RunId $runId `
+        -Role $role `
+        -AgentUuid $agentUuid `
+        -SessionId $runId `
+        -Capabilities $capabilities `
+        -PayloadJson $targetPayload
+)
+$targetEvents = @($targetOutput | Where-Object {
+    $_ -is [psobject] -and [string]$_.status -ceq 'target_state_manifested'
+})
+$targetDelivery = $null
+if ($targetEvents.Count -eq 1) {
+    $targetDeliveryProperty = $targetEvents[0].PSObject.Properties['_bridge_delivery']
+    if ($null -ne $targetDeliveryProperty) {
+        $targetDelivery = $targetDeliveryProperty.Value
+    }
+}
+if (
+    $targetEvents.Count -ne 1 -or
+    $null -eq $targetDelivery -or
+    [string]$targetDelivery.delivery_status -cne 'canonical' -or
+    $targetDelivery.canonical_durable -isnot [bool] -or
+    $targetDelivery.canonical_durable -ne $true
+) {
+    throw "target-state manifest event was not canonically durable for $agent"
+}
+$targetOutput | Out-Host
 Assert-ToolsBootstrapIntegrity `
     -ScriptRoot $PSScriptRoot `
     -BootstrapRoot $bootstrapRoot `
@@ -1376,6 +1399,8 @@ $canaryPayload = [ordered]@{
     generation = $Generation
     target_state_id = [string]$targetState.id
     manifest_writer = 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
+    audit_phase = 'canonical_append_probe'
+    success_requires_canonical_delivery = $true
 } | ConvertTo-Json -Compress
 $canaryStartedUtc = [DateTimeOffset]::UtcNow
 $canaryOutput = @(
@@ -1384,7 +1409,7 @@ $canaryOutput = @(
         -Type status `
         -TaskId $canaryTaskId `
         -Status append_canary `
-        -Message "Verified the manifest-hashed canonical writer for $agent generation $runId." `
+        -Message "Canonical append canary attempted with the manifest-hashed writer for $agent generation $runId; success requires its canonical delivery receipt." `
         -To '' `
         -RunId $runId `
         -Role $role `
@@ -1399,6 +1424,13 @@ $canaryEvents = @(
         $_ -is [psobject] -and [string]$_.status -ceq 'append_canary'
     }
 )
+$canaryDelivery = $null
+if ($canaryEvents.Count -eq 1) {
+    $canaryDeliveryProperty = $canaryEvents[0].PSObject.Properties['_bridge_delivery']
+    if ($null -ne $canaryDeliveryProperty) {
+        $canaryDelivery = $canaryDeliveryProperty.Value
+    }
+}
 $canaryLatencyMs = [int64][Math]::Ceiling(
     ($canaryCompletedUtc - $canaryStartedUtc).TotalMilliseconds
 )
@@ -1411,6 +1443,10 @@ if (
     [string]$canaryEvents[0].task_id -cne $canaryTaskId -or
     [string]$canaryEvents[0].to -cne '' -or
     [int]$canaryEvents[0].pid -ne $PID -or
+    $null -eq $canaryDelivery -or
+    [string]$canaryDelivery.delivery_status -cne 'canonical' -or
+    $canaryDelivery.canonical_durable -isnot [bool] -or
+    $canaryDelivery.canonical_durable -ne $true -or
     $canaryLatencyMs -gt 5000
 ) {
     throw "manifest-writer append canary failed for $agent"

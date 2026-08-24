@@ -142,6 +142,28 @@ if (-not $SkipGitStatus) {
     }
 }
 
+# Drain only the isolated accepted-v1 queue before emitting liveness or
+# deciding whether incoming work already has a canonical received ACK. The
+# helper has no legacy-bulk fallback and processes each hash-bound leaf alone.
+$acceptedDrain = Join-Path $PSScriptRoot 'Drain-AcceptedBridgeQueue.ps1'
+if (Test-Path -LiteralPath $acceptedDrain -PathType Leaf) {
+    try {
+        $acceptedDrainSummary = (& $acceptedDrain `
+            -BridgeRoot $runtimeFull -ReceiptJson) |
+            ConvertFrom-Json -ErrorAction Stop
+        if ([int64]$acceptedDrainSummary.failed -gt 0) {
+            throw "accepted-v1 drain failed for $($acceptedDrainSummary.failed) WAL(s)"
+        }
+    } catch {
+        Write-Warning (
+            'Start-AgentBridgeSession: accepted-v1 drain retained queued WALs: ' +
+            $_.Exception.Message
+        )
+    }
+} else {
+    Write-Warning "Start-AgentBridgeSession: accepted-v1 drain helper missing: $acceptedDrain"
+}
+
 if (-not $SkipLiveness) {
     $sendLiveness = Join-Path $PSScriptRoot 'Send-Liveness.ps1'
     & $sendLiveness `

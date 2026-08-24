@@ -3,8 +3,9 @@
 """Fail-closed Python implementation of the bridge AppendV1 writer.
 
 The canonical bridge stream is exactly ``<bridge_root>/shared/events.jsonl``.
-Every canonical append uses the same durable pending-WAL, named-mutex, file
-sharing, validation-checkpoint, and post-append ordering contract as
+Every canonical append uses the same queue-publication fence, durable
+pending-WAL, named append mutex, file sharing, validation-checkpoint, and
+post-append ordering contract as
 ``.agent-bridge/bin/Write-AgentEvent.ps1``.  The production backend is Windows
 only and uses ``ctypes`` directly; unsupported platforms never fall back to an
 unfenced Python append.
@@ -25,13 +26,17 @@ import os
 from pathlib import Path
 import re
 import threading
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 import uuid
 import warnings
 
 
 APPEND_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
 APPEND_MUTEX_TIMEOUT_MS = 10_000
+QUEUE_PUBLICATION_MUTEX_NAME = (
+    r"Global\WaggleDanceBridgeAcceptedQueuePublicationV1"
+)
+QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS = 10_000
 CHECKPOINT_SCHEMA = "waggledance.bridge.append-v1-validation"
 CHECKPOINT_SUFFIX = ".append-v1-validation.json"
 TAIL_ANCHOR_MAX_BYTES = 4096
@@ -61,9 +66,9 @@ V1_REPLAYER_REQUIRED_FIELDS = ("agent", "type", "task_id", "status")
 class BridgeEventWriteError(RuntimeError):
     """A fail-closed bridge write failure.
 
-    ``wal_path`` identifies the durable replay artifact when one could be
-    retained.  ``canonical_durable`` is intentionally false for raised errors;
-    post-flush failures return a successful :class:`BridgeWriteResult` instead.
+    ``wal_path`` identifies recovery state when one could be retained, but a
+    raised error never promises that state was cleanly published or verified.
+    Accepted canonical and queued deliveries return :class:`BridgeWriteResult`.
     """
 
     decision = "bridge_write_failed"
@@ -74,12 +79,18 @@ class BridgeEventWriteError(RuntimeError):
         self.canonical_durable = False
 
 
+class _CanonicalAppendUncertainError(RuntimeError):
+    """Canonical bytes may have changed without a durable rollback."""
+
+
 @dataclass(frozen=True)
 class BridgeWriteResult:
     events_path: Path
+    delivery_status: Literal["canonical", "queued"]
     canonical_durable: bool
     checkpoint_advanced: bool
     retained_wal_path: Path | None
+    retained_wal_sha256: str | None
     warning_messages: tuple[str, ...]
     outbox_written: bool
     last_file_written: bool
@@ -112,12 +123,21 @@ class AppendV1Mutex(Protocol):
     def close(self) -> None: ...
 
 
+class AppendV1DirectoryLease(Protocol):
+    def close(self) -> None: ...
+
+
 class AppendV1Backend(Protocol):
     """Low-level operations required by the platform-neutral protocol logic."""
 
     def ensure_supported(self) -> None: ...
 
     def mkdir(self, path: Path) -> None: ...
+
+    def open_plain_directory_chain(
+        self,
+        path: Path,
+    ) -> list[AppendV1DirectoryLease]: ...
 
     def create_new(self, path: Path, *, hidden: bool) -> AppendV1File: ...
 
@@ -155,8 +175,49 @@ class _CanonicalAppendResult:
 @dataclass
 class _PendingWal:
     pending_path: Path
-    final_path: Path
+    ready_path: Path
+    row: bytes
+    row_sha256: str
     lease: AppendV1File | None
+    directory_leases: tuple[AppendV1DirectoryLease, ...]
+
+
+def _acquire_queue_publication_mutex(
+    backend: AppendV1Backend,
+) -> AppendV1Mutex:
+    mutex: AppendV1Mutex | None = None
+    try:
+        mutex = backend.acquire_mutex(
+            QUEUE_PUBLICATION_MUTEX_NAME,
+            QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS,
+        )
+    except Exception as exc:  # noqa: BLE001 - no WAL exists yet
+        raise BridgeEventWriteError(
+            f"accepted queue publication fence acquisition failed: {exc}"
+        ) from exc
+    if mutex is not None and mutex.acquired and not mutex.abandoned:
+        return mutex
+
+    reason = (
+        "ownership was abandoned"
+        if mutex is not None and mutex.abandoned
+        else "timed out"
+    )
+    cleanup_errors: list[str] = []
+    if mutex is not None:
+        if mutex.acquired:
+            try:
+                mutex.release()
+            except Exception as exc:  # noqa: BLE001 - report pre-acceptance cleanup
+                cleanup_errors.append(f"release failed: {exc}")
+        try:
+            mutex.close()
+        except Exception as exc:  # noqa: BLE001 - report pre-acceptance cleanup
+            cleanup_errors.append(f"close failed: {exc}")
+    suffix = f"; {'; '.join(cleanup_errors)}" if cleanup_errors else ""
+    raise BridgeEventWriteError(
+        f"accepted queue publication fence {reason}{suffix}"
+    )
 
 
 def write_bridge_event(
@@ -195,108 +256,149 @@ def write_bridge_event(
         last_bytes = _last_event_bytes(event)
 
     warning_messages: list[str] = []
-    wal = _open_pending_wal(
-        backend=active_backend,
-        bridge_root=root,
-        agent=agent,
-        row=row,
-    )
+    publication_mutex = _acquire_queue_publication_mutex(active_backend)
+    try:
+        wal = _open_pending_wal(
+            backend=active_backend,
+            bridge_root=root,
+            row=row,
+        )
+    except Exception as exc:
+        cleanup_errors: list[str] = []
+        try:
+            publication_mutex.release()
+        except Exception as release_exc:  # noqa: BLE001
+            cleanup_errors.append(f"release failed: {release_exc}")
+        try:
+            publication_mutex.close()
+        except Exception as close_exc:  # noqa: BLE001
+            cleanup_errors.append(f"close failed: {close_exc}")
+        if cleanup_errors:
+            raise BridgeEventWriteError(
+                "accepted queue publication fence cleanup failed after WAL "
+                f"creation error: {'; '.join(cleanup_errors)}"
+            ) from exc
+        raise
     mutex: AppendV1Mutex | None = None
     canonical_result: _CanonicalAppendResult | None = None
     retained_wal: Path | None = None
-    primary_error: BridgeEventWriteError | None = None
+    retained_wal_sha256: str | None = None
+    queued_reason = ""
     try:
         try:
             mutex = active_backend.acquire_mutex(
                 APPEND_MUTEX_NAME,
                 APPEND_MUTEX_TIMEOUT_MS,
             )
-        except Exception as exc:  # noqa: BLE001 - fail closed at platform edge
-            retained_wal = _close_and_promote_for_failure(
-                active_backend,
-                wal,
-                reason=f"AppendV1 mutex acquisition failed: {exc}",
-            )
-            primary_error = BridgeEventWriteError(
-                "could not acquire clean AppendV1 for bridge event "
-                f"{target}: {exc}; event durably spooled to {retained_wal}",
-                wal_path=retained_wal,
-            )
-            raise primary_error
+        except Exception as exc:  # noqa: BLE001 - queue only after verified WAL publish
+            queued_reason = f"AppendV1 mutex acquisition failed: {exc}"
 
-        if not mutex.acquired or mutex.abandoned:
-            reason = (
+        if not queued_reason and mutex is None:
+            queued_reason = "AppendV1 mutex acquisition returned no mutex"
+
+        if not queued_reason and mutex is not None and (
+            not mutex.acquired or mutex.abandoned
+        ):
+            queued_reason = (
                 "AppendV1 was abandoned; dirty ownership cannot mutate canonical bytes"
                 if mutex.abandoned
                 else "bridge append mutex timeout"
             )
-            retained_wal = _close_and_promote_for_failure(
+
+        if queued_reason:
+            retained_wal, retained_wal_sha256 = _publish_wal_ready(
                 active_backend,
                 wal,
-                reason=reason,
-            )
-            primary_error = BridgeEventWriteError(
-                "could not acquire clean AppendV1 for bridge event "
-                f"{target} (reason: {reason}; event durably spooled to "
-                f"{retained_wal})",
-                wal_path=retained_wal,
-            )
-            raise primary_error
-
-        try:
-            _close_wal_lease(wal)
-            canonical_result = _append_canonical_transactionally(
-                backend=active_backend,
-                path=target,
-                row=row,
-            )
-        except Exception as exc:  # noqa: BLE001 - preserve the durable WAL
-            retained_wal = _promote_wal(active_backend, wal)
-            primary_error = BridgeEventWriteError(
-                "bridge append failed; WAL promoted to "
-                f"{retained_wal} ({exc})",
-                wal_path=retained_wal,
-            )
-            raise primary_error from exc
-
-        if not canonical_result.checkpoint_advanced:
-            retained_wal = _retain_wal_best_effort(active_backend, wal)
-            _record_warning(
-                warning_messages,
-                "canonical bridge append is durable; validation checkpoint "
-                "advance failed and redundant WAL was retained at "
-                f"{retained_wal} ({canonical_result.checkpoint_error})",
             )
         else:
             try:
-                active_backend.delete(wal.pending_path)
-                if active_backend.path_exists(wal.pending_path):
-                    raise OSError("pending WAL still exists after removal")
-            except Exception as exc:  # noqa: BLE001 - canonical is durable
+                _close_wal_lease(wal)
+                canonical_directory_leases = active_backend.open_plain_directory_chain(
+                    target.parent,
+                )
+                wal.directory_leases = (
+                    *wal.directory_leases,
+                    *canonical_directory_leases,
+                )
+                canonical_result = _append_canonical_transactionally(
+                    backend=active_backend,
+                    path=target,
+                    row=row,
+                )
+            except _CanonicalAppendUncertainError as exc:
+                # The exact accepted WAL is the recovery authority for a torn
+                # prefix. Targeted replay can bind, quarantine, and truncate
+                # only a tail matching this WAL before appending it once.
+                queued_reason = f"bridge canonical append requires recovery: {exc}"
+                retained_wal, retained_wal_sha256 = _publish_wal_ready(
+                    active_backend,
+                    wal,
+                )
+            except Exception as exc:  # noqa: BLE001 - queue only after verified publish
+                queued_reason = f"bridge canonical append failed: {exc}"
+                retained_wal, retained_wal_sha256 = _publish_wal_ready(
+                    active_backend,
+                    wal,
+                )
+
+        if not queued_reason and canonical_result is not None:
+            if not canonical_result.checkpoint_advanced:
                 retained_wal = _retain_wal_best_effort(active_backend, wal)
+                retained_wal_sha256 = wal.row_sha256
                 _record_warning(
                     warning_messages,
-                    "bridge append is durable but WAL cleanup failed; retained at "
-                    f"{retained_wal} ({exc})",
+                    "canonical bridge append is durable; validation checkpoint "
+                    "advance failed and redundant WAL was retained at "
+                    f"{retained_wal} ({canonical_result.checkpoint_error})",
                 )
+            else:
+                try:
+                    marker_path = _accepted_wal_digest_marker_path(wal)
+                    active_backend.delete(marker_path)
+                    if active_backend.path_exists(marker_path):
+                        raise OSError("accepted WAL digest marker still exists after removal")
+                    active_backend.delete(wal.pending_path)
+                    if active_backend.path_exists(wal.pending_path):
+                        raise OSError("pending WAL still exists after removal")
+                except Exception as exc:  # noqa: BLE001 - canonical is durable
+                    retained_wal = _retain_wal_best_effort(active_backend, wal)
+                    retained_wal_sha256 = wal.row_sha256
+                    _record_warning(
+                        warning_messages,
+                        "bridge append is durable but WAL cleanup failed; retained at "
+                        f"{retained_wal} ({exc})",
+                    )
     finally:
+        pending_close_error: BridgeEventWriteError | None = None
         if wal.lease is not None:
             try:
                 _close_wal_lease(wal)
             except Exception as exc:  # noqa: BLE001
                 if canonical_result is not None and canonical_result.durable:
                     retained_wal = wal.pending_path
+                    retained_wal_sha256 = wal.row_sha256
                     _record_warning(
                         warning_messages,
                         "canonical bridge append is durable but pending WAL lease "
                         f"close failed; retained at {retained_wal} ({exc})",
                     )
-                elif primary_error is None:
-                    raise BridgeEventWriteError(
+                elif not (
+                    queued_reason
+                    and retained_wal is not None
+                    and retained_wal_sha256 is not None
+                ):
+                    pending_close_error = BridgeEventWriteError(
                         "pending WAL lease close failed before durable canonical "
                         f"success; retained at {wal.pending_path} ({exc})",
                         wal_path=wal.pending_path,
-                    ) from exc
+                    )
+                    pending_close_error.__cause__ = exc
+                else:
+                    _record_warning(
+                        warning_messages,
+                        "accepted queued WAL lease close remains deferred at "
+                        f"{wal.pending_path} ({exc})",
+                    )
         if mutex is not None:
             if mutex.acquired:
                 try:
@@ -313,6 +415,55 @@ def write_bridge_event(
                     warning_messages,
                     f"canonical AppendV1 close failed: {exc}",
                 )
+        for directory_lease in reversed(wal.directory_leases):
+            try:
+                directory_lease.close()
+            except Exception as exc:  # noqa: BLE001 - transport is already decided
+                _record_warning(
+                    warning_messages,
+                    f"accepted queue directory lease close failed: {exc}",
+                )
+        if publication_mutex is not None:
+            if publication_mutex.acquired:
+                try:
+                    publication_mutex.release()
+                except Exception as exc:  # noqa: BLE001 - transport is settled
+                    _record_warning(
+                        warning_messages,
+                        f"accepted queue publication fence release failed: {exc}",
+                    )
+            try:
+                publication_mutex.close()
+            except Exception as exc:  # noqa: BLE001 - transport is settled
+                _record_warning(
+                    warning_messages,
+                    f"accepted queue publication fence close failed: {exc}",
+                )
+        if pending_close_error is not None:
+            raise pending_close_error
+
+    if queued_reason:
+        if retained_wal is None or retained_wal_sha256 is None:
+            raise BridgeEventWriteError(
+                "queued bridge delivery ended without a verified ready WAL",
+                wal_path=retained_wal,
+            )
+        _record_warning(
+            warning_messages,
+            "bridge event accepted into the durable replay queue at "
+            f"{retained_wal} ({queued_reason})",
+        )
+        return BridgeWriteResult(
+            events_path=target,
+            delivery_status="queued",
+            canonical_durable=False,
+            checkpoint_advanced=False,
+            retained_wal_path=retained_wal,
+            retained_wal_sha256=retained_wal_sha256,
+            warning_messages=tuple(warning_messages),
+            outbox_written=False,
+            last_file_written=False,
+        )
 
     if canonical_result is None or not canonical_result.durable:
         raise BridgeEventWriteError(
@@ -345,9 +496,11 @@ def write_bridge_event(
 
     return BridgeWriteResult(
         events_path=target,
+        delivery_status="canonical",
         canonical_durable=True,
         checkpoint_advanced=canonical_result.checkpoint_advanced,
         retained_wal_path=retained_wal,
+        retained_wal_sha256=retained_wal_sha256,
         warning_messages=tuple(warning_messages),
         outbox_written=outbox_written,
         last_file_written=last_file_written,
@@ -444,39 +597,96 @@ def _open_pending_wal(
     *,
     backend: AppendV1Backend,
     bridge_root: Path,
-    agent: str,
     row: bytes,
 ) -> _PendingWal:
-    spool_dir = bridge_root / "spool"
-    backend.mkdir(spool_dir)
-    from datetime import datetime, timezone
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:-3]
-    final_name = (
-        f"failed-append-{agent}-{stamp}-{os.getpid()}-{uuid.uuid4().hex}.jsonl"
-    )
-    final_path = spool_dir / final_name
-    pending_path = spool_dir / f".{final_name}.pending"
-    lease: AppendV1File | None = None
+    accepted_root = bridge_root / "spool" / "accepted-v1"
+    pending_dir = accepted_root / "pending"
+    ready_dir = accepted_root / "ready"
+    quarantine_dir = accepted_root / "quarantine"
+    replayed_dir = accepted_root / "replayed"
+    directory_leases: list[AppendV1DirectoryLease] = []
     try:
-        lease = backend.create_new(pending_path, hidden=True)
+        for directory in (
+            pending_dir,
+            ready_dir,
+            quarantine_dir,
+            replayed_dir,
+        ):
+            directory_leases.extend(backend.open_plain_directory_chain(directory))
+    except Exception as exc:  # noqa: BLE001 - no WAL has been accepted yet
+        for directory_lease in reversed(directory_leases):
+            try:
+                directory_lease.close()
+            except Exception:
+                pass
+        raise BridgeEventWriteError(
+            f"accepted queue directory validation failed before WAL creation: {exc}"
+        ) from exc
+    leaf = f"bridge-wal-v1-{uuid.uuid4().hex}.jsonl"
+    pending_path = pending_dir / leaf
+    ready_path = ready_dir / leaf
+    row_sha256 = hashlib.sha256(row).hexdigest()
+    lease: AppendV1File | None = None
+    keep_directory_leases = False
+    try:
+        lease = backend.create_new(pending_path, hidden=False)
         lease.write_at(0, row)
         lease.flush()
-        return _PendingWal(
+        if lease.size() != len(row) or lease.read_at(0, len(row)) != row:
+            raise OSError("durable pending WAL writeback verification mismatch")
+        wal = _PendingWal(
             pending_path=pending_path,
-            final_path=final_path,
+            ready_path=ready_path,
+            row=row,
+            row_sha256=row_sha256,
             lease=lease,
+            directory_leases=tuple(directory_leases),
         )
+        _ensure_accepted_wal_digest_marker(backend, wal)
+        keep_directory_leases = True
+        return wal
     except Exception as exc:  # noqa: BLE001
         if lease is not None:
             try:
                 lease.close()
             except Exception:
                 pass
+        excluded_path: Path | None = None
+        try:
+            if backend.path_exists(pending_path):
+                quarantine_dir = accepted_root / "quarantine"
+                backend.mkdir(quarantine_dir)
+                excluded_path = quarantine_dir / f"unaccepted-{leaf}"
+                backend.move(
+                    pending_path,
+                    excluded_path,
+                    replace=False,
+                    write_through=True,
+                )
+        except Exception as quarantine_exc:  # noqa: BLE001
+            try:
+                if backend.path_exists(pending_path):
+                    backend.delete(pending_path)
+            except Exception:
+                pass
+            if backend.path_exists(pending_path):
+                raise BridgeEventWriteError(
+                    "pending WAL acceptance is unknown and blind retry is unsafe at "
+                    f"{pending_path}: {exc}; exclusion failed: {quarantine_exc}",
+                    wal_path=pending_path,
+                ) from exc
         raise BridgeEventWriteError(
-            f"could not create a durable pending bridge WAL at {pending_path}: {exc}",
-            wal_path=pending_path,
+            "could not establish an accepted pending bridge WAL; candidate was "
+            f"excluded from automatic replay at {excluded_path}: {exc}",
+            wal_path=excluded_path,
         ) from exc
+    finally:
+        if not keep_directory_leases:
+            for directory_lease in reversed(directory_leases):
+                try:
+                    directory_lease.close()
+                except Exception:
+                    pass
 
 
 def _close_wal_lease(wal: _PendingWal) -> None:
@@ -487,45 +697,158 @@ def _close_wal_lease(wal: _PendingWal) -> None:
     wal.lease = None
 
 
-def _promote_wal(backend: AppendV1Backend, wal: _PendingWal) -> Path:
+def _read_plain_recovery_path(backend: AppendV1Backend, path: Path) -> bytes:
+    if isinstance(backend, WindowsAppendV1Backend):
+        return backend.read_plain_single_link_path(path)
+    return backend.read_path(path)
+
+
+def _exact_wal_recovery_candidate(
+    backend: AppendV1Backend,
+    path: Path,
+    wal: _PendingWal,
+) -> bool:
+    try:
+        candidate = _read_plain_recovery_path(backend, path)
+    except Exception:  # noqa: BLE001 - a different/unavailable path is not authority
+        return False
+    return candidate == wal.row and hashlib.sha256(candidate).hexdigest() == wal.row_sha256
+
+
+def _accepted_wal_digest_marker_path(wal: _PendingWal) -> Path:
+    return wal.ready_path.parent / f".{wal.ready_path.name}.pending-recovery-blocked"
+
+
+def _accepted_wal_digest_marker_bytes(wal: _PendingWal) -> bytes:
+    marker = {
+        "schema": "waggledance.bridge.accepted-pending-block.v1",
+        "wal_leaf": wal.ready_path.name,
+        "expected_sha256": wal.row_sha256,
+    }
+    return (
+        json.dumps(marker, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8", errors="strict")
+
+
+def _accepted_wal_digest_marker_matches(
+    backend: AppendV1Backend,
+    path: Path,
+    wal: _PendingWal,
+) -> bool:
+    try:
+        raw = _read_plain_recovery_path(backend, path)
+        marker = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and marker.get("schema") == "waggledance.bridge.accepted-pending-block.v1"
+        and marker.get("wal_leaf") == wal.ready_path.name
+        and marker.get("expected_sha256") == wal.row_sha256
+    )
+
+
+def _ensure_accepted_wal_digest_marker(
+    backend: AppendV1Backend,
+    wal: _PendingWal,
+) -> Path:
+    marker_path = _accepted_wal_digest_marker_path(wal)
+    backend.mkdir(marker_path.parent)
+    if backend.path_exists(marker_path):
+        if _accepted_wal_digest_marker_matches(backend, marker_path, wal):
+            return marker_path
+        raise OSError("accepted WAL digest marker collides with different authority")
+
+    quarantine_dir = wal.pending_path.parent.parent / "quarantine"
+    backend.mkdir(quarantine_dir)
+    temporary_path = quarantine_dir / f"digest-marker-{uuid.uuid4().hex}.tmp"
+    marker_bytes = _accepted_wal_digest_marker_bytes(wal)
+    marker_file: AppendV1File | None = None
+    try:
+        marker_file = backend.create_new(temporary_path, hidden=False)
+        marker_file.write_at(0, marker_bytes)
+        marker_file.flush()
+        if (
+            marker_file.size() != len(marker_bytes)
+            or marker_file.read_at(0, len(marker_bytes)) != marker_bytes
+        ):
+            raise OSError("durable accepted WAL digest marker verification mismatch")
+        marker_file.close()
+        marker_file = None
+        try:
+            backend.move(
+                temporary_path,
+                marker_path,
+                replace=False,
+                write_through=True,
+            )
+        except Exception:  # noqa: BLE001 - accept an exact prior marker only
+            if _accepted_wal_digest_marker_matches(backend, marker_path, wal):
+                return marker_path
+            raise
+        return marker_path
+    finally:
+        if marker_file is not None:
+            try:
+                marker_file.close()
+            except Exception:
+                pass
+        try:
+            if backend.path_exists(temporary_path):
+                backend.delete(temporary_path)
+        except Exception:
+            pass
+
+
+def _publish_wal_ready(
+    backend: AppendV1Backend,
+    wal: _PendingWal,
+) -> tuple[Path, str]:
     try:
         _close_wal_lease(wal)
-        backend.set_hidden(wal.pending_path, False)
+    except Exception:
+        # Flush plus exact readback already established acceptance. Keep the
+        # lease for the outer finally and report pending; the drainer waits for
+        # the process to release it before age-gated recovery.
+        return wal.pending_path, wal.row_sha256
+    try:
+        _ensure_accepted_wal_digest_marker(backend, wal)
+    except Exception as exc:  # noqa: BLE001 - queued success requires marker authority
+        raise BridgeEventWriteError(
+            "accepted WAL digest authority is unavailable; queued success is "
+            f"unsafe even if pending bytes remain: {exc}",
+            wal_path=wal.pending_path,
+        ) from exc
+    try:
+        backend.mkdir(wal.ready_path.parent)
         backend.move(
             wal.pending_path,
-            wal.final_path,
+            wal.ready_path,
             replace=False,
-            write_through=False,
+            write_through=True,
         )
     except Exception as exc:  # noqa: BLE001
+        if _exact_wal_recovery_candidate(backend, wal.pending_path, wal):
+            return wal.pending_path, wal.row_sha256
+        if _exact_wal_recovery_candidate(backend, wal.ready_path, wal):
+            return wal.ready_path, wal.row_sha256
         raise BridgeEventWriteError(
-            "WAL promotion failed and pending WAL was retained at "
+            "accepted WAL publication failed and recovery state was retained at "
             f"{wal.pending_path}: {exc}",
             wal_path=wal.pending_path,
         ) from exc
-    return wal.final_path
-
-
-def _close_and_promote_for_failure(
-    backend: AppendV1Backend,
-    wal: _PendingWal,
-    *,
-    reason: str,
-) -> Path:
-    try:
-        return _promote_wal(backend, wal)
-    except BridgeEventWriteError as exc:
-        raise BridgeEventWriteError(
-            f"{reason}; {exc}",
-            wal_path=exc.wal_path,
-        ) from exc
+    # Exact bytes were verified through the exclusive pending lease before it
+    # closed. The write-through, no-replace rename is the publication point;
+    # a drainer is free to archive ready immediately after this succeeds.
+    return wal.ready_path, wal.row_sha256
 
 
 def _retain_wal_best_effort(backend: AppendV1Backend, wal: _PendingWal) -> Path:
     try:
-        return _promote_wal(backend, wal)
-    except BridgeEventWriteError:
-        return wal.pending_path
+        ready_path, _ = _publish_wal_ready(backend, wal)
+        return ready_path
+    except BridgeEventWriteError as exc:
+        return exc.wal_path or wal.pending_path
 
 
 def _append_canonical_transactionally(
@@ -534,9 +857,9 @@ def _append_canonical_transactionally(
     path: Path,
     row: bytes,
 ) -> _CanonicalAppendResult:
-    # ``ensure_supported`` already ran before WAL creation.  The canonical
-    # parent is deliberately created only after a clean mutex acquisition.
-    backend.mkdir(path.parent)
+    # ``ensure_supported`` already ran before WAL creation.  The caller opens
+    # and retains a plain, no-delete directory chain only after acquiring the
+    # clean append mutex, before this lexical path can create or open a leaf.
     stream: AppendV1File | None = None
     durable = False
     close_error = ""
@@ -571,7 +894,7 @@ def _append_canonical_transactionally(
                 stream.truncate(pre_length)
                 stream.flush()
             except Exception as rollback_exc:  # noqa: BLE001
-                raise BridgeEventWriteError(
+                raise _CanonicalAppendUncertainError(
                     "transactional bridge append failed "
                     f"({append_exc}); ROLLBACK FAILED: {rollback_exc}"
                 ) from rollback_exc
@@ -929,8 +1252,8 @@ def _record_warning(messages: list[str], message: str) -> None:
     try:
         warnings.warn(message, RuntimeWarning, stacklevel=3)
     except Warning:
-        # Warning filters must not convert an already-durable canonical append
-        # into a raised failure that invites a duplicate retry.
+        # Warning filters must not convert an accepted canonical or verified
+        # queued delivery into a raised failure that invites a duplicate retry.
         pass
 
 
@@ -1066,6 +1389,26 @@ class _WindowsMutex:
             self._backend._raise_last_error("CloseHandle(mutex)", None)
 
 
+class _WindowsDirectoryLease:
+    def __init__(
+        self,
+        backend: "WindowsAppendV1Backend",
+        handle: int,
+        path: Path,
+    ) -> None:
+        self._backend = backend
+        self._handle = handle
+        self._path = path
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if not self._backend._kernel32.CloseHandle(self._handle):
+            self._backend._raise_last_error("CloseHandle(directory)", self._path)
+
+
 class _FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
 
@@ -1091,11 +1434,16 @@ class WindowsAppendV1Backend:
     GENERIC_READ = 0x80000000
     GENERIC_WRITE = 0x40000000
     FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
     CREATE_NEW = 1
     OPEN_EXISTING = 3
     OPEN_ALWAYS = 4
     FILE_ATTRIBUTE_HIDDEN = 0x00000002
+    FILE_ATTRIBUTE_DIRECTORY = 0x00000010
     FILE_ATTRIBUTE_NORMAL = 0x00000080
+    FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
     INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
     MOVEFILE_REPLACE_EXISTING = 0x00000001
     MOVEFILE_WRITE_THROUGH = 0x00000008
@@ -1185,6 +1533,67 @@ class WindowsAppendV1Backend:
     def mkdir(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
+    def open_plain_directory_chain(self, path: Path) -> list[_WindowsDirectoryLease]:
+        self.ensure_supported()
+        full_path = Path(os.path.abspath(os.path.normpath(os.fspath(path))))
+        if not full_path.anchor:
+            raise OSError(f"accepted queue directory path is not rooted: {path}")
+        cursor = Path(full_path.anchor)
+        candidates = [cursor]
+        for part in full_path.relative_to(full_path.anchor).parts:
+            cursor = cursor / part
+            candidates.append(cursor)
+
+        leases: list[_WindowsDirectoryLease] = []
+        try:
+            for candidate in candidates:
+                candidate.mkdir(exist_ok=True)
+                handle = self._kernel32.CreateFileW(
+                    os.fspath(candidate),
+                    self.GENERIC_READ,
+                    self.FILE_SHARE_READ | self.FILE_SHARE_WRITE,
+                    None,
+                    self.OPEN_EXISTING,
+                    self.FILE_FLAG_BACKUP_SEMANTICS
+                    | self.FILE_FLAG_OPEN_REPARSE_POINT,
+                    None,
+                )
+                if handle == wintypes.HANDLE(-1).value:
+                    self._raise_last_error("CreateFileW(directory)", candidate)
+                lease = _WindowsDirectoryLease(self, handle, candidate)
+                try:
+                    information = _BY_HANDLE_FILE_INFORMATION()
+                    if not self._kernel32.GetFileInformationByHandle(
+                        handle,
+                        ctypes.byref(information),
+                    ):
+                        self._raise_last_error(
+                            "GetFileInformationByHandle(directory)",
+                            candidate,
+                        )
+                    if not (
+                        information.dwFileAttributes & self.FILE_ATTRIBUTE_DIRECTORY
+                    ) or (
+                        information.dwFileAttributes
+                        & self.FILE_ATTRIBUTE_REPARSE_POINT
+                    ):
+                        raise OSError(
+                            "accepted queue path component must be a plain directory, "
+                            f"not a reparse point: {candidate}"
+                        )
+                except Exception:
+                    lease.close()
+                    raise
+                leases.append(lease)
+            return leases
+        except Exception:
+            for lease in reversed(leases):
+                try:
+                    lease.close()
+                except Exception:
+                    pass
+            raise
+
     def _open(
         self,
         path: Path,
@@ -1214,12 +1623,29 @@ class WindowsAppendV1Backend:
         return self._open(path, disposition=self.CREATE_NEW, share=0, attributes=attributes)
 
     def open_or_create_shared_read(self, path: Path) -> _WindowsFile:
-        return self._open(
+        stream = self._open(
             path,
             disposition=self.OPEN_ALWAYS,
             share=self.FILE_SHARE_READ,
-            attributes=self.FILE_ATTRIBUTE_NORMAL,
+            attributes=self.FILE_ATTRIBUTE_NORMAL | self.FILE_FLAG_OPEN_REPARSE_POINT,
         )
+        try:
+            information = _BY_HANDLE_FILE_INFORMATION()
+            if not self._kernel32.GetFileInformationByHandle(
+                stream._require_open(),
+                ctypes.byref(information),
+            ):
+                self._raise_last_error("GetFileInformationByHandle", path)
+            if (
+                information.nNumberOfLinks != 1
+                or information.dwFileAttributes & self.FILE_ATTRIBUTE_REPARSE_POINT
+                or information.dwFileAttributes & self.FILE_ATTRIBUTE_DIRECTORY
+            ):
+                raise OSError(f"append target must be a plain single-link file: {path}")
+            return stream
+        except Exception:
+            stream.close()
+            raise
 
     def acquire_mutex(self, name: str, timeout_ms: int) -> _WindowsMutex:
         self.ensure_supported()
@@ -1249,6 +1675,31 @@ class WindowsAppendV1Backend:
             access=self.GENERIC_READ,
         )
         try:
+            return handle.read_at(0, handle.size())
+        finally:
+            handle.close()
+
+    def read_plain_single_link_path(self, path: Path) -> bytes:
+        handle = self._open(
+            path,
+            disposition=self.OPEN_EXISTING,
+            share=self.FILE_SHARE_READ,
+            attributes=self.FILE_FLAG_OPEN_REPARSE_POINT,
+            access=self.GENERIC_READ,
+        )
+        try:
+            information = _BY_HANDLE_FILE_INFORMATION()
+            if not self._kernel32.GetFileInformationByHandle(
+                handle._handle,  # noqa: SLF001 - same backend owns the handle wrapper
+                ctypes.byref(information),
+            ):
+                self._raise_last_error("GetFileInformationByHandle", path)
+            if information.nNumberOfLinks != 1:
+                raise OSError(f"accepted recovery candidate has multiple hard links: {path}")
+            if information.dwFileAttributes & self.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise OSError(f"accepted recovery candidate is a reparse point: {path}")
+            if information.dwFileAttributes & self.FILE_ATTRIBUTE_DIRECTORY:
+                raise OSError(f"accepted recovery candidate is a directory: {path}")
             return handle.read_at(0, handle.size())
         finally:
             handle.close()
@@ -1389,6 +1840,11 @@ class _PortableMutex:
         return
 
 
+class _PortableDirectoryLease:
+    def close(self) -> None:
+        return
+
+
 class _PortableTestBackend:
     """Filesystem-backed injected fake used by portable tests only."""
 
@@ -1410,6 +1866,26 @@ class _PortableTestBackend:
 
     def mkdir(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
+
+    def open_plain_directory_chain(self, path: Path) -> list[_PortableDirectoryLease]:
+        full_path = Path(os.path.abspath(os.path.normpath(os.fspath(path))))
+        if not full_path.anchor:
+            raise OSError(f"accepted queue directory path is not rooted: {path}")
+        cursor = Path(full_path.anchor)
+        candidates = [cursor]
+        for part in full_path.relative_to(full_path.anchor).parts:
+            cursor = cursor / part
+            candidates.append(cursor)
+        leases: list[_PortableDirectoryLease] = []
+        for candidate in candidates:
+            candidate.mkdir(exist_ok=True)
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise OSError(
+                    "accepted queue path component must be a plain directory, "
+                    f"not a symbolic link: {candidate}"
+                )
+            leases.append(_PortableDirectoryLease())
+        return leases
 
     def create_new(self, path: Path, *, hidden: bool) -> _PortableFile:
         del hidden
@@ -1481,6 +1957,8 @@ class _PortableTestBackend:
 __all__ = [
     "APPEND_MUTEX_NAME",
     "APPEND_MUTEX_TIMEOUT_MS",
+    "QUEUE_PUBLICATION_MUTEX_NAME",
+    "QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS",
     "BridgeEventWriteError",
     "BridgeWriteResult",
     "V1_EVENT_TYPES",

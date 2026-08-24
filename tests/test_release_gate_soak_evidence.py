@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from tools.check_release_gate import evaluate_release_gate
 
@@ -341,12 +344,62 @@ def test_release_gate_holds_when_reproducibility_report_malformed(
     assert repro["report_malformed"] is True
 
 
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"verified": True, "blockers": None, "mismatched_fields": []},
+        {"verified": False, "blockers": [], "mismatched_fields": 5},
+        {
+            "verified": False,
+            "blockers": "field_mismatch:docker_stable_policy",
+            "mismatched_fields": [],
+        },
+    ],
+    ids=["blockers-none", "mismatched-int", "blockers-string"],
+)
+def test_release_gate_holds_when_report_fields_malformed(
+    tmp_path, monkeypatch, report
+) -> None:
+    # Dict reports whose blockers/mismatched_fields are not lists of strings
+    # must fail closed with the stable redacted blocker: no TypeError, no
+    # character-exploded blockers, no forwarded report content.
+    monkeypatch.setattr(
+        "tools.verify_release_soak_evidence.build_report",
+        lambda **_kwargs: dict(report),
+    )
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    evidence_path.write_text(json.dumps(_valid_evidence()), encoding="utf-8")
+
+    result = evaluate_release_gate(
+        readiness_path="docs/release/RELEASE_READINESS.md",
+        soak_evidence_path=evidence_path,
+        today=dt.date(2026, 5, 24),
+    )
+
+    assert result["decision"] == "hold"
+    assert "soak_reproducibility_report_malformed" in result["blockers"]
+    assert "soak_evidence_not_reproducible" not in result["blockers"]
+    assert not any(
+        blocker.startswith("field_mismatch") or len(blocker) == 1
+        for blocker in result["blockers"]
+    )
+    repro = result["soak_evidence_diagnostics"]["soak_reproducibility"]
+    assert repro["verified"] is False
+    assert repro["report_malformed"] is True
+    assert "verifier_blockers" not in repro
+
+
 def test_release_gate_cli_direct_script_reaches_canonical_verifier() -> None:
     # Direct-script invocation puts tools/ on sys.path (not the repo root);
     # the gate must still import the canonical verifier - never degrade to
     # verifier_unavailable. --today is pinned inside the soak window so the
     # hold is date-deterministic: the test asserts import-path health, not
     # the current (changeable) reproducibility of the canonical evidence.
+    clean_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "PYTHONPATH"
+    }
     completed = subprocess.run(
         [
             sys.executable,
@@ -361,6 +414,7 @@ def test_release_gate_cli_direct_script_reaches_canonical_verifier() -> None:
         capture_output=True,
         text=True,
         check=False,
+        env=clean_env,
     )
 
     assert completed.returncode == 1

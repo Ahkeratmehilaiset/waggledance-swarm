@@ -337,10 +337,35 @@ def evaluate_release_gate(
                             "verified": False,
                         })
                     else:
-                        if not isinstance(reproducibility, dict):
+                        raw_blockers = (
+                            reproducibility.get("blockers")
+                            if isinstance(reproducibility, dict)
+                            else None
+                        )
+                        raw_mismatched = (
+                            reproducibility.get("mismatched_fields")
+                            if isinstance(reproducibility, dict)
+                            else None
+                        )
+                        report_shape_valid = (
+                            isinstance(reproducibility, dict)
+                            and isinstance(raw_blockers, list)
+                            and all(
+                                isinstance(blocker, str)
+                                for blocker in raw_blockers
+                            )
+                            and isinstance(raw_mismatched, list)
+                            and all(
+                                isinstance(field, str)
+                                for field in raw_mismatched
+                            )
+                        )
+                        if not report_shape_valid:
                             # Fail closed on a malformed verifier report
-                            # (None/list/other): stable redacted blocker,
-                            # never an uncaught attribute error.
+                            # (non-dict, or blockers/mismatched_fields not
+                            # lists of strings): stable redacted blocker,
+                            # no report content forwarded, never a crash
+                            # or character-exploded blockers.
                             blockers.append(
                                 "soak_reproducibility_report_malformed"
                             )
@@ -353,13 +378,7 @@ def evaluate_release_gate(
                             verified = (
                                 reproducibility.get("verified") is True
                             )
-                            verifier_blockers = [
-                                blocker
-                                for blocker in reproducibility.get(
-                                    "blockers", []
-                                )
-                                if isinstance(blocker, str)
-                            ]
+                            verifier_blockers = list(raw_blockers)
                             if not verified:
                                 blockers.append(
                                     "soak_evidence_not_reproducible"
@@ -369,8 +388,7 @@ def evaluate_release_gate(
                                 "available": True,
                                 "verified": verified,
                                 "mismatched_field_count": len(
-                                    reproducibility.get("mismatched_fields")
-                                    or []
+                                    raw_mismatched
                                 ),
                                 "verifier_blockers": verifier_blockers,
                             })

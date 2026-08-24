@@ -72,7 +72,36 @@ def test_totals_only_report_is_unbound(tmp_path) -> None:
         report_path, tmp_path, COMMIT
     )
 
-    assert "bandit_report_totals_only_unbound" in blockers
+    assert "bandit_scanned_paths_unbound" in blockers
+
+
+def test_duplicate_normalized_alias_is_unbound(tmp_path) -> None:
+    files = _write_source_tree(tmp_path)
+    report = _clean_report(files)
+    # The same file under both separators collapses to one normalized
+    # path: an ambiguous inventory must fail closed.
+    report["metrics"]["core/gamma.py"] = {"SEVERITY.HIGH": 0}
+    report["metrics"]["core\\gamma.py"] = {"SEVERITY.HIGH": 0}
+    report_path = _write_report(tmp_path, report)
+
+    blockers = evaluate_bandit_source_attestation(
+        report_path, tmp_path, COMMIT
+    )
+
+    assert "bandit_scanned_paths_unbound" in blockers
+
+
+def test_malformed_per_file_metric_value_is_unbound(tmp_path) -> None:
+    files = _write_source_tree(tmp_path)
+    report = _clean_report(files)
+    report["metrics"][files[0]] = ["not", "a", "dict"]
+    report_path = _write_report(tmp_path, report)
+
+    blockers = evaluate_bandit_source_attestation(
+        report_path, tmp_path, COMMIT
+    )
+
+    assert "bandit_scanned_paths_unbound" in blockers
 
 
 def test_missing_inventory_is_stale(tmp_path) -> None:
@@ -162,13 +191,20 @@ def test_unclean_or_malformed_totals_block(tmp_path, totals) -> None:
         report_path, tmp_path, COMMIT
     )
 
-    assert "bandit_severity_totals_not_clean" in blockers
+    assert "bandit_high_medium_present" in blockers
 
 
 @pytest.mark.parametrize(
     "generated_at",
-    ["", "yesterday", "2026-08-24T08:00:00", 12345, None],
-    ids=["empty", "garbage", "naive", "non-string", "missing"],
+    [
+        "",
+        "yesterday",
+        "2026-08-24T08:00:00",
+        "2026-08-24T11:00:00+03:00",
+        12345,
+        None,
+    ],
+    ids=["empty", "garbage", "naive", "nonzero-offset", "non-string", "missing"],
 )
 def test_invalid_generated_at_blocks(tmp_path, generated_at) -> None:
     files = _write_source_tree(tmp_path)
@@ -197,7 +233,7 @@ def test_unreadable_and_non_object_fail_closed(tmp_path) -> None:
     not_object.write_text("[1, 2, 3]", encoding="utf-8")
     assert evaluate_bandit_source_attestation(
         not_object, tmp_path, COMMIT
-    ) == ["bandit_report_not_object"]
+    ) == ["bandit_report_unreadable"]
 
 
 def test_malformed_nested_types_never_crash(tmp_path) -> None:
@@ -214,8 +250,8 @@ def test_malformed_nested_types_never_crash(tmp_path) -> None:
         report_path, tmp_path, COMMIT
     )
 
-    assert "bandit_severity_totals_not_clean" in blockers
-    assert "bandit_report_totals_only_unbound" in blockers
+    assert "bandit_high_medium_present" in blockers
+    assert "bandit_scanned_paths_unbound" in blockers
     assert "bandit_source_commit_mismatch" in blockers
     assert "bandit_generated_at_invalid" in blockers
 

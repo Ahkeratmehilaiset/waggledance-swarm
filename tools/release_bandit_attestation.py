@@ -70,9 +70,9 @@ def _generated_at_valid(value: object) -> bool:
         return False
     if parsed.tzinfo is None:
         return False
-    try:
-        parsed.astimezone(dt.UTC)
-    except (OverflowError, OSError, ValueError):
+    if parsed.utcoffset() != dt.timedelta(0):
+        # Timezone-aware is not enough: the attestation timestamp must
+        # be expressed directly in UTC (offset zero), never local time.
         return False
     return True
 
@@ -85,12 +85,18 @@ def evaluate_bandit_source_attestation(
     """Return stable blockers binding a Bandit report to current source.
 
     Empty list only when the report is a readable JSON object whose
-    HIGH/MEDIUM totals are strict-int zero, whose per-file metrics cover
-    exactly the current ``waggledance`` + ``core`` ``.py`` tree (ignoring
-    ``__pycache__``), whose ``source_commit`` equals the 40-lowercase-hex
-    ``expected_commit``, and whose ``generated_at`` parses as a valid
-    timezone-aware UTC timestamp. All blockers are path-free; malformed
-    nested types fold into blockers, never exceptions.
+    HIGH/MEDIUM totals are strict-int zero
+    (``bandit_high_medium_present`` otherwise, malformed included),
+    whose per-file metrics form a trustworthy inventory - dict values,
+    no duplicate normalized aliases, not totals-only
+    (``bandit_scanned_paths_unbound``) - covering exactly the current
+    ``waggledance`` + ``core`` ``.py`` tree ignoring ``__pycache__``
+    (``bandit_scanned_paths_stale``), whose ``source_commit`` equals
+    the 40-lowercase-hex ``expected_commit``, and whose
+    ``generated_at`` parses as a UTC-offset-zero timestamp. Unreadable
+    input and non-object JSON both map to ``bandit_report_unreadable``.
+    All blockers are path-free; malformed nested types fold into
+    blockers, never exceptions.
     """
     blockers: list[str] = []
 
@@ -104,29 +110,41 @@ def evaluate_bandit_source_attestation(
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return ["bandit_report_unreadable"]
     if not isinstance(loaded, dict):
-        return ["bandit_report_not_object"]
+        return ["bandit_report_unreadable"]
 
     metrics = loaded.get("metrics")
     if not isinstance(metrics, dict):
-        blockers.append("bandit_severity_totals_not_clean")
-        blockers.append("bandit_report_totals_only_unbound")
+        blockers.append("bandit_high_medium_present")
+        blockers.append("bandit_scanned_paths_unbound")
     else:
         totals = metrics.get("_totals")
         if not isinstance(totals, dict) or not (
             _is_strict_zero_int(totals.get("SEVERITY.HIGH"))
             and _is_strict_zero_int(totals.get("SEVERITY.MEDIUM"))
         ):
-            blockers.append("bandit_severity_totals_not_clean")
+            blockers.append("bandit_high_medium_present")
 
         scanned: set[str] = set()
-        for key in metrics:
+        inventory_trustworthy = True
+        for key, value in metrics.items():
             if key == "_totals":
                 continue
+            if not isinstance(value, dict):
+                # Malformed per-file metric value: inventory untrusted.
+                inventory_trustworthy = False
+                continue
             normalized = _normalized_py_path(key)
-            if normalized is not None:
-                scanned.add(normalized)
-        if not scanned:
-            blockers.append("bandit_report_totals_only_unbound")
+            if normalized is None:
+                continue
+            if normalized in scanned:
+                # Two raw keys collapsing to one normalized path (e.g.
+                # both separators of the same file) make the inventory
+                # ambiguous - fail closed.
+                inventory_trustworthy = False
+                continue
+            scanned.add(normalized)
+        if not inventory_trustworthy or not scanned:
+            blockers.append("bandit_scanned_paths_unbound")
         elif scanned != _current_source_py_paths(Path(source_root)):
             blockers.append("bandit_scanned_paths_stale")
 

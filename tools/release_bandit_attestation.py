@@ -129,8 +129,13 @@ def evaluate_bandit_source_attestation(
         for key, value in metrics.items():
             if key == "_totals":
                 continue
-            if not isinstance(value, dict):
-                # Malformed per-file metric value: inventory untrusted.
+            if not isinstance(value, dict) or not (
+                _is_strict_zero_int(value.get("SEVERITY.HIGH"))
+                and _is_strict_zero_int(value.get("SEVERITY.MEDIUM"))
+            ):
+                # A per-file entry without strict-int-zero HIGH/MEDIUM
+                # counts (empty dict included) is not scan evidence:
+                # inventory untrusted.
                 inventory_trustworthy = False
                 continue
             normalized = _normalized_py_path(key)

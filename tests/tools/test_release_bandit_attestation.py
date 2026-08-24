@@ -30,7 +30,10 @@ def _clean_report(files: list[str], commit: str = COMMIT) -> dict:
     metrics: dict = {
         # Mixed separators on purpose: the canonical artifact uses
         # backslash keys on Windows.
-        rel.replace("/", "\\") if index % 2 else rel: {"SEVERITY.HIGH": 0}
+        rel.replace("/", "\\") if index % 2 else rel: {
+            "SEVERITY.HIGH": 0,
+            "SEVERITY.MEDIUM": 0,
+        }
         for index, rel in enumerate(files)
     }
     metrics["_totals"] = {"SEVERITY.HIGH": 0, "SEVERITY.MEDIUM": 0}
@@ -112,6 +115,35 @@ def test_malformed_per_file_metric_value_is_unbound(tmp_path) -> None:
     files = _write_source_tree(tmp_path)
     report = _clean_report(files)
     report["metrics"][files[0]] = ["not", "a", "dict"]
+    report_path = _write_report(tmp_path, report)
+
+    blockers = evaluate_bandit_source_attestation(
+        report_path, tmp_path, COMMIT
+    )
+
+    assert "bandit_scanned_paths_unbound" in blockers
+
+
+@pytest.mark.parametrize(
+    "per_file",
+    [
+        {},
+        {"SEVERITY.HIGH": 0},
+        {"SEVERITY.HIGH": 0, "SEVERITY.MEDIUM": 1},
+        {"SEVERITY.HIGH": False, "SEVERITY.MEDIUM": 0},
+        {"SEVERITY.HIGH": 0, "SEVERITY.MEDIUM": "0"},
+    ],
+    ids=["empty-dict", "missing-medium", "medium-one", "bool-high", "string-medium"],
+)
+def test_per_file_metrics_without_clean_counts_are_unbound(
+    tmp_path, per_file
+) -> None:
+    # An inventory entry is scan evidence only with strict-int-zero
+    # HIGH/MEDIUM counts; anything else (tools' empty-dict probe class)
+    # fails closed as unbound.
+    files = _write_source_tree(tmp_path)
+    report = _clean_report(files)
+    report["metrics"][files[0]] = per_file
     report_path = _write_report(tmp_path, report)
 
     blockers = evaluate_bandit_source_attestation(

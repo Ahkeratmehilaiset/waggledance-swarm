@@ -238,7 +238,6 @@ def _runner(
             "pr",
             "diff",
             str(PR),
-            "--patch",
             "--repo",
             REPO,
         ): _completed(diff),

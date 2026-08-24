@@ -7,10 +7,11 @@ evidence (actual or rebuilt-expected) claims ``profile_s_smoke`` or
 ``security_privacy_gate`` pass. They re-verify that the underlying local
 artifacts genuinely support a *final* stable-evidence claim:
 
-* the privacy precheck receipt must contain the exact stripped lines
-  ``74 passed`` and ``SMOKE_OK`` (substring echoes inside sentences do
-  not count) and must not carry explicit non-final / preliminary
-  stable-evidence markers;
+* the privacy precheck receipt must contain an exact stripped line
+  matching ``<count> passed`` with the count at or above the historical
+  floor of 74, plus the exact stripped line ``SMOKE_OK`` (substring
+  echoes inside sentences never count), and must not carry explicit
+  non-final / preliminary stable-evidence markers;
 * the selected OSV/pip-audit report's canonical ``(name, version)`` pin
   multiset must equal the exact pins in ``requirements.lock.txt``.
 
@@ -31,7 +32,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PRIVACY_REQUIRED_EXACT_LINES = ("74 passed", "SMOKE_OK")
+PRIVACY_REQUIRED_EXACT_LINES = ("SMOKE_OK",)
+PRIVACY_PASSED_COUNT_FLOOR = 74
+_PRIVACY_PASSED_LINE_PATTERN = re.compile(r"^([1-9][0-9]*) passed$")
 NON_FINAL_MARKERS = (
     "not final",
     "not-final",
@@ -69,9 +72,12 @@ def _normalized_marker_text(text: str) -> str:
 def evaluate_privacy_attestation(privacy_precheck: Path | str) -> list[str]:
     """Return stable blockers for the privacy precheck receipt.
 
-    Empty list means the receipt attests a final pass: every required
-    token is present as an exact stripped line and no explicit
-    non-final / preliminary marker appears anywhere in the text.
+    Empty list means the receipt attests a final pass: an exact
+    stripped ``<count> passed`` line meets the historical floor, every
+    other required token is present as an exact stripped line, and no
+    explicit non-final / preliminary marker appears anywhere in the
+    text. Missing, malformed, or under-floor passed lines all map to
+    the same stable blocker.
     """
     try:
         text = Path(privacy_precheck).read_text(encoding="utf-8")
@@ -80,7 +86,13 @@ def evaluate_privacy_attestation(privacy_precheck: Path | str) -> list[str]:
 
     blockers: list[str] = []
     stripped_lines = {line.strip() for line in text.splitlines()}
-    if any(
+    passed_line_ok = False
+    for line in stripped_lines:
+        match = _PRIVACY_PASSED_LINE_PATTERN.match(line)
+        if match and int(match.group(1)) >= PRIVACY_PASSED_COUNT_FLOOR:
+            passed_line_ok = True
+            break
+    if not passed_line_ok or any(
         required not in stripped_lines
         for required in PRIVACY_REQUIRED_EXACT_LINES
     ):

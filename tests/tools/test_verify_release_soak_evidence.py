@@ -35,7 +35,44 @@ ATTESTATION_BLOCKERS = {
     "requirements_lock_unreadable",
 }
 
-_FINAL_PRIVACY_TEXT = "# v3.12.0 final privacy receipt\n\n74 passed\nSMOKE_OK\n"
+_FINAL_PRIVACY_TEXT = "# v3.12.0 final privacy receipt\n\n87 passed\nSMOKE_OK\n"
+
+
+@pytest.mark.parametrize(
+    "passed_line, accepted",
+    [
+        ("74 passed", True),
+        ("87 passed", True),
+        ("174 passed", True),
+        ("73 passed", False),
+        ("Result: 87 passed today", False),
+        ("187 passed suffix", False),
+        ("0 passed", False),
+        ("eighty passed", False),
+    ],
+    ids=[
+        "floor-74",
+        "current-87",
+        "higher-174",
+        "under-floor-73",
+        "embedded-sentence",
+        "trailing-suffix",
+        "zero",
+        "non-integer",
+    ],
+)
+def test_privacy_passed_line_floor(tmp_path, passed_line, accepted) -> None:
+    receipt = tmp_path / "receipt.md"
+    receipt.write_text(
+        f"# receipt\n\n{passed_line}\nSMOKE_OK\n", encoding="utf-8"
+    )
+
+    blockers = evaluate_privacy_attestation(receipt)
+
+    if accepted:
+        assert blockers == []
+    else:
+        assert blockers == ["privacy_attestation_missing_exact_line"]
 
 
 def _real_lock_report_dependencies() -> list[dict[str, str]]:

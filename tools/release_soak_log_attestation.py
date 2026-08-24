@@ -20,7 +20,9 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -93,16 +95,30 @@ def _normalized_rel_path(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     normalized = value.replace("\\", "/").strip()
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
     if _ABSOLUTE_PATTERN.match(normalized):
         return None
     parts = normalized.split("/")
-    if any(part in ("", "..") for part in parts):
+    # "." components are internal aliases (logs/./x == logs/x) and are
+    # rejected outright rather than silently collapsed.
+    if any(part in ("", ".", "..") for part in parts):
         return None
     if not normalized.lower().endswith(ALLOWED_SOURCE_SUFFIXES):
         return None
     return normalized
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """True for Windows reparse points (junctions included); 3.11-safe."""
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if not reparse_flag:
+        return False
+    try:
+        attributes = getattr(
+            os.lstat(path), "st_file_attributes", 0
+        )
+    except OSError:
+        return True
+    return bool(attributes & reparse_flag)
 
 
 def _source_digest(path: Path) -> str | None:
@@ -114,15 +130,23 @@ def _source_digest(path: Path) -> str | None:
     return "sha256:" + digest.hexdigest()
 
 
-def _dict_record_instant(record: dict) -> dt.datetime | None | bool:
-    """Return an instant, None for undated, or False for malformed."""
+def _dict_record_instants(record: dict) -> list[dt.datetime] | None:
+    """All timestamp instants of one record; None = undated/malformed.
+
+    Every recognized timestamp key present must parse (first-key-wins
+    would let a malformed or coverage-relevant later key hide); a
+    record with no recognized key at all is undated and equally fails.
+    """
+    instants: list[dt.datetime] = []
     for key in TIMESTAMP_KEYS:
         if key in record:
             instant = _parse_record_instant(record[key])
             if instant is None:
-                return False
-            return instant
-    return None
+                return None
+            instants.append(instant)
+    if not instants:
+        return None
+    return instants
 
 
 def _file_record_instants(path: Path) -> list[dt.datetime] | None:
@@ -147,28 +171,28 @@ def _file_record_instants(path: Path) -> list[dt.datetime] | None:
                 continue
             try:
                 loaded = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 return None
             if not isinstance(loaded, dict):
                 return None
-            found = _dict_record_instant(loaded)
-            if found is False or found is None:
+            found = _dict_record_instants(loaded)
+            if found is None:
                 return None
-            instants.append(found)
+            instants.extend(found)
         return instants
     if suffix == ".json":
         try:
             loaded = json.loads(text)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return None
         records = loaded if isinstance(loaded, list) else [loaded]
         for record in records:
             if not isinstance(record, dict):
                 return None
-            found = _dict_record_instant(record)
-            if found is False or found is None:
+            found = _dict_record_instants(record)
+            if found is None:
                 return None
-            instants.append(found)
+            instants.extend(found)
         return instants
     for line in text.splitlines():
         if not line.strip():
@@ -183,13 +207,18 @@ def _file_record_instants(path: Path) -> list[dt.datetime] | None:
     return instants
 
 
+_MAX_HOURS_PARAM = 1_000_000
+
+
 def _positive_finite_number(value: object) -> bool:
+    # Bounded above as well: a huge int (e.g. 10**1000) is finite but
+    # overflows timedelta construction, which must never raise.
     if type(value) is int:
-        return value > 0
+        return 0 < value <= _MAX_HOURS_PARAM
     if type(value) is float:
-        return value > 0 and value == value and value not in (
-            float("inf"),
-            float("-inf"),
+        return (
+            value == value
+            and 0 < value <= _MAX_HOURS_PARAM
         )
     return False
 
@@ -225,7 +254,12 @@ def evaluate_soak_log_source_attestation(
 
     try:
         loaded = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ):
         return ["soak_log_report_unreadable"]
     if not isinstance(loaded, dict):
         return ["soak_log_report_unreadable"]
@@ -233,7 +267,9 @@ def evaluate_soak_log_source_attestation(
     blockers: list[str] = []
 
     if not (
-        loaded.get("audit_result") == "pass"
+        loaded.get("schema_version")
+        == "waggledance.release_soak_log_audit.v1"
+        and loaded.get("audit_result") == "pass"
         and loaded.get("error_log_clean") is True
         and loaded.get("blockers") == []
         and _is_strict_zero_int(loaded.get("silent_failure_count"))
@@ -284,8 +320,19 @@ def evaluate_soak_log_source_attestation(
     ):
         sources_bound = False
     else:
+        # The source root itself must not be a symlink or reparse
+        # point: the parent walk below stops AT the root, so an
+        # untrusted root would otherwise never be inspected.
+        try:
+            if source_root_path.is_symlink() or _is_reparse_point(
+                source_root_path
+            ):
+                sources_bound = False
+        except (OSError, RuntimeError):
+            sources_bound = False
         seen: set[str] = set()
-        for entry in source_files:
+        seen_identities: set = set()
+        for entry in source_files if sources_bound else []:
             normalized = _normalized_rel_path(entry)
             # Windows resolves paths case-insensitively: casefold the
             # alias check so LOGS/X.LOG cannot double-count logs/x.log.
@@ -298,24 +345,50 @@ def evaluate_soak_log_source_attestation(
                 if candidate.is_symlink() or not candidate.is_file():
                     sources_bound = False
                     break
-                # Reject a symlink/reparse point on ANY path component
-                # between the candidate and the source root, not only
-                # the final file.
-                component_link = False
+                # Reject a symlink or Windows reparse point (junction)
+                # on the candidate or ANY component up to the source
+                # root, not only the final file.
+                component_link = _is_reparse_point(candidate)
                 resolved_root = source_root_path.resolve()
-                for parent in candidate.parents:
-                    if parent == source_root_path or parent == resolved_root:
-                        break
-                    if parent.is_symlink():
-                        component_link = True
-                        break
+                if not component_link:
+                    for parent in candidate.parents:
+                        if (
+                            parent == source_root_path
+                            or parent == resolved_root
+                        ):
+                            break
+                        if parent.is_symlink() or _is_reparse_point(
+                            parent
+                        ):
+                            component_link = True
+                            break
                 if component_link:
                     sources_bound = False
                     break
-                if not candidate.resolve().is_relative_to(resolved_root):
+                resolved = candidate.resolve()
+                if not resolved.is_relative_to(resolved_root):
                     sources_bound = False
                     break
-            except OSError:
+                # Two entries naming the same underlying file (hardlink,
+                # junction, or case alias) are one source counted twice.
+                # Path.resolve() does NOT unify hardlinks, so identity
+                # is the (device, inode) stat pair, with the resolved
+                # casefolded path as a fallback where inodes are zero.
+                candidate_stat = os.stat(candidate)
+                if candidate_stat.st_ino:
+                    identity = (
+                        candidate_stat.st_dev,
+                        candidate_stat.st_ino,
+                    )
+                else:
+                    identity = str(resolved).casefold()
+                if identity in seen_identities:
+                    sources_bound = False
+                    break
+                seen_identities.add(identity)
+            except (OSError, RuntimeError):
+                # RuntimeError covers pathological symlink loops that
+                # pathlib resolution raises on.
                 sources_bound = False
                 break
             bound_files.append((entry, candidate))

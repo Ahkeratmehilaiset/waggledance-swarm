@@ -126,6 +126,7 @@ def test_canonical_shape_missing_commit_and_generated_block(tmp_path) -> None:
         {"silent_failure_count": False},
         {"error_count": "0"},
         {"undated_record_count": 1},
+        {"schema_version": "waggledance.release_soak_log_audit.v2"},
     ],
     ids=[
         "result-blocked",
@@ -135,6 +136,7 @@ def test_canonical_shape_missing_commit_and_generated_block(tmp_path) -> None:
         "count-bool",
         "count-string",
         "count-nonzero",
+        "schema-drift",
     ],
 )
 def test_dirty_or_nonliteral_clean_fields_block(tmp_path, overrides) -> None:
@@ -239,6 +241,7 @@ def _set_consistent_sources(report, tmp_path, entries) -> None:
         "../outside.log",
         "logs/missing.log",
         "logs/readme.txt",
+        "logs/./runtime.log",
     ],
     ids=[
         "duplicate",
@@ -248,6 +251,7 @@ def _set_consistent_sources(report, tmp_path, entries) -> None:
         "traversal",
         "missing-file",
         "bad-suffix",
+        "dot-alias",
     ],
 )
 def test_unbound_source_inventories_block(tmp_path, extra_entry) -> None:
@@ -278,6 +282,104 @@ def test_unbound_source_structures_block(tmp_path, mutate) -> None:
     blockers = _evaluate(tmp_path, report)
 
     assert "soak_log_sources_unbound" in blockers
+
+
+def test_symlinked_source_root_is_unbound(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    root_link = tmp_path.parent / (tmp_path.name + "-rootlink")
+    try:
+        os.symlink(tmp_path, root_link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this host")
+    report_path = _write_report(tmp_path, _clean_report(tmp_path, files))
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, root_link, COMMIT
+    )
+
+    assert "soak_log_sources_unbound" in blockers
+
+
+def test_hardlink_same_file_alias_is_unbound(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    link = tmp_path / "logs" / "hardlink.log"
+    try:
+        os.link(tmp_path / "logs" / "runtime.log", link)
+    except (OSError, NotImplementedError):
+        pytest.skip("hardlink creation not permitted on this host")
+    report = _clean_report(tmp_path, files)
+    _set_consistent_sources(
+        report, tmp_path, files + ["logs/hardlink.log"]
+    )
+    blockers = _evaluate(tmp_path, report)
+
+    assert "soak_log_sources_unbound" in blockers
+
+
+def test_deep_nested_report_is_unreadable(tmp_path) -> None:
+    report_path = tmp_path / "deep.json"
+    depth = 200_000
+    report_path.write_text("[" * depth + "]" * depth, encoding="utf-8")
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT
+    )
+
+    assert blockers == ["soak_log_report_unreadable"]
+
+
+def test_deep_nested_source_json_blocks_coverage(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    deep = tmp_path / "logs" / "deep.json"
+    depth = 200_000
+    deep.write_text("[" * depth + "]" * depth, encoding="utf-8")
+    all_files = files + ["logs/deep.json"]
+    blockers = _evaluate(tmp_path, _clean_report(tmp_path, all_files))
+
+    assert "soak_log_coverage_insufficient" in blockers
+
+
+def test_two_timestamp_keys_both_contribute_coverage(tmp_path) -> None:
+    # Records spaced 36h apart would fail max_gap=24h on their first key
+    # alone; the paired ended_at_utc 18h later closes every gap, so the
+    # pass proves ALL recognized keys contribute instants.
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    paired = logs / "paired.jsonl"
+    lines = []
+    instant = START
+    while instant <= END:
+        lines.append(
+            json.dumps(
+                {
+                    "started_at_utc": _iso(instant),
+                    "ended_at_utc": _iso(
+                        min(instant + dt.timedelta(hours=18), END)
+                    ),
+                }
+            )
+        )
+        instant += dt.timedelta(hours=36)
+    paired.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    files = ["logs/paired.jsonl"]
+
+    assert _evaluate(tmp_path, _clean_report(tmp_path, files)) == []
+
+
+def test_malformed_second_timestamp_key_blocks_coverage(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    extra = tmp_path / "logs" / "twokey.jsonl"
+    extra.write_text(
+        json.dumps(
+            {"ts_utc": _iso(START), "ended_at_utc": "yesterday"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    all_files = files + ["logs/twokey.jsonl"]
+    blockers = _evaluate(tmp_path, _clean_report(tmp_path, all_files))
+
+    assert "soak_log_coverage_insufficient" in blockers
 
 
 def test_parent_symlink_component_is_unbound(tmp_path) -> None:
@@ -346,8 +448,8 @@ def test_out_of_window_records_do_not_rescue_coverage(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     "window_hours",
-    [True, "336", 0, -5],
-    ids=["bool", "string", "zero", "negative"],
+    [True, "336", 0, -5, 10**1000],
+    ids=["bool", "string", "zero", "negative", "huge-int"],
 )
 def test_invalid_required_window_param_blocks(tmp_path, window_hours) -> None:
     files = _write_daily_sources(tmp_path)
@@ -362,8 +464,8 @@ def test_invalid_required_window_param_blocks(tmp_path, window_hours) -> None:
 
 @pytest.mark.parametrize(
     "gap_hours",
-    [True, "24", 0, -1, float("inf")],
-    ids=["bool", "string", "zero", "negative", "infinite"],
+    [True, "24", 0, -1, float("inf"), 10**1000],
+    ids=["bool", "string", "zero", "negative", "infinite", "huge-int"],
 )
 def test_invalid_max_gap_param_blocks(tmp_path, gap_hours) -> None:
     files = _write_daily_sources(tmp_path)

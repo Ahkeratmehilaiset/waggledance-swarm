@@ -234,7 +234,7 @@ def test_release_gate_diagnostics_redact_unexpected_status_values(tmp_path) -> N
 def test_release_gate_holds_when_evidence_not_reproducible(tmp_path) -> None:
     # Real verifier, no mocks: syntactically valid evidence whose fields are
     # not rebuildable from the canonical local artifacts must hold.
-    evidence_path = tmp_path / "release_soak_evidence_DO_NOT_LEAK.json"
+    evidence_path = tmp_path / "release_soak_evidence_private_path.json"
     evidence_path.write_text(json.dumps(_valid_evidence()), encoding="utf-8")
 
     result = evaluate_release_gate(

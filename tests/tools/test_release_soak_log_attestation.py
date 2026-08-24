@@ -339,39 +339,37 @@ def test_deep_nested_source_json_blocks_coverage(tmp_path) -> None:
     assert "soak_log_coverage_insufficient" in blockers
 
 
-def test_two_timestamp_keys_both_contribute_coverage(tmp_path) -> None:
-    # Records spaced 36h apart would fail max_gap=24h on their first key
-    # alone; the paired ended_at_utc 18h later closes every gap, so the
-    # pass proves ALL recognized keys contribute instants.
+def test_one_record_many_keys_cannot_forge_coverage(tmp_path) -> None:
+    # CRITICAL regression: a single record carrying every recognized
+    # timestamp key at 24h intervals across the window must NOT count
+    # as continuous coverage - a record contributes at most one instant.
+    from tools.release_soak_log_attestation import TIMESTAMP_KEYS
+
     logs = tmp_path / "logs"
     logs.mkdir()
-    paired = logs / "paired.jsonl"
-    lines = []
-    instant = START
-    while instant <= END:
-        lines.append(
-            json.dumps(
-                {
-                    "started_at_utc": _iso(instant),
-                    "ended_at_utc": _iso(
-                        min(instant + dt.timedelta(hours=18), END)
-                    ),
-                }
-            )
-        )
-        instant += dt.timedelta(hours=36)
-    paired.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    files = ["logs/paired.jsonl"]
+    forged = logs / "forged.jsonl"
+    record = {
+        key: _iso(START + dt.timedelta(hours=12 + 24 * index))
+        for index, key in enumerate(TIMESTAMP_KEYS)
+    }
+    forged.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    files = ["logs/forged.jsonl"]
+    blockers = _evaluate(tmp_path, _clean_report(tmp_path, files))
 
-    assert _evaluate(tmp_path, _clean_report(tmp_path, files)) == []
+    assert "soak_log_coverage_insufficient" in blockers
 
 
-def test_malformed_second_timestamp_key_blocks_coverage(tmp_path) -> None:
+def test_multi_key_record_is_ambiguous_and_blocks(tmp_path) -> None:
+    # Even two VALID recognized keys on one record are ambiguous
+    # (summary started/ended metadata is not a runtime heartbeat).
     files = _write_daily_sources(tmp_path)
     extra = tmp_path / "logs" / "twokey.jsonl"
     extra.write_text(
         json.dumps(
-            {"ts_utc": _iso(START), "ended_at_utc": "yesterday"}
+            {
+                "ts_utc": _iso(START),
+                "ended_at_utc": _iso(START + dt.timedelta(hours=1)),
+            }
         )
         + "\n",
         encoding="utf-8",

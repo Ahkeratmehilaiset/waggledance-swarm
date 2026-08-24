@@ -131,22 +131,22 @@ def _source_digest(path: Path) -> str | None:
 
 
 def _dict_record_instants(record: dict) -> list[dt.datetime] | None:
-    """All timestamp instants of one record; None = undated/malformed.
+    """The single event instant of one record; None = invalid record.
 
-    Every recognized timestamp key present must parse (first-key-wins
-    would let a malformed or coverage-relevant later key hide); a
-    record with no recognized key at all is undated and equally fails.
+    A record must carry EXACTLY ONE recognized timestamp key: zero
+    means undated, and more than one is ambiguous - counting every
+    timestamp field would let one synthetic record with many keys
+    manufacture continuous window coverage, and would let soak-summary
+    started/ended metadata masquerade as runtime heartbeats. The one
+    present key must parse as a timezone-aware instant.
     """
-    instants: list[dt.datetime] = []
-    for key in TIMESTAMP_KEYS:
-        if key in record:
-            instant = _parse_record_instant(record[key])
-            if instant is None:
-                return None
-            instants.append(instant)
-    if not instants:
+    present = [key for key in TIMESTAMP_KEYS if key in record]
+    if len(present) != 1:
         return None
-    return instants
+    instant = _parse_record_instant(record[present[0]])
+    if instant is None:
+        return None
+    return [instant]
 
 
 def _file_record_instants(path: Path) -> list[dt.datetime] | None:

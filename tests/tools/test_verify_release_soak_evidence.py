@@ -5,11 +5,193 @@ import datetime as dt
 import json
 
 import tools.verify_release_soak_evidence as verifier
-from tools.collect_soak_evidence import build_soak_evidence
+from tools.collect_soak_evidence import (
+    FINAL_PIP_AUDIT_REPORTS,
+    PRIVACY_PRECHECK,
+    build_soak_evidence,
+)
+from pathlib import Path
+
+from tools.release_security_attestation import (
+    DEFAULT_REQUIREMENTS_LOCK,
+    _lock_pin_multiset,
+    evaluate_audited_lock_pins,
+    evaluate_privacy_attestation,
+)
 from tools.verify_release_soak_evidence import build_report, main
 
 
 COMMIT = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
+
+ATTESTATION_BLOCKERS = {
+    "privacy_attestation_not_final",
+    "privacy_attestation_missing_exact_line",
+    "privacy_attestation_unreadable",
+    "audited_lock_pins_stale",
+    "audited_report_missing",
+    "audited_report_unreadable",
+    "requirements_lock_unreadable",
+}
+
+_FINAL_PRIVACY_TEXT = "# v3.12.0 final privacy receipt\n\n74 passed\nSMOKE_OK\n"
+
+
+def _real_lock_report_dependencies() -> list[dict[str, str]]:
+    pins = _lock_pin_multiset(DEFAULT_REQUIREMENTS_LOCK)
+    assert pins, "repo requirements.lock.txt must parse to pins"
+    return [
+        {"name": name, "version": version}
+        for (name, version), count in sorted(pins.items())
+        for _ in range(count)
+    ]
+
+
+def _attestation_env(
+    tmp_path,
+    *,
+    privacy_text: str | None,
+    report_dependencies: list[dict[str, str]] | None,
+):
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    if privacy_text is not None:
+        (evidence_root / PRIVACY_PRECHECK).write_text(
+            privacy_text, encoding="utf-8"
+        )
+    if report_dependencies is not None:
+        (evidence_root / FINAL_PIP_AUDIT_REPORTS[0]).write_text(
+            json.dumps({"dependencies": report_dependencies}),
+            encoding="utf-8",
+        )
+    return evidence_root
+
+
+def _claiming_evidence(tmp_path, **fields) -> Path:
+    evidence = {
+        "commit": "abc123",
+        "started_at_utc": "2026-05-10T00:00:00Z",
+        "ended_at_utc": "2026-05-22T12:00:00Z",
+        **fields,
+    }
+    soak_evidence = tmp_path / "v3.12.0.json"
+    soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
+    return soak_evidence
+
+
+def _attestation_report(tmp_path, evidence_root, **evidence_fields):
+    soak_evidence = _claiming_evidence(tmp_path, **evidence_fields)
+    return build_report(
+        soak_evidence=soak_evidence,
+        release_readiness="docs/release/RELEASE_READINESS.md",
+        evidence_root=evidence_root,
+        release_notes=tmp_path / "v3.12.0.md",
+    )
+
+
+def test_attestation_blocks_non_final_privacy_receipt(tmp_path) -> None:
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text=(
+            "Status: preliminary local precheck only. "
+            "This is not final stable evidence.\n\n74 passed\nSMOKE_OK\n"
+        ),
+        report_dependencies=_real_lock_report_dependencies(),
+    )
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert report["verified"] is False
+    assert "privacy_attestation_not_final" in report["blockers"]
+    assert str(tmp_path) not in json.dumps(report)
+
+
+def test_attestation_blocks_embedded_privacy_tokens(tmp_path) -> None:
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text="Result: 74 passed today\nSMOKE_OK_EXTRA marker\n",
+        report_dependencies=_real_lock_report_dependencies(),
+    )
+    report = _attestation_report(
+        tmp_path, evidence_root, profile_s_smoke="pass"
+    )
+
+    assert report["verified"] is False
+    assert "privacy_attestation_missing_exact_line" in report["blockers"]
+    assert "privacy_attestation_not_final" not in report["blockers"]
+
+
+def test_attestation_clears_final_exact_lines_and_matching_pins(
+    tmp_path,
+) -> None:
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text=_FINAL_PRIVACY_TEXT,
+        report_dependencies=_real_lock_report_dependencies(),
+    )
+
+    # Positive path proven directly: both helper evaluations return no
+    # blockers for the final exact-line receipt and lock-matching report.
+    assert (
+        evaluate_privacy_attestation(evidence_root / PRIVACY_PRECHECK) == []
+    )
+    assert (
+        evaluate_audited_lock_pins(
+            evidence_root / FINAL_PIP_AUDIT_REPORTS[0]
+        )
+        == []
+    )
+
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert not (set(report["blockers"]) & ATTESTATION_BLOCKERS)
+
+
+def test_attestation_blocks_drifted_lock_pins(tmp_path) -> None:
+    dependencies = _real_lock_report_dependencies()
+    dependencies[0] = {
+        "name": dependencies[0]["name"],
+        "version": dependencies[0]["version"] + ".drifted",
+    }
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text=_FINAL_PRIVACY_TEXT,
+        report_dependencies=dependencies,
+    )
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert report["verified"] is False
+    assert "audited_lock_pins_stale" in report["blockers"]
+
+
+def test_attestation_missing_artifacts_fail_closed(tmp_path) -> None:
+    evidence_root = _attestation_env(
+        tmp_path, privacy_text=None, report_dependencies=None
+    )
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert report["verified"] is False
+    assert "privacy_attestation_unreadable" in report["blockers"]
+    assert "audited_report_missing" in report["blockers"]
+
+
+def test_attestation_inactive_without_pass_claim(tmp_path) -> None:
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text=(
+            "Status: preliminary. This is not final stable evidence.\n"
+        ),
+        report_dependencies=[{"name": "aiohttp", "version": "0.0.1"}],
+    )
+    report = _attestation_report(tmp_path, evidence_root, result="hold")
+
+    assert not (set(report["blockers"]) & ATTESTATION_BLOCKERS)
 
 
 def _write_evidence(path, evidence_root, release_notes) -> dict:

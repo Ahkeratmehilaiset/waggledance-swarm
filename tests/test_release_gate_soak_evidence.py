@@ -313,6 +313,31 @@ def test_release_gate_holds_when_local_artifacts_unbuildable(
     ]
 
 
+def test_release_gate_holds_when_reproducibility_report_malformed(
+    tmp_path, monkeypatch
+) -> None:
+    # A verifier returning a non-dict (None here) must fail closed with a
+    # stable redacted blocker instead of crashing the gate.
+    monkeypatch.setattr(
+        "tools.verify_release_soak_evidence.build_report",
+        lambda **_kwargs: None,
+    )
+    evidence_path = tmp_path / "release_soak_evidence.json"
+    evidence_path.write_text(json.dumps(_valid_evidence()), encoding="utf-8")
+
+    result = evaluate_release_gate(
+        readiness_path="docs/release/RELEASE_READINESS.md",
+        soak_evidence_path=evidence_path,
+        today=dt.date(2026, 5, 24),
+    )
+
+    assert result["decision"] == "hold"
+    assert "soak_reproducibility_report_malformed" in result["blockers"]
+    repro = result["soak_evidence_diagnostics"]["soak_reproducibility"]
+    assert repro["verified"] is False
+    assert repro["report_malformed"] is True
+
+
 def test_release_gate_skips_reproducibility_for_structurally_invalid_paths(
     tmp_path,
 ) -> None:

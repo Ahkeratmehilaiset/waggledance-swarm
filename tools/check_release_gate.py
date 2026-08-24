@@ -300,7 +300,10 @@ def evaluate_release_gate(
                     from tools.verify_release_soak_evidence import (
                         build_report as _build_reproducibility_report,
                     )
-                except ImportError:
+                except Exception:  # noqa: BLE001 - fail closed, redacted
+                    # Any import-time failure (not only ImportError) makes
+                    # the verifier unavailable; the blocker stays stable and
+                    # carries no exception text or paths.
                     blockers.append("soak_reproducibility_verifier_unavailable")
                     repro_diagnostics.update({
                         "available": False,
@@ -326,24 +329,43 @@ def evaluate_release_gate(
                             "verified": False,
                         })
                     else:
-                        verified = reproducibility.get("verified") is True
-                        verifier_blockers = [
-                            blocker
-                            for blocker in reproducibility.get("blockers", [])
-                            if isinstance(blocker, str)
-                        ]
-                        if not verified:
-                            blockers.append("soak_evidence_not_reproducible")
-                            blockers.extend(verifier_blockers)
-                        repro_diagnostics.update({
-                            "available": True,
-                            "verified": verified,
-                            "mismatched_field_count": len(
-                                reproducibility.get("mismatched_fields")
-                                or []
-                            ),
-                            "verifier_blockers": verifier_blockers,
-                        })
+                        if not isinstance(reproducibility, dict):
+                            # Fail closed on a malformed verifier report
+                            # (None/list/other): stable redacted blocker,
+                            # never an uncaught attribute error.
+                            blockers.append(
+                                "soak_reproducibility_report_malformed"
+                            )
+                            repro_diagnostics.update({
+                                "available": True,
+                                "verified": False,
+                                "report_malformed": True,
+                            })
+                        else:
+                            verified = (
+                                reproducibility.get("verified") is True
+                            )
+                            verifier_blockers = [
+                                blocker
+                                for blocker in reproducibility.get(
+                                    "blockers", []
+                                )
+                                if isinstance(blocker, str)
+                            ]
+                            if not verified:
+                                blockers.append(
+                                    "soak_evidence_not_reproducible"
+                                )
+                                blockers.extend(verifier_blockers)
+                            repro_diagnostics.update({
+                                "available": True,
+                                "verified": verified,
+                                "mismatched_field_count": len(
+                                    reproducibility.get("mismatched_fields")
+                                    or []
+                                ),
+                                "verifier_blockers": verifier_blockers,
+                            })
                 soak_diagnostics["soak_reproducibility"] = repro_diagnostics
 
     return {

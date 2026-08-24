@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Fail-closed source and coverage binding for release soak-log audits.
+
+Pure helper: no network, no audit re-run, no writes. It answers one
+question about a stored soak-log audit report - does it attest a clean,
+commit-bound audit over verified sources with continuous runtime
+coverage of the required window?
+
+The canonical artifact this hardens against claims a clean pass from
+only two sources, carries no source commit or generation timestamp, and
+the audit runner accepts a single synthetic clean line spanning the
+nominal 336-hour window as a pass. Every failure shape maps to a
+stable, path-free blocker; an empty list is returned only for a clean,
+complete, exact-commit, continuously-covered report.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+ALLOWED_SOURCE_SUFFIXES = (".log", ".json", ".jsonl")
+TIMESTAMP_KEYS = (
+    "ts",
+    "ts_utc",
+    "timestamp",
+    "timestamp_utc",
+    "time",
+    "time_utc",
+    "created_at",
+    "created_at_utc",
+    "started_at",
+    "started_at_utc",
+    "ended_at",
+    "ended_at_utc",
+    "updated_at",
+    "updated_at_utc",
+)
+LINE_TIMESTAMP_PATTERN = re.compile(
+    r"^\s*(?P<ts>\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+Z?)\b"
+)
+_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_ABSOLUTE_PATTERN = re.compile(r"^([A-Za-z]:|/|\\\\)")
+
+
+def _append_once(blockers: list[str], blocker: str) -> None:
+    if blocker not in blockers:
+        blockers.append(blocker)
+
+
+def _is_strict_zero_int(value: object) -> bool:
+    return type(value) is int and value == 0
+
+
+def _parse_utc_zero(value: object) -> dt.datetime | None:
+    """Parse an explicit UTC-offset-zero timestamp; anything else is None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        return None
+    return parsed
+
+
+def _parse_record_instant(value: object) -> dt.datetime | None:
+    """Parse a record timestamp: timezone-aware only, folded to UTC."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(dt.UTC)
+
+
+def _normalized_rel_path(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    if _ABSOLUTE_PATTERN.match(normalized):
+        return None
+    parts = normalized.split("/")
+    if any(part in ("", "..") for part in parts):
+        return None
+    if not normalized.lower().endswith(ALLOWED_SOURCE_SUFFIXES):
+        return None
+    return normalized
+
+
+def _source_digest(path: Path) -> str | None:
+    try:
+        normalized = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+    digest = hashlib.sha256(normalized.encode("utf-8"))
+    return "sha256:" + digest.hexdigest()
+
+
+def _dict_record_instant(record: dict) -> dt.datetime | None | bool:
+    """Return an instant, None for undated, or False for malformed."""
+    for key in TIMESTAMP_KEYS:
+        if key in record:
+            instant = _parse_record_instant(record[key])
+            if instant is None:
+                return False
+            return instant
+    return None
+
+
+def _file_record_instants(path: Path) -> list[dt.datetime] | None:
+    """All record instants of one source file; None = parse failure."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    instants: list[dt.datetime] = []
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                loaded = json.loads(line)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(loaded, dict):
+                return None
+            found = _dict_record_instant(loaded)
+            if found is False:
+                return None
+            if found is not None:
+                instants.append(found)
+        return instants
+    if suffix == ".json":
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        records = loaded if isinstance(loaded, list) else [loaded]
+        for record in records:
+            if not isinstance(record, dict):
+                return None
+            found = _dict_record_instant(record)
+            if found is False:
+                return None
+            if found is not None:
+                instants.append(found)
+        return instants
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = LINE_TIMESTAMP_PATTERN.match(line)
+        if match is None:
+            continue
+        instant = _parse_record_instant(match.group("ts"))
+        if instant is None:
+            return None
+        instants.append(instant)
+    return instants
+
+
+def evaluate_soak_log_source_attestation(
+    report_path: Path | str,
+    source_root: Path | str,
+    expected_commit: str,
+    required_window_hours: int = 336,
+    max_gap_hours: int = 24,
+) -> list[str]:
+    """Return stable blockers binding a soak-log audit to source truth.
+
+    Empty list only when: the report is a readable JSON object;
+    ``audit_result`` is the literal string ``pass``, ``error_log_clean``
+    is literally ``True``, ``blockers`` is exactly an empty list, and
+    all three counts are strict-int zero; ``source_commit`` equals the
+    40-lowercase-hex ``expected_commit``; started/ended/generated
+    timestamps are explicit UTC-offset-zero with the window at least
+    ``required_window_hours`` and ``generated_at`` not before the end;
+    the source inventory is exact, unique, normalized, confined under
+    ``source_root`` (no absolute paths, traversal, symlinks, or
+    aliases; only .log/.json/.jsonl) with LF-normalized sha256 hashes
+    that recompute; and the union of timestamped records covers the
+    window with endpoints and interior gaps within ``max_gap_hours``.
+    All blockers are path-free; hostile nested types fold into
+    blockers, never exceptions.
+    """
+    if not isinstance(expected_commit, str) or not _COMMIT_PATTERN.match(
+        expected_commit
+    ):
+        return ["expected_commit_invalid"]
+
+    try:
+        loaded = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ["soak_log_report_unreadable"]
+    if not isinstance(loaded, dict):
+        return ["soak_log_report_unreadable"]
+
+    blockers: list[str] = []
+
+    if not (
+        loaded.get("audit_result") == "pass"
+        and loaded.get("error_log_clean") is True
+        and loaded.get("blockers") == []
+        and _is_strict_zero_int(loaded.get("silent_failure_count"))
+        and _is_strict_zero_int(loaded.get("error_count"))
+        and _is_strict_zero_int(loaded.get("undated_record_count"))
+    ):
+        _append_once(blockers, "soak_log_not_clean")
+
+    source_commit = loaded.get("source_commit")
+    if source_commit is None:
+        _append_once(blockers, "soak_log_source_commit_missing")
+    elif (
+        not isinstance(source_commit, str)
+        or source_commit != expected_commit
+    ):
+        _append_once(blockers, "soak_log_source_commit_mismatch")
+
+    started = _parse_utc_zero(loaded.get("started_at_utc"))
+    ended = _parse_utc_zero(loaded.get("ended_at_utc"))
+    window_valid = (
+        started is not None
+        and ended is not None
+        and ended > started
+        and (ended - started)
+        >= dt.timedelta(hours=required_window_hours)
+    )
+    if not window_valid:
+        _append_once(blockers, "soak_log_window_invalid")
+
+    generated = _parse_utc_zero(loaded.get("generated_at"))
+    if generated is None or (
+        ended is not None and generated < ended
+    ):
+        _append_once(blockers, "soak_log_generated_at_invalid")
+
+    source_files = loaded.get("source_files")
+    source_hashes = loaded.get("source_hashes")
+    source_root_path = Path(source_root)
+    bound_files: list[tuple[str, Path]] = []
+    sources_bound = True
+    if (
+        not isinstance(source_files, list)
+        or not source_files
+        or not isinstance(source_hashes, dict)
+        or type(loaded.get("source_file_count")) is not int
+        or loaded.get("source_file_count") != len(source_files)
+    ):
+        sources_bound = False
+    else:
+        seen: set[str] = set()
+        for entry in source_files:
+            normalized = _normalized_rel_path(entry)
+            if normalized is None or normalized in seen:
+                sources_bound = False
+                break
+            seen.add(normalized)
+            candidate = source_root_path / normalized
+            try:
+                if candidate.is_symlink() or not candidate.is_file():
+                    sources_bound = False
+                    break
+                resolved_root = source_root_path.resolve()
+                if not candidate.resolve().is_relative_to(resolved_root):
+                    sources_bound = False
+                    break
+            except OSError:
+                sources_bound = False
+                break
+            bound_files.append((entry, candidate))
+        if sources_bound and set(source_hashes.keys()) != {
+            entry for entry, _ in bound_files
+        }:
+            sources_bound = False
+    if not sources_bound:
+        _append_once(blockers, "soak_log_sources_unbound")
+
+    hashes_ok = sources_bound
+    if sources_bound:
+        for entry, candidate in bound_files:
+            expected_digest = source_hashes.get(entry)
+            actual_digest = _source_digest(candidate)
+            if (
+                not isinstance(expected_digest, str)
+                or actual_digest is None
+                or actual_digest != expected_digest
+            ):
+                hashes_ok = False
+        if not hashes_ok:
+            _append_once(blockers, "soak_log_source_hash_mismatch")
+
+    if sources_bound and hashes_ok and window_valid:
+        instants: list[dt.datetime] = []
+        coverage_ok = True
+        for _, candidate in bound_files:
+            file_instants = _file_record_instants(candidate)
+            if file_instants is None:
+                coverage_ok = False
+                break
+            instants.extend(file_instants)
+        if coverage_ok:
+            instants.sort()
+            max_gap = dt.timedelta(hours=max_gap_hours)
+            if not instants:
+                coverage_ok = False
+            elif (
+                instants[0] - started > max_gap
+                or ended - instants[-1] > max_gap
+            ):
+                coverage_ok = False
+            else:
+                for earlier, later in zip(instants, instants[1:]):
+                    if later - earlier > max_gap:
+                        coverage_ok = False
+                        break
+        if not coverage_ok:
+            _append_once(blockers, "soak_log_coverage_insufficient")
+
+    return blockers

@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import pytest
+
 import tools.verify_release_soak_evidence as verifier
 from tools.collect_soak_evidence import (
     FINAL_PIP_AUDIT_REPORTS,
@@ -121,8 +123,23 @@ def test_attestation_blocks_embedded_privacy_tokens(tmp_path) -> None:
     assert "privacy_attestation_not_final" not in report["blockers"]
 
 
+def _pin_expected_to_actual(monkeypatch):
+    """Make the rebuilt expected evidence equal whatever actual claims."""
+
+    def _mirror(release_readiness, *, commit, started_at_utc, ended_at_utc,
+                use_local_artifacts, evidence_root, release_notes):
+        return {
+            "commit": commit,
+            "started_at_utc": "2026-05-10T00:00:00Z",
+            "ended_at_utc": "2026-05-22T12:00:00Z",
+            "security_privacy_gate": "pass",
+        }
+
+    monkeypatch.setattr(verifier, "build_soak_evidence", _mirror)
+
+
 def test_attestation_clears_final_exact_lines_and_matching_pins(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
     evidence_root = _attestation_env(
         tmp_path,
@@ -142,11 +159,81 @@ def test_attestation_clears_final_exact_lines_and_matching_pins(
         == []
     )
 
+    # And end to end: with actual equal to rebuilt expected (mirrored via
+    # the established build_soak_evidence monkeypatch pattern) and a pass
+    # claim active, the whole report verifies with no blockers at all.
+    _pin_expected_to_actual(monkeypatch)
+    report = _attestation_report(
+        tmp_path,
+        evidence_root,
+        commit="abc123",
+        security_privacy_gate="pass",
+    )
+
+    assert report["verified"] is True
+    assert report["blockers"] == []
+
+
+def test_attestation_blocks_only_on_non_final_when_fields_match(
+    tmp_path, monkeypatch
+) -> None:
+    # Matching-fields counter-case: actual == expected so no ordinary
+    # field mismatches exist, yet a non-final receipt alone must flip
+    # verified to False through the attestation blocker.
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text=(
+            "This is not final stable evidence.\n\n74 passed\nSMOKE_OK\n"
+        ),
+        report_dependencies=_real_lock_report_dependencies(),
+    )
+    _pin_expected_to_actual(monkeypatch)
+    report = _attestation_report(
+        tmp_path,
+        evidence_root,
+        commit="abc123",
+        security_privacy_gate="pass",
+    )
+
+    assert report["verified"] is False
+    assert report["blockers"] == ["privacy_attestation_not_final"]
+    assert report["mismatched_fields"] == []
+
+
+@pytest.mark.parametrize(
+    "marker_text",
+    [
+        "This is not final stable evidence.",
+        "This is not\tfinal stable evidence.",
+        "This is not  final stable evidence.",
+        "This is not-final stable evidence.",
+        "This is not​ final stable evidence.",
+        "This is ｎｏｔ ｆｉｎａｌ stable evidence.",
+        "This is not–final stable evidence.",
+    ],
+    ids=[
+        "nbsp",
+        "tab",
+        "double-space",
+        "hyphenated",
+        "zero-width",
+        "fullwidth",
+        "en-dash",
+    ],
+)
+def test_attestation_normalizes_unicode_non_final_markers(
+    tmp_path, marker_text
+) -> None:
+    evidence_root = _attestation_env(
+        tmp_path,
+        privacy_text=marker_text + "\n\n74 passed\nSMOKE_OK\n",
+        report_dependencies=_real_lock_report_dependencies(),
+    )
     report = _attestation_report(
         tmp_path, evidence_root, security_privacy_gate="pass"
     )
 
-    assert not (set(report["blockers"]) & ATTESTATION_BLOCKERS)
+    assert "privacy_attestation_not_final" in report["blockers"]
 
 
 def test_attestation_blocks_drifted_lock_pins(tmp_path) -> None:

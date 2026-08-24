@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -31,7 +32,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 PRIVACY_REQUIRED_EXACT_LINES = ("74 passed", "SMOKE_OK")
-NON_FINAL_MARKERS = ("not final", "non-final", "preliminary")
+NON_FINAL_MARKERS = (
+    "not final",
+    "not-final",
+    "non-final",
+    "non final",
+    "preliminary",
+)
 DEFAULT_REQUIREMENTS_LOCK = ROOT / "requirements.lock.txt"
 
 _PIN_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^;\s]+)")
@@ -39,6 +46,24 @@ _PIN_PATTERN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^;\s]+)")
 
 def _canonical_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _normalized_marker_text(text: str) -> str:
+    """Normalize receipt text so Unicode variants cannot dodge markers.
+
+    NFKC folds fullwidth/compatibility forms; format characters
+    (category Cf, e.g. zero-width space) are removed; Unicode dash
+    punctuation (category Pd) maps to an ASCII hyphen; whitespace runs
+    (NBSP, tabs, doubled spaces, ...) collapse to one ASCII space.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(
+        "-" if unicodedata.category(char) == "Pd" else char
+        for char in text
+        if unicodedata.category(char) != "Cf"
+    )
+    text = re.sub(r"\s+", " ", text)
+    return text.lower()
 
 
 def evaluate_privacy_attestation(privacy_precheck: Path | str) -> list[str]:
@@ -60,8 +85,8 @@ def evaluate_privacy_attestation(privacy_precheck: Path | str) -> list[str]:
         for required in PRIVACY_REQUIRED_EXACT_LINES
     ):
         blockers.append("privacy_attestation_missing_exact_line")
-    lowered = text.lower()
-    if any(marker in lowered for marker in NON_FINAL_MARKERS):
+    normalized = _normalized_marker_text(text)
+    if any(marker in normalized for marker in NON_FINAL_MARKERS):
         blockers.append("privacy_attestation_not_final")
     return blockers
 

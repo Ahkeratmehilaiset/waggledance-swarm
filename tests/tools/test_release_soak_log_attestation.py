@@ -206,54 +206,174 @@ def test_generated_before_end_blocks(tmp_path) -> None:
     assert "soak_log_generated_at_invalid" in blockers
 
 
+_FAKE_DIGEST = "sha256:" + "0" * 64
+
+
+def _set_consistent_sources(report, tmp_path, entries) -> None:
+    """Make source fields internally consistent for ``entries``.
+
+    Count always matches, and every entry gets a digest - the real
+    LF-normalized digest where the file exists, a plausible fake
+    otherwise - so each grid case blocks on its NAMED defect rather
+    than on the count/keyset precheck.
+    """
+    report["source_files"] = list(entries)
+    report["source_file_count"] = len(entries)
+    hashes = {}
+    for entry in entries:
+        candidate = tmp_path / entry.replace("\\", "/")
+        try:
+            hashes[entry] = _lf_sha256(candidate)
+        except (OSError, ValueError):
+            hashes[entry] = _FAKE_DIGEST
+    report["source_hashes"] = hashes
+
+
 @pytest.mark.parametrize(
-    "mutate",
+    "extra_entry",
     [
-        lambda report, files: report.update(
-            {"source_files": files + [files[0]]}
-        ),
-        lambda report, files: report.update(
-            {"source_files": files + ["logs\\runtime.jsonl"]}
-        ),
-        lambda report, files: report.update(
-            {"source_files": files + ["C:/windows/system32/evil.log"]}
-        ),
-        lambda report, files: report.update(
-            {"source_files": files + ["../outside.log"]}
-        ),
-        lambda report, files: report.update(
-            {"source_files": files + ["logs/missing.log"]}
-        ),
-        lambda report, files: report.update(
-            {"source_files": files + ["logs/readme.txt"]}
-        ),
-        lambda report, files: report.update({"source_file_count": True}),
-        lambda report, files: report.update(
-            {"source_hashes": {files[0]: "sha256:0"}}
-        ),
-        lambda report, files: report.update({"source_files": []}),
-        lambda report, files: report.update({"source_files": "logs"}),
+        "logs/runtime.jsonl",
+        "logs\\runtime.jsonl",
+        "LOGS/RUNTIME.JSONL",
+        "C:/windows/system32/evil.log",
+        "../outside.log",
+        "logs/missing.log",
+        "logs/readme.txt",
     ],
     ids=[
         "duplicate",
         "separator-alias",
+        "casefold-alias",
         "absolute",
         "traversal",
         "missing-file",
         "bad-suffix",
-        "bool-count",
-        "hash-keyset-drift",
-        "empty-list",
-        "non-list",
     ],
 )
-def test_unbound_source_inventories_block(tmp_path, mutate) -> None:
+def test_unbound_source_inventories_block(tmp_path, extra_entry) -> None:
+    files = _write_daily_sources(tmp_path)
+    report = _clean_report(tmp_path, files)
+    _set_consistent_sources(report, tmp_path, files + [extra_entry])
+    blockers = _evaluate(tmp_path, report)
+
+    assert "soak_log_sources_unbound" in blockers
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda report, files: report.update({"source_file_count": True}),
+        lambda report, files: report["source_hashes"].pop(files[1]),
+        lambda report, files: report.update(
+            {"source_files": [], "source_file_count": 0, "source_hashes": {}}
+        ),
+        lambda report, files: report.update({"source_files": "logs"}),
+    ],
+    ids=["bool-count", "hash-keyset-drift", "empty-list", "non-list"],
+)
+def test_unbound_source_structures_block(tmp_path, mutate) -> None:
     files = _write_daily_sources(tmp_path)
     report = _clean_report(tmp_path, files)
     mutate(report, files)
     blockers = _evaluate(tmp_path, report)
 
     assert "soak_log_sources_unbound" in blockers
+
+
+def test_parent_symlink_component_is_unbound(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    linkdir = tmp_path / "linkdir"
+    try:
+        os.symlink(tmp_path / "logs", linkdir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this host")
+    report = _clean_report(tmp_path, files)
+    _set_consistent_sources(
+        report, tmp_path, files + ["linkdir/runtime.log"]
+    )
+    blockers = _evaluate(tmp_path, report)
+
+    assert "soak_log_sources_unbound" in blockers
+
+
+def test_undated_log_line_blocks_coverage(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    log_path = tmp_path / "logs" / "runtime.log"
+    log_path.write_text(
+        log_path.read_text(encoding="utf-8") + "orphan line without ts\n",
+        encoding="utf-8",
+    )
+    report = _clean_report(tmp_path, files)
+    blockers = _evaluate(tmp_path, report)
+
+    assert "soak_log_coverage_insufficient" in blockers
+
+
+def test_undated_jsonl_record_blocks_coverage(tmp_path) -> None:
+    files = _write_daily_sources(tmp_path)
+    jsonl_path = tmp_path / "logs" / "runtime.jsonl"
+    jsonl_path.write_text(
+        jsonl_path.read_text(encoding="utf-8")
+        + json.dumps({"msg": "undated failure"})
+        + "\n",
+        encoding="utf-8",
+    )
+    report = _clean_report(tmp_path, files)
+    blockers = _evaluate(tmp_path, report)
+
+    assert "soak_log_coverage_insufficient" in blockers
+
+
+def test_out_of_window_records_do_not_rescue_coverage(tmp_path) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    sparse = logs / "sparse.jsonl"
+    instants = [
+        START - dt.timedelta(hours=48),
+        START,
+        END,
+        END + dt.timedelta(hours=48),
+    ]
+    sparse.write_text(
+        "\n".join(json.dumps({"ts_utc": _iso(i)}) for i in instants) + "\n",
+        encoding="utf-8",
+    )
+    files = ["logs/sparse.jsonl"]
+    blockers = _evaluate(tmp_path, _clean_report(tmp_path, files))
+
+    assert "soak_log_coverage_insufficient" in blockers
+
+
+@pytest.mark.parametrize(
+    "window_hours",
+    [True, "336", 0, -5],
+    ids=["bool", "string", "zero", "negative"],
+)
+def test_invalid_required_window_param_blocks(tmp_path, window_hours) -> None:
+    files = _write_daily_sources(tmp_path)
+    report_path = _write_report(tmp_path, _clean_report(tmp_path, files))
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, required_window_hours=window_hours
+    )
+
+    assert "soak_log_window_invalid" in blockers
+
+
+@pytest.mark.parametrize(
+    "gap_hours",
+    [True, "24", 0, -1, float("inf")],
+    ids=["bool", "string", "zero", "negative", "infinite"],
+)
+def test_invalid_max_gap_param_blocks(tmp_path, gap_hours) -> None:
+    files = _write_daily_sources(tmp_path)
+    report_path = _write_report(tmp_path, _clean_report(tmp_path, files))
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, max_gap_hours=gap_hours
+    )
+
+    assert "soak_log_coverage_insufficient" in blockers
 
 
 def test_symlink_source_is_unbound(tmp_path) -> None:

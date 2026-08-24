@@ -126,7 +126,15 @@ def _dict_record_instant(record: dict) -> dt.datetime | None | bool:
 
 
 def _file_record_instants(path: Path) -> list[dt.datetime] | None:
-    """All record instants of one source file; None = parse failure."""
+    """All record instants of one source file; None = parse failure.
+
+    Every nonblank record must carry exactly one valid timezone-aware
+    timestamp: report counts are attacker-controlled, so an undated
+    record (dict without a recognized timestamp key, or a log line
+    without a timestamp prefix) is a parse failure rather than a silent
+    skip - otherwise undated failure records could hide inside an
+    otherwise-covered file.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -144,10 +152,9 @@ def _file_record_instants(path: Path) -> list[dt.datetime] | None:
             if not isinstance(loaded, dict):
                 return None
             found = _dict_record_instant(loaded)
-            if found is False:
+            if found is False or found is None:
                 return None
-            if found is not None:
-                instants.append(found)
+            instants.append(found)
         return instants
     if suffix == ".json":
         try:
@@ -159,22 +166,32 @@ def _file_record_instants(path: Path) -> list[dt.datetime] | None:
             if not isinstance(record, dict):
                 return None
             found = _dict_record_instant(record)
-            if found is False:
+            if found is False or found is None:
                 return None
-            if found is not None:
-                instants.append(found)
+            instants.append(found)
         return instants
     for line in text.splitlines():
         if not line.strip():
             continue
         match = LINE_TIMESTAMP_PATTERN.match(line)
         if match is None:
-            continue
+            return None
         instant = _parse_record_instant(match.group("ts"))
         if instant is None:
             return None
         instants.append(instant)
     return instants
+
+
+def _positive_finite_number(value: object) -> bool:
+    if type(value) is int:
+        return value > 0
+    if type(value) is float:
+        return value > 0 and value == value and value not in (
+            float("inf"),
+            float("-inf"),
+        )
+    return False
 
 
 def evaluate_soak_log_source_attestation(
@@ -237,7 +254,8 @@ def evaluate_soak_log_source_attestation(
     started = _parse_utc_zero(loaded.get("started_at_utc"))
     ended = _parse_utc_zero(loaded.get("ended_at_utc"))
     window_valid = (
-        started is not None
+        _positive_finite_number(required_window_hours)
+        and started is not None
         and ended is not None
         and ended > started
         and (ended - started)
@@ -269,16 +287,31 @@ def evaluate_soak_log_source_attestation(
         seen: set[str] = set()
         for entry in source_files:
             normalized = _normalized_rel_path(entry)
-            if normalized is None or normalized in seen:
+            # Windows resolves paths case-insensitively: casefold the
+            # alias check so LOGS/X.LOG cannot double-count logs/x.log.
+            if normalized is None or normalized.casefold() in seen:
                 sources_bound = False
                 break
-            seen.add(normalized)
+            seen.add(normalized.casefold())
             candidate = source_root_path / normalized
             try:
                 if candidate.is_symlink() or not candidate.is_file():
                     sources_bound = False
                     break
+                # Reject a symlink/reparse point on ANY path component
+                # between the candidate and the source root, not only
+                # the final file.
+                component_link = False
                 resolved_root = source_root_path.resolve()
+                for parent in candidate.parents:
+                    if parent == source_root_path or parent == resolved_root:
+                        break
+                    if parent.is_symlink():
+                        component_link = True
+                        break
+                if component_link:
+                    sources_bound = False
+                    break
                 if not candidate.resolve().is_relative_to(resolved_root):
                     sources_bound = False
                     break
@@ -308,16 +341,24 @@ def evaluate_soak_log_source_attestation(
             _append_once(blockers, "soak_log_source_hash_mismatch")
 
     if sources_bound and hashes_ok and window_valid:
+        coverage_ok = _positive_finite_number(max_gap_hours)
         instants: list[dt.datetime] = []
-        coverage_ok = True
-        for _, candidate in bound_files:
-            file_instants = _file_record_instants(candidate)
-            if file_instants is None:
-                coverage_ok = False
-                break
-            instants.extend(file_instants)
         if coverage_ok:
-            instants.sort()
+            for _, candidate in bound_files:
+                file_instants = _file_record_instants(candidate)
+                if file_instants is None:
+                    coverage_ok = False
+                    break
+                instants.extend(file_instants)
+        if coverage_ok:
+            # Only instants inside [started, ended] count toward
+            # coverage: out-of-window records must not fake endpoint
+            # proximity or bridge interior gaps.
+            instants = sorted(
+                instant
+                for instant in instants
+                if started <= instant <= ended
+            )
             max_gap = dt.timedelta(hours=max_gap_hours)
             if not instants:
                 coverage_ok = False

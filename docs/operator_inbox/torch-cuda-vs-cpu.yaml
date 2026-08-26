@@ -86,15 +86,17 @@ operator_signoff:
         non_windows_pins:
           torch: "2.13.0"
         required_absent:
+          - "chromadb"
           - "torchvision"
           - "torchaudio"
           - "torchao"
           - "xformers"
-        transition_accepts_signed_prior: true
+        transition_accepts_signed_prior: false
         transition_note: >
-          The signed A2 2.11 projection remains valid only as an explicitly
-          reported transition-pending state until the remediated projection
-          lands. It is not release-clean evidence.
+          The signed A2 2.11 projection is superseded and cannot satisfy this
+          contract. Before the remediated projection lands it remains only
+          historical evidence and the lock check stays fail-closed.
+        operator_signature_required: true
     - recorded_utc: 2026-05-27T08:14:26Z
       recorded_by: "codex-lead-1"
       source: "bridge:operator-authorization-open-rco-tasks-2026-05-27"

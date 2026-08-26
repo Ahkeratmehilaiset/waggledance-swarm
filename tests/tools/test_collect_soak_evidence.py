@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tools.check_release_gate import evaluate_release_gate
 from tools.collect_soak_evidence import (
     build_soak_evidence,
@@ -1099,3 +1101,259 @@ def test_collector_cli_writes_output_and_history(tmp_path) -> None:
     assert evidence["result"] == "hold"
     assert len(history_lines) == 1
     assert json.loads(history_lines[0])["target_version"] == "v3.12.0"
+
+
+# ---------------------------------------------------------------------------
+# E3 selector regressions: newest-or-explicit, fail-closed artifact selection
+# (lead dispatch 2026-08-26; stale-snapshot selection was Grok-confirmed HIGH).
+
+_PIP_OSV_NAME = "v3.12.0_pip_audit_report_lock_after_prune_osv.json"
+_PIP_PLAIN_NAME = "v3.12.0_pip_audit_report.json"
+_BANDIT_ZERO_MEDIUM_NAME = (
+    "v3.12.0_bandit_report_after_static_hardening_zero_medium.json"
+)
+_BANDIT_PLAIN_NAME = "v3.12.0_bandit_report.json"
+
+
+def _utime(path: Path, epoch: int) -> None:
+    os.utime(path, (epoch, epoch))
+
+
+def _selection_env(tmp_path) -> tuple[Path, Path]:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = tmp_path / "v3.12.0.md"
+    _write_bandit_report(evidence_root)
+    _write_privacy_precheck(evidence_root)
+    _write_release_notes(release_notes)
+    return evidence_root, release_notes
+
+
+def _selection_evidence(evidence_root, release_notes, **kwargs):
+    return build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+        **kwargs,
+    )
+
+
+def test_security_selection_prefers_newest_pip_audit_not_name_priority(
+    tmp_path,
+) -> None:
+    # The highest name-priority report is clean but STALE; a newer report
+    # under a lower-priority name carries a real vulnerability. The old
+    # `_first_existing` name-priority order passed security here.
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=1, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["path"] == _PIP_PLAIN_NAME
+    assert selection["basis"] == "newest_mtime"
+    assert selection["blockers"] == []
+    assert selection["source_digest"].startswith("sha256:")
+    assert selection["candidates"] == sorted([_PIP_OSV_NAME, _PIP_PLAIN_NAME])
+
+
+def test_security_selection_stale_vulnerable_snapshot_cannot_decide(
+    tmp_path,
+) -> None:
+    # Converse direction: the stale high-name-priority report is vulnerable,
+    # the newest report is clean -> the fresh truth wins and security passes.
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=3, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "pass"
+    assert (
+        evidence["artifact_selection"]["pip_audit_report"]["path"]
+        == _PIP_PLAIN_NAME
+    )
+    assert (
+        evidence["artifact_selection"]["bandit_report"]["basis"]
+        == "only_candidate"
+    )
+
+
+def test_security_selection_fails_closed_on_mtime_tie(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_500_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 1_500_000)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    # Both candidates are clean; only the ambiguity itself blocks.
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["path"] is None
+    assert selection["basis"] is None
+    assert len(selection["blockers"]) == 1
+    assert selection["blockers"][0].startswith("newest_mtime_ambiguous:")
+    assert _PIP_OSV_NAME in selection["blockers"][0]
+    assert _PIP_PLAIN_NAME in selection["blockers"][0]
+
+
+def test_security_selection_never_falls_back_from_unparseable_newest(
+    tmp_path,
+) -> None:
+    # The newest candidate is unparseable; an older clean report exists.
+    # Selection must stick to the newest candidate and block - silently
+    # falling back to the stale clean report would be a fail-open.
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    (evidence_root / _PIP_PLAIN_NAME).write_text("not json", encoding="utf-8")
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    assert (
+        evidence["artifact_selection"]["pip_audit_report"]["path"]
+        == _PIP_PLAIN_NAME
+    )
+
+
+def test_bandit_selection_prefers_newest_report(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    # _selection_env wrote the clean zero-medium bandit report; add a NEWER
+    # plain-name bandit report that carries findings.
+    (evidence_root / _BANDIT_PLAIN_NAME).write_text(
+        json.dumps({
+            "metrics": {
+                "_totals": {"SEVERITY.HIGH": 0, "SEVERITY.MEDIUM": 2},
+            },
+            "results": [],
+        }),
+        encoding="utf-8",
+    )
+    _write_pip_audit_report(evidence_root, vuln_count=0)
+    _utime(evidence_root / _BANDIT_ZERO_MEDIUM_NAME, 1_000_000)
+    _utime(evidence_root / _BANDIT_PLAIN_NAME, 2_000_000)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["bandit_report"]
+    assert selection["path"] == _BANDIT_PLAIN_NAME
+    assert selection["basis"] == "newest_mtime"
+
+
+def test_explicit_pip_audit_selection_wins_over_newest(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=1, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    evidence = _selection_evidence(
+        evidence_root, release_notes, pip_audit_report=_PIP_OSV_NAME
+    )
+
+    assert evidence["security_privacy_gate"] == "pass"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["basis"] == "explicit"
+    assert selection["path"] == _PIP_OSV_NAME
+
+
+def test_explicit_selection_fails_closed_when_missing(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0)
+
+    evidence = _selection_evidence(
+        evidence_root, release_notes, pip_audit_report="does_not_exist.json"
+    )
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["blockers"] == ["explicit_artifact_missing"]
+    assert selection["path"] is None
+
+
+def test_explicit_selection_requires_use_local_artifacts() -> None:
+    with pytest.raises(ValueError, match="use_local_artifacts"):
+        build_soak_evidence(
+            "docs/release/RELEASE_READINESS.md",
+            commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+            pip_audit_report="v3.12.0_pip_audit_report.json",
+        )
+
+
+def test_artifact_selection_record_reproducible_and_manual_mode_unchanged(
+    tmp_path,
+) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    first = _selection_evidence(evidence_root, release_notes)
+    second = _selection_evidence(evidence_root, release_notes)
+    assert first["artifact_selection"] == second["artifact_selection"]
+    assert json.dumps(first["artifact_selection"], sort_keys=True)
+
+    manual = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",
+    )
+    assert "artifact_selection" not in manual
+
+
+def test_cli_explicit_pip_audit_report_flag(tmp_path, capsys) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=1, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    rc = main([
+        "--release-readiness",
+        "docs/release/RELEASE_READINESS.md",
+        "--commit",
+        "dc76e81cd8c804608bfaedf951220e46ff1baffa",
+        "--use-local-artifacts",
+        "--evidence-root",
+        str(evidence_root),
+        "--release-notes",
+        str(release_notes),
+        "--pip-audit-report",
+        _PIP_OSV_NAME,
+    ])
+
+    assert rc == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["security_privacy_gate"] == "pass"
+    assert (
+        printed["artifact_selection"]["pip_audit_report"]["basis"]
+        == "explicit"
+    )
+
+
+def test_cli_explicit_report_without_use_local_artifacts_fails(
+    tmp_path, capsys
+) -> None:
+    rc = main([
+        "--release-readiness",
+        "docs/release/RELEASE_READINESS.md",
+        "--pip-audit-report",
+        "v3.12.0_pip_audit_report.json",
+    ])
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "use_local_artifacts" in captured.err

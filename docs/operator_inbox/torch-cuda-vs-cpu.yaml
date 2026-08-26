@@ -74,7 +74,8 @@ operator_signoff:
         required_evidence:
           - "primary-index wheel/version verification"
           - "exact-lock resolver pass"
-          - "fresh live OSV audit with zero vulnerability rows"
+          - "fresh live OSV audit proving GHSA-rrmf-rvhw-rf47 absent and ChromaDB absent from the stable lock"
+          - "truthful full-lock OSV row count recorded as a release HOLD until every remaining advisory is fixed, de-scoped, or explicitly adjudicated"
           - "affected tests and exact-head CI"
     - recorded_utc: 2026-05-27T08:14:26Z
       recorded_by: "codex-lead-1"

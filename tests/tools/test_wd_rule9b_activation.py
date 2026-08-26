@@ -316,9 +316,9 @@ def _run_powershell_encoder(exe: str, encoder_source: str, payload: dict[str, An
 def _production_ps_encoder_source() -> str:
     """The activator's own ConvertTo-CanonicalJson, lifted for direct exercise.
 
-    The function is extracted rather than dot-sourced because the activator
-    performs real work at the top level (toolchain sealing, elevation checks)
-    that must not run inside a test.
+    The function is extracted so the slice-1 mutation harness stays isolated
+    from later construction helpers. Direct activation remains an exit-2
+    refusal; separate manifest tests dot-source the construction-only library.
     """
     if not ACTIVATOR.is_file():
         pytest.fail(
@@ -755,3 +755,17 @@ $files = @(
 """
     completed = _run_activation_snippet(host, snippet)
     assert completed.returncode != 0, f"{host} accepted a casefold collision"
+
+
+@pytest.mark.parametrize("host", [PS7, PS51])
+def test_direct_activation_invocation_remains_exit_2_refusal(host: str) -> None:
+    completed = subprocess.run(
+        [host, "-NoProfile", "-NonInteractive", "-File", str(ACTIVATOR)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert completed.returncode == 2
+    assert "FAIL-CLOSED" in (completed.stdout or "")

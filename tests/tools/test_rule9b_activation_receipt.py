@@ -15,11 +15,11 @@ properties have to hold and neither is the default:
    ``receipt_verified: true`` in a caller-supplied status file was accepted as
    authority without the artifact ever being opened.
 
-Scope note, deliberate: this module covers the receipt schema and its own
-verification. It does NOT cover the ACL/MIC protection of the authority root,
-the task XML binding, the sealed runtime manifest, the nonce, or the rollback
-path. Those land in later slices and each needs its own review; nothing here
-may be cited as covering them.
+Scope note, deliberate: this module covers the receipt schema, closed runtime
+manifest contract, and pure receipt+runtime bundle verification. It does NOT
+cover GitHub-source materialization, ACL/MIC protection of the authority root,
+task XML binding, the nonce, rollback, or a protected broker. Those land in
+later slices and each needs its own review.
 """
 
 from __future__ import annotations
@@ -336,6 +336,36 @@ def test_receipt_with_a_bom_is_refused(tmp_path: Path) -> None:
     assert report["verified"] is False
 
 
+def test_receipt_with_duplicate_json_key_is_refused(tmp_path: Path) -> None:
+    receipt = _sealed()
+    raw = json.dumps(receipt, separators=(",", ":"))
+    path = tmp_path / "receipt.json"
+    path.write_text(
+        raw.replace('{"schema"', '{"schema":"duplicate","schema"'),
+        encoding="utf-8",
+    )
+    report = _require("verify_receipt_file")(
+        path, expected_activation_head=HEAD, now_utc=NOW
+    )
+    assert report["verified"] is False
+    assert any("DuplicateJsonKeyError" in item for item in report["blockers"])
+
+
+def test_receipt_file_itself_cannot_be_hardlinked(tmp_path: Path) -> None:
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(_sealed()), encoding="utf-8")
+    alias = tmp_path / "receipt-alias.json"
+    try:
+        os.link(path, alias)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable on this filesystem: {exc}")
+    report = _require("verify_receipt_file")(
+        path, expected_activation_head=HEAD, now_utc=NOW
+    )
+    assert report["verified"] is False
+    assert any("hard-link" in item for item in report["blockers"])
+
+
 def test_verification_has_no_bypass_parameter() -> None:
     """A skip-validation flag is how a fail-closed check becomes optional."""
     import inspect
@@ -539,6 +569,26 @@ def test_runtime_manifest_refuses_unknown_root_and_entry_fields() -> None:
     assert any("unknown runtime manifest field" in item for item in blockers)
 
 
+def test_runtime_manifest_refuses_unknown_entry_field_independently() -> None:
+    validate = _require("validate_runtime_manifest_schema")
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": HEAD,
+        "activation_tree_sha": TREE,
+        "runtime_generation_id": "generation-1",
+        "files": [
+            {
+                "path": "a.py",
+                "git_blob_sha1": "1" * 40,
+                "byte_length": 1,
+                "sha256": "2" * 64,
+                "trust": True,
+            }
+        ],
+    }
+    assert any("unknown field: trust" in item for item in validate(manifest))
+
+
 def test_runtime_manifest_refuses_noncanonical_bytes(tmp_path: Path) -> None:
     root, path, manifest = _runtime_fixture(tmp_path)
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -615,11 +665,20 @@ def test_runtime_manifest_refuses_receipt_binding_mismatch(
     assert any(needle in item for item in report["blockers"])
 
 
+def test_runtime_manifest_refuses_boolean_expected_file_count(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    report = _verify_runtime(root, path, manifest, expected_file_count=True)
+    assert report["verified"] is False
+    assert any("file count is malformed" in item for item in report["blockers"])
+
+
 def test_runtime_manifest_refuses_missing_required_authority_blob(
     tmp_path: Path,
 ) -> None:
     root, path, manifest = _runtime_fixture(tmp_path)
-    removed = manifest["files"].pop()
+    broker_path = "ops/windows/reboot/Invoke-WdRule9bMergeBroker.ps1"
+    removed = next(item for item in manifest["files"] if item["path"] == broker_path)
+    manifest["files"].remove(removed)
     root.joinpath(*removed["path"].split("/")).unlink()
     path.write_bytes(_require("canonical_runtime_manifest_bytes")(manifest))
     report = _verify_runtime(
@@ -670,6 +729,55 @@ def test_runtime_manifest_refuses_alternate_data_stream(tmp_path: Path) -> None:
     report = _verify_runtime(root, path, manifest)
     assert report["verified"] is False
     assert any("alternate data stream" in item for item in report["blockers"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="alternate streams are an NTFS contract")
+def test_runtime_manifest_refuses_directory_alternate_data_stream(
+    tmp_path: Path,
+) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    directory = next(candidate for candidate in root.rglob("*") if candidate.is_dir())
+    stream_path = Path(str(directory) + ":unsealed")
+    try:
+        stream_path.write_bytes(b"not covered by the manifest")
+    except OSError as exc:
+        pytest.skip(f"directory alternate streams unavailable: {exc}")
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("alternate data stream" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_records_late_identity_change_as_blocker(
+    tmp_path: Path,
+) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    verify = _require("verify_runtime_manifest")
+    original = verify.__globals__["_has_unsafe_file_identity"]
+    calls: dict[Path, int] = {}
+
+    def race_probe(candidate: Path) -> str | None:
+        result = original(candidate)
+        if candidate.is_file() and candidate != path:
+            calls[candidate] = calls.get(candidate, 0) + 1
+            if calls[candidate] >= 2:
+                return "synthetic late reparse substitution"
+        return result
+
+    verify.__globals__["_has_unsafe_file_identity"] = race_probe
+    try:
+        report = verify(
+            path,
+            root,
+            expected_activation_head=HEAD,
+            expected_activation_tree_sha=TREE,
+            expected_generation_id=manifest["runtime_generation_id"],
+            expected_manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            expected_file_count=len(manifest["files"]),
+        )
+    finally:
+        verify.__globals__["_has_unsafe_file_identity"] = original
+    assert report["verified"] is False
+    assert any("changed identity" in item for item in report["blockers"])
 
 
 def _activation_bundle_fixture(
@@ -748,3 +856,28 @@ def test_activation_bundle_verifier_has_no_bypass_parameter() -> None:
     params = set(inspect.signature(verify).parameters)
     forbidden = {"skip", "skip_validation", "trust", "assume_valid", "force", "unsafe"}
     assert not (params & forbidden), f"bypass parameter present: {params & forbidden}"
+
+
+def test_activation_bundle_converts_runtime_verifier_exception_to_refusal(
+    tmp_path: Path,
+) -> None:
+    receipt_path, manifest_path, root, _ = _activation_bundle_fixture(tmp_path)
+    verify = _require("verify_activation_bundle")
+    original = verify.__globals__["verify_runtime_manifest"]
+
+    def explode(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("synthetic verifier fault")
+
+    verify.__globals__["verify_runtime_manifest"] = explode
+    try:
+        report = verify(
+            receipt_path,
+            manifest_path,
+            root,
+            expected_activation_head=HEAD,
+            now_utc=NOW,
+        )
+    finally:
+        verify.__globals__["verify_runtime_manifest"] = original
+    assert report["verified"] is False
+    assert report["blockers"] == ["runtime verification raised RuntimeError"]

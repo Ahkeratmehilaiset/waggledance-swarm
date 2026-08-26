@@ -1,11 +1,11 @@
 """Rule 9b activation-receipt verifier.
 
-Implemented so far: the canonical JSON encoder that produces the bytes the
-ConfirmDigest is taken over (v5 slice 1), and the CLOSED receipt schema with
-independent receipt verification (v5 slice 2). The security probes, task
-probes, sealed runtime manifest checks and the full admission verdict land in
-later slices and are deliberately absent rather than stubbed, so nothing can
-mistake an unimplemented check for a passing one.
+Implemented so far: the canonical JSON encoder (v5 slice 1), the CLOSED
+receipt schema with independent receipt verification (v5 slice 2), and the
+closed sealed-runtime manifest contract plus pure bundle re-verification
+(v5 rollout step 5, bounded manifest slice). GitHub-source materialization,
+protected fixed roots, ACL/MIC and task/security probes, and the full broker
+admission verdict remain deliberately absent rather than stubbed.
 
 Why the encoder lives here and not in a shared utility: the digest has
 exactly two producers -- this verifier and the elevated PowerShell activator
@@ -165,15 +165,23 @@ RUNTIME_MANIFEST_SCHEMA_ID = "wd.rule9b.runtime_manifest.v1"
 REQUIRED_RUNTIME_PATHS = (
     "CLAUDE.md",
     "ops/windows/reboot/Invoke-BridgeMergeDriver.ps1",
+    "ops/windows/reboot/Invoke-WdRule9bActivation.ps1",
     "ops/windows/reboot/Invoke-WdRule9bMergeBroker.ps1",
     "ops/windows/reboot/check_rule9b_activation_receipt.py",
     "ops/windows/reboot/start-wd-all.ps1",
     "ops/windows/reboot/wd-fleet.json",
     "ops/windows/reboot/wd_supervisor.ps1",
     "tools/check_bridge_changes_requested.py",
+    "tools/check_promotion_eligible.py",
+    "tools/check_proven_safe_autosign_class.py",
     "tools/check_rco_pass_present.py",
+    "tools/build_promotion_snapshot.py",
     "tools/idle_consensus_auto_merge.py",
     "tools/merge_with_bridge_receipt.py",
+    "tools/pr_status_snapshot.py",
+    "tools/write_bridge_consensus_merge_receipt.py",
+    "waggledance/core/idle_consensus_charter.py",
+    "waggledance/core/magma/consensus_receipt.py",
 )
 
 _MANIFEST_FIELDS = {
@@ -429,6 +437,24 @@ def verify_runtime_manifest(
     refuses Apply until that broker exists.
     """
     blockers: list[str] = []
+    if not _is_sha1(expected_activation_head):
+        blockers.append("expected activation head is missing or malformed")
+    if not _is_sha1(expected_activation_tree_sha):
+        blockers.append("expected activation tree SHA is missing or malformed")
+    if (
+        not isinstance(expected_generation_id, str)
+        or not expected_generation_id
+        or len(expected_generation_id) > 128
+        or any(ord(ch) < 33 or ord(ch) > 126 for ch in expected_generation_id)
+    ):
+        blockers.append("expected runtime generation id is missing or malformed")
+    if not _is_sha256(expected_manifest_sha256):
+        blockers.append("expected runtime manifest SHA-256 is missing or malformed")
+    if not _is_nonnegative_int(expected_file_count):
+        blockers.append("expected runtime file count is malformed")
+    if blockers:
+        return {"verified": False, "blockers": blockers, "manifest": None}
+
     root = Path(generation_root)
     manifest_file = Path(manifest_path)
     manifest_identity = _has_unsafe_file_identity(manifest_file)
@@ -506,6 +532,10 @@ def verify_runtime_manifest(
     if root_identity:
         blockers.append(f"runtime generation root identity refused: {root_identity}")
         return {"verified": False, "blockers": blockers, "manifest": manifest}
+    root_stream = _alternate_stream_blocker(root)
+    if root_stream:
+        blockers.append(f"runtime generation root identity refused: {root_stream}")
+        return {"verified": False, "blockers": blockers, "manifest": manifest}
 
     disk_paths: set[str] = set()
     for directory, dir_names, file_names in os.walk(root, followlinks=False):
@@ -519,6 +549,13 @@ def verify_runtime_manifest(
                     f"{directory_blocker}"
                 )
                 dir_names.remove(dir_name)
+                continue
+            directory_stream = _alternate_stream_blocker(candidate)
+            if directory_stream:
+                blockers.append(
+                    f"runtime directory {candidate.relative_to(root).as_posix()}: "
+                    f"{directory_stream}"
+                )
         for file_name in file_names:
             candidate = directory_path / file_name
             relative = candidate.relative_to(root).as_posix()
@@ -539,7 +576,19 @@ def verify_runtime_manifest(
     entries = {entry["path"]: entry for entry in manifest["files"]}
     for relative in sorted(manifest_paths & disk_paths):
         candidate = root.joinpath(*relative.split("/"))
-        if _has_unsafe_file_identity(candidate):
+        late_identity_blocker = _has_unsafe_file_identity(candidate)
+        if late_identity_blocker:
+            blockers.append(
+                f"runtime file {relative} changed identity before rehash: "
+                f"{late_identity_blocker}"
+            )
+            continue
+        late_stream_blocker = _alternate_stream_blocker(candidate)
+        if late_stream_blocker:
+            blockers.append(
+                f"runtime file {relative} changed streams before rehash: "
+                f"{late_stream_blocker}"
+            )
             continue
         try:
             payload = candidate.read_bytes()
@@ -709,6 +758,20 @@ def verify_receipt_file(
     receipt: Any = None
 
     file_path = Path(path)
+    receipt_identity = _has_unsafe_file_identity(file_path)
+    if receipt_identity:
+        return {
+            "verified": False,
+            "blockers": [f"receipt identity refused: {receipt_identity}"],
+            "receipt": None,
+        }
+    receipt_stream = _alternate_stream_blocker(file_path)
+    if receipt_stream:
+        return {
+            "verified": False,
+            "blockers": [f"receipt identity refused: {receipt_stream}"],
+            "receipt": None,
+        }
     try:
         raw = file_path.read_bytes()
     except OSError as exc:
@@ -727,8 +790,14 @@ def verify_receipt_file(
             "receipt": None,
         }
     try:
-        receipt = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        receipt = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_closed_object
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        _DuplicateJsonKeyError,
+    ) as exc:
         return {
             "verified": False,
             "blockers": [f"receipt is not valid UTF-8 JSON: {exc.__class__.__name__}"],
@@ -827,15 +896,24 @@ def verify_activation_bundle(
                 "manifest": None,
             },
         }
-    runtime_report = verify_runtime_manifest(
-        manifest_path,
-        generation_root,
-        expected_activation_head=receipt["activation_head"],
-        expected_activation_tree_sha=receipt["activation_tree_sha"],
-        expected_generation_id=receipt["runtime_generation_id"],
-        expected_manifest_sha256=receipt["runtime_manifest_sha256"],
-        expected_file_count=receipt["runtime_file_count"],
-    )
+    try:
+        runtime_report = verify_runtime_manifest(
+            manifest_path,
+            generation_root,
+            expected_activation_head=receipt["activation_head"],
+            expected_activation_tree_sha=receipt["activation_tree_sha"],
+            expected_generation_id=receipt["runtime_generation_id"],
+            expected_manifest_sha256=receipt["runtime_manifest_sha256"],
+            expected_file_count=receipt["runtime_file_count"],
+        )
+    except Exception as exc:  # noqa: BLE001 - any verifier fault is refusal
+        runtime_report = {
+            "verified": False,
+            "blockers": [
+                f"runtime verification raised {exc.__class__.__name__}"
+            ],
+            "manifest": None,
+        }
     runtime_blockers = runtime_report.get("blockers")
     if not isinstance(runtime_blockers, list) or not all(
         isinstance(item, str) for item in runtime_blockers

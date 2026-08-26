@@ -508,6 +508,10 @@ def check_bridge_clear_to_merge(
             peer_signals[agent] = (index, "block", event)
             continue
         if _is_clear_status(status):
+            # ``recognized_rco_agent_set`` is the union of the canonical
+            # ``_RECOGNIZED_RCOS`` and any caller-provided extensions (built
+            # above); an empty or partial extension can never remove a
+            # canonical RCO from this retraction restriction.
             clear_event_types = (
                 RCO_RETRACTION_EVENT_TYPES
                 if agent in recognized_rco_agent_set

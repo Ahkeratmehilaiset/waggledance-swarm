@@ -61,5 +61,6 @@ prometheus-client>=0.20.0      # /metrics endpoint for Prometheus/Grafana
 # PyMuPDF>=1.23.0              # fitz — PDF knowledge import
 networkx>=3.0
 pydantic>=2.0
+jsonschema>=4.25.0             # MAGMA core imports (was chromadb transitive)
 pytest>=9.0.3
 pytest-asyncio>=0.23.0

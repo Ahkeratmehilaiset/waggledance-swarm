@@ -54,6 +54,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# B7: the one shared claim-lease / session-heartbeat implementation.
+# Every lease writer goes through it, so there is a single CAS to review.
+. (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT.
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
     [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
@@ -123,10 +127,44 @@ $now = (Get-Date).ToUniversalTime()
 
 foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -ErrorAction SilentlyContinue)) {
+    # B7: take the same per-claim lock the keepalive and release use and
+    # re-read under it, so a sweep decision is never made from content
+    # another writer is part-way through replacing.
+    $claimLock = Enter-BridgeClaimLock -ClaimPath $file.FullName
+    if ($null -eq $claimLock) { continue }
+    try {
+    if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) { continue }
+    $claim = $null
     try {
         $claim = Get-Content -Raw -Path $file.FullName -Encoding UTF8 |
-            ConvertFrom-Json
-    } catch { continue }
+            ConvertFrom-Json -ErrorAction Stop
+    } catch { $claim = $null }
+    if ($null -eq $claim) {
+        # B7: an unreadable claim used to be skipped forever, so one
+        # corrupt file could hold a write scope hostage indefinitely.
+        # Quarantine it instead: the scope frees and the bytes are kept
+        # for forensics rather than deleted.
+        $badStamp = $now.ToString('yyyyMMddTHHmmssZ')
+        $badSafe = ($file.BaseName -replace '[^A-Za-z0-9._-]', '_').Trim('_')
+        $badPath = Join-Path $doneDir ("$badSafe.$badStamp.unreadable.json")
+        try {
+            [System.IO.File]::Move($file.FullName, $badPath)
+            if (-not $Quiet) {
+                Write-Host ("UNREADABLE CLAIM QUARANTINED: {0}" -f $file.Name) `
+                    -ForegroundColor Yellow
+            }
+            [pscustomobject]@{
+                task_id       = ''
+                agent         = ''
+                age_seconds   = 0
+                archived_path = $badPath
+            }
+        } catch {
+            Write-Warning ("could not quarantine unreadable claim {0}: {1}" -f `
+                $file.Name, $_.Exception.Message)
+        }
+        continue
+    }
 
     $agent = [string]$claim.agent
     if ($agent -in @('operator','system')) { continue }
@@ -171,6 +209,15 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     if ($effectiveLeaseSeconds -lt 1) { $effectiveLeaseSeconds = 1 }
     if ($now -lt $effectiveExpiresUtc) { continue }
 
+    # B7: expiry alone is no longer sufficient. A claim whose owning
+    # session is still beating is live work, not a leak. The check binds
+    # owner_session_id plus owner_token_sha256; the recorded pid is
+    # deliberately never consulted, because pids are recycled.
+    if (Test-BridgeSessionHeartbeatLive -Root $bridgeRoot -Claim $claim `
+            -NowUtc $now) {
+        continue
+    }
+
     # Stale: archive the claim file to done/ with a stale_lease
     # stamp and emit a release/stale_lease event.
     $stamp = $now.ToString('yyyyMMddTHHmmssZ')
@@ -185,10 +232,24 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         -NotePropertyValue ("last_heartbeat_utc was $([int]$ageSeconds)s old; lease threshold $effectiveLeaseSeconds s") `
         -Force
 
+    # B7: the same Replace-then-Move recipe Release-AgentTask.ps1 uses -
+    # stamp the claim in place, then move it. There is never a moment
+    # where both files exist or neither does, and the claim file is not
+    # recreated afterwards.
     try {
-        $claim | ConvertTo-Json -Depth 8 |
-            Set-Content -Path $donePath -Encoding UTF8
-        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+        $sweepEncoding = New-Object System.Text.UTF8Encoding($false)
+        $sweepTmp = "$($file.FullName).tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+        # Real backup path: PowerShell marshals $null to an empty string
+        # and File.Replace rejects that.
+        $sweepBackup = "$($file.FullName).bak.$PID.$([guid]::NewGuid().ToString('N'))"
+        [System.IO.File]::WriteAllText(
+            $sweepTmp,
+            ((ConvertTo-BridgeIsoTimestamps -Object $claim) |
+                ConvertTo-Json -Depth 8),
+            $sweepEncoding)
+        [System.IO.File]::Replace($sweepTmp, $file.FullName, $sweepBackup)
+        try { Remove-Item -LiteralPath $sweepBackup -Force -ErrorAction SilentlyContinue } catch {}
+        [System.IO.File]::Move($file.FullName, $donePath)
     } catch {
         Write-Warning ("could not archive stale claim {0}: {1}" -f `
             $file.Name, $_.Exception.Message)
@@ -238,5 +299,8 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
         agent          = $agent
         age_seconds    = [int]$ageSeconds
         archived_path  = $donePath
+    }
+    } finally {
+        Exit-BridgeClaimLock -Lock $claimLock
     }
 }

@@ -249,6 +249,22 @@ if ((-not $SkipWakeWatcher) -and $wakeEnabled) {
 # every 60 s, which bumps last_heartbeat_utc for this agent's active
 # claims. Operators can opt out via WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0
 # or -SkipHeartbeatJob.
+# B7: mint this session's owner token before anything can claim. The
+# raw token stays in this process's environment and is never written to
+# disk; claims and heartbeats carry only its SHA-256, so another process
+# cannot extend or steal this session's leases.
+. (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
+if (-not $env:AGENT_BRIDGE_OWNER_TOKEN) {
+    $env:AGENT_BRIDGE_OWNER_TOKEN = New-BridgeOwnerToken
+}
+$sessionOwnerIdentity = Get-BridgeOwnerIdentity -SessionId $RunId
+if ($null -ne $sessionOwnerIdentity) {
+    # Seed the durable heartbeat immediately so a claim taken in the
+    # first seconds of the session is already protected.
+    [void](Write-BridgeSessionHeartbeat -Root $runtimeFull -AgentName $Agent `
+        -Identity $sessionOwnerIdentity)
+}
+
 $heartbeatJobId = ''
 $heartbeatEnabled = $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED -ne '0'
 if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
@@ -258,14 +274,20 @@ if ((-not $SkipHeartbeatJob) -and $heartbeatEnabled) {
             $heartbeatJobName = "agent-bridge-heartbeat-$Agent"
             Stop-AgentBridgeExistingJob -Name $heartbeatJobName -EnvName 'AGENT_BRIDGE_HEARTBEAT_JOB'
             $job = Start-Job -Name $heartbeatJobName -ScriptBlock {
-                param($scriptPath, $agentArg, $runtimeArg, $roleArg, $agentUuidArg, $capabilitiesArg)
+                param($scriptPath, $agentArg, $runtimeArg, $roleArg, $agentUuidArg, $capabilitiesArg, $sessionArg, $tokenArg)
+                # B7: session id and owner token are passed explicitly.
+                # The job must not depend on whichever environment
+                # variables happen to be inherited, and without both it
+                # cannot extend any lease.
+                $env:AGENT_BRIDGE_OWNER_TOKEN = $tokenArg
                 & $scriptPath `
                     -Agent $agentArg `
                     -RuntimeRoot $runtimeArg `
                     -Role $roleArg `
                     -AgentUuid $agentUuidArg `
-                    -Capabilities $capabilitiesArg
-            } -ArgumentList $heartbeatScript, $Agent, $runtimeFull, $Role, $AgentUuid, (,@($Capabilities))
+                    -Capabilities $capabilitiesArg `
+                    -SessionId $sessionArg
+            } -ArgumentList $heartbeatScript, $Agent, $runtimeFull, $Role, $AgentUuid, (,@($Capabilities)), $RunId, ([string]$env:AGENT_BRIDGE_OWNER_TOKEN)
             $heartbeatJobId = $job.Id
             $env:AGENT_BRIDGE_HEARTBEAT_JOB = [string]$heartbeatJobId
         } catch {

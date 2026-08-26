@@ -18,7 +18,10 @@ def _safe_print(msg: str) -> None:
 
 REQUIRED = [
     # Core
-    ("chromadb",       "chromadb"),
+    # chromadb removed 2026-08-26: de-scoped from the stable default install
+    # (5 no-fix OSV advisories). Opt-in only via the [chroma] extra; the
+    # runtime fails loudly with an install instruction if vector_backend=
+    # chroma is selected without the package. Never auto-install it.
     ("fastapi",        "fastapi"),
     ("uvicorn",        "uvicorn"),
     ("yaml",           "pyyaml"),

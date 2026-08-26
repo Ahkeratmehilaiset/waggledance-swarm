@@ -85,8 +85,11 @@ def test_core_deps_pinned_to_floor(cfg):
         "fastapi": ">=0.115",
         "uvicorn[standard]": ">=0.30",
         "pydantic": ">=2.0",
-        "chromadb": ">=1.0",
+        # chromadb intentionally absent: de-scoped to the [chroma] extra
+        # 2026-08-26 (5 no-fix OSV advisories). See
+        # test_chromadb_descoped_to_optional_extra below.
         "pyyaml": ">=6.0",
+        "torch": ">=2.13",
     }
     for pkg, floor in required.items():
         # Normalize comparison key so uvicorn[standard] matches.
@@ -95,3 +98,19 @@ def test_core_deps_pinned_to_floor(cfg):
         assert any(floor in dep for dep in matched), (
             f"{pkg} floor regressed below {floor}; got {matched}"
         )
+
+
+def test_chromadb_descoped_to_optional_extra(cfg):
+    """Dependency remediation 2026-08-26: chromadb has 5 OSV advisories
+    with no fixed release, so it must NOT be a default dependency and must
+    remain available only via the opt-in ``[chroma]`` extra."""
+    deps = cfg["project"].get("dependencies", [])
+    assert not any(
+        d.split(">=")[0].split("[")[0].strip() == "chromadb" for d in deps
+    ), f"chromadb must not be a core dependency; got {deps}"
+
+    extras = cfg["project"].get("optional-dependencies", {})
+    assert "chroma" in extras, "the [chroma] opt-in extra must exist"
+    assert any(
+        d.split(">=")[0].strip() == "chromadb" for d in extras["chroma"]
+    ), f"[chroma] extra must carry chromadb; got {extras['chroma']}"

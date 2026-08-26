@@ -10,11 +10,12 @@ aiosqlite>=0.20.0
 websockets>=13.0
 pyyaml>=6.0
 psutil>=5.9.0
-chromadb>=1.0.0
+# chromadb de-scoped 2026-08-26: 5 no-fix OSV advisories at <=1.5.9.
+# Opt-in extra: pip install .[chroma]  + WAGGLE_VECTOR_BACKEND=chroma
 
 # === TRANSLATION (Opus-MT Finnish <-> English) ===
 transformers>=4.40.0
-torch>=2.11.0
+torch>=2.13.0                # >=2.13.0 fixes GHSA-rrmf-rvhw-rf47
 sentencepiece>=0.1.99
 
 # === SEARCH & WEB ===
@@ -30,7 +31,7 @@ anthropic>=0.30.0
 # peft>=0.11.0               # LoRA adapters
 # accelerate>=0.30.0         # Training acceleration
 # bitsandbytes>=0.43.0       # 4-bit quantization (QLoRA)
-# Note: requires torch>=2.11.0 (already in requirements)
+# Note: requires torch>=2.13.0 (already in requirements)
 
 # === OPTIONAL: Voice interface (Phase 7) ===
 # openai-whisper>=20231117     # STT

@@ -164,6 +164,7 @@ RUNTIME_MANIFEST_SCHEMA_ID = "wd.rule9b.runtime_manifest.v1"
 # impossible until that slice exists and is signed.
 REQUIRED_RUNTIME_PATHS = (
     "CLAUDE.md",
+    "docs/architecture/IDLE_AUTONOMY_CHARTER.md",
     "ops/windows/reboot/Invoke-BridgeMergeDriver.ps1",
     "ops/windows/reboot/Invoke-WdRule9bActivation.ps1",
     "ops/windows/reboot/Invoke-WdRule9bMergeBroker.ps1",

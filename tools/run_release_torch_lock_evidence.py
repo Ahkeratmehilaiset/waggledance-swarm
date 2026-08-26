@@ -107,6 +107,16 @@ def _exact_extra_index_present(options: list[str], expected_url: str) -> bool:
     return any(option.strip() == expected for option in options)
 
 
+def _unexpected_extra_indexes(options: list[str], expected_url: str) -> list[str]:
+    expected = f"--extra-index-url {expected_url}"
+    return sorted(
+        option.strip()
+        for option in options
+        if option.strip().startswith("--extra-index-url")
+        and option.strip() != expected
+    )
+
+
 def _current_commit() -> str:
     try:
         completed = subprocess.run(
@@ -312,6 +322,9 @@ def _validate_a2_refresh_lock(
     index_present = _exact_extra_index_present(options, expected_index)
     if not expected_index or not index_present:
         blockers.append("pytorch_cu126_extra_index_missing")
+    unexpected_indexes = _unexpected_extra_indexes(options, expected_index)
+    if unexpected_indexes:
+        blockers.append("unexpected_extra_index_present")
 
     windows_pins = {
         "torch": _platform_pin(entries, "torch", sys_platform="win32")
@@ -346,6 +359,7 @@ def _validate_a2_refresh_lock(
         "platform_strategy": "windows_cu126_linux_darwin_plain_torch_only",
         "pytorch_extra_index_url": expected_index,
         "pytorch_extra_index_present": index_present,
+        "unexpected_extra_indexes": unexpected_indexes,
         "windows_pins": windows_pins,
         "linux_pins": linux_pins,
         "darwin_pins": darwin_pins,
@@ -365,6 +379,9 @@ def _validate_a2_lock(
     index_present = _exact_extra_index_present(options, expected_index)
     if not expected_index or not index_present:
         blockers.append("pytorch_cu126_extra_index_missing")
+    unexpected_indexes = _unexpected_extra_indexes(options, expected_index)
+    if unexpected_indexes:
+        blockers.append("unexpected_extra_index_present")
 
     windows_pins = {
         name: _platform_pin(entries, name, sys_platform="win32")
@@ -400,6 +417,7 @@ def _validate_a2_lock(
         "platform_strategy": "windows_cu126_linux_darwin_plain_pytorch",
         "pytorch_extra_index_url": expected_index,
         "pytorch_extra_index_present": index_present,
+        "unexpected_extra_indexes": unexpected_indexes,
         "windows_pins": windows_pins,
         "linux_pins": linux_pins,
         "darwin_pins": darwin_pins,
@@ -644,11 +662,6 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OPERATOR_DECISION_PACK,
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument(
-        "--allow-blocked",
-        action="store_true",
-        help="Exit 0 even when lock evidence remains blocked/fail-closed.",
-    )
     args = parser.parse_args(argv)
 
     commit = args.commit or _current_commit()
@@ -663,9 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     args.output.write_text(encoded, encoding="utf-8")
     print(encoded, end="")
     blockers = evaluate_report(report, expected_commit=commit)
-    if not blockers or args.allow_blocked:
-        return 0
-    return 1
+    return 0 if not blockers else 1
 
 
 if __name__ == "__main__":

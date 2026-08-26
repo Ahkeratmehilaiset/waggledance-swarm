@@ -105,6 +105,7 @@ def _write_refresh_lock(
     keep_companion: bool = False,
     keep_chromadb: bool = False,
     index_option: str = "--extra-index-url https://download.pytorch.org/whl/cu126",
+    extra_index_option: str = "",
 ):
     path = root / "requirements.lock.txt"
     lines = [
@@ -116,6 +117,8 @@ def _write_refresh_lock(
         lines.append("xformers==0.0.35")
     if keep_chromadb:
         lines.append("chromadb==1.5.9")
+    if extra_index_option:
+        lines.append(extra_index_option)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -421,6 +424,25 @@ def test_scope_update_requires_exact_pytorch_index_option(tmp_path) -> None:
     )
 
     assert "pytorch_cu126_extra_index_missing" in report["blockers"]
+
+
+def test_scope_update_rejects_additional_extra_index(tmp_path) -> None:
+    pack = _write_pack(tmp_path, scope_update=True)
+    lock = _write_refresh_lock(
+        tmp_path,
+        extra_index_option="--extra-index-url https://attacker.invalid/simple",
+    )
+
+    report = build_report(
+        commit=COMMIT,
+        requirements_lock=lock,
+        operator_decision_pack=pack,
+    )
+
+    assert report["lock_summary"]["unexpected_extra_indexes"] == [
+        "--extra-index-url https://attacker.invalid/simple"
+    ]
+    assert "unexpected_extra_index_present" in report["blockers"]
 
 
 def test_malformed_scope_update_fails_closed(tmp_path) -> None:

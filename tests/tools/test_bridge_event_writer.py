@@ -22,11 +22,13 @@ from tools.bridge_event_writer import (
     QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS,
     CHECKPOINT_SUFFIX,
     BridgeEventWriteError,
+    V1_EVENT_TYPES,
     WindowsAppendV1Backend,
     _PortableTestBackend,
     _checkpoint_bytes,
     write_bridge_event,
 )
+from waggledance.core.bridge_event_schema import KNOWN_EVENT_TYPES
 
 
 def _event(index: int = 1, *, agent: str = "codex") -> dict[str, object]:
@@ -264,6 +266,58 @@ def test_invalid_replayer_shape_refuses_before_root_or_wal_creation(
 
     assert not root.exists()
     assert not _canonical(root).exists()
+
+
+def test_writer_and_schema_event_type_sets_are_in_exact_parity() -> None:
+    assert V1_EVENT_TYPES == KNOWN_EVENT_TYPES
+
+
+def test_python_writer_runs_full_schema_before_wal_creation(tmp_path: Path) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event.update(
+        agent="grok-scout-1",
+        type="message",
+        status="grok_response",
+        to="codex-lead-1",
+        payload={},
+    )
+
+    with pytest.raises(BridgeEventWriteError, match="grok freshness proof"):
+        write_bridge_event(
+            bridge_root=root,
+            event=event,
+            backend=_PortableTestBackend(),
+        )
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("event_type", ["triage_disposition", "consumer_tick"])
+def test_python_writer_accepts_new_validated_types(
+    tmp_path: Path,
+    event_type: str,
+) -> None:
+    root = tmp_path / "bridge"
+    event = _event()
+    event["type"] = event_type
+    if event_type == "triage_disposition":
+        event["status"] = "recorded"
+        event["payload"] = {
+            "disposition": "ack_dispatch",
+            "target_event_id": "event:1",
+        }
+    else:
+        event["status"] = "started"
+
+    result = write_bridge_event(
+        bridge_root=root,
+        event=event,
+        backend=_PortableTestBackend(),
+    )
+
+    assert result.canonical_durable is True
+    assert _rows(_canonical(root))[0]["type"] == event_type
 
 
 @pytest.mark.skipif(os.name == "nt", reason="production backend is supported on Windows")

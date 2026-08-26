@@ -77,6 +77,24 @@ operator_signoff:
           - "fresh live OSV audit proving GHSA-rrmf-rvhw-rf47 absent and ChromaDB absent from the stable lock"
           - "truthful full-lock OSV row count recorded as a release HOLD until every remaining advisory is fixed, de-scoped, or explicitly adjudicated"
           - "affected tests and exact-head CI"
+      lock_evidence_contract:
+        schema_version: "waggledance.torch_lock_scope_update.v1"
+        strategy: "a2_cu126_torch_2_13_chroma_descope"
+        pytorch_extra_index_url: "https://download.pytorch.org/whl/cu126"
+        windows_pins:
+          torch: "2.13.0+cu126"
+        non_windows_pins:
+          torch: "2.13.0"
+        required_absent:
+          - "torchvision"
+          - "torchaudio"
+          - "torchao"
+          - "xformers"
+        transition_accepts_signed_prior: true
+        transition_note: >
+          The signed A2 2.11 projection remains valid only as an explicitly
+          reported transition-pending state until the remediated projection
+          lands. It is not release-clean evidence.
     - recorded_utc: 2026-05-27T08:14:26Z
       recorded_by: "codex-lead-1"
       source: "bridge:operator-authorization-open-rco-tasks-2026-05-27"

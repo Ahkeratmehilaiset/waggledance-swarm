@@ -14,7 +14,13 @@ from tools.run_release_torch_lock_evidence import (
 COMMIT = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
 
 
-def _write_pack(root, *, chosen_option: str = "A2_cu126"):
+def _write_pack(
+    root,
+    *,
+    chosen_option: str = "A2_cu126",
+    scope_update: bool = False,
+    malformed_scope_update: bool = False,
+):
     path = root / "torch-cuda-vs-cpu.yaml"
     path.write_text(
         "schema_version: waggledance.operator_decision_pack.v1\n"
@@ -44,12 +50,60 @@ def _write_pack(root, *, chosen_option: str = "A2_cu126"):
         "operator_signoff:\n"
         '  signed_by: "operator:jani:2026-05-22T18:14:34Z"\n'
         f'  chosen_option: "{chosen_option}"\n'
-        "structural_invariants:\n"
+        + (
+            "  scope_updates:\n"
+            "    - recorded_utc: 2026-08-26T05:06:00Z\n"
+            "      recorded_by: codex-lead-1\n"
+            "      source: operator-directive:2026-08-26:swarm-efficiency-overhaul-release-burndown-E1-E2\n"
+            "      lock_evidence_contract:\n"
+            "        schema_version: waggledance.torch_lock_scope_update.v1\n"
+            "        strategy: a2_cu126_torch_2_13_chroma_descope\n"
+            "        pytorch_extra_index_url: https://download.pytorch.org/whl/cu126\n"
+            "        windows_pins:\n"
+            "          torch: 2.12.0+cu126\n"
+            "        non_windows_pins:\n"
+            "          torch: 2.13.0\n"
+            "        required_absent: [torchvision, torchaudio, torchao, xformers]\n"
+            "        transition_accepts_signed_prior: true\n"
+            if malformed_scope_update
+            else (
+                "  scope_updates:\n"
+                "    - recorded_utc: 2026-08-26T05:06:00Z\n"
+                "      recorded_by: codex-lead-1\n"
+                "      source: operator-directive:2026-08-26:swarm-efficiency-overhaul-release-burndown-E1-E2\n"
+                "      lock_evidence_contract:\n"
+                "        schema_version: waggledance.torch_lock_scope_update.v1\n"
+                "        strategy: a2_cu126_torch_2_13_chroma_descope\n"
+                "        pytorch_extra_index_url: https://download.pytorch.org/whl/cu126\n"
+                "        windows_pins:\n"
+                "          torch: 2.13.0+cu126\n"
+                "        non_windows_pins:\n"
+                "          torch: 2.13.0\n"
+                "        required_absent: [torchvision, torchaudio, torchao, xformers]\n"
+                "        transition_accepts_signed_prior: true\n"
+                if scope_update
+                else ""
+            )
+        )
+        + "structural_invariants:\n"
         "  no_main_branch_auto_merge: true\n"
         "  dependency_change_lands_via_pr: true\n"
         "  agent_must_not_self_resolve: true\n",
         encoding="utf-8",
     )
+    return path
+
+
+def _write_refresh_lock(root, *, keep_companion: bool = False):
+    path = root / "requirements.lock.txt"
+    lines = [
+        "--extra-index-url https://download.pytorch.org/whl/cu126",
+        'torch==2.13.0+cu126 ; sys_platform == "win32"',
+        'torch==2.13.0 ; sys_platform != "win32"',
+    ]
+    if keep_companion:
+        lines.append("xformers==0.0.35")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -131,6 +185,69 @@ def test_a2_lock_evidence_blocks_missing_pytorch_index(tmp_path) -> None:
     assert "pytorch_cu126_extra_index_missing" in report["blockers"]
 
 
+def test_scope_update_accepts_exact_torch_2_13_descope_lock(tmp_path) -> None:
+    pack = _write_pack(tmp_path, scope_update=True)
+    lock = _write_refresh_lock(tmp_path)
+
+    report = build_report(
+        commit=COMMIT,
+        requirements_lock=lock,
+        operator_decision_pack=pack,
+    )
+
+    assert report["torch_lock_status"] == "implemented"
+    assert report["lock_summary"]["windows_pins"] == {
+        "torch": "2.13.0+cu126"
+    }
+    assert report["lock_summary"]["unexpected_present"] == []
+    assert evaluate_report(report, expected_commit=COMMIT) == []
+
+
+def test_scope_update_reports_signed_prior_as_transition_pending(tmp_path) -> None:
+    pack = _write_pack(tmp_path, scope_update=True)
+    lock = _write_lock(tmp_path)
+
+    report = build_report(
+        commit=COMMIT,
+        requirements_lock=lock,
+        operator_decision_pack=pack,
+    )
+
+    assert report["torch_lock_status"] == "transition_pending"
+    assert report["lock_summary"]["transition_requires"] == (
+        "a2_cu126_torch_2_13_chroma_descope"
+    )
+    assert evaluate_report(report, expected_commit=COMMIT) == []
+
+
+def test_scope_update_blocks_retained_companion(tmp_path) -> None:
+    pack = _write_pack(tmp_path, scope_update=True)
+    lock = _write_refresh_lock(tmp_path, keep_companion=True)
+
+    report = build_report(
+        commit=COMMIT,
+        requirements_lock=lock,
+        operator_decision_pack=pack,
+    )
+
+    assert report["torch_lock_status"] == "blocked"
+    assert "descope_required_packages_present" in report["blockers"]
+
+
+def test_malformed_scope_update_fails_closed(tmp_path) -> None:
+    pack = _write_pack(tmp_path, malformed_scope_update=True)
+    lock = _write_lock(tmp_path)
+
+    report = build_report(
+        commit=COMMIT,
+        requirements_lock=lock,
+        operator_decision_pack=pack,
+    )
+
+    assert report["torch_lock_status"] == "blocked"
+    assert "operator_scope_update_contract_invalid" in report["blockers"]
+
+
 def test_report_rejects_any_security_gate_flip(tmp_path) -> None:
     pack = _write_pack(tmp_path)
     lock = _write_lock(tmp_path)
@@ -164,7 +281,7 @@ def test_main_writes_current_repository_lock_evidence(tmp_path) -> None:
 
     assert rc == 0
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["torch_lock_status"] == "implemented"
+    assert report["torch_lock_status"] == "transition_pending"
     assert report["lock_summary"]["windows_pins"] == {
         "torch": "2.11.0+cu126",
         "torchvision": "0.26.0+cu126",

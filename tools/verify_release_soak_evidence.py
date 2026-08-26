@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Verify release soak evidence is reproducible from local artifacts."""
+"""Verify release soak evidence is reproducible from local artifacts.
+
+When the actual evidence records an explicit security-artifact selection
+(``artifact_selection`` entry with ``basis == "explicit"``), the rebuild
+recovers that selection - but only a validated root-relative recorded
+path is accepted (typed ``explicit_selection_invalid:<field>`` blocker
+otherwise). The recovered path re-enters the collector's containment
+checks against the resolved evidence root, so recovery cannot escape the
+root or fall open.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +17,7 @@ import argparse
 import datetime as dt
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +29,7 @@ from tools.collect_soak_evidence import (
     DEFAULT_RELEASE_NOTES,
     FINAL_PIP_AUDIT_REPORTS,
     PRIVACY_PRECHECK,
+    SELECTION_BASIS_EXPLICIT,
     build_soak_evidence,
 )
 from tools.release_security_attestation import (
@@ -79,6 +89,30 @@ def _read_object(path: Path) -> dict[str, Any]:
     return loaded
 
 
+def _validated_root_relative(value: object) -> str | None:
+    """Accept only a safe root-relative posix path recorded by the collector.
+
+    Rejects non-strings, empties, backslashes, absolute paths (posix or
+    Windows drive/UNC forms), and any ``..`` traversal component. The
+    recovered value re-enters ``_select_artifact``, which containment-checks
+    the resolved path against the resolved evidence root and fails closed;
+    this validator just refuses obviously non-root-relative records up
+    front with a typed blocker instead of rebuilding a divergent expected.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if "\\" in value:
+        return None
+    pure = PurePosixPath(value)
+    if pure.is_absolute():
+        return None
+    if ":" in value or value.startswith("//"):
+        return None
+    if any(part == ".." for part in pure.parts):
+        return None
+    return value
+
+
 def build_report(
     *,
     soak_evidence: Path | str,
@@ -102,6 +136,28 @@ def build_report(
             "mismatched_fields": [],
         }
 
+    explicit_overrides: dict[str, str] = {}
+    selection = actual.get("artifact_selection")
+    if isinstance(selection, dict):
+        for field, kwarg in (
+            ("bandit_report", "bandit_report"),
+            ("pip_audit_report", "pip_audit_report"),
+        ):
+            record = selection.get(field)
+            if not isinstance(record, dict):
+                continue
+            if record.get("basis") != SELECTION_BASIS_EXPLICIT:
+                continue
+            recovered = _validated_root_relative(record.get("path"))
+            if recovered is None:
+                return {
+                    "schema_version": "waggledance.release_soak_verifier.v1",
+                    "verified": False,
+                    "blockers": [f"explicit_selection_invalid:{field}"],
+                    "mismatched_fields": [],
+                }
+            explicit_overrides[kwarg] = recovered
+
     try:
         expected = build_soak_evidence(
             release_readiness,
@@ -111,6 +167,7 @@ def build_report(
             use_local_artifacts=True,
             evidence_root=evidence_root,
             release_notes=release_notes,
+            **explicit_overrides,
         )
     except (OSError, ValueError) as exc:
         return {

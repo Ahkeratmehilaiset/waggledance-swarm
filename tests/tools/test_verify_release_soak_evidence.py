@@ -526,3 +526,163 @@ def test_verifier_cli_writes_report(tmp_path) -> None:
     assert rc == 0
     assert report["verified"] is True
     assert str(tmp_path) not in json.dumps(report)
+
+
+# ---------------------------------------------------------------------------
+# Explicit-selection round-trip (lead expanded_changes_requested
+# 2026-08-26T07:27:33Z; tools finding: evidence built with an explicit
+# --bandit-report/--pip-audit-report must verify, with recovery restricted
+# to validated root-relative recorded paths).
+
+_RT_PIP_OLD = "v3.12.0_pip_audit_report_lock_after_prune_osv.json"
+_RT_PIP_NEW = "v3.12.0_pip_audit_report.json"
+_RT_BANDIT_ZM = "v3.12.0_bandit_report_after_static_hardening_zero_medium.json"
+_RT_BANDIT_PLAIN = "v3.12.0_bandit_report.json"
+
+
+def _rt_release_notes(tmp_path) -> Path:
+    release_notes = tmp_path / "v3.12.0.md"
+    release_notes.write_text(
+        "Does **not** claim AGI, consciousness, model superiority\n"
+        "States Docker `:latest` will remain `v3.8.0`\n",
+        encoding="utf-8",
+    )
+    return release_notes
+
+
+def _rt_pip_report(root: Path, name: str, vulns: int) -> None:
+    (root / name).write_text(
+        json.dumps({
+            "dependencies": [
+                {
+                    "name": "pkg",
+                    "version": "1",
+                    "vulns": [{"id": f"PYSEC-RT-{i}"} for i in range(vulns)],
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+
+def _rt_bandit_report(root: Path, name: str, medium: int) -> None:
+    (root / name).write_text(
+        json.dumps({
+            "metrics": {
+                "_totals": {"SEVERITY.HIGH": 0, "SEVERITY.MEDIUM": medium},
+            },
+            "results": [],
+        }),
+        encoding="utf-8",
+    )
+
+
+def _rt_build_and_verify(tmp_path, evidence_root, release_notes, **explicit):
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit=COMMIT,
+        ended_at_utc=dt.datetime(2026, 5, 22, 12, 0, tzinfo=dt.UTC),
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+        **explicit,
+    )
+    soak_evidence = tmp_path / "v3.12.0.json"
+    soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
+    report = build_report(
+        soak_evidence=soak_evidence,
+        release_readiness="docs/release/RELEASE_READINESS.md",
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+    return evidence, report
+
+
+def test_verifier_round_trips_explicit_pip_selection(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = _rt_release_notes(tmp_path)
+    # Two candidates; the explicit selection pins one of them. A vulnerable
+    # report keeps security blocked on BOTH sides, so the attestation
+    # extension stays inactive and the test isolates pure round-tripping.
+    _rt_pip_report(evidence_root, _RT_PIP_OLD, vulns=1)
+    _rt_pip_report(evidence_root, _RT_PIP_NEW, vulns=0)
+
+    evidence, report = _rt_build_and_verify(
+        tmp_path, evidence_root, release_notes, pip_audit_report=_RT_PIP_OLD
+    )
+
+    assert (
+        evidence["artifact_selection"]["pip_audit_report"]["basis"]
+        == "explicit"
+    )
+    assert report["mismatched_fields"] == []
+    assert report["blockers"] == []
+    assert report["verified"] is True
+
+
+def test_verifier_round_trips_explicit_bandit_selection(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = _rt_release_notes(tmp_path)
+    _rt_bandit_report(evidence_root, _RT_BANDIT_ZM, medium=0)
+    _rt_bandit_report(evidence_root, _RT_BANDIT_PLAIN, medium=1)
+    _rt_pip_report(evidence_root, _RT_PIP_NEW, vulns=1)
+
+    evidence, report = _rt_build_and_verify(
+        tmp_path,
+        evidence_root,
+        release_notes,
+        bandit_report=_RT_BANDIT_PLAIN,
+    )
+
+    assert (
+        evidence["artifact_selection"]["bandit_report"]["basis"] == "explicit"
+    )
+    assert report["mismatched_fields"] == []
+    assert report["blockers"] == []
+    assert report["verified"] is True
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "../outside.json",
+        "/abs/evil.json",
+        "C:/evil.json",
+        "a\\b.json",
+        "",
+        None,
+    ],
+    ids=["dotdot", "posix-abs", "drive-abs", "backslash", "empty", "none"],
+)
+def test_verifier_rejects_non_root_relative_explicit_selection(
+    tmp_path, bad_path
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    release_notes = _rt_release_notes(tmp_path)
+    _rt_pip_report(evidence_root, _RT_PIP_NEW, vulns=1)
+
+    evidence, _ = _rt_build_and_verify(tmp_path, evidence_root, release_notes)
+    evidence["artifact_selection"]["pip_audit_report"] = {
+        "basis": "explicit",
+        "path": bad_path,
+        "source_digest": "sha256:0",
+        "candidates": [],
+        "blockers": [],
+    }
+    soak_evidence = tmp_path / "tampered.json"
+    soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
+
+    report = build_report(
+        soak_evidence=soak_evidence,
+        release_readiness="docs/release/RELEASE_READINESS.md",
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert report["verified"] is False
+    assert report["blockers"] == [
+        "explicit_selection_invalid:pip_audit_report"
+    ]

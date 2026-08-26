@@ -332,6 +332,32 @@ def test_non_author_rco_signal_still_blocks_when_author_agent_supplied() -> None
     assert result["latest_blocking_event"]["type"] == "finding"
 
 
+def test_recognized_rco_finding_type_latches_before_clear_text() -> None:
+    for agent in ["claude-rco-1", "claude-rco-2"]:
+        for status in [
+            "changes_requested_retracted",
+            "changes_requested_resolved",
+            "changes_requested_cleared",
+        ]:
+            result = check_bridge_clear_to_merge(
+                events=[
+                    _event(
+                        "2026-08-26T07:00:00Z",
+                        agent,
+                        "finding",
+                        status,
+                    )
+                ],
+                task_id="T",
+                merging_agent="codex-lead-1",
+            )
+
+            assert result["clear_to_merge"] is False
+            assert result["latest_blocking_event"]["agent"] == agent
+            assert result["latest_blocking_event"]["type"] == "finding"
+            assert result["latest_blocking_event"]["status"] == status
+
+
 def test_cleared_when_peer_approves_after_earlier_block() -> None:
     events = [
         _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),

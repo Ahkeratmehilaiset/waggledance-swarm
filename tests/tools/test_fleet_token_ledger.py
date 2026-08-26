@@ -206,6 +206,15 @@ def test_invalid_timestamp_is_lane_unknown_not_whole_fleet_exception():
     assert "invalid_usage_timestamp" in lane["telemetry_errors"]
 
 
+def test_null_timestamp_is_lane_unknown_not_whole_fleet_exception():
+    bad = replace(_record(), occurred_at_utc=None)
+    result = build_fleet_token_ledger([bad], now=NOW)
+    lane = result["lanes"]["codex-lead-1"]
+    assert lane["enforcement_state"] == "telemetry_unknown"
+    assert lane["automatic_turns_allowed"] is False
+    assert "invalid_usage_timestamp" in lane["telemetry_errors"]
+
+
 def test_mixed_accounting_modes_and_empty_lane_fail_closed():
     mixed = [
         _record(event="one", cumulative=100),

@@ -254,7 +254,9 @@ def _validate_accounting_sequences(
             prior = cumulative
 
 
-def _parse_utc(value: str) -> datetime:
+def _parse_utc(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be text")
     text = value[:-1] + "+00:00" if value.endswith("Z") else value
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
@@ -262,7 +264,7 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _try_parse_utc(value: str) -> datetime | None:
+def _try_parse_utc(value: object) -> datetime | None:
     try:
         return _parse_utc(value)
     except (TypeError, ValueError):

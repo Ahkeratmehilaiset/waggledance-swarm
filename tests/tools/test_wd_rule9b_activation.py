@@ -487,6 +487,11 @@ NON_STRING_KEY = "$h = @{}\n$h[1] = 'x'\nConvertTo-CanonicalJson -Value $h\n"
 OVERSIZED_INTEGER = (
     "$n = [bigint]'9223372036854775808'\nConvertTo-CanonicalJson -Value $n\n"
 )
+FLOAT_VALUE = "$n = [double]1.5\nConvertTo-CanonicalJson -Value $n\n"
+NON_ASCII_KEY = (
+    "$h = @{}\n$h[[string][char]0x00E4] = 'x'\n"
+    "ConvertTo-CanonicalJson -Value $h\n"
+)
 
 
 @pytest.mark.parametrize("host", [PS7, PS51])
@@ -520,8 +525,27 @@ OVERSIZED_INTEGER = (
             "represent them; the refusal is explicit rather than an incidental "
             "unsupported-type error",
         ),
+        (
+            "float",
+            FLOAT_VALUE,
+            "floats have no single reproducible JSON form across the two "
+            "implementations",
+        ),
+        (
+            "non_ascii_object_key",
+            NON_ASCII_KEY,
+            "restricting keys to printable ASCII removes cross-runtime ordering "
+            "differences instead of silently choosing one host's order",
+        ),
     ],
-    ids=["lone_high", "lone_low", "non_string_key", "oversized_int"],
+    ids=[
+        "lone_high",
+        "lone_low",
+        "non_string_key",
+        "oversized_int",
+        "float",
+        "non_ascii_key",
+    ],
 )
 def test_powershell_refuses_what_python_refuses(
     host: str, name: str, snippet: str, why: str

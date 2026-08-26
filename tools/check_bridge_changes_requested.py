@@ -90,6 +90,7 @@ BLOCKING_EVENT_TYPES = frozenset(
     {"decision", "rco_review", "finding", "blocked", "test"}
 )
 CLEAR_EVENT_TYPES = frozenset({"decision", "rco_review", "finding", "done", "test"})
+RCO_RETRACTION_EVENT_TYPES = frozenset({"decision", "rco_review"})
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_RESOLUTION_TOKENS = frozenset(
     {"clear", "cleared", "resolved", "retracted", "withdrawn"}
@@ -507,7 +508,12 @@ def check_bridge_clear_to_merge(
             peer_signals[agent] = (index, "block", event)
             continue
         if _is_clear_status(status):
-            if event_type in CLEAR_EVENT_TYPES:
+            clear_event_types = (
+                RCO_RETRACTION_EVENT_TYPES
+                if agent in recognized_rco_agent_set
+                else CLEAR_EVENT_TYPES
+            )
+            if event_type in clear_event_types:
                 if author_event:
                     peer_signals[agent] = (index, "clear", event)
                     continue
@@ -517,6 +523,15 @@ def check_bridge_clear_to_merge(
             continue
         if _is_blocking_status(status, event_type=event_type):
             peer_signals[agent] = (index, "block", event)
+            continue
+        # A recognized RCO's standing veto can be retracted only by a later
+        # verified decision/review event. Operational ``done``/``test`` events
+        # may still carry block-shaped statuses (handled above), but must never
+        # overwrite an RCO block with clear/approval vocabulary.
+        if (
+            agent in recognized_rco_agent_set
+            and event_type not in RCO_RETRACTION_EVENT_TYPES
+        ):
             continue
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
             continue

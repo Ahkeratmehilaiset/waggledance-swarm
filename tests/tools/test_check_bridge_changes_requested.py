@@ -456,6 +456,107 @@ def test_rco_operational_event_cannot_clear_type_latched_finding() -> None:
         assert result["latest_blocking_event"]["type"] == "finding"
 
 
+def test_empty_rco_extension_cannot_drop_canonical_retraction_restriction() -> None:
+    for event_type, status in [
+        ("test", "changes_requested_resolved"),
+        ("done", "approved_ci_green"),
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-08-26T07:00:00Z",
+                    "claude-rco-1",
+                    "finding",
+                    "hold",
+                ),
+                _event(
+                    "2026-08-26T07:01:00Z",
+                    "claude-rco-1",
+                    event_type,
+                    status,
+                ),
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+            recognized_rco_agents=(),
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["agent"] == "claude-rco-1"
+
+
+def test_non_rco_operational_event_preserves_existing_clear_semantics() -> None:
+    for event_type, status in [
+        ("test", "changes_requested_resolved"),
+        ("done", "approved_ci_green"),
+    ]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-08-26T07:00:00Z",
+                    "codex-tools-1",
+                    "decision",
+                    "changes_requested",
+                ),
+                _event(
+                    "2026-08-26T07:01:00Z",
+                    "codex-tools-1",
+                    event_type,
+                    status,
+                ),
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is True
+        assert result["latest_blocking_event"] is None
+
+
+def test_rco_test_event_with_blocking_status_still_blocks() -> None:
+    for status in ["changes_requested", "rco_block"]:
+        result = check_bridge_clear_to_merge(
+            events=[
+                _event(
+                    "2026-08-26T07:00:00Z",
+                    "claude-rco-1",
+                    "test",
+                    status,
+                )
+            ],
+            task_id="T",
+            merging_agent="codex-lead-1",
+        )
+
+        assert result["clear_to_merge"] is False
+        assert result["latest_blocking_event"]["status"] == status
+
+
+def test_rco_decision_pass_can_clear_type_latched_finding() -> None:
+    result = check_bridge_clear_to_merge(
+        events=[
+            _event(
+                "2026-08-26T07:00:00Z",
+                "claude-rco-1",
+                "finding",
+                "hold",
+            ),
+            _event(
+                "2026-08-26T07:01:00Z",
+                "claude-rco-1",
+                "decision",
+                "rco_pass",
+            ),
+        ],
+        task_id="T",
+        merging_agent="codex-lead-1",
+    )
+
+    assert result["clear_to_merge"] is True
+    assert result["latest_blocking_event"] is None
+    assert result["latest_approval_event"]["status"] == "rco_pass"
+
+
 def test_cleared_when_peer_approves_after_earlier_block() -> None:
     events = [
         _event("2026-05-21T10:00:00Z", "claude", "handoff", "rco_requested"),

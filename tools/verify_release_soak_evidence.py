@@ -27,10 +27,10 @@ if str(ROOT) not in sys.path:
 from tools.collect_soak_evidence import (
     DEFAULT_EVIDENCE_ROOT,
     DEFAULT_RELEASE_NOTES,
-    FINAL_PIP_AUDIT_REPORTS,
     PRIVACY_PRECHECK,
     SELECTION_BASIS_EXPLICIT,
     build_soak_evidence,
+    select_pip_audit_artifact,
 )
 from tools.release_security_attestation import (
     evaluate_audited_lock_pins,
@@ -46,12 +46,25 @@ def _security_attestation_blockers(
     actual: dict[str, Any],
     expected: dict[str, Any],
     evidence_root: Path,
+    *,
+    explicit_pip_audit: str | None = None,
 ) -> list[str]:
     """Fail-closed attestation blockers, active only under a pass claim.
 
     When neither the actual evidence nor the rebuilt expected evidence
     claims ``profile_s_smoke`` or ``security_privacy_gate`` pass, this
     returns no blockers and legacy behavior is unchanged.
+
+    The audited pip artifact is taken from the collector's own
+    containment-validated selector (newest-or-explicit), NEVER from a
+    registry-order first-existing scan. This is the only place that
+    re-validates real audit content against a file at verify time, so
+    its file choice is load-bearing: with a registry fallback the
+    verifier could attest file A as clean while the collector selected,
+    digest-bound and gated on a different, vulnerable file B (transitive
+    source substitution, Grok/lead 2026-08-26). A failed selection
+    (ambiguous, unreadable, or escaping the evidence root) fails closed
+    with ``audited_report_selection_blocked`` instead of falling back.
     """
     claims_pass = any(
         actual.get(field) == "pass" or expected.get(field) == "pass"
@@ -62,12 +75,12 @@ def _security_attestation_blockers(
     blockers = list(
         evaluate_privacy_attestation(evidence_root / PRIVACY_PRECHECK)
     )
-    audited_report = None
-    for name in FINAL_PIP_AUDIT_REPORTS:
-        candidate = evidence_root / name
-        if candidate.exists():
-            audited_report = candidate
-            break
+    audited_report, selection = select_pip_audit_artifact(
+        evidence_root, explicit=explicit_pip_audit
+    )
+    if selection["blockers"]:
+        blockers.append("audited_report_selection_blocked")
+        audited_report = None
     blockers.extend(evaluate_audited_lock_pins(audited_report))
     return blockers
 
@@ -185,7 +198,12 @@ def build_report(
             blockers.append(f"field_mismatch:{field}")
 
     blockers.extend(
-        _security_attestation_blockers(actual, expected, evidence_root)
+        _security_attestation_blockers(
+            actual,
+            expected,
+            evidence_root,
+            explicit_pip_audit=explicit_overrides.get("pip_audit_report"),
+        )
     )
 
     return {

@@ -1473,3 +1473,63 @@ def test_registered_candidate_symlink_escaping_root_fails_closed(
     assert selection["blockers"] == [
         f"candidate_outside_root:{_PIP_PLAIN_NAME}"
     ]
+
+
+def test_explicit_nested_path_inside_root_is_selected(tmp_path) -> None:
+    # Nested-but-contained explicit paths stay usable; the record keeps the
+    # nested root-relative form.
+    evidence_root, release_notes = _selection_env(tmp_path)
+    nested = evidence_root / "nested" / "audit"
+    nested.mkdir(parents=True)
+    _write_pip_audit_report(nested, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=1, name=_PIP_PLAIN_NAME)
+
+    evidence = _selection_evidence(
+        evidence_root,
+        release_notes,
+        pip_audit_report=f"nested/audit/{_PIP_OSV_NAME}",
+    )
+
+    assert evidence["security_privacy_gate"] == "pass"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["basis"] == "explicit"
+    assert selection["path"] == f"nested/audit/{_PIP_OSV_NAME}"
+
+
+def test_explicit_nested_traversal_escaping_root_is_rejected(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0)
+    nested = evidence_root / "nested"
+    nested.mkdir()
+    outside = tmp_path / "escaped.json"
+    outside.write_text(
+        json.dumps({"dependencies": [{"name": "pkg", "version": "1", "vulns": []}]}),
+        encoding="utf-8",
+    )
+
+    evidence = _selection_evidence(
+        evidence_root, release_notes, pip_audit_report="nested/../../escaped.json"
+    )
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["blockers"] == ["explicit_artifact_outside_root"]
+
+
+def test_public_pip_audit_selector_matches_internal_selection(tmp_path) -> None:
+    # The verifier consumes this public entry point; it must return the
+    # same artifact the evidence records.
+    from tools.collect_soak_evidence import select_pip_audit_artifact
+
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    _write_pip_audit_report(evidence_root, vuln_count=1, name=_PIP_PLAIN_NAME)
+    _utime(evidence_root / _PIP_OSV_NAME, 1_000_000)
+    _utime(evidence_root / _PIP_PLAIN_NAME, 2_000_000)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+    selected, record = select_pip_audit_artifact(evidence_root)
+
+    assert selected is not None
+    assert selected.name == _PIP_PLAIN_NAME
+    assert record == evidence["artifact_selection"]["pip_audit_report"]

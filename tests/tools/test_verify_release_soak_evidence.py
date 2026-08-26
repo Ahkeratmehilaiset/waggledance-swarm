@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 
 import pytest
 
@@ -26,6 +27,7 @@ from tools.verify_release_soak_evidence import build_report, main
 COMMIT = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
 
 ATTESTATION_BLOCKERS = {
+    "audited_report_selection_blocked",
     "privacy_attestation_not_final",
     "privacy_attestation_missing_exact_line",
     "privacy_attestation_unreadable",
@@ -673,6 +675,268 @@ def test_verifier_rejects_non_root_relative_explicit_selection(
         "blockers": [],
     }
     soak_evidence = tmp_path / "tampered.json"
+    soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
+
+    report = build_report(
+        soak_evidence=soak_evidence,
+        release_readiness="docs/release/RELEASE_READINESS.md",
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert report["verified"] is False
+    assert report["blockers"] == [
+        "explicit_selection_invalid:pip_audit_report"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Transitive source-substitution regressions (Grok/lead changes_requested
+# 2026-08-26T08:02:27Z at head 11985868): the attestation must re-validate
+# EXACTLY the containment-validated selected pip artifact. A registry-order
+# first-existing fallback lets the verifier attest file A while the collector
+# selected, digest-bound and gated on file B.
+
+_SUB_FIRST = FINAL_PIP_AUDIT_REPORTS[0]
+_SUB_MIDDLE = FINAL_PIP_AUDIT_REPORTS[2]
+_SUB_LAST = FINAL_PIP_AUDIT_REPORTS[-1]
+# Satisfies BOTH the collector precheck ("74 passed" + SMOKE_OK) and the
+# attestation floor, so a pass claim is not masked by a privacy blocker.
+_SUB_PRIVACY = "# v3.12.0 final privacy receipt\n\n74 passed\nSMOKE_OK\n"
+
+
+def _lock_matching_dependencies(*, with_vulns: bool = False):
+    deps = _real_lock_report_dependencies()
+    if with_vulns:
+        return [dict(dep, vulns=[]) for dep in deps]
+    return deps
+
+
+def _drifted_dependencies(*, with_vulns: bool = False):
+    entry = {"name": "aiohttp", "version": "0.0.1"}
+    return [dict(entry, vulns=[])] if with_vulns else [entry]
+
+
+def _write_pip_candidate(root: Path, name: str, deps, mtime: int) -> None:
+    path = root / name
+    path.write_text(json.dumps({"dependencies": deps}), encoding="utf-8")
+    os.utime(path, (mtime, mtime))
+
+
+def _sub_env(tmp_path) -> Path:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    (evidence_root / PRIVACY_PRECHECK).write_text(
+        _SUB_PRIVACY, encoding="utf-8"
+    )
+    return evidence_root
+
+
+def test_attestation_consumes_selected_artifact_not_registry_first(
+    tmp_path,
+) -> None:
+    # Registry-FIRST candidate matches the lock (attestation would clear);
+    # the NEWEST candidate - the one the collector actually selects and
+    # gates on - is stale. Under the old first-existing scan the verifier
+    # attested the clean file and the stale one passed unexamined.
+    evidence_root = _sub_env(tmp_path)
+    _write_pip_candidate(
+        evidence_root, _SUB_FIRST, _lock_matching_dependencies(), 1_000_000
+    )
+    _write_pip_candidate(
+        evidence_root, _SUB_LAST, _drifted_dependencies(), 2_000_000
+    )
+
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert "audited_lock_pins_stale" in report["blockers"]
+    assert report["verified"] is False
+
+
+def test_attestation_clears_when_selected_artifact_matches_lock(
+    tmp_path,
+) -> None:
+    # Converse direction: the STALE file is the registry-first one and the
+    # selected newest file matches the lock. Attestation must clear - proof
+    # the binding follows selection, not merely "adds more blockers".
+    evidence_root = _sub_env(tmp_path)
+    _write_pip_candidate(
+        evidence_root, _SUB_FIRST, _drifted_dependencies(), 1_000_000
+    )
+    _write_pip_candidate(
+        evidence_root, _SUB_LAST, _lock_matching_dependencies(), 2_000_000
+    )
+
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert not (set(report["blockers"]) & ATTESTATION_BLOCKERS)
+
+
+def test_attestation_consumes_explicit_selection_over_newest_and_registry(
+    tmp_path,
+) -> None:
+    # Explicit pass-claim round trip: registry-first AND newest are both
+    # stale; only the explicitly selected middle candidate matches the
+    # lock. Any file choice other than the recovered explicit one fails.
+    evidence_root = _sub_env(tmp_path)
+    release_notes = tmp_path / "v3.12.0.md"
+    release_notes.write_text(
+        "Does **not** claim AGI, consciousness, model superiority\n"
+        "States Docker `:latest` will remain `v3.8.0`\n",
+        encoding="utf-8",
+    )
+    (evidence_root / "v3.12.0_bandit_report.json").write_text(
+        json.dumps({
+            "metrics": {"_totals": {"SEVERITY.HIGH": 0, "SEVERITY.MEDIUM": 0}},
+            "results": [],
+        }),
+        encoding="utf-8",
+    )
+    _write_pip_candidate(
+        evidence_root,
+        _SUB_FIRST,
+        _drifted_dependencies(with_vulns=True),
+        1_000_000,
+    )
+    _write_pip_candidate(
+        evidence_root,
+        _SUB_MIDDLE,
+        _lock_matching_dependencies(with_vulns=True),
+        1_500_000,
+    )
+    _write_pip_candidate(
+        evidence_root,
+        _SUB_LAST,
+        _drifted_dependencies(with_vulns=True),
+        2_000_000,
+    )
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit=COMMIT,
+        ended_at_utc=dt.datetime(2026, 5, 22, 12, 0, tzinfo=dt.UTC),
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+        pip_audit_report=_SUB_MIDDLE,
+    )
+    assert (
+        evidence["artifact_selection"]["pip_audit_report"]["basis"]
+        == "explicit"
+    )
+    assert evidence["security_privacy_gate"] == "pass"
+    soak_evidence = tmp_path / "v3.12.0.json"
+    soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
+
+    report = build_report(
+        soak_evidence=soak_evidence,
+        release_readiness="docs/release/RELEASE_READINESS.md",
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert not (set(report["blockers"]) & ATTESTATION_BLOCKERS)
+    assert report["mismatched_fields"] == []
+    assert report["verified"] is True
+
+
+def test_attestation_fails_closed_when_selection_is_ambiguous(
+    tmp_path,
+) -> None:
+    # Two candidates with identical mtimes: selection itself fails, so the
+    # attestation must refuse rather than attest an arbitrary candidate.
+    evidence_root = _sub_env(tmp_path)
+    _write_pip_candidate(
+        evidence_root, _SUB_FIRST, _lock_matching_dependencies(), 1_500_000
+    )
+    _write_pip_candidate(
+        evidence_root, _SUB_LAST, _lock_matching_dependencies(), 1_500_000
+    )
+
+    report = _attestation_report(
+        tmp_path, evidence_root, security_privacy_gate="pass"
+    )
+
+    assert "audited_report_selection_blocked" in report["blockers"]
+    assert "audited_report_missing" in report["blockers"]
+    assert report["verified"] is False
+
+
+def test_verifier_blocks_tampered_selection_source_digest(tmp_path) -> None:
+    evidence_root = _sub_env(tmp_path)
+    release_notes = tmp_path / "v3.12.0.md"
+    release_notes.write_text("notes\n", encoding="utf-8")
+    _write_pip_candidate(
+        evidence_root, _SUB_LAST, _lock_matching_dependencies(), 2_000_000
+    )
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit=COMMIT,
+        ended_at_utc=dt.datetime(2026, 5, 22, 12, 0, tzinfo=dt.UTC),
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+    record = evidence["artifact_selection"]["pip_audit_report"]
+    assert record["source_digest"].startswith("sha256:")
+    record["source_digest"] = "sha256:" + "0" * 64
+    soak_evidence = tmp_path / "tampered_digest.json"
+    soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
+
+    report = build_report(
+        soak_evidence=soak_evidence,
+        release_readiness="docs/release/RELEASE_READINESS.md",
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+
+    assert "field_mismatch:artifact_selection" in report["blockers"]
+    assert report["verified"] is False
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "\\\\server\\share\\report.json",
+        "//server/share/report.json",
+        "sub/../../evil.json",
+        "nested/deeper/../../../evil.json",
+        "./../evil.json",
+    ],
+    ids=["unc-backslash", "unc-slash", "nested-traversal", "deep-traversal",
+         "dot-prefixed-traversal"],
+)
+def test_verifier_rejects_unc_and_nested_traversal_records(
+    tmp_path, bad_path
+) -> None:
+    evidence_root = _sub_env(tmp_path)
+    _write_pip_candidate(
+        evidence_root, _SUB_LAST, _drifted_dependencies(), 2_000_000
+    )
+    release_notes = tmp_path / "v3.12.0.md"
+    release_notes.write_text("notes\n", encoding="utf-8")
+
+    evidence = build_soak_evidence(
+        "docs/release/RELEASE_READINESS.md",
+        commit=COMMIT,
+        ended_at_utc=dt.datetime(2026, 5, 22, 12, 0, tzinfo=dt.UTC),
+        use_local_artifacts=True,
+        evidence_root=evidence_root,
+        release_notes=release_notes,
+    )
+    evidence["artifact_selection"]["pip_audit_report"] = {
+        "basis": "explicit",
+        "path": bad_path,
+        "source_digest": "sha256:0",
+        "candidates": [],
+        "blockers": [],
+    }
+    soak_evidence = tmp_path / "traversal.json"
     soak_evidence.write_text(json.dumps(evidence), encoding="utf-8")
 
     report = build_report(

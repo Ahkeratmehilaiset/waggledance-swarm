@@ -351,6 +351,29 @@ def _privacy_precheck_ok(path: Path) -> bool | None:
     return False
 
 
+def select_pip_audit_artifact(
+    evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
+    *,
+    explicit: Path | str | None = None,
+) -> tuple[Path | None, dict[str, Any]]:
+    """Public: the containment-validated pip-audit artifact selection.
+
+    Verify-time consumers (``tools/verify_release_soak_evidence.py``)
+    MUST attest exactly this artifact. A registry-order fallback can
+    attest a different file than the one whose vulnerability result
+    decided ``security_privacy_gate`` - transitive source substitution
+    (Grok/lead finding 2026-08-26): file A attested clean while file B
+    was selected, digest-bound and actually vulnerable.
+
+    Returns ``(selected_path_or_None, selection_record)`` exactly as
+    :func:`_select_artifact`; a record carrying blockers means selection
+    failed and the caller must fail closed rather than fall back.
+    """
+    return _select_artifact(
+        Path(evidence_root), FINAL_PIP_AUDIT_REPORTS, explicit=explicit
+    )
+
+
 def _security_privacy_status(
     evidence_root: Path,
     *,

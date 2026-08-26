@@ -118,6 +118,38 @@ def test_blocked_when_peer_changes_requested_is_latest() -> None:
     assert result["latest_blocking_event"]["status"] == "changes_requested"
 
 
+def test_triage_disposition_cannot_clear_changes_requested_veto() -> None:
+    events = [
+        _event(
+            "2026-08-26T10:00:00Z",
+            "claude-rco-1",
+            "decision",
+            "changes_requested",
+        ),
+        _event(
+            "2026-08-26T10:01:00Z",
+            "codex-lead-1",
+            "triage_disposition",
+            "recorded",
+        ),
+    ]
+    events[1]["payload"] = {
+        "disposition": "ack_dispatch",
+        "target_event_id": "event:1",
+    }
+
+    result = check_bridge_clear_to_merge(
+        events=events,
+        task_id="T",
+        merging_agent="fable-5",
+    )
+
+    assert result["clear_to_merge"] is False
+    assert result["latest_blocking_event"]["status"] == "changes_requested"
+    assert "triage_disposition" not in bridge_check_tool.CLEAR_EVENT_TYPES
+    assert "triage_disposition" not in bridge_check_tool.BLOCKING_EVENT_TYPES
+
+
 def test_recognized_rco_uuid_mismatch_block_latches_fail_closed() -> None:
     # Contract fix (bridge audit 2026-07-02): identity binding stops FORGED
     # approvals; silently dropping an unverified VETO from a recognized-RCO

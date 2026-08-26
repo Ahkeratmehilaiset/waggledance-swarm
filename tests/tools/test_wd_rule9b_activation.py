@@ -334,6 +334,35 @@ def _production_ps_encoder_source() -> str:
     return match.group(0)
 
 
+def _python_runtime_manifest(manifest: dict[str, Any]) -> bytes:
+    namespace: dict[str, Any] = {
+        "__name__": "rule9b_verifier_under_test",
+        "__file__": str(VERIFIER),
+    }
+    exec(compile(VERIFIER.read_bytes(), str(VERIFIER), "exec"), namespace)
+    encoder = namespace.get("canonical_runtime_manifest_bytes")
+    if not callable(encoder):
+        pytest.fail("canonical_runtime_manifest_bytes is not implemented")
+    return encoder(manifest)
+
+
+def _run_activation_snippet(exe: str, snippet: str) -> subprocess.CompletedProcess[str]:
+    """Dot-source the construction-only activator and execute a snippet.
+
+    Direct invocation remains a typed refusal. Dot-sourcing only defines the
+    pure functions; this bounded slice has no Apply or mutation body.
+    """
+    script_text = ". '" + str(ACTIVATOR).replace("'", "''") + "'\n" + snippet
+    return subprocess.run(
+        [exe, "-NoProfile", "-NonInteractive", "-Command", script_text],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+
+
 # --------------------------------------------------------------------------
 # The contract
 # --------------------------------------------------------------------------
@@ -648,3 +677,81 @@ def test_in_range_unsigned_integers_are_accepted_and_match_python() -> None:
             f"{(completed.stderr or '').strip()[:300]}"
         )
         assert bytes.fromhex((completed.stdout or "").strip()) == b"5"
+
+
+@pytest.mark.parametrize("host", [PS7, PS51])
+def test_runtime_manifest_bytes_match_python_and_sort_by_utf8(host: str) -> None:
+    files = [
+        {
+            "path": "z.py",
+            "git_blob_sha1": "2" * 40,
+            "byte_length": 2,
+            "sha256": "b" * 64,
+        },
+        {
+            "path": "docs/\u00e4\u00e4ni.py",
+            "git_blob_sha1": "3" * 40,
+            "byte_length": 3,
+            "sha256": "c" * 64,
+        },
+        {
+            "path": "a.py",
+            "git_blob_sha1": "1" * 40,
+            "byte_length": 1,
+            "sha256": "a" * 64,
+        },
+    ]
+    sorted_files = sorted(files, key=lambda item: item["path"].encode("utf-8"))
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": "1" * 40,
+        "activation_tree_sha": "2" * 40,
+        "runtime_generation_id": "generation-1",
+        "files": sorted_files,
+    }
+    expected = _python_runtime_manifest(manifest)
+    snippet = r"""
+$files = @(
+    [ordered]@{path='z.py';git_blob_sha1=('2' * 40);byte_length=[int64]2;sha256=('b' * 64)},
+    [ordered]@{path='docs/ääni.py';git_blob_sha1=('3' * 40);byte_length=[int64]3;sha256=('c' * 64)},
+    [ordered]@{path='a.py';git_blob_sha1=('1' * 40);byte_length=[int64]1;sha256=('a' * 64)}
+)
+$bytes = New-WdRule9bRuntimeManifestBytes -ActivationHead ('1' * 40) `
+    -ActivationTreeSha ('2' * 40) -RuntimeGenerationId 'generation-1' -Files $files
+Write-Output (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+"""
+    completed = _run_activation_snippet(host, snippet)
+    assert completed.returncode == 0, (completed.stderr or completed.stdout)[:800]
+    assert bytes.fromhex((completed.stdout or "").strip()) == expected
+
+
+@pytest.mark.parametrize("host", [PS7, PS51])
+@pytest.mark.parametrize(
+    "path",
+    ["../escape.py", "C:/drive.py", "dir\\backslash.py", "con.txt", "a//b.py"],
+)
+def test_powershell_runtime_manifest_refuses_unsafe_paths(
+    host: str, path: str
+) -> None:
+    escaped = path.replace("'", "''")
+    snippet = f"""
+$files = @([ordered]@{{path='{escaped}';git_blob_sha1=('1' * 40);byte_length=[int64]1;sha256=('a' * 64)}})
+[void](New-WdRule9bRuntimeManifestBytes -ActivationHead ('1' * 40) `
+    -ActivationTreeSha ('2' * 40) -RuntimeGenerationId 'generation-1' -Files $files)
+"""
+    completed = _run_activation_snippet(host, snippet)
+    assert completed.returncode != 0, f"{host} accepted unsafe path {path!r}"
+
+
+@pytest.mark.parametrize("host", [PS7, PS51])
+def test_powershell_runtime_manifest_refuses_casefold_collision(host: str) -> None:
+    snippet = r"""
+$files = @(
+    [ordered]@{path='Gate.py';git_blob_sha1=('1' * 40);byte_length=[int64]1;sha256=('a' * 64)},
+    [ordered]@{path='gate.py';git_blob_sha1=('2' * 40);byte_length=[int64]1;sha256=('b' * 64)}
+)
+[void](New-WdRule9bRuntimeManifestBytes -ActivationHead ('1' * 40) `
+    -ActivationTreeSha ('2' * 40) -RuntimeGenerationId 'generation-1' -Files $files)
+"""
+    completed = _run_activation_snippet(host, snippet)
+    assert completed.returncode != 0, f"{host} accepted a casefold collision"

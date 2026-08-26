@@ -25,7 +25,9 @@ may be cited as covering them.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -357,3 +359,392 @@ def test_report_shape_is_stable() -> None:
     assert isinstance(report.get("verified"), bool)
     assert isinstance(report.get("blockers"), list)
     assert all(isinstance(b, str) for b in report["blockers"])
+
+
+# --------------------------------------------------------------------------
+# Sealed exact-head runtime manifest
+# --------------------------------------------------------------------------
+def _git_blob_sha1(payload: bytes) -> str:
+    return hashlib.sha1(
+        f"blob {len(payload)}\0".encode("ascii") + payload,
+        usedforsecurity=False,
+    ).hexdigest()
+
+
+def _runtime_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
+    ns = _module()
+    required = ns.get("REQUIRED_RUNTIME_PATHS")
+    encoder = ns.get("canonical_runtime_manifest_bytes")
+    if not isinstance(required, tuple) or not callable(encoder):
+        pytest.fail("sealed runtime manifest contract is not implemented")
+
+    root = tmp_path / "generation"
+    entries: list[dict[str, Any]] = []
+    for index, relative in enumerate(required):
+        payload = f"sealed:{index}:{relative}\n".encode("utf-8")
+        target = root.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        entries.append(
+            {
+                "path": relative,
+                "git_blob_sha1": _git_blob_sha1(payload),
+                "byte_length": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    entries.sort(key=lambda item: item["path"].encode("utf-8"))
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": HEAD,
+        "activation_tree_sha": TREE,
+        "runtime_generation_id": "gen-20260826T120000Z-0001",
+        "files": entries,
+    }
+    manifest_path = tmp_path / "runtime-manifest.json"
+    manifest_path.write_bytes(encoder(manifest))
+    return root, manifest_path, manifest
+
+
+def _verify_runtime(
+    root: Path,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    **overrides: Any,
+) -> dict[str, Any]:
+    verify = _require("verify_runtime_manifest")
+    raw = manifest_path.read_bytes()
+    kwargs = {
+        "expected_activation_head": HEAD,
+        "expected_activation_tree_sha": TREE,
+        "expected_generation_id": manifest["runtime_generation_id"],
+        "expected_manifest_sha256": hashlib.sha256(raw).hexdigest(),
+        "expected_file_count": len(manifest["files"]),
+    }
+    kwargs.update(overrides)
+    return verify(manifest_path, root, **kwargs)
+
+
+def test_runtime_manifest_happy_path_rehashes_every_git_blob(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is True, report["blockers"]
+    assert report["blockers"] == []
+
+
+def test_runtime_manifest_is_canonical_bom_free_utf8_plus_one_lf(
+    tmp_path: Path,
+) -> None:
+    _, path, manifest = _runtime_fixture(tmp_path)
+    raw = path.read_bytes()
+    assert raw.endswith(b"\n")
+    assert not raw.endswith(b"\n\n")
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    assert raw == _require("canonical_runtime_manifest_bytes")(manifest)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "../escape.py",
+        "/absolute.py",
+        "C:/drive.py",
+        "dir\\backslash.py",
+        "con.txt",
+        "dir/trailing. ",
+        "dir//empty.py",
+    ],
+)
+def test_runtime_manifest_refuses_windows_escape_and_alias_paths(
+    relative: str,
+) -> None:
+    validate = _require("validate_runtime_manifest_schema")
+    entry = {
+        "path": relative,
+        "git_blob_sha1": "1" * 40,
+        "byte_length": 1,
+        "sha256": "2" * 64,
+    }
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": HEAD,
+        "activation_tree_sha": TREE,
+        "runtime_generation_id": "generation-1",
+        "files": [entry],
+    }
+    assert validate(manifest), relative
+
+
+def test_runtime_manifest_refuses_case_insensitive_collision() -> None:
+    validate = _require("validate_runtime_manifest_schema")
+    files = [
+        {
+            "path": path,
+            "git_blob_sha1": str(index) * 40,
+            "byte_length": 1,
+            "sha256": str(index) * 64,
+        }
+        for index, path in ((1, "Gate.py"), (2, "gate.py"))
+    ]
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": HEAD,
+        "activation_tree_sha": TREE,
+        "runtime_generation_id": "generation-1",
+        "files": files,
+    }
+    assert any("collision" in item for item in validate(manifest))
+
+
+def test_runtime_manifest_refuses_non_utf8_sort_order() -> None:
+    validate = _require("validate_runtime_manifest_schema")
+    files = [
+        {
+            "path": path,
+            "git_blob_sha1": str(index) * 40,
+            "byte_length": 1,
+            "sha256": str(index) * 64,
+        }
+        for index, path in ((2, "z.py"), (1, "a.py"))
+    ]
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": HEAD,
+        "activation_tree_sha": TREE,
+        "runtime_generation_id": "generation-1",
+        "files": files,
+    }
+    assert any("sorted" in item for item in validate(manifest))
+
+
+def test_runtime_manifest_refuses_unknown_root_and_entry_fields() -> None:
+    validate = _require("validate_runtime_manifest_schema")
+    manifest = {
+        "schema": "wd.rule9b.runtime_manifest.v1",
+        "activation_head": HEAD,
+        "activation_tree_sha": TREE,
+        "runtime_generation_id": "generation-1",
+        "future_authority": True,
+        "files": [
+            {
+                "path": "a.py",
+                "git_blob_sha1": "1" * 40,
+                "byte_length": 1,
+                "sha256": "2" * 64,
+                "trust": True,
+            }
+        ],
+    }
+    blockers = validate(manifest)
+    assert any("unknown runtime manifest field" in item for item in blockers)
+
+
+def test_runtime_manifest_refuses_noncanonical_bytes(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    report = _verify_runtime(
+        root,
+        path,
+        manifest,
+        expected_manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    assert report["verified"] is False
+    assert any("not canonical" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_refuses_duplicate_json_keys(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    raw = path.read_text(encoding="utf-8")
+    path.write_text(raw.replace('{"activation_head"', '{"schema":"duplicate","activation_head"'), encoding="utf-8")
+    report = _verify_runtime(
+        root,
+        path,
+        manifest,
+        expected_manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    assert report["verified"] is False
+    assert any("duplicate" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_refuses_unmanifested_file(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    (root / "injected.py").write_text("payload", encoding="utf-8")
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("unmanifested" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_refuses_missing_file(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    target = root.joinpath(*manifest["files"][0]["path"].split("/"))
+    target.unlink()
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("missing manifested" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_refuses_changed_bytes_even_at_same_length(
+    tmp_path: Path,
+) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    target = root.joinpath(*manifest["files"][0]["path"].split("/"))
+    original = target.read_bytes()
+    target.write_bytes(b"X" + original[1:])
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("SHA-256 mismatch" in item for item in report["blockers"])
+    assert any("Git blob mismatch" in item for item in report["blockers"])
+
+
+@pytest.mark.parametrize(
+    "overrides,needle",
+    [
+        ({"expected_activation_head": "f" * 40}, "activation_head"),
+        ({"expected_activation_tree_sha": "e" * 40}, "activation_tree_sha"),
+        ({"expected_generation_id": "other"}, "generation id"),
+        ({"expected_manifest_sha256": "d" * 64}, "SHA-256"),
+        ({"expected_file_count": 1}, "file count"),
+    ],
+)
+def test_runtime_manifest_refuses_receipt_binding_mismatch(
+    tmp_path: Path, overrides: dict[str, Any], needle: str
+) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    report = _verify_runtime(root, path, manifest, **overrides)
+    assert report["verified"] is False
+    assert any(needle in item for item in report["blockers"])
+
+
+def test_runtime_manifest_refuses_missing_required_authority_blob(
+    tmp_path: Path,
+) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    removed = manifest["files"].pop()
+    root.joinpath(*removed["path"].split("/")).unlink()
+    path.write_bytes(_require("canonical_runtime_manifest_bytes")(manifest))
+    report = _verify_runtime(
+        root,
+        path,
+        manifest,
+        expected_manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        expected_file_count=len(manifest["files"]),
+    )
+    assert report["verified"] is False
+    assert any("required authority path" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_refuses_hardlinked_file(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    target = root.joinpath(*manifest["files"][0]["path"].split("/"))
+    alias = tmp_path / "outside-hardlink"
+    try:
+        os.link(target, alias)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable on this filesystem: {exc}")
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("hard-link" in item for item in report["blockers"])
+
+
+def test_runtime_manifest_file_itself_cannot_be_hardlinked(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    alias = tmp_path / "runtime-manifest-alias.json"
+    try:
+        os.link(path, alias)
+    except OSError as exc:
+        pytest.skip(f"hardlinks unavailable on this filesystem: {exc}")
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("hard-link" in item for item in report["blockers"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="alternate streams are an NTFS contract")
+def test_runtime_manifest_refuses_alternate_data_stream(tmp_path: Path) -> None:
+    root, path, manifest = _runtime_fixture(tmp_path)
+    target = root.joinpath(*manifest["files"][0]["path"].split("/"))
+    stream_path = Path(str(target) + ":unsealed")
+    try:
+        stream_path.write_bytes(b"not covered by the manifest")
+    except OSError as exc:
+        pytest.skip(f"alternate streams unavailable on this filesystem: {exc}")
+    report = _verify_runtime(root, path, manifest)
+    assert report["verified"] is False
+    assert any("alternate data stream" in item for item in report["blockers"])
+
+
+def _activation_bundle_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, dict[str, Any]]:
+    root, manifest_path, manifest = _runtime_fixture(tmp_path)
+    receipt = _sealed(
+        activation_tree_sha=TREE,
+        runtime_generation_id=manifest["runtime_generation_id"],
+        runtime_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        runtime_file_count=len(manifest["files"]),
+    )
+    receipt_path = tmp_path / "activation-receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    return receipt_path, manifest_path, root, receipt
+
+
+def test_activation_bundle_opens_receipt_manifest_and_every_runtime_file(
+    tmp_path: Path,
+) -> None:
+    receipt_path, manifest_path, root, _ = _activation_bundle_fixture(tmp_path)
+    verify = _require("verify_activation_bundle")
+    report = verify(
+        receipt_path,
+        manifest_path,
+        root,
+        expected_activation_head=HEAD,
+        now_utc=NOW,
+    )
+    assert report["verified"] is True, report["blockers"]
+    assert report["receipt_gate"]["verified"] is True
+    assert report["runtime_gate"]["verified"] is True
+
+
+def test_activation_bundle_does_not_accept_receipt_self_claim_after_file_tamper(
+    tmp_path: Path,
+) -> None:
+    receipt_path, manifest_path, root, _ = _activation_bundle_fixture(tmp_path)
+    target = next(path for path in root.rglob("*") if path.is_file())
+    target.write_bytes(target.read_bytes() + b"tampered")
+    report = _require("verify_activation_bundle")(
+        receipt_path,
+        manifest_path,
+        root,
+        expected_activation_head=HEAD,
+        now_utc=NOW,
+    )
+    assert report["verified"] is False
+    assert report["receipt_gate"]["verified"] is True
+    assert report["runtime_gate"]["verified"] is False
+
+
+def test_activation_bundle_stops_before_runtime_when_receipt_is_invalid(
+    tmp_path: Path,
+) -> None:
+    receipt_path, manifest_path, root, receipt = _activation_bundle_fixture(tmp_path)
+    receipt["runtime_file_count"] += 1
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    report = _require("verify_activation_bundle")(
+        receipt_path,
+        manifest_path,
+        root,
+        expected_activation_head=HEAD,
+        now_utc=NOW,
+    )
+    assert report["verified"] is False
+    assert report["receipt_gate"]["verified"] is False
+    assert report["runtime_gate"]["verified"] is False
+    assert any("not attempted" in item for item in report["runtime_gate"]["blockers"])
+
+
+def test_activation_bundle_verifier_has_no_bypass_parameter() -> None:
+    import inspect
+
+    verify = _require("verify_activation_bundle")
+    params = set(inspect.signature(verify).parameters)
+    forbidden = {"skip", "skip_validation", "trust", "assume_valid", "force", "unsafe"}
+    assert not (params & forbidden), f"bypass parameter present: {params & forbidden}"

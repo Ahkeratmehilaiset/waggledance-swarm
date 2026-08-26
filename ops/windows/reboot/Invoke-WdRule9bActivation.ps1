@@ -1,16 +1,18 @@
 <#
 .SYNOPSIS
-    Rule 9b activation (elevated). NOT IMPLEMENTED YET.
+    Rule 9b activation construction library. Apply is NOT IMPLEMENTED YET.
 
 .DESCRIPTION
-    Implemented so far (red-test-first, v5 slice 1): ConvertTo-CanonicalJson,
+    Implemented so far: ConvertTo-CanonicalJson (v5 slice 1) and the sealed
+    runtime manifest byte contract (v5 rollout step 5, bounded first slice).
     the handwritten RFC 8259 encoder that produces the bytes the ConfirmDigest
     is taken over. Its counterpart is canonical_json_bytes in
     ops/windows/reboot/check_rule9b_activation_receipt.py, and the two are held
     byte-identical by tests/tools/test_wd_rule9b_activation.py across both
     Windows PowerShell 5.1 and PowerShell 7.
 
-    Everything else - the sealed runtime staging, the protected broker, the
+    Everything else - GitHub-source materialization, object protection, the
+    protected broker, the
     dedicated service principal, the GitHub App credential, the three rulesets,
     the ACL/MIC table, the scheduled-task transaction and rollback - lands in
     later slices. Until then this script REFUSES TO RUN rather than performing
@@ -176,9 +178,141 @@ function ConvertTo-CanonicalJson {
     throw ('canonical JSON: unsupported type ' + $Value.GetType().FullName)
 }
 
+function Compare-WdUtf8Bytes {
+    param(
+        [Parameter(Mandatory)] [string] $Left,
+        [Parameter(Mandatory)] [string] $Right
+    )
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $a = $utf8.GetBytes($Left)
+    $b = $utf8.GetBytes($Right)
+    $count = [Math]::Min($a.Length, $b.Length)
+    for ($i = 0; $i -lt $count; $i++) {
+        if ($a[$i] -lt $b[$i]) { return -1 }
+        if ($a[$i] -gt $b[$i]) { return 1 }
+    }
+    if ($a.Length -lt $b.Length) { return -1 }
+    if ($a.Length -gt $b.Length) { return 1 }
+    return 0
+}
+
+function Assert-WdRuntimeManifestPath {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    if (-not $Path -or $Path.StartsWith('/') -or $Path.Contains('\') -or
+        $Path.Contains(':')) {
+        throw 'runtime manifest path must be repository-relative POSIX text without colon'
+    }
+    $reserved = @('con','prn','aux','nul','com1','com2','com3','com4','com5',
+        'com6','com7','com8','com9','lpt1','lpt2','lpt3','lpt4','lpt5','lpt6',
+        'lpt7','lpt8','lpt9')
+    foreach ($part in $Path.Split('/')) {
+        if (-not $part -or $part -eq '.' -or $part -eq '..') {
+            throw 'runtime manifest path contains an empty or traversal component'
+        }
+        if ($part.EndsWith(' ') -or $part.EndsWith('.')) {
+            throw 'runtime manifest path component has a trailing dot or space'
+        }
+        foreach ($ch in $part.ToCharArray()) {
+            if ([int]$ch -lt 32) {
+                throw 'runtime manifest path component contains a control character'
+            }
+        }
+        $stem = $part.Split('.')[0].ToLowerInvariant()
+        if ($reserved -ccontains $stem) {
+            throw 'runtime manifest path component is a reserved Windows device name'
+        }
+    }
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try { [void]$strictUtf8.GetBytes($Path) }
+    catch { throw 'runtime manifest path is not valid Unicode text' }
+}
+
+function New-WdRule9bRuntimeManifestBytes {
+    <#
+        Construct the exact bytes later written outside a sealed generation.
+        This function performs no filesystem, Git, ACL, task or credential
+        mutation. The elevated materializer will supply entries obtained from
+        pinned git ls-tree/cat-file after that later slice lands.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string] $ActivationHead,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[0-9a-f]{40}$')]
+        [string] $ActivationTreeSha,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[!-~]{1,128}$')]
+        [string] $RuntimeGenerationId,
+
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary[]] $Files
+    )
+
+    if ($Files.Count -eq 0) {
+        throw 'runtime manifest files must be nonempty'
+    }
+    $requiredFields = @('path','git_blob_sha1','byte_length','sha256')
+    $seen = @{}
+    $normalized = New-Object System.Collections.Generic.List[System.Collections.IDictionary]
+    foreach ($entry in $Files) {
+        if ($null -eq $entry) { throw 'runtime manifest file entry must be an object' }
+        $keys = @($entry.Keys | ForEach-Object { [string]$_ })
+        if (@($keys | Where-Object { $requiredFields -cnotcontains $_ }).Count -ne 0 -or
+            @($requiredFields | Where-Object { $keys -cnotcontains $_ }).Count -ne 0) {
+            throw 'runtime manifest file entry schema is not exact'
+        }
+        $path = [string]$entry['path']
+        Assert-WdRuntimeManifestPath -Path $path
+        $folded = $path.ToLowerInvariant()
+        if ($seen.ContainsKey($folded)) {
+            throw ("runtime manifest path collision: '{0}' and '{1}'" -f
+                $seen[$folded], $path)
+        }
+        $seen[$folded] = $path
+        if ([string]$entry['git_blob_sha1'] -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'runtime manifest git_blob_sha1 is malformed'
+        }
+        $length = $entry['byte_length']
+        if ($length -is [bool] -or $length -isnot [ValueType] -or
+            [int64]$length -lt 0 -or [decimal]$length -ne [int64]$length) {
+            throw 'runtime manifest byte_length must be a nonnegative integer'
+        }
+        if ([string]$entry['sha256'] -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'runtime manifest sha256 is malformed'
+        }
+        [void]$normalized.Add([ordered]@{
+            path = $path
+            git_blob_sha1 = [string]$entry['git_blob_sha1']
+            byte_length = [int64]$length
+            sha256 = [string]$entry['sha256']
+        })
+    }
+
+    $sorted = @($normalized)
+    [Array]::Sort($sorted, [System.Collections.Generic.Comparer[object]]::Create({
+        param($left, $right)
+        return Compare-WdUtf8Bytes -Left ([string]$left['path']) -Right ([string]$right['path'])
+    }))
+    $manifest = [ordered]@{
+        schema = 'wd.rule9b.runtime_manifest.v1'
+        activation_head = $ActivationHead
+        activation_tree_sha = $ActivationTreeSha
+        runtime_generation_id = $RuntimeGenerationId
+        files = $sorted
+    }
+    $json = ConvertTo-CanonicalJson -Value $manifest
+    $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    return $utf8.GetBytes($json + "`n")
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     Write-Host 'FAIL-CLOSED: Invoke-WdRule9bActivation.ps1 is not implemented yet.'
-    Write-Host 'Only the canonical JSON encoder has landed (v5 slice 1).'
+    Write-Host 'Only pure construction contracts have landed; Apply remains absent.'
     Write-Host 'No activation, task, credential, ruleset or receipt action is available.'
     exit 2
 }

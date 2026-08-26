@@ -1357,3 +1357,119 @@ def test_cli_explicit_report_without_use_local_artifacts_fails(
     assert rc == 2
     captured = capsys.readouterr()
     assert "use_local_artifacts" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Containment regressions (lead changes_requested 2026-08-26T07:22:27Z at
+# 63aed5dc): selection must stay inside the resolved evidence root; recorded
+# paths are root-relative only; escapes fail closed with typed blockers.
+
+
+def _symlink_or_skip(target: Path, link: Path) -> None:
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not permitted in this environment")
+
+
+def test_explicit_selection_rejects_dotdot_escape(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0)
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps({"dependencies": [{"name": "pkg", "version": "1", "vulns": []}]}),
+        encoding="utf-8",
+    )
+
+    evidence = _selection_evidence(
+        evidence_root, release_notes, pip_audit_report="../outside.json"
+    )
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["blockers"] == ["explicit_artifact_outside_root"]
+    assert selection["path"] is None
+    assert selection["basis"] is None
+
+
+def test_explicit_selection_rejects_absolute_path_outside_root(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0)
+    outside = tmp_path / "outside_abs.json"
+    outside.write_text(
+        json.dumps({"dependencies": [{"name": "pkg", "version": "1", "vulns": []}]}),
+        encoding="utf-8",
+    )
+
+    evidence = _selection_evidence(
+        evidence_root, release_notes, pip_audit_report=str(outside)
+    )
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["blockers"] == ["explicit_artifact_outside_root"]
+
+
+def test_explicit_absolute_path_inside_root_recorded_root_relative(
+    tmp_path,
+) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+
+    evidence = _selection_evidence(
+        evidence_root,
+        release_notes,
+        pip_audit_report=str(evidence_root / _PIP_OSV_NAME),
+    )
+
+    assert evidence["security_privacy_gate"] == "pass"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["basis"] == "explicit"
+    # Root-relative posix only - the absolute host path must not enter
+    # evidence.
+    assert selection["path"] == _PIP_OSV_NAME
+
+
+def test_explicit_symlink_escaping_root_is_rejected(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0)
+    outside = tmp_path / "outside_link_target.json"
+    outside.write_text(
+        json.dumps({"dependencies": [{"name": "pkg", "version": "1", "vulns": []}]}),
+        encoding="utf-8",
+    )
+    link = evidence_root / "linked_report.json"
+    _symlink_or_skip(outside, link)
+
+    evidence = _selection_evidence(
+        evidence_root, release_notes, pip_audit_report="linked_report.json"
+    )
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["blockers"] == ["explicit_artifact_outside_root"]
+
+
+def test_registered_candidate_symlink_escaping_root_fails_closed(
+    tmp_path,
+) -> None:
+    # A registered candidate NAME that is a symlink escaping the root must
+    # poison selection entirely - skipping it and using the other candidate
+    # would be a silent fallback.
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    outside = tmp_path / "outside_candidate.json"
+    outside.write_text(
+        json.dumps({"dependencies": [{"name": "pkg", "version": "1", "vulns": []}]}),
+        encoding="utf-8",
+    )
+    _symlink_or_skip(outside, evidence_root / _PIP_PLAIN_NAME)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["path"] is None
+    assert selection["blockers"] == [
+        f"candidate_outside_root:{_PIP_PLAIN_NAME}"
+    ]

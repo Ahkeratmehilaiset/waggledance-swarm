@@ -11,7 +11,10 @@ and fail-closed: with no explicit override the newest existing candidate by
 mtime is used, a tie or unreadable selection blocks (never a silent fallback
 to a stale snapshot), and the chosen artifact name, selection basis, and
 normalized sha256 source digest are recorded in the evidence under
-``artifact_selection``.
+``artifact_selection``. Every selected artifact - explicit or registered -
+is resolved and containment-checked against the resolved evidence root;
+paths are recorded root-relative only, so absolute host paths and ../ or
+symlink escapes can never enter evidence (typed outside-root blockers).
 """
 
 from __future__ import annotations
@@ -197,11 +200,19 @@ def _select_artifact(
     Returns ``(selected_path_or_None, selection_record)``. A ``None`` path
     with no blockers means no candidate exists at all (missing evidence);
     a ``None`` path with blockers means selection itself failed. The record
-    holds only content-stable values (artifact name, basis, normalized
-    sha256 digest) so re-deriving evidence from identical artifacts stays
-    reproducible for tools/verify_release_soak_evidence.py.
+    holds only content-stable values (root-relative resolved path, basis,
+    normalized sha256 digest) so re-deriving evidence from identical
+    artifacts stays reproducible for tools/verify_release_soak_evidence.py.
+
+    Containment: the root and every candidate are resolved (symlinks
+    followed) and the resolved artifact must stay inside the resolved
+    root - explicit and registered candidates alike. Violations record
+    typed blockers (``explicit_artifact_outside_root``,
+    ``candidate_outside_root:<name>``) and select nothing; recorded paths
+    are always root-relative posix, never absolute host paths.
     """
     record = _empty_selection_record()
+    root_resolved = root.resolve()
     if explicit is not None:
         explicit_path = Path(explicit)
         if not explicit_path.is_absolute():
@@ -209,23 +220,49 @@ def _select_artifact(
         if not explicit_path.is_file():
             record["blockers"].append("explicit_artifact_missing")
             return None, record
-        digest = _source_digest(explicit_path)
+        try:
+            resolved = explicit_path.resolve(strict=True)
+        except OSError:
+            record["blockers"].append("explicit_artifact_unresolvable")
+            return None, record
+        if not resolved.is_relative_to(root_resolved):
+            # Typed containment failure: ../ escapes, absolute host paths
+            # outside the root, and symlinks resolving outside all land
+            # here - fail closed, never select.
+            record["blockers"].append("explicit_artifact_outside_root")
+            return None, record
+        digest = _source_digest(resolved)
         if digest is None:
             record["blockers"].append("explicit_artifact_unreadable")
             return None, record
         record["basis"] = SELECTION_BASIS_EXPLICIT
-        record["path"] = Path(explicit).as_posix()
+        record["path"] = resolved.relative_to(root_resolved).as_posix()
         record["source_digest"] = digest
-        return explicit_path, record
+        return resolved, record
+
+    present: list[str] = []
+    for name in names:
+        if (root / name).exists():
+            present.append(name)
+    record["candidates"] = sorted(present)
+    if not present:
+        return None, record
 
     existing: list[tuple[str, Path]] = []
-    for name in names:
+    for name in present:
         candidate = root / name
-        if candidate.exists():
-            existing.append((name, candidate))
-    record["candidates"] = sorted(name for name, _ in existing)
-    if not existing:
-        return None, record
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            record["blockers"].append(f"candidate_unresolvable:{name}")
+            return None, record
+        if not resolved.is_relative_to(root_resolved):
+            # A registered candidate name that escapes the root (e.g. a
+            # symlink) poisons selection entirely - skipping it would be a
+            # silent fallback.
+            record["blockers"].append(f"candidate_outside_root:{name}")
+            return None, record
+        existing.append((name, resolved))
 
     timed: list[tuple[float, str, Path]] = []
     for name, candidate in existing:
@@ -263,7 +300,7 @@ def _select_artifact(
         record["blockers"].append(f"selected_artifact_unreadable:{name}")
         return None, record
     record["basis"] = basis
-    record["path"] = name
+    record["path"] = selected.relative_to(root_resolved).as_posix()
     record["source_digest"] = digest
     return selected, record
 

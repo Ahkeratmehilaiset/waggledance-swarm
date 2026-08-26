@@ -95,7 +95,7 @@ def _extract_codex(rows: list[dict], *, complete: bool = True):
     return extract_codex_session_usage(
         rows,
         lane="codex-lead-1",
-        task_class="lead_triage_design",
+        task_class="lead_triage/design",
         invocation_argv_sha256=SHA_A,
         source_log_sha256=SHA_B,
         session_complete=complete,
@@ -163,6 +163,8 @@ def _claude_row() -> dict:
     # Captured shape: Claude interactive session JSONL, 2026-08-26.
     return {
         "type": "assistant",
+        "version": "2.1.246",
+        "entrypoint": "sdk-cli",
         "timestamp": "2026-08-26T05:28:14.944Z",
         "sessionId": "34bd49c2-8180-4975-b762-11c0cdf9ab71",
         "uuid": "e3d011fa-cccb-4b9e-b763-df0fcc3a2019",
@@ -251,3 +253,51 @@ def test_unknown_task_class_digest_and_schema_fail_closed():
     with pytest.raises(TelemetryUnknownError, match="unknown Claude usage"):
         _extract_claude([row])
 
+
+def test_captured_provider_envelopes_and_versions_are_pinned():
+    rows = _codex_rows()
+    rows[0]["payload"]["originator"] = "unknown"
+    with pytest.raises(TelemetryUnknownError, match="origin/source"):
+        _extract_codex(rows)
+
+    rows = _codex_rows()
+    rows[2]["payload"]["info"]["last_token_usage"]["new_token_kind"] = 1
+    with pytest.raises(TelemetryUnknownError, match="unknown or missing"):
+        _extract_codex(rows)
+
+    row = _claude_row()
+    row["version"] = "2.1.247"
+    with pytest.raises(TelemetryUnknownError, match="unsupported Claude"):
+        _extract_claude([row])
+
+
+def test_malformed_usage_envelopes_and_order_fail_closed():
+    rows = _codex_rows()
+    rows[2]["payload"] = "not-an-object"
+    with pytest.raises(TelemetryUnknownError, match="event_msg payload"):
+        _extract_codex(rows)
+
+    rows = _codex_rows()
+    rows[1], rows[2] = rows[2], rows[1]
+    with pytest.raises(TelemetryUnknownError, match="precedes turn_context"):
+        _extract_codex(rows)
+
+    row = _claude_row()
+    row["message"] = "not-an-object"
+    with pytest.raises(TelemetryUnknownError, match="assistant message"):
+        _extract_claude([row])
+
+
+def test_reasoning_bounds_and_codex_timestamp_collision_fail_closed():
+    row = _claude_row()
+    row["message"]["usage"]["output_tokens_details"]["thinking_tokens"] = 2_000
+    with pytest.raises(TelemetryUnknownError, match="thinking tokens exceed"):
+        _extract_claude([row])
+
+    rows = _codex_rows()
+    collision = deepcopy(rows[2])
+    collision["payload"]["info"]["last_token_usage"]["input_tokens"] -= 1
+    collision["payload"]["info"]["last_token_usage"]["total_tokens"] -= 1
+    rows.append(collision)
+    with pytest.raises(TelemetryUnknownError, match="conflicting Codex"):
+        _extract_codex(rows)

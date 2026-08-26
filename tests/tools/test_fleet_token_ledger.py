@@ -31,7 +31,7 @@ def _record(
         provider=provider,
         model="gpt-5.6-sol" if provider == "openai_codex" else "claude-fable-5",
         task_class=(
-            "lead_triage_design"
+            "lead_triage/design"
             if lane == "codex-lead-1"
             else "production_code_tests"
         ),
@@ -74,7 +74,7 @@ def test_green_complete_sequence_counts_native_total_once():
     assert lane["daily_remaining"] == 599_850
     assert lane["automatic_turns_allowed"] is True
     assert lane["enforcement_state"] == "within_budget"
-    assert lane["task_classes"] == {"lead_triage_design": 150}
+    assert lane["task_classes"] == {"lead_triage/design": 150}
 
 
 def test_cache_and_reasoning_are_never_added_to_total_again():
@@ -92,6 +92,20 @@ def test_daily_80_percent_goes_sentinel_idle():
     lane = build_fleet_token_ledger([record], now=NOW)["lanes"]["codex-lead-1"]
     assert lane["enforcement_state"] == "budget_idle"
     assert lane["automatic_turns_allowed"] is False
+
+
+def test_daily_threshold_is_exact_and_weekly_stop_takes_precedence():
+    below = _record(total=479_999, cumulative=479_999)
+    lane = build_fleet_token_ledger([below], now=NOW)["lanes"]["codex-lead-1"]
+    assert lane["enforcement_state"] == "within_budget"
+
+    at = _record(total=480_000, cumulative=480_000)
+    lane = build_fleet_token_ledger([at], now=NOW)["lanes"]["codex-lead-1"]
+    assert lane["enforcement_state"] == "budget_idle"
+
+    weekly = _record(total=3_000_000, cumulative=3_000_000)
+    lane = build_fleet_token_ledger([weekly], now=NOW)["lanes"]["codex-lead-1"]
+    assert lane["enforcement_state"] == "weekly_hard_stop"
 
 
 def test_weekly_cap_is_hard_stop():
@@ -155,10 +169,15 @@ def test_identical_duplicate_is_counted_once_but_conflict_fails_closed():
 
 def test_rolling_seven_day_and_utc_day_boundaries():
     records = [
-        _record(event="today", ts="2026-08-26T00:00:00.000000Z", total=10),
+        _record(
+            event="today",
+            ts="2026-08-26T00:00:00.000000Z",
+            total=10,
+            cumulative=10,
+        ),
         _record(
             event="week",
-            ts="2026-08-19T15:00:00.000001Z",
+            ts="2026-08-19T15:00:00.000000Z",
             total=20,
             cumulative=None,
             provider="anthropic_claude",
@@ -178,10 +197,32 @@ def test_rolling_seven_day_and_utc_day_boundaries():
     assert lane["weekly_consumed"] == 30
 
 
+def test_invalid_timestamp_is_lane_unknown_not_whole_fleet_exception():
+    bad = replace(_record(), occurred_at_utc="not-a-time")
+    result = build_fleet_token_ledger([bad], now=NOW)
+    lane = result["lanes"]["codex-lead-1"]
+    assert lane["enforcement_state"] == "telemetry_unknown"
+    assert lane["automatic_turns_allowed"] is False
+    assert "invalid_usage_timestamp" in lane["telemetry_errors"]
+
+
+def test_mixed_accounting_modes_and_empty_lane_fail_closed():
+    mixed = [
+        _record(event="one", cumulative=100),
+        _record(event="two", cumulative=None),
+    ]
+    lane = build_fleet_token_ledger(mixed, now=NOW)["lanes"]["codex-lead-1"]
+    assert "mixed_session_accounting_modes" in lane["telemetry_errors"]
+    assert lane["automatic_turns_allowed"] is False
+
+    empty = build_fleet_token_ledger([], now=NOW)["lanes"]["codex-lead-1"]
+    assert empty["enforcement_state"] == "telemetry_unknown"
+    assert "no_native_usage_records" in empty["telemetry_errors"]
+
+
 def test_unknown_lane_is_not_silently_assigned_a_budget():
     record = replace(_record(), lane="new-lane")
     result = build_fleet_token_ledger([record], now=NOW)
     assert result["unconfigured_lanes"] == ["new-lane"]
     assert result["lanes"]["new-lane"]["enforcement_state"] == "telemetry_unknown"
     assert result["lanes"]["new-lane"]["automatic_turns_allowed"] is False
-

@@ -34,13 +34,14 @@ MODEL_TASK_CLASSES = frozenset(
     {
         "cheap_conformance",
         "production_code_tests",
-        "lead_triage_design",
+        "lead_triage/design",
         "plan_adversarial_advisory",
         "recognized_rco_review",
         "build_consensus",
     }
 )
 SUPPORTED_CODEX_CLI_VERSIONS = frozenset({"0.149.0"})
+SUPPORTED_CLAUDE_INTERACTIVE_VERSIONS = frozenset({"2.1.246"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -117,8 +118,10 @@ def extract_codex_session_usage(
             context = _mapping(payload, "Codex turn_context payload")
             model = _nonempty(context.get("model"), "Codex model")
             continue
-        if row_type != "event_msg" or not isinstance(payload, Mapping):
+        if row_type != "event_msg":
             continue
+        if not isinstance(payload, Mapping):
+            raise TelemetryUnknownError("Codex event_msg payload is not an object")
         if payload.get("type") != "token_count":
             continue
         if not model:
@@ -186,8 +189,17 @@ def extract_claude_interactive_usage(
         if row.get("type") != "assistant":
             continue
         message = row.get("message")
-        if not isinstance(message, Mapping) or "usage" not in message:
+        if not isinstance(message, Mapping):
+            raise TelemetryUnknownError("Claude assistant message is not an object")
+        if "usage" not in message:
             continue
+        version = _nonempty(row.get("version"), "Claude CLI version")
+        if version not in SUPPORTED_CLAUDE_INTERACTIVE_VERSIONS:
+            raise TelemetryUnknownError(
+                f"unsupported Claude interactive CLI version: {version}"
+            )
+        if row.get("entrypoint") != "sdk-cli":
+            raise TelemetryUnknownError("unsupported Claude interactive entrypoint")
         session_id = _nonempty(row.get("sessionId"), "Claude session id")
         message_id = _nonempty(message.get("id"), "Claude message id")
         model = _nonempty(message.get("model"), "Claude model")

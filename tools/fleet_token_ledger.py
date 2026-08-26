@@ -85,15 +85,20 @@ def build_fleet_token_ledger(
     lanes: dict[str, dict[str, Any]] = {}
     for lane in all_lanes:
         lane_records = by_lane[lane]
+        timestamped_records = [
+            (record, occurred)
+            for record in lane_records
+            if (occurred := _try_parse_utc(record.occurred_at_utc)) is not None
+        ]
         daily_records = [
             record
-            for record in lane_records
-            if utc_day_start <= _parse_utc(record.occurred_at_utc) <= now
+            for record, occurred in timestamped_records
+            if utc_day_start <= occurred <= now
         ]
         weekly_records = [
             record
-            for record in lane_records
-            if rolling_week_start < _parse_utc(record.occurred_at_utc) <= now
+            for record, occurred in timestamped_records
+            if rolling_week_start <= occurred <= now
         ]
         daily_consumed = sum(record.total_tokens for record in daily_records)
         weekly_consumed = sum(record.total_tokens for record in weekly_records)
@@ -209,16 +214,26 @@ def _validate_accounting_sequences(
     for record in records:
         by_session.setdefault((record.provider, record.session_id), []).append(record)
     for session_records in by_session.values():
-        modes = {record.accounting_mode for record in session_records}
+        valid_session_records = [
+            record
+            for record in session_records
+            if _try_parse_utc(record.occurred_at_utc) is not None
+        ]
+        if not valid_session_records:
+            continue
+        modes = {record.accounting_mode for record in valid_session_records}
         if len(modes) != 1:
             errors.add("mixed_session_accounting_modes")
             continue
         if modes == {"per_event"}:
-            if any(record.cumulative_total_tokens is not None for record in session_records):
+            if any(
+                record.cumulative_total_tokens is not None
+                for record in valid_session_records
+            ):
                 errors.add("unexpected_cumulative_total")
             continue
         ordered = sorted(
-            session_records,
+            valid_session_records,
             key=lambda record: (
                 _parse_utc(record.occurred_at_utc),
                 record.source_event_id,
@@ -246,3 +261,9 @@ def _parse_utc(value: str) -> datetime:
         raise ValueError("timestamp has no timezone")
     return parsed.astimezone(timezone.utc)
 
+
+def _try_parse_utc(value: str) -> datetime | None:
+    try:
+        return _parse_utc(value)
+    except (TypeError, ValueError):
+        return None

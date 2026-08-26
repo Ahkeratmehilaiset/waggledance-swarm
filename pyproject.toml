@@ -65,6 +65,9 @@ chroma = [
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
+    # Direct import of the schema contract tests; previously only a
+    # chromadb transitive (de-scoped 2026-08-26).
+    "jsonschema>=4.25.0",
 ]
 lora = [
     "peft>=0.11.0",

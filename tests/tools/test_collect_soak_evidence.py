@@ -387,7 +387,23 @@ def test_collector_output_still_uses_release_gate_as_source_of_truth(tmp_path) -
     assert "soak_evidence_docker_policy_not_finalized" in result["blockers"]
 
 
-def test_collector_can_emit_valid_pass_when_all_evidence_is_explicit(tmp_path) -> None:
+def test_collector_can_emit_valid_pass_when_all_evidence_is_explicit(
+    tmp_path, monkeypatch
+) -> None:
+    # This test owns the collector contract: explicit all-pass inputs emit
+    # evidence the gate accepts as structurally valid. The gate now also
+    # requires local-artifact reproducibility, which synthetic explicit
+    # evidence cannot satisfy, so the verifier is pinned verified=True here;
+    # reproducibility itself is covered by tests/test_release_gate_soak_evidence.py.
+    monkeypatch.setattr(
+        "tools.verify_release_soak_evidence.build_report",
+        lambda **_kwargs: {
+            "schema_version": "waggledance.release_soak_verifier.v1",
+            "verified": True,
+            "blockers": [],
+            "mismatched_fields": [],
+        },
+    )
     evidence = build_soak_evidence(
         "docs/release/RELEASE_READINESS.md",
         commit="dc76e81cd8c804608bfaedf951220e46ff1baffa",

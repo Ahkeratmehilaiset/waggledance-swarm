@@ -5,6 +5,11 @@
 The gate is intentionally documentation-driven: release posture remains in
 docs/release/RELEASE_READINESS.md, while this tool makes the high-risk parts
 machine-checkable before any stable tag or Docker :latest promotion.
+
+A stable pass additionally requires verifier-confirmed local-artifact
+reproducibility: structurally valid soak evidence must also be rebuildable
+from the canonical evidence artifacts (tools/verify_release_soak_evidence)
+or the gate holds.
 """
 
 from __future__ import annotations
@@ -17,6 +22,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Direct-script invocations put tools/ (not the repo root) on sys.path;
+# without the root the lazy canonical-verifier import degrades the gate to
+# soak_reproducibility_verifier_unavailable. Mirror the bootstrap the
+# verifier itself uses so the canonical verifier is always importable.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 SCHEMA_VERSION = "waggledance.release_soak.v1"
@@ -285,6 +298,101 @@ def evaluate_release_gate(
                     readable=True,
                     is_object=True,
                 )
+                # Reproducibility gate: structurally valid evidence must also
+                # be rebuildable from local artifacts. Fail closed on a
+                # missing verifier, a verifier exception, or verified!=True.
+                # The import is lazy (after structural validation) because
+                # the verifier's dependency chain imports this module.
+                repro_diagnostics: dict[str, Any] = {"invoked": True}
+                try:
+                    from tools.verify_release_soak_evidence import (
+                        build_report as _build_reproducibility_report,
+                    )
+                except Exception:  # noqa: BLE001 - fail closed, redacted
+                    # Any import-time failure (not only ImportError) makes
+                    # the verifier unavailable; the blocker stays stable and
+                    # carries no exception text or paths.
+                    blockers.append("soak_reproducibility_verifier_unavailable")
+                    repro_diagnostics.update({
+                        "available": False,
+                        "verified": False,
+                    })
+                else:
+                    # Canonical defaults are mandatory: the verifier is
+                    # called with only the evidence and readiness paths so
+                    # no caller can point the stable gate at non-canonical
+                    # artifact roots or release notes.
+                    try:
+                        reproducibility = _build_reproducibility_report(
+                            soak_evidence=soak_evidence_path,
+                            release_readiness=readiness_path,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - fail closed
+                        blockers.append(
+                            "soak_reproducibility_verifier_error:"
+                            f"{exc.__class__.__name__}"
+                        )
+                        repro_diagnostics.update({
+                            "available": True,
+                            "verified": False,
+                        })
+                    else:
+                        raw_blockers = (
+                            reproducibility.get("blockers")
+                            if isinstance(reproducibility, dict)
+                            else None
+                        )
+                        raw_mismatched = (
+                            reproducibility.get("mismatched_fields")
+                            if isinstance(reproducibility, dict)
+                            else None
+                        )
+                        report_shape_valid = (
+                            isinstance(reproducibility, dict)
+                            and isinstance(raw_blockers, list)
+                            and all(
+                                isinstance(blocker, str)
+                                for blocker in raw_blockers
+                            )
+                            and isinstance(raw_mismatched, list)
+                            and all(
+                                isinstance(field, str)
+                                for field in raw_mismatched
+                            )
+                        )
+                        if not report_shape_valid:
+                            # Fail closed on a malformed verifier report
+                            # (non-dict, or blockers/mismatched_fields not
+                            # lists of strings): stable redacted blocker,
+                            # no report content forwarded, never a crash
+                            # or character-exploded blockers.
+                            blockers.append(
+                                "soak_reproducibility_report_malformed"
+                            )
+                            repro_diagnostics.update({
+                                "available": True,
+                                "verified": False,
+                                "report_malformed": True,
+                            })
+                        else:
+                            verified = (
+                                reproducibility.get("verified") is True
+                            )
+                            verifier_blockers = list(raw_blockers)
+                            if not verified:
+                                blockers.append(
+                                    "soak_evidence_not_reproducible"
+                                )
+                                blockers.extend(verifier_blockers)
+                            repro_diagnostics.update({
+                                "available": True,
+                                "verified": verified,
+                                "mismatched_field_count": len(
+                                    raw_mismatched
+                                ),
+                                "verifier_blockers": verifier_blockers,
+                            })
+                soak_diagnostics["soak_reproducibility"] = repro_diagnostics
 
     return {
         "decision": "pass" if not blockers else "hold",

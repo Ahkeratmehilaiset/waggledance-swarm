@@ -151,6 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(result["decision"])
         if result.get("emitted"):
             print(f"event written to: {result['events_path']}")
+        elif result.get("queued"):
+            print(f"event queued in: {result['retained_wal_path']}")
         else:
             print("dry-run: pass --apply (or --emit) to write the close event")
     return 0
@@ -230,7 +232,7 @@ def close_bridge_rco_request(
     }
     if emit:
         try:
-            write_bridge_event(
+            write_result = write_bridge_event(
                 bridge_root=bridge_root,
                 events_path=events_path,
                 event=event,
@@ -241,9 +243,29 @@ def close_bridge_rco_request(
             )
         except BridgeEventWriteError as exc:
             raise CloseRcoError(str(exc), exc.decision) from exc
-        report["emitted"] = True
-        report["decision"] = "closed"
-        report["events_path"] = str(events_path)
+        canonical = (
+            write_result.delivery_status == "canonical"
+            and write_result.canonical_durable
+        )
+        report.update(
+            {
+                "emitted": canonical,
+                "queued": write_result.delivery_status == "queued",
+                "delivery_status": write_result.delivery_status,
+                "canonical_durable": write_result.canonical_durable,
+                "retained_wal_path": (
+                    str(write_result.retained_wal_path)
+                    if write_result.retained_wal_path is not None
+                    else None
+                ),
+                "retained_wal_sha256": write_result.retained_wal_sha256,
+            }
+        )
+        if canonical:
+            report["decision"] = "closed"
+            report["events_path"] = str(events_path)
+        elif report["queued"]:
+            report["decision"] = "queued"
     return report
 
 

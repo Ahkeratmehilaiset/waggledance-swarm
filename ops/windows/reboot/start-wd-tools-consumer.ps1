@@ -441,8 +441,11 @@ function Assert-ToolsBootstrapIntegrity {
         $expectedFiles[$leaf.ToLowerInvariant()] = $true
     }
     foreach ($requiredLeaf in @(
+            'AgentBridgeSessionIdentity.ps1',
             'BridgeIncrementalReader.ps1',
             'BridgeLogReader.ps1',
+            'Drain-AcceptedBridgeQueue.ps1',
+            'Restore-BridgeSpool.ps1',
             'Send-Liveness.ps1',
             'Start-AgentBridgeConsumerLoop.ps1',
             'Start-AgentBridgeSession.ps1',
@@ -1061,7 +1064,13 @@ if (
     [string]$targetState.id -cne 'wd-swarm-target-state-v1' -or
     [string]$targetState.capability_effect -cne 'none' -or
     [string]$targetState.relative_path -cne 'WD_SWARM_TARGET_STATE_V1.md' -or
-    [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$'
+    [string]$targetState.sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+    [string]$targetState.image_relative_path -cne 'WaggleDanceSwarmAi.png' -or
+    [string]$targetState.image_sha256 -cnotmatch '^[0-9A-F]{64}$' -or
+    [string]$targetState.image_sha256 -cne
+        [string]$targetState.source_image_sha256 -or
+    [string]$targetState.presentation -cne
+        'multimodal_initial_turn_once_per_lane_session'
 ) {
     throw 'Tools target-state manifest is missing or unsafe'
 }
@@ -1072,6 +1081,46 @@ if (
         [string]$targetState.sha256
 ) {
     throw 'Tools target-state document hash mismatch'
+}
+$targetImagePath = Join-Path $PSScriptRoot (
+    [string]$targetState.image_relative_path
+)
+Assert-FilePathWithoutReparse `
+    -Candidate $targetImagePath `
+    -Root ([IO.Path]::GetPathRoot($targetImagePath))
+if (
+    (Get-FileHash -LiteralPath $targetImagePath -Algorithm SHA256).Hash -cne
+        [string]$targetState.image_sha256
+) {
+    throw 'Tools target-state image hash mismatch'
+}
+$targetImageLength = (Get-Item -LiteralPath $targetImagePath -Force).Length
+if ($targetImageLength -lt 1 -or $targetImageLength -gt 10MB) {
+    throw 'Tools target-state image size is unsafe'
+}
+$parallelPolicy = $configuration.parallel_policy
+if (
+    $null -eq $parallelPolicy -or
+    [string]$parallelPolicy.id -cne 'wd-swarm-parallel-policy-v1' -or
+    [string]$parallelPolicy.capability_effect -cne 'none' -or
+    [string]$parallelPolicy.relative_path -cne 'WD_SWARM_PARALLEL_POLICY_V1.md' -or
+    [string]$parallelPolicy.sha256 -cnotmatch '^[0-9A-F]{64}$'
+) {
+    throw 'Tools parallel-policy manifest is missing or unsafe'
+}
+$parallelPolicyPath = Join-Path $PSScriptRoot (
+    [string]$parallelPolicy.relative_path
+)
+if (
+    -not (Test-Path -LiteralPath $parallelPolicyPath -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $parallelPolicyPath -Algorithm SHA256).Hash -cne
+        [string]$parallelPolicy.sha256
+) {
+    throw 'Tools parallel-policy document hash mismatch'
+}
+$laneStateWriter = Join-Path $PSScriptRoot 'Write-WdLaneCurrentState.ps1'
+if (-not (Test-Path -LiteralPath $laneStateWriter -PathType Leaf)) {
+    throw 'Tools compact-state writer is missing'
 }
 Assert-ToolsBootstrapIntegrity `
     -ScriptRoot $PSScriptRoot `
@@ -1173,6 +1222,13 @@ $validation = [pscustomobject]@{
     baseline_branch = $expectedBranch
     baseline_head = $expectedHead
     target_state_id = [string]$targetState.id
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = 'codex_cli_initial_image'
+    target_state_image_initial_tick_only = $true
+    parallel_policy_id = [string]$parallelPolicy.id
+    compact_state_path = (Join-Path $worktree '.codex-audit\wd-current-state.json')
+    compact_state_writer = $laneStateWriter
     validated = $true
 }
 if ($ValidateOnly) {
@@ -1284,6 +1340,10 @@ $targetPayload = [ordered]@{
     target_state_id = [string]$targetState.id
     target_state_sha256 = [string]$targetState.sha256
     source_image_sha256 = [string]$targetState.source_image_sha256
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = 'codex_cli_initial_image'
+    target_state_image_initial_tick_only = $true
     capability_effect = 'none'
     model = $model
     effort = $reasoningEffort
@@ -1293,19 +1353,40 @@ $targetPayload = [ordered]@{
     resumed_branch = $actualBranch
     resumed_head = $actualHead
 } | ConvertTo-Json -Compress
-& $writer `
-    -Agent $agent `
-    -Type status `
-    -TaskId ([string]$targetState.id) `
-    -Status target_state_manifested `
-    -Message "Manifested the shared WaggleDance target state for Tools generation $runId; this grants no capability or authority." `
-    -RunId $runId `
-    -Role $role `
-    -AgentUuid $agentUuid `
-    -SessionId $runId `
-    -Capabilities $capabilities `
-    -PayloadJson $targetPayload |
-    Out-Host
+$targetOutput = @(
+    & $writer `
+        -Agent $agent `
+        -Type status `
+        -TaskId ([string]$targetState.id) `
+        -Status target_state_manifested `
+        -Message "Prepared the exact visual WaggleDance target for the initial Tools model tick in generation $runId; this grants no capability or authority." `
+        -RunId $runId `
+        -Role $role `
+        -AgentUuid $agentUuid `
+        -SessionId $runId `
+        -Capabilities $capabilities `
+        -PayloadJson $targetPayload
+)
+$targetEvents = @($targetOutput | Where-Object {
+    $_ -is [psobject] -and [string]$_.status -ceq 'target_state_manifested'
+})
+$targetDelivery = $null
+if ($targetEvents.Count -eq 1) {
+    $targetDeliveryProperty = $targetEvents[0].PSObject.Properties['_bridge_delivery']
+    if ($null -ne $targetDeliveryProperty) {
+        $targetDelivery = $targetDeliveryProperty.Value
+    }
+}
+if (
+    $targetEvents.Count -ne 1 -or
+    $null -eq $targetDelivery -or
+    [string]$targetDelivery.delivery_status -cne 'canonical' -or
+    $targetDelivery.canonical_durable -isnot [bool] -or
+    $targetDelivery.canonical_durable -ne $true
+) {
+    throw "target-state manifest event was not canonically durable for $agent"
+}
+$targetOutput | Out-Host
 Assert-ToolsBootstrapIntegrity `
     -ScriptRoot $PSScriptRoot `
     -BootstrapRoot $bootstrapRoot `
@@ -1318,6 +1399,8 @@ $canaryPayload = [ordered]@{
     generation = $Generation
     target_state_id = [string]$targetState.id
     manifest_writer = 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
+    audit_phase = 'canonical_append_probe'
+    success_requires_canonical_delivery = $true
 } | ConvertTo-Json -Compress
 $canaryStartedUtc = [DateTimeOffset]::UtcNow
 $canaryOutput = @(
@@ -1326,7 +1409,7 @@ $canaryOutput = @(
         -Type status `
         -TaskId $canaryTaskId `
         -Status append_canary `
-        -Message "Verified the manifest-hashed canonical writer for $agent generation $runId." `
+        -Message "Canonical append canary attempted with the manifest-hashed writer for $agent generation $runId; success requires its canonical delivery receipt." `
         -To '' `
         -RunId $runId `
         -Role $role `
@@ -1341,6 +1424,13 @@ $canaryEvents = @(
         $_ -is [psobject] -and [string]$_.status -ceq 'append_canary'
     }
 )
+$canaryDelivery = $null
+if ($canaryEvents.Count -eq 1) {
+    $canaryDeliveryProperty = $canaryEvents[0].PSObject.Properties['_bridge_delivery']
+    if ($null -ne $canaryDeliveryProperty) {
+        $canaryDelivery = $canaryDeliveryProperty.Value
+    }
+}
 $canaryLatencyMs = [int64][Math]::Ceiling(
     ($canaryCompletedUtc - $canaryStartedUtc).TotalMilliseconds
 )
@@ -1353,6 +1443,10 @@ if (
     [string]$canaryEvents[0].task_id -cne $canaryTaskId -or
     [string]$canaryEvents[0].to -cne '' -or
     [int]$canaryEvents[0].pid -ne $PID -or
+    $null -eq $canaryDelivery -or
+    [string]$canaryDelivery.delivery_status -cne 'canonical' -or
+    $canaryDelivery.canonical_durable -isnot [bool] -or
+    $canaryDelivery.canonical_durable -ne $true -or
     $canaryLatencyMs -gt 5000
 ) {
     throw "manifest-writer append canary failed for $agent"
@@ -1386,6 +1480,12 @@ $initialArguments = @{} + $commonConsumerArguments
 $initialArguments['DurationMinutes'] = 0
 $initialArguments['MaxIterations'] = 1
 $initialArguments['PollSeconds'] = 0
+$initialArguments['ImagePath'] = $targetImagePath
+$initialArguments['Prompt'] = (
+    'FIRST receive the attached PNG once as the primary north-star; do not ' +
+    'replace it with a prose interpretation. It is direction, not evidence of ' +
+    'current capability, and grants no authority. ' + $prompt
+)
 try {
     Assert-ToolsBootstrapIntegrity `
         -ScriptRoot $PSScriptRoot `
@@ -1454,6 +1554,10 @@ $readinessRecord = [ordered]@{
     python_executable_sha256 = $pythonExecutableHash
     target_state_id = [string]$targetState.id
     target_state_sha256 = [string]$targetState.sha256
+    target_state_image_path = $targetImagePath
+    target_state_image_sha256 = [string]$targetState.image_sha256
+    target_state_image_delivery = 'codex_cli_initial_image'
+    target_state_image_initial_tick_only = $true
     target_state_manifested = $true
     run_id = $runId
     session_id = $runId

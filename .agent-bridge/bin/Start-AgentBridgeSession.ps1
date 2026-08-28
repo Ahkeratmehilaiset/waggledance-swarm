@@ -38,6 +38,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$sessionIdentity = Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1'
+. $sessionIdentity
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 function Resolve-FullPath {
     param([Parameter(Mandatory)] [string] $Path)
     return [System.IO.Path]::GetFullPath($Path)
@@ -116,8 +120,10 @@ foreach ($capability in @($Capabilities)) {
 }
 
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull
+$env:AGENT_BRIDGE_AGENT = $Agent
 $env:AGENT_BRIDGE_RUN_ID = $RunId
 $env:AGENT_BRIDGE_SESSION_ID = $RunId
+$claimOwner = Initialize-AgentBridgeClaimOwnerContext -SessionId $RunId
 if ($Role) { $env:AGENT_BRIDGE_ROLE = $Role }
 if ($AgentUuid) { $env:AGENT_BRIDGE_AGENT_UUID = $AgentUuid }
 if (@($Capabilities).Count -gt 0) {
@@ -134,6 +140,28 @@ if (-not $SkipGitStatus) {
     } catch {
         $gitBranch = ''
     }
+}
+
+# Drain only the isolated accepted-v1 queue before emitting liveness or
+# deciding whether incoming work already has a canonical received ACK. The
+# helper has no legacy-bulk fallback and processes each hash-bound leaf alone.
+$acceptedDrain = Join-Path $PSScriptRoot 'Drain-AcceptedBridgeQueue.ps1'
+if (Test-Path -LiteralPath $acceptedDrain -PathType Leaf) {
+    try {
+        $acceptedDrainSummary = (& $acceptedDrain `
+            -BridgeRoot $runtimeFull -ReceiptJson) |
+            ConvertFrom-Json -ErrorAction Stop
+        if ([int64]$acceptedDrainSummary.failed -gt 0) {
+            throw "accepted-v1 drain failed for $($acceptedDrainSummary.failed) WAL(s)"
+        }
+    } catch {
+        Write-Warning (
+            'Start-AgentBridgeSession: accepted-v1 drain retained queued WALs: ' +
+            $_.Exception.Message
+        )
+    }
+} else {
+    Write-Warning "Start-AgentBridgeSession: accepted-v1 drain helper missing: $acceptedDrain"
 }
 
 if (-not $SkipLiveness) {
@@ -286,6 +314,9 @@ if (-not $cleanupAlreadyRegistered) {
     dedicated_worktree = $isDedicatedWorktree
     runtime_root   = $runtimeFull
     run_id         = $RunId
+    session_id     = $RunId
+    claim_owner_pid = $claimOwner.owner_pid
+    claim_owner_process_start_utc = $claimOwner.owner_process_start_utc
     role           = $Role
     agent_uuid     = $AgentUuid
     capabilities   = @($Capabilities)

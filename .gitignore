@@ -8,6 +8,7 @@
 # Watch-CodexPrompts.ps1 is a Windows-Terminal monitor for Codex prompts;
 # prompts/prompt*_*.md are session-specific operator paste files.
 Watch-CodexPrompts.ps1
+!ops/windows/reboot/Watch-CodexPrompts.ps1
 prompts/prompt*_*.md
 
 # Operator-local scratch (R22.5 cleanup 2026-05-10): brief / report

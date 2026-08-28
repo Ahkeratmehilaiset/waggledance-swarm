@@ -127,6 +127,16 @@ try {
         -Passed ($LASTEXITCODE -eq 2) `
         -Detail "passive check exit=$LASTEXITCODE"
 
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $jsonForceLines = & $checkScript -Agent operator -Json -Force 2>&1
+    $jsonForceExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    $jsonForceOutput = ($jsonForceLines | ForEach-Object { [string]$_ }) -join "`n"
+    Add-Check -Name 'JSON force cannot bypass canonical override audit' `
+        -Passed ($jsonForceExit -eq 2 -and $jsonForceOutput -match 'unsupported') `
+        -Detail "exit=$jsonForceExit output=$jsonForceOutput"
+
     # ── 7: Get-AgentBridgeStatus does not crash with 1 claim ─────
     Write-Host ''
     Write-Host '5. Get-AgentBridgeStatus -MaxUnresolved 10 does not crash:'

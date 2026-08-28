@@ -137,6 +137,77 @@ docker compose up -d
 Compose boots the current web runtime. It is not the stable R22.5
 promotion workflow and does not move `:latest`.
 
+### Vector backend under Compose
+
+The compose service sets:
+
+```yaml
+- WAGGLE_VECTOR_BACKEND=${WAGGLE_VECTOR_BACKEND-inmemory}
+- CHROMA_DIR=${CHROMA_DIR-/app/data/chroma_data}
+```
+
+The **single dash** is required, and the distinction from `:-` is the
+whole point:
+
+| Your environment | Container receives | Result |
+| --- | --- | --- |
+| unset | `inmemory` | non-persistent; the documented Compose default |
+| `WAGGLE_VECTOR_BACKEND=chroma` | `chroma` | preserved; needs a derived image (below) |
+| `WAGGLE_VECTOR_BACKEND=` (empty) | empty | **preserved and rejected at startup** |
+
+`${VAR:-default}` would treat that explicit empty value as unset and
+silently select the non-persistent backend. `${VAR-default}` defaults only
+when the variable is genuinely **unset**, so an empty value survives and
+the runtime refuses it as an unknown backend. Silent selection of a
+non-persistent store is exactly what the fail-closed contract forbids.
+
+A hard `WAGGLE_VECTOR_BACKEND=inmemory` entry would be wrong for a
+different reason: values under `environment:` take precedence over
+`env_file:`, so a literal pin would override an operator who asked for
+`chroma` without any error at all.
+
+`tests/test_chroma_opt_in_truth.py` rejects both the literal pin and the
+`:-` form.
+
+### Chroma under Docker requires a derived image
+
+Setting `WAGGLE_VECTOR_BACKEND=chroma` is **not sufficient** in Docker.
+The image installs `requirements-ci.txt`, which intentionally omits
+`chromadb`, so the runtime fail-closes at startup with a `RuntimeError`
+naming the install command. Env alone cannot conjure the package.
+
+To run Chroma in Docker, build a derived image that adds the extra from
+the **checkout** (not the package index, so you install the code you are
+actually running):
+
+```dockerfile
+FROM waggledance:local
+RUN pip install --no-cache-dir .[chroma]
+```
+
+```bash
+WAGGLE_VECTOR_BACKEND=chroma docker compose up -d
+```
+
+**Where the store lands.** The runtime default `CHROMA_DIR` is
+`./chroma_data`, which under `WORKDIR /app` resolves to `/app/chroma_data`
+— a path **no** compose volume covers, so the store would be lost on
+container replacement. The compose service therefore sets
+`CHROMA_DIR=/app/data/chroma_data`, which sits inside the existing
+`./data:/app/data` bind mount and survives replacement. If you override
+`CHROMA_DIR`, keep it under a mounted path.
+
+### Plain `docker run`
+
+`docker run` does not read `docker-compose.yml`, so it inherits no
+default from it. With no `WAGGLE_VECTOR_BACKEND` set, the runtime default
+is `chroma`, and on the stock image that **fail-closes** at startup. Pass
+the backend explicitly:
+
+```bash
+docker run --rm -p 8000:8000 -e WAGGLE_VECTOR_BACKEND=inmemory waggledance:local
+```
+
 ## Profiles
 
 * **Profile S**: fully offline / local-first. No cloud provider SDKs
@@ -153,6 +224,11 @@ promotion workflow and does not move `:latest`.
 * ARM builds are not verified.
 * Persistent runtime volumes are operator-managed; the default container
   filesystem is ephemeral.
+* Compose injects `inmemory` when the variable is unset, so semantic
+  memory is **not persistent** out of the box. That is Compose supplying a
+  value, not the runtime falling back. Chroma in Docker needs a derived
+  image with the `[chroma]` extra and a volume-backed `CHROMA_DIR`, not
+  just an environment variable.
 * 3D hex topology and per-cell DB sharding are not part of this Docker
   surface.
 

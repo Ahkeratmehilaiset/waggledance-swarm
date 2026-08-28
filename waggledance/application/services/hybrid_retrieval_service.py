@@ -1,15 +1,29 @@
 """
 Hybrid retrieval service — orchestrates cell-local FAISS → neighbor FAISS →
-global ChromaDB retrieval with full telemetry.
+global vector-store retrieval with full telemetry.
 
-Feature-flagged: when hybrid is disabled, falls through to global Chroma only.
-When embeddings or FAISS are unavailable, degrades gracefully.
+The global layer is whatever ``VectorStorePort`` the container built. Since
+the 2026-08-26 dependency remediation the container uses Chroma only when it
+is both SELECTED and INSTALLED (``WAGGLE_VECTOR_BACKEND`` unset or ``chroma``,
+plus the ``[chroma]`` extra); a missing package is a startup error, not a
+downgrade. The NON-PERSISTENT in-memory store is reached only by an explicit
+``WAGGLE_VECTOR_BACKEND=inmemory`` and is never an automatic alternative.
+Under docker-compose an unset variable is INJECTED as ``inmemory`` by Compose
+itself, which is a deployment default, not a runtime fallback.
+
+This service is backend agnostic: it neither selects nor validates the backend — that is the
+container's fail-closed job. The ``global_chroma*`` telemetry names and the
+``global_chroma`` layer id are retained verbatim for wire compatibility and
+name the LAYER, not a guarantee that Chroma is behind it.
+
+Feature-flagged: when hybrid is disabled, falls through to the global layer
+only. When embeddings or FAISS are unavailable, degrades gracefully.
 
 Retrieval order (when hybrid enabled):
   1. Local FAISS cell (cell assigned by HexCellTopology)
   2. Ring-1 neighbor FAISS cells
   3. (Optional) Ring-2 neighbor FAISS cells (only if ring-1 insufficient)
-  4. Global ChromaDB
+  4. Global vector store (Chroma when selected and installed; in-memory only when explicitly selected)
   5. (LLM fallback handled by caller, not by this service)
 
 Each retrieval attempt is timed and recorded in HybridTraceResult.
@@ -100,12 +114,14 @@ _SUFFICIENT_SCORE = 0.70
 
 
 class HybridRetrievalService:
-    """Orchestrates hybrid retrieval across cell-local FAISS and global ChromaDB.
+    """Orchestrates hybrid retrieval across cell-local FAISS and the global store.
 
     Args:
         faiss_registry: FaissRegistry instance for cell-local indices
         topology: HexCellTopology for cell assignment and neighbor lookup
-        vector_store: VectorStorePort (ChromaDB) for global retrieval
+        vector_store: VectorStorePort for global retrieval (Chroma when
+            selected and installed; the non-persistent in-memory store
+            only when explicitly requested)
         embed_fn: callable(text) -> numpy array or None (embedding function)
         enabled: whether hybrid mode is active (feature flag)
         ring2_enabled: whether to search ring-2 neighbors (default: False)
@@ -180,7 +196,7 @@ class HybridRetrievalService:
         """Execute hybrid retrieval for a query.
 
         Returns HybridTraceResult with hits and full telemetry.
-        If hybrid is disabled, only global ChromaDB is searched.
+        If hybrid is disabled, only the global vector store is searched.
         """
         t0 = time.perf_counter()
         self._total_queries += 1

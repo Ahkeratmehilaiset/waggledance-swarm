@@ -23,7 +23,7 @@ Retrieval order (when hybrid enabled):
   1. Local FAISS cell (cell assigned by HexCellTopology)
   2. Ring-1 neighbor FAISS cells
   3. (Optional) Ring-2 neighbor FAISS cells (only if ring-1 insufficient)
-  4. Global vector store (Chroma when opted in, else in-memory)
+  4. Global vector store (Chroma when selected and installed; in-memory only when explicitly selected)
   5. (LLM fallback handled by caller, not by this service)
 
 Each retrieval attempt is timed and recorded in HybridTraceResult.

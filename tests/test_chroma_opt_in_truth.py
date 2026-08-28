@@ -357,6 +357,28 @@ def test_hybrid_docstring_states_selected_and_installed() -> None:
     assert "global ChromaDB retrieval" not in header
 
 
+def test_no_line_of_the_hybrid_docstring_implies_a_fallback() -> None:
+    """The whole docstring must agree with itself, not just its prose.
+
+    The retrieval-order list shipped saying "Chroma when opted in, else
+    in-memory" while the class docstring eight lines below said the
+    opposite. Both were read, each in isolation, and the contradiction
+    survived. This checks the docstring as a whole so one corrected
+    paragraph cannot vouch for an uncorrected list item.
+    """
+    header = _read(HYBRID_PATH).split('"""')[1]
+    lowered = header.lower()
+    for phrasing in ("else in-memory", "otherwise in-memory", "opted in, else"):
+        assert phrasing not in lowered, (
+            f"{phrasing!r} implies in-memory is an automatic fallback; it is "
+            "reachable only by explicit selection"
+        )
+    assert (
+        "4. Global vector store (Chroma when selected and installed; "
+        "in-memory only when explicitly selected)" in header
+    )
+
+
 def test_memory_service_docstring_states_explicit_only() -> None:
     header = _read(MEMORY_SERVICE_PATH).split('"""')[1]
     assert "never selected" in header

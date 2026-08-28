@@ -448,6 +448,75 @@ def test_telemetry_divergence_reported_without_preference() -> None:
         compare_with_telemetry(report, {"solver_first_served_ratio": True})
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="pos-inf"),
+        pytest.param(float("-inf"), id="neg-inf"),
+    ],
+)
+def test_non_finite_telemetry_ratio_is_rejected(bad: float) -> None:
+    """A NaN telemetry ratio must not read as agreement.
+
+    NaN survives ``abs()`` and then loses every comparison, so the old
+    ``delta > 1e-9`` returned False and reported the two sources as
+    AGREEING. That is a false negative at an evidence-comparison
+    boundary, so non-finite input fails closed instead.
+    """
+    report = {"solver_first_served_ratio": 0.5}
+    with pytest.raises(DerivationRejected) as excinfo:
+        compare_with_telemetry(report, {"solver_first_served_ratio": bad})
+    assert excinfo.value.reason == "telemetry_ratio_not_finite"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="pos-inf"),
+        pytest.param(float("-inf"), id="neg-inf"),
+    ],
+)
+def test_non_finite_report_ratio_is_rejected(bad: float) -> None:
+    """Symmetric guard on the caller-supplied report mapping.
+
+    ``derive_report`` itself cannot emit a non-finite ratio (integer
+    counts, zero denominator guarded), so this defends the public
+    function against a hand-built mapping rather than an internally
+    reachable path.
+    """
+    with pytest.raises(DerivationRejected) as excinfo:
+        compare_with_telemetry(
+            {"solver_first_served_ratio": bad},
+            {"solver_first_served_ratio": 0.5},
+        )
+    assert excinfo.value.reason == "report_ratio_not_finite"
+
+
+def test_non_finite_is_rejected_before_any_delta_is_computed() -> None:
+    """The rejection must pre-empt the subtraction, not describe it."""
+    nan = float("nan")
+    with pytest.raises(DerivationRejected) as excinfo:
+        compare_with_telemetry(
+            {"solver_first_served_ratio": nan},
+            {"solver_first_served_ratio": nan},
+        )
+    # telemetry is validated first, so that reason wins on a both-NaN call
+    assert excinfo.value.reason == "telemetry_ratio_not_finite"
+
+
+def test_finite_comparison_still_reports_divergence_normally() -> None:
+    """The guard must not swallow ordinary divergence."""
+    report = {"solver_first_served_ratio": 0.5}
+    agreeing = compare_with_telemetry(report, {"solver_first_served_ratio": 0.5})
+    assert agreeing["diverges"] is False
+    assert agreeing["abs_delta"] == pytest.approx(0.0)
+    diverging = compare_with_telemetry(report, {"solver_first_served_ratio": 0.75})
+    assert diverging["diverges"] is True
+    assert diverging["abs_delta"] == pytest.approx(0.25)
+
+
 def test_report_never_contains_claim_safe(ledger: LedgerBuilder) -> None:
     ledger.served("sol-0", route_type="solver")
     ledger.receipt("sol-0")

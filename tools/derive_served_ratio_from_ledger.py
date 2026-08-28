@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
@@ -304,10 +305,21 @@ def compare_with_telemetry(
     telemetry_ratio = telemetry_stats.get("solver_first_served_ratio")
     if not isinstance(telemetry_ratio, (int, float)) or isinstance(telemetry_ratio, bool):
         raise DerivationRejected("telemetry_snapshot_missing_ratio")
+    # Reject non-finite ratios BEFORE the subtraction. NaN propagates
+    # through abs() and then silently loses every comparison, so
+    # `delta > 1e-9` would be False and a NaN telemetry ratio would be
+    # reported as AGREEING with the ledger -- a false negative at an
+    # evidence-comparison boundary. +/-Inf yields an abs_delta of inf,
+    # which is not a meaningful magnitude either. Ambiguity fails closed.
+    telemetry_ratio = float(telemetry_ratio)
+    if not math.isfinite(telemetry_ratio):
+        raise DerivationRejected("telemetry_ratio_not_finite")
     ledger_ratio = float(report["solver_first_served_ratio"])
-    delta = abs(float(telemetry_ratio) - ledger_ratio)
+    if not math.isfinite(ledger_ratio):
+        raise DerivationRejected("report_ratio_not_finite")
+    delta = abs(telemetry_ratio - ledger_ratio)
     return {
-        "telemetry_ratio": float(telemetry_ratio),
+        "telemetry_ratio": telemetry_ratio,
         "ledger_ratio": ledger_ratio,
         "abs_delta": delta,
         "diverges": delta > 1e-9,

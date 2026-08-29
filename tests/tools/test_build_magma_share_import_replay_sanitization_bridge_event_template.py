@@ -48,7 +48,7 @@ def _ready_summary() -> dict[str, object]:
         "controls_present": False,
         "manifest_version": "magma.share_manifest.v0",
         "admission_contract_version": (
-            "magma.share_manifest_replay_admission_contract.v0"
+            "magma.share_manifest_replay_admission_contract.v1"
         ),
         "sanitization_contract": "sanitization_v0",
         "scope": "no_authority_metadata_replay",
@@ -201,6 +201,14 @@ def _assert_rejected(summary: dict[str, object], blocker_substr: str) -> None:
     )
     assert report["ok"] is False
     assert any(blocker_substr in b for b in report["blockers"])
+
+
+def test_admission_contract_version_mismatch_is_rejected() -> None:
+    summary = _ready_summary()
+    summary["admission_contract_version"] = (
+        "magma.share_manifest_replay_admission_contract.v0"
+    )
+    _assert_rejected(summary, "admission_contract_version_mismatch")
 
 
 def test_legacy_required_check_names_field_is_rejected() -> None:

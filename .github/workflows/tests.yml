@@ -108,8 +108,12 @@ jobs:
       shell: pwsh
       run: |
         git config --global core.longpaths true
+        git config --global core.autocrlf false
         if ((git config --global --get core.longpaths) -cne "true") {
           throw "Git long-path support was not enabled."
+        }
+        if ((git config --global --get core.autocrlf) -cne "false") {
+          throw "Git line-ending conversion was not disabled."
         }
 
     - name: Check out the triggering exact head

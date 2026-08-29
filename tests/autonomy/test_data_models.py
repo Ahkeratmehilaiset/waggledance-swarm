@@ -314,6 +314,84 @@ class TestCaseTrajectory:
         grade = ct.grade()
         assert grade == QualityGrade.QUARANTINE
 
+    # -- literal-True verifier pass (2026-08-23 product-integrity fix) --
+    #
+    # grade() truth-tested the raw verifier_result["passed"], so with a
+    # solver the strings "false"/"true", int 1, [0] or a non-empty
+    # mapping graded GOLD (and without a solver SILVER); a persisted
+    # string "false" could reach QualityGate auto_promote. Only the
+    # literal True may count as a verifier pass.
+
+    _NOT_LITERAL_TRUE_PASSED = [
+        pytest.param("false", id="str-false"),
+        pytest.param("true", id="str-true"),
+        pytest.param("True", id="str-True"),
+        pytest.param(1, id="int-1"),
+        pytest.param(1.0, id="float-1"),
+        pytest.param([0], id="list-0"),
+        pytest.param({"x": 1}, id="non-empty-mapping"),
+        pytest.param(object(), id="object"),
+    ]
+
+    @pytest.mark.parametrize("value", _NOT_LITERAL_TRUE_PASSED)
+    def test_grade_truthy_non_bool_passed_with_solver_is_silver_not_gold(self, value):
+        ct = CaseTrajectory(
+            selected_capabilities=[
+                CapabilityContract("solve.math", CapabilityCategory.SOLVE),
+            ],
+            verifier_result={"passed": value},
+        )
+        assert ct.grade() == QualityGrade.SILVER
+        assert ct.quality_grade == QualityGrade.SILVER
+
+    @pytest.mark.parametrize("value", _NOT_LITERAL_TRUE_PASSED)
+    def test_grade_truthy_non_bool_passed_without_solver_is_bronze_not_silver(self, value):
+        ct = CaseTrajectory(
+            selected_capabilities=[
+                CapabilityContract("explain.llm", CapabilityCategory.EXPLAIN),
+            ],
+            verifier_result={"passed": value},
+        )
+        assert ct.grade() == QualityGrade.BRONZE
+
+    def test_grade_passed_truthiness_is_never_consulted(self):
+        class _ExplosiveBool:
+            def __bool__(self):  # pragma: no cover - must not run
+                raise AssertionError("verifier passed truthiness was coerced")
+
+        ct = CaseTrajectory(
+            selected_capabilities=[
+                CapabilityContract("solve.math", CapabilityCategory.SOLVE),
+            ],
+            verifier_result={"passed": _ExplosiveBool()},
+        )
+        assert ct.grade() == QualityGrade.SILVER
+
+    @pytest.mark.parametrize("value", [None, 0, 0.0, "", [], {}],
+                             ids=["none", "int-0", "float-0", "str-empty",
+                                  "list-empty", "mapping-empty"])
+    def test_grade_falsy_non_bool_passed_behaves_like_false(self, value):
+        with_solver = CaseTrajectory(
+            selected_capabilities=[
+                CapabilityContract("solve.math", CapabilityCategory.SOLVE),
+            ],
+            verifier_result={"passed": value},
+        )
+        assert with_solver.grade() == QualityGrade.SILVER
+        without_solver = CaseTrajectory(verifier_result={"passed": value})
+        assert without_solver.grade() == QualityGrade.BRONZE
+
+    def test_grade_literal_bool_behavior_preserved(self):
+        solver = [CapabilityContract("solve.math", CapabilityCategory.SOLVE)]
+        assert CaseTrajectory(selected_capabilities=solver,
+                              verifier_result={"passed": True}).grade() == QualityGrade.GOLD
+        assert CaseTrajectory(selected_capabilities=solver,
+                              verifier_result={"passed": False}).grade() == QualityGrade.SILVER
+        assert CaseTrajectory(verifier_result={"passed": True}).grade() == QualityGrade.SILVER
+        assert CaseTrajectory(verifier_result={"passed": False}).grade() == QualityGrade.BRONZE
+        assert CaseTrajectory(selected_capabilities=solver,
+                              verifier_result={}).grade() == QualityGrade.SILVER
+
     def test_to_dict(self):
         ct = CaseTrajectory(
             goal=Goal(type=GoalType.DIAGNOSE, description="Varroa check"),

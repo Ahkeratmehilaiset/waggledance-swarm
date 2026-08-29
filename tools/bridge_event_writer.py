@@ -30,6 +30,8 @@ from typing import Any, Literal, Mapping, Protocol
 import uuid
 import warnings
 
+from waggledance.core.bridge_event_schema import validate_event
+
 
 APPEND_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
 APPEND_MUTEX_TIMEOUT_MS = 10_000
@@ -57,6 +59,8 @@ V1_EVENT_TYPES = frozenset(
         "heartbeat",
         "wake_request",
         "liveness",
+        "triage_disposition",
+        "consumer_tick",
     }
 )
 V1_AGENT_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
@@ -528,6 +532,12 @@ def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
             f"bridge event cannot be serialized as a JSON object: {exc}"
         ) from exc
     validate_v1_replayer_event(event_object)
+    try:
+        validate_event(event_object)
+    except Exception as exc:  # noqa: BLE001 - normalize every schema refusal
+        raise BridgeEventWriteError(
+            f"bridge event schema validation failed: {exc}"
+        ) from exc
     try:
         text = json.dumps(
             event_object,

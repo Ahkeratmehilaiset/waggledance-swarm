@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -19,6 +20,16 @@ RUNTIME_SOURCE = ROOT / "tools" / "release_evidence_runtime.py"
 PRODUCER_RELPATH = "tools/fake_release_producer.py"
 OUTPUT_RELPATH = runtime.CANONICAL_OUTPUTS["axis_b_hex_aligned_eval"]
 OLD_BYTES = b'{"schema_version":"stale-release-evidence"}\n'
+
+
+class _CtypesCall:
+    def __init__(self, function: object) -> None:
+        self.function = function
+        self.argtypes: object = None
+        self.restype: object = None
+
+    def __call__(self, *args: object) -> object:
+        return self.function(*args)  # type: ignore[operator]
 
 
 def _fixture_git_executable() -> Path:
@@ -634,11 +645,10 @@ def test_windows_process_image_query_retries_fresh_state_without_path_inference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queried = tmp_path / "kernel-reported-python.exe"
+    queried = r"\Device\HarddiskVolume7\trusted\kernel-reported-python.exe"
     inferred = tmp_path / "inferred-from-command-line.exe"
-    queried.write_bytes(b"queried")
     inferred.write_bytes(b"inferred")
-    attempts: list[tuple[object, int]] = []
+    attempts: list[tuple[object, int, int]] = []
     sleeps: list[float] = []
 
     class Query:
@@ -653,26 +663,17 @@ def test_windows_process_image_query_retries_fresh_state_without_path_inference(
             size_pointer: object,
         ) -> bool:
             size = size_pointer._obj  # type: ignore[attr-defined]
-            attempts.append((buffer, int(size.value)))
+            attempts.append((buffer, int(size.value), int(_flags)))
             if len(attempts) < 3:
                 size.value = 7
                 return False
-            buffer.value = os.fspath(queried)  # type: ignore[attr-defined]
-            size.value = len(os.fspath(queried))
+            buffer.value = queried  # type: ignore[attr-defined]
+            size.value = len(queried)
             return True
-
-    class GetLongPath:
-        argtypes: object = None
-        restype: object = None
-
-        def __call__(self, path: str, buffer: object, _size: int) -> int:
-            buffer.value = path  # type: ignore[attr-defined]
-            return len(path)
 
     class Kernel32:
         def __init__(self) -> None:
             self.QueryFullProcessImageNameW = Query()
-            self.GetLongPathNameW = GetLongPath()
 
     class Process:
         _handle = 31337
@@ -690,13 +691,19 @@ def test_windows_process_image_query_retries_fresh_state_without_path_inference(
     monkeypatch.setattr(runtime.ctypes, "set_last_error", lambda _value: None, raising=False)
     monkeypatch.setattr(runtime.time, "sleep", sleeps.append)
 
+    def reject_path_interpretation(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("opaque native image must not enter path normalization")
+
+    monkeypatch.setattr(runtime, "_absolute_lexical", reject_path_interpretation)
+
     observed = runtime._process_image_path(Process())  # type: ignore[arg-type]
 
     assert observed == queried
-    assert observed != inferred
+    assert observed != os.fspath(inferred)
     assert len(attempts) == 3
-    assert len({id(buffer) for buffer, _size in attempts}) == 3
-    assert [size for _buffer, size in attempts] == [32768, 32768, 32768]
+    assert len({id(buffer) for buffer, _size, _flags in attempts}) == 3
+    assert [size for _buffer, size, _flags in attempts] == [32768, 32768, 32768]
+    assert [flags for _buffer, _size, flags in attempts] == [1, 1, 1]
     assert sleeps == [0.002, 0.002]
 
 
@@ -706,7 +713,7 @@ def test_windows_process_image_query_persistent_failure_has_exact_reason(
 ) -> None:
     inferred = tmp_path / "inferred-existing.exe"
     inferred.write_bytes(b"must not be inferred")
-    attempts: list[tuple[object, int]] = []
+    attempts: list[tuple[object, int, int]] = []
     sleeps: list[float] = []
 
     class Query:
@@ -721,7 +728,7 @@ def test_windows_process_image_query_persistent_failure_has_exact_reason(
             size_pointer: object,
         ) -> bool:
             size = size_pointer._obj  # type: ignore[attr-defined]
-            attempts.append((buffer, int(size.value)))
+            attempts.append((buffer, int(size.value), int(_flags)))
             size.value = 1
             return False
 
@@ -753,9 +760,222 @@ def test_windows_process_image_query_persistent_failure_has_exact_reason(
     assert caught.value.reason_code == "process_image_unavailable"
     assert caught.value.phase == "isolation"
     assert len(attempts) == 4
-    assert len({id(buffer) for buffer, _size in attempts}) == 4
-    assert [size for _buffer, size in attempts] == [32768] * 4
+    assert len({id(buffer) for buffer, _size, _flags in attempts}) == 4
+    assert [size for _buffer, size, _flags in attempts] == [32768] * 4
+    assert [flags for _buffer, _size, flags in attempts] == [1] * 4
     assert sleeps == [0.002] * 3
+
+
+@pytest.mark.parametrize(
+    ("value", "reported_length"),
+    [
+        ("", 0),
+        (r"C:\trusted.exe", len(r"C:\trusted.exe")),
+        (
+            r"\Device\HarddiskVolume9\trusted.exe",
+            len(r"\Device\HarddiskVolume9\trusted.exe") + 1,
+        ),
+    ],
+)
+def test_windows_process_image_query_rejects_malformed_success(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    reported_length: int,
+) -> None:
+    class Query:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(
+            self,
+            _handle: object,
+            flags: object,
+            buffer: object,
+            size_pointer: object,
+        ) -> bool:
+            assert int(flags) == 1
+            buffer.value = value  # type: ignore[attr-defined]
+            size_pointer._obj.value = reported_length  # type: ignore[attr-defined]
+            return True
+
+    class Kernel32:
+        def __init__(self) -> None:
+            self.QueryFullProcessImageNameW = Query()
+
+    class Process:
+        _handle = 6161
+
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    monkeypatch.setattr(
+        runtime.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: Kernel32(),
+        raising=False,
+    )
+    monkeypatch.setattr(runtime.ctypes, "set_last_error", lambda _value: None, raising=False)
+
+    with pytest.raises(
+        runtime.EvidenceIntegrityError,
+        match="^process_image_unavailable$",
+    ) as caught:
+        runtime._process_image_path(Process())  # type: ignore[arg-type]
+
+    assert caught.value.phase == "isolation"
+
+
+def test_windows_expected_native_image_uses_independent_handle_and_nt_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "trusted.exe"
+    executable.write_bytes(b"trusted")
+    native = r"\Device\HarddiskVolume9\trusted.exe"
+    opened: list[tuple[object, ...]] = []
+    queried: list[tuple[object, ...]] = []
+    closed: list[object] = []
+
+    def create_file(*args: object) -> int:
+        opened.append(args)
+        return 31337
+
+    def final_path(
+        handle: object,
+        buffer: object,
+        size: object,
+        flags: object,
+    ) -> int:
+        queried.append((handle, size, flags))
+        buffer.value = native  # type: ignore[attr-defined]
+        return len(native)
+
+    def close_handle(handle: object) -> bool:
+        closed.append(handle)
+        return True
+
+    class Kernel32:
+        CreateFileW = _CtypesCall(create_file)
+        GetFinalPathNameByHandleW = _CtypesCall(final_path)
+        CloseHandle = _CtypesCall(close_handle)
+
+    monkeypatch.setattr(
+        runtime.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: Kernel32(),
+        raising=False,
+    )
+
+    observed = runtime._windows_expected_native_image(executable)
+
+    assert observed == native
+    assert opened == [
+        (
+            os.fspath(executable),
+            0x80000000,
+            0x00000001,
+            None,
+            3,
+            0x00200000,
+            None,
+        )
+    ]
+    assert queried == [(31337, 32768, 0x2)]
+    assert closed == [31337]
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason", "expected_closes"),
+    [
+        ("open", "windows_expected_native_path_open_failed", 0),
+        ("empty", "windows_expected_native_path_unavailable", 1),
+        ("empty_close", "windows_expected_native_path_unavailable", 1),
+        ("oversize", "windows_expected_native_path_unavailable", 1),
+        ("length", "windows_expected_native_path_unavailable", 1),
+        ("drive", "windows_expected_native_path_unavailable", 1),
+        ("close", "windows_expected_native_path_close_failed", 1),
+    ],
+)
+def test_windows_expected_native_image_failures_are_closed_and_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    reason: str,
+    expected_closes: int,
+) -> None:
+    from ctypes import wintypes
+
+    executable = tmp_path / "trusted.exe"
+    executable.write_bytes(b"trusted")
+    closed: list[object] = []
+
+    def create_file(*_args: object) -> int:
+        if mode == "open":
+            return wintypes.HANDLE(-1).value
+        return 4242
+
+    def final_path(
+        _handle: object,
+        buffer: object,
+        _size: object,
+        flags: object,
+    ) -> int:
+        assert flags == 0x2
+        if mode in {"empty", "empty_close"}:
+            return 0
+        if mode == "oversize":
+            return 32768
+        value = (
+            r"C:\trusted.exe"
+            if mode == "drive"
+            else r"\Device\HarddiskVolume9\trusted.exe"
+        )
+        buffer.value = value  # type: ignore[attr-defined]
+        return len(value) + (1 if mode == "length" else 0)
+
+    def close_handle(handle: object) -> bool:
+        closed.append(handle)
+        return mode not in {"close", "empty_close"}
+
+    class Kernel32:
+        CreateFileW = _CtypesCall(create_file)
+        GetFinalPathNameByHandleW = _CtypesCall(final_path)
+        CloseHandle = _CtypesCall(close_handle)
+
+    monkeypatch.setattr(
+        runtime.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: Kernel32(),
+        raising=False,
+    )
+
+    with pytest.raises(runtime.EvidenceIntegrityError, match=f"^{reason}$") as caught:
+        runtime._windows_expected_native_image(executable)
+
+    assert caught.value.reason_code == reason
+    assert caught.value.phase == "isolation"
+    assert len(closed) == expected_closes
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process handles only")
+def test_windows_native_process_image_survives_short_process_exit() -> None:
+    executable = runtime._trusted_git_literal()
+    expected = runtime._windows_expected_native_image(executable)
+    for _attempt in range(5):
+        with subprocess.Popen(
+            [os.fspath(executable), "version"],
+            executable=os.fspath(executable),
+            env=_fixture_git_environment(),
+            shell=False,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            stdout, _stderr = process.communicate(timeout=10)
+            assert process.returncode == 0
+            assert stdout.startswith(b"git version ")
+            observed = runtime._process_image_path(process)
+            assert type(observed) is str
+            assert os.path.normcase(observed) == os.path.normcase(expected)
 
 
 def test_run_git_preserves_process_image_error_and_kills_and_reaps(
@@ -799,7 +1019,13 @@ def test_run_git_preserves_process_image_error_and_kills_and_reaps(
 
     process = Process()
     monkeypatch.setattr(runtime, "_bind_trusted_git", lambda: binding)
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    popen_kwargs: dict[str, object] = {}
+
+    def popen(*_args: object, **kwargs: object) -> Process:
+        popen_kwargs.update(kwargs)
+        return process
+
+    monkeypatch.setattr(runtime.subprocess, "Popen", popen)
 
     def fail_image(_process: object) -> Path:
         raise image_error
@@ -814,6 +1040,80 @@ def test_run_git_preserves_process_image_error_and_kills_and_reaps(
     assert caught.value.phase == "isolation"
     assert process.killed is True
     assert process.reaped is True
+    assert process.communicate_calls == 1
+    assert popen_kwargs["executable"] == os.fspath(executable)
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "changed"])
+def test_run_git_preserves_image_failure_for_already_exited_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    executable = tmp_path / "bound-git.exe"
+    executable.write_bytes(b"bound executable")
+    content, identity = runtime._read_plain_file(executable, require_single_link=False)
+    binding = runtime._ExecutableBinding(
+        path=executable,
+        identity=identity,
+        sha256="sha256:" + hashlib.sha256(content).hexdigest(),
+        aliases=(os.fspath(executable),),
+    )
+    expected_native = r"\Device\HarddiskVolume9\bound-git.exe"
+
+    class Process:
+        returncode = 0
+        killed = False
+        communicate_calls = 0
+
+        def poll(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+            raise OSError("an exited process must not be killed")
+
+        def communicate(self, *_args: object, **_kwargs: object) -> tuple[bytes, bytes]:
+            self.communicate_calls += 1
+            return b"", b""
+
+    process = Process()
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    monkeypatch.setattr(runtime, "_bind_trusted_git", lambda: binding)
+    monkeypatch.setattr(
+        runtime,
+        "_windows_expected_native_image",
+        lambda _path: expected_native,
+    )
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        runtime,
+        "_process_image_path",
+        lambda _process: (
+            r"\Device\HarddiskVolume9\other.exe"
+            if failure == "mismatch"
+            else expected_native
+        ),
+    )
+    if failure == "changed":
+        changed_identity = replace(identity, size=identity.size + 1)
+        monkeypatch.setattr(
+            runtime,
+            "_read_plain_file",
+            lambda *_args, **_kwargs: (content, changed_identity),
+        )
+
+    reason = (
+        "trusted_git_process_image_mismatch"
+        if failure == "mismatch"
+        else "trusted_git_process_image_changed"
+    )
+    with pytest.raises(runtime.EvidenceIntegrityError, match=f"^{reason}$") as caught:
+        runtime._run_git(executable, tmp_path, "version")
+
+    assert caught.value.reason_code == reason
+    assert caught.value.phase == "git"
+    assert process.killed is False
     assert process.communicate_calls == 1
 
 
@@ -1355,6 +1655,44 @@ def test_real_isolated_constant_loader_private_receipt_and_public_mapping(
     assert envelope["status"] == status
 
 
+def test_isolated_child_launch_uses_explicit_bound_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, snapshot, spec, _output = _make_release_repo(
+        tmp_path,
+        producer_bytes=_frozen_producer_source("pass"),
+    )
+    original_popen = runtime.subprocess.Popen
+    captured: list[tuple[object, object]] = []
+
+    def capture_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        captured.append((args[0], kwargs.get("executable")))
+        return original_popen(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.subprocess, "Popen", capture_popen)
+
+    result = runtime.ensure_isolated_once(
+        snapshot=snapshot,
+        executing_file=repo / PRODUCER_RELPATH,
+        producer_relpath=PRODUCER_RELPATH,
+        validated_argv=(),
+        bootstrap_spec=spec,
+    )
+
+    assert result == runtime.EXIT_PASS
+    interpreter = runtime._bind_current_interpreter()["path"]
+    child_calls = [
+        executable
+        for command, executable in captured
+        if type(command) is list
+        and command
+        and command[0] == interpreter
+        and "-I" in command
+    ]
+    assert child_calls == [interpreter]
+
+
 def test_producer_stdout_cannot_contaminate_dedicated_child_receipt(
     tmp_path: Path,
 ) -> None:
@@ -1636,8 +1974,8 @@ def test_isolated_publication_rejects_hardlinked_target_without_mutating_other_n
     os.link(outside, output)
     with pytest.raises(
         runtime.EvidenceIntegrityError,
-        match="^file_not_plain_single_link$",
-    ):
+        match="^transaction_file_not_plain$",
+    ) as caught:
         runtime.ensure_isolated_once(
             snapshot=snapshot,
             executing_file=repo / PRODUCER_RELPATH,
@@ -1645,6 +1983,7 @@ def test_isolated_publication_rejects_hardlinked_target_without_mutating_other_n
             validated_argv=(),
             bootstrap_spec=spec,
         )
+    assert caught.value.phase == "durability"
     assert outside.read_bytes() == OLD_BYTES
     assert output.read_bytes() == OLD_BYTES
     assert not _reserved_residue(output.parent)
@@ -1665,8 +2004,8 @@ def test_isolated_publication_rejects_dangling_target_without_following_it(
         pytest.skip(f"symlink creation unavailable: {exc}")
     with pytest.raises(
         runtime.EvidenceIntegrityError,
-        match="^file_not_plain_single_link$",
-    ):
+        match="^transaction_file_not_plain$",
+    ) as caught:
         runtime.ensure_isolated_once(
             snapshot=snapshot,
             executing_file=repo / PRODUCER_RELPATH,
@@ -1674,9 +2013,60 @@ def test_isolated_publication_rejects_dangling_target_without_following_it(
             validated_argv=(),
             bootstrap_spec=spec,
         )
+    assert caught.value.phase == "durability"
     assert output.is_symlink()
     assert not outside.exists()
     assert not _reserved_residue(output.parent)
+
+
+@pytest.mark.parametrize(
+    ("reason", "phase", "remapped"),
+    [
+        ("file_not_plain_single_link", "path", True),
+        ("plain_file_open_failed", "path", False),
+    ],
+)
+def test_windows_transaction_reader_remaps_only_not_plain_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+    phase: str,
+    remapped: bool,
+) -> None:
+    source = runtime.EvidenceIntegrityError(
+        reason,
+        phase=phase,
+        recovery_paths=("opaque",),
+    )
+
+    class Lease:
+        path = tmp_path
+
+        @staticmethod
+        def revalidate() -> None:
+            return None
+
+    monkeypatch.setattr(runtime.os, "name", "nt")
+    monkeypatch.setattr(runtime, "_dir_lstat", lambda *_args: os.stat_result((0,) * 10))
+
+    def fail_read(*_args: object, **_kwargs: object) -> tuple[bytes, runtime.FileIdentity]:
+        raise source
+
+    monkeypatch.setattr(runtime, "_read_plain_file", fail_read)
+
+    with pytest.raises(runtime.EvidenceIntegrityError) as caught:
+        runtime._dir_read_plain(Lease(), "target.json")
+
+    if remapped:
+        assert caught.value is not source
+        assert caught.value.reason_code == "transaction_file_not_plain"
+        assert caught.value.phase == "durability"
+        assert caught.value.recovery_paths == ("opaque",)
+        assert caught.value.__cause__ is source
+    else:
+        assert caught.value is source
+        assert caught.value.reason_code == reason
+        assert caught.value.phase == phase
 
 
 def test_isolated_publication_index_lock_blocks_before_transaction_residue(

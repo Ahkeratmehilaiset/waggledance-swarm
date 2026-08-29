@@ -804,9 +804,15 @@ def _run_git(
     binding = _bind_trusted_git()
     if not _same_identity_path(executable, binding.path):
         _integrity("trusted_git_argument_mismatch", phase="git")
+    expected_native_image = (
+        _windows_expected_native_image(binding.path)
+        if sys.platform == "win32"
+        else None
+    )
     try:
         process = subprocess.Popen(
             [*_git_base_argv(executable), *arguments],
+            executable=os.fspath(binding.path),
             cwd=cwd,
             env=fresh_process_environment(),
             shell=False,
@@ -816,16 +822,25 @@ def _run_git(
             stderr=subprocess.PIPE,
         )
         image = _process_image_path(process)
-        if os.path.normcase(os.path.normpath(os.fspath(image))) != os.path.normcase(
-            os.path.normpath(os.fspath(binding.path))
-        ):
-            process.kill()
-            process.communicate()
-            _integrity("trusted_git_process_image_mismatch", phase="git")
-        image_bytes, image_identity = _read_plain_file(image, require_single_link=False)
+        if sys.platform == "win32":
+            if (
+                type(image) is not str
+                or type(expected_native_image) is not str
+                or os.path.normcase(image) != os.path.normcase(expected_native_image)
+            ):
+                _integrity("trusted_git_process_image_mismatch", phase="git")
+            image_path = binding.path
+        else:
+            if os.path.normcase(os.path.normpath(os.fspath(image))) != os.path.normcase(
+                os.path.normpath(os.fspath(binding.path))
+            ):
+                _integrity("trusted_git_process_image_mismatch", phase="git")
+            image_path = image
+        image_bytes, image_identity = _read_plain_file(
+            image_path,
+            require_single_link=False,
+        )
         if image_identity != binding.identity or _sha256_bytes(image_bytes) != binding.sha256:
-            process.kill()
-            process.communicate()
             _integrity("trusted_git_process_image_changed", phase="git")
         stdout, _stderr = process.communicate(timeout=60)
         completed_returncode = process.returncode
@@ -849,7 +864,68 @@ def _run_git(
     return bytes(stdout)
 
 
-def _process_image_path(process: subprocess.Popen[bytes]) -> Path:
+def _windows_expected_native_image(path: Path) -> str:
+    """Return an opaque NT device name for an independently opened image."""
+
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        0x80000000,
+        0x00000001,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        _integrity("windows_expected_native_path_open_failed", phase="isolation")
+    try:
+        size = 32768
+        buffer = ctypes.create_unicode_buffer(size)
+        length = int(kernel32.GetFinalPathNameByHandleW(handle, buffer, size, 0x2))
+        value = buffer.value
+        if (
+            length <= 0
+            or length >= size
+            or length != len(value)
+            or not value.startswith("\\Device\\")
+            or "\x00" in value
+        ):
+            _integrity(
+                "windows_expected_native_path_unavailable",
+                phase="isolation",
+            )
+        return value
+    finally:
+        if not kernel32.CloseHandle(handle) and sys.exc_info()[0] is None:
+            _integrity(
+                "windows_expected_native_path_close_failed",
+                phase="isolation",
+            )
+
+
+def _process_image_path(process: subprocess.Popen[bytes]) -> Path | str:
     if sys.platform == "win32":
         from ctypes import wintypes
 
@@ -870,11 +946,18 @@ def _process_image_path(process: subprocess.Popen[bytes]) -> Path:
             buffer = ctypes.create_unicode_buffer(size.value)
             ctypes.set_last_error(0)
             if kernel32.QueryFullProcessImageNameW(
-                handle, 0, buffer, ctypes.byref(size)
+                handle, 0x1, buffer, ctypes.byref(size)
             ):
-                if size.value <= 0 or size.value >= len(buffer) or not buffer.value:
+                value = buffer.value
+                if (
+                    size.value <= 0
+                    or size.value >= len(buffer)
+                    or size.value != len(value)
+                    or not value.startswith("\\Device\\")
+                    or "\x00" in value
+                ):
                     _integrity("process_image_unavailable", phase="isolation")
-                return _absolute_lexical(buffer.value)
+                return value
             if attempt != 3:
                 time.sleep(0.002)
         _integrity("process_image_unavailable", phase="isolation")
@@ -2883,8 +2966,14 @@ def ensure_isolated_once(
     private_exit: int | None = None
     public: int | None = None
     try:
+        expected_native_image = (
+            _windows_expected_native_image(Path(interpreter["path"]))
+            if sys.platform == "win32"
+            else None
+        )
         process = subprocess.Popen(
             command,
+            executable=interpreter["path"],
             cwd=snapshot.root,
             env=fresh_process_environment(),
             shell=False,
@@ -2894,11 +2983,25 @@ def ensure_isolated_once(
             stderr=subprocess.PIPE,
         )
         child_image = _process_image_path(process)
-        if os.path.normcase(os.path.normpath(os.fspath(child_image))) != os.path.normcase(
-            os.path.normpath(interpreter["path"])
-        ):
-            _integrity("python_child_image_mismatch", phase="isolation")
-        image_bytes, image_identity = _read_plain_file(child_image, require_single_link=False)
+        if sys.platform == "win32":
+            if (
+                type(child_image) is not str
+                or type(expected_native_image) is not str
+                or os.path.normcase(child_image)
+                != os.path.normcase(expected_native_image)
+            ):
+                _integrity("python_child_image_mismatch", phase="isolation")
+            child_image_path = Path(interpreter["path"])
+        else:
+            if os.path.normcase(
+                os.path.normpath(os.fspath(child_image))
+            ) != os.path.normcase(os.path.normpath(interpreter["path"])):
+                _integrity("python_child_image_mismatch", phase="isolation")
+            child_image_path = child_image
+        image_bytes, image_identity = _read_plain_file(
+            child_image_path,
+            require_single_link=False,
+        )
         if (
             _identity_mapping(image_identity) != interpreter["identity"]
             or _sha256_bytes(image_bytes) != interpreter["sha256"]
@@ -3512,10 +3615,19 @@ def _dir_read_plain(
     if info is None:
         return None
     if os.name == "nt":
-        return _read_plain_file(
-            parent_lease.path / name,
-            require_single_link=require_single_link,
-        )
+        try:
+            return _read_plain_file(
+                parent_lease.path / name,
+                require_single_link=require_single_link,
+            )
+        except EvidenceIntegrityError as exc:
+            if exc.reason_code != "file_not_plain_single_link":
+                raise
+            raise EvidenceIntegrityError(
+                "transaction_file_not_plain",
+                phase="durability",
+                recovery_paths=exc.recovery_paths,
+            ) from exc
     if (
         not stat.S_ISREG(info.st_mode)
         or _stat_is_reparse(info)

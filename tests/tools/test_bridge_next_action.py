@@ -93,7 +93,12 @@ def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path)
         }
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[claim])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[claim],
+        now_utc=datetime.fromisoformat("2026-05-18T10:00:00+00:00"),
+    )
 
     assert report["action"] == "continue_claim"
     assert report["task_id"] == "owned-task"
@@ -169,6 +174,7 @@ def test_merge_blocking_incoming_request_interrupts_own_claim(
         agent="codex-tools-1",
         events=events,
         claims=[claim],
+        now_utc=datetime.fromisoformat("2026-06-08T06:06:43+00:00"),
     )
 
     assert report["action"] == "answer_incoming"
@@ -218,6 +224,7 @@ def test_rco_reemit_request_interrupts_own_claim(
         agent="codex-lead-1",
         events=events,
         claims=[claim],
+        now_utc=datetime.fromisoformat("2026-06-13T15:45:09+00:00"),
     )
 
     assert report["action"] == "answer_incoming"
@@ -252,7 +259,12 @@ def test_free_text_build_consensus_request_does_not_interrupt_own_claim(
         }
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[claim])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[claim],
+        now_utc=datetime.fromisoformat("2026-06-08T06:10:00+00:00"),
+    )
 
     assert report["action"] == "continue_claim"
     assert report["task_id"] == "owned-task"
@@ -290,7 +302,12 @@ def test_recommends_answering_latest_unanswered_incoming_request() -> None:
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-18T10:10:00+00:00"),
+    )
 
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "new-task"
@@ -340,7 +357,12 @@ def test_open_request_closure_scan_is_indexed(monkeypatch) -> None:
         counting_is_answer_like,
     )
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-18T11:03:19+00:00"),
+    )
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
@@ -360,7 +382,12 @@ def test_request_changes_status_remains_open_request() -> None:
         }
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-18T10:00:00+00:00"),
+    )
 
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "review-task"
@@ -607,6 +634,368 @@ def test_same_pr_requester_terminal_close_closes_rco_review_request() -> None:
 
 
 @pytest.mark.parametrize(
+    ("request_identity", "closure_identity", "closed"),
+    [
+        (
+            {"agent_uuid": "UUID-A", "session_id": "session-a"},
+            {"agent_uuid": "uuid-a", "session_id": "session-a"},
+            True,
+        ),
+        (
+            {"agent_uuid": "uuid-a", "session_id": "session-a"},
+            {"agent_uuid": "uuid-a", "session_id": "session-b"},
+            False,
+        ),
+        (
+            {"agent_uuid": "uuid-a", "session_id": "session-a"},
+            {"agent_uuid": "uuid-b", "session_id": "session-a"},
+            False,
+        ),
+        (
+            {"agent_uuid": "uuid-a", "session_id": "session-a"},
+            {},
+            False,
+        ),
+        ({}, {"agent_uuid": "uuid-a", "session_id": "session-a"}, True),
+    ],
+)
+def test_requester_terminal_close_is_bound_to_request_identity(
+    request_identity: dict[str, str],
+    closure_identity: dict[str, str],
+    closed: bool,
+) -> None:
+    request = {
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "identity-bound-rco-review",
+        "status": "rco_review_requested",
+        "message": "RCO review requested",
+        **request_identity,
+    }
+    closure = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1,operator",
+        "type": "decision",
+        "task_id": "identity-bound-rco-review",
+        "status": "superseded",
+        "message": "Review request superseded",
+        **closure_identity,
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[request, closure],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["open_incoming_count"] == (0 if closed else 1)
+    assert report["action"] == (
+        "claim_unblocked_work" if closed else "answer_incoming"
+    )
+
+
+@pytest.mark.parametrize(
+    ("closure_identity", "closed"),
+    [
+        ({"agent_uuid": "uuid-a", "session_id": "session-a"}, True),
+        ({"agent_uuid": "uuid-a", "session_id": "session-b"}, False),
+    ],
+)
+def test_requester_merge_receipt_is_bound_to_request_identity(
+    closure_identity: dict[str, str],
+    closed: bool,
+) -> None:
+    request = {
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "agent": "codex-lead-1",
+        "agent_uuid": "uuid-a",
+        "session_id": "session-a",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "identity-bound-merge",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    receipt = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "codex-lead-1",
+        "to": "operator",
+        "type": "decision",
+        "task_id": "identity-bound-merge",
+        "status": "autonomous_merge_receipt",
+        "message": "Merge recorded",
+        **closure_identity,
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[request, receipt],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["open_incoming_count"] == (0 if closed else 1)
+
+
+@pytest.mark.parametrize("closer", ["requester", "target"])
+def test_prior_future_dated_closure_does_not_close_later_appended_request(
+    closer: str,
+) -> None:
+    request = {
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "agent": "codex-lead-1",
+        "agent_uuid": "uuid-a",
+        "session_id": "session-a",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "append-order-request",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    closure = {
+        "ts_utc": "2099-06-13T09:01:00Z",
+        "agent": "codex-lead-1" if closer == "requester" else "claude-rco-1",
+        "agent_uuid": "uuid-a" if closer == "requester" else "",
+        "session_id": "session-a" if closer == "requester" else "",
+        "to": "operator",
+        "type": "decision",
+        "task_id": "append-order-request",
+        "status": "superseded" if closer == "requester" else "answered",
+        "message": "Closure recorded before the request",
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[closure, request],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+def test_later_appended_closure_wins_despite_older_timestamp() -> None:
+    request = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "append-order-request",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    closure = {
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "append-order-request",
+        "status": "answered",
+        "message": "Answer appended after the request",
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[request, closure],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+def test_same_task_requests_from_distinct_sessions_remain_independent() -> None:
+    base_request = {
+        "agent": "codex-lead-1",
+        "agent_uuid": "uuid-a",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "session-specific-request",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    first = {
+        **base_request,
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "session_id": "session-a",
+    }
+    second = {
+        **base_request,
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "session_id": "session-b",
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[first, second],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "identity_mode",
+    ["different_agent", "different_session", "same_identity"],
+)
+@pytest.mark.parametrize("future_first", [False, True])
+@pytest.mark.parametrize("explicit_now", [False, True])
+def test_future_dated_request_is_never_actionable(
+    monkeypatch: pytest.MonkeyPatch,
+    identity_mode: str,
+    future_first: bool,
+    explicit_now: bool,
+) -> None:
+    fixed_now = datetime.fromisoformat("2026-06-13T09:02:00+00:00")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(bridge_next_action, "datetime", FixedDatetime)
+    future = {
+        "ts_utc": "2099-06-13T09:01:00Z",
+        "agent": "codex-tools-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "future-request",
+        "status": "review_requested",
+        "message": "Future request must not become actionable",
+    }
+    current_agent = (
+        "codex-lead-1" if identity_mode == "different_agent" else "codex-tools-1"
+    )
+    current = {
+        **future,
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": current_agent,
+        "message": "Current request remains actionable",
+    }
+    if identity_mode == "different_session":
+        future.update({"agent_uuid": "uuid-a", "session_id": "session-a"})
+        current.update({"agent_uuid": "uuid-a", "session_id": "session-b"})
+    events = [future, current] if future_first else [current, future]
+    kwargs = {"now_utc": fixed_now} if explicit_now else {}
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=events,
+        claims=[],
+        **kwargs,
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+    assert report["incoming"]["agent"] == current_agent
+    assert report["incoming"]["ts_utc"] == "2026-06-13T09:01:00Z"
+
+
+def test_invalid_request_timestamp_is_never_actionable() -> None:
+    current = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "invalid-timestamp-request",
+        "status": "review_requested",
+        "message": "Current request remains actionable",
+    }
+    invalid = {
+        **current,
+        "ts_utc": "not-a-timestamp",
+        "agent": "codex-tools-1",
+        "message": "Invalid request must not become actionable",
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[current, invalid],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+    assert report["incoming"]["agent"] == "codex-lead-1"
+    assert report["incoming"]["ts_utc"] == "2026-06-13T09:01:00Z"
+
+
+def test_closure_between_repeated_requests_closes_only_the_earlier_request() -> None:
+    first = {
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "repeated-request",
+        "status": "review_requested",
+        "message": "Review requested",
+    }
+    answer = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "repeated-request",
+        "status": "answered",
+        "message": "First request answered",
+    }
+    repeated = {**first, "ts_utc": "2026-06-13T09:02:00Z"}
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[first, answer, repeated],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:03:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("invalid_pr", [True, 1.5])
+def test_malformed_pr_does_not_create_cross_task_closure(invalid_pr: object) -> None:
+    request = {
+        "ts_utc": "2026-06-13T09:00:00Z",
+        "agent": "codex-lead-1",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "request-task",
+        "status": "review_requested",
+        "message": "Review requested",
+        "payload": {"pr": invalid_pr},
+    }
+    answer = {
+        "ts_utc": "2026-06-13T09:01:00Z",
+        "agent": "claude-rco-1",
+        "to": "codex-lead-1",
+        "type": "decision",
+        "task_id": "different-task",
+        "status": "answered",
+        "message": "Different task answered",
+        "payload": {"pr": invalid_pr},
+    }
+
+    report = recommend_next_action(
+        agent="claude-rco-1",
+        events=[request, answer],
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize(
     "status",
     [
         "changes_requested_NOT_resolved",
@@ -630,6 +1019,7 @@ def test_negated_terminal_words_do_not_close_request_statuses(status: str) -> No
         agent="codex-tools-1",
         events=events,
         claims=[],
+        now_utc=datetime.fromisoformat("2026-06-11T09:30:42+00:00"),
     )
 
     assert report["action"] == "answer_incoming"
@@ -658,7 +1048,12 @@ def test_ignores_stale_incoming_request_when_bridge_has_moved_on() -> None:
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-20T10:30:00+00:00"),
+    )
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
@@ -687,7 +1082,12 @@ def test_ignores_stale_incoming_request_with_powershell_fractional_timestamp() -
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-20T10:30:00+00:00"),
+    )
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
@@ -725,7 +1125,12 @@ def test_deduplicates_stale_incoming_task_ids_but_preserves_event_count() -> Non
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-20T10:30:00+00:00"),
+    )
 
     assert report["action"] == "claim_unblocked_work"
     assert report["stale_incoming_count"] == 1
@@ -945,7 +1350,12 @@ def test_fresh_incoming_request_wins_over_stale_backlog() -> None:
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-20T10:30:00+00:00"),
+    )
 
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "fresh-task"
@@ -966,7 +1376,12 @@ def test_rco_requested_status_is_open_request() -> None:
         }
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-18T10:10:00+00:00"),
+    )
 
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "rco-task"
@@ -999,7 +1414,7 @@ def test_done_postmerge_validated_closes_incoming_handoff() -> None:
     assert report["open_incoming_count"] == 0
 
 
-def test_autonomous_merge_receipt_closes_same_task_incoming_request() -> None:
+def test_third_party_autonomous_merge_receipt_does_not_close_request() -> None:
     events = [
         {
             "ts_utc": "2026-06-16T00:21:54Z",
@@ -1035,9 +1450,76 @@ def test_autonomous_merge_receipt_closes_same_task_incoming_request() -> None:
         now_utc=datetime.fromisoformat("2026-06-16T00:23:00+00:00"),
     )
 
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+def test_target_autonomous_merge_receipt_closes_same_task_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-16T00:21:54Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "target-receipt-task",
+            "status": "lead_build_consensus_required",
+            "message": "Lead build consensus is required",
+        },
+        {
+            "ts_utc": "2026-06-16T00:22:05Z",
+            "agent": "codex-lead-1",
+            "to": "codex-tools-1,operator",
+            "type": "decision",
+            "task_id": "target-receipt-task",
+            "status": "autonomous_merge_receipt",
+            "message": "Target recorded the merge receipt.",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-16T00:23:00+00:00"),
+    )
+
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
-    assert report["stale_incoming_count"] == 0
+
+
+def test_third_party_terminal_same_pr_event_does_not_close_request() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-16T00:21:54Z",
+            "agent": "codex-tools-1",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "pr-request",
+            "status": "review_requested",
+            "message": "Review PR #1238",
+            "payload": {"pr": 1238},
+        },
+        {
+            "ts_utc": "2026-06-16T00:22:05Z",
+            "agent": "claude-rco-1",
+            "to": "operator",
+            "type": "done",
+            "task_id": "unrelated-closeout",
+            "status": "merged",
+            "message": "PR #1238 merged.",
+            "payload": {"pr": 1238},
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-lead-1",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-16T00:23:00+00:00"),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
 
 
 def test_autonomous_merge_receipt_does_not_close_unrelated_task_request() -> None:
@@ -1347,7 +1829,12 @@ def test_unrelated_retraction_does_not_close_incoming_finding() -> None:
         },
     ]
 
-    report = recommend_next_action(agent="fable-5", events=events, claims=[])
+    report = recommend_next_action(
+        agent="fable-5",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-06-12T05:13:00+00:00"),
+    )
 
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "fable-5/failover-refuse-path-tests-20260612"
@@ -1396,7 +1883,12 @@ def test_comma_separated_recipient_is_incoming_for_target_agent() -> None:
         }
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime.fromisoformat("2026-05-22T08:52:04+00:00"),
+    )
 
     assert report["action"] == "answer_incoming"
     assert report["task_id"] == "multi-target-help"
@@ -1997,6 +2489,7 @@ def test_report_surfaces_agent_profile_and_claim_role_metadata() -> None:
         agent="codex-impl-1",
         events=events,
         claims=[claim],
+        now_utc=datetime.fromisoformat("2026-05-23T15:00:00+00:00"),
     )
 
     assert report["action"] == "parallel_read_only"
@@ -2108,6 +2601,7 @@ def test_incoming_report_surfaces_requester_role_metadata() -> None:
         agent="codex-impl-1",
         events=events,
         claims=[],
+        now_utc=datetime.fromisoformat("2026-05-23T15:00:00+00:00"),
     )
 
     assert report["action"] == "answer_incoming"
@@ -2211,6 +2705,195 @@ def test_recent_peer_production_activity_does_not_report_liveness_gap() -> None:
     )
 
     assert "production_liveness" not in report
+
+
+@pytest.mark.parametrize("explicit_now", [False, True])
+def test_future_activity_does_not_hide_stalled_production_lane(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_now: bool,
+) -> None:
+    fixed_now = datetime(2026, 6, 13, 12, 20, tzinfo=timezone.utc)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(bridge_next_action, "datetime", FixedDatetime)
+    events = [
+        {
+            "ts_utc": "2026-06-13T10:00:00Z",
+            "agent": "codex-lead-1",
+            "type": "status",
+            "task_id": "lead-slice",
+            "status": "working",
+            "message": "last trustworthy activity",
+        },
+        {
+            "ts_utc": "2099-06-13T12:10:00Z",
+            "agent": "codex-lead-1",
+            "type": "status",
+            "task_id": "future-clock-skew",
+            "status": "working",
+            "message": "future activity must be ignored",
+        },
+    ]
+    kwargs = {"now_utc": fixed_now} if explicit_now else {}
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        production_idle_warn_minutes=60.0,
+        **kwargs,
+    )
+
+    liveness = report["production_liveness"]
+    assert liveness["stalled_agent_count"] == 1
+    assert liveness["stalled_agents"][0]["agent"] == "codex-lead-1"
+    assert liveness["stalled_agents"][0]["last_activity_ts_utc"] == (
+        "2026-06-13T10:00:00Z"
+    )
+    assert liveness["stalled_agents"][0]["idle_minutes"] == 140.0
+
+
+def test_future_wake_request_does_not_create_delivery_escalation() -> None:
+    now_utc = datetime(2026, 6, 13, 12, 20, tzinfo=timezone.utc)
+    old_wake = {
+        "ts_utc": "2026-06-13T12:00:00Z",
+        "agent": "operator",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "rco-needed",
+        "status": "open",
+        "message": "one historical wake",
+    }
+    future_wake = {
+        **old_wake,
+        "ts_utc": "2099-06-13T12:05:00Z",
+        "message": "future wake must not count as a repeat",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[old_wake, future_wake],
+        claims=[],
+        now_utc=now_utc,
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert "wake_delivery" not in report.get("production_liveness", {})
+
+
+def test_future_wake_request_does_not_refresh_valid_repeat_evidence() -> None:
+    now_utc = datetime(2026, 6, 13, 12, 20, tzinfo=timezone.utc)
+    first = {
+        "ts_utc": "2026-06-13T12:00:00Z",
+        "agent": "operator",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "rco-needed",
+        "status": "open",
+        "message": "first valid wake",
+    }
+    second = {
+        **first,
+        "ts_utc": "2026-06-13T12:05:00Z",
+        "message": "second valid wake",
+    }
+    future = {
+        **first,
+        "ts_utc": "2099-06-13T12:10:00Z",
+        "message": "future wake must not refresh the group",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[first, second, future],
+        claims=[],
+        now_utc=now_utc,
+        production_idle_warn_minutes=12.0,
+    )
+
+    wake = report["production_liveness"]["wake_delivery"]["stalled_wakes"][0]
+    assert report["action"] == "escalate_wake_delivery_stall"
+    assert wake["wake_request_count"] == 2
+    assert wake["latest_wake_age_minutes"] == 15.0
+
+
+@pytest.mark.parametrize("backdated_first", [False, True])
+def test_backdated_wake_repeat_cannot_move_latest_wake_backward(
+    backdated_first: bool,
+) -> None:
+    now_utc = datetime(2026, 6, 27, 17, 0, tzinfo=timezone.utc)
+    current = {
+        "ts_utc": "2026-06-27T16:40:00Z",
+        "agent": "operator",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "rco-needed",
+        "status": "open",
+        "message": "current wake",
+    }
+    backdated = {
+        **current,
+        "ts_utc": "2026-06-23T16:40:00Z",
+        "message": "backdated repeat",
+    }
+    events = [backdated, current] if backdated_first else [current, backdated]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=now_utc,
+        production_idle_warn_minutes=12.0,
+    )
+
+    wake = report["production_liveness"]["wake_delivery"]["stalled_wakes"][0]
+    assert report["action"] == "escalate_wake_delivery_stall"
+    assert wake["wake_request_count"] == 2
+    assert wake["latest_wake_age_minutes"] == 20.0
+    assert wake["last_ts_utc"] == "2026-06-27T16:40:00Z"
+
+
+@pytest.mark.parametrize(
+    "response_ts",
+    ["2026-06-13T11:00:00Z", "2099-06-13T12:10:00Z"],
+)
+def test_later_target_activity_clears_wake_gap_by_append_order(
+    response_ts: str,
+) -> None:
+    wake = {
+        "ts_utc": "2026-06-13T12:00:00Z",
+        "agent": "operator",
+        "to": "claude-rco-1",
+        "type": "wake_request",
+        "task_id": "rco-needed",
+        "status": "open",
+        "message": "wake",
+    }
+    response = {
+        "ts_utc": response_ts,
+        "agent": "claude-rco-1",
+        "to": "operator",
+        "type": "decision",
+        "task_id": "rco-needed",
+        "status": "rco_pass",
+        "message": "response appended after both wakes",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[wake, {**wake, "ts_utc": "2026-06-13T12:05:00Z"}, response],
+        claims=[],
+        now_utc=datetime(2026, 6, 13, 12, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert "wake_delivery" not in report.get("production_liveness", {})
 
 
 @pytest.mark.parametrize("activity_type", ["decision", "finding"])
@@ -2652,6 +3335,56 @@ def test_wake_send_failure_changes_wake_delivery_escalation() -> None:
     assert "TitleMap" in wake["safe_next_action"]
 
 
+def test_backdated_wake_send_failure_cannot_replace_current_failure() -> None:
+    events = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "lead-needed",
+            "status": "open",
+        },
+        {
+            "ts_utc": "2026-06-06T10:04:00Z",
+            "agent": "operator",
+            "type": "message",
+            "task_id": "wake-failure-current",
+            "status": "wake_send_failed",
+            "message": "Keying 'codex-lead-1' failed (current failure).",
+        },
+        {
+            "ts_utc": "2026-06-05T10:04:00Z",
+            "agent": "operator",
+            "type": "message",
+            "task_id": "wake-failure-backdated",
+            "status": "wake_send_failed",
+            "message": "Keying 'codex-lead-1' failed (backdated failure).",
+        },
+        {
+            "ts_utc": "2026-06-06T10:05:00Z",
+            "agent": "operator",
+            "to": "codex-lead-1",
+            "type": "wake_request",
+            "task_id": "lead-needed",
+            "status": "open",
+        },
+    ]
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 6, 6, 10, 20, tzinfo=timezone.utc),
+        production_idle_warn_minutes=12.0,
+    )
+
+    wake = report["production_liveness"]["wake_delivery"]["stalled_wakes"][0]
+    assert wake["wake_send_failed_count"] == 2
+    assert wake["latest_wake_send_failed_ts_utc"] == "2026-06-06T10:04:00Z"
+    assert "current failure" in wake["latest_wake_send_failed_message"]
+
+
 def test_wake_delivery_gap_does_not_interrupt_active_own_claim(
     tmp_path: Path,
 ) -> None:
@@ -2778,7 +3511,12 @@ def test_idle_protocol_counter_is_closed_by_later_consensus_target() -> None:
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 5, 18, 7, 20, tzinfo=timezone.utc),
+    )
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
@@ -2817,7 +3555,102 @@ def test_idle_protocol_proposal_is_closed_by_later_response() -> None:
         },
     ]
 
-    report = recommend_next_action(agent="codex", events=events, claims=[])
+    report = recommend_next_action(
+        agent="codex",
+        events=events,
+        claims=[],
+        now_utc=datetime(2026, 5, 18, 7, 20, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "claim_unblocked_work"
+    assert report["open_incoming_count"] == 0
+
+
+@pytest.mark.parametrize("progress_ts", ["2099-05-18T06:34:58Z", "not-a-timestamp"])
+def test_prior_idle_protocol_progress_does_not_close_later_proposal(
+    progress_ts: str,
+) -> None:
+    progress = {
+        "ts_utc": progress_ts,
+        "agent": "codex",
+        "to": "claude",
+        "type": "message",
+        "task_id": "idle-protocol-progress",
+        "status": "idle_counter_proposal",
+        "message": "progress recorded before the proposal",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "event_type": "idle_counter_proposal",
+            "proposal_id": "idle-counter-round2",
+            "responds_to": "idle-proposal-round1",
+        },
+    }
+    proposal = {
+        "ts_utc": "2026-05-18T05:53:31Z",
+        "agent": "claude",
+        "to": "codex",
+        "type": "message",
+        "task_id": "idle-protocol-proposal",
+        "status": "idle_proposal",
+        "message": "proposal appended after unrelated prior progress",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "event_type": "idle_proposal",
+            "proposal_id": "idle-proposal-round1",
+        },
+    }
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[progress, proposal],
+        claims=[],
+        now_utc=datetime(2026, 5, 18, 7, 20, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
+
+
+@pytest.mark.parametrize("progress_ts", ["2026-05-18T05:00:00Z", "not-a-timestamp"])
+def test_later_idle_protocol_progress_closes_proposal_by_append_order(
+    progress_ts: str,
+) -> None:
+    proposal = {
+        "ts_utc": "2026-05-18T05:53:31Z",
+        "agent": "claude",
+        "to": "codex",
+        "type": "message",
+        "task_id": "idle-protocol-proposal",
+        "status": "idle_proposal",
+        "message": "proposal",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "event_type": "idle_proposal",
+            "proposal_id": "idle-proposal-round1",
+        },
+    }
+    progress = {
+        "ts_utc": progress_ts,
+        "agent": "codex",
+        "to": "claude",
+        "type": "message",
+        "task_id": "idle-protocol-progress",
+        "status": "idle_counter_proposal",
+        "message": "progress appended after the proposal",
+        "payload": {
+            "protocol_version": "idle-protocol.v1",
+            "event_type": "idle_counter_proposal",
+            "proposal_id": "idle-counter-round2",
+            "responds_to": "idle-proposal-round1",
+        },
+    }
+
+    report = recommend_next_action(
+        agent="codex",
+        events=[proposal, progress],
+        claims=[],
+        now_utc=datetime(2026, 5, 18, 7, 20, tzinfo=timezone.utc),
+    )
 
     assert report["action"] == "claim_unblocked_work"
     assert report["open_incoming_count"] == 0
@@ -3497,7 +4330,12 @@ def test_private_marker_in_selected_output_is_refused() -> None:
     ]
 
     try:
-        recommend_next_action(agent="codex", events=events, claims=[])
+        recommend_next_action(
+            agent="codex",
+            events=events,
+            claims=[],
+            now_utc=datetime.fromisoformat("2026-05-18T10:10:00+00:00"),
+        )
     except Exception as exc:
         assert "private marker" in str(exc)
     else:

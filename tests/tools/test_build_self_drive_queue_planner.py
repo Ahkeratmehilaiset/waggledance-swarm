@@ -15,6 +15,7 @@ SCRIPT = ROOT / "tools" / "build_self_drive_queue_planner.py"
 
 sys.path.insert(0, str(ROOT))
 
+import tools.build_self_drive_queue_planner as planner_module  # noqa: E402
 from tools.build_self_drive_queue_planner import (  # noqa: E402
     SelfDriveQueuePlannerError,
     build_self_drive_queue_planner,
@@ -128,6 +129,227 @@ def test_planner_ranks_operator_gate_before_agent_request_and_redacts_paths() ->
     assert "visible request" not in encoded
     assert report["authority_boundary"]["bridge_append_allowed"] is False
     assert report["authority_boundary"]["merge_allowed"] is False
+
+
+def test_planner_default_wall_clock_rejects_future_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return NOW if tz is None else NOW.astimezone(tz)
+
+    monkeypatch.setattr(planner_module, "datetime", FixedDatetime)
+    future = _event(
+        agent="codex-tools-1",
+        to="claude-rco-1",
+        task_id="shared-task",
+        ts="2099-06-27T16:40:00Z",
+    )
+    current = _event(
+        agent="codex-lead-1",
+        to="claude-rco-1",
+        task_id="shared-task",
+        ts="2026-06-27T16:40:00Z",
+    )
+
+    report = build_self_drive_queue_planner(
+        events=[future, current],
+        claims=[],
+    )
+
+    open_actions = [
+        action
+        for action in report["queue"]["next_actions"]
+        if action["classification"] == "answer_open_bridge_request"
+    ]
+    assert len(open_actions) == 1
+    assert open_actions[0]["requester"] == "codex-lead-1"
+    assert open_actions[0]["task_id"] == "shared-task"
+
+
+@pytest.mark.parametrize("bad_ts", ["2099-06-27T16:40:00Z", "not-a-timestamp"])
+def test_future_or_invalid_ready_review_item_is_not_actionable(
+    bad_ts: str,
+) -> None:
+    report = build_self_drive_queue_planner(
+        events=[
+            _event(
+                event_type="status",
+                status="review_requested",
+                task_id="bad-ready-review",
+                ts=bad_ts,
+            )
+        ],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    assert all(
+        action["classification"] != "ready_for_review_or_lead_action"
+        for action in report["queue"]["next_actions"]
+    )
+
+
+def test_future_ready_review_does_not_replace_valid_task_state() -> None:
+    valid = _event(
+        event_type="status",
+        status="review_requested",
+        task_id="shared-ready-review",
+        ts="2026-06-27T16:40:00Z",
+        agent="codex-lead-1",
+    )
+    future = {
+        **valid,
+        "ts_utc": "2099-06-27T16:50:00Z",
+        "agent": "codex-tools-1",
+    }
+
+    report = build_self_drive_queue_planner(
+        events=[valid, future],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    ready = [
+        action
+        for action in report["queue"]["next_actions"]
+        if action["classification"] == "ready_for_review_or_lead_action"
+    ]
+    assert len(ready) == 1
+    assert ready[0]["requester"] == "codex-lead-1"
+    assert ready[0]["age_minutes"] == 20.0
+
+
+def test_backdated_ready_review_does_not_replace_newer_task_state() -> None:
+    current = _event(
+        event_type="status",
+        status="review_requested",
+        task_id="shared-ready-review",
+        ts="2026-06-27T16:40:00Z",
+        agent="codex-lead-1",
+        payload={"pr": 1412, "head": HEAD},
+    )
+    backdated = {
+        **current,
+        "ts_utc": "2026-06-26T16:40:00Z",
+        "agent": "codex-tools-1",
+        "payload": {"pr": True, "head": HEAD},
+    }
+
+    report = build_self_drive_queue_planner(
+        events=[current, backdated],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    ready = [
+        action
+        for action in report["queue"]["next_actions"]
+        if action["classification"] == "ready_for_review_or_lead_action"
+    ]
+    assert len(ready) == 1
+    assert ready[0]["requester"] == "codex-lead-1"
+    assert ready[0]["age_minutes"] == 20.0
+    assert ready[0]["pr"] == "1412"
+
+
+@pytest.mark.parametrize("malformed_pr", [True, 1208.5, "not-pr"])
+def test_ready_review_action_rejects_malformed_pr_identifier(
+    malformed_pr: object,
+) -> None:
+    report = build_self_drive_queue_planner(
+        events=[
+            _event(
+                event_type="status",
+                status="review_requested",
+                task_id="malformed-pr-ready-review",
+                payload={"pr": malformed_pr, "head": HEAD},
+            )
+        ],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    ready = [
+        action
+        for action in report["queue"]["next_actions"]
+        if action["classification"] == "ready_for_review_or_lead_action"
+    ]
+    assert len(ready) == 1
+    assert "pr" not in ready[0]
+
+
+@pytest.mark.parametrize(
+    "terminal_ts",
+    ["2026-06-27T16:30:00Z", "2099-06-27T16:50:00Z", "not-a-timestamp"],
+)
+def test_later_terminal_event_clears_ready_state_by_append_order(
+    terminal_ts: str,
+) -> None:
+    ready = _event(
+        event_type="status",
+        status="review_requested",
+        task_id="terminal-ready-review",
+        ts="2026-06-27T16:40:00Z",
+    )
+    terminal = {
+        **ready,
+        "ts_utc": terminal_ts,
+        "type": "done",
+        "status": "done",
+    }
+
+    later_terminal = build_self_drive_queue_planner(
+        events=[ready, terminal],
+        claims=[],
+        now_utc=NOW,
+    )
+    prior_terminal = build_self_drive_queue_planner(
+        events=[terminal, ready],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    assert all(
+        action["classification"] != "ready_for_review_or_lead_action"
+        for action in later_terminal["queue"]["next_actions"]
+    )
+    assert any(
+        action["classification"] == "ready_for_review_or_lead_action"
+        for action in prior_terminal["queue"]["next_actions"]
+    )
+
+
+def test_future_or_backdated_activity_does_not_poison_lane_timestamp() -> None:
+    current = _event(
+        event_type="status",
+        status="working",
+        task_id="lane-work",
+        ts="2026-06-27T16:40:00Z",
+        agent="codex-lead-1",
+    )
+    backdated = {
+        **current,
+        "ts_utc": "2026-06-26T16:40:00Z",
+        "status": "backdated",
+    }
+    future = {
+        **current,
+        "ts_utc": "2099-06-27T16:50:00Z",
+        "status": "future",
+    }
+
+    report = build_self_drive_queue_planner(
+        events=[current, backdated, future],
+        claims=[],
+        now_utc=NOW,
+    )
+
+    lane = report["lanes"]["agents"]["codex-lead-1"]
+    assert lane["last_substantive_ts_utc"] == "2026-06-27T16:40:00Z"
+    assert lane["last_substantive_status"] == "working"
+    assert lane["substantive_gap_minutes"] == 20.0
 
 
 def test_operator_addressed_proposal_is_not_treated_as_operator_gate() -> None:

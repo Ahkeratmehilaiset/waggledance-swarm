@@ -22,7 +22,6 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
     _event_agent,
     _event_recipients,
@@ -31,8 +30,11 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_type,
     _is_answer_like,
     _is_request_like,
-    _latest_event_time,
+    _is_requester_terminal_closure,
     _parse_utc,
+    _pr_number_for_event,
+    _requester_identity_matches,
+    _requester_terminal_request_key,
     _task_id,
     read_events,
 )
@@ -192,15 +194,15 @@ def report_unanswered_requests(
         )
 
     agent_filter = _normalize_agent_filter(agents)
-    effective_now = (
-        now_utc
-        or _latest_event_time(events)
-        or datetime.now(timezone.utc).astimezone(timezone.utc)
+    effective_now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    open_requests = _open_requests_by_target(
+        events=events,
+        agent_filter=agent_filter,
+        now_utc=effective_now,
     )
-    open_requests = _open_requests_by_target(events=events, agent_filter=agent_filter)
 
-    rows: list[dict[str, Any]] = []
-    for state in open_requests.values():
+    eligible_open_requests: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for key, state in open_requests.items():
         latest_request_ts = _parse_utc(str(state["ts_utc"]))
         first_request_ts = _parse_utc(
             str(state.get("first_ts_utc") or state["ts_utc"])
@@ -217,6 +219,24 @@ def report_unanswered_requests(
             continue
         if max_age_minutes is not None and latest_age_minutes > max_age_minutes:
             continue
+        eligible_open_requests[key] = state
+
+    rows: list[dict[str, Any]] = []
+    for state in _collapse_open_request_identities(
+        eligible_open_requests
+    ).values():
+        latest_request_ts = _parse_utc(str(state["ts_utc"]))
+        first_request_ts = _parse_utc(
+            str(state.get("first_ts_utc") or state["ts_utc"])
+        )
+        if latest_request_ts is None or first_request_ts is None:
+            continue
+        latest_age_minutes = (
+            effective_now.astimezone(timezone.utc) - latest_request_ts
+        ).total_seconds() / 60.0
+        first_age_minutes = (
+            effective_now.astimezone(timezone.utc) - first_request_ts
+        ).total_seconds() / 60.0
         rows.append(
             _request_row(
                 state,
@@ -260,28 +280,16 @@ def _open_requests_by_target(
     *,
     events: Sequence[Mapping[str, Any]],
     agent_filter: set[str],
-) -> dict[tuple[str, str], dict[str, Any]]:
+    now_utc: datetime,
+) -> dict[tuple[str, str, str], dict[str, Any]]:
     known_agents = _known_bridge_agents(events)
-    open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    closed_merge_task_keys: set[str] = set()
-    closed_prs: set[str] = set()
+    open_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
         _close_answered_requests(open_by_key, event, known_agents=known_agents)
-        if _is_terminal_closure_event(event):
-            if _event_status(event).endswith("merge_receipt"):
-                closed_merge_task_keys.add(
-                    _task_key(
-                        _task_id(event),
-                        known_agents=known_agents,
-                        requester=_event_agent(event),
-                    )
-                )
-            closed_pr = _payload_scalar(event, "pr") or _payload_scalar(
-                event, "pr_number"
-            )
-            if closed_pr:
-                closed_prs.add(closed_pr)
         if not _is_request_like(event):
+            continue
+        request_ts = _parse_utc(_event_ts(event))
+        if request_ts is None or request_ts > now_utc.astimezone(timezone.utc):
             continue
         requester = _event_agent(event)
         for target in _event_recipients(event):
@@ -295,26 +303,31 @@ def _open_requests_by_target(
                 known_agents=known_agents,
                 requester=requester,
             )
-            payload_pr = _payload_scalar(event, "pr") or _payload_scalar(
-                event, "pr_number"
-            )
-            if task_key in closed_merge_task_keys or (
-                payload_pr and payload_pr in closed_prs
-            ):
-                continue
-            key = (target, task_key)
+            payload_pr = _pr_number_for_event(event) or ""
+            requester_identity_key = _requester_terminal_request_key(event)
+            key = (target, task_key, requester_identity_key)
             previous = open_by_key.get(key)
+            latest_request_ts = _event_ts(event)
+            if previous is not None:
+                previous_request_ts = _parse_utc(str(previous["ts_utc"]))
+                if previous_request_ts is not None and previous_request_ts > request_ts:
+                    latest_request_ts = str(previous["ts_utc"])
             open_by_key[key] = {
                 "target_agent": target,
                 "requester": requester,
                 "task_id": task_id,
                 "type": _event_type(event),
                 "status": _event_status(event),
-                "ts_utc": _event_ts(event),
+                "ts_utc": latest_request_ts,
                 "first_ts_utc": (
                     previous.get("first_ts_utc")
                     if previous is not None
                     else _event_ts(event)
+                ),
+                "first_event_index": (
+                    previous.get("first_event_index")
+                    if previous is not None
+                    else index
                 ),
                 "request_count": int(previous.get("request_count", 1)) + 1
                 if previous is not None
@@ -323,17 +336,58 @@ def _open_requests_by_target(
                 "event_index": index,
                 "payload_head": _payload_scalar(event, "head"),
                 "payload_pr": payload_pr,
+                "_request_event": event,
             }
     return open_by_key
 
 
+def _collapse_open_request_identities(
+    open_by_identity: Mapping[tuple[str, str, str], Mapping[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Preserve task-level rows while keeping requester authority independent."""
+    collapsed: dict[tuple[str, str], dict[str, Any]] = {}
+    for (target, task_key, _requester_identity), state in open_by_identity.items():
+        key = (target, task_key)
+        previous = collapsed.get(key)
+        if previous is None:
+            collapsed[key] = dict(state)
+            continue
+        latest = (
+            state
+            if int(state["event_index"]) > int(previous["event_index"])
+            else previous
+        )
+        earliest = (
+            state
+            if int(state["first_event_index"])
+            < int(previous["first_event_index"])
+            else previous
+        )
+        merged = dict(latest)
+        merged["first_ts_utc"] = earliest["first_ts_utc"]
+        merged["first_event_index"] = earliest["first_event_index"]
+        previous_ts = _parse_utc(str(previous["ts_utc"]))
+        state_ts = _parse_utc(str(state["ts_utc"]))
+        if previous_ts is not None and state_ts is not None:
+            merged["ts_utc"] = (
+                state["ts_utc"] if state_ts > previous_ts else previous["ts_utc"]
+            )
+        merged["request_count"] = int(previous["request_count"]) + int(
+            state["request_count"]
+        )
+        collapsed[key] = merged
+    return collapsed
+
+
 def _close_answered_requests(
-    open_by_key: dict[tuple[str, str], dict[str, Any]],
+    open_by_key: dict[tuple[str, str, str], dict[str, Any]],
     event: Mapping[str, Any],
     *,
     known_agents: Sequence[str],
 ) -> None:
-    if not _is_answer_like(event) and not _is_terminal_closure_event(event):
+    requester_terminal = _is_requester_terminal_closure(event)
+    target_answer = _is_answer_like(event)
+    if not requester_terminal and not target_answer:
         return
     event_agent = _event_agent(event)
     event_task_key = _task_key(
@@ -341,17 +395,21 @@ def _close_answered_requests(
         known_agents=known_agents,
         requester=event_agent,
     )
-    event_ts = _event_ts(event)
     for key, state in list(open_by_key.items()):
-        target, state_task_key = key
+        target, state_task_key, _requester_identity_key = key
         requester = str(state["requester"])
         same_task = state_task_key == event_task_key
         same_pr = _same_payload_pr(event, state)
         if not same_task and not same_pr:
             continue
-        if event_ts <= str(state["ts_utc"]):
+        if event_agent == target and target_answer:
+            del open_by_key[key]
             continue
-        if event_agent in {target, requester} or _is_terminal_closure_event(event):
+        if (
+            event_agent == requester
+            and requester_terminal
+            and _requester_identity_matches(state["_request_event"], event)
+        ):
             del open_by_key[key]
 
 
@@ -391,18 +449,9 @@ def _task_key(
 
 
 def _same_payload_pr(event: Mapping[str, Any], state: Mapping[str, Any]) -> bool:
-    event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
+    event_pr = _pr_number_for_event(event)
     state_pr = str(state.get("payload_pr") or "").strip()
     return bool(event_pr and state_pr and event_pr == state_pr)
-
-
-def _is_terminal_closure_event(event: Mapping[str, Any]) -> bool:
-    status = _event_status(event)
-    return (
-        _event_type(event) == "done"
-        or status in CLOSED_REQUEST_STATUSES
-        or status.endswith("merge_receipt")
-    )
 
 
 def _request_row(

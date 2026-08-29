@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_bridge_wake_delivery.py"
@@ -367,6 +369,152 @@ def test_default_now_uses_wall_clock_not_latest_event(monkeypatch) -> None:
     row = report["stalled_wakes"][0]
     assert row["age_minutes"] == 30.0
     assert row["latest_wake_age_minutes"] == 25.0
+
+
+@pytest.mark.parametrize("bad_ts", ["2099-01-01T00:00:00Z", "not-a-time"])
+def test_future_or_invalid_wake_does_not_create_repeat(bad_ts: str) -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _wake(ts=bad_ts),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    assert report["stalled_count"] == 0
+
+
+def test_invalid_wake_after_valid_repeats_does_not_hide_group() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _wake(ts="not-a-time"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    assert report["stalled_count"] == 1
+    row = report["stalled_wakes"][0]
+    assert row["wake_request_count"] == 2
+    assert row["last_ts_utc"] == "2026-06-13T12:05:00Z"
+
+
+def test_backdated_repeat_keeps_current_wake_window_monotonic() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:20:00Z"),
+            _wake(ts="2026-06-09T12:20:00Z"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    assert report["stalled_count"] == 1
+    row = report["stalled_wakes"][0]
+    assert row["wake_request_count"] == 2
+    assert row["first_ts_utc"] == "2026-06-13T12:20:00Z"
+    assert row["last_ts_utc"] == "2026-06-13T12:20:00Z"
+    assert row["latest_wake_age_minutes"] == 10.0
+
+
+def test_current_wake_after_old_wake_advances_latest_timestamp() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:20:00Z"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    row = report["stalled_wakes"][0]
+    assert row["first_ts_utc"] == "2026-06-13T12:00:00Z"
+    assert row["last_ts_utc"] == "2026-06-13T12:20:00Z"
+    assert row["latest_wake_age_minutes"] == 10.0
+
+
+@pytest.mark.parametrize(
+    "activity_ts",
+    ["2026-06-13T11:00:00Z", "2099-01-01T00:00:00Z", "!"],
+)
+def test_later_target_activity_clears_by_append_order(activity_ts: str) -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _activity(ts=activity_ts, event_type="decision"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    assert report["stalled_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "terminal_ts",
+    ["2026-06-13T11:00:00Z", "2099-01-01T00:00:00Z", "!"],
+)
+def test_later_terminal_closure_clears_by_append_order(terminal_ts: str) -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            {
+                "ts_utc": terminal_ts,
+                "agent": "operator",
+                "type": "done",
+                "task_id": "bridge-follow-nudge-20260613",
+                "status": "completed",
+            },
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    assert report["stalled_count"] == 0
+
+
+def test_future_self_liveness_does_not_suppress_current_stall() -> None:
+    report = check_wake_delivery(
+        events=[
+            _activity(ts="2026-06-13T10:00:00Z", event_type="decision"),
+            _activity(ts="2099-01-01T00:00:00Z", event_type="decision"),
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    assert report["stalled_count"] == 1
+    assert report["self_pacing_wake_count"] == 0
+
+
+def test_future_wake_send_failure_is_not_enrolled() -> None:
+    report = check_wake_delivery(
+        events=[
+            _wake(ts="2026-06-13T12:00:00Z"),
+            _wake(ts="2026-06-13T12:05:00Z"),
+            _wake_send_failed(ts="2099-01-01T00:00:00Z"),
+        ],
+        now_utc=_now(),
+        min_age_minutes=0,
+        min_repeats=2,
+    )
+
+    row = report["stalled_wakes"][0]
+    assert row["wake_send_failed_count"] == 0
 
 
 def test_closed_wake_status_is_not_reported() -> None:

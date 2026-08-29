@@ -31,6 +31,7 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_status,
     _event_ts,
     _event_type,
+    _admitted_event_time,
     _parse_utc,
     _task_id,
     read_events,
@@ -227,12 +228,16 @@ def check_wake_delivery(
         max_age_minutes = None
 
     agent_filter = _normalize_agent_filter(agents)
-    effective_now = now_utc or _utc_now()
+    effective_now = (now_utc or _utc_now()).astimezone(timezone.utc)
     unresolved = _unresolved_wake_groups(
         events=events,
         agent_filter=agent_filter,
+        now_utc=effective_now,
     )
-    self_liveness_by_agent = _latest_self_liveness_by_agent(events)
+    self_liveness_by_agent = _latest_self_liveness_by_agent(
+        events,
+        now_utc=effective_now,
+    )
 
     stalled: list[dict[str, Any]] = []
     self_pacing: list[dict[str, Any]] = []
@@ -409,15 +414,16 @@ def _unresolved_wake_groups(
     *,
     events: Sequence[Mapping[str, Any]],
     agent_filter: set[str],
+    now_utc: datetime,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for index, event in enumerate(events):
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
         if event_agent and _is_target_delivery_activity(event):
-            _clear_for_target_activity(groups, event_agent=event_agent, event_ts=event_ts)
+            _clear_for_target_activity(groups, event_agent=event_agent)
         _clear_for_terminal_task(groups, event)
-        _record_wake_send_failure(groups, event)
+        _record_wake_send_failure(groups, event, now_utc=now_utc)
 
         if _event_type(event) != "wake_request":
             continue
@@ -425,6 +431,9 @@ def _unresolved_wake_groups(
             continue
         task_id = _task_id(event)
         if not task_id:
+            continue
+        admitted_ts = _admitted_event_time(event, now_utc=now_utc)
+        if admitted_ts is None:
             continue
         for target in _event_recipients(event):
             if not target or target == event_agent:
@@ -446,11 +455,13 @@ def _unresolved_wake_groups(
                     "last_event_index": index,
                 }
                 continue
-            existing["last_ts_utc"] = event_ts
             existing["wake_request_count"] = int(existing["wake_request_count"]) + 1
-            existing["last_status"] = _event_status(event)
-            existing["last_message"] = _safe_message(event.get("message"))
             existing["last_event_index"] = index
+            existing_last_ts = _parse_utc(str(existing.get("last_ts_utc") or ""))
+            if existing_last_ts is None or admitted_ts >= existing_last_ts:
+                existing["last_ts_utc"] = event_ts
+                existing["last_status"] = _event_status(event)
+                existing["last_message"] = _safe_message(event.get("message"))
             if event_agent:
                 requesters = existing["requesters"]
                 if isinstance(requesters, set):
@@ -461,25 +472,30 @@ def _unresolved_wake_groups(
 def _record_wake_send_failure(
     groups: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
+    *,
+    now_utc: datetime,
 ) -> None:
     target = _wake_send_failed_target(event)
     if not target:
+        return
+    admitted_ts = _admitted_event_time(event, now_utc=now_utc)
+    if admitted_ts is None:
         return
     event_ts = _event_ts(event)
     for (group_target, _task_id_value), group in groups.items():
         if group_target != target:
             continue
-        if event_ts and str(group.get("first_ts_utc") or "") and event_ts < str(
-            group["first_ts_utc"]
-        ):
-            continue
         group["wake_send_failed_count"] = int(
             group.get("wake_send_failed_count") or 0
         ) + 1
-        group["latest_wake_send_failed_ts_utc"] = event_ts
-        group["latest_wake_send_failed_message"] = _safe_message(
-            event.get("message")
+        previous_ts = _parse_utc(
+            str(group.get("latest_wake_send_failed_ts_utc") or "")
         )
+        if previous_ts is None or admitted_ts >= previous_ts:
+            group["latest_wake_send_failed_ts_utc"] = event_ts
+            group["latest_wake_send_failed_message"] = _safe_message(
+                event.get("message")
+            )
 
 
 def _wake_send_failed_target(event: Mapping[str, Any]) -> str:
@@ -504,13 +520,15 @@ def _is_self_liveness_activity(event: Mapping[str, Any]) -> bool:
 
 def _latest_self_liveness_by_agent(
     events: Sequence[Mapping[str, Any]],
+    *,
+    now_utc: datetime,
 ) -> dict[str, datetime]:
     latest: dict[str, datetime] = {}
     for event in events:
         agent = _event_agent(event)
         if not agent or not _is_self_liveness_activity(event):
             continue
-        event_ts = _parse_utc(_event_ts(event))
+        event_ts = _admitted_event_time(event, now_utc=now_utc)
         if event_ts is None:
             continue
         existing = latest.get(agent)
@@ -581,15 +599,12 @@ def _clear_for_target_activity(
     groups: dict[tuple[str, str], dict[str, Any]],
     *,
     event_agent: str,
-    event_ts: str,
 ) -> None:
     for key, group in list(groups.items()):
         target, _task_id_value = key
         if target != event_agent:
             continue
-        last_ts = str(group["last_ts_utc"])
-        if event_ts and event_ts > last_ts:
-            del groups[key]
+        del groups[key]
 
 
 def _clear_for_terminal_task(

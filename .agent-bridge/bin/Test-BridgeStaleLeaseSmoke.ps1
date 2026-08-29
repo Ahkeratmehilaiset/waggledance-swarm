@@ -56,6 +56,22 @@ function Add-Check {
     if ($Detail) { Write-Host "        $Detail" }
 }
 
+function Convert-ClaimTimestampUtc {
+    param([Parameter(Mandatory)] [object] $Value)
+
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    return [DateTime]::Parse(
+        [string]$Value,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        $styles
+    ).ToUniversalTime()
+}
+
 $tempRoot = Join-Path $env:TEMP `
     "bridge-r15-stale-lease-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
@@ -179,8 +195,8 @@ try {
     # Re-read claim and confirm last_heartbeat_utc was bumped.
     $obj3 = Get-Content -Raw -Path $freshClaimPath -Encoding UTF8 |
         ConvertFrom-Json
-    $bumpedTs = [DateTime]::Parse([string]$obj3.last_heartbeat_utc).ToUniversalTime()
-    $oldTsParsed = [DateTime]::Parse($oldTs).ToUniversalTime()
+    $bumpedTs = Convert-ClaimTimestampUtc $obj3.last_heartbeat_utc
+    $oldTsParsed = Convert-ClaimTimestampUtc $oldTs
     Add-Check -Name 'heartbeat bumped last_heartbeat_utc on own claim' `
         -Passed ($bumpedTs -gt $oldTsParsed) `
         -Detail "old=$oldTs new=$([string]$obj3.last_heartbeat_utc)"

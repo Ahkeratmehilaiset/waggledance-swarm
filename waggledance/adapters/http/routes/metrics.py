@@ -661,8 +661,9 @@ class _WaggleCollector:
         yield GaugeMetricFamily(
             "waggledance_runtime_receipt_coverage_ratio",
             (
-                "Runtime receipt success ratio over finalized handle_query "
-                "paths in this process"
+                "Ratio of finalized handle_query paths with a strictly verified, "
+                "nonzero receipt count in this process; operational data only, "
+                "not named-window or claim-safe evidence"
             ),
             value=_as_finite_float(snapshot.get("coverage_ratio")),
         )
@@ -801,6 +802,14 @@ class _WaggleCollector:
                 "verifier_not_ok_total",
                 "waggledance_runtime_receipt_verifier_not_ok_total",
                 "Runtime receipt sink results without verifier_report.ok=true.",
+            ),
+            (
+                "verified_receipt_query_total",
+                "waggledance_runtime_receipt_verified_query_total",
+                (
+                    "Finalized handle_query paths with verifier_report.ok=true "
+                    "and a nonzero receipt count."
+                ),
             ),
             (
                 "receipt_count_total",

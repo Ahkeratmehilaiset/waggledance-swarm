@@ -30,6 +30,7 @@ from tools.run_release_torch_decision_evidence import (
     DEFAULT_TARGET_VERSION,
     implementation_authorization_from_decision_pack,
 )
+from tools.operator_decision_pack import DecisionPackError, load_pack
 
 
 SCHEMA_VERSION = "waggledance.release_torch_lock_evidence.v1"
@@ -55,11 +56,65 @@ A2_CU126_NON_WINDOWS_PINS = {
 }
 A2_EXPECTED_TORCHAO = "0.17.0"
 A2_EXPECTED_XFORMERS = "0.0.35"
+SCOPE_UPDATE_SCHEMA_VERSION = "waggledance.torch_lock_scope_update.v1"
+A2_REFRESH_STRATEGY = "a2_cu126_torch_2_13_chroma_descope"
+A2_REFRESH_WINDOWS_PINS = {"torch": "2.13.0+cu126"}
+A2_REFRESH_NON_WINDOWS_PINS = {"torch": "2.13.0"}
+A2_REFRESH_REQUIRED_ABSENT = (
+    "chromadb",
+    "torchvision",
+    "torchaudio",
+    "torchao",
+    "xformers",
+)
 
 
 def _format_utc(value: dt.datetime) -> str:
     normalized = value.astimezone(dt.UTC).replace(microsecond=0)
     return normalized.isoformat().replace("+00:00", "Z")
+
+
+def _scope_update_utc(value: object) -> str:
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.UTC)
+        return _format_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return _format_utc(parsed)
+
+
+def _scope_operator_signoff(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":", 2)
+    if len(parts) != 3 or parts[0] != "operator" or not parts[1].strip():
+        return None
+    signed_at_utc = _scope_update_utc(parts[2])
+    if not signed_at_utc:
+        return None
+    return parts[1].strip(), signed_at_utc
+
+
+def _exact_extra_index_present(options: list[str], expected_url: str) -> bool:
+    expected = f"--extra-index-url {expected_url}"
+    return any(option.strip() == expected for option in options)
+
+
+def _unexpected_extra_indexes(options: list[str], expected_url: str) -> list[str]:
+    expected = f"--extra-index-url {expected_url}"
+    return sorted(
+        option.strip()
+        for option in options
+        if option.strip().startswith("--extra-index-url")
+        and option.strip() != expected
+    )
 
 
 def _current_commit() -> str:
@@ -170,6 +225,150 @@ def _stale_torch_lines(entries: list[dict[str, Any]]) -> list[str]:
     return stale
 
 
+def _scope_update_contract(
+    operator_decision_pack: Path,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Return the latest closed-form lock contract, failing closed if malformed."""
+
+    try:
+        pack = load_pack(operator_decision_pack)
+    except (OSError, DecisionPackError):
+        return None, ["operator_scope_update_pack_invalid"]
+    signoff = pack.get("operator_signoff")
+    if not isinstance(signoff, Mapping):
+        return None, ["operator_scope_update_signoff_invalid"]
+    updates = signoff.get("scope_updates")
+    if updates is None:
+        return None, []
+    if not isinstance(updates, list):
+        return None, ["operator_scope_updates_invalid"]
+
+    candidates: list[tuple[str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for update in updates:
+        if not isinstance(update, Mapping):
+            return None, ["operator_scope_update_invalid"]
+        contract = update.get("lock_evidence_contract")
+        if contract is None:
+            continue
+        if not isinstance(contract, Mapping):
+            return None, ["operator_scope_update_contract_invalid"]
+        recorded_utc = _scope_update_utc(update.get("recorded_utc"))
+        candidates.append((recorded_utc, update, contract))
+    if not candidates:
+        return None, []
+
+    timestamps = [item[0] for item in candidates]
+    if any(not value for value in timestamps):
+        return None, ["operator_scope_update_timestamp_invalid"]
+    if len(timestamps) != len(set(timestamps)):
+        return None, ["operator_scope_update_timestamp_ambiguous"]
+    recorded_utc, update, contract = max(candidates, key=lambda item: item[0])
+    expected_source = (
+        "operator-directive:2026-08-26:"
+        "swarm-efficiency-overhaul-release-burndown-E1-E2"
+    )
+    required_absent = contract.get("required_absent")
+    if not isinstance(required_absent, list) or any(
+        not isinstance(name, str) or not name.strip()
+        for name in required_absent
+    ):
+        return None, ["operator_scope_update_required_absent_invalid"]
+    normalized_absent = tuple(canonicalize_name(name) for name in required_absent)
+    transition = contract.get("transition_accepts_signed_prior")
+    valid = (
+        recorded_utc == "2026-08-26T05:06:00Z"
+        and str(update.get("recorded_by") or "") == "codex-lead-1"
+        and str(update.get("source") or "") == expected_source
+        and contract.get("schema_version") == SCOPE_UPDATE_SCHEMA_VERSION
+        and contract.get("strategy") == A2_REFRESH_STRATEGY
+        and contract.get("pytorch_extra_index_url")
+        == "https://download.pytorch.org/whl/cu126"
+        and contract.get("windows_pins") == A2_REFRESH_WINDOWS_PINS
+        and contract.get("non_windows_pins") == A2_REFRESH_NON_WINDOWS_PINS
+        and normalized_absent == A2_REFRESH_REQUIRED_ABSENT
+        and isinstance(transition, bool)
+    )
+    if not valid:
+        return None, ["operator_scope_update_contract_invalid"]
+    scope_signoff = _scope_operator_signoff(update.get("signed_by"))
+    result = {
+        "recorded_utc": recorded_utc,
+        "recorded_by": str(update.get("recorded_by") or ""),
+        "source": str(update.get("source") or ""),
+        "schema_version": SCOPE_UPDATE_SCHEMA_VERSION,
+        "strategy": A2_REFRESH_STRATEGY,
+        "pytorch_extra_index_url": str(contract["pytorch_extra_index_url"]),
+        "windows_pins": dict(A2_REFRESH_WINDOWS_PINS),
+        "non_windows_pins": dict(A2_REFRESH_NON_WINDOWS_PINS),
+        "required_absent": list(A2_REFRESH_REQUIRED_ABSENT),
+        "transition_accepts_signed_prior": transition,
+        "operator_signed": scope_signoff is not None,
+    }
+    if scope_signoff is None:
+        return result, ["operator_scope_update_signature_required"]
+    operator_id, authorized_at_utc = scope_signoff
+    result["operator_id"] = operator_id
+    result["authorized_at_utc"] = authorized_at_utc
+    return result, []
+
+
+def _validate_a2_refresh_lock(
+    entries: list[dict[str, Any]],
+    options: list[str],
+    contract: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    blockers: list[str] = []
+    expected_index = str(contract.get("pytorch_extra_index_url") or "")
+    index_present = _exact_extra_index_present(options, expected_index)
+    if not expected_index or not index_present:
+        blockers.append("pytorch_cu126_extra_index_missing")
+    unexpected_indexes = _unexpected_extra_indexes(options, expected_index)
+    if unexpected_indexes:
+        blockers.append("unexpected_extra_index_present")
+
+    windows_pins = {
+        "torch": _platform_pin(entries, "torch", sys_platform="win32")
+    }
+    linux_pins = {
+        "torch": _platform_pin(entries, "torch", sys_platform="linux")
+    }
+    darwin_pins = {
+        "torch": _platform_pin(entries, "torch", sys_platform="darwin")
+    }
+    if windows_pins != A2_REFRESH_WINDOWS_PINS:
+        blockers.append("windows_cu126_refresh_pin_mismatch")
+    if linux_pins != A2_REFRESH_NON_WINDOWS_PINS:
+        blockers.append("linux_plain_pytorch_refresh_pin_mismatch")
+    if darwin_pins != A2_REFRESH_NON_WINDOWS_PINS:
+        blockers.append("darwin_plain_pytorch_refresh_pin_mismatch")
+
+    present_forbidden = sorted(
+        name
+        for name in A2_REFRESH_REQUIRED_ABSENT
+        if any(entry.get("name") == canonicalize_name(name) for entry in entries)
+    )
+    if present_forbidden:
+        blockers.append("descope_required_packages_present")
+
+    stale_lines = _stale_torch_lines(entries)
+    if stale_lines:
+        blockers.append("stale_cu118_or_torch_2_7_1_pins_present")
+
+    return {
+        "lock_contract": A2_REFRESH_STRATEGY,
+        "platform_strategy": "windows_cu126_linux_darwin_plain_torch_only",
+        "pytorch_extra_index_url": expected_index,
+        "pytorch_extra_index_present": index_present,
+        "unexpected_extra_indexes": unexpected_indexes,
+        "windows_pins": windows_pins,
+        "linux_pins": linux_pins,
+        "darwin_pins": darwin_pins,
+        "required_absent": list(A2_REFRESH_REQUIRED_ABSENT),
+        "unexpected_present": present_forbidden,
+        "stale_torch_lines": stale_lines,
+    }, blockers
+
+
 def _validate_a2_lock(
     entries: list[dict[str, Any]],
     options: list[str],
@@ -177,9 +376,12 @@ def _validate_a2_lock(
 ) -> tuple[dict[str, Any], list[str]]:
     blockers: list[str] = []
     expected_index = str(authorization.get("index_url") or "")
-    index_present = any(expected_index in option for option in options)
+    index_present = _exact_extra_index_present(options, expected_index)
     if not expected_index or not index_present:
         blockers.append("pytorch_cu126_extra_index_missing")
+    unexpected_indexes = _unexpected_extra_indexes(options, expected_index)
+    if unexpected_indexes:
+        blockers.append("unexpected_extra_index_present")
 
     windows_pins = {
         name: _platform_pin(entries, name, sys_platform="win32")
@@ -215,6 +417,7 @@ def _validate_a2_lock(
         "platform_strategy": "windows_cu126_linux_darwin_plain_pytorch",
         "pytorch_extra_index_url": expected_index,
         "pytorch_extra_index_present": index_present,
+        "unexpected_extra_indexes": unexpected_indexes,
         "windows_pins": windows_pins,
         "linux_pins": linux_pins,
         "darwin_pins": darwin_pins,
@@ -222,6 +425,36 @@ def _validate_a2_lock(
         "xformers_pin": xformers_pin,
         "stale_torch_lines": stale_lines,
     }, blockers
+
+
+def _refresh_lock_authorization(
+    scope_update: Mapping[str, Any],
+    *,
+    commit: str,
+    target_version: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "waggledance.operator_torch_lock_scope_authorization.v1",
+        "target_version": target_version,
+        "commit": commit,
+        "implementation_authorized": True,
+        "release_gate_effect": "none",
+        "source": "operator_signed_scope_update",
+        "decision_id": "torch-cuda-vs-cpu",
+        "chosen_option": "A2_cu126",
+        "operator_id": str(scope_update.get("operator_id") or ""),
+        "authorized_at_utc": str(scope_update.get("authorized_at_utc") or ""),
+        "strategy": A2_REFRESH_STRATEGY,
+        "packages": [
+            'torch==2.13.0+cu126 ; sys_platform == "win32"',
+            'torch==2.13.0 ; sys_platform != "win32"',
+        ],
+        "pytorch_extra_index_url": str(
+            scope_update.get("pytorch_extra_index_url") or ""
+        ),
+        "required_absent": list(A2_REFRESH_REQUIRED_ABSENT),
+        "fresh_pip_audit_required": True,
+    }
 
 
 def build_report(
@@ -235,13 +468,22 @@ def build_report(
     generated_at_utc = generated_at_utc or dt.datetime.now(dt.UTC)
     blockers: list[str] = []
     lock_summary: dict[str, Any] = {}
-    authorization = implementation_authorization_from_decision_pack(
+    prior_authorization = implementation_authorization_from_decision_pack(
         operator_decision_pack,
         commit=commit,
         target_version=target_version,
     )
-    if authorization is None:
+    if prior_authorization is None:
         blockers.append("operator_decision_pack_unsigned_or_invalid")
+    scope_update, scope_blockers = _scope_update_contract(operator_decision_pack)
+    blockers.extend(scope_blockers)
+    if (
+        scope_update
+        and scope_update.get("operator_signed") is True
+        and prior_authorization
+        and scope_update.get("operator_id") != prior_authorization.get("operator_id")
+    ):
+        blockers.append("operator_scope_update_signer_mismatch")
     if not requirements_lock.exists():
         blockers.append("requirements_lock_missing")
 
@@ -255,17 +497,58 @@ def build_report(
         if invalid_lines:
             blockers.append("requirements_lock_invalid_lines")
             lock_summary["invalid_lines"] = invalid_lines
-        elif authorization and authorization.get("chosen_option") == "A2_cu126":
-            lock_summary, lock_blockers = _validate_a2_lock(
+        elif prior_authorization and prior_authorization.get("chosen_option") == "A2_cu126":
+            signed_summary, signed_blockers = _validate_a2_lock(
                 entries,
                 options,
-                authorization,
+                prior_authorization,
             )
-            blockers.extend(lock_blockers)
+            if scope_update is None:
+                lock_summary = signed_summary
+                blockers.extend(signed_blockers)
+            else:
+                refresh_summary, refresh_blockers = _validate_a2_refresh_lock(
+                    entries,
+                    options,
+                    scope_update,
+                )
+                if not refresh_blockers:
+                    lock_summary = refresh_summary
+                elif not signed_blockers and scope_update.get(
+                    "transition_accepts_signed_prior"
+                ) is True:
+                    lock_summary = {
+                        **signed_summary,
+                        "lock_contract": "signed_a2_cu126_transition_pending",
+                        "transition_requires": A2_REFRESH_STRATEGY,
+                    }
+                else:
+                    lock_summary = refresh_summary
+                    blockers.append("torch_lock_matches_no_authorized_contract")
+                    blockers.extend(refresh_blockers)
         else:
             blockers.append("unsupported_torch_decision_for_lock_evidence")
 
-    status = "implemented" if not blockers else "blocked"
+    transition_pending = (
+        lock_summary.get("lock_contract")
+        == "signed_a2_cu126_transition_pending"
+    )
+    if transition_pending:
+        blockers.append("torch_lock_transition_pending")
+    status = "transition_pending" if transition_pending else (
+        "blocked" if blockers else "implemented"
+    )
+    scope_is_signed = bool(scope_update and scope_update.get("operator_signed"))
+    active_lock_authorization: Mapping[str, Any] | None = None
+    if status == "implemented":
+        if scope_is_signed:
+            active_lock_authorization = _refresh_lock_authorization(
+                scope_update,
+                commit=commit,
+                target_version=target_version,
+            )
+        elif scope_update is None:
+            active_lock_authorization = prior_authorization
     return {
         "schema_version": SCHEMA_VERSION,
         "target_version": target_version,
@@ -278,7 +561,10 @@ def build_report(
         "security_privacy_gate_status": "unchanged",
         "fresh_pip_audit_required": True,
         "pip_audit_skip_is_not_clean": True,
-        "implementation_authorization": authorization,
+        "prior_signed_authorization": prior_authorization,
+        "active_lock_authorization": active_lock_authorization,
+        "active_scope_update": scope_update if scope_is_signed else None,
+        "pending_scope_update": scope_update if not scope_is_signed else None,
         "lock_summary": lock_summary,
         "blockers": blockers,
     }
@@ -315,11 +601,49 @@ def evaluate_report(
         blockers.extend(str(item) for item in report_blockers)
     if report.get("torch_lock_status") != "implemented":
         blockers.append("torch_lock_not_implemented")
-    auth = report.get("implementation_authorization")
-    if not isinstance(auth, Mapping):
-        blockers.append("implementation_authorization_missing")
-    elif auth.get("chosen_option") != "A2_cu126":
-        blockers.append("implementation_authorization_not_a2_cu126")
+    if report.get("torch_lock_status") == "transition_pending":
+        scope_update = report.get("active_scope_update")
+        if not isinstance(scope_update, Mapping):
+            blockers.append("transition_scope_update_missing")
+        elif scope_update.get("transition_accepts_signed_prior") is not True:
+            blockers.append("transition_not_authorized")
+    prior_auth = report.get("prior_signed_authorization")
+    if not isinstance(prior_auth, Mapping):
+        blockers.append("prior_signed_authorization_missing")
+    elif prior_auth.get("chosen_option") != "A2_cu126":
+        blockers.append("prior_signed_authorization_not_a2_cu126")
+    active_auth = report.get("active_lock_authorization")
+    if report.get("torch_lock_status") == "implemented":
+        if not isinstance(active_auth, Mapping):
+            blockers.append("active_lock_authorization_missing")
+        else:
+            if active_auth.get("chosen_option") != "A2_cu126":
+                blockers.append("active_lock_authorization_not_a2_cu126")
+            lock_summary = report.get("lock_summary")
+            if not isinstance(lock_summary, Mapping):
+                blockers.append("lock_summary_invalid")
+            elif lock_summary.get("lock_contract") == A2_REFRESH_STRATEGY:
+                if active_auth.get("strategy") != A2_REFRESH_STRATEGY:
+                    blockers.append("active_lock_authorization_strategy_mismatch")
+                if lock_summary.get("windows_pins") != A2_REFRESH_WINDOWS_PINS:
+                    blockers.append("active_lock_authorization_windows_pin_mismatch")
+                if lock_summary.get("linux_pins") != A2_REFRESH_NON_WINDOWS_PINS:
+                    blockers.append("active_lock_authorization_linux_pin_mismatch")
+                if lock_summary.get("darwin_pins") != A2_REFRESH_NON_WINDOWS_PINS:
+                    blockers.append("active_lock_authorization_darwin_pin_mismatch")
+                if tuple(active_auth.get("required_absent") or ()) != (
+                    A2_REFRESH_REQUIRED_ABSENT
+                ):
+                    blockers.append("active_lock_authorization_absence_mismatch")
+                if active_auth.get("packages") != [
+                    'torch==2.13.0+cu126 ; sys_platform == "win32"',
+                    'torch==2.13.0 ; sys_platform != "win32"',
+                ]:
+                    blockers.append("active_lock_authorization_packages_mismatch")
+                if not active_auth.get("operator_id"):
+                    blockers.append("active_lock_authorization_operator_missing")
+                if not active_auth.get("authorized_at_utc"):
+                    blockers.append("active_lock_authorization_timestamp_missing")
     return blockers
 
 
@@ -338,11 +662,6 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OPERATOR_DECISION_PACK,
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument(
-        "--allow-blocked",
-        action="store_true",
-        help="Exit 0 even when lock evidence remains blocked/fail-closed.",
-    )
     args = parser.parse_args(argv)
 
     commit = args.commit or _current_commit()
@@ -357,9 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     args.output.write_text(encoded, encoding="utf-8")
     print(encoded, end="")
     blockers = evaluate_report(report, expected_commit=commit)
-    if not blockers or args.allow_blocked:
-        return 0
-    return 1
+    return 0 if not blockers else 1
 
 
 if __name__ == "__main__":

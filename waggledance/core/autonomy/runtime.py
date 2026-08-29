@@ -41,6 +41,10 @@ from waggledance.core.memory.working_memory import WorkingMemory
 from waggledance.core.planning.planner import Planner
 from waggledance.core.policy.policy_engine import PolicyEngine
 from waggledance.core.reasoning.solver_router import SolverRouter
+from waggledance.core.reasoning.solver_services import (
+    SolverServices,
+    invoke_solver_callable,
+)
 from waggledance.core.reasoning.verifier import Verifier
 from waggledance.core.world.world_model import WorldModel
 
@@ -81,7 +85,11 @@ def _runtime_receipt_nonnegative_int(value: Any) -> int:
     return max(parsed, 0)
 
 
-def _make_adapter_executor(adapter):
+def _make_adapter_executor(
+    adapter,
+    *,
+    solver_services: SolverServices | None = None,
+):
     """Bridge adapter.execute(...) to ActionBus Executor(action) protocol.
 
     ActionBus calls ``executor(action: Action) -> dict``.
@@ -91,15 +99,23 @@ def _make_adapter_executor(adapter):
     """
 
     def executor(action: Action) -> Dict[str, Any]:
-        payload = action.payload or {}
+        payload = dict(action.payload or {})
         # Try full payload as kwargs (most flexible — works for
         # specialized adapters that accept metric=, entity=, etc.)
         try:
-            result = adapter.execute(**payload)
+            result = invoke_solver_callable(
+                adapter.execute,
+                injected_services=solver_services,
+                **payload,
+            )
         except TypeError:
             # Fallback: positional query string (MathSolverAdapter etc.)
             query = payload.get("query", "")
-            result = adapter.execute(query)
+            result = invoke_solver_callable(
+                adapter.execute,
+                query,
+                injected_services=solver_services,
+            )
         return _run_maybe_async(result)
 
     return executor
@@ -131,9 +147,11 @@ class AutonomyRuntime:
         enable_persistence: bool = True,
         enable_hex_canary_mirror: bool = False,
         runtime_receipt_sink: Optional[Callable[[dict[str, Any]], Any]] = None,
+        solver_services: Optional[SolverServices] = None,
     ):
         self.profile = profile
         self.runtime_receipt_sink = runtime_receipt_sink
+        self.solver_services = solver_services
         self._runtime_receipt_handle_query_total = 0
         self._runtime_receipt_solver_trace_present_total = 0
         self._runtime_receipt_sink_not_configured_total = 0
@@ -223,7 +241,11 @@ class AutonomyRuntime:
             adapter = self.capability_registry.get_executor(cap_id)
             if adapter is not None:
                 self.action_bus.register_executor(
-                    cap_id, _make_adapter_executor(adapter)
+                    cap_id,
+                    _make_adapter_executor(
+                        adapter,
+                        solver_services=self.solver_services,
+                    ),
                 )
 
         # MAGMA adapters (audit, event log, trust)

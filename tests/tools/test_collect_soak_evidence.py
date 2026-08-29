@@ -255,6 +255,10 @@ def _write_ci_status(root, *, commit: str, report_commit: str | None = None) -> 
                 {"workflow": "WaggleDance CI", "job": "test (3.13)"},
                 {"workflow": "WaggleDance CI", "job": "security-scan"},
                 {"workflow": "Tests", "job": "unified"},
+                {
+                    "workflow": "Tests",
+                    "job": "release-evidence-runtime-windows",
+                },
             ],
             "runs": [
                 _ci_run(
@@ -262,7 +266,11 @@ def _write_ci_status(root, *, commit: str, report_commit: str | None = None) -> 
                     ["test (3.11)", "test (3.12)", "test (3.13)", "security-scan"],
                     commit=report_commit,
                 ),
-                _ci_run("Tests", ["unified"], commit=report_commit),
+                _ci_run(
+                    "Tests",
+                    ["unified", "release-evidence-runtime-windows"],
+                    commit=report_commit,
+                ),
             ],
             "blockers": [],
             "ci_status": "pass",

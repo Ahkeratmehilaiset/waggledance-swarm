@@ -104,6 +104,14 @@ jobs:
       contents: read
 
     steps:
+    - name: Enable Git long paths for checkout
+      shell: pwsh
+      run: |
+        git config --global core.longpaths true
+        if ((git config --global --get core.longpaths) -cne "true") {
+          throw "Git long-path support was not enabled."
+        }
+
     - name: Check out the triggering exact head
       uses: actions/checkout@v7
       with:

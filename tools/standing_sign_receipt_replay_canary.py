@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-base-sha", default="")
     parser.add_argument("--consensus-proposal-id", required=True)
     parser.add_argument("--receipt-bundle-path", default="")
+    parser.add_argument("--rule9b-activation-receipt-path", required=True)
+    parser.add_argument("--expected-rule9b-activation-head", required=True)
     parser.add_argument("--repo", default="")
     parser.add_argument("--from-agent", default="")
     parser.add_argument("--bridge-task-id", default="")
@@ -72,6 +74,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_base_sha=args.expected_base_sha,
             consensus_proposal_id=args.consensus_proposal_id,
             receipt_bundle_path=args.receipt_bundle_path,
+            rule9b_activation_receipt_path=(
+                args.rule9b_activation_receipt_path
+            ),
+            expected_rule9b_activation_head=(
+                args.expected_rule9b_activation_head
+            ),
             repo=args.repo,
             from_agent=args.from_agent,
             bridge_task_id=args.bridge_task_id,
@@ -111,6 +119,8 @@ def replay_standing_sign_receipt(
     expected_base_sha: str = "",
     consensus_proposal_id: str,
     receipt_bundle_path: str = "",
+    rule9b_activation_receipt_path: str,
+    expected_rule9b_activation_head: str,
     repo: str = "",
     from_agent: str = "",
     bridge_task_id: str = "",
@@ -132,6 +142,8 @@ def replay_standing_sign_receipt(
             expected_base_sha=expected_base_sha,
             consensus_proposal_id=consensus_proposal_id,
             receipt_bundle_path=manifest_path,
+            rule9b_activation_receipt_path=rule9b_activation_receipt_path,
+            expected_rule9b_activation_head=expected_rule9b_activation_head,
             events_path=events_path,
             utc_date=utc_date,
             repo=repo,
@@ -171,6 +183,8 @@ def replay_standing_sign_receipt(
         "expected_base_sha": expected_base_sha,
         "consensus_proposal_id": consensus_proposal_id,
         "receipt_bundle_path": manifest_path,
+        "rule9b_activation_receipt_path": rule9b_activation_receipt_path,
+        "expected_rule9b_activation_head": expected_rule9b_activation_head,
         "gate_decision": gate_report.get("decision"),
         "standing_consensus_sign": dict(
             gate_report.get("standing_consensus_sign", {})

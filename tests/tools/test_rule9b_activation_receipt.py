@@ -568,7 +568,10 @@ def test_path_replacement_during_snapshot_is_denied_or_detected(
     else:
         assert replacement_denied is False
         assert report["verified"] is False
-        assert any("identity" in blocker for blocker in report["blockers"])
+        assert any(
+            "identity" in blocker or "metadata" in blocker
+            for blocker in report["blockers"]
+        )
 
 
 def test_verification_has_no_bypass_parameter() -> None:

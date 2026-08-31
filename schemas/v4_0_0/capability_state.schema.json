@@ -1,0 +1,358 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v4_0_0/capability_state.schema.json",
+  "title": "WaggleDance v4 P0 capability-state snapshot",
+  "description": "Dormant P0 snapshot contract. It deliberately cannot certify profile readiness or claim-safe authority before a later operator-explicit semantic evaluator is wired.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "release_target", "activation_authority", "profile_id",
+    "source_head_sha", "manifest_digest", "config_digest", "observed_at_utc",
+    "supervisor_live", "foundation_ready", "profile_state", "profile_ready",
+    "claim_safe", "receipt_evidence", "capabilities", "catalog_capabilities", "integrations", "probes", "blockers"
+  ],
+  "properties": {
+    "schema_version": {"const": "waggledance.capability_state.p0.v1"},
+    "release_target": {"const": "4.0.0"},
+    "activation_authority": {"const": "none"},
+    "profile_id": {"enum": ["HOME", "COTTAGE", "FACTORY", "GADGET"]},
+    "source_head_sha": {"$ref": "#/definitions/git_sha"},
+    "manifest_digest": {"$ref": "#/definitions/digest"},
+    "config_digest": {"$ref": "#/definitions/digest"},
+    "observed_at_utc": {"type": "string", "format": "date-time"},
+    "supervisor_live": {"type": "boolean"},
+    "foundation_ready": {"const": false},
+    "profile_state": {
+      "enum": ["ABSENT", "UNPROVISIONED", "STARTING", "DEGRADED", "BLOCKED", "FAILED", "STALE", "STOPPED"]
+    },
+    "profile_ready": {"const": false},
+    "claim_safe": {"const": false},
+    "receipt_evidence": {"$ref": "#/definitions/receipt_evidence"},
+    "capabilities": {"$ref": "#/definitions/capability_observations"},
+    "catalog_capabilities": {"$ref": "#/definitions/catalog_observations"},
+    "integrations": {"$ref": "#/definitions/integration_observations"},
+    "probes": {"$ref": "#/definitions/probe_observations"},
+    "blockers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/definitions/blocker_reason_code"},
+      "contains": {"const": "profile.contract_unwired"}
+    }
+  },
+  "definitions": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "capability_state": {
+      "type": "string",
+      "enum": ["ABSENT", "UNPROVISIONED", "STARTING", "READY", "DEGRADED", "BLOCKED", "FAILED", "STALE", "STOPPED"]
+    },
+    "reason_code": {
+      "type": "string",
+      "enum": [
+        "capability.absent", "capability.blocked", "capability.degraded", "capability.failed",
+        "capability.ready", "capability.stale", "capability.starting", "capability.stopped", "capability.unprovisioned",
+        "catalog.absent", "catalog.blocked", "catalog.degraded", "catalog.failed",
+        "catalog.ready", "catalog.stale", "catalog.starting", "catalog.stopped", "catalog.unprovisioned",
+        "integration.absent", "integration.blocked", "integration.degraded", "integration.failed",
+        "integration.ready", "integration.stale", "integration.starting", "integration.stopped", "integration.unprovisioned",
+        "probe.absent", "probe.blocked", "probe.degraded", "probe.failed", "probe.ready",
+        "probe.stale", "probe.starting", "probe.stopped", "probe.unprovisioned",
+        "profile.contract_unwired", "profile.required_component_not_ready", "profile.supervisor_stopped"
+      ]
+    },
+    "blocker_reason_code": {
+      "type": "string",
+      "enum": [
+        "capability.blocked", "capability.degraded", "capability.failed", "capability.stale", "capability.starting", "capability.stopped", "capability.unprovisioned",
+        "catalog.blocked", "catalog.degraded", "catalog.failed", "catalog.stale", "catalog.starting", "catalog.stopped", "catalog.unprovisioned",
+        "integration.blocked", "integration.degraded", "integration.failed", "integration.stale", "integration.starting", "integration.stopped", "integration.unprovisioned",
+        "probe.blocked", "probe.degraded", "probe.failed", "probe.stale", "probe.starting", "probe.stopped", "probe.unprovisioned",
+        "profile.contract_unwired", "profile.required_component_not_ready", "profile.supervisor_stopped"
+      ]
+    },
+    "receipt_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_id", "source_head_sha", "served_count", "runtime_covered_count",
+        "chat_covered_count", "gap_count", "chain_head_digest", "evidence_digest", "complete"
+      ],
+      "properties": {
+        "window_id": {"oneOf": [{"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{2,127}$"}, {"type": "null"}]},
+        "source_head_sha": {"oneOf": [{"$ref": "#/definitions/git_sha"}, {"type": "null"}]},
+        "served_count": {"type": "integer", "minimum": 0},
+        "runtime_covered_count": {"type": "integer", "minimum": 0},
+        "chat_covered_count": {"type": "integer", "minimum": 0},
+        "gap_count": {"type": "integer", "minimum": 0},
+        "chain_head_digest": {"oneOf": [{"$ref": "#/definitions/digest"}, {"type": "null"}]},
+        "evidence_digest": {"oneOf": [{"$ref": "#/definitions/digest"}, {"type": "null"}]},
+        "complete": {"const": false}
+      }
+    },
+    "capability_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification", "enabled_by_default", "release_required", "readiness_phase",
+        "activation_requires_claim_safe", "dependencies", "state", "servable",
+        "dependencies_ready", "receipts_complete", "artifact_digest", "reason_code"
+      ],
+      "properties": {
+        "classification": {"enum": ["required", "not_applicable"]},
+        "enabled_by_default": {"type": "boolean"},
+        "release_required": {"type": "boolean"},
+        "readiness_phase": {"enum": ["foundation", "release", "excluded"]},
+        "activation_requires_claim_safe": {"type": "boolean"},
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/capability_id"}
+        },
+        "state": {"$ref": "#/definitions/capability_state"},
+        "servable": {"type": "boolean"},
+        "dependencies_ready": {"type": "boolean"},
+        "receipts_complete": {"type": "boolean"},
+        "artifact_digest": {"oneOf": [{"$ref": "#/definitions/digest"}, {"type": "null"}]},
+        "reason_code": {
+          "allOf": [
+            {"$ref": "#/definitions/reason_code"},
+            {"pattern": "^capability\\."}
+          ]
+        }
+      },
+      "allOf": [
+        {"$ref": "#/definitions/state_reason_consistency"},
+        {
+          "if": {"properties": {"state": {"const": "READY"}}},
+          "then": {
+            "properties": {
+              "dependencies_ready": {"const": true},
+              "artifact_digest": {"$ref": "#/definitions/digest"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"not": {"const": "READY"}}}},
+          "then": {"properties": {"servable": {"const": false}}}
+        },
+        {
+          "if": {"properties": {"activation_requires_claim_safe": {"const": true}}},
+          "then": {"properties": {"servable": {"const": false}}}
+        },
+        {
+          "if": {"properties": {"classification": {"const": "not_applicable"}}},
+          "then": {
+            "properties": {
+              "enabled_by_default": {"const": false}, "release_required": {"const": false},
+              "readiness_phase": {"const": "excluded"}, "activation_requires_claim_safe": {"const": false},
+              "dependencies": {"maxItems": 0}, "state": {"const": "ABSENT"}, "servable": {"const": false},
+              "dependencies_ready": {"const": false}, "receipts_complete": {"const": false}, "artifact_digest": {"type": "null"},
+              "reason_code": {"const": "capability.absent"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"classification": {"const": "required"}}},
+          "then": {"properties": {"enabled_by_default": {"const": true}, "release_required": {"const": true}, "state": {"not": {"const": "ABSENT"}}}}
+        }
+      ]
+    },
+    "component_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "enabled_by_default", "release_required", "state", "ready", "artifact_digest", "reason_code"],
+      "properties": {
+        "classification": {"enum": ["required", "not_applicable"]},
+        "enabled_by_default": {"type": "boolean"},
+        "release_required": {"type": "boolean"},
+        "state": {"$ref": "#/definitions/capability_state"},
+        "ready": {"type": "boolean"},
+        "artifact_digest": {"oneOf": [{"$ref": "#/definitions/digest"}, {"type": "null"}]},
+        "reason_code": {"$ref": "#/definitions/reason_code"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "READY"}}},
+          "then": {"properties": {"ready": {"const": true}, "artifact_digest": {"$ref": "#/definitions/digest"}}}
+        },
+        {
+          "if": {"properties": {"state": {"not": {"const": "READY"}}}},
+          "then": {"properties": {"ready": {"const": false}}}
+        },
+        {
+          "if": {"properties": {"classification": {"const": "not_applicable"}}},
+          "then": {"properties": {"enabled_by_default": {"const": false}, "release_required": {"const": false}, "state": {"const": "ABSENT"}, "ready": {"const": false}, "artifact_digest": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"classification": {"const": "required"}}},
+          "then": {"properties": {"enabled_by_default": {"const": true}, "release_required": {"const": true}, "state": {"not": {"const": "ABSENT"}}}}
+        }
+      ]
+    },
+    "state_reason_consistency": {
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "ABSENT"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.absent$"}}}},
+        {"if": {"properties": {"state": {"const": "UNPROVISIONED"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.unprovisioned$"}}}},
+        {"if": {"properties": {"state": {"const": "STARTING"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.starting$"}}}},
+        {"if": {"properties": {"state": {"const": "READY"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.ready$"}}}},
+        {"if": {"properties": {"state": {"const": "DEGRADED"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.degraded$"}}}},
+        {"if": {"properties": {"state": {"const": "BLOCKED"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.blocked$"}}}},
+        {"if": {"properties": {"state": {"const": "FAILED"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.failed$"}}}},
+        {"if": {"properties": {"state": {"const": "STALE"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.stale$"}}}},
+        {"if": {"properties": {"state": {"const": "STOPPED"}}}, "then": {"properties": {"reason_code": {"pattern": "^[^.]+\\.stopped$"}}}}
+      ]
+    },
+    "integration_observation": {
+      "allOf": [
+        {"$ref": "#/definitions/component_observation"},
+        {"$ref": "#/definitions/state_reason_consistency"},
+        {"properties": {"reason_code": {"pattern": "^integration\\."}}}
+      ]
+    },
+    "probe_observation": {
+      "allOf": [
+        {"$ref": "#/definitions/component_observation"},
+        {"$ref": "#/definitions/state_reason_consistency"},
+        {"properties": {"reason_code": {"pattern": "^probe\\."}}}
+      ]
+    },
+    "catalog_observation": {
+      "allOf": [
+        {"$ref": "#/definitions/component_observation"},
+        {"$ref": "#/definitions/state_reason_consistency"},
+        {"properties": {"reason_code": {"pattern": "^catalog\\."}}}
+      ]
+    },
+    "capability_id": {
+      "type": "string",
+      "enum": [
+        "audit.chat_served_receipts", "audit.claim_safe_evaluator", "audit.receipt_chain_verifier", "audit.runtime_receipts",
+        "autonomy.autofix", "autonomy.canary", "autonomy.eig2", "autonomy.high_risk_gated_pipeline", "autonomy.learned_tunnels",
+        "autonomy.low_risk_autogrowth", "autonomy.query_api", "autonomy.stage2_execution", "autonomy.virtual_dimensions",
+        "governance.write_rco", "mesh.dynamic_subdivision", "mesh.hex_2d", "mesh.ring_messaging",
+        "packaging.production_container", "providers.real_http", "retrieval.hybrid_faiss", "routing.deterministic_solver_first",
+        "safety.child_privacy", "safety.credential_non_exposure", "safety.deny_by_default", "safety.external_write_gate", "safety.redaction"
+      ]
+    },
+    "catalog_id": {
+      "type": "string",
+      "enum": [
+        "analyze.routing", "detect.anomaly", "detect.seasonal_rules", "explain.llm_reasoning", "normalize.finnish",
+        "normalize.translate_fi_en", "optimize.schedule", "retrieve.hot_cache", "retrieve.semantic_search", "retrieve.vector_search",
+        "sense.audio", "sense.camera_frigate", "sense.fusion", "sense.home_assistant", "sense.intent_classify", "sense.mqtt_ingest",
+        "solve.causal", "solve.constraints", "solve.math", "solve.neural_classifier", "solve.pattern_match", "solve.stats",
+        "solve.symbolic", "solve.thermal", "verify.consensus", "verify.english_output", "verify.hallucination"
+      ]
+    },
+    "capability_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audit.chat_served_receipts", "audit.claim_safe_evaluator", "audit.receipt_chain_verifier", "audit.runtime_receipts",
+        "autonomy.autofix", "autonomy.canary", "autonomy.eig2", "autonomy.high_risk_gated_pipeline", "autonomy.learned_tunnels",
+        "autonomy.low_risk_autogrowth", "autonomy.query_api", "autonomy.stage2_execution", "autonomy.virtual_dimensions",
+        "governance.write_rco", "mesh.dynamic_subdivision", "mesh.hex_2d", "mesh.ring_messaging",
+        "packaging.production_container", "providers.real_http", "retrieval.hybrid_faiss", "routing.deterministic_solver_first",
+        "safety.child_privacy", "safety.credential_non_exposure", "safety.deny_by_default", "safety.external_write_gate", "safety.redaction"
+      ],
+      "properties": {
+        "audit.chat_served_receipts": {"$ref": "#/definitions/capability_observation"},
+        "audit.claim_safe_evaluator": {"$ref": "#/definitions/capability_observation"},
+        "audit.receipt_chain_verifier": {"$ref": "#/definitions/capability_observation"},
+        "audit.runtime_receipts": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.autofix": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.canary": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.eig2": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.high_risk_gated_pipeline": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.learned_tunnels": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.low_risk_autogrowth": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.query_api": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.stage2_execution": {"$ref": "#/definitions/capability_observation"},
+        "autonomy.virtual_dimensions": {"$ref": "#/definitions/capability_observation"},
+        "governance.write_rco": {"$ref": "#/definitions/capability_observation"},
+        "mesh.dynamic_subdivision": {"$ref": "#/definitions/capability_observation"},
+        "mesh.hex_2d": {"$ref": "#/definitions/capability_observation"},
+        "mesh.ring_messaging": {"$ref": "#/definitions/capability_observation"},
+        "packaging.production_container": {"$ref": "#/definitions/capability_observation"},
+        "providers.real_http": {"$ref": "#/definitions/capability_observation"},
+        "retrieval.hybrid_faiss": {"$ref": "#/definitions/capability_observation"},
+        "routing.deterministic_solver_first": {"$ref": "#/definitions/capability_observation"},
+        "safety.child_privacy": {"$ref": "#/definitions/capability_observation"},
+        "safety.credential_non_exposure": {"$ref": "#/definitions/capability_observation"},
+        "safety.deny_by_default": {"$ref": "#/definitions/capability_observation"},
+        "safety.external_write_gate": {"$ref": "#/definitions/capability_observation"},
+        "safety.redaction": {"$ref": "#/definitions/capability_observation"}
+      }
+    },
+    "integration_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alertmanager", "alerts", "device_enrollment", "electricity", "frigate", "home_assistant", "local_model", "mqtt", "offline_queue", "otel", "power_loss_recovery", "prometheus", "sensors", "signed_ota", "voice_audio", "watchdogs", "weather"],
+      "properties": {
+        "alertmanager": {"$ref": "#/definitions/integration_observation"}, "alerts": {"$ref": "#/definitions/integration_observation"},
+        "device_enrollment": {"$ref": "#/definitions/integration_observation"}, "electricity": {"$ref": "#/definitions/integration_observation"},
+        "frigate": {"$ref": "#/definitions/integration_observation"}, "home_assistant": {"$ref": "#/definitions/integration_observation"},
+        "local_model": {"$ref": "#/definitions/integration_observation"}, "mqtt": {"$ref": "#/definitions/integration_observation"},
+        "offline_queue": {"$ref": "#/definitions/integration_observation"}, "otel": {"$ref": "#/definitions/integration_observation"},
+        "power_loss_recovery": {"$ref": "#/definitions/integration_observation"}, "prometheus": {"$ref": "#/definitions/integration_observation"},
+        "sensors": {"$ref": "#/definitions/integration_observation"}, "signed_ota": {"$ref": "#/definitions/integration_observation"},
+        "voice_audio": {"$ref": "#/definitions/integration_observation"}, "watchdogs": {"$ref": "#/definitions/integration_observation"},
+        "weather": {"$ref": "#/definitions/integration_observation"}
+      }
+    },
+    "catalog_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analyze.routing", "detect.anomaly", "detect.seasonal_rules", "explain.llm_reasoning", "normalize.finnish",
+        "normalize.translate_fi_en", "optimize.schedule", "retrieve.hot_cache", "retrieve.semantic_search", "retrieve.vector_search",
+        "sense.audio", "sense.camera_frigate", "sense.fusion", "sense.home_assistant", "sense.intent_classify", "sense.mqtt_ingest",
+        "solve.causal", "solve.constraints", "solve.math", "solve.neural_classifier", "solve.pattern_match", "solve.stats",
+        "solve.symbolic", "solve.thermal", "verify.consensus", "verify.english_output", "verify.hallucination"
+      ],
+      "properties": {
+        "analyze.routing": {"$ref": "#/definitions/catalog_observation"},
+        "detect.anomaly": {"$ref": "#/definitions/catalog_observation"},
+        "detect.seasonal_rules": {"$ref": "#/definitions/catalog_observation"},
+        "explain.llm_reasoning": {"$ref": "#/definitions/catalog_observation"},
+        "normalize.finnish": {"$ref": "#/definitions/catalog_observation"},
+        "normalize.translate_fi_en": {"$ref": "#/definitions/catalog_observation"},
+        "optimize.schedule": {"$ref": "#/definitions/catalog_observation"},
+        "retrieve.hot_cache": {"$ref": "#/definitions/catalog_observation"},
+        "retrieve.semantic_search": {"$ref": "#/definitions/catalog_observation"},
+        "retrieve.vector_search": {"$ref": "#/definitions/catalog_observation"},
+        "sense.audio": {"$ref": "#/definitions/catalog_observation"},
+        "sense.camera_frigate": {"$ref": "#/definitions/catalog_observation"},
+        "sense.fusion": {"$ref": "#/definitions/catalog_observation"},
+        "sense.home_assistant": {"$ref": "#/definitions/catalog_observation"},
+        "sense.intent_classify": {"$ref": "#/definitions/catalog_observation"},
+        "sense.mqtt_ingest": {"$ref": "#/definitions/catalog_observation"},
+        "solve.causal": {"$ref": "#/definitions/catalog_observation"},
+        "solve.constraints": {"$ref": "#/definitions/catalog_observation"},
+        "solve.math": {"$ref": "#/definitions/catalog_observation"},
+        "solve.neural_classifier": {"$ref": "#/definitions/catalog_observation"},
+        "solve.pattern_match": {"$ref": "#/definitions/catalog_observation"},
+        "solve.stats": {"$ref": "#/definitions/catalog_observation"},
+        "solve.symbolic": {"$ref": "#/definitions/catalog_observation"},
+        "solve.thermal": {"$ref": "#/definitions/catalog_observation"},
+        "verify.consensus": {"$ref": "#/definitions/catalog_observation"},
+        "verify.english_output": {"$ref": "#/definitions/catalog_observation"},
+        "verify.hallucination": {"$ref": "#/definitions/catalog_observation"}
+      }
+    },
+    "probe_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backup_restore", "clock_sync", "config_schema", "hardware_readiness", "integration_readiness", "receipt_chain", "required_capabilities", "secret_non_exposure", "unexpected_remote_provider_reachability", "unexpected_vector_backend_reachability"],
+      "properties": {
+        "backup_restore": {"$ref": "#/definitions/probe_observation"}, "clock_sync": {"$ref": "#/definitions/probe_observation"},
+        "config_schema": {"$ref": "#/definitions/probe_observation"}, "hardware_readiness": {"$ref": "#/definitions/probe_observation"},
+        "integration_readiness": {"$ref": "#/definitions/probe_observation"}, "receipt_chain": {"$ref": "#/definitions/probe_observation"},
+        "required_capabilities": {"$ref": "#/definitions/probe_observation"}, "secret_non_exposure": {"$ref": "#/definitions/probe_observation"},
+        "unexpected_remote_provider_reachability": {"$ref": "#/definitions/probe_observation"},
+        "unexpected_vector_backend_reachability": {"$ref": "#/definitions/probe_observation"}
+      }
+    }
+  }
+}

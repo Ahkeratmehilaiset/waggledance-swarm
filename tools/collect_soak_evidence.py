@@ -241,10 +241,32 @@ def _select_artifact(
         return resolved, record
 
     present: list[str] = []
+    discovery_blockers: list[str] = []
     for name in names:
-        if (root / name).exists():
+        candidate = root / name
+        try:
+            # ``exists()`` follows links and therefore reports a dangling
+            # symlink/junction as absent.  That silently omitted a registered
+            # fresh candidate and let an older sibling win as
+            # ``only_candidate``.  lstat observes the directory entry itself;
+            # the existing strict resolve below then rejects any dangling or
+            # escaping target.  Only a genuinely absent registered name may
+            # be skipped.
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Permission and other discovery ambiguity must poison selection,
+            # never masquerade as absence.  Keep the stable registered name in
+            # the record without exposing host paths or exception text.
+            present.append(name)
+            discovery_blockers.append(f"candidate_unresolvable:{name}")
+        else:
             present.append(name)
     record["candidates"] = sorted(present)
+    if discovery_blockers:
+        record["blockers"].extend(discovery_blockers)
+        return None, record
     if not present:
         return None, record
 

@@ -1475,6 +1475,75 @@ def test_registered_candidate_symlink_escaping_root_fails_closed(
     ]
 
 
+def test_registered_dangling_candidate_blocks_stale_sibling_fallback(
+    tmp_path,
+) -> None:
+    # Path.exists() follows the dangling link and used to omit it, making the
+    # older clean report look like the only candidate.  The registered entry
+    # must stay visible to selection and poison the result instead.
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    dangling = evidence_root / _PIP_PLAIN_NAME
+    _symlink_or_skip(evidence_root / "missing-target.json", dangling)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["path"] is None
+    assert selection["basis"] is None
+    assert selection["source_digest"] is None
+    assert selection["candidates"] == sorted([_PIP_OSV_NAME, _PIP_PLAIN_NAME])
+    assert selection["blockers"] == [
+        f"candidate_unresolvable:{_PIP_PLAIN_NAME}"
+    ]
+
+
+def test_registered_dangling_only_candidate_blocks(tmp_path) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    dangling = evidence_root / _PIP_PLAIN_NAME
+    _symlink_or_skip(evidence_root / "missing-target.json", dangling)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["path"] is None
+    assert selection["basis"] is None
+    assert selection["candidates"] == [_PIP_PLAIN_NAME]
+    assert selection["blockers"] == [
+        f"candidate_unresolvable:{_PIP_PLAIN_NAME}"
+    ]
+
+
+def test_registered_candidate_lstat_error_never_reads_as_absent(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_root, release_notes = _selection_env(tmp_path)
+    _write_pip_audit_report(evidence_root, vuln_count=0, name=_PIP_OSV_NAME)
+    inaccessible = evidence_root / _PIP_PLAIN_NAME
+    original_lstat = Path.lstat
+
+    def guarded_lstat(path: Path):
+        if path == inaccessible:
+            raise PermissionError("simulated registered-candidate denial")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", guarded_lstat)
+
+    evidence = _selection_evidence(evidence_root, release_notes)
+
+    assert evidence["security_privacy_gate"] == "blocked"
+    selection = evidence["artifact_selection"]["pip_audit_report"]
+    assert selection["path"] is None
+    assert selection["basis"] is None
+    assert selection["candidates"] == sorted([_PIP_OSV_NAME, _PIP_PLAIN_NAME])
+    assert selection["blockers"] == [
+        f"candidate_unresolvable:{_PIP_PLAIN_NAME}"
+    ]
+
+
 def test_explicit_nested_path_inside_root_is_selected(tmp_path) -> None:
     # Nested-but-contained explicit paths stay usable; the record keeps the
     # nested root-relative form.

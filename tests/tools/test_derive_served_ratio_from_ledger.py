@@ -1128,3 +1128,30 @@ def test_tool_no_longer_imports_canonical_helper() -> None:
     import tools.derive_served_ratio_from_ledger as tool
 
     assert not hasattr(tool, "read_pending_append_failures")
+
+
+def test_missing_nofollow_constant_rejects_before_any_open(
+    ledger: LedgerBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Grok refuse-on-sight regression: on a POSIX branch without O_NOFOLLOW
+    # the opener must fail closed, path-free, BEFORE calling os.open - a
+    # zero-fallback flag would silently follow a symlink and restore the
+    # false-complete zero.
+    import os as os_module
+
+    import tools.derive_served_ratio_from_ledger as tool
+
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    monkeypatch.setattr(os_module, "name", "posix")
+    monkeypatch.delattr(os_module, "O_NOFOLLOW", raising=False)
+
+    def _must_not_open(*args: object, **kwargs: object) -> int:
+        raise AssertionError("os.open must not be reached without O_NOFOLLOW")
+
+    monkeypatch.setattr(os_module, "open", _must_not_open)
+    with pytest.raises(DerivationRejected) as excinfo:
+        tool._count_pending_append_failures(str(ledger.failures))
+    assert excinfo.value.reason == "pending_failure_ledger_nofollow_unavailable"

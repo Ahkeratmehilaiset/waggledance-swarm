@@ -181,11 +181,15 @@ def _open_failure_ledger_descriptor(path: str) -> int:
         except OSError:
             kernel32.CloseHandle(handle)
             raise
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    # O_NOFOLLOW is MANDATORY, never a zero fallback: a silently-dropped
+    # nofollow flag follows a symlink and restores the false-complete zero
+    # (strongest-Grok refuse-on-sight pattern). A platform without the
+    # constant fails closed, path-free, BEFORE any open call. O_CLOEXEC is
+    # descriptor hygiene, not a security property, so its fallback stays.
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise DerivationRejected("pending_failure_ledger_nofollow_unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow
     return os.open(path, flags)
 
 

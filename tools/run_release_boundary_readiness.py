@@ -6,12 +6,21 @@ This tool is deliberately read-only with respect to the release boundary. It
 can observe that the release gate and operator decision packs are in place, but
 it never creates a tag, moves a Docker alias, claims stable release, or changes
 external authority. Finalization remains operator-only.
+
+Readiness is granted only by the live canonical release gate, evaluated
+in-process at checked_at_utc against the ROOT-resolved RELEASE_READINESS.md
+and soak evidence, and only when the exact full-hex git HEAD equals the
+canonical soak commit. The --release-gate-recheck and
+--phase-synthesis-refresh snapshot inputs are continuity lineage only: they
+can add blockers but can never grant readiness.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools import run_release_gate_readonly_recheck as live_release_gate
 from tools.operator_decision_pack import DecisionPackError, is_signed, load_pack
 
 
@@ -37,6 +47,10 @@ DEFAULT_OUTPUT = SPRINT_DIR / "release_boundary_readiness.json"
 RELEASE_SOAK_TASK_ID = "release_soak_evidence_blocker_resolution"
 FINALIZATION_TASK_ID = "operator_release_finalization_decision"
 STRICT_BLOCKED_EXIT_CODE = 2
+
+_FULL_HEX_SHA = re.compile(r"^[0-9a-f]{40}$")
+CANONICAL_RELEASE_READINESS = ROOT / live_release_gate.DEFAULT_RELEASE_READINESS
+CANONICAL_SOAK_EVIDENCE = ROOT / live_release_gate.DEFAULT_SOAK_EVIDENCE
 
 FALSE_RELEASE_BOUNDARY = {
     "stable_release_claim": False,
@@ -66,6 +80,156 @@ def _parse_timestamp(value: str) -> dt.datetime:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "git rev-parse HEAD failed")
+    return result.stdout.strip()
+
+
+def _run_live_release_gate(
+    checked_at_utc: dt.datetime | None,
+) -> dict[str, Any]:
+    """Run the canonical release gate in-process at checked_at_utc.
+
+    This is the sole readiness grant path. It always evaluates the
+    ROOT-resolved canonical RELEASE_READINESS.md and soak evidence; callers
+    cannot redirect it, so a stale snapshot can never grant readiness.
+    """
+    return live_release_gate.build_report(
+        release_readiness=CANONICAL_RELEASE_READINESS,
+        soak_evidence=CANONICAL_SOAK_EVIDENCE,
+        checked_at_utc=checked_at_utc,
+    )
+
+
+def _live_gate_evaluation(
+    checked_at_utc: dt.datetime | None,
+) -> tuple[dict[str, Any], list[str]]:
+    blockers: list[str] = []
+    try:
+        report = _run_live_release_gate(checked_at_utc)
+    except Exception as exc:  # noqa: BLE001 - evaluator failure must block, never crash
+        return (
+            {"ok": False, "error": str(exc)},
+            ["live_release_gate_evaluator_error"],
+        )
+    summary = _release_gate_summary(report)
+    if summary["ok"] is not True:
+        blockers.append("live_release_gate_report_not_ok")
+    if summary["read_only"] is not True:
+        blockers.append("live_release_gate_not_read_only")
+    if summary["release_gate_effect"] != "none":
+        blockers.append("live_release_gate_effect_not_none")
+    if summary["release_boundary_all_false"] is not True:
+        blockers.append("live_release_gate_boundary_mutated")
+    if summary["release_gate_decision"] != "pass" or summary["blockers"]:
+        blockers.append("live_release_gate_not_passed")
+    return summary, blockers
+
+
+def _head_soak_binding() -> tuple[dict[str, Any], list[str]]:
+    """Bind the exact full-hex git HEAD to the canonical soak commit."""
+    blockers: list[str] = []
+    binding: dict[str, Any] = {
+        "git_head": None,
+        "soak_commit": None,
+        "soak_evidence_path": str(CANONICAL_SOAK_EVIDENCE),
+    }
+    try:
+        head = _git_head()
+    except Exception as exc:  # noqa: BLE001 - any git failure blocks readiness
+        binding["error"] = str(exc)
+        blockers.append("git_head_unavailable")
+        return binding, blockers
+    binding["git_head"] = head
+    if not _FULL_HEX_SHA.fullmatch(head):
+        blockers.append("git_head_not_full_hex")
+
+    try:
+        soak = _read_json(CANONICAL_SOAK_EVIDENCE)
+    except Exception as exc:  # noqa: BLE001 - unreadable evidence blocks readiness
+        binding["error"] = str(exc)
+        blockers.append("soak_evidence_unreadable")
+        return binding, blockers
+    commit = soak.get("commit") if isinstance(soak, dict) else None
+    if not isinstance(commit, str) or not _FULL_HEX_SHA.fullmatch(commit):
+        blockers.append("soak_commit_missing_or_malformed")
+        return binding, blockers
+    binding["soak_commit"] = commit
+    if not blockers and head != commit:
+        blockers.append("git_head_does_not_match_soak_commit")
+    return binding, blockers
+
+
+def _identity_tuple(signed_by: str) -> tuple[str, str] | None:
+    parts = signed_by.split(":")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    return (parts[0], parts[1])
+
+
+def _torch_scope_update_blockers(pack: Mapping[str, Any]) -> list[str]:
+    """Fail-closed inspection of operator_signoff.scope_updates.
+
+    Missing scope_updates means an empty set. An update carrying a
+    lock_evidence_contract whose operator_signature_required is the literal
+    bool True must have a non-empty direct signed_by whose operator role+id
+    tuple exactly matches the top-level signoff identity. Malformed or
+    ambiguous structures block; historical updates without a contract stay
+    lineage-only and never block.
+    """
+    blockers: list[str] = []
+    signoff = pack.get("operator_signoff")
+    if not isinstance(signoff, Mapping):
+        return blockers
+    top_tuple = _identity_tuple(str(signoff.get("signed_by") or ""))
+    updates = signoff.get("scope_updates")
+    if updates is None:
+        return blockers
+    if not isinstance(updates, list):
+        blockers.append("scope_updates_malformed")
+        return blockers
+    for index, update in enumerate(updates):
+        if not isinstance(update, Mapping):
+            blockers.append(f"scope_update_{index}_malformed")
+            continue
+        contract = update.get("lock_evidence_contract")
+        if contract is None:
+            continue
+        if not isinstance(contract, Mapping):
+            blockers.append(f"scope_update_{index}_contract_malformed")
+            continue
+        required = contract.get("operator_signature_required")
+        if required is False:
+            continue
+        if required is None:
+            blockers.append(f"scope_update_{index}_required_flag_missing")
+            continue
+        if required is not True:
+            blockers.append(f"scope_update_{index}_required_flag_malformed")
+            continue
+        direct = update.get("signed_by")
+        if not isinstance(direct, str) or not direct.strip():
+            blockers.append(f"scope_update_{index}_missing_direct_signed_by")
+            continue
+        update_tuple = _identity_tuple(direct)
+        if (
+            top_tuple is None
+            or update_tuple is None
+            or update_tuple != top_tuple
+        ):
+            blockers.append(f"scope_update_{index}_signer_identity_mismatch")
+    return blockers
 
 
 def _remaining_package(
@@ -183,11 +347,20 @@ def _docker_pack_summary(path: Path) -> dict[str, Any]:
 
 
 def _torch_pack_summary(path: Path) -> dict[str, Any]:
-    return _decision_pack_summary(
+    summary = _decision_pack_summary(
         path,
         expected_decision_id="torch-cuda-vs-cpu",
         expected_category="dependency_security",
     )
+    if "error" not in summary:
+        try:
+            pack = load_pack(path)
+        except (OSError, DecisionPackError) as exc:
+            summary["blockers"].append("operator_decision_pack_missing_or_invalid")
+            summary["error"] = str(exc)
+            return summary
+        summary["blockers"].extend(_torch_scope_update_blockers(pack))
+    return summary
 
 
 def _release_gate_summary(report: dict[str, Any]) -> dict[str, Any]:
@@ -348,17 +521,25 @@ def build_report(
     checked_at_utc = checked_at_utc or _utc_now()
     torch_pack = _torch_pack_summary(torch_decision_pack)
     docker_pack = _docker_pack_summary(docker_decision_pack)
-    blockers = _collect_blockers(
-        phase_synthesis_refresh=phase_synthesis_refresh,
-        release_gate_recheck=release_gate_recheck,
-        torch_pack=torch_pack,
-        docker_pack=docker_pack,
-    )
+    live_gate_summary, live_gate_blockers = _live_gate_evaluation(checked_at_utc)
+    binding, binding_blockers = _head_soak_binding()
+    blockers = [
+        *live_gate_blockers,
+        *binding_blockers,
+        *_collect_blockers(
+            phase_synthesis_refresh=phase_synthesis_refresh,
+            release_gate_recheck=release_gate_recheck,
+            torch_pack=torch_pack,
+            docker_pack=docker_pack,
+        ),
+    ]
     ready = not blockers
     return {
         "schema_version": SCHEMA_VERSION,
         "checked_at_utc": _format_utc(checked_at_utc),
         "ok": ready,
+        "source_live_release_gate": live_gate_summary,
+        "head_soak_binding": binding,
         "release_boundary_status": (
             "ready_for_operator_finalization"
             if ready

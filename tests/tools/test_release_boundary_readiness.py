@@ -5,16 +5,27 @@ import datetime as dt
 import json
 from pathlib import Path
 
+import pytest
+
+import tools.run_release_boundary_readiness as boundary
 from tools.run_release_boundary_readiness import (
+    CANONICAL_SOAK_EVIDENCE,
+    DEFAULT_PHASE_SYNTHESIS_REFRESH,
+    DEFAULT_RELEASE_GATE_RECHECK,
     FALSE_RELEASE_BOUNDARY,
+    ROOT,
     SCHEMA_VERSION,
     build_report,
+    build_report_from_paths,
     main,
     strict_exit_code,
 )
 
 
 FIXED_NOW = dt.datetime(2026, 6, 1, 3, 0, tzinfo=dt.UTC)
+CANONICAL_SOAK_COMMIT = json.loads(
+    CANONICAL_SOAK_EVIDENCE.read_text(encoding="utf-8")
+)["commit"]
 
 
 def _phase_synthesis_refresh(
@@ -71,7 +82,26 @@ def _release_gate_recheck(
     }
 
 
-def _write_torch_pack(path: Path, *, signed: bool = True) -> Path:
+def _pass_live_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolated pass fixture: mock the live builder and the git HEAD.
+
+    Only tests may take this path; the CLI and default runs always evaluate
+    the real canonical gate.
+    """
+    monkeypatch.setattr(
+        boundary,
+        "_run_live_release_gate",
+        lambda checked_at_utc: _release_gate_recheck(),
+    )
+    monkeypatch.setattr(boundary, "_git_head", lambda: CANONICAL_SOAK_COMMIT)
+
+
+def _write_torch_pack(
+    path: Path,
+    *,
+    signed: bool = True,
+    scope_updates_yaml: str = "",
+) -> Path:
     signed_by = '"operator:jani:2026-05-22T18:14:34Z"' if signed else '""'
     chosen = "A2_cu126" if signed else ""
     path.write_text(
@@ -88,7 +118,7 @@ options:
 operator_signoff:
   signed_by: {signed_by}
   chosen_option: "{chosen}"
-structural_invariants:
+{scope_updates_yaml}structural_invariants:
   no_main_branch_auto_merge: true
   dependency_change_lands_via_pr: true
   agent_must_not_self_resolve: true
@@ -138,16 +168,30 @@ structural_invariants:
     return path
 
 
-def test_report_records_ready_for_operator_finalization_without_release_action(
+def _build_pass_report(
     tmp_path: Path,
-) -> None:
-    report = build_report(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    torch_scope_yaml: str = "",
+) -> dict[str, object]:
+    _pass_live_gate(monkeypatch)
+    return build_report(
         phase_synthesis_refresh=_phase_synthesis_refresh(),
         release_gate_recheck=_release_gate_recheck(),
-        torch_decision_pack=_write_torch_pack(tmp_path / "torch.yaml"),
+        torch_decision_pack=_write_torch_pack(
+            tmp_path / "torch.yaml",
+            scope_updates_yaml=torch_scope_yaml,
+        ),
         docker_decision_pack=_write_docker_pack(tmp_path / "docker.yaml"),
         checked_at_utc=FIXED_NOW,
     )
+
+
+def test_report_records_ready_for_operator_finalization_without_release_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(tmp_path, monkeypatch)
 
     assert report["schema_version"] == SCHEMA_VERSION
     assert report["checked_at_utc"] == "2026-06-01T03:00:00Z"
@@ -156,6 +200,9 @@ def test_report_records_ready_for_operator_finalization_without_release_action(
     assert report["release_boundary_blockers"] == []
     assert report["operator_finalization_required"] is True
     assert report["release_boundary"] == FALSE_RELEASE_BOUNDARY
+    assert report["source_live_release_gate"]["release_gate_decision"] == "pass"
+    assert report["head_soak_binding"]["git_head"] == CANONICAL_SOAK_COMMIT
+    assert report["head_soak_binding"]["soak_commit"] == CANONICAL_SOAK_COMMIT
     assert report["release_boundary_guardrails"] == {
         "release_boundary_effect": "none",
         "tag_creation_applied": False,
@@ -193,7 +240,9 @@ def test_report_records_ready_for_operator_finalization_without_release_action(
 
 def test_landed_release_soak_package_keeps_readiness_idempotent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pass_live_gate(monkeypatch)
     phase = _phase_synthesis_refresh()
     phase["remaining_work_packages"] = [
         package
@@ -234,7 +283,11 @@ def test_landed_release_soak_package_keeps_readiness_idempotent(
     assert strict_exit_code(report) == 0
 
 
-def test_unsigned_docker_decision_pack_blocks_readiness(tmp_path: Path) -> None:
+def test_unsigned_docker_decision_pack_blocks_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pass_live_gate(monkeypatch)
     report = build_report(
         phase_synthesis_refresh=_phase_synthesis_refresh(),
         release_gate_recheck=_release_gate_recheck(),
@@ -255,7 +308,11 @@ def test_unsigned_docker_decision_pack_blocks_readiness(tmp_path: Path) -> None:
     assert strict_exit_code(report) == 2
 
 
-def test_docker_latest_move_in_signed_pack_blocks_readiness(tmp_path: Path) -> None:
+def test_docker_latest_move_in_signed_pack_blocks_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pass_live_gate(monkeypatch)
     report = build_report(
         phase_synthesis_refresh=_phase_synthesis_refresh(),
         release_gate_recheck=_release_gate_recheck(),
@@ -274,9 +331,11 @@ def test_docker_latest_move_in_signed_pack_blocks_readiness(tmp_path: Path) -> N
     assert report["release_boundary"] == FALSE_RELEASE_BOUNDARY
 
 
-def test_release_gate_hold_blocks_readiness_without_release_mutation(
+def test_stale_snapshot_hold_still_blocks_as_continuity(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pass_live_gate(monkeypatch)
     report = build_report(
         phase_synthesis_refresh=_phase_synthesis_refresh(),
         release_gate_recheck=_release_gate_recheck(
@@ -295,7 +354,9 @@ def test_release_gate_hold_blocks_readiness_without_release_mutation(
 
 def test_phase_status_must_be_ready_for_release_boundary_review(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pass_live_gate(monkeypatch)
     report = build_report(
         phase_synthesis_refresh=_phase_synthesis_refresh(
             status="blocked_until_release_gate_soak_evidence_passes"
@@ -316,7 +377,9 @@ def test_phase_status_must_be_ready_for_release_boundary_review(
 def test_cli_writes_readiness_report_and_honors_strict(
     tmp_path: Path,
     capsys,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _pass_live_gate(monkeypatch)
     phase_path = tmp_path / "phase.json"
     gate_path = tmp_path / "gate.json"
     output_path = tmp_path / "release_boundary_readiness.json"
@@ -350,3 +413,286 @@ def test_cli_writes_readiness_report_and_honors_strict(
     assert disk_report["release_boundary_status"] == (
         "ready_for_operator_finalization"
     )
+
+
+# --- Live-gate authority: the stale-snapshot false green cannot recur ---
+
+
+def test_repository_defaults_hold_for_live_gate_reason() -> None:
+    """Unmocked repository defaults must HOLD via the live gate, never ready."""
+    report = build_report_from_paths(
+        phase_synthesis_refresh_path=ROOT / DEFAULT_PHASE_SYNTHESIS_REFRESH,
+        release_gate_recheck_path=ROOT / DEFAULT_RELEASE_GATE_RECHECK,
+        torch_decision_pack=ROOT / "docs/operator_inbox/torch-cuda-vs-cpu.yaml",
+        docker_decision_pack=(
+            ROOT / "docs/operator_inbox/docker-latest-promotion.yaml"
+        ),
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "live_release_gate_not_passed" in report["release_boundary_blockers"]
+    assert report["release_boundary"] == FALSE_RELEASE_BOUNDARY
+    assert strict_exit_code(report) == 2
+
+
+def test_stale_passing_snapshot_cannot_grant_readiness(tmp_path: Path) -> None:
+    """The original defect: a checked-in passing snapshot granted readiness."""
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(),
+        release_gate_recheck=_release_gate_recheck(decision="pass"),
+        torch_decision_pack=_write_torch_pack(tmp_path / "torch.yaml"),
+        docker_decision_pack=_write_docker_pack(tmp_path / "docker.yaml"),
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "live_release_gate_not_passed" in report["release_boundary_blockers"]
+    assert strict_exit_code(report) == 2
+
+
+def test_live_evaluator_exception_is_a_named_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(checked_at_utc):
+        raise RuntimeError("evaluator exploded")
+
+    monkeypatch.setattr(boundary, "_run_live_release_gate", _raise)
+    monkeypatch.setattr(boundary, "_git_head", lambda: CANONICAL_SOAK_COMMIT)
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(),
+        release_gate_recheck=_release_gate_recheck(),
+        torch_decision_pack=_write_torch_pack(tmp_path / "torch.yaml"),
+        docker_decision_pack=_write_docker_pack(tmp_path / "docker.yaml"),
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "live_release_gate_evaluator_error" in report[
+        "release_boundary_blockers"
+    ]
+    assert report["source_live_release_gate"]["ok"] is False
+    assert strict_exit_code(report) == 2
+
+
+# --- Head/soak binding ---
+
+
+def test_git_head_unavailable_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        boundary,
+        "_run_live_release_gate",
+        lambda checked_at_utc: _release_gate_recheck(),
+    )
+
+    def _raise() -> str:
+        raise RuntimeError("git missing")
+
+    monkeypatch.setattr(boundary, "_git_head", _raise)
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(),
+        release_gate_recheck=_release_gate_recheck(),
+        torch_decision_pack=_write_torch_pack(tmp_path / "torch.yaml"),
+        docker_decision_pack=_write_docker_pack(tmp_path / "docker.yaml"),
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "git_head_unavailable" in report["release_boundary_blockers"]
+
+
+def test_git_head_not_full_hex_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        boundary,
+        "_run_live_release_gate",
+        lambda checked_at_utc: _release_gate_recheck(),
+    )
+    monkeypatch.setattr(boundary, "_git_head", lambda: "abc123")
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(),
+        release_gate_recheck=_release_gate_recheck(),
+        torch_decision_pack=_write_torch_pack(tmp_path / "torch.yaml"),
+        docker_decision_pack=_write_docker_pack(tmp_path / "docker.yaml"),
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "git_head_not_full_hex" in report["release_boundary_blockers"]
+
+
+def test_git_head_soak_commit_mismatch_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        boundary,
+        "_run_live_release_gate",
+        lambda checked_at_utc: _release_gate_recheck(),
+    )
+    monkeypatch.setattr(boundary, "_git_head", lambda: "f" * 40)
+    report = build_report(
+        phase_synthesis_refresh=_phase_synthesis_refresh(),
+        release_gate_recheck=_release_gate_recheck(),
+        torch_decision_pack=_write_torch_pack(tmp_path / "torch.yaml"),
+        docker_decision_pack=_write_docker_pack(tmp_path / "docker.yaml"),
+        checked_at_utc=FIXED_NOW,
+    )
+
+    assert report["ok"] is False
+    assert "git_head_does_not_match_soak_commit" in report[
+        "release_boundary_blockers"
+    ]
+
+
+# --- Torch operator_signoff.scope_updates fail-closed inspection ---
+
+
+_SCOPE_SIGNED = """  scope_updates:
+    - recorded_utc: 2026-08-26T07:00:00Z
+      recorded_by: "codex-lead-1"
+      signed_by: "operator:jani:2026-08-26T07:00:00Z"
+      lock_evidence_contract:
+        operator_signature_required: true
+"""
+
+_SCOPE_MISSING_SIGNER = """  scope_updates:
+    - recorded_utc: 2026-08-26T07:00:00Z
+      recorded_by: "codex-lead-1"
+      lock_evidence_contract:
+        operator_signature_required: true
+"""
+
+_SCOPE_WRONG_SIGNER = """  scope_updates:
+    - recorded_utc: 2026-08-26T07:00:00Z
+      signed_by: "agent:codex-lead-1:2026-08-26T07:00:00Z"
+      lock_evidence_contract:
+        operator_signature_required: true
+"""
+
+_SCOPE_TRUTHY_FLAG = """  scope_updates:
+    - recorded_utc: 2026-08-26T07:00:00Z
+      signed_by: "operator:jani:2026-08-26T07:00:00Z"
+      lock_evidence_contract:
+        operator_signature_required: "yes"
+"""
+
+_SCOPE_FLAG_MISSING = """  scope_updates:
+    - recorded_utc: 2026-08-26T07:00:00Z
+      lock_evidence_contract:
+        note: "contract present but required flag absent"
+"""
+
+_SCOPE_HISTORICAL = """  scope_updates:
+    - recorded_utc: 2026-05-27T08:14:26Z
+      recorded_by: "codex-lead-1"
+      summary: "historical dependency-floor authorization, no contract"
+"""
+
+_SCOPE_NOT_A_LIST = """  scope_updates: "not-a-list"
+"""
+
+
+def test_exact_signed_required_scope_update_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_SIGNED,
+    )
+    assert report["ok"] is True
+    assert report["release_boundary_blockers"] == []
+
+
+def test_required_scope_update_without_direct_signer_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_MISSING_SIGNER,
+    )
+    assert report["ok"] is False
+    assert "torch_scope_update_0_missing_direct_signed_by" in report[
+        "release_boundary_blockers"
+    ]
+
+
+def test_required_scope_update_with_wrong_identity_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_WRONG_SIGNER,
+    )
+    assert report["ok"] is False
+    assert "torch_scope_update_0_signer_identity_mismatch" in report[
+        "release_boundary_blockers"
+    ]
+
+
+def test_truthy_non_bool_required_flag_blocks_as_malformed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_TRUTHY_FLAG,
+    )
+    assert report["ok"] is False
+    assert "torch_scope_update_0_required_flag_malformed" in report[
+        "release_boundary_blockers"
+    ]
+
+
+def test_contract_without_required_flag_blocks_as_ambiguous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_FLAG_MISSING,
+    )
+    assert report["ok"] is False
+    assert "torch_scope_update_0_required_flag_missing" in report[
+        "release_boundary_blockers"
+    ]
+
+
+def test_historical_update_without_contract_does_not_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_HISTORICAL,
+    )
+    assert report["ok"] is True
+    assert report["release_boundary_blockers"] == []
+
+
+def test_scope_updates_not_a_list_blocks_as_malformed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _build_pass_report(
+        tmp_path,
+        monkeypatch,
+        torch_scope_yaml=_SCOPE_NOT_A_LIST,
+    )
+    assert report["ok"] is False
+    assert "torch_scope_updates_malformed" in report["release_boundary_blockers"]

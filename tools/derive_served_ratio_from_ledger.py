@@ -59,9 +59,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from waggledance.core.magma.chat_served_accounting import (  # noqa: E402
-    read_pending_append_failures,
-)
 from waggledance.core.magma.chat_served_ledger import (  # noqa: E402
     GAP_TERMINAL,
     RECEIPT_TERMINAL,
@@ -148,35 +145,115 @@ def lifecycle_violation(state: str | None, entry_type: object) -> str | None:
     return None
 
 
-def _count_pending_append_failures(path: object) -> int:
-    """Preflight and count durable pending-append failures fail-closed.
+def _open_failure_ledger_descriptor(path: str) -> int:
+    """Open ONE stable no-follow descriptor for the failure ledger.
 
-    The canonical helper maps ANY absent-looking path (missing file, empty
-    string, None, 0, False) to a clean zero, which is exactly the false-green
-    this tool must refuse. So the path is validated here FIRST -- required
-    string, os.lstat (never following links), regular file, no Windows
-    reparse point -- and only then is the canonical helper consulted for the
-    count. An empty-but-present regular file is an explicit zero; an absent
-    or non-regular path is no evidence at all.
+    The count must come from a descriptor held across the whole check, never
+    from a second path lookup: the canonical helper re-resolves its path and
+    maps a vanished file to a clean zero, which is the P1 TOCTOU fail-open.
+    POSIX gets O_NOFOLLOW | O_CLOEXEC. Windows CPython has no working
+    O_NOFOLLOW (os.open FOLLOWS a symlink even with the getattr fallback), so
+    the handle comes from CreateFileW with FILE_FLAG_OPEN_REPARSE_POINT,
+    which opens the reparse point itself; share mode stays
+    READ|WRITE|DELETE so the live emitter can keep appending.
     """
-    if not isinstance(path, str) or not path:
-        raise DerivationRejected("pending_failure_ledger_path_invalid")
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        generic_read = 0x80000000
+        share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+        open_existing = 3
+        # BACKUP_SEMANTICS lets a directory open succeed so fstat can reject
+        # it as not-regular instead of an ambiguous access-denied.
+        flags = 0x00200000 | 0x02000000  # OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        handle = kernel32.CreateFileW(
+            path, generic_read, share_read_write_delete, None,
+            open_existing, flags, None,
+        )
+        if handle in (None, wintypes.HANDLE(-1).value):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        except OSError:
+            kernel32.CloseHandle(handle)
+            raise
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    return os.open(path, flags)
+
+
+def _reject_from_open_failure(path: str) -> None:
+    """Classify an open failure into a stable path-free rejection.
+
+    Only the ALREADY-FAILING path is lstat-ed, to keep directory ->
+    not_regular distinct from missing -> not_found; a racy mis-name between
+    two reject tokens is acceptable, a racy count of zero is not. Always
+    raises.
+    """
     try:
         st = os.lstat(path)
     except OSError:
         raise DerivationRejected("pending_failure_ledger_not_found") from None
-    if not stat_module.S_ISREG(st.st_mode):
-        raise DerivationRejected("pending_failure_ledger_not_regular")
-    reparse_attr = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", None)
-    file_attributes = getattr(st, "st_file_attributes", 0)
-    if reparse_attr is not None and file_attributes & reparse_attr:
-        raise DerivationRejected("pending_failure_ledger_not_regular")
+    reparse_attr = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if not stat_module.S_ISREG(st.st_mode) or (
+        reparse_attr and getattr(st, "st_file_attributes", 0) & reparse_attr
+    ):
+        raise DerivationRejected("pending_failure_ledger_not_regular") from None
+    raise DerivationRejected("pending_failure_ledger_unreadable") from None
+
+
+def _count_pending_append_failures(path: object) -> int:
+    """Count durable pending-append failures from one stable descriptor.
+
+    The canonical helper maps ANY absent-looking path (missing file, empty
+    string, None, 0, False) to a clean zero and re-resolves the path on
+    every call, so this tool never consults it: the path is validated as a
+    required string, opened ONCE with a no-follow descriptor, fstat-checked
+    as a regular non-reparse file on THAT descriptor, and counted from THAT
+    descriptor with the helper-equivalent rule (every nonblank UTF-8 line,
+    no filtering). An empty-but-present regular file is an explicit zero; an
+    absent, swapped or non-regular path is no evidence at all. Every
+    rejection reason is a stable token carrying no path and no exception
+    text.
+    """
+    if not isinstance(path, str) or not path:
+        raise DerivationRejected("pending_failure_ledger_path_invalid")
     try:
-        return int(read_pending_append_failures(path))
-    except (OSError, UnicodeError) as exc:
-        raise DerivationRejected(
-            f"pending_failure_ledger_unreadable:{exc}"
-        ) from exc
+        fd = _open_failure_ledger_descriptor(path)
+    except OSError:
+        _reject_from_open_failure(path)
+    try:
+        st = os.fstat(fd)
+        reparse_attr = getattr(
+            stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+        )
+        if not stat_module.S_ISREG(st.st_mode) or (
+            reparse_attr
+            and getattr(st, "st_file_attributes", 0) & reparse_attr
+        ):
+            raise DerivationRejected("pending_failure_ledger_not_regular")
+    except OSError:
+        os.close(fd)
+        raise DerivationRejected("pending_failure_ledger_unreadable") from None
+    except DerivationRejected:
+        os.close(fd)
+        raise
+    count = 0
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    count += 1
+    except (OSError, UnicodeError):
+        raise DerivationRejected("pending_failure_ledger_unreadable") from None
+    return count
 
 
 def derive_report(

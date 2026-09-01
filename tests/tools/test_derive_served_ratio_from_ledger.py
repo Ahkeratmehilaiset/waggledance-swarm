@@ -997,3 +997,134 @@ def test_cli_missing_failure_ledger_is_structured_rejection(
     rejection = json.loads(capsys.readouterr().out)
     assert rejection["derived"] is False
     assert rejection["reason"] == "pending_failure_ledger_not_found"
+
+
+# --- P1/P2 correction regressions: stable-descriptor counting (Grok
+# --- PASS_PLAN, fable-5/served-ratio-pending-failure-fix-20260901).
+
+
+def test_toctou_unlink_race_rejects_never_zero(
+    ledger: LedgerBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # P1 pending_failure_path_toctou_silent_zero: the failure file vanishes
+    # between validation and the read. With the stable descriptor the vanish
+    # lands as an open failure and a named rejection - never as a silent
+    # zero that restores evidence_complete=True.
+    import tools.derive_served_ratio_from_ledger as tool
+
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    real_open = tool._open_failure_ledger_descriptor
+
+    def _race_open(path: str) -> int:
+        Path(path).unlink()
+        return real_open(path)
+
+    monkeypatch.setattr(tool, "_open_failure_ledger_descriptor", _race_open)
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_found"
+
+
+def test_toctou_symlink_swap_race_rejects(
+    ledger: LedgerBuilder, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Swap variant: the regular file is replaced by a symlink to an empty
+    # target in the race window. The no-follow open (POSIX) or the reparse
+    # fstat check (Windows) must reject it as not-regular, never count 0.
+    import tools.derive_served_ratio_from_ledger as tool
+
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+    target = tmp_path / "swap_target_empty.jsonl"
+    target.write_text("", encoding="utf-8")
+
+    real_open = tool._open_failure_ledger_descriptor
+
+    def _swap_open(path: str) -> int:
+        Path(path).unlink()
+        try:
+            Path(path).symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted on this platform")
+        return real_open(path)
+
+    monkeypatch.setattr(tool, "_open_failure_ledger_descriptor", _swap_open)
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_regular"
+
+
+def test_unreadable_reason_is_exact_token_without_path_or_exc(
+    ledger: LedgerBuilder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # P2 raw_oserror_path_disclosure: the rejection payload must never carry
+    # the supplied path, errno text or codec details. The reason is the
+    # EXACT token, not a prefix.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.failures.write_bytes(b"\xff\xfe invalid utf-8 \xff\n")
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_unreadable"
+
+    rc = main(
+        [
+            "--ledger",
+            str(ledger.path),
+            "--pending-failure-ledger",
+            str(ledger.failures),
+            "--json",
+        ]
+    )
+    assert rc == EXIT_REJECTED
+    out = capsys.readouterr().out
+    rejection = json.loads(out)
+    assert rejection["reason"] == "pending_failure_ledger_unreadable"
+    assert str(ledger.failures) not in out
+    assert "codec" not in out
+    assert "Errno" not in out
+    assert "0xff" not in out
+
+
+def test_local_count_matches_canonical_helper_on_regular_file(
+    ledger: LedgerBuilder,
+) -> None:
+    # Parity lock, tests only: on a non-racy regular mixed file the local
+    # descriptor count must equal the canonical helper's count. The helper
+    # stays OUT of the tool; this pins rule equivalence, not a call path.
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+    ledger.fail_pending_append(lines=1, text='{"schema_version": "wrong"}')
+    ledger.fail_pending_append(lines=1, text="not json at all")
+    ledger.fail_pending_append(lines=1, text="   ")
+
+    from tools.derive_served_ratio_from_ledger import (
+        _count_pending_append_failures,
+    )
+
+    local = _count_pending_append_failures(str(ledger.failures))
+    canonical = chat_served_accounting.read_pending_append_failures(
+        str(ledger.failures)
+    )
+    assert local == canonical == 3
+
+
+def test_tool_no_longer_imports_canonical_helper() -> None:
+    # The helper re-resolves its path (the P1 mechanism); the tool must not
+    # be able to reach it even by accident.
+    import tools.derive_served_ratio_from_ledger as tool
+
+    assert not hasattr(tool, "read_pending_append_failures")

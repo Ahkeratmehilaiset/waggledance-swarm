@@ -39,6 +39,9 @@ TEST_CARRIER_HEAD = "f" * 40
 TEST_SUBJECT_TREE = "a" * 40
 TEST_CARRIER_TREE = "b" * 40
 OPERATOR_SIGNER = "operator:jani:2026-05-22T18:14:34Z"
+TEST_GIT_EXECUTABLE = str(
+    (ROOT / ".codex-audit" / "wd-test-git").resolve()
+)
 EXPECTED_PYYAML_602_MANIFEST = (
     ("yaml/__init__.py", 12311,
      "377e52d351cc7ac1537b469144c5a43e3d0f6bc2046c7a44f452bb72be4176dc"),
@@ -75,6 +78,19 @@ EXPECTED_PYYAML_602_MANIFEST = (
     ("yaml/tokens.py", 2573,
      "953408cd2570f0c83dc2fe39f7e4e388e41eeb05738aa69196a5f6ffcf6ba79e"),
 )
+
+
+def _configure_output_test_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Give writer tests an existing, repository-shaped temporary root."""
+    test_root = tmp_path / "output-root"
+    audit_root = test_root / ".codex-audit"
+    audit_root.mkdir(parents=True)
+    monkeypatch.setattr(boundary, "ROOT", test_root)
+    monkeypatch.setattr(boundary, "_PYCACHE_ROOT", audit_root)
+    return audit_root
 
 
 def _phase_synthesis_refresh(
@@ -476,7 +492,8 @@ def test_cli_writes_readiness_report_and_honors_strict(
     monkeypatch.setattr(
         boundary, "build_report_from_paths", lambda **kwargs: expected
     )
-    output_path = boundary._PYCACHE_ROOT / f"{tmp_path.name}-readiness.json"
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    output_path = audit_root / f"{tmp_path.name}-readiness.json"
 
     rc = main(
         [
@@ -504,7 +521,8 @@ def test_cli_hold_returns_nonzero_without_strict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output_path = boundary._PYCACHE_ROOT / f"{tmp_path.name}-readiness.json"
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    output_path = audit_root / f"{tmp_path.name}-readiness.json"
     live_hold = _release_gate_recheck(
         decision="hold",
         blockers=["soak_evidence_not_reproducible"],
@@ -612,11 +630,13 @@ def test_main_never_writes_a_disallowed_canonical_input_output(
 
 def test_writer_rejects_allowed_hardlink_to_noncanonical_source(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "disposable-source.json"
     source.write_text("unchanged", encoding="utf-8")
     original = source.read_bytes()
-    alias = boundary._PYCACHE_ROOT / f"{tmp_path.name}-{source.name}.json"
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    alias = audit_root / f"{tmp_path.name}-{source.name}.json"
     alias.unlink(missing_ok=True)
     os.link(source, alias)
     try:
@@ -649,10 +669,14 @@ def test_output_allowlist_rejects_source_git_and_audit_root(path: Path) -> None:
     assert boundary._output_path_blocker(path) == "output_path_not_allowed"
 
 
-def test_output_allowlist_accepts_only_default_or_audit_descendant() -> None:
+def test_output_allowlist_accepts_only_default_or_audit_descendant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert boundary._output_path_blocker(boundary.DEFAULT_OUTPUT) is None
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
     assert boundary._output_path_blocker(
-        boundary._PYCACHE_ROOT / "readiness.json"
+        audit_root / "readiness.json"
     ) is None
 
 
@@ -740,7 +764,8 @@ def test_output_missing_parent_is_not_created(
 def test_output_parent_change_prevents_replace_and_cleans_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = boundary._PYCACHE_ROOT / f"{tmp_path.name}-parent-change.json"
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    target = audit_root / f"{tmp_path.name}-parent-change.json"
     target.write_text("old", encoding="utf-8")
     real_snapshot = boundary._output_parent_snapshot
     replace_called = False
@@ -854,8 +879,10 @@ def test_posix_output_parent_identity_mismatch_closes_all_descriptors(
 
 def test_writer_atomically_replaces_allowed_output_and_cleans_temp(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = boundary._PYCACHE_ROOT / f"{tmp_path.name}-atomic.json"
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    target = audit_root / f"{tmp_path.name}-atomic.json"
     target.write_text("old", encoding="utf-8")
     pattern = f".{target.name}.tmp.*"
     try:
@@ -884,7 +911,8 @@ def test_main_rejects_nonfinite_internal_report_before_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    target = boundary._PYCACHE_ROOT / f"{tmp_path.name}-nonfinite.json"
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    target = audit_root / f"{tmp_path.name}-nonfinite.json"
     target.write_text("old", encoding="utf-8")
     monkeypatch.setattr(
         boundary,
@@ -2240,9 +2268,11 @@ def test_live_child_names_yaml_shadow_created_after_spawn(
 
 
 def test_pycache_root_identity_replacement_is_a_named_hold(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    info = os.lstat(boundary._PYCACHE_ROOT)
+    audit_root = _configure_output_test_root(tmp_path, monkeypatch)
+    info = os.lstat(audit_root)
     monkeypatch.setattr(boundary, "_PYCACHE_ROOT_SAFE", True)
     monkeypatch.setattr(
         boundary, "_PYCACHE_ROOT_IDENTITY",
@@ -3006,7 +3036,7 @@ def _build_test_live_child_bundle() -> bytes:
         file_records=_live_child_file_records(),
         git_records=_live_child_git_records(),
         git_executable={
-            "path": r"C:\Program Files\Git\cmd\git.exe",
+            "path": TEST_GIT_EXECUTABLE,
             "sha256": "0" * 64,
         },
     )
@@ -3178,7 +3208,7 @@ def test_live_child_one_historical_commit_converges_when_evidence_matches() -> N
             docker_commit=LIVE_CHILD_SOAK_COMMIT,
         ),
         git_records=_live_child_git_records((LIVE_CHILD_SOAK_COMMIT,)),
-        git_executable={"path": "X:/trusted/git.exe", "sha256": "0" * 64},
+        git_executable={"path": TEST_GIT_EXECUTABLE, "sha256": "0" * 64},
     )
     decoded = boundary._live_child_decode_bundle(bundle)
     assert set(decoded["git_subjects"]) == {LIVE_CHILD_SOAK_COMMIT}
@@ -3193,7 +3223,7 @@ def test_live_child_cross_binds_both_evidence_commit_authorities() -> None:
                 docker_commit=LIVE_CHILD_STALE_DOCKER_COMMIT,
             ),
             git_records=_live_child_git_records((LIVE_CHILD_SOAK_COMMIT,)),
-            git_executable={"path": "X:/trusted/git.exe", "sha256": "0" * 64},
+            git_executable={"path": TEST_GIT_EXECUTABLE, "sha256": "0" * 64},
         )
     assert raised.value.blocker == "live_child_historical_commit_count_invalid"
 
@@ -3212,7 +3242,7 @@ def test_live_child_git_replay_rejects_one_extra_command() -> None:
             root=ROOT,
             file_records=_live_child_file_records(),
             git_records=records,
-            git_executable={"path": "X:/trusted/git.exe", "sha256": "0" * 64},
+            git_executable={"path": TEST_GIT_EXECUTABLE, "sha256": "0" * 64},
         )
     assert raised.value.blocker == "live_child_git_replay_not_exact"
 
@@ -3229,7 +3259,7 @@ def test_live_child_git_replay_rejects_blob_oid_content_mismatch() -> None:
             root=ROOT,
             file_records=_live_child_file_records(),
             git_records=records,
-            git_executable={"path": "X:/trusted/git.exe", "sha256": "0" * 64},
+            git_executable={"path": TEST_GIT_EXECUTABLE, "sha256": "0" * 64},
         )
     assert raised.value.blocker == "live_child_git_blob_replay_invalid"
 

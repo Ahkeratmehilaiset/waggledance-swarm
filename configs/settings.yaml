@@ -1,8 +1,8 @@
 profile: home
 facts:
-  business_name: JKH Service
-  owner: Jani Korpi
-  y_tunnus: 2828492-2
+  business_name: REDACTED_BUSINESS
+  owner: REDACTED_OWNER
+  y_tunnus: REDACTED_BUSINESS_ID
 hivemind:
   heartbeat_interval: 30
   idle_research_enabled: true

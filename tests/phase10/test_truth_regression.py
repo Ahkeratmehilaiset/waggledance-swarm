@@ -16,6 +16,7 @@ Covers RULE 7 categories not already covered by P2/P3/P4/P5:
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -24,6 +25,151 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_D1_PREPARATION_PATH = REPO_ROOT / "docs/security/d1_pii_scrub_lineage.json"
+
+_D1_PREPARED_FROM_COMMIT = "f12f6d971accf5717141b7bfa2f54a7a35628f91"
+_D1_PREPARATION_TOP_LEVEL_KEYS = {
+    "schema_version",
+    "kind",
+    "status",
+    "prepared_from_commit",
+    "current_tree",
+    "blocked_scope",
+    "authority",
+    "history",
+    "refs",
+    "mirror",
+    "execution",
+}
+_D1_PREPARATION_CURRENT_TREE = {
+    "matched_path_union": 205,
+    "business_id_paths": 15,
+    "legal_keep_paths": 3,
+    "settings_redaction_paths": 2,
+    "remaining_unclassified_paths": 203,
+}
+_D1_PREPARATION_AUTHORITY = {
+    "scope": False,
+    "legal": False,
+    "release": False,
+    "production": False,
+    "execution": False,
+}
+
+
+def _d1_preparation_fixture() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "kind": "waggledance.d1_pii_scrub_preparation",
+        "status": "prepared_blocked",
+        "prepared_from_commit": _D1_PREPARED_FROM_COMMIT,
+        "current_tree": dict(_D1_PREPARATION_CURRENT_TREE),
+        "blocked_scope": True,
+        "authority": dict(_D1_PREPARATION_AUTHORITY),
+        "history": None,
+        "refs": None,
+        "mirror": None,
+        "execution": None,
+    }
+
+
+def _validate_d1_prepared_lineage(raw: bytes) -> dict[str, object]:
+    """Validate PREP evidence without importing producer-owned code."""
+
+    if type(raw) is not bytes or raw.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("D1 preparation lineage must be BOM-free bytes")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if type(key) is not str or key in result:
+                raise ValueError("duplicate D1 preparation lineage key")
+            result[key] = value
+        return result
+
+    def reject_nonfinite(value: str) -> None:
+        raise ValueError(f"non-finite D1 preparation value: {value}")
+
+    try:
+        decoded = raw.decode("utf-8")
+        if decoded.startswith("\ufeff"):
+            raise ValueError("D1 preparation lineage contains a BOM")
+        payload = json.loads(
+            decoded,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_nonfinite,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("D1 preparation lineage is not strict JSON") from exc
+
+    if type(payload) is not dict or set(payload) != _D1_PREPARATION_TOP_LEVEL_KEYS:
+        raise ValueError("D1 preparation lineage top-level schema mismatch")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        raise ValueError("D1 preparation lineage schema version mismatch")
+    if payload["kind"] != "waggledance.d1_pii_scrub_preparation":
+        raise ValueError("D1 preparation lineage kind mismatch")
+    if payload["status"] != "prepared_blocked":
+        raise ValueError("D1 preparation lineage status mismatch")
+    if payload["prepared_from_commit"] != _D1_PREPARED_FROM_COMMIT:
+        raise ValueError("D1 preparation lineage source commit mismatch")
+    current_tree = payload["current_tree"]
+    if type(current_tree) is not dict or set(current_tree) != set(
+        _D1_PREPARATION_CURRENT_TREE
+    ):
+        raise ValueError("D1 preparation current-tree schema mismatch")
+    for key, expected in _D1_PREPARATION_CURRENT_TREE.items():
+        if type(current_tree[key]) is not int or current_tree[key] != expected:
+            raise ValueError(f"D1 preparation aggregate mismatch: {key}")
+    if payload["blocked_scope"] is not True:
+        raise ValueError("D1 preparation scope is not blocked")
+    authority = payload["authority"]
+    if type(authority) is not dict or set(authority) != set(
+        _D1_PREPARATION_AUTHORITY
+    ):
+        raise ValueError("D1 preparation authority schema mismatch")
+    if any(authority[key] is not False for key in _D1_PREPARATION_AUTHORITY):
+        raise ValueError("D1 preparation grants authority")
+    if any(payload[key] is not None for key in ("history", "refs", "mirror", "execution")):
+        raise ValueError("D1 preparation contains future lineage")
+    return payload
+
+
+def _run_phase10_ancestry_git(
+    args: list[str],
+    *,
+    cwd: Path = REPO_ROOT,
+    timeout: int = 10,
+) -> subprocess.CompletedProcess[str]:
+    """Run an ancestry query without permitting local replacement refs."""
+
+    return subprocess.run(  # noqa: S603
+        ["git", "--no-replace-objects", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _assert_phase10_recorded_ancestor(
+    recorded_sha: str,
+    *,
+    main_sha: str,
+    main_ref: str = "origin/main",
+    cwd: Path = REPO_ROOT,
+) -> None:
+    """Fail closed unless the recorded Phase-10 commit is an ancestor."""
+
+    contains_proc = _run_phase10_ancestry_git(
+        ["merge-base", "--is-ancestor", recorded_sha, main_ref],
+        cwd=cwd,
+    )
+    assert contains_proc.returncode == 0, (
+        "recorded Phase 10 squash commit "
+        f"{recorded_sha} is not an ancestor of {main_ref} "
+        f"(main_sha={main_sha}); a force-push may have rewritten history"
+    )
 
 
 # ---------------------------------------------------------------
@@ -99,8 +245,8 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
     2. Post-squash-merge (PR #54 merged 2026-04-28): origin/main contains
        the Phase 10 substrate squash commit. The invariant becomes "the
        recorded squash SHA in merged_commit_sha.txt is still an ancestor
-       of origin/main" — a force-push that rewrote the squash away would
-       break ancestry.
+       of origin/main". D1 preparation records no history-rewrite authority,
+       so PREP has no exception to this ancestry requirement.
 
     Detection: post-squash regime is signalled by the presence of
     docs/runs/release_bundle_2026_04_28_phase10/merged_commit_sha.txt
@@ -115,13 +261,8 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
     if not git_dir.exists():
         pytest.skip("not a git checkout")
     try:
-        main_sha_proc = subprocess.run(  # noqa: S603
-            ["git", "rev-parse", "origin/main"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+        main_sha_proc = _run_phase10_ancestry_git(
+            ["rev-parse", "origin/main"],
         )
     except FileNotFoundError:
         pytest.skip("git not available")
@@ -143,72 +284,9 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
             # Post-squash-merge regime: the recorded squash SHA must
             # still be an ancestor of origin/main. Any force-push that
             # rewrote it away would fail this check.
-            contains_proc = subprocess.run(  # noqa: S603
-                [
-                    "git",
-                    "merge-base",
-                    "--is-ancestor",
-                    recorded_sha,
-                    "origin/main",
-                ],
-                cwd=str(REPO_ROOT),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-            if contains_proc.returncode != 0:
-                # Later D1 privacy remediation deliberately rewrote main's
-                # commit graph. Preserve the Phase 10 evidence check by
-                # accepting that lineage only when the old squash commit is
-                # still reachable from a remote archive/ref and current main
-                # carries the explicit D1 scrub tooling/runbook.
-                remote_refs_proc = subprocess.run(  # noqa: S603
-                    [
-                        "git",
-                        "for-each-ref",
-                        "--contains",
-                        recorded_sha,
-                        "--format=%(refname:short)",
-                        "refs/remotes",
-                    ],
-                    cwd=str(REPO_ROOT),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=20,
-                )
-                d1_tool_proc = subprocess.run(  # noqa: S603
-                    [
-                        "git",
-                        "cat-file",
-                        "-e",
-                        "origin/main:tools/d1_pii_scrub.py",
-                    ],
-                    cwd=str(REPO_ROOT),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=10,
-                )
-                d1_runbook = REPO_ROOT / "docs" / "operations" / "D1_PII_SCRUB_RUNBOOK.md"
-                d1_runbook_text = (
-                    d1_runbook.read_text(encoding="utf-8") if d1_runbook.is_file() else ""
-                )
-                d1_scrub_lineage = (
-                    remote_refs_proc.returncode == 0
-                    and bool(remote_refs_proc.stdout.strip())
-                    and d1_tool_proc.returncode == 0
-                    and "full history scrub" in d1_runbook_text.lower()
-                    and "force-push will rewrite every commit SHA" in d1_runbook_text
-                )
-                if d1_scrub_lineage:
-                    return
-            assert contains_proc.returncode == 0, (
-                "recorded Phase 10 squash commit "
-                f"{recorded_sha} is not an ancestor of origin/main "
-                f"(main_sha={main_sha}); a force-push may have "
-                "rewritten history"
+            _assert_phase10_recorded_ancestor(
+                recorded_sha,
+                main_sha=main_sha,
             )
             return
 
@@ -216,12 +294,8 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
     # original phase10 branch ref. This branch only exists in the
     # working clone before / during PR #54; after merge it may have
     # been deleted, in which case we skip rather than fail.
-    merge_base = subprocess.run(  # noqa: S603
-        ["git", "merge-base", "phase10/foundation-truth-builder-lane", "origin/main"],
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
+    merge_base = _run_phase10_ancestry_git(
+        ["merge-base", "phase10/foundation-truth-builder-lane", "origin/main"],
         timeout=15,
     )
     if merge_base.returncode != 0:
@@ -231,6 +305,257 @@ def test_phase10_branch_history_is_linear_descended_from_main() -> None:
         "phase10 branch is not linearly ahead of origin/main: "
         f"merge_base={base_sha} main={main_sha}"
     )
+
+
+def test_phase10_ancestry_cannot_be_forged_by_replacement_ref(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "replacement-ref-ancestry"
+    repo.mkdir()
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603
+            ["git", *args],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+
+    git("init")
+    git("config", "user.name", "WaggleDance regression")
+    git("config", "user.email", "regression@example.invalid")
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    git("add", "base.txt")
+    git("commit", "-m", "base")
+    base = git("rev-parse", "HEAD").stdout.strip()
+
+    git("switch", "-c", "left")
+    (repo / "left.txt").write_text("left\n", encoding="utf-8")
+    git("add", "left.txt")
+    git("commit", "-m", "left")
+    left = git("rev-parse", "HEAD").stdout.strip()
+
+    git("switch", "-c", "right", base)
+    (repo / "right.txt").write_text("right\n", encoding="utf-8")
+    git("add", "right.txt")
+    git("commit", "-m", "right")
+    right = git("rev-parse", "HEAD").stdout.strip()
+    git("replace", "--graft", right, left)
+    assert git("replace", "--list").stdout.strip() == right
+
+    protected = _run_phase10_ancestry_git(
+        ["merge-base", "--is-ancestor", left, right], cwd=repo
+    )
+    assert protected.returncode == 1
+
+
+@pytest.mark.parametrize("lineage_status", ["missing", "prepared", "executed"])
+@pytest.mark.parametrize("stale_ref", [False, True], ids=["no-stale-ref", "stale-ref"])
+@pytest.mark.parametrize(
+    "magic_runbook",
+    [False, True],
+    ids=["no-magic-runbook", "old-magic-runbook"],
+)
+def test_phase10_nonancestor_cannot_be_overridden_by_d1_artifacts(
+    tmp_path: Path,
+    lineage_status: str,
+    stale_ref: bool,
+    magic_runbook: bool,
+) -> None:
+    """Historical D1 markers and stale refs never excuse non-ancestry."""
+
+    repo = tmp_path / "nonancestor-d1-override"
+    repo.mkdir()
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603
+            ["git", *args],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+
+    git("init")
+    git("config", "user.name", "WaggleDance regression")
+    git("config", "user.email", "regression@example.invalid")
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    git("add", "base.txt")
+    git("commit", "-m", "base")
+    base = git("rev-parse", "HEAD").stdout.strip()
+
+    git("switch", "-c", "recorded", base)
+    (repo / "recorded.txt").write_text("recorded\n", encoding="utf-8")
+    git("add", "recorded.txt")
+    git("commit", "-m", "recorded Phase 10 commit")
+    recorded_sha = git("rev-parse", "HEAD").stdout.strip()
+
+    git("switch", "-c", "current", base)
+    tool_path = repo / "tools" / "d1_pii_scrub.py"
+    tool_path.parent.mkdir(parents=True)
+    tool_path.write_text("# inert test fixture\n", encoding="utf-8")
+
+    if lineage_status != "missing":
+        lineage_path = repo / "docs" / "security" / "d1_pii_scrub_lineage.json"
+        lineage_path.parent.mkdir(parents=True)
+        lineage = _d1_preparation_fixture()
+        lineage["prepared_from_commit"] = recorded_sha
+        if lineage_status == "executed":
+            lineage["status"] = "executed"
+        lineage_path.write_text(
+            json.dumps(lineage, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    if magic_runbook:
+        runbook_path = repo / "docs" / "operations" / "D1_PII_SCRUB_RUNBOOK.md"
+        runbook_path.parent.mkdir(parents=True, exist_ok=True)
+        runbook_path.write_text(
+            "full history scrub\nforce-push will rewrite every commit SHA\n",
+            encoding="utf-8",
+        )
+
+    git("add", ".")
+    git("commit", "-m", "divergent current main with D1 markers")
+    main_sha = git("rev-parse", "HEAD").stdout.strip()
+    git("update-ref", "refs/remotes/origin/main", main_sha)
+    if stale_ref:
+        git(
+            "update-ref",
+            "refs/remotes/origin/stale-phase10-archive",
+            recorded_sha,
+        )
+
+    with pytest.raises(AssertionError, match="is not an ancestor"):
+        _assert_phase10_recorded_ancestor(
+            recorded_sha,
+            main_sha=main_sha,
+            cwd=repo,
+        )
+
+
+def _encode_d1_preparation(payload: dict[str, object]) -> bytes:
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+
+
+def test_d1_prepared_lineage_accepts_only_the_blocked_preparation_fact() -> None:
+    expected = _d1_preparation_fixture()
+    assert _D1_PREPARATION_PATH.is_file(), "D1 preparation lineage is missing"
+    assert _validate_d1_prepared_lineage(_D1_PREPARATION_PATH.read_bytes()) == expected
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "missing",
+        "prepared",
+        "locally_edited",
+        "committed",
+        "executed",
+        "self_attested",
+    ],
+)
+def test_d1_prepared_lineage_rejects_every_override_status(status: str) -> None:
+    payload = _d1_preparation_fixture()
+    payload["status"] = status
+    with pytest.raises(ValueError, match="status mismatch"):
+        _validate_d1_prepared_lineage(_encode_d1_preparation(payload))
+
+
+@pytest.mark.parametrize("field", sorted(_D1_PREPARATION_AUTHORITY))
+@pytest.mark.parametrize("value", [True, 0, None])
+def test_d1_prepared_lineage_rejects_any_authority_value(
+    field: str, value: object,
+) -> None:
+    payload = _d1_preparation_fixture()
+    authority = payload["authority"]
+    assert isinstance(authority, dict)
+    authority[field] = value
+    with pytest.raises(ValueError, match="grants authority"):
+        _validate_d1_prepared_lineage(_encode_d1_preparation(payload))
+
+
+@pytest.mark.parametrize("field", sorted(_D1_PREPARATION_CURRENT_TREE))
+@pytest.mark.parametrize("value", [True, -1, 0, None, "205"])
+def test_d1_prepared_lineage_rejects_wrong_aggregate_type_or_value(
+    field: str, value: object,
+) -> None:
+    payload = _d1_preparation_fixture()
+    current_tree = payload["current_tree"]
+    assert isinstance(current_tree, dict)
+    current_tree[field] = value
+    with pytest.raises(ValueError, match="aggregate mismatch"):
+        _validate_d1_prepared_lineage(_encode_d1_preparation(payload))
+
+
+@pytest.mark.parametrize("field", ["history", "refs", "mirror", "execution"])
+@pytest.mark.parametrize("value", [False, {}, [], "prepared", _D1_PREPARED_FROM_COMMIT])
+def test_d1_prepared_lineage_rejects_future_lineage(
+    field: str, value: object,
+) -> None:
+    payload = _d1_preparation_fixture()
+    payload[field] = value
+    with pytest.raises(ValueError, match="future lineage"):
+        _validate_d1_prepared_lineage(_encode_d1_preparation(payload))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema_version", True, "schema version mismatch"),
+        ("schema_version", 2, "schema version mismatch"),
+        ("kind", "waggledance.d1_pii_scrub_execution", "kind mismatch"),
+        ("prepared_from_commit", "f" * 40, "source commit mismatch"),
+        ("blocked_scope", False, "scope is not blocked"),
+        ("blocked_scope", 1, "scope is not blocked"),
+    ],
+)
+def test_d1_prepared_lineage_rejects_wrong_fixed_values(
+    field: str, value: object, message: str,
+) -> None:
+    payload = _d1_preparation_fixture()
+    payload[field] = value
+    with pytest.raises(ValueError, match=message):
+        _validate_d1_prepared_lineage(_encode_d1_preparation(payload))
+
+
+@pytest.mark.parametrize("container", ["top", "current_tree", "authority"])
+@pytest.mark.parametrize("operation", ["extra", "missing"])
+def test_d1_prepared_lineage_rejects_open_or_incomplete_schemas(
+    container: str, operation: str,
+) -> None:
+    payload = _d1_preparation_fixture()
+    target = payload if container == "top" else payload[container]
+    assert isinstance(target, dict)
+    if operation == "extra":
+        target["self_attested"] = True
+    else:
+        target.pop(next(iter(target)))
+    with pytest.raises(ValueError, match="schema mismatch"):
+        _validate_d1_prepared_lineage(_encode_d1_preparation(payload))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'\xef\xbb\xbf{"schema_version":1}',
+        b'{"schema_version":1,"schema_version":1}',
+        b'{"schema_version":NaN}',
+    ],
+    ids=["utf8-bom", "duplicate-key", "nonfinite"],
+)
+def test_d1_prepared_lineage_rejects_non_strict_json(raw: bytes) -> None:
+    with pytest.raises(ValueError):
+        _validate_d1_prepared_lineage(raw)
 
 
 # ---------------------------------------------------------------

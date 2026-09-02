@@ -55,6 +55,16 @@ HARNESS_RELATIVE = Path("tools") / "run_phase17b_local_efficiency_benchmark.py"
 BENCHMARK_JSON = "phase17b_local_efficiency_benchmark.json"
 SCENARIO_B_PROOF = Path("scenario_B_capability_lookup_10k") / "solver_scale_proof.json"
 HARNESS_TIMEOUT_SECONDS = 1800
+# Depth budgets, evaluated BEFORE any git invocation. The clone root is used
+# as a subprocess working directory by the pinned git primitives, the
+# harness and the producers, and every runtime-touched file below it is
+# opened by Python; on Windows both stay under MAX_PATH only when the root
+# itself is short, independent of any OS long-path policy. Files that only
+# git touches (the deepest tracked test names, git's own pack files) may
+# exceed MAX_PATH because core.longpaths is persisted INTO the clone.
+CLONE_ROOT_BUDGET = 120
+CLONE_PATH_BUDGET = 4096
+CLONE_PERSISTED_CONFIG = (("core.autocrlf", "false"), ("core.longpaths", "true"))
 
 
 def _clean_git_environment() -> dict[str, str]:
@@ -68,6 +78,7 @@ def _clean_git_environment() -> dict[str, str]:
 
 
 def _git_argv(*args: str) -> list[str]:
+    """argv git with process-level long-path/autocrlf settings."""
     return [
         "git",
         "-c", "core.autocrlf=false",
@@ -76,7 +87,7 @@ def _git_argv(*args: str) -> list[str]:
     ]
 
 
-def _run_git(args: list[str], env: dict[str, str]) -> None:
+def _run_git(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run one argv git command; any failure surfaces its stderr tail."""
     completed = subprocess.run(
         args, capture_output=True, text=True, check=False, env=env
@@ -85,6 +96,81 @@ def _run_git(args: list[str], env: dict[str, str]) -> None:
         f"{' '.join(args[:6])} ... exited {completed.returncode}: "
         f"{completed.stderr[-800:]}"
     )
+    return completed
+
+
+def _longest_tracked_path(sha: str) -> int:
+    """Longest tracked path, in characters, at ``sha`` in the live repository."""
+    completed = verifier.run_git(ROOT, "ls-tree", "-r", "-z", "--name-only", sha)
+    assert completed is not None and completed.returncode == 0, "ls-tree unavailable"
+    names = [name for name in completed.stdout.decode("utf-8").split("\0") if name]
+    assert names, "tracked tree is empty"
+    return max(len(name) for name in names)
+
+
+def clone_depth_overflow(clone: Path, longest_tracked: int) -> str | None:
+    """Precise reason when ``clone`` cannot hold the tree, else ``None``.
+
+    Pure: no filesystem or git access. The clone root must fit the
+    working-directory budget on Windows and the deepest tracked file must
+    fit git's long-path ceiling everywhere.
+    """
+    root_length = len(str(clone))
+    deepest = root_length + 1 + longest_tracked
+    if os.name == "nt" and root_length > CLONE_ROOT_BUDGET:
+        return (
+            f"clone root is {root_length} characters, over the "
+            f"{CLONE_ROOT_BUDGET}-character working-directory budget; "
+            "run pytest with a shorter --basetemp"
+        )
+    if deepest > CLONE_PATH_BUDGET:
+        return (
+            f"deepest tracked path would be {deepest} characters, over the "
+            f"{CLONE_PATH_BUDGET}-character long-path budget; "
+            "run pytest with a shorter --basetemp"
+        )
+    return None
+
+
+def _prepare_isolated_clone(base: Path, sha: str, *, longest_tracked: int) -> Path:
+    """Clone the live repository into ``base / "clone"`` detached at ``sha``.
+
+    Refuses precisely before any git invocation when a depth budget is
+    exceeded. ``core.autocrlf``/``core.longpaths`` are persisted INTO the
+    clone (``git clone --config``) and asserted, so every later git call
+    against it (pinned verifier primitives, harness, producers) honors them;
+    a process-level ``-c`` alone would not survive the clone command.
+    """
+    clone = base / "clone"
+    overflow = clone_depth_overflow(clone, longest_tracked)
+    if overflow is not None:
+        pytest.fail(f"isolated clone refused before clone: {overflow}")
+    env = _clean_git_environment()
+    persisted = [
+        item
+        for key, value in CLONE_PERSISTED_CONFIG
+        for item in ("--config", f"{key}={value}")
+    ]
+    _run_git(
+        _git_argv(
+            "clone", *persisted,
+            "--no-local", "--no-hardlinks", "--no-checkout",
+            "--", str(ROOT), str(clone),
+        ),
+        env,
+    )
+    for key, expected in CLONE_PERSISTED_CONFIG:
+        completed = _run_git(_git_argv("-C", str(clone), "config", "--get", key), env)
+        assert completed.stdout.strip() == expected, f"{key} not persisted in clone"
+    _run_git(_git_argv("-C", str(clone), "checkout", "-q", "--detach", sha), env)
+    depth = f"clone root {len(str(clone))} chars, deepest tracked path {len(str(clone)) + 1 + longest_tracked} chars"
+    resolved = verifier.resolve_commit(clone, "HEAD")
+    assert resolved == (sha, None), f"clone HEAD {resolved} != ({sha}, None); {depth}"
+    porcelain = verifier.worktree_porcelain(clone)
+    assert porcelain == b"", (
+        f"clone porcelain not empty ({len(porcelain or b'')} bytes); {depth}"
+    )
+    return clone
 
 
 @pytest.fixture(scope="module")
@@ -94,33 +180,22 @@ def isolated_benchmark(tmp_path_factory) -> dict:
     The live checkout is only peeled for its exact HEAD with the pinned
     ``resolve_commit`` primitive; it is never required to be clean,
     cleaned, reset or stashed. The clone is a fresh argv git clone
-    (``--no-local --no-hardlinks --no-checkout``, ``GIT_*`` stripped),
-    detached at that SHA and asserted clean; the harness copy INSIDE the
-    clone runs in a fresh subprocess whose cwd and PYTHONPATH are the
-    clone, never the live imported module. The output directory is a
-    sibling outside the clone.
+    (``--no-local --no-hardlinks --no-checkout``, ``GIT_*`` stripped,
+    long-path config persisted), detached at that SHA and asserted clean;
+    the harness copy INSIDE the clone runs in a fresh subprocess whose cwd
+    and PYTHONPATH are the clone, never the live imported module. The
+    output directory is a sibling outside the clone.
     """
     base = tmp_path_factory.mktemp("phase17b_isolated")
     sha, blocker = verifier.resolve_commit(ROOT, "HEAD")
     assert blocker is None and sha is not None, f"live HEAD unresolvable: {blocker}"
     assert verifier.SOURCE_COMMIT_PATTERN.match(sha), sha
-
-    clone = base / "clone"
+    longest = _longest_tracked_path(sha)
+    clone = _prepare_isolated_clone(base, sha, longest_tracked=longest)
     out_dir = base / "out"
-    env = _clean_git_environment()
-    _run_git(
-        _git_argv(
-            "clone", "--no-local", "--no-hardlinks", "--no-checkout",
-            "--", str(ROOT), str(clone),
-        ),
-        env,
-    )
-    _run_git(_git_argv("-C", str(clone), "checkout", "-q", "--detach", sha), env)
-    assert verifier.resolve_commit(clone, "HEAD") == (sha, None)
-    assert verifier.worktree_porcelain(clone) == b""
     assert not out_dir.exists()
 
-    harness_env = dict(env)
+    harness_env = _clean_git_environment()
     harness_env["PYTHONPATH"] = str(clone)
     completed = subprocess.run(
         [
@@ -155,7 +230,13 @@ def isolated_benchmark(tmp_path_factory) -> dict:
         (out_dir / SCENARIO_B_PROOF).read_text(encoding="utf-8")
     )
     assert proof["source_commit"] == sha
-    return {"sha": sha, "clone": clone, "out_dir": out_dir, "benchmark": benchmark}
+    return {
+        "sha": sha,
+        "clone": clone,
+        "out_dir": out_dir,
+        "benchmark": benchmark,
+        "longest_tracked": longest,
+    }
 
 
 @pytest.fixture
@@ -590,3 +671,53 @@ def test_harness_exposes_no_bypass_or_stamp_flags(tmp_path, argv) -> None:
 
     assert excinfo.value.code == 2
     assert not (tmp_path / "never").exists()
+
+
+def test_clone_depth_overflow_refuses_precisely_before_git(tmp_path, monkeypatch) -> None:
+    """Depth budgets are decided before git runs, with an actionable reason."""
+
+    def _no_git(*args, **kwargs):
+        raise AssertionError("git must not run before the depth check")
+
+    monkeypatch.setattr(subprocess, "run", _no_git)
+    short_clone = tmp_path / "clone"
+    assert clone_depth_overflow(short_clone, 10) is None
+
+    huge = clone_depth_overflow(short_clone, CLONE_PATH_BUDGET)
+    assert huge is not None and "long-path budget" in huge
+    with pytest.raises(pytest.fail.Exception, match="refused before clone"):
+        _prepare_isolated_clone(tmp_path, FAKE_SHA, longest_tracked=CLONE_PATH_BUDGET)
+
+    if os.name == "nt":
+        deep_root = Path(str(tmp_path) + os.sep + ("d" * (CLONE_ROOT_BUDGET + 1)))
+        deep = clone_depth_overflow(deep_root / "clone", 10)
+        assert deep is not None and "working-directory budget" in deep
+        with pytest.raises(pytest.fail.Exception, match="working-directory budget"):
+            _prepare_isolated_clone(deep_root, FAKE_SHA, longest_tracked=10)
+
+
+def test_isolated_clone_persists_longpaths_for_deep_tracked_paths(tmp_path) -> None:
+    """Regression for the path-depth finding: the deepest tracked path lies
+    beyond MAX_PATH inside the clone, and the clone still checks out clean
+    and resolves because long-path support is persisted in its config."""
+    sha, blocker = verifier.resolve_commit(ROOT, "HEAD")
+    assert blocker is None and sha is not None, blocker
+    longest = _longest_tracked_path(sha)
+
+    clone = _prepare_isolated_clone(tmp_path, sha, longest_tracked=longest)
+
+    assert len(str(clone)) + 1 + longest > 260
+    env = _clean_git_environment()
+    for key, expected in CLONE_PERSISTED_CONFIG:
+        completed = _run_git(_git_argv("-C", str(clone), "config", "--get", key), env)
+        assert completed.stdout.strip() == expected
+    assert verifier.resolve_commit(clone, "HEAD") == (sha, None)
+    assert verifier.worktree_porcelain(clone) == b""
+    # The empty porcelain above is the stat-based proof (git status walks
+    # every tracked path); this confirms the deepest path is present in
+    # the clone index at exactly the expected length.
+    listed = _run_git(
+        ["git", "-C", str(clone), "ls-files", "-z", "--error-unmatch", "--", "."],
+        env,
+    ).stdout
+    assert max(len(name) for name in listed.split("\0") if name) == longest

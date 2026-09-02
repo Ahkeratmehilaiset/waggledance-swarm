@@ -17,6 +17,7 @@ Why small scale inside the test:
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 @pytest.fixture
@@ -50,7 +53,11 @@ def benchmark(out_dir: Path) -> dict:
         ]
         import run_phase17b_local_efficiency_benchmark as harness  # type: ignore
         rc = harness.main()
-        assert rc == 0, "benchmark harness exited non-zero"
+        assert rc == 0, (
+            "benchmark harness exited non-zero (exit 2 means the Axis V2 "
+            "entry preflight refused a dirty or unresolvable ROOT; run from "
+            "a clean committed HEAD)"
+        )
     finally:
         sys.argv = saved
     out = out_dir / "phase17b_local_efficiency_benchmark.json"
@@ -288,3 +295,184 @@ def test_benchmark_explicitly_disclaims_consciousness(benchmark: dict
     assert benchmark["forbidden_claims_absent"] is True
     assert benchmark["no_cloud_api_calls_this_session"] is True
     assert benchmark["no_pull_or_download_this_session"] is True
+
+
+# ---------------------------------------------------------------------------
+# Axis V2 (2026-09-02): entry source-subject peel + B-first --source-commit
+# ---------------------------------------------------------------------------
+
+FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
+SCENARIO_ORDER = (
+    "B_capability_lookup_10k",
+    "A_solver_hot_path",
+    "C_handle_query_e2e",
+    "D_restart_continuity",
+    "E_producer_fabric",
+)
+
+
+def _harness():
+    import run_phase17b_local_efficiency_benchmark as harness  # type: ignore
+    return harness
+
+
+def _fake_proof(harness, **kwargs):
+    return harness.ProofRunResult(
+        name=kwargs["name"],
+        tool=kwargs["tool"],
+        out_json_path=None,
+        runtime_seconds=0.01,
+        exit_code=0,
+        parsed_json={},
+        stderr_tail="",
+        passed=True,
+    )
+
+
+def _git(root, *args):
+    return subprocess.run(
+        [
+            "git",
+            "-c", "user.name=axis-v2-test",
+            "-c", "user.email=axis-v2-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            "-c", "core.autocrlf=false",
+            "-c", "core.longpaths=true",
+            "-C", str(root),
+            *args,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_scenario_b_runs_first_with_peeled_source_commit(tmp_path, monkeypatch) -> None:
+    """Unit lock: B first, exact --source-commit argv, same SHA as git_sha.
+
+    The proof subprocesses and the entry peel are replaced so the live
+    ROOT is never read, run or dirtied by this test.
+    """
+    harness = _harness()
+    calls: list[tuple[str, list[str]]] = []
+
+    def _record(**kwargs):
+        calls.append((kwargs["name"], list(kwargs.get("extra_args") or [])))
+        return _fake_proof(harness, **kwargs)
+
+    monkeypatch.setattr(harness, "run_proof_subprocess", _record)
+    monkeypatch.setattr(
+        harness, "peel_source_subject", lambda root=None: (FAKE_SHA, None)
+    )
+    out_dir = tmp_path / "unit_lock_out"
+
+    rc = harness.main([
+        "--out-dir", str(out_dir),
+        "--skip-ollama",
+        "--scale-descriptors", "240",
+        "--scale-lookups", "120",
+    ])
+
+    assert rc == 0
+    assert tuple(name for name, _ in calls) == SCENARIO_ORDER
+    b_args = calls[0][1]
+    assert b_args[b_args.index("--source-commit") + 1] == FAKE_SHA
+    assert b_args[b_args.index("--descriptors") + 1] == "240"
+    assert b_args[b_args.index("--lookup-pass-count") + 1] == "120"
+    assert all("--source-commit" not in args for _, args in calls[1:])
+    benchmark = json.loads(
+        (out_dir / "phase17b_local_efficiency_benchmark.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert benchmark["git_sha"] == FAKE_SHA
+    assert benchmark["tracks"]["B_capability_lookup_10k"]["raw"]["tool"] == (
+        "tools/run_solver_scale_proof.py"
+    )
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    ["worktree_dirty", "git_unavailable", "git_revision_unresolvable",
+     "git_status_unavailable"],
+)
+def test_entry_preflight_failure_aborts_before_any_scenario(
+    tmp_path, monkeypatch, capsys, blocker
+) -> None:
+    harness = _harness()
+    calls: list[str] = []
+
+    def _record(**kwargs):
+        calls.append(kwargs["name"])
+        return _fake_proof(harness, **kwargs)
+
+    monkeypatch.setattr(harness, "run_proof_subprocess", _record)
+    monkeypatch.setattr(
+        harness, "peel_source_subject", lambda root=None: (None, blocker)
+    )
+    out_dir = tmp_path / "abort_out"
+
+    rc = harness.main(["--out-dir", str(out_dir), "--skip-ollama"])
+
+    assert rc == 2
+    assert calls == []
+    assert not out_dir.exists()
+    assert blocker in capsys.readouterr().err
+
+
+def test_peel_source_subject_on_throwaway_repo(tmp_path) -> None:
+    """The peel is exact and fail-closed; exercised on a throwaway repo only."""
+    harness = _harness()
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "f.txt").write_text("x\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "x")
+    head = _git(root, "rev-parse", "HEAD").stdout.strip()
+
+    assert harness.peel_source_subject(root) == (head, None)
+
+    (root / "stray.txt").write_text("stray\n", encoding="utf-8")
+    assert harness.peel_source_subject(root) == (None, "worktree_dirty")
+
+    (root / "stray.txt").unlink()
+    (root / "f.txt").write_text("y\n", encoding="utf-8")
+    assert harness.peel_source_subject(root) == (None, "worktree_dirty")
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert harness.peel_source_subject(plain) == (
+        None, "git_revision_unresolvable"
+    )
+
+
+def test_peel_source_subject_git_unavailable(tmp_path, monkeypatch) -> None:
+    harness = _harness()
+    import tools.verify_release_soak_evidence as verifier
+
+    monkeypatch.setattr(
+        verifier, "GIT_EXECUTABLE", "git-axis-v2-definitely-missing"
+    )
+
+    assert harness.peel_source_subject(tmp_path) == (None, "git_unavailable")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--source-commit", FAKE_SHA],
+        ["--allow-dirty"],
+        ["--skip-preflight"],
+        ["--git-sha", FAKE_SHA],
+    ],
+    ids=["source-commit", "allow-dirty", "skip-preflight", "git-sha"],
+)
+def test_harness_exposes_no_bypass_or_stamp_flags(tmp_path, argv) -> None:
+    harness = _harness()
+
+    with pytest.raises(SystemExit) as excinfo:
+        harness.main(["--out-dir", str(tmp_path / "never"), *argv])
+
+    assert excinfo.value.code == 2
+    assert not (tmp_path / "never").exists()

@@ -48,6 +48,20 @@ Options:
     --ollama-prompts INT  Number of round-trip prompts for the probe
                           (default: 10).
     --no-soak             Skip scenario D's tail soak iteration (faster).
+
+Axis V2 entry preflight (2026-09-02):
+
+    Scenario B runs ``tools/run_solver_scale_proof.py``, whose
+    ``--source-commit`` is required. The harness peels the exact
+    lowercase 40-hex ``HEAD^{commit}`` of the repository ROOT once at
+    entry with the pinned git primitives shared with the Axis
+    producers, requires an empty ``git status --porcelain=v1 -z
+    --untracked-files=all``, runs scenario B FIRST with that SHA, then
+    A, C, D, E, F, G unchanged, and reuses the same SHA as the output
+    ``git_sha``. Any git failure or dirty tracked/untracked entry aborts
+    with exit code 2 before any scenario runs and before any output is
+    written; there is no ``unknown`` fallback, optional flag, HEAD
+    default or dirty bypass.
 """
 
 from __future__ import annotations
@@ -69,7 +83,17 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.verify_release_soak_evidence import (  # noqa: E402
+    SOURCE_COMMIT_PATTERN,
+    resolve_commit,
+    worktree_porcelain,
+)
+
 BENCHMARK_VERSION = "phase17b.v1"
+ABORT_EXIT_CODE = 2
 
 # Forbidden vocabulary check (master prompt rule 18) — explicit denylist.
 # We don't put any of these into the benchmark output. The list is here
@@ -84,6 +108,31 @@ FORBIDDEN_VOCABULARY: tuple[str, ...] = (
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def peel_source_subject(root: Path = ROOT) -> tuple[str | None, str | None]:
+    """Exact lowercase 40-hex ``HEAD^{commit}`` of a clean ``root``, else a blocker.
+
+    Uses the same argv git primitives as the Axis producers (pinned
+    ``--git-dir``/``--work-tree``, ``GIT_*`` environment stripped). Returns
+    ``(sha, None)`` only when HEAD resolves to exactly one lowercase 40-hex
+    line and the porcelain status including untracked files is empty;
+    otherwise ``(None, blocker)`` with a stable blocker name
+    (``git_unavailable``, ``git_revision_unresolvable``,
+    ``git_status_unavailable`` or ``worktree_dirty``). No fallback value is
+    ever returned.
+    """
+    commit, blocker = resolve_commit(root, "HEAD")
+    if blocker is not None:
+        return None, blocker
+    if commit is None or not SOURCE_COMMIT_PATTERN.match(commit):
+        return None, "git_revision_unresolvable"
+    porcelain = worktree_porcelain(root)
+    if porcelain is None:
+        return None, "git_status_unavailable"
+    if porcelain != b"":
+        return None, "worktree_dirty"
+    return commit, None
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +545,7 @@ def documented_external_slots() -> list[dict[str, Any]]:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out-dir", type=Path,
@@ -529,7 +578,20 @@ def main() -> int:
     parser.add_argument("--producer-repeat", type=int, default=1,
                             help="Repeat the producer-fabric track N times "
                                   "(default 1).")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    # Axis V2 entry preflight: peel the exact clean HEAD once. Scenario B
+    # passes it as the producer's required --source-commit and the same
+    # SHA is the output git_sha. Any failure aborts before any scenario
+    # runs and before any output is written; there is no unknown fallback.
+    source_commit, subject_blocker = peel_source_subject(ROOT)
+    if subject_blocker is not None or source_commit is None:
+        print(
+            "ABORT (harness entry): source subject preflight failed: "
+            f"{subject_blocker}; no scenario ran and no benchmark written.",
+            file=sys.stderr,
+        )
+        return ABORT_EXIT_CODE
 
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -544,6 +606,23 @@ def main() -> int:
     scratch_root = Path(tempfile.mkdtemp(prefix="phase17b_bench_"))
     scenario_results: dict[str, ProofRunResult] = {}
 
+    # ---- B: Phase 17A 10k synthetic capability scale (runs FIRST) ----
+    # The Axis A producer requires --source-commit equal to the clean HEAD
+    # peeled at entry; it runs before any other scenario so the source
+    # subject it binds is the one this harness started from.
+    b_dir = out_dir / "scenario_B_capability_lookup_10k"
+    b_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[B] capability_lookup_10k -> {b_dir}")
+    scenario_results["B_capability_lookup_10k"] = run_proof_subprocess(
+        name="B_capability_lookup_10k",
+        tool="tools/run_solver_scale_proof.py",
+        out_dir=b_dir,
+        extra_args=["--descriptors", str(args.scale_descriptors),
+                       "--lookup-pass-count", str(args.scale_lookups),
+                       "--source-commit", source_commit],
+        db_path=scratch_root / "B.db",
+    )
+
     # ---- A: Phase 15 hint extractor ----
     a_dir = out_dir / "scenario_A_solver_hot_path"
     a_dir.mkdir(parents=True, exist_ok=True)
@@ -553,19 +632,6 @@ def main() -> int:
         tool="tools/run_automatic_runtime_hint_proof.py",
         out_dir=a_dir,
         db_path=scratch_root / "A.db",
-    )
-
-    # ---- B: Phase 17A 10k synthetic capability scale ----
-    b_dir = out_dir / "scenario_B_capability_lookup_10k"
-    b_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[B] capability_lookup_10k -> {b_dir}")
-    scenario_results["B_capability_lookup_10k"] = run_proof_subprocess(
-        name="B_capability_lookup_10k",
-        tool="tools/run_solver_scale_proof.py",
-        out_dir=b_dir,
-        extra_args=["--descriptors", str(args.scale_descriptors),
-                       "--lookup-pass-count", str(args.scale_lookups)],
-        db_path=scratch_root / "B.db",
     )
 
     # ---- C: Phase 16A upstream structured_request ----
@@ -693,13 +759,10 @@ def main() -> int:
     # Per master prompt P2: emit benchmark_version, git_sha,
     # python_version, platform, docker_mode, tracks, claim_labels,
     # forbidden_claims_absent, top-level deltas, release_gate_pass.
-    try:
-        git_sha = subprocess.run(  # noqa: S603
-            ["git", "rev-parse", "HEAD"], cwd=str(ROOT),
-            capture_output=True, text=True, check=False, timeout=10,
-        ).stdout.strip()
-    except Exception:  # noqa: BLE001
-        git_sha = "unknown"
+    # git_sha is the exact clean HEAD peeled at entry, the same SHA the
+    # Axis A producer bound in scenario B; never re-read late, never a
+    # fallback value.
+    git_sha = source_commit
     docker_mode = (
         "container" if (os.path.exists("/.dockerenv")
                          or os.environ.get("DOCKER_CONTAINER") == "1")

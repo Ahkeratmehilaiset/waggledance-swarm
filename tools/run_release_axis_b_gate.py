@@ -1,12 +1,40 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Write v3.12 Axis B hex-aligned oracle evidence."""
+"""Write v3.12 Axis B hex-aligned oracle evidence.
+
+AXIS V2 SOURCE BINDING (2026-09-02):
+
+* ``--source-commit`` is REQUIRED and must be the lowercase full 40-hex
+  commit; there is no default and no HEAD fallback. Before the
+  evaluation and again immediately before the artifact is written, a
+  fail-closed preflight pinned to the repository ``ROOT`` (argv git with
+  ``--git-dir``/``--work-tree`` and a clean ``GIT_*`` environment)
+  requires ``HEAD^{commit}`` to equal the stamp and ``git status
+  --porcelain=v1 -z --untracked-files=all`` to be empty, and binds the
+  exact ``AXIS_B_EXPECTED_SOURCES`` inventory: every entry tracked as a
+  regular blob at HEAD, a regular non-link non-reparse worktree file
+  under ``ROOT``, with LF-normalized worktree digest == HEAD blob digest.
+  The second preflight must reproduce the same digests. Any git failure,
+  dirty entry, stamp mismatch, HEAD change or inventory drift aborts
+  with exit code 2 and NO artifact. A blocked evaluation still writes a
+  non-pass artifact.
+* ``--oracle-dir`` / ``--hex-config`` are anchored to ``ROOT`` (never the
+  working directory) and can yield ``result: pass`` only when the
+  canonical ``ROOT/tests/oracle_hex`` and ``ROOT/configs/hex_cells.yaml``
+  are themselves non-link, non-reparse paths and the arguments resolve
+  to exactly those paths; any other input evaluates as ``blocked``.
+* The artifact carries ``source_commit``, UTC ``generated_at``,
+  ``source_files`` and ``sha256:`` ``source_hashes`` so
+  ``tools/release_axis_b_attestation.py`` can bind it to source truth.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +42,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.release_axis_b_attestation import AXIS_B_EXPECTED_SOURCES
 from tools.run_r21_oracle_ab_proof import load_oracle_corpus, quality_arm
+from tools.verify_release_soak_evidence import (
+    SOURCE_COMMIT_PATTERN,
+    InventoryBinding,
+    bind_source_subject,
+    is_link_or_reparse,
+)
 from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
 
 
@@ -24,8 +59,11 @@ DEFAULT_OUTPUT = (
     / "release_soak_evidence"
     / "v3.12.0_axis_b_hex_aligned_eval.json"
 )
-DEFAULT_ORACLE_DIR = Path("tests") / "oracle_hex"
-DEFAULT_HEX_CONFIG = Path("configs") / "hex_cells.yaml"
+CANONICAL_ORACLE_DIR = Path("tests") / "oracle_hex"
+CANONICAL_HEX_CONFIG = Path("configs") / "hex_cells.yaml"
+DEFAULT_ORACLE_DIR = CANONICAL_ORACLE_DIR
+DEFAULT_HEX_CONFIG = CANONICAL_HEX_CONFIG
+NONCANONICAL_ORACLE_DIR = "noncanonical"
 EXPECTED_CELLS = {
     "hub",
     "bee_ops",
@@ -39,19 +77,103 @@ QUALITY_FLOOR = 0.74
 MISMATCHED_BASELINE_QUALITY = 0.5
 MINIMUM_BASELINE_DELTA = 0.20
 PER_CELL_QUALITY_FLOOR = 0.6
+ABORT_EXIT_CODE = 2
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _anchor(root: Path, candidate: Path | str) -> Path:
+    candidate = Path(candidate)
+    return candidate if candidate.is_absolute() else root / candidate
+
+
+def _has_link_component(root: Path, path: Path) -> bool:
+    """True when ``path`` or any component below ``root`` is a link/reparse."""
+    if is_link_or_reparse(path):
+        return True
+    for parent in path.parents:
+        if parent == root:
+            break
+        if is_link_or_reparse(parent):
+            return True
+    return False
+
+
+def canonical_input_blockers(
+    root: Path | str,
+    oracle_dir: Path | str,
+    hex_config: Path | str,
+) -> tuple[list[str], Path, Path]:
+    """Blockers for the corpus inputs, plus the ROOT-anchored input paths.
+
+    Empty only when the canonical oracle directory and hex config exist
+    under a non-link ``root`` without any link or reparse component and
+    both arguments resolve to exactly those canonical paths. The
+    canonical paths are checked for links *before* resolution because
+    resolution alone follows a junction planted at the canonical
+    location.
+    """
+    root = Path(root)
+    oracle_path = _anchor(root, oracle_dir)
+    config_path = _anchor(root, hex_config)
+    blockers: list[str] = []
+    canonical_oracle = root / CANONICAL_ORACLE_DIR
+    canonical_config = root / CANONICAL_HEX_CONFIG
+    try:
+        if is_link_or_reparse(root):
+            return ["source_root_link_or_reparse"], oracle_path, config_path
+        root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return ["source_root_unavailable"], oracle_path, config_path
+
+    for label, canonical, want_dir in (
+        ("oracle_dir", canonical_oracle, True),
+        ("hex_config", canonical_config, False),
+    ):
+        try:
+            os.lstat(canonical)
+        except OSError:
+            blockers.append(f"{label}_canonical_missing")
+            continue
+        if _has_link_component(root, canonical):
+            blockers.append(f"{label}_canonical_link_or_reparse")
+            continue
+        present = canonical.is_dir() if want_dir else canonical.is_file()
+        if not present:
+            blockers.append(f"{label}_canonical_missing")
+
+    for label, given, canonical in (
+        ("oracle_dir", oracle_path, canonical_oracle),
+        ("hex_config", config_path, canonical_config),
+    ):
+        if any(item.startswith(label) for item in blockers):
+            continue
+        try:
+            if given.resolve(strict=True) != canonical.resolve(strict=True):
+                blockers.append(f"{label}_noncanonical")
+        except (OSError, RuntimeError):
+            blockers.append(f"{label}_unresolvable")
+    return blockers, oracle_path, config_path
 
 
 def build_axis_b_report(
     *,
-    oracle_dir: Path = DEFAULT_ORACLE_DIR,
-    hex_config: Path = DEFAULT_HEX_CONFIG,
+    oracle_dir: Path | str = DEFAULT_ORACLE_DIR,
+    hex_config: Path | str = DEFAULT_HEX_CONFIG,
+    root: Path | str = ROOT,
 ) -> dict[str, Any]:
-    registry = HexTopologyRegistry(config_path=str(hex_config), agents=[])
-    oracles = load_oracle_corpus(oracle_dir)
+    root = Path(root)
+    input_blockers, oracle_path, config_path = canonical_input_blockers(
+        root, oracle_dir, hex_config
+    )
+    registry = HexTopologyRegistry(config_path=str(config_path), agents=[])
+    oracles = load_oracle_corpus(oracle_path)
     result = quality_arm(oracles, registry.select_origin_cell)
 
     cells = {oracle["cell"] for oracle in oracles}
-    blockers: list[str] = []
+    blockers: list[str] = list(input_blockers)
     if len(oracles) != 7:
         blockers.append("oracle_file_count_not_7")
     if cells != EXPECTED_CELLS:
@@ -75,9 +197,15 @@ def build_axis_b_report(
         "schema_version": "waggledance.axis_b_hex_eval.v1",
         "target_version": "v3.12.0",
         "benchmark_id": "v3.12-axis-b-hex-aligned-eval",
-        "command": "python tools/run_release_axis_b_gate.py",
+        "command": (
+            "python tools/run_release_axis_b_gate.py --source-commit <sha>"
+        ),
         "corpus": {
-            "oracle_dir": str(oracle_dir),
+            "oracle_dir": (
+                CANONICAL_ORACLE_DIR.as_posix()
+                if not input_blockers
+                else NONCANONICAL_ORACLE_DIR
+            ),
             "files": len(oracles),
             "cells": sorted(cells),
             "total_positive": total_positive,
@@ -100,20 +228,93 @@ def build_axis_b_report(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def _source_commit_argument(value: str) -> str:
+    if not SOURCE_COMMIT_PATTERN.match(value):
+        raise argparse.ArgumentTypeError(
+            "must be the lowercase full 40-hex commit that is HEAD of the "
+            "repository ROOT (no default, no HEAD fallback)"
+        )
+    return value
+
+
+def _abort(stage: str, binding: InventoryBinding) -> int:
+    print(
+        f"ABORT ({stage}): source-subject preflight failed; "
+        "no Axis B artifact written.",
+        file=sys.stderr,
+    )
+    for line in binding.details or binding.blockers:
+        print(f"  {line}", file=sys.stderr)
+    return ABORT_EXIT_CODE
+
+
+def main(argv: list[str] | None = None, *, root: Path | str = ROOT) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--oracle-dir", type=Path, default=DEFAULT_ORACLE_DIR)
     parser.add_argument("--hex-config", type=Path, default=DEFAULT_HEX_CONFIG)
+    parser.add_argument(
+        "--source-commit",
+        required=True,
+        type=_source_commit_argument,
+        metavar="SHA",
+        help=(
+            "Lowercase full 40-hex commit that must equal HEAD^{commit} of "
+            "the repository ROOT with a clean tree (tracked and untracked); "
+            "required, no default, no HEAD fallback."
+        ),
+    )
     args = parser.parse_args(argv)
+    root = Path(root)
 
-    report = build_axis_b_report(
-        oracle_dir=args.oracle_dir,
-        hex_config=args.hex_config,
+    binding = bind_source_subject(root, args.source_commit, AXIS_B_EXPECTED_SOURCES)
+    if binding.blockers:
+        return _abort("preflight before evaluation", binding)
+
+    try:
+        report = build_axis_b_report(
+            oracle_dir=args.oracle_dir,
+            hex_config=args.hex_config,
+            root=root,
+        )
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return _abort(
+            "evaluation",
+            InventoryBinding(
+                {},
+                [f"evaluation_failed:{exc.__class__.__name__}"],
+                [f"evaluation_failed:{exc.__class__.__name__}"],
+            ),
+        )
+
+    recheck = bind_source_subject(root, args.source_commit, AXIS_B_EXPECTED_SOURCES)
+    if recheck.blockers:
+        return _abort("preflight before artifact", recheck)
+    if recheck.digests != binding.digests:
+        return _abort(
+            "preflight before artifact",
+            InventoryBinding(
+                {},
+                ["source_inventory_changed"],
+                ["source_inventory_changed: worktree digests moved during the run"],
+            ),
+        )
+
+    report.update(
+        {
+            "source_commit": args.source_commit,
+            "generated_at": _utc_iso(),
+            "source_files": list(AXIS_B_EXPECTED_SOURCES),
+            "source_hashes": dict(binding.digests),
+        }
     )
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(encoded, encoding="utf-8")
+    output = _anchor(root, args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(encoded, encoding="utf-8")
     print(encoded, end="")
     return 0 if report["result"] == "pass" else 1
 

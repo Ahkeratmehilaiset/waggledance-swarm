@@ -12,11 +12,28 @@ Why small scale inside the test:
     run (recorded in the committed
     `phase17b_local_efficiency_benchmark.json`) and by the post-merge
     rerun. The test here only proves the CODE PATH works end-to-end.
+
+Axis V2 test isolation (2026-09-02):
+    The harness now refuses a dirty ROOT at entry (its scenario B
+    producer binds the exact clean HEAD), and a full pytest session
+    legitimately dirties the live checkout before this module runs.
+    The end-to-end fixture therefore runs the harness ONCE per module
+    inside an independent clean clone of the live repository at the
+    exact live HEAD: the live HEAD is only peeled (never required
+    clean), the clone is a fresh argv ``git clone --no-local
+    --no-hardlinks --no-checkout`` with a stripped ``GIT_*``
+    environment, checked out ``--detach`` at that SHA and asserted
+    clean, and the clone-resident harness runs in a fresh subprocess
+    with cwd and PYTHONPATH set to the clone. The output directory is
+    a sibling outside the clone. There is no shared or local fallback,
+    no worktree registry, no copytree, no clean/reset/stash of any
+    tree, and no production bypass.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,38 +48,135 @@ if str(TOOLS_DIR) not in sys.path:
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-
-@pytest.fixture
-def out_dir(tmp_path: Path) -> Path:
-    return tmp_path / "phase17b_benchmark_artifacts"
+import tools.verify_release_soak_evidence as verifier  # noqa: E402
 
 
-@pytest.fixture
-def benchmark(out_dir: Path) -> dict:
-    """Run the harness once at small scale and return the JSON."""
-    saved = sys.argv[:]
-    try:
-        sys.argv = [
-            "run_phase17b_local_efficiency_benchmark.py",
+HARNESS_RELATIVE = Path("tools") / "run_phase17b_local_efficiency_benchmark.py"
+BENCHMARK_JSON = "phase17b_local_efficiency_benchmark.json"
+SCENARIO_B_PROOF = Path("scenario_B_capability_lookup_10k") / "solver_scale_proof.json"
+HARNESS_TIMEOUT_SECONDS = 1800
+
+
+def _clean_git_environment() -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _git_argv(*args: str) -> list[str]:
+    return [
+        "git",
+        "-c", "core.autocrlf=false",
+        "-c", "core.longpaths=true",
+        *args,
+    ]
+
+
+def _run_git(args: list[str], env: dict[str, str]) -> None:
+    """Run one argv git command; any failure surfaces its stderr tail."""
+    completed = subprocess.run(
+        args, capture_output=True, text=True, check=False, env=env
+    )
+    assert completed.returncode == 0, (
+        f"{' '.join(args[:6])} ... exited {completed.returncode}: "
+        f"{completed.stderr[-800:]}"
+    )
+
+
+@pytest.fixture(scope="module")
+def isolated_benchmark(tmp_path_factory) -> dict:
+    """Run the harness once, in an independent clean clone at the live HEAD.
+
+    The live checkout is only peeled for its exact HEAD with the pinned
+    ``resolve_commit`` primitive; it is never required to be clean,
+    cleaned, reset or stashed. The clone is a fresh argv git clone
+    (``--no-local --no-hardlinks --no-checkout``, ``GIT_*`` stripped),
+    detached at that SHA and asserted clean; the harness copy INSIDE the
+    clone runs in a fresh subprocess whose cwd and PYTHONPATH are the
+    clone, never the live imported module. The output directory is a
+    sibling outside the clone.
+    """
+    base = tmp_path_factory.mktemp("phase17b_isolated")
+    sha, blocker = verifier.resolve_commit(ROOT, "HEAD")
+    assert blocker is None and sha is not None, f"live HEAD unresolvable: {blocker}"
+    assert verifier.SOURCE_COMMIT_PATTERN.match(sha), sha
+
+    clone = base / "clone"
+    out_dir = base / "out"
+    env = _clean_git_environment()
+    _run_git(
+        _git_argv(
+            "clone", "--no-local", "--no-hardlinks", "--no-checkout",
+            "--", str(ROOT), str(clone),
+        ),
+        env,
+    )
+    _run_git(_git_argv("-C", str(clone), "checkout", "-q", "--detach", sha), env)
+    assert verifier.resolve_commit(clone, "HEAD") == (sha, None)
+    assert verifier.worktree_porcelain(clone) == b""
+    assert not out_dir.exists()
+
+    harness_env = dict(env)
+    harness_env["PYTHONPATH"] = str(clone)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(clone / HARNESS_RELATIVE),
             "--out-dir", str(out_dir),
             "--skip-ollama",
             "--canonical-repeat", "1",
             "--scale-descriptors", "240",
             "--scale-lookups", "120",
             "--producer-repeat", "1",
-        ]
-        import run_phase17b_local_efficiency_benchmark as harness  # type: ignore
-        rc = harness.main()
-        assert rc == 0, (
-            "benchmark harness exited non-zero (exit 2 means the Axis V2 "
-            "entry preflight refused a dirty or unresolvable ROOT; run from "
-            "a clean committed HEAD)"
-        )
-    finally:
-        sys.argv = saved
-    out = out_dir / "phase17b_local_efficiency_benchmark.json"
+        ],
+        cwd=str(clone),
+        env=harness_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HARNESS_TIMEOUT_SECONDS,
+    )
+    assert completed.returncode == 0, (
+        "clone-resident benchmark harness exited "
+        f"{completed.returncode}: {completed.stderr[-800:]}"
+    )
+    out = out_dir / BENCHMARK_JSON
     assert out.is_file(), "benchmark JSON missing"
-    return json.loads(out.read_text(encoding="utf-8"))
+    benchmark = json.loads(out.read_text(encoding="utf-8"))
+    assert benchmark["git_sha"] == sha
+    assert benchmark["tracks"]["B_capability_lookup_10k"]["raw"]["tool"] == (
+        "tools/run_solver_scale_proof.py"
+    )
+    proof = json.loads(
+        (out_dir / SCENARIO_B_PROOF).read_text(encoding="utf-8")
+    )
+    assert proof["source_commit"] == sha
+    return {"sha": sha, "clone": clone, "out_dir": out_dir, "benchmark": benchmark}
+
+
+@pytest.fixture
+def out_dir(isolated_benchmark: dict) -> Path:
+    return isolated_benchmark["out_dir"]
+
+
+@pytest.fixture
+def benchmark(isolated_benchmark: dict) -> dict:
+    return isolated_benchmark["benchmark"]
+
+
+def test_isolated_run_is_bound_to_the_live_head(isolated_benchmark: dict) -> None:
+    """The clone-resident run binds exactly the peeled live HEAD."""
+    sha = isolated_benchmark["sha"]
+    assert verifier.SOURCE_COMMIT_PATTERN.match(sha)
+    assert isolated_benchmark["benchmark"]["git_sha"] == sha
+    assert isolated_benchmark["clone"].resolve() != ROOT.resolve()
+    assert not isolated_benchmark["out_dir"].resolve().is_relative_to(
+        isolated_benchmark["clone"].resolve()
+    )
 
 
 # ---------------------------------------------------------------------------

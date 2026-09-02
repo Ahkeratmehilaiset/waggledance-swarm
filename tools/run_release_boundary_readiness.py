@@ -3570,6 +3570,8 @@ _native_alias_allow = set()
 for _module_name, _attribute_name in (
     ("nt", "fspath"), ("posix", "fspath"),
     ("nt", "_path_normpath"), ("nt", "_path_splitroot_ex"),
+    ("posix", "_path_normpath"), ("posix", "_path_splitroot"),
+    ("posix", "_path_splitroot_ex"),
     ("_winapi", "LCMapStringEx"),
     ("_thread", "RLock"), ("_thread", "allocate_lock"),
     ("_thread", "get_ident"), ("_thread", "_is_main_interpreter"),

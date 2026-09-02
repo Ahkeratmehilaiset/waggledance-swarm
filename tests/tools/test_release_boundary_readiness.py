@@ -39,9 +39,7 @@ TEST_CARRIER_HEAD = "f" * 40
 TEST_SUBJECT_TREE = "a" * 40
 TEST_CARRIER_TREE = "b" * 40
 OPERATOR_SIGNER = "operator:jani:2026-05-22T18:14:34Z"
-TEST_GIT_EXECUTABLE = str(
-    (ROOT / ".codex-audit" / "wd-test-git").resolve()
-)
+TEST_GIT_EXECUTABLE = str(Path(Path(ROOT).anchor) / "wd-test-git")
 EXPECTED_PYYAML_602_MANIFEST = (
     ("yaml/__init__.py", 12311,
      "377e52d351cc7ac1537b469144c5a43e3d0f6bc2046c7a44f452bb72be4176dc"),
@@ -3454,7 +3452,7 @@ def test_live_child_unknown_reads_and_all_mutations_are_sticky(
             "backend=sys.modules.get('_winapi') or "
             "sys.modules.get('_posixsubprocess')\n"
             "name='GetCurrentProcess' if '_winapi' in sys.modules else "
-            "'_fork_exec'\n"
+            "'fork_exec'\n"
             "try:\n getattr(backend,name)()\n"
             "except BaseException:\n pass\nprint('forged pass')\n"
         ),

@@ -30,6 +30,30 @@ NO STAGE-2 FLIP / NO HUMAN_APPROVAL / NO ALLOWLIST WIDENING:
   threshold_rule, interval_bucket_classifier, linear_arithmetic,
   bounded_interpolation. 8 hex cells: general, thermal, energy,
   safety, seasonal, math, system, learning.
+
+AXIS V2 SOURCE BINDING (2026-09-02):
+
+* ``--source-commit`` is REQUIRED and must be the lowercase full 40-hex
+  commit; there is no default and no HEAD fallback. Before measurement
+  and again immediately before the proof is written, a fail-closed
+  preflight pinned to the repository ``ROOT`` (argv git with
+  ``--git-dir``/``--work-tree`` and a clean ``GIT_*`` environment)
+  requires ``HEAD^{commit}`` to equal the stamp and ``git status
+  --porcelain=v1 -z --untracked-files=all`` to be empty, and binds the
+  exact ``AXIS_A_EXPECTED_SOURCES`` inventory: every entry tracked as a
+  regular blob at HEAD, a regular non-link non-reparse worktree file
+  under ``ROOT``, with LF-normalized worktree digest == HEAD blob digest.
+  The second preflight must reproduce the same digests. Any git failure,
+  dirty entry, stamp mismatch, HEAD change or inventory drift aborts
+  with exit code 2 and NO proof artifact. A measured run that misses the
+  strict pass criterion still writes a proof, marked ``result: blocked``
+  with named blockers.
+* The proof carries ``source_commit``, UTC ``generated_at``,
+  ``source_files`` and ``sha256:`` ``source_hashes`` so
+  ``tools/release_axis_a_attestation.py`` can bind it to source truth.
+* ``--db`` (and any SQLite side files) must live outside ``ROOT``; a
+  scratch file inside the tree dirties it and fails the second
+  preflight.
 """
 
 from __future__ import annotations
@@ -50,6 +74,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.release_axis_a_attestation import AXIS_A_EXPECTED_SOURCES
+from tools.verify_release_soak_evidence import (
+    SOURCE_COMMIT_PATTERN,
+    InventoryBinding,
+    bind_source_subject,
+)
 from waggledance.core.autonomy_growth.runtime_query_router import (
     RuntimeQuery,
     RuntimeQueryRouter,
@@ -75,6 +105,8 @@ HEX_CELLS: tuple[str, ...] = (
     "general", "thermal", "energy", "safety",
     "seasonal", "math", "system", "learning",
 )
+
+ABORT_EXIT_CODE = 2
 
 
 def _stable_hash(payload: str) -> str:
@@ -367,11 +399,38 @@ def run_lookup_pass(
 
 
 # ---------------------------------------------------------------------------
+# Axis V2 source-subject binding
+# ---------------------------------------------------------------------------
+
+def _source_commit_argument(value: str) -> str:
+    if not SOURCE_COMMIT_PATTERN.match(value):
+        raise argparse.ArgumentTypeError(
+            "must be the lowercase full 40-hex commit that is HEAD of the "
+            "repository ROOT (no default, no HEAD fallback)"
+        )
+    return value
+
+
+def _abort(stage: str, binding: InventoryBinding) -> int:
+    print(
+        f"ABORT ({stage}): source-subject preflight failed; "
+        "no proof artifact written.",
+        file=sys.stderr,
+    )
+    for line in binding.details or binding.blockers:
+        print(f"  {line}", file=sys.stderr)
+    return ABORT_EXIT_CODE
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv: list[str] | None = None, *, root: Path | str = ROOT) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--out-dir", type=Path,
         default=ROOT / "docs" / "runs" / "phase17a_producer_fabric_scale_2026_05_04",
@@ -387,9 +446,26 @@ def main() -> int:
     )
     parser.add_argument(
         "--db", type=Path, default=None,
-        help="Path to scratch SQLite DB (default: temp file).",
+        help="Path to scratch SQLite DB, outside the repository "
+             "(default: temp file).",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--source-commit",
+        required=True,
+        type=_source_commit_argument,
+        metavar="SHA",
+        help=(
+            "Lowercase full 40-hex commit that must equal HEAD^{commit} of "
+            "the repository ROOT with a clean tree (tracked and untracked); "
+            "required, no default, no HEAD fallback."
+        ),
+    )
+    args = parser.parse_args(argv)
+    root = Path(root)
+
+    binding = bind_source_subject(root, args.source_commit, AXIS_A_EXPECTED_SOURCES)
+    if binding.blockers:
+        return _abort("preflight before measurement", binding)
 
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +478,7 @@ def main() -> int:
     print(f"lookup_pass_count      = {args.lookup_pass_count}")
     print(f"families_total         = {len(ALLOWED_FAMILIES)}")
     print(f"hex_cells_total        = {len(HEX_CELLS)}")
+    print(f"source_commit          = {args.source_commit}")
     print()
 
     descriptors = synthesize_descriptors(args.descriptors)
@@ -461,6 +538,33 @@ def main() -> int:
             f"{lookup_stats['lookup_p99_ms']}")
 
     finished_at = _utc_iso()
+
+    # Second preflight, immediately before any artifact: the subject must
+    # still be exactly the stamped clean HEAD and every inventory digest
+    # must reproduce; otherwise no proof is written at all.
+    recheck = bind_source_subject(root, args.source_commit, AXIS_A_EXPECTED_SOURCES)
+    if recheck.blockers:
+        return _abort("preflight before proof artifact", recheck)
+    if recheck.digests != binding.digests:
+        return _abort(
+            "preflight before proof artifact",
+            InventoryBinding(
+                {},
+                ["source_inventory_changed"],
+                ["source_inventory_changed: worktree digests moved during the run"],
+            ),
+        )
+
+    criterion_blockers: list[str] = []
+    if (lookup_stats["lookup_capability_hits_total"]
+            != lookup_stats["lookup_pass_count"]):
+        criterion_blockers.append("lookup_capability_hits_incomplete")
+    if lookup_stats["lookup_fifo_fallback_total"] != 0:
+        criterion_blockers.append("lookup_fifo_fallback_present")
+    if lookup_stats["lookup_miss_total"] != 0:
+        criterion_blockers.append("lookup_miss_present")
+    if len(descriptors) < args.descriptors:
+        criterion_blockers.append("descriptor_count_short")
 
     proof = {
         "phase": "phase17a_solver_scale",
@@ -523,6 +627,13 @@ def main() -> int:
         "no_allowlist_widening": True,
         "allowed_families": list(ALLOWED_FAMILIES),
         "hex_cells": list(HEX_CELLS),
+        # Axis V2 source binding (verified by release_axis_a_attestation).
+        "source_commit": args.source_commit,
+        "generated_at": _utc_iso(),
+        "source_files": list(AXIS_A_EXPECTED_SOURCES),
+        "source_hashes": dict(binding.digests),
+        "result": "pass" if not criterion_blockers else "blocked",
+        "blockers": criterion_blockers,
     }
 
     proof_path = out_dir / "solver_scale_proof.json"
@@ -530,16 +641,12 @@ def main() -> int:
                                           default=str), encoding="utf-8")
     print()
     print(f"Wrote {proof_path}")
+    print(f"  source_commit  = {args.source_commit}")
+    print(f"  source_files   = {len(AXIS_A_EXPECTED_SOURCES)} bound")
 
-    pass_criterion = (
-        lookup_stats["lookup_capability_hits_total"] ==
-        lookup_stats["lookup_pass_count"]
-        and lookup_stats["lookup_fifo_fallback_total"] == 0
-        and lookup_stats["lookup_miss_total"] == 0
-        and len(descriptors) >= args.descriptors
-    )
-    if not pass_criterion:
-        print("\nFAIL: scale proof did not meet the strict pass criterion.")
+    if criterion_blockers:
+        print("\nFAIL: scale proof did not meet the strict pass criterion: "
+              + ", ".join(criterion_blockers))
         return 1
     print("\nPASS: 10k synthetic solver capability scale proof.")
     return 0

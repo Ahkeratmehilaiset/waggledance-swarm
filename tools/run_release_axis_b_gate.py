@@ -23,6 +23,19 @@ AXIS V2 SOURCE BINDING (2026-09-02):
   canonical ``ROOT/tests/oracle_hex`` and ``ROOT/configs/hex_cells.yaml``
   are themselves non-link, non-reparse paths and the arguments resolve
   to exactly those paths; any other input evaluates as ``blocked``.
+* The scorer never reads the corpus from the worktree. Between the two
+  preflights the exact blobs tracked at ``--source-commit`` are copied
+  from the git object store (``git cat-file blob``) into a private
+  temporary directory that must resolve outside ``ROOT``; the copy's LF
+  digests must equal the bound inventory, the canonical corpus and hex
+  config are scored from that copy alone, and the copy is re-digested
+  after scoring and then removed (best effort: a cleanup error does not
+  turn a scored result into a crash). A worktree rewrite that lands after
+  the first preflight and is reverted before the second one therefore
+  cannot reach the scorer (claude-rco-1 finding, 2026-09-03), and the
+  stamped ``source_hashes`` describe exactly the bytes that were scored.
+  Non-canonical ``--oracle-dir`` / ``--hex-config`` inputs are still
+  scored as given from the worktree and can only yield ``blocked``.
 * The artifact carries ``source_commit``, UTC ``generated_at``,
   ``source_files`` and ``sha256:`` ``source_hashes`` so
   ``tools/release_axis_b_attestation.py`` can bind it to source truth.
@@ -34,6 +47,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +63,9 @@ from tools.verify_release_soak_evidence import (
     InventoryBinding,
     bind_source_subject,
     is_link_or_reparse,
+    lf_digest,
+    tracked_blob_bytes,
+    worktree_source_digest,
 )
 from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
 
@@ -239,13 +256,169 @@ def _source_commit_argument(value: str) -> str:
 
 def _abort(stage: str, binding: InventoryBinding) -> int:
     print(
-        f"ABORT ({stage}): source-subject preflight failed; "
+        f"ABORT ({stage}): source-subject binding failed; "
         "no Axis B artifact written.",
         file=sys.stderr,
     )
     for line in binding.details or binding.blockers:
         print(f"  {line}", file=sys.stderr)
     return ABORT_EXIT_CODE
+
+
+def _collect(
+    digests: dict[str, str],
+    blockers: list[str],
+    details: list[str],
+    rel: str,
+    digest: str | None,
+    blocker: str | None,
+) -> None:
+    if blocker is not None:
+        if blocker not in blockers:
+            blockers.append(blocker)
+        details.append(f"{blocker}: {rel}")
+        return
+    assert digest is not None
+    digests[rel] = digest
+
+
+def materialize_source_subject(
+    root: Path | str,
+    source_commit: object,
+    rel_paths: tuple[str, ...],
+    destination: Path | str,
+) -> InventoryBinding:
+    """Copy the regular blobs tracked at ``source_commit`` under ``destination``.
+
+    Every inventory entry is fetched from the git object store of ``root``
+    through the pinned argv invocation and written as ``destination/entry``
+    with its committed bytes; the worktree is never read. ``digests`` maps
+    each entry to the LF digest of the bytes written and is empty whenever
+    any blocker is present, so a partial copy can never be scored. An
+    entry that is absolute, rooted or contains ``..`` is refused before
+    any git call.
+    """
+    if not isinstance(source_commit, str) or not SOURCE_COMMIT_PATTERN.match(
+        source_commit
+    ):
+        return InventoryBinding(
+            {}, ["source_commit_invalid"], ["source_commit_invalid"]
+        )
+    destination = Path(destination)
+    digests: dict[str, str] = {}
+    blockers: list[str] = []
+    details: list[str] = []
+    for rel in rel_paths:
+        entry = Path(rel)
+        if (
+            not rel
+            or entry.is_absolute()
+            or entry.drive
+            or entry.root
+            or ".." in entry.parts
+        ):
+            _collect(digests, blockers, details, rel, None, "source_entry_not_confined")
+            continue
+        data, blocker = tracked_blob_bytes(root, source_commit, rel)
+        digest = lf_digest(data) if blocker is None and data is not None else None
+        if blocker is None and digest is None:
+            blocker = "source_blob_not_utf8"
+        if blocker is None:
+            assert data is not None
+            target = destination / entry
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            except OSError:
+                blocker = "subject_copy_unwritable"
+        _collect(digests, blockers, details, rel, digest, blocker)
+    if blockers:
+        return InventoryBinding({}, blockers, details)
+    return InventoryBinding(digests, [], [])
+
+
+def subject_snapshot_digests(
+    destination: Path | str, rel_paths: tuple[str, ...]
+) -> InventoryBinding:
+    """LF digests of the private copy as confined regular files, else blockers."""
+    digests: dict[str, str] = {}
+    blockers: list[str] = []
+    details: list[str] = []
+    for rel in rel_paths:
+        digest, blocker = worktree_source_digest(destination, rel)
+        _collect(digests, blockers, details, rel, digest, blocker)
+    if blockers:
+        return InventoryBinding({}, blockers, details)
+    return InventoryBinding(digests, [], [])
+
+
+def evaluate_source_subject(
+    root: Path | str, source_commit: str, binding: InventoryBinding
+) -> tuple[dict[str, Any] | None, tuple[str, InventoryBinding] | None]:
+    """Score the canonical corpus from a private copy of the bound blobs.
+
+    ``binding`` is the inventory bound by the first preflight. The blobs
+    tracked at ``source_commit`` are copied into a fresh temporary
+    directory that must resolve outside ``root``; the copy's digests must
+    equal ``binding.digests`` before scoring and again after it, and the
+    copy is removed afterwards on every path (best effort: cleanup errors
+    are ignored, never raised). Returns ``(report, None)`` on success, else
+    ``(None, (stage, blockers))`` for ``_abort``. The worktree corpus is
+    never opened here, so nothing written to it between the two preflights
+    can reach the scorer.
+    """
+    root = Path(root)
+    with tempfile.TemporaryDirectory(
+        prefix="axis_b_subject_", ignore_cleanup_errors=True
+    ) as scratch:
+        subject_root = Path(scratch)
+        try:
+            inside_root = subject_root.resolve(strict=True).is_relative_to(
+                root.resolve(strict=True)
+            )
+        except (OSError, RuntimeError):
+            inside_root = True
+        if inside_root:
+            return None, (
+                "subject copy",
+                InventoryBinding(
+                    {},
+                    ["subject_snapshot_inside_root"],
+                    ["subject_snapshot_inside_root: private copy would live under ROOT"],
+                ),
+            )
+        materialized = materialize_source_subject(
+            root, source_commit, AXIS_B_EXPECTED_SOURCES, subject_root
+        )
+        if materialized.blockers:
+            return None, ("subject copy", materialized)
+        if materialized.digests != binding.digests:
+            return None, (
+                "subject copy",
+                InventoryBinding(
+                    {},
+                    ["subject_snapshot_mismatch"],
+                    ["subject_snapshot_mismatch: copied blobs differ from the bound inventory"],
+                ),
+            )
+        report = build_axis_b_report(
+            oracle_dir=CANONICAL_ORACLE_DIR,
+            hex_config=CANONICAL_HEX_CONFIG,
+            root=subject_root,
+        )
+        after = subject_snapshot_digests(subject_root, AXIS_B_EXPECTED_SOURCES)
+        if after.blockers:
+            return None, ("subject recheck after scoring", after)
+        if after.digests != materialized.digests:
+            return None, (
+                "subject recheck after scoring",
+                InventoryBinding(
+                    {},
+                    ["subject_snapshot_changed"],
+                    ["subject_snapshot_changed: the private copy moved during scoring"],
+                ),
+            )
+    return report, None
 
 
 def main(argv: list[str] | None = None, *, root: Path | str = ROOT) -> int:
@@ -274,12 +447,24 @@ def main(argv: list[str] | None = None, *, root: Path | str = ROOT) -> int:
     if binding.blockers:
         return _abort("preflight before evaluation", binding)
 
+    input_blockers, _oracle_path, _config_path = canonical_input_blockers(
+        root, args.oracle_dir, args.hex_config
+    )
     try:
-        report = build_axis_b_report(
-            oracle_dir=args.oracle_dir,
-            hex_config=args.hex_config,
-            root=root,
-        )
+        if input_blockers:
+            # Non-canonical inputs can never pass; score them as given so the
+            # blocked artifact describes what was actually asked for.
+            report = build_axis_b_report(
+                oracle_dir=args.oracle_dir,
+                hex_config=args.hex_config,
+                root=root,
+            )
+        else:
+            report, failure = evaluate_source_subject(
+                root, args.source_commit, binding
+            )
+            if failure is not None:
+                return _abort(*failure)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return _abort(
             "evaluation",
@@ -289,6 +474,7 @@ def main(argv: list[str] | None = None, *, root: Path | str = ROOT) -> int:
                 [f"evaluation_failed:{exc.__class__.__name__}"],
             ),
         )
+    assert report is not None
 
     recheck = bind_source_subject(root, args.source_commit, AXIS_B_EXPECTED_SOURCES)
     if recheck.blockers:

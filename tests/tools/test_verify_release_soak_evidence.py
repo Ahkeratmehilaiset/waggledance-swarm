@@ -918,6 +918,34 @@ def test_bind_source_inventory_untracked_at_commit(tmp_path) -> None:
     assert current.blockers == []
 
 
+def test_tracked_blob_bytes_returns_committed_bytes_not_worktree(tmp_path) -> None:
+    """The bytes come from the object store even when the worktree differs."""
+    root = tmp_path / "repo"
+    head = _init_source_repo(root)
+    rel = AXIS_A_EXPECTED_SOURCES[0]
+    committed = (root / rel).read_bytes()
+    _git(root, "update-index", "--assume-unchanged", rel)
+    (root / rel).write_bytes(b"# tampered\nvalue = 2\n")
+
+    data, blocker = verifier.tracked_blob_bytes(root, head, rel)
+
+    assert blocker is None
+    assert data == committed
+    assert data != (root / rel).read_bytes()
+    assert verifier.tracked_blob_digest(root, head, rel) == (
+        verifier.lf_digest(committed),
+        None,
+    )
+    assert verifier.tracked_blob_bytes(root, head, "not/tracked.py") == (
+        None,
+        "source_not_tracked_at_commit",
+    )
+    assert verifier.tracked_blob_bytes(root, NOT_IN_REPO, rel) == (
+        None,
+        "git_ls_tree_failed",
+    )
+
+
 def test_bind_source_inventory_missing_and_directory_entries(tmp_path) -> None:
     root = tmp_path / "repo"
     head = _init_source_repo(root)

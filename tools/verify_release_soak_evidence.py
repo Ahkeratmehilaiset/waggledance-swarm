@@ -567,10 +567,16 @@ def worktree_source_digest(
     return digest, None
 
 
-def tracked_blob_digest(
+def tracked_blob_bytes(
     root: Path | str, commit: str, rel: str
-) -> tuple[str | None, str | None]:
-    """LF digest of the regular blob tracked at ``commit:rel``, else a blocker."""
+) -> tuple[bytes | None, str | None]:
+    """Raw bytes of the regular blob tracked at ``commit:rel``, else a blocker.
+
+    The bytes come from the git object store through the pinned argv
+    invocation (``ls-tree`` then ``cat-file blob``, no smudge filters) and
+    never from the worktree, so they are exactly what ``commit`` records
+    for ``rel``.
+    """
     completed = run_git(root, "ls-tree", "-z", commit, "--", rel)
     if completed is None:
         return None, "git_unavailable"
@@ -597,7 +603,18 @@ def tracked_blob_digest(
         return None, "git_unavailable"
     if completed.returncode != 0:
         return None, "git_cat_file_failed"
-    digest = lf_digest(completed.stdout)
+    return completed.stdout, None
+
+
+def tracked_blob_digest(
+    root: Path | str, commit: str, rel: str
+) -> tuple[str | None, str | None]:
+    """LF digest of the regular blob tracked at ``commit:rel``, else a blocker."""
+    data, blocker = tracked_blob_bytes(root, commit, rel)
+    if blocker is not None:
+        return None, blocker
+    assert data is not None
+    digest = lf_digest(data)
     if digest is None:
         return None, "source_blob_not_utf8"
     return digest, None

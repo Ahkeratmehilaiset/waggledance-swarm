@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -408,3 +410,232 @@ def test_cli_exposes_no_root_override(tmp_path) -> None:
         main(["--root", str(tmp_path), "--source-commit", NOT_IN_REPO])
 
     assert excinfo.value.code == 2
+
+
+# --- CLI: the scorer consumes the bound blobs, never a worktree re-read ---
+
+
+HUB_REL = "tests/oracle_hex/hub.yaml"
+
+
+def _hub_row(report):
+    return next(row for row in report["per_file"] if row["cell"] == "hub")
+
+
+def _count_preserving_rewrite(clean: bytes) -> bytes:
+    """Swap the last hub positive for a hub negative: same 15/5 shape, one
+    utterance that now routes to another cell."""
+    text = clean.decode("utf-8")
+    assert '"needs central triage"' in text
+    return text.replace(
+        '"needs central triage"', '"hive temperature alert"', 1
+    ).encode("utf-8")
+
+
+def test_cli_scores_the_bound_blobs_not_a_reverted_worktree_rewrite(
+    tmp_path, source_repo, monkeypatch
+) -> None:
+    """claude-rco-1 finding on PR #1671 (2026-09-03): a corpus rewrite that
+    lands after the first preflight and is reverted before the second one
+    must not reach the scorer, and the stamped hashes must describe the
+    bytes that were actually scored."""
+    root, head = source_repo
+    hub = root / HUB_REL
+    clean_bytes = hub.read_bytes()
+    rewritten = _count_preserving_rewrite(clean_bytes)
+    # The rewrite is effective whenever the worktree itself is scored.
+    hub.write_bytes(rewritten)
+    try:
+        direct = build_axis_b_report(root=root)
+    finally:
+        hub.write_bytes(clean_bytes)
+    assert direct["corpus"]["total_positive"] == 105
+    assert _hub_row(direct)["pos_correct"] == _hub_row(direct)["pos_total"] - 1
+    clean = build_axis_b_report(root=root)
+    assert _hub_row(clean)["pos_correct"] == _hub_row(clean)["pos_total"]
+
+    original = gate.build_axis_b_report
+    evaluation_roots: list[Path] = []
+    copied: dict[str, bytes] = {}
+
+    def _rewrite_worktree_during_scoring(**kwargs):
+        evaluation_root = Path(kwargs["root"])
+        evaluation_roots.append(evaluation_root)
+        hub.write_bytes(rewritten)
+        try:
+            for rel in AXIS_B_EXPECTED_SOURCES:
+                copied[rel] = (evaluation_root / rel).read_bytes()
+            return original(**kwargs)
+        finally:
+            hub.write_bytes(clean_bytes)
+
+    monkeypatch.setattr(gate, "build_axis_b_report", _rewrite_worktree_during_scoring)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["result"] == "pass"
+    assert report["blockers"] == []
+    assert _hub_row(report)["pos_correct"] == _hub_row(report)["pos_total"]
+    assert report["quality"] == clean["quality"]
+    assert report["per_file"] == clean["per_file"]
+    assert report["source_hashes"] == {
+        rel: _helper_source_digest(root / rel) for rel in AXIS_B_EXPECTED_SOURCES
+    }
+    assert evaluate_axis_b_attestation(output, root, head) == []
+    # The scorer saw the committed bytes while the worktree was rewritten...
+    assert copied[HUB_REL] == clean_bytes
+    assert copied == {rel: (root / rel).read_bytes() for rel in AXIS_B_EXPECTED_SOURCES}
+    # ...from one private copy outside ROOT that is gone afterwards.
+    assert len(evaluation_roots) == 1
+    evaluation_root = evaluation_roots[0]
+    assert evaluation_root != root
+    assert not evaluation_root.resolve().is_relative_to(root.resolve())
+    assert not evaluation_root.exists()
+    assert str(tmp_path) not in output.read_text(encoding="utf-8")
+
+
+def test_materialize_source_subject_copies_committed_blobs_not_worktree(
+    tmp_path, source_repo
+) -> None:
+    root, head = source_repo
+    destination = tmp_path / "copy"
+    committed = (root / HUB_REL).read_bytes()
+    _git(root, "update-index", "--assume-unchanged", HUB_REL)
+    (root / HUB_REL).write_bytes(committed + b"# tampered\n")
+
+    materialized = gate.materialize_source_subject(
+        root, head, AXIS_B_EXPECTED_SOURCES, destination
+    )
+
+    assert materialized.blockers == []
+    assert set(materialized.digests) == set(AXIS_B_EXPECTED_SOURCES)
+    assert (destination / HUB_REL).read_bytes() == committed
+    assert materialized.digests[HUB_REL] == verifier.lf_digest(committed)
+    for rel in AXIS_B_EXPECTED_SOURCES:
+        assert materialized.digests[rel] == verifier.tracked_blob_digest(root, head, rel)[0]
+    recheck = gate.subject_snapshot_digests(destination, AXIS_B_EXPECTED_SOURCES)
+    assert recheck.blockers == []
+    assert recheck.digests == materialized.digests
+
+    unknown = gate.materialize_source_subject(
+        root, NOT_IN_REPO, AXIS_B_EXPECTED_SOURCES, tmp_path / "unknown"
+    )
+    assert unknown.digests == {}
+    assert unknown.blockers == ["git_ls_tree_failed"]
+    assert not (tmp_path / "unknown").exists()
+    malformed = gate.materialize_source_subject(
+        root, "HEAD", AXIS_B_EXPECTED_SOURCES, tmp_path / "malformed"
+    )
+    assert malformed.blockers == ["source_commit_invalid"]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["../escape.yaml", "/rooted.yaml", "tests/../../escape.yaml", ""],
+    ids=["parent", "rooted", "nested-parent", "empty"],
+)
+def test_materialize_source_subject_refuses_unconfined_entries(
+    tmp_path, source_repo, entry
+) -> None:
+    root, head = source_repo
+
+    binding = gate.materialize_source_subject(
+        root, head, (HUB_REL, entry), tmp_path / "copy"
+    )
+
+    assert binding.digests == {}
+    assert binding.blockers == ["source_entry_not_confined"]
+    assert not list(tmp_path.rglob("escape.yaml"))
+    assert not list(tmp_path.rglob("rooted.yaml"))
+
+
+def test_cli_private_copy_edited_during_scoring_aborts(
+    tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+    original = gate.build_axis_b_report
+
+    def _score_then_edit_copy(**kwargs):
+        report = original(**kwargs)
+        with (Path(kwargs["root"]) / HUB_REL).open("ab") as handle:
+            handle.write(b"# late edit\n")
+        return report
+
+    monkeypatch.setattr(gate, "build_axis_b_report", _score_then_edit_copy)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 2
+    assert not output.exists()
+    assert "subject_snapshot_changed" in capsys.readouterr().err
+
+
+def test_cli_private_copy_digest_mismatch_aborts(
+    tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+    original = gate.materialize_source_subject
+
+    def _copy_then_misreport(*args, **kwargs):
+        materialized = original(*args, **kwargs)
+        digests = dict(materialized.digests)
+        digests[HUB_REL] = "sha256:" + "0" * 64
+        return verifier.InventoryBinding(digests, [], [])
+
+    monkeypatch.setattr(gate, "materialize_source_subject", _copy_then_misreport)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 2
+    assert not output.exists()
+    assert "subject_snapshot_mismatch" in capsys.readouterr().err
+
+
+def test_cli_private_copy_inside_root_is_refused(
+    tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+    monkeypatch.setattr(
+        gate.tempfile,
+        "TemporaryDirectory",
+        functools.partial(tempfile.TemporaryDirectory, dir=root),
+    )
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 2
+    assert not output.exists()
+    assert "subject_snapshot_inside_root" in capsys.readouterr().err
+    assert verifier.worktree_porcelain(root) == b""
+
+
+def test_cli_noncanonical_inputs_are_scored_as_given_and_blocked(
+    tmp_path, source_repo, monkeypatch
+) -> None:
+    """The private copy is only used for canonical inputs; a planted corpus
+    is still scored where it was asked for and can only be ``blocked``."""
+    root, head = source_repo
+    planted = tmp_path / "planted_oracle"
+    shutil.copytree(root / "tests" / "oracle_hex", planted)
+    output = tmp_path / "axis_b.json"
+    original = gate.build_axis_b_report
+    seen: list[dict] = []
+
+    def _record(**kwargs):
+        seen.append(dict(kwargs))
+        return original(**kwargs)
+
+    monkeypatch.setattr(gate, "build_axis_b_report", _record)
+
+    rc = main(
+        ["--output", str(output), "--oracle-dir", str(planted), "--source-commit", head],
+        root=root,
+    )
+
+    assert rc == 1
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["result"] == "blocked"
+    assert "oracle_dir_noncanonical" in report["blockers"]
+    assert seen == [{"oracle_dir": planted, "hex_config": gate.DEFAULT_HEX_CONFIG, "root": root}]

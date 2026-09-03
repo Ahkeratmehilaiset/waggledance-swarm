@@ -23,19 +23,29 @@ AXIS V2 SOURCE BINDING (2026-09-02):
   canonical ``ROOT/tests/oracle_hex`` and ``ROOT/configs/hex_cells.yaml``
   are themselves non-link, non-reparse paths and the arguments resolve
   to exactly those paths; any other input evaluates as ``blocked``.
-* The scorer never reads the corpus from the worktree. Between the two
-  preflights the exact blobs tracked at ``--source-commit`` are copied
-  from the git object store (``git cat-file blob``) into a private
-  temporary directory that must resolve outside ``ROOT``; the copy's LF
-  digests must equal the bound inventory, the canonical corpus and hex
-  config are scored from that copy alone, and the copy is re-digested
-  after scoring and then removed (best effort: a cleanup error does not
-  turn a scored result into a crash). A worktree rewrite that lands after
-  the first preflight and is reverted before the second one therefore
-  cannot reach the scorer (claude-rco-1 finding, 2026-09-03), and the
-  stamped ``source_hashes`` describe exactly the bytes that were scored.
-  Non-canonical ``--oracle-dir`` / ``--hex-config`` inputs are still
-  scored as given from the worktree and can only yield ``blocked``.
+* The scorer never reads the corpus from the worktree, and nothing read
+  from disk after the preflight is scored unverified. Between the two
+  preflights the exact blobs tracked at ``--source-commit`` are fetched
+  from the git object store (``git cat-file blob``) and held in memory;
+  their LF digests must equal the bound inventory. The oracle corpus that
+  is scored is parsed from those in-memory bytes. The production loaders
+  still run, over a private copy of the same bytes in a temporary
+  directory that must resolve outside ``ROOT``, because
+  ``load_oracle_corpus`` and ``HexTopologyRegistry`` only accept paths:
+  the loader's corpus must equal the in-memory parse and the registry's
+  cells, in load order, must equal the cells derived from the in-memory
+  config, else the run aborts with no artifact
+  (``subject_corpus_mismatch`` / ``subject_hex_config_mismatch``).
+  Routing is a pure function of those ordered cells (no agents are
+  mapped), so equal cells mean identical routing. A rewrite of the copy
+  that is reverted before any later check therefore cannot change what
+  is scored either: it can only abort the run (claude-rco-2 finding,
+  2026-09-03, on top of claude-rco-1's worktree finding). The copy is
+  re-digested after scoring as a secondary check and then removed (best
+  effort: a cleanup error does not turn a scored result into a crash).
+  The stamped ``source_hashes`` describe exactly the bytes that were
+  scored. Non-canonical ``--oracle-dir`` / ``--hex-config`` inputs are
+  still scored as given from the worktree and can only yield ``blocked``.
 * The artifact carries ``source_commit``, UTC ``generated_at``,
   ``source_files`` and ``sha256:`` ``source_hashes`` so
   ``tools/release_axis_b_attestation.py`` can bind it to source truth.
@@ -48,9 +58,12 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, NamedTuple
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -68,6 +81,7 @@ from tools.verify_release_soak_evidence import (
     worktree_source_digest,
 )
 from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
+from waggledance.core.domain.hex_mesh import HexCellDefinition, HexCoord
 
 
 DEFAULT_OUTPUT = (
@@ -180,13 +194,25 @@ def build_axis_b_report(
     oracle_dir: Path | str = DEFAULT_ORACLE_DIR,
     hex_config: Path | str = DEFAULT_HEX_CONFIG,
     root: Path | str = ROOT,
+    subject: Mapping[str, bytes] | None = None,
 ) -> dict[str, Any]:
+    """Score the hex-aligned oracle corpus.
+
+    With ``subject`` (the verified bytes of ``AXIS_B_EXPECTED_SOURCES``
+    keyed by repository-relative path) the scored corpus is parsed from
+    those bytes, and the production loaders' view of ``root`` must match
+    them exactly (``bind_scored_subject``), else ``SubjectMismatch`` is
+    raised and nothing is scored. Without ``subject`` the paths are scored
+    as given.
+    """
     root = Path(root)
     input_blockers, oracle_path, config_path = canonical_input_blockers(
         root, oracle_dir, hex_config
     )
     registry = HexTopologyRegistry(config_path=str(config_path), agents=[])
     oracles = load_oracle_corpus(oracle_path)
+    if subject is not None:
+        oracles = bind_scored_subject(oracles, registry, subject)
     result = quality_arm(oracles, registry.select_origin_cell)
 
     cells = {oracle["cell"] for oracle in oracles}
@@ -282,32 +308,178 @@ def _collect(
     digests[rel] = digest
 
 
+class SubjectMismatch(RuntimeError):
+    """What the production loaders read differs from the verified bytes."""
+
+    def __init__(self, blocker: str, detail: str) -> None:
+        super().__init__(f"{blocker}: {detail}")
+        self.blocker = blocker
+        self.detail = detail
+
+
+class MaterializedSubject(NamedTuple):
+    """``InventoryBinding`` fields plus the committed bytes that were copied.
+
+    ``contents`` maps each inventory entry to its committed bytes and is
+    empty whenever any blocker is present, exactly like ``digests``.
+    """
+
+    digests: dict[str, str]
+    blockers: list[str]
+    details: list[str]
+    contents: dict[str, bytes]
+
+    @property
+    def binding(self) -> InventoryBinding:
+        return InventoryBinding(self.digests, self.blockers, self.details)
+
+
+def _universal_newlines(data: bytes) -> str:
+    """Decode like ``Path.read_text(encoding="utf-8")`` (CRLF and CR to LF)."""
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def parse_oracle_documents(documents: Mapping[str, bytes]) -> list[dict[str, Any]]:
+    """``load_oracle_corpus`` over in-memory documents keyed by file name.
+
+    Mirrors ``tools.run_r21_oracle_ab_proof.load_oracle_corpus`` exactly:
+    names sorted, ``_``-prefixed names skipped, documents that are not a
+    mapping or carry no ``cell`` skipped, the same six keys. The production
+    loader is run over the same bytes at scoring time and must agree
+    (``bind_scored_subject``), so any divergence aborts the run instead of
+    scoring a different corpus.
+    """
+    out: list[dict[str, Any]] = []
+    for name in sorted(documents):
+        if not name.endswith(".yaml") or name.startswith("_"):
+            continue
+        data = yaml.safe_load(_universal_newlines(documents[name]))
+        if not isinstance(data, dict):
+            continue
+        if not data.get("cell"):
+            continue
+        out.append(
+            {
+                "file": name,
+                "solver": data.get("solver", ""),
+                "domain": data.get("domain", ""),
+                "cell": data.get("cell", ""),
+                "positive": list(data.get("positive") or []),
+                "negative": list(data.get("negative") or []),
+            }
+        )
+    return out
+
+
+def expected_hex_cells(config: bytes) -> dict[str, HexCellDefinition]:
+    """The cells ``HexTopologyRegistry`` builds from ``config``, in load order.
+
+    Mirrors ``HexTopologyRegistry._load`` field by field: a document that
+    is not a mapping yields no cells, entries without ``id`` are skipped,
+    a duplicate id or coordinate is skipped, and the same defaults apply.
+    Routing (``select_origin_cell`` with no agents) is a pure function of
+    these ordered cells, so a registry whose cells equal this mapping
+    routes identically.
+    """
+    data = yaml.safe_load(_universal_newlines(config))
+    cells: dict[str, HexCellDefinition] = {}
+    coords: set[HexCoord] = set()
+    if not data or not isinstance(data, dict):
+        return cells
+    for cell_data in data.get("cells", []):
+        cell_id = cell_data.get("id")
+        if not cell_id:
+            continue
+        coord_data = cell_data.get("coord", {})
+        coord = HexCoord(q=coord_data.get("q", 0), r=coord_data.get("r", 0))
+        if cell_id in cells or coord in coords:
+            continue
+        cells[cell_id] = HexCellDefinition(
+            id=cell_id,
+            coord=coord,
+            description=cell_data.get("description", ""),
+            domain_selectors=cell_data.get("domain_selectors", []),
+            tag_selectors=cell_data.get("tag_selectors", []),
+            enabled=cell_data.get("enabled", True),
+            neighbor_policy=cell_data.get("neighbor_policy", "default"),
+        )
+        coords.add(coord)
+    return cells
+
+
+def bind_scored_subject(
+    loaded_oracles: list[dict[str, Any]],
+    registry: HexTopologyRegistry,
+    subject: Mapping[str, bytes],
+) -> list[dict[str, Any]]:
+    """Return the corpus to score: the in-memory parse of ``subject``.
+
+    ``loaded_oracles`` (the production loader's read of the private copy)
+    must equal that parse, and ``registry.cells`` in load order must equal
+    the cells derived from the in-memory config; otherwise
+    ``SubjectMismatch`` is raised and nothing is scored. Nothing read from
+    disk after the preflight is therefore ever scored unverified, and a
+    rewrite of the copy that is reverted before a later check can only
+    abort the run, never change its result.
+    """
+    oracle_prefix = CANONICAL_ORACLE_DIR.as_posix() + "/"
+    documents = {
+        PurePosixPath(rel).name: data
+        for rel, data in subject.items()
+        if rel.startswith(oracle_prefix)
+    }
+    config = subject.get(CANONICAL_HEX_CONFIG.as_posix())
+    if config is None or not documents:
+        raise SubjectMismatch(
+            "subject_incomplete", "bound inventory lacks the corpus or the hex config"
+        )
+    try:
+        expected_oracles = parse_oracle_documents(documents)
+        expected_cells = expected_hex_cells(config)
+    except Exception as exc:  # noqa: BLE001 - any parse failure is a mismatch
+        raise SubjectMismatch(
+            "subject_unparseable", exc.__class__.__name__
+        ) from exc
+    if loaded_oracles != expected_oracles:
+        raise SubjectMismatch(
+            "subject_corpus_mismatch",
+            "the oracle corpus read from the private copy differs from the bound bytes",
+        )
+    if list(registry.cells.items()) != list(expected_cells.items()):
+        raise SubjectMismatch(
+            "subject_hex_config_mismatch",
+            "the hex topology loaded from the private copy differs from the bound bytes",
+        )
+    return expected_oracles
+
+
 def materialize_source_subject(
     root: Path | str,
     source_commit: object,
     rel_paths: tuple[str, ...],
     destination: Path | str,
-) -> InventoryBinding:
+) -> MaterializedSubject:
     """Copy the regular blobs tracked at ``source_commit`` under ``destination``.
 
     Every inventory entry is fetched from the git object store of ``root``
-    through the pinned argv invocation and written as ``destination/entry``
-    with its committed bytes; the worktree is never read. ``digests`` maps
-    each entry to the LF digest of the bytes written and is empty whenever
-    any blocker is present, so a partial copy can never be scored. An
-    entry that is absolute, rooted or contains ``..`` is refused before
-    any git call.
+    through the pinned argv invocation, kept in ``contents`` and written as
+    ``destination/entry`` with its committed bytes; the worktree is never
+    read. ``digests`` maps each entry to the LF digest of those bytes;
+    ``digests`` and ``contents`` are empty whenever any blocker is present,
+    so a partial copy can never be scored. An entry that is absolute,
+    rooted or contains ``..`` is refused before any git call.
     """
     if not isinstance(source_commit, str) or not SOURCE_COMMIT_PATTERN.match(
         source_commit
     ):
-        return InventoryBinding(
-            {}, ["source_commit_invalid"], ["source_commit_invalid"]
+        return MaterializedSubject(
+            {}, ["source_commit_invalid"], ["source_commit_invalid"], {}
         )
     destination = Path(destination)
     digests: dict[str, str] = {}
     blockers: list[str] = []
     details: list[str] = []
+    contents: dict[str, bytes] = {}
     for rel in rel_paths:
         entry = Path(rel)
         if (
@@ -332,9 +504,12 @@ def materialize_source_subject(
             except OSError:
                 blocker = "subject_copy_unwritable"
         _collect(digests, blockers, details, rel, digest, blocker)
+        if blocker is None:
+            assert data is not None
+            contents[rel] = data
     if blockers:
-        return InventoryBinding({}, blockers, details)
-    return InventoryBinding(digests, [], [])
+        return MaterializedSubject({}, blockers, details, {})
+    return MaterializedSubject(digests, [], [], contents)
 
 
 def subject_snapshot_digests(
@@ -355,17 +530,20 @@ def subject_snapshot_digests(
 def evaluate_source_subject(
     root: Path | str, source_commit: str, binding: InventoryBinding
 ) -> tuple[dict[str, Any] | None, tuple[str, InventoryBinding] | None]:
-    """Score the canonical corpus from a private copy of the bound blobs.
+    """Score the canonical corpus from the bound blobs, never from the worktree.
 
     ``binding`` is the inventory bound by the first preflight. The blobs
-    tracked at ``source_commit`` are copied into a fresh temporary
-    directory that must resolve outside ``root``; the copy's digests must
-    equal ``binding.digests`` before scoring and again after it, and the
-    copy is removed afterwards on every path (best effort: cleanup errors
-    are ignored, never raised). Returns ``(report, None)`` on success, else
-    ``(None, (stage, blockers))`` for ``_abort``. The worktree corpus is
-    never opened here, so nothing written to it between the two preflights
-    can reach the scorer.
+    tracked at ``source_commit`` are fetched into memory and copied into a
+    fresh temporary directory that must resolve outside ``root``; the
+    copy's digests must equal ``binding.digests``. The corpus that is
+    scored is parsed from the in-memory bytes, and the production loaders'
+    read of the copy must agree with them (``bind_scored_subject``); the
+    copy is re-digested after scoring as a secondary check and removed
+    afterwards on every path (best effort: cleanup errors are ignored,
+    never raised). Returns ``(report, None)`` on success, else
+    ``(None, (stage, blockers))`` for ``_abort``. Nothing written to the
+    worktree or to the copy after the preflight can change what is scored;
+    it can only abort the run.
     """
     root = Path(root)
     with tempfile.TemporaryDirectory(
@@ -391,7 +569,7 @@ def evaluate_source_subject(
             root, source_commit, AXIS_B_EXPECTED_SOURCES, subject_root
         )
         if materialized.blockers:
-            return None, ("subject copy", materialized)
+            return None, ("subject copy", materialized.binding)
         if materialized.digests != binding.digests:
             return None, (
                 "subject copy",
@@ -401,11 +579,18 @@ def evaluate_source_subject(
                     ["subject_snapshot_mismatch: copied blobs differ from the bound inventory"],
                 ),
             )
-        report = build_axis_b_report(
-            oracle_dir=CANONICAL_ORACLE_DIR,
-            hex_config=CANONICAL_HEX_CONFIG,
-            root=subject_root,
-        )
+        try:
+            report = build_axis_b_report(
+                oracle_dir=CANONICAL_ORACLE_DIR,
+                hex_config=CANONICAL_HEX_CONFIG,
+                root=subject_root,
+                subject=materialized.contents,
+            )
+        except SubjectMismatch as exc:
+            return None, (
+                "subject verification",
+                InventoryBinding({}, [exc.blocker], [f"{exc.blocker}: {exc.detail}"]),
+            )
         after = subject_snapshot_digests(subject_root, AXIS_B_EXPECTED_SOURCES)
         if after.blockers:
             return None, ("subject recheck after scoring", after)

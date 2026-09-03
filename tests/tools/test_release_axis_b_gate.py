@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 import tools.run_release_axis_b_gate as gate
 import tools.verify_release_soak_evidence as verifier
@@ -18,7 +19,9 @@ from tools.release_axis_b_attestation import (
     _source_digest as _helper_source_digest,
     evaluate_axis_b_attestation,
 )
+from tools.run_r21_oracle_ab_proof import load_oracle_corpus
 from tools.run_release_axis_b_gate import build_axis_b_report, main
+from waggledance.application.services.hex_topology_registry import HexTopologyRegistry
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -511,6 +514,8 @@ def test_materialize_source_subject_copies_committed_blobs_not_worktree(
 
     assert materialized.blockers == []
     assert set(materialized.digests) == set(AXIS_B_EXPECTED_SOURCES)
+    assert set(materialized.contents) == set(AXIS_B_EXPECTED_SOURCES)
+    assert materialized.contents[HUB_REL] == committed
     assert (destination / HUB_REL).read_bytes() == committed
     assert materialized.digests[HUB_REL] == verifier.lf_digest(committed)
     for rel in AXIS_B_EXPECTED_SOURCES:
@@ -582,7 +587,7 @@ def test_cli_private_copy_digest_mismatch_aborts(
         materialized = original(*args, **kwargs)
         digests = dict(materialized.digests)
         digests[HUB_REL] = "sha256:" + "0" * 64
-        return verifier.InventoryBinding(digests, [], [])
+        return gate.MaterializedSubject(digests, [], [], materialized.contents)
 
     monkeypatch.setattr(gate, "materialize_source_subject", _copy_then_misreport)
 
@@ -639,3 +644,174 @@ def test_cli_noncanonical_inputs_are_scored_as_given_and_blocked(
     assert report["result"] == "blocked"
     assert "oracle_dir_noncanonical" in report["blockers"]
     assert seen == [{"oracle_dir": planted, "hex_config": gate.DEFAULT_HEX_CONFIG, "root": root}]
+
+
+# --- the scored objects are the verified bytes, not a disk re-read ---------
+
+
+def test_parse_oracle_documents_matches_production_loader() -> None:
+    """Runtime equivalence lock: the in-memory parse is the production loader."""
+    corpus_dir = ROOT / "tests" / "oracle_hex"
+    documents = {path.name: path.read_bytes() for path in corpus_dir.glob("*.yaml")}
+    assert len(documents) == 7
+
+    assert gate.parse_oracle_documents(documents) == load_oracle_corpus(corpus_dir)
+
+    # The loader's skip rules are mirrored: underscore names, documents
+    # without a cell, and non-mapping documents are all ignored.
+    documents["_off_domain.yaml"] = b"cell: hub\npositive: [x]\n"
+    documents["nocell.yaml"] = b"solver: x\n"
+    documents["scalar.yaml"] = b"just a string\n"
+    documents["notes.txt"] = b"cell: hub\n"
+    assert gate.parse_oracle_documents(documents) == load_oracle_corpus(corpus_dir)
+
+
+def test_expected_hex_cells_match_production_registry() -> None:
+    """Runtime equivalence lock: the derived cells are the registry's cells, in order."""
+    config = ROOT / "configs" / "hex_cells.yaml"
+    registry = HexTopologyRegistry(config_path=str(config), agents=[])
+
+    expected = gate.expected_hex_cells(config.read_bytes())
+
+    assert len(expected) == 7
+    assert list(registry.cells.items()) == list(expected.items())
+    assert gate.expected_hex_cells(b"just a string\n") == {}
+    assert gate.expected_hex_cells(b"cells:\n  - coord: {q: 1, r: 1}\n") == {}
+
+
+def test_cli_scores_the_in_memory_parse_of_the_bound_bytes(
+    tmp_path, source_repo, monkeypatch
+) -> None:
+    """The object handed to the scorer IS the in-memory parse of the bound
+    bytes, not the loader's read of the private copy."""
+    root, head = source_repo
+    parsed: list = []
+    scored: list = []
+    original_parse = gate.parse_oracle_documents
+    original_quality_arm = gate.quality_arm
+
+    def _record_parse(documents):
+        result = original_parse(documents)
+        parsed.append(result)
+        return result
+
+    def _record_quality_arm(oracles, route_fn):
+        scored.append(oracles)
+        return original_quality_arm(oracles, route_fn)
+
+    monkeypatch.setattr(gate, "parse_oracle_documents", _record_parse)
+    monkeypatch.setattr(gate, "quality_arm", _record_quality_arm)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 0
+    assert len(parsed) == 1 and len(scored) == 1
+    assert scored[0] is parsed[0]
+    assert json.loads(output.read_text(encoding="utf-8"))["result"] == "pass"
+
+
+def test_cli_private_copy_rewritten_and_reverted_during_scoring_aborts(
+    tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    """claude-rco-2 finding on bd67af38 (2026-09-03): a rewrite of the private
+    copy that is reverted before the after-recheck must not be scored."""
+    root, head = source_repo
+    original = gate.build_axis_b_report
+
+    def _rewrite_copy_then_revert(**kwargs):
+        copy = Path(kwargs["root"]) / HUB_REL
+        clean = copy.read_bytes()
+        copy.write_bytes(_count_preserving_rewrite(clean))
+        try:
+            return original(**kwargs)
+        finally:
+            copy.write_bytes(clean)
+
+    monkeypatch.setattr(gate, "build_axis_b_report", _rewrite_copy_then_revert)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 2
+    assert not output.exists()
+    err = capsys.readouterr().err
+    assert "subject_corpus_mismatch" in err
+    assert str(tmp_path) not in err
+
+
+@pytest.mark.parametrize("mutation", ["reorder_cells", "disable_hub"])
+def test_cli_private_copy_hex_config_rewritten_and_reverted_aborts(
+    tmp_path, source_repo, monkeypatch, capsys, mutation
+) -> None:
+    """Same class against the hex config: cell order and every cell field
+    loaded by the registry must equal the bound bytes."""
+    root, head = source_repo
+    original = gate.build_axis_b_report
+
+    def _rewrite_config_then_revert(**kwargs):
+        config = Path(kwargs["root"]) / "configs" / "hex_cells.yaml"
+        clean = config.read_bytes()
+        data = yaml.safe_load(clean.decode("utf-8"))
+        if mutation == "reorder_cells":
+            data["cells"][0], data["cells"][1] = data["cells"][1], data["cells"][0]
+        else:
+            next(cell for cell in data["cells"] if cell["id"] == "hub")["enabled"] = False
+        config.write_bytes(yaml.safe_dump(data, sort_keys=False).encode("utf-8"))
+        try:
+            return original(**kwargs)
+        finally:
+            config.write_bytes(clean)
+
+    monkeypatch.setattr(gate, "build_axis_b_report", _rewrite_config_then_revert)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 2
+    assert not output.exists()
+    assert "subject_hex_config_mismatch" in capsys.readouterr().err
+
+
+def test_cli_private_copy_planted_oracle_file_aborts(
+    tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+    original = gate.build_axis_b_report
+
+    def _plant_then_remove(**kwargs):
+        planted = Path(kwargs["root"]) / "tests" / "oracle_hex" / "zzz_planted.yaml"
+        planted.write_text(
+            'cell: hub\npositive:\n  - "needs central triage"\nnegative: []\n',
+            encoding="utf-8",
+        )
+        try:
+            return original(**kwargs)
+        finally:
+            planted.unlink()
+
+    monkeypatch.setattr(gate, "build_axis_b_report", _plant_then_remove)
+
+    rc, output = _cli(tmp_path, root, head)
+
+    assert rc == 2
+    assert not output.exists()
+    assert "subject_corpus_mismatch" in capsys.readouterr().err
+
+
+def test_bind_scored_subject_rejects_incomplete_or_unparseable_subject() -> None:
+    corpus_dir = ROOT / "tests" / "oracle_hex"
+    config = ROOT / "configs" / "hex_cells.yaml"
+    registry = HexTopologyRegistry(config_path=str(config), agents=[])
+    oracles = load_oracle_corpus(corpus_dir)
+    subject = {rel: (ROOT / rel).read_bytes() for rel in AXIS_B_EXPECTED_SOURCES}
+
+    assert gate.bind_scored_subject(oracles, registry, subject) == oracles
+
+    without_config = {rel: data for rel, data in subject.items() if "hex_cells" not in rel}
+    with pytest.raises(gate.SubjectMismatch) as excinfo:
+        gate.bind_scored_subject(oracles, registry, without_config)
+    assert excinfo.value.blocker == "subject_incomplete"
+
+    broken = dict(subject)
+    broken[HUB_REL] = b"positive: [unterminated\n"
+    with pytest.raises(gate.SubjectMismatch) as excinfo:
+        gate.bind_scored_subject(oracles, registry, broken)
+    assert excinfo.value.blocker == "subject_unparseable"

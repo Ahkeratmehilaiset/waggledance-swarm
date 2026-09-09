@@ -116,6 +116,12 @@ function Read-BridgeEventObjects {
                 $null -ne $obj.PSObject.Properties['task_id'] -and
                 $null -ne $obj.PSObject.Properties['agent']
             ) {
+                # Record the append order of the read window so closure
+                # decisions can compare log order, not only timestamps.
+                # -Force so a same-named field inside the JSON payload can
+                # never shadow the real read order.
+                $obj | Add-Member -NotePropertyName '__append_index' `
+                    -NotePropertyValue $items.Count -Force
                 [void]$items.Add($obj)
             }
         } catch {}
@@ -179,6 +185,61 @@ foreach ($req in $requestsForAgent) {
     }
 }
 
+function Get-BridgeEventIdentityField {
+    param(
+        [Parameter(Mandatory)] [object] $Event,
+        [Parameter(Mandatory)] [string] $Name
+    )
+    $prop = $Event.PSObject.Properties[$Name]
+    if ($null -eq $prop -or $null -eq $prop.Value) { return '' }
+    return ([string]$prop.Value).Trim()
+}
+
+function Test-BridgeClosureOccursAfterRequest {
+    param(
+        [Parameter(Mandatory)] [object] $Closure,
+        [Parameter(Mandatory)] [object] $Request
+    )
+    # Mirror of tools/bridge_next_action.py::_closure_occurs_after_request:
+    # a closure counts only when it follows the request in BOTH append order
+    # and timestamp order. Timestamp order alone (the previous raw string
+    # ts_utc comparison here) lets a post-dated closure appended before the
+    # request suppress it; append order alone lets a stale WAL/spool-replayed
+    # closure at the log tail close a request renewed after it. When either
+    # side has no parseable timestamp the comparison falls back to append
+    # order, preserving the legacy behavior for malformed records.
+    $closureIndex = [int]$Closure.__append_index
+    $requestIndex = [int]$Request.__append_index
+    if ($closureIndex -le $requestIndex) { return $false }
+    $closureTs = ConvertTo-BridgeUtcDateTime -Value ([string]$Closure.ts_utc)
+    $requestTs = ConvertTo-BridgeUtcDateTime -Value ([string]$Request.ts_utc)
+    if ($null -eq $closureTs -or $null -eq $requestTs) { return $true }
+    return ($closureTs -ge $requestTs)
+}
+
+function Test-BridgeRequesterIdentityMatch {
+    param(
+        [Parameter(Mandatory)] [object] $Request,
+        [Parameter(Mandatory)] [object] $Closure
+    )
+    # Mirror of tools/bridge_next_action.py::_requester_identity_matches: a
+    # requester closeout binds to every identity field present on the
+    # request, so a writer that only shares the agent name cannot close a
+    # request bound to a specific agent_uuid/session_id. Fields absent on
+    # the request stay wildcards so legacy events keep closing.
+    $requestUuid = (Get-BridgeEventIdentityField -Event $Request -Name 'agent_uuid').ToLowerInvariant()
+    if ($requestUuid) {
+        $closureUuid = (Get-BridgeEventIdentityField -Event $Closure -Name 'agent_uuid').ToLowerInvariant()
+        if ($closureUuid -cne $requestUuid) { return $false }
+    }
+    $requestSession = Get-BridgeEventIdentityField -Event $Request -Name 'session_id'
+    if ($requestSession) {
+        $closureSession = Get-BridgeEventIdentityField -Event $Closure -Name 'session_id'
+        if ($closureSession -cne $requestSession) { return $false }
+    }
+    return $true
+}
+
 function Test-BridgeRequestStillOpen {
     param([Parameter(Mandatory)] [object] $Request)
 
@@ -187,7 +248,7 @@ function Test-BridgeRequestStillOpen {
             Where-Object {
                 [string]$_.agent -eq $Agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
-                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
+                (Test-BridgeClosureOccursAfterRequest -Closure $_ -Request $Request) -and
                 (Test-BridgeAnswerEvent -Event $_)
             } |
             Select-Object -First 1
@@ -198,7 +259,8 @@ function Test-BridgeRequestStillOpen {
             Where-Object {
                 [string]$_.agent -eq [string]$Request.agent -and
                 [string]$_.task_id -eq [string]$Request.task_id -and
-                [string]$_.ts_utc -gt [string]$Request.ts_utc -and
+                (Test-BridgeRequesterIdentityMatch -Request $Request -Closure $_) -and
+                (Test-BridgeClosureOccursAfterRequest -Closure $_ -Request $Request) -and
                 (Test-BridgeRequesterClosureEvent -Event $_)
             } |
             Select-Object -First 1

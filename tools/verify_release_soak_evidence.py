@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Verify release soak evidence is reproducible from local artifacts."""
+"""Verify release soak evidence is reproducible from local artifacts.
+
+When the actual evidence records an explicit security-artifact selection
+(``artifact_selection`` entry with ``basis == "explicit"``), the rebuild
+recovers that selection - but only a validated root-relative recorded
+path is accepted (typed ``explicit_selection_invalid:<field>`` blocker
+otherwise). The recovered path re-enters the collector's containment
+checks against the resolved evidence root, so recovery cannot escape the
+root or fall open.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +17,7 @@ import argparse
 import datetime as dt
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,9 +27,10 @@ if str(ROOT) not in sys.path:
 from tools.collect_soak_evidence import (
     DEFAULT_EVIDENCE_ROOT,
     DEFAULT_RELEASE_NOTES,
-    FINAL_PIP_AUDIT_REPORTS,
     PRIVACY_PRECHECK,
+    SELECTION_BASIS_EXPLICIT,
     build_soak_evidence,
+    select_pip_audit_artifact,
 )
 from tools.release_security_attestation import (
     evaluate_audited_lock_pins,
@@ -36,12 +46,25 @@ def _security_attestation_blockers(
     actual: dict[str, Any],
     expected: dict[str, Any],
     evidence_root: Path,
+    *,
+    explicit_pip_audit: str | None = None,
 ) -> list[str]:
     """Fail-closed attestation blockers, active only under a pass claim.
 
     When neither the actual evidence nor the rebuilt expected evidence
     claims ``profile_s_smoke`` or ``security_privacy_gate`` pass, this
     returns no blockers and legacy behavior is unchanged.
+
+    The audited pip artifact is taken from the collector's own
+    containment-validated selector (newest-or-explicit), NEVER from a
+    registry-order first-existing scan. This is the only place that
+    re-validates real audit content against a file at verify time, so
+    its file choice is load-bearing: with a registry fallback the
+    verifier could attest file A as clean while the collector selected,
+    digest-bound and gated on a different, vulnerable file B (transitive
+    source substitution, Grok/lead 2026-08-26). A failed selection
+    (ambiguous, unreadable, or escaping the evidence root) fails closed
+    with ``audited_report_selection_blocked`` instead of falling back.
     """
     claims_pass = any(
         actual.get(field) == "pass" or expected.get(field) == "pass"
@@ -52,12 +75,12 @@ def _security_attestation_blockers(
     blockers = list(
         evaluate_privacy_attestation(evidence_root / PRIVACY_PRECHECK)
     )
-    audited_report = None
-    for name in FINAL_PIP_AUDIT_REPORTS:
-        candidate = evidence_root / name
-        if candidate.exists():
-            audited_report = candidate
-            break
+    audited_report, selection = select_pip_audit_artifact(
+        evidence_root, explicit=explicit_pip_audit
+    )
+    if selection["blockers"]:
+        blockers.append("audited_report_selection_blocked")
+        audited_report = None
     blockers.extend(evaluate_audited_lock_pins(audited_report))
     return blockers
 
@@ -77,6 +100,30 @@ def _read_object(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ValueError("evidence JSON must be an object")
     return loaded
+
+
+def _validated_root_relative(value: object) -> str | None:
+    """Accept only a safe root-relative posix path recorded by the collector.
+
+    Rejects non-strings, empties, backslashes, absolute paths (posix or
+    Windows drive/UNC forms), and any ``..`` traversal component. The
+    recovered value re-enters ``_select_artifact``, which containment-checks
+    the resolved path against the resolved evidence root and fails closed;
+    this validator just refuses obviously non-root-relative records up
+    front with a typed blocker instead of rebuilding a divergent expected.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if "\\" in value:
+        return None
+    pure = PurePosixPath(value)
+    if pure.is_absolute():
+        return None
+    if ":" in value or value.startswith("//"):
+        return None
+    if any(part == ".." for part in pure.parts):
+        return None
+    return value
 
 
 def build_report(
@@ -102,6 +149,28 @@ def build_report(
             "mismatched_fields": [],
         }
 
+    explicit_overrides: dict[str, str] = {}
+    selection = actual.get("artifact_selection")
+    if isinstance(selection, dict):
+        for field, kwarg in (
+            ("bandit_report", "bandit_report"),
+            ("pip_audit_report", "pip_audit_report"),
+        ):
+            record = selection.get(field)
+            if not isinstance(record, dict):
+                continue
+            if record.get("basis") != SELECTION_BASIS_EXPLICIT:
+                continue
+            recovered = _validated_root_relative(record.get("path"))
+            if recovered is None:
+                return {
+                    "schema_version": "waggledance.release_soak_verifier.v1",
+                    "verified": False,
+                    "blockers": [f"explicit_selection_invalid:{field}"],
+                    "mismatched_fields": [],
+                }
+            explicit_overrides[kwarg] = recovered
+
     try:
         expected = build_soak_evidence(
             release_readiness,
@@ -111,6 +180,7 @@ def build_report(
             use_local_artifacts=True,
             evidence_root=evidence_root,
             release_notes=release_notes,
+            **explicit_overrides,
         )
     except (OSError, ValueError) as exc:
         return {
@@ -128,7 +198,12 @@ def build_report(
             blockers.append(f"field_mismatch:{field}")
 
     blockers.extend(
-        _security_attestation_blockers(actual, expected, evidence_root)
+        _security_attestation_blockers(
+            actual,
+            expected,
+            evidence_root,
+            explicit_pip_audit=explicit_overrides.get("pip_audit_report"),
+        )
     )
 
     return {

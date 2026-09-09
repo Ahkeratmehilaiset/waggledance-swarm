@@ -15,6 +15,7 @@ SCRIPT = ROOT / "tools" / "build_operator_attention_digest.py"
 
 sys.path.insert(0, str(ROOT))
 
+from tools import build_operator_attention_digest as attention_module  # noqa: E402
 from tools.build_operator_attention_digest import (  # noqa: E402
     OperatorAttentionDigestError,
     build_operator_attention_digest,
@@ -335,6 +336,114 @@ def test_age_filters_and_max_items() -> None:
 
     assert report["attention_count"] == 1
     assert report["items"][0]["task_id"] == "old-2"
+
+
+def test_default_now_ignores_future_attention_without_hiding_current(
+    monkeypatch,
+) -> None:
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _now()
+
+    monkeypatch.setattr(attention_module, "datetime", FixedDatetime)
+
+    report = build_operator_attention_digest(
+        events=[
+            _event(ts="2026-06-14T05:00:00Z", task_id="current"),
+            _event(ts="2099-01-01T00:00:00Z", task_id="future"),
+        ],
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 1
+    assert report["items"][0]["task_id"] == "current"
+
+
+@pytest.mark.parametrize("bad_ts", ["2099-01-01T00:00:00Z", "not-a-time"])
+def test_invalid_or_future_same_key_attention_cannot_hide_current(
+    bad_ts: str,
+) -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(ts="2026-06-14T05:00:00Z", task_id="same-task"),
+            _event(ts=bad_ts, task_id="same-task"),
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 1
+    assert report["items"][0]["ts_utc"] == "2026-06-14T05:00:00Z"
+    assert report["items"][0]["event_count"] == 1
+
+
+def test_backdated_repeat_cannot_expire_newer_operator_attention() -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(ts="2026-06-14T05:20:00Z", task_id="same-task"),
+            _event(ts="2026-06-13T05:20:00Z", task_id="same-task"),
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 1
+    item = report["items"][0]
+    assert item["ts_utc"] == "2026-06-14T05:20:00Z"
+    assert item["event_count"] == 2
+    assert item["age_minutes"] == 10.0
+
+
+@pytest.mark.parametrize("closure_ts", ["2026-06-13T05:00:00Z", "!"])
+def test_later_appended_terminal_closes_regardless_of_event_clock(
+    closure_ts: str,
+) -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(task_id="task-close"),
+            _event(
+                ts=closure_ts,
+                agent="driver",
+                to="operator",
+                event_type="done",
+                task_id="task-close",
+                status="merged",
+                severity="",
+            ),
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 0
+
+
+@pytest.mark.parametrize("malformed_pr", [True, 1208.5, "not-pr"])
+def test_malformed_pr_does_not_create_cross_task_closure(
+    malformed_pr: object,
+) -> None:
+    report = build_operator_attention_digest(
+        events=[
+            _event(task_id="attention", payload={"pr": malformed_pr}),
+            _event(
+                ts="2026-06-14T05:10:00Z",
+                agent="driver",
+                to="operator",
+                event_type="done",
+                task_id="different-task",
+                status="merged",
+                severity="",
+                payload={"pr": malformed_pr},
+            ),
+        ],
+        now_utc=_now(),
+        include_wake_delivery=False,
+    )
+
+    assert report["attention_count"] == 1
+    assert report["items"][0]["task_id"] == "attention"
+    assert "pr" not in report["items"][0]
 
 
 @pytest.mark.parametrize(

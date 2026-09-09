@@ -90,6 +90,7 @@ BLOCKING_EVENT_TYPES = frozenset(
     {"decision", "rco_review", "finding", "blocked", "test"}
 )
 CLEAR_EVENT_TYPES = frozenset({"decision", "rco_review", "finding", "done", "test"})
+RCO_RETRACTION_EVENT_TYPES = frozenset({"decision", "rco_review"})
 BLOCKING_CLEAR_TOKENS = frozenset({"clear", "cleared"})
 BLOCKING_RESOLUTION_TOKENS = frozenset(
     {"clear", "cleared", "resolved", "retracted", "withdrawn"}
@@ -488,26 +489,14 @@ def check_bridge_clear_to_merge(
         # bridge conversation often includes diagnostic status strings with
         # "block"/"clear" words and must not become a phantom merge stop.
         # Approvals stay type-restricted.
-        if _is_clear_status(status):
-            if event_type in CLEAR_EVENT_TYPES:
-                if author_event:
-                    peer_signals[agent] = (index, "clear", event)
-                    continue
-                existing = peer_signals.get(agent)
-                if existing is None or existing[1] != "approval":
-                    peer_signals[agent] = (index, "clear", event)
-            continue
-        # Cause-B fix (#1387 latch-bypass): a recognized-RCO ``finding`` (and any
-        # ``blocked``-type event) is a veto BY TYPE -- it latches regardless of its
-        # free-text status. The #1387 vector was a recognized-RCO finding whose
-        # status carried a "content_pass" token (no block-vocab), so the
-        # status-string classifier below silently failed open and the PR
-        # auto-merged past a live RCO veto. Authority here is the event TYPE +
-        # RCO identity per the single-source P2/D5 taxonomy
-        # (``BLOCK_BY_TYPE`` / ``RCO_GATED_TYPES``), never the status string. An
-        # explicit clear/retraction status is handled above (so an RCO can still
-        # retract via a clear); the standing veto is otherwise cleared only by a
-        # later ``decision`` rco_pass from the SAME RCO (latest-signal-wins below).
+        #
+        # Cause-B ordering invariant: classify authoritative veto TYPES before
+        # interpreting any free-text clear/retraction vocabulary. Otherwise a
+        # mistokened recognized-RCO finding such as
+        # ``status=changes_requested_retracted`` clears itself before the
+        # type-based latch below can see it. A recognized RCO retracts via a
+        # later verified ``decision``/``rco_review`` signal, never by changing
+        # the status text on the veto-typed finding itself.
         if event_type in _TAXONOMY_BLOCK_BY_TYPE and (
             event_type not in _TAXONOMY_RCO_GATED_TYPES
             or agent in _RECOGNIZED_RCOS
@@ -518,8 +507,35 @@ def check_bridge_clear_to_merge(
         ):
             peer_signals[agent] = (index, "block", event)
             continue
+        if _is_clear_status(status):
+            # ``recognized_rco_agent_set`` is the union of the canonical
+            # ``_RECOGNIZED_RCOS`` and any caller-provided extensions (built
+            # above); an empty or partial extension can never remove a
+            # canonical RCO from this retraction restriction.
+            clear_event_types = (
+                RCO_RETRACTION_EVENT_TYPES
+                if agent in recognized_rco_agent_set
+                else CLEAR_EVENT_TYPES
+            )
+            if event_type in clear_event_types:
+                if author_event:
+                    peer_signals[agent] = (index, "clear", event)
+                    continue
+                existing = peer_signals.get(agent)
+                if existing is None or existing[1] != "approval":
+                    peer_signals[agent] = (index, "clear", event)
+            continue
         if _is_blocking_status(status, event_type=event_type):
             peer_signals[agent] = (index, "block", event)
+            continue
+        # A recognized RCO's standing veto can be retracted only by a later
+        # verified decision/review event. Operational ``done``/``test`` events
+        # may still carry block-shaped statuses (handled above), but must never
+        # overwrite an RCO block with clear/approval vocabulary.
+        if (
+            agent in recognized_rco_agent_set
+            and event_type not in RCO_RETRACTION_EVENT_TYPES
+        ):
             continue
         if event_type == "done" and status not in DONE_APPROVAL_STATUSES:
             continue

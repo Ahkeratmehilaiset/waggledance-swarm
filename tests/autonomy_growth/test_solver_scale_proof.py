@@ -20,6 +20,16 @@ Why 240 (not 10000) inside the test:
     * 240 descriptors still exercises 6 families × 8 cells (×5 each)
       which preserves the balanced-distribution invariant.
 
+Axis V2 (2026-09-02): the proof requires ``--source-commit`` and runs a
+fail-closed source-subject preflight against the repository root, so
+the fixture drives it against a throwaway git repository holding the
+exact Axis A inventory (``root=`` is a keyword-only test seam of
+``main``; the CLI exposes no root override). The forge tests below cover
+every named failure: malformed and arbitrary stamps, dirty tracked and
+untracked trees, tampering hidden from ``git status``, mid-run HEAD and
+source changes, git unavailable, ``GIT_*`` retargeting, and the
+non-pass artifact for a failed criterion.
+
 Note: the orchestrator and proof tool import the *real*
 ``RuntimeQueryRouter`` + ``LowRiskSolverDispatcher`` + ``ControlPlaneDB``;
 no mocks, no synthetic shortcuts of the data path.
@@ -27,7 +37,9 @@ no mocks, no synthetic shortcuts of the data path.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,6 +50,102 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import run_solver_scale_proof as scale  # type: ignore  # noqa: E402
+import tools.verify_release_soak_evidence as verifier  # noqa: E402
+from tools.release_axis_a_attestation import (  # noqa: E402
+    AXIS_A_EXPECTED_SOURCES,
+    _source_digest as _helper_source_digest,
+)
+
+
+NOT_IN_REPO = "0123456789abcdef0123456789abcdef01234567"
+SMALL_RUN = ["--descriptors", "240", "--lookup-pass-count", "120"]
+PROOF_NAME = "solver_scale_proof.json"
+
+
+def _git(root, *args, check=True):
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=axis-v2-test",
+            "-c",
+            "user.email=axis-v2-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.longpaths=true",
+            "-C",
+            str(root),
+            *args,
+        ],
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_source(root, rel, text="value = 1\n"):
+    target = root / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(f"# {rel}\n{text}".encode("utf-8"))
+    return target
+
+
+def _init_axis_a_repo(root) -> str:
+    """A throwaway repository holding the exact Axis A inventory."""
+    root.mkdir(parents=True, exist_ok=True)
+    _git(root, "init", "-q")
+    _git(root, "config", "core.autocrlf", "false")
+    for rel in AXIS_A_EXPECTED_SOURCES:
+        _write_source(root, rel)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "axis a sources")
+    return _git(root, "rev-parse", "HEAD").stdout.strip()
+
+
+def _commit_all(root, message="more") -> str:
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", message)
+    return _git(root, "rev-parse", "HEAD").stdout.strip()
+
+
+def _argv(out_dir, db_path, stamp, extra=()):
+    return [
+        "--out-dir",
+        str(out_dir),
+        *SMALL_RUN,
+        "--db",
+        str(db_path),
+        "--source-commit",
+        stamp,
+        *extra,
+    ]
+
+
+def _mid_run(monkeypatch, action) -> None:
+    """Run ``action`` once, inside the measurement, before the second preflight."""
+    original = scale.run_lookup_samples
+    fired = {"done": False}
+
+    def _wrapper(router, samples):
+        if not fired["done"]:
+            fired["done"] = True
+            action()
+        return original(router, samples)
+
+    monkeypatch.setattr(scale, "run_lookup_samples", _wrapper)
+
+
+@pytest.fixture
+def source_repo(tmp_path):
+    root = tmp_path / "repo"
+    return root, _init_axis_a_repo(root)
 
 
 @pytest.fixture
@@ -46,25 +154,13 @@ def out_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def proof(out_dir: Path, tmp_path: Path) -> dict:
+def proof(out_dir: Path, tmp_path: Path, source_repo) -> dict:
     """Run the scale proof at 240 descriptors and return the proof JSON."""
-    db_path = tmp_path / "scale_proof_test.db"
-    saved = sys.argv[:]
-    try:
-        sys.argv = [
-            "run_solver_scale_proof.py",
-            "--out-dir", str(out_dir),
-            "--descriptors", "240",
-            "--lookup-pass-count", "120",
-            "--db", str(db_path),
-        ]
-        import run_solver_scale_proof as scale  # type: ignore
-        rc = scale.main()
-        assert rc == 0, "scale proof exited non-zero"
-    finally:
-        sys.argv = saved
+    root, head = source_repo
+    rc = scale.main(_argv(out_dir, tmp_path / "scale_proof_test.db", head), root=root)
+    assert rc == 0, "scale proof exited non-zero"
 
-    proof_path = out_dir / "solver_scale_proof.json"
+    proof_path = out_dir / PROOF_NAME
     assert proof_path.is_file(), "solver_scale_proof.json missing"
     return json.loads(proof_path.read_text(encoding="utf-8"))
 
@@ -232,7 +328,6 @@ def test_proof_emits_build_descriptors_per_second(proof: dict) -> None:
 def test_real_capability_lookup_path_exercised() -> None:
     """Importing the proof script must pull in the real runtime router
     and dispatcher classes (not a mock or a synthetic stand-in)."""
-    import run_solver_scale_proof as scale  # type: ignore
     from waggledance.core.autonomy_growth.runtime_query_router import (
         RuntimeQueryRouter as _RealRouter,
     )
@@ -257,7 +352,6 @@ def test_real_capability_lookup_path_exercised() -> None:
 # ---------------------------------------------------------------------------
 
 def test_synthesize_descriptors_unique_solver_names() -> None:
-    import run_solver_scale_proof as scale  # type: ignore
     descriptors = scale.synthesize_descriptors(60)
     names = {d["solver_name"] for d in descriptors}
     assert len(names) == 60
@@ -266,7 +360,6 @@ def test_synthesize_descriptors_unique_solver_names() -> None:
 def test_synthesize_features_only_within_allowlist() -> None:
     """Each synthesized feature dict belongs to one of the six
     low-risk families. No feature dict may bleed across families."""
-    import run_solver_scale_proof as scale  # type: ignore
     for family in scale.ALLOWED_FAMILIES:
         feats = scale.synthesize_features(family, 0)
         # Every family includes the synth_id key for unique lookup.
@@ -290,8 +383,231 @@ def test_synthesize_features_only_within_allowlist() -> None:
 def test_synthesize_artifact_returns_executable_kind() -> None:
     """Each synthesized artifact carries the family ``kind`` field
     that ``execute_artifact`` requires."""
-    import run_solver_scale_proof as scale  # type: ignore
     for family in scale.ALLOWED_FAMILIES:
         artifact, inputs = scale.synthesize_artifact_and_inputs(family, 0)
         assert artifact.get("kind") == family
         assert isinstance(inputs, dict) and len(inputs) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Axis V2: source-subject binding
+# ---------------------------------------------------------------------------
+
+def test_proof_binds_source_subject(proof: dict, source_repo) -> None:
+    root, head = source_repo
+    assert proof["source_commit"] == head
+    assert proof["source_files"] == list(AXIS_A_EXPECTED_SOURCES)
+    assert proof["source_hashes"] == {
+        rel: _helper_source_digest(root / rel) for rel in AXIS_A_EXPECTED_SOURCES
+    }
+    assert all(digest.startswith("sha256:") for digest in proof["source_hashes"].values())
+    generated_at = dt.datetime.fromisoformat(
+        proof["generated_at"].replace("Z", "+00:00")
+    )
+    assert generated_at.utcoffset() == dt.timedelta(0)
+    assert proof["result"] == "pass"
+    assert proof["blockers"] == []
+
+
+def test_source_commit_flag_is_required(out_dir, tmp_path, source_repo) -> None:
+    root, _head = source_repo
+
+    with pytest.raises(SystemExit) as excinfo:
+        scale.main(
+            ["--out-dir", str(out_dir), *SMALL_RUN, "--db", str(tmp_path / "a.db")],
+            root=root,
+        )
+
+    assert excinfo.value.code == 2
+    assert not (out_dir / PROOF_NAME).exists()
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    ["HEAD", "main", NOT_IN_REPO.upper(), NOT_IN_REPO[:39], NOT_IN_REPO + "0"],
+    ids=["head-word", "branch", "uppercase", "short", "long"],
+)
+def test_malformed_source_commit_rejected(out_dir, tmp_path, source_repo, stamp) -> None:
+    root, _head = source_repo
+
+    with pytest.raises(SystemExit) as excinfo:
+        scale.main(_argv(out_dir, tmp_path / "a.db", stamp), root=root)
+
+    assert excinfo.value.code == 2
+    assert not (out_dir / PROOF_NAME).exists()
+
+
+def test_well_formed_stamp_not_head_aborts_without_artifact(
+    out_dir, tmp_path, source_repo, capsys
+) -> None:
+    root, _head = source_repo
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", NOT_IN_REPO), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    captured = capsys.readouterr()
+    assert "source_commit_not_head" in captured.err
+    assert str(tmp_path) not in captured.err
+
+
+def test_dirty_tracked_worktree_aborts_without_artifact(
+    out_dir, tmp_path, source_repo, capsys
+) -> None:
+    root, head = source_repo
+    with (root / AXIS_A_EXPECTED_SOURCES[0]).open("ab") as handle:
+        handle.write(b"# dirty\n")
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "worktree_dirty" in capsys.readouterr().err
+
+
+def test_untracked_file_aborts_without_artifact(
+    out_dir, tmp_path, source_repo, capsys
+) -> None:
+    root, head = source_repo
+    (root / "stray.txt").write_text("stray\n", encoding="utf-8")
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "worktree_dirty" in capsys.readouterr().err
+
+
+def test_tamper_hidden_from_status_aborts(out_dir, tmp_path, source_repo, capsys) -> None:
+    root, head = source_repo
+    rel = AXIS_A_EXPECTED_SOURCES[0]
+    _git(root, "update-index", "--assume-unchanged", rel)
+    (root / rel).write_bytes(b"# tampered\nvalue = 2\n")
+    assert verifier.source_subject_preflight(root, head) == []
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "source_worktree_blob_mismatch" in capsys.readouterr().err
+
+
+def test_mid_run_head_change_aborts_without_artifact(
+    out_dir, tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+
+    def _late_commit():
+        (root / "late.txt").write_text("late\n", encoding="utf-8")
+        _commit_all(root, "late")
+
+    _mid_run(monkeypatch, _late_commit)
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "source_commit_not_head" in capsys.readouterr().err
+
+
+def test_mid_run_source_edit_aborts_without_artifact(
+    out_dir, tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+
+    def _late_edit():
+        with (root / AXIS_A_EXPECTED_SOURCES[1]).open("ab") as handle:
+            handle.write(b"# late edit\n")
+
+    _mid_run(monkeypatch, _late_edit)
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "worktree_dirty" in capsys.readouterr().err
+
+
+def test_mid_run_tamper_hidden_from_status_aborts(
+    out_dir, tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    """The first preflight passes; the second catches a status-invisible edit."""
+    root, head = source_repo
+    rel = AXIS_A_EXPECTED_SOURCES[2]
+    _git(root, "update-index", "--assume-unchanged", rel)
+
+    def _late_tamper():
+        (root / rel).write_bytes(b"# tampered\nvalue = 3\n")
+
+    _mid_run(monkeypatch, _late_tamper)
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "source_worktree_blob_mismatch" in capsys.readouterr().err
+
+
+def test_git_unavailable_aborts_without_artifact(
+    out_dir, tmp_path, source_repo, monkeypatch, capsys
+) -> None:
+    root, head = source_repo
+    monkeypatch.setattr(verifier, "GIT_EXECUTABLE", "git-axis-v2-definitely-missing")
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 2
+    assert not (out_dir / PROOF_NAME).exists()
+    assert "git_unavailable" in capsys.readouterr().err
+
+
+def test_git_environment_cannot_retarget_producer(
+    out_dir, tmp_path, source_repo, monkeypatch
+) -> None:
+    root, head = source_repo
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q")
+    (other / "README.md").write_text("other\n", encoding="utf-8")
+    other_head = _commit_all(other, "other")
+    assert other_head != head
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(other / ".git" / "index"))
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 0
+    proof = json.loads((out_dir / PROOF_NAME).read_text(encoding="utf-8"))
+    assert proof["source_commit"] == head
+
+
+def test_failed_pass_criterion_writes_non_pass_artifact(
+    out_dir, tmp_path, source_repo, monkeypatch
+) -> None:
+    root, head = source_repo
+    original = scale.run_lookup_samples
+
+    def _degraded(router, samples):
+        stats = original(router, samples)
+        stats["lookup_fifo_fallback_total"] += 1
+        stats["lookup_capability_hits_total"] -= 1
+        return stats
+
+    monkeypatch.setattr(scale, "run_lookup_samples", _degraded)
+
+    rc = scale.main(_argv(out_dir, tmp_path / "a.db", head), root=root)
+
+    assert rc == 1
+    proof = json.loads((out_dir / PROOF_NAME).read_text(encoding="utf-8"))
+    assert proof["result"] == "blocked"
+    assert "lookup_fifo_fallback_present" in proof["blockers"]
+    assert "lookup_capability_hits_incomplete" in proof["blockers"]
+    assert proof["source_commit"] == head
+
+
+def test_cli_exposes_no_root_override(tmp_path) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        scale.main(["--root", str(tmp_path), "--source-commit", NOT_IN_REPO])
+
+    assert excinfo.value.code == 2

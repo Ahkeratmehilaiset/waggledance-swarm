@@ -4230,7 +4230,7 @@ def _execute_exact_gate(
     raise _system_exit(status)
 
 _runtime_globals = globals()
-_protected_functions = set()
+_protected_functions = {}
 _function_candidates = list(_runtime_globals.values())
 _reachable_runtime_classes = []
 _pending_runtime_classes = [object]
@@ -4271,8 +4271,13 @@ for _candidate in _function_candidates:
         isinstance(_candidate, types.FunctionType)
         and _candidate.__globals__ is _runtime_globals
     ):
-        _protected_functions.add(id(_candidate))
-_protected_function_ids = frozenset(_protected_functions)
+        _protected_functions[id(_candidate)] = _candidate
+# The installed hook must retain the original function objects, not only
+# integer IDs. Temporary setup functions are removed below; without strong
+# references their IDs can be reused by ordinary generated module functions,
+# causing a false protected-object denial during an otherwise valid import.
+# The same immutable ID-membership check remains in force for the hook's life.
+_protected_function_ids = types.MappingProxyType(dict(_protected_functions))
 _install_audit_hook(_protected_function_ids)
 del _install_audit_hook
 for _sys_name in (

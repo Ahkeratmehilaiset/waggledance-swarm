@@ -3229,8 +3229,10 @@ def test_live_child_bundle_records_both_docker_commits_and_absence() -> None:
     assert stale["tools/operator_decision_pack.py"] == {"present": False}
 
 
+@pytest.mark.parametrize("production_pycache_prefix", [False, True])
 def test_live_child_production_schema_executes_authenticated_git_closure(
     monkeypatch: pytest.MonkeyPatch,
+    production_pycache_prefix: bool,
 ) -> None:
     executable = boundary._trusted_git_executable()
     if executable is None:
@@ -3279,7 +3281,10 @@ def test_live_child_production_schema_executes_authenticated_git_closure(
     timestamp = "2026-09-02T05:00:00Z"
     completed = subprocess.run(
         [
-            sys.executable, "-B", "-I", "-S", "-c",
+            sys.executable, "-B",
+            *(["-X", f"pycache_prefix={boundary._PYCACHE_PREFIX}"]
+              if production_pycache_prefix else []),
+            "-I", "-S", "-c",
             boundary._LIVE_CHILD_BOOTSTRAP,
             "--release-readiness", str(boundary.CANONICAL_RELEASE_READINESS),
             "--soak-evidence", str(CANONICAL_SOAK_EVIDENCE),

@@ -1335,7 +1335,8 @@ def test_production_child_verifies_axis_subject_after_evidence_commit(
             "object_format": "sha1", "error": None,
         })
         completed = subprocess.run(
-            [sys.executable, "-B", "-I", "-S", "-c",
+            [sys.executable, "-B", "-X", f"pycache_prefix={boundary._PYCACHE_PREFIX}",
+             "-I", "-S", "-c",
              boundary._LIVE_CHILD_BOOTSTRAP,
              "--release-readiness", str(root / "docs/release/RELEASE_READINESS.md"),
              "--soak-evidence", str(carrier_path),

@@ -48,6 +48,55 @@ operator_signoff:
   recorded_by: "claude"
   note: "Operator chose A2_cu126 (keep GPU + fix vulns) and explicitly instructed Claude to record this signoff. Decision authority is the operator; Claude is the scribe. This authorizes the implementation only -- security_privacy_gate flips to pass only after the torch 2.11.0+cu126 lock change lands via PR and a fresh OSV/pip-audit is clean (+ xformers cu126 reconciliation; requires a CUDA 12.6 capable driver)."
   scope_updates:
+    - recorded_utc: 2026-08-26T05:06:00Z
+      recorded_by: "codex-lead-1"
+      source: "operator-directive:2026-08-26:swarm-efficiency-overhaul-release-burndown-E1-E2"
+      summary: >
+        The operator explicitly directed the release burndown to remediate
+        GHSA-rrmf-rvhw-rf47 with Torch 2.13.0, de-scope ChromaDB into an
+        optional extra with explicit backend selection and no silent fallback,
+        and record that this remediation supersedes the obsolete A2 2.11 pin.
+        This update preserves the chosen A2 CUDA strategy while superseding its
+        exact package versions; it grants no release, merge, or gate bypass.
+      authorized_remediation:
+        torch_strategy: "keep A2 cu126; require torch>=2.13.0 and, if retained, a matching verified torchvision build"
+        optional_torch_family: >
+          Keep torchaudio and xformers in the stable lock only when they are
+          required and their exact wheels resolve and import against the
+          selected Torch build; otherwise de-scope them from the stable lock.
+        chromadb_strategy: >
+          Remove ChromaDB from stable default dependencies while no patched
+          release exists. An explicitly documented optional extra may remain,
+          but auto-install and silent non-stub fallback are forbidden.
+        lock_strategy: >
+          Regenerate the stable lock from declared release dependencies rather
+          than carrying unrelated developer-environment pip-freeze packages.
+        required_evidence:
+          - "primary-index wheel/version verification"
+          - "exact-lock resolver pass"
+          - "fresh live OSV audit proving GHSA-rrmf-rvhw-rf47 absent and ChromaDB absent from the stable lock"
+          - "truthful full-lock OSV row count recorded as a release HOLD until every remaining advisory is fixed, de-scoped, or explicitly adjudicated"
+          - "affected tests and exact-head CI"
+      lock_evidence_contract:
+        schema_version: "waggledance.torch_lock_scope_update.v1"
+        strategy: "a2_cu126_torch_2_13_chroma_descope"
+        pytorch_extra_index_url: "https://download.pytorch.org/whl/cu126"
+        windows_pins:
+          torch: "2.13.0+cu126"
+        non_windows_pins:
+          torch: "2.13.0"
+        required_absent:
+          - "chromadb"
+          - "torchvision"
+          - "torchaudio"
+          - "torchao"
+          - "xformers"
+        transition_accepts_signed_prior: false
+        transition_note: >
+          The signed A2 2.11 projection is superseded and cannot satisfy this
+          contract. Before the remediated projection lands it remains only
+          historical evidence and the lock check stays fail-closed.
+        operator_signature_required: true
     - recorded_utc: 2026-05-27T08:14:26Z
       recorded_by: "codex-lead-1"
       source: "bridge:operator-authorization-open-rco-tasks-2026-05-27"

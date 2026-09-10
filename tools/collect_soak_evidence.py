@@ -5,6 +5,16 @@
 This tool does not decide release readiness. It writes evidence in the schema
 validated by tools/check_release_gate.py and intentionally defaults incomplete
 signals to a hold posture until the operator supplies explicit pass evidence.
+
+Security artifact selection (bandit / pip-audit reports) is newest-or-explicit
+and fail-closed: with no explicit override the newest existing candidate by
+mtime is used, a tie or unreadable selection blocks (never a silent fallback
+to a stale snapshot), and the chosen artifact name, selection basis, and
+normalized sha256 source digest are recorded in the evidence under
+``artifact_selection``. Every selected artifact - explicit or registered -
+is resolved and containment-checked against the resolved evidence root;
+paths are recorded root-relative only, so absolute host paths and ../ or
+symlink escapes can never enter evidence (typed outside-root blockers).
 """
 
 from __future__ import annotations
@@ -156,12 +166,165 @@ def _normalize_source_path(value: str) -> str:
     return value.replace("\\", "/").strip()
 
 
-def _first_existing(root: Path, names: tuple[str, ...]) -> Path | None:
+SELECTION_BASIS_EXPLICIT = "explicit"
+SELECTION_BASIS_ONLY_CANDIDATE = "only_candidate"
+SELECTION_BASIS_NEWEST_MTIME = "newest_mtime"
+
+
+def _empty_selection_record() -> dict[str, Any]:
+    return {
+        "basis": None,
+        "path": None,
+        "source_digest": None,
+        "candidates": [],
+        "blockers": [],
+    }
+
+
+def _select_artifact(
+    root: Path,
+    names: tuple[str, ...],
+    *,
+    explicit: Path | str | None = None,
+) -> tuple[Path | None, dict[str, Any]]:
+    """Newest-or-explicit artifact selection (fail closed).
+
+    ``names`` is the registry of known artifact file names for one signal;
+    tuple order carries no priority. Selection uses the explicit artifact
+    when one is supplied, otherwise the newest existing candidate by
+    filesystem mtime. A tie for newest, a stat failure, an unreadable
+    selected artifact, or a missing explicit artifact records a selection
+    blocker and selects nothing - callers must fail closed on that and
+    never silently fall back to another (possibly stale) candidate.
+
+    Returns ``(selected_path_or_None, selection_record)``. A ``None`` path
+    with no blockers means no candidate exists at all (missing evidence);
+    a ``None`` path with blockers means selection itself failed. The record
+    holds only content-stable values (root-relative resolved path, basis,
+    normalized sha256 digest) so re-deriving evidence from identical
+    artifacts stays reproducible for tools/verify_release_soak_evidence.py.
+
+    Containment: the root and every candidate are resolved (symlinks
+    followed) and the resolved artifact must stay inside the resolved
+    root - explicit and registered candidates alike. Violations record
+    typed blockers (``explicit_artifact_outside_root``,
+    ``candidate_outside_root:<name>``) and select nothing; recorded paths
+    are always root-relative posix, never absolute host paths.
+    """
+    record = _empty_selection_record()
+    root_resolved = root.resolve()
+    if explicit is not None:
+        explicit_path = Path(explicit)
+        if not explicit_path.is_absolute():
+            explicit_path = root / explicit_path
+        if not explicit_path.is_file():
+            record["blockers"].append("explicit_artifact_missing")
+            return None, record
+        try:
+            resolved = explicit_path.resolve(strict=True)
+        except OSError:
+            record["blockers"].append("explicit_artifact_unresolvable")
+            return None, record
+        if not resolved.is_relative_to(root_resolved):
+            # Typed containment failure: ../ escapes, absolute host paths
+            # outside the root, and symlinks resolving outside all land
+            # here - fail closed, never select.
+            record["blockers"].append("explicit_artifact_outside_root")
+            return None, record
+        digest = _source_digest(resolved)
+        if digest is None:
+            record["blockers"].append("explicit_artifact_unreadable")
+            return None, record
+        record["basis"] = SELECTION_BASIS_EXPLICIT
+        record["path"] = resolved.relative_to(root_resolved).as_posix()
+        record["source_digest"] = digest
+        return resolved, record
+
+    present: list[str] = []
+    discovery_blockers: list[str] = []
     for name in names:
         candidate = root / name
-        if candidate.exists():
-            return candidate
-    return None
+        try:
+            # ``exists()`` follows links and therefore reports a dangling
+            # symlink/junction as absent.  That silently omitted a registered
+            # fresh candidate and let an older sibling win as
+            # ``only_candidate``.  lstat observes the directory entry itself;
+            # the existing strict resolve below then rejects any dangling or
+            # escaping target.  Only a genuinely absent registered name may
+            # be skipped.
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Permission and other discovery ambiguity must poison selection,
+            # never masquerade as absence.  Keep the stable registered name in
+            # the record without exposing host paths or exception text.
+            present.append(name)
+            discovery_blockers.append(f"candidate_unresolvable:{name}")
+        else:
+            present.append(name)
+    record["candidates"] = sorted(present)
+    if discovery_blockers:
+        record["blockers"].extend(discovery_blockers)
+        return None, record
+    if not present:
+        return None, record
+
+    existing: list[tuple[str, Path]] = []
+    for name in present:
+        candidate = root / name
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            record["blockers"].append(f"candidate_unresolvable:{name}")
+            return None, record
+        if not resolved.is_relative_to(root_resolved):
+            # A registered candidate name that escapes the root (e.g. a
+            # symlink) poisons selection entirely - skipping it would be a
+            # silent fallback.
+            record["blockers"].append(f"candidate_outside_root:{name}")
+            return None, record
+        existing.append((name, resolved))
+
+    timed: list[tuple[float, str, Path]] = []
+    for name, candidate in existing:
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            record["blockers"].append(f"candidate_stat_failed:{name}")
+            return None, record
+        timed.append((mtime, name, candidate))
+
+    if len(timed) == 1:
+        basis = SELECTION_BASIS_ONLY_CANDIDATE
+        _, name, selected = timed[0]
+    else:
+        newest_mtime = max(item[0] for item in timed)
+        newest = sorted(
+            item_name
+            for item_mtime, item_name, _ in timed
+            if item_mtime == newest_mtime
+        )
+        if len(newest) > 1:
+            record["blockers"].append(
+                "newest_mtime_ambiguous:" + ",".join(newest)
+            )
+            return None, record
+        basis = SELECTION_BASIS_NEWEST_MTIME
+        name = newest[0]
+        selected = next(
+            candidate
+            for _, item_name, candidate in timed
+            if item_name == name
+        )
+    digest = _source_digest(selected)
+    if digest is None:
+        record["blockers"].append(f"selected_artifact_unreadable:{name}")
+        return None, record
+    record["basis"] = basis
+    record["path"] = selected.relative_to(root_resolved).as_posix()
+    record["source_digest"] = digest
+    return selected, record
 
 
 def _bandit_high_medium_clean(report_path: Path) -> bool | None:
@@ -210,10 +373,51 @@ def _privacy_precheck_ok(path: Path) -> bool | None:
     return False
 
 
-def _security_privacy_status(evidence_root: Path) -> str:
-    bandit_report = _first_existing(evidence_root, FINAL_BANDIT_REPORTS)
-    pip_audit_report = _first_existing(evidence_root, FINAL_PIP_AUDIT_REPORTS)
+def select_pip_audit_artifact(
+    evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
+    *,
+    explicit: Path | str | None = None,
+) -> tuple[Path | None, dict[str, Any]]:
+    """Public: the containment-validated pip-audit artifact selection.
+
+    Verify-time consumers (``tools/verify_release_soak_evidence.py``)
+    MUST attest exactly this artifact. A registry-order fallback can
+    attest a different file than the one whose vulnerability result
+    decided ``security_privacy_gate`` - transitive source substitution
+    (Grok/lead finding 2026-08-26): file A attested clean while file B
+    was selected, digest-bound and actually vulnerable.
+
+    Returns ``(selected_path_or_None, selection_record)`` exactly as
+    :func:`_select_artifact`; a record carrying blockers means selection
+    failed and the caller must fail closed rather than fall back.
+    """
+    return _select_artifact(
+        Path(evidence_root), FINAL_PIP_AUDIT_REPORTS, explicit=explicit
+    )
+
+
+def _security_privacy_status(
+    evidence_root: Path,
+    *,
+    bandit_explicit: Path | str | None = None,
+    pip_audit_explicit: Path | str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    bandit_report, bandit_selection = _select_artifact(
+        evidence_root, FINAL_BANDIT_REPORTS, explicit=bandit_explicit
+    )
+    pip_audit_report, pip_audit_selection = _select_artifact(
+        evidence_root, FINAL_PIP_AUDIT_REPORTS, explicit=pip_audit_explicit
+    )
+    selection = {
+        "bandit_report": bandit_selection,
+        "pip_audit_report": pip_audit_selection,
+    }
     privacy_precheck = evidence_root / PRIVACY_PRECHECK
+    if bandit_selection["blockers"] or pip_audit_selection["blockers"]:
+        # Fail closed: an ambiguous, unreadable, or missing-explicit
+        # selection is an error state - never a silent fallback to another
+        # candidate and never a mere "unknown".
+        return BLOCKED_STATUS, selection
     partial_release_evidence = (
         bandit_report is not None
         or pip_audit_report is not None
@@ -222,18 +426,19 @@ def _security_privacy_status(evidence_root: Path) -> str:
 
     if bandit_report is None or pip_audit_report is None:
         if partial_release_evidence:
-            return BLOCKED_STATUS
-        return UNKNOWN_STATUS
+            return BLOCKED_STATUS, selection
+        return UNKNOWN_STATUS, selection
 
     bandit_clean = _bandit_high_medium_clean(bandit_report)
     pip_blockers = _pip_audit_blocker_count(pip_audit_report)
     privacy_ok = _privacy_precheck_ok(privacy_precheck)
 
     if bandit_clean is None or pip_blockers is None or privacy_ok is None:
-        return BLOCKED_STATUS if partial_release_evidence else UNKNOWN_STATUS
+        # Both reports exist here, so evidence is partial by definition.
+        return BLOCKED_STATUS, selection
     if not bandit_clean or pip_blockers > 0 or not privacy_ok:
-        return BLOCKED_STATUS
-    return "pass"
+        return BLOCKED_STATUS, selection
+    return "pass", selection
 
 
 def _profile_s_smoke_status(evidence_root: Path) -> str:
@@ -547,16 +752,24 @@ def local_artifact_evidence_fields(
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
     commit: str | None = None,
+    bandit_report: Path | str | None = None,
+    pip_audit_report: Path | str | None = None,
 ) -> dict[str, Any]:
     """Derive release evidence fields from local artifacts without manual stubs."""
 
     evidence_root = Path(evidence_root)
     release_notes = Path(release_notes)
+    security_status, artifact_selection = _security_privacy_status(
+        evidence_root,
+        bandit_explicit=bandit_report,
+        pip_audit_explicit=pip_audit_report,
+    )
     return {
         "ci_status": _ci_status(evidence_root, commit),
         "docker_stable_policy": _docker_stable_policy(evidence_root, commit),
         "profile_s_smoke": _profile_s_smoke_status(evidence_root),
-        "security_privacy_gate": _security_privacy_status(evidence_root),
+        "security_privacy_gate": security_status,
+        "artifact_selection": artifact_selection,
         "axis_a_regression": _axis_a_solver_scale_status(evidence_root),
         "axis_b_gate": _axis_b_hex_eval_status(evidence_root),
         "release_notes_anti_claims": _release_notes_anti_claims_status(
@@ -571,6 +784,8 @@ def local_artifact_statuses(
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
     commit: str | None = None,
+    bandit_report: Path | str | None = None,
+    pip_audit_report: Path | str | None = None,
 ) -> dict[str, str]:
     """Derive release statuses from local artifacts without manual stubs."""
 
@@ -578,6 +793,8 @@ def local_artifact_statuses(
         evidence_root=evidence_root,
         release_notes=release_notes,
         commit=commit,
+        bandit_report=bandit_report,
+        pip_audit_report=pip_audit_report,
     )
     return {
         field: value
@@ -625,14 +842,24 @@ def build_soak_evidence(
     use_local_artifacts: bool = False,
     evidence_root: Path | str = DEFAULT_EVIDENCE_ROOT,
     release_notes: Path | str = DEFAULT_RELEASE_NOTES,
+    bandit_report: Path | str | None = None,
+    pip_audit_report: Path | str | None = None,
 ) -> dict[str, Any]:
     """Build a soak evidence object in the release-gate schema."""
 
+    if (
+        bandit_report is not None or pip_audit_report is not None
+    ) and not use_local_artifacts:
+        raise ValueError(
+            "explicit artifact selection (bandit_report/pip_audit_report) "
+            "requires use_local_artifacts"
+        )
     readiness = _read_readiness(Path(release_readiness))
     started_at_utc = started_at_utc or _utc_midnight(readiness.soak_start)
     ended_at_utc = ended_at_utc or dt.datetime.now(dt.UTC)
     evidence_commit = commit if commit is not None else _current_commit()
     status_values = {field: UNKNOWN_STATUS for field in STATUS_PASS_FIELDS}
+    artifact_selection: dict[str, Any] | None = None
 
     for field, value in (status_overrides or {}).items():
         if field not in STATUS_PASS_FIELDS:
@@ -643,6 +870,8 @@ def build_soak_evidence(
             evidence_root=evidence_root,
             release_notes=release_notes,
             commit=evidence_commit,
+            bandit_report=bandit_report,
+            pip_audit_report=pip_audit_report,
         )
         status_values.update({
             field: value
@@ -655,6 +884,9 @@ def build_soak_evidence(
             error_log_clean = bool(local_fields["error_log_clean"])
         if "docker_stable_policy" in local_fields:
             docker_stable_policy = str(local_fields["docker_stable_policy"])
+        selection_value = local_fields.get("artifact_selection")
+        if isinstance(selection_value, dict):
+            artifact_selection = selection_value
 
     required_hours = (readiness.soak_end - readiness.soak_start).days * 24
     evidence: dict[str, Any] = {
@@ -669,6 +901,8 @@ def build_soak_evidence(
         "docker_stable_policy": docker_stable_policy,
         **status_values,
     }
+    if artifact_selection is not None:
+        evidence["artifact_selection"] = artifact_selection
     evidence["result"] = _derive_result(evidence, required_hours)
     return evidence
 
@@ -737,6 +971,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--evidence-root", default=DEFAULT_EVIDENCE_ROOT, type=Path)
     parser.add_argument("--release-notes", default=DEFAULT_RELEASE_NOTES, type=Path)
+    parser.add_argument(
+        "--bandit-report",
+        default=None,
+        type=Path,
+        help=(
+            "Explicit bandit report (absolute, or relative to the evidence "
+            "root). Requires --use-local-artifacts; fails closed if missing."
+        ),
+    )
+    parser.add_argument(
+        "--pip-audit-report",
+        default=None,
+        type=Path,
+        help=(
+            "Explicit pip-audit report (absolute, or relative to the "
+            "evidence root). Requires --use-local-artifacts; fails closed "
+            "if missing."
+        ),
+    )
     args = parser.parse_args(argv)
 
     status_overrides = dict(args.status)
@@ -753,6 +1006,8 @@ def main(argv: list[str] | None = None) -> int:
             use_local_artifacts=args.use_local_artifacts,
             evidence_root=args.evidence_root,
             release_notes=args.release_notes,
+            bandit_report=args.bandit_report,
+            pip_audit_report=args.pip_audit_report,
         )
         write_soak_evidence(evidence, output=args.output, history=args.history)
     except (OSError, ValueError) as exc:

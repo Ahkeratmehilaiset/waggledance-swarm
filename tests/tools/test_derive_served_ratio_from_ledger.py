@@ -51,6 +51,16 @@ class LedgerBuilder:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.prev = GENESIS_PREV_HASH
+        # Explicit empty failure ledger: pending_failure_ledger_path is
+        # required, and an empty-but-present regular file asserts zero
+        # durable pending-append failures.
+        self.failures = path.parent / "pending_failures.jsonl"
+        self.failures.write_text("", encoding="utf-8")
+
+    def fail_pending_append(self, lines: int = 1, text: str = "{}") -> None:
+        with open(self.failures, "a", encoding="utf-8") as handle:
+            for _ in range(lines):
+                handle.write(text + "\n")
 
     def _append(self, entry: dict) -> None:
         append_entry(str(self.path), entry, fsync=False)
@@ -83,7 +93,12 @@ def ledger(tmp_path: Path) -> LedgerBuilder:
 def test_empty_present_ledger_yields_zero_ratio(tmp_path: Path) -> None:
     path = tmp_path / "ledger.jsonl"
     path.write_bytes(b"")
-    report = derive_report(ledger_path=str(path))
+    failures = tmp_path / "pending_failures.jsonl"
+    failures.write_text("", encoding="utf-8")
+    report = derive_report(
+        ledger_path=str(path),
+        pending_failure_ledger_path=str(failures),
+    )
     assert report["served_total"] == 0
     assert report["solver_first_served_total"] == 0
     assert report["solver_first_served_ratio"] == 0.0
@@ -96,8 +111,13 @@ def test_missing_ledger_rejects_not_zero_report(tmp_path: Path) -> None:
     # as a real empty ledger, so a path misconfiguration read as a
     # confirmed-complete measurement of zero servings. An absent file is no
     # evidence, not clean evidence.
+    failures = tmp_path / "pending_failures.jsonl"
+    failures.write_text("", encoding="utf-8")
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(tmp_path / "missing.jsonl"))
+        derive_report(
+            ledger_path=str(tmp_path / "missing.jsonl"),
+            pending_failure_ledger_path=str(failures),
+        )
     assert excinfo.value.reason == "ledger_not_found"
 
 
@@ -109,7 +129,10 @@ def test_basic_ratio_from_receipted_entries(ledger: LedgerBuilder) -> None:
         ledger.served(f"llm-{index}", route_type="llm")
         ledger.receipt(f"llm-{index}")
 
-    report = derive_report(ledger_path=str(ledger.path))
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
 
     assert report["served_total"] == 5
     assert report["solver_first_served_total"] == 3
@@ -133,6 +156,7 @@ def test_subset_invariant_when_denominator_excludes_solver(
 
     report = derive_report(
         ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
         served_route_types=("llm",),
     )
 
@@ -146,7 +170,10 @@ def test_unresolved_pending_visible_and_not_complete(ledger: LedgerBuilder) -> N
     ledger.receipt("sol-0")
     ledger.served("sol-1", route_type="solver")
 
-    report = derive_report(ledger_path=str(ledger.path))
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
 
     assert report["receipt_coverage"] == {"receipted": 1, "gap": 0, "pending": 1}
     assert report["evidence_complete"] is False
@@ -157,7 +184,10 @@ def test_gap_terminal_breaks_gapless_flag(ledger: LedgerBuilder) -> None:
     ledger.served("sol-0", route_type="solver")
     ledger.gap("sol-0")
 
-    report = derive_report(ledger_path=str(ledger.path))
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
 
     assert report["receipt_coverage"] == {"receipted": 0, "gap": 1, "pending": 0}
     assert report["gapless"] is False
@@ -176,7 +206,10 @@ def test_conflicting_second_terminal_rejects(ledger: LedgerBuilder) -> None:
     ledger.gap("sol-0")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason == "second_terminal_for_served_id:sol-0"
 
 
@@ -188,7 +221,10 @@ def test_duplicate_same_type_terminal_also_rejects(ledger: LedgerBuilder) -> Non
     ledger.receipt("sol-0")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason == "second_terminal_for_served_id:sol-0"
 
 
@@ -204,7 +240,10 @@ def test_duplicate_pending_for_one_served_id_rejects(ledger: LedgerBuilder) -> N
     ledger.receipt("same-served-id", ts="2026-08-21T09:00:02Z")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason == "duplicate_pending_for_served_id:same-served-id"
 
 
@@ -216,7 +255,10 @@ def test_pending_after_terminal_is_also_duplicate_pending(ledger: LedgerBuilder)
     ledger.served("sol-0", route_type="solver", ts="2026-08-21T10:00:00Z")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason == "duplicate_pending_for_served_id:sol-0"
 
 
@@ -230,7 +272,10 @@ def test_receipt_terminal_without_pending_rejects(ledger: LedgerBuilder) -> None
     ledger.receipt("valid-id", ts="2026-08-21T09:00:02Z")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason == "terminal_without_pending_for_served_id:orphan-id"
 
 
@@ -238,7 +283,10 @@ def test_gap_terminal_without_pending_rejects(ledger: LedgerBuilder) -> None:
     ledger.gap("orphan-gap")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason == "terminal_without_pending_for_served_id:orphan-gap"
 
 
@@ -278,7 +326,10 @@ def test_unknown_entry_type_never_reaches_counting(ledger: LedgerBuilder) -> Non
         )
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason.startswith(("chain_invalid:", "unknown_entry_type:"))
 
 
@@ -292,7 +343,10 @@ def test_chain_tamper_is_rejected(ledger: LedgerBuilder, tmp_path: Path) -> None
     ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     with pytest.raises(DerivationRejected) as excinfo:
-        derive_report(ledger_path=str(ledger.path))
+        derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
     assert excinfo.value.reason.startswith("chain_invalid:")
 
 
@@ -302,7 +356,10 @@ def test_torn_tail_tolerated_and_reported(ledger: LedgerBuilder) -> None:
     with ledger.path.open("ab") as handle:
         handle.write(b'{"torn": tr')  # crash-shaped unparseable FINAL line
 
-    report = derive_report(ledger_path=str(ledger.path))
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
 
     assert report["torn_tail"] is True
     assert report["evidence_complete"] is False
@@ -318,6 +375,7 @@ def test_window_bounds_filter_serves_but_not_coverage(ledger: LedgerBuilder) -> 
 
     report = derive_report(
         ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
         window_start="2026-08-21T08:30:00Z",
         window_end="2026-08-21T10:00:00Z",
     )
@@ -338,6 +396,7 @@ def test_window_uses_parsed_time_not_string_order(ledger: LedgerBuilder) -> None
 
     report = derive_report(
         ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
         window_start="2026-08-21T09:00:00Z",
         window_end="2026-08-21T09:01:00Z",
     )
@@ -353,7 +412,10 @@ def test_unknown_route_counts_in_default_denominator_never_numerator(
     ledger.served("sol-0", route_type="solver")
     ledger.receipt("sol-0")
 
-    report = derive_report(ledger_path=str(ledger.path))
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
 
     assert report["served_total"] == 2
     assert report["solver_first_served_total"] == 1
@@ -361,6 +423,7 @@ def test_unknown_route_counts_in_default_denominator_never_numerator(
 
     narrowed = derive_report(
         ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
         served_route_types=("solver",),
     )
     assert narrowed["served_total"] == 1
@@ -381,6 +444,7 @@ def test_unknown_never_counts_as_solver_even_when_explicitly_configured(
 
     report = derive_report(
         ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
         solver_route_types=("unknown",),
     )
     assert report["served_total"] == 1
@@ -391,11 +455,15 @@ def test_unknown_never_counts_as_solver_even_when_explicitly_configured(
 def test_unparseable_entry_ts_under_window_rejects(ledger: LedgerBuilder) -> None:
     ledger.served("odd-ts", route_type="solver", ts="not-a-time")
 
-    derive_report(ledger_path=str(ledger.path))  # windowless: fine
+    derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )  # windowless: fine
 
     with pytest.raises(DerivationRejected) as excinfo:
         derive_report(
             ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
             window_start="2026-08-21T08:00:00Z",
         )
     assert excinfo.value.reason == "entry_ts_unparseable_under_window"
@@ -409,11 +477,15 @@ def test_naive_entry_ts_under_window_rejects_not_typeerror(
     # comparison instead of the promised structured rejection.
     ledger.served("naive", route_type="solver", ts="2026-08-21T09:00:00")
 
-    derive_report(ledger_path=str(ledger.path))  # windowless: unaffected
+    derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )  # windowless: unaffected
 
     with pytest.raises(DerivationRejected) as excinfo:
         derive_report(
             ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
             window_start="2026-08-21T08:00:00Z",
         )
     assert excinfo.value.reason == "entry_ts_unparseable_under_window"
@@ -425,6 +497,7 @@ def test_naive_window_bound_rejects_as_unparseable(ledger: LedgerBuilder) -> Non
     with pytest.raises(DerivationRejected) as excinfo:
         derive_report(
             ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
             window_start="2026-08-21T08:00:00",
         )
     assert excinfo.value.reason == "window_start_unparseable"
@@ -432,6 +505,7 @@ def test_naive_window_bound_rejects_as_unparseable(ledger: LedgerBuilder) -> Non
     with pytest.raises(DerivationRejected) as excinfo:
         derive_report(
             ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
             window_end="2026-08-21T10:00:00",
         )
     assert excinfo.value.reason == "window_end_unparseable"
@@ -521,7 +595,10 @@ def test_report_never_contains_claim_safe(ledger: LedgerBuilder) -> None:
     ledger.served("sol-0", route_type="solver")
     ledger.receipt("sol-0")
 
-    report = derive_report(ledger_path=str(ledger.path))
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
 
     assert "claim_safe" not in json.dumps(report)
     assert report["flags"]["measurement_only"] is True
@@ -534,7 +611,15 @@ def test_cli_json_and_exit_codes(
     ledger.served("sol-0", route_type="solver")
     ledger.receipt("sol-0")
 
-    assert main(["--ledger", str(ledger.path), "--json"]) == EXIT_OK
+    assert main(
+        [
+            "--ledger",
+            str(ledger.path),
+            "--pending-failure-ledger",
+            str(ledger.failures),
+            "--json",
+        ]
+    ) == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
     assert payload["derived"] is True
     assert payload["schema"] == "wd.served_ratio_from_ledger.v1"
@@ -549,6 +634,8 @@ def test_cli_json_and_exit_codes(
             [
                 "--ledger",
                 str(ledger.path),
+                "--pending-failure-ledger",
+                str(ledger.failures),
                 "--telemetry-snapshot",
                 str(snapshot),
                 "--json",
@@ -560,9 +647,511 @@ def test_cli_json_and_exit_codes(
     assert payload["telemetry_divergence"]["diverges"] is False
 
     assert (
-        main(["--ledger", str(ledger.path), "--window-start-ts", "garbage"])
+        main(
+            [
+                "--ledger",
+                str(ledger.path),
+                "--pending-failure-ledger",
+                str(ledger.failures),
+                "--window-start-ts",
+                "garbage",
+            ]
+        )
         == EXIT_REJECTED
     )
     rejection = json.loads(capsys.readouterr().out)
     assert rejection["derived"] is False
     assert rejection["reason"] == "window_start_unparseable"
+
+
+# --- Durable pending-append failures: required ledger, den+gap never
+# --- numerator, forced incompleteness, scope rejection (Grok-locked plan,
+# --- codex-lead-1/served-ratio-pending-failure-fix-20260901).
+
+
+VALID_FAILURE_LINE = json.dumps(
+    {
+        "schema_version": "magma.chat_served_pending_append_failure.v0",
+        "reason": "sink_write_failed",
+        "served_id_hash": "sha256:" + "b" * 64,
+        "ts_utc": "2026-08-21T09:05:00Z",
+        "metadata": {"source": "chat", "route_type": "llm"},
+    },
+    sort_keys=True,
+)
+
+
+def test_pending_failure_ledger_path_is_required_in_api(
+    ledger: LedgerBuilder,
+) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    with pytest.raises(TypeError):
+        derive_report(ledger_path=str(ledger.path))  # type: ignore[call-arg]
+
+
+def test_pending_failure_ledger_flag_is_required_in_cli(
+    ledger: LedgerBuilder,
+) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--ledger", str(ledger.path), "--json"])
+    assert excinfo.value.code == 2
+
+
+def test_missing_pending_failure_ledger_rejects_not_zero(
+    ledger: LedgerBuilder, tmp_path: Path
+) -> None:
+    # The canonical helper maps a missing path to a clean zero; the tool must
+    # reject BEFORE consulting it. An absent failure ledger is no evidence.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(tmp_path / "no_such_failures.jsonl"),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_found"
+
+
+@pytest.mark.parametrize("bad_path", ["", None, 0, False])
+def test_absentish_pending_failure_path_rejects_as_invalid(
+    ledger: LedgerBuilder, bad_path: object
+) -> None:
+    # Every one of these values makes the canonical helper return 0 silently.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=bad_path,  # type: ignore[arg-type]
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_path_invalid"
+
+
+def test_directory_as_pending_failure_ledger_rejects_structurally(
+    ledger: LedgerBuilder, tmp_path: Path
+) -> None:
+    # The canonical helper raises PermissionError on a directory; the tool
+    # must produce a structured rejection instead of an uncaught exception.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    directory = tmp_path / "failures_dir"
+    directory.mkdir()
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(directory),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_regular"
+
+
+def test_symlink_to_empty_pending_failure_ledger_rejects(
+    ledger: LedgerBuilder, tmp_path: Path
+) -> None:
+    # Path.is_file() follows links, so a symlink to an empty file would read
+    # as an explicit zero; os.lstat + S_ISREG must reject the link itself.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    target = tmp_path / "real_empty.jsonl"
+    target.write_text("", encoding="utf-8")
+    link = tmp_path / "failures_link.jsonl"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform")
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(link),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_regular"
+
+
+def test_failures_widen_denominator_and_gap_never_numerator(
+    ledger: LedgerBuilder,
+) -> None:
+    # The 0.95-threshold honesty case: one receipted solver serve plus one
+    # durable failed pending-append. The true solver-first ratio over served
+    # responses is 0.5, not 1.0, and the window is holed.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
+
+    assert report["solver_first_served_total"] == 1
+    assert report["served_total"] == 2
+    assert report["solver_first_served_ratio"] == pytest.approx(0.5)
+    assert report["pending_append_failures"] == 1
+    assert type(report["pending_append_failures"]) is int
+    assert report["receipt_coverage"] == {"receipted": 1, "gap": 1, "pending": 0}
+    assert report["gapless"] is False
+    assert report["evidence_complete"] is False
+
+
+def test_mixed_failure_lines_all_count_without_filtering(
+    ledger: LedgerBuilder,
+) -> None:
+    # One schema-valid line, one invalid-metadata line, one corrupt non-JSON
+    # line: the canonical helper counts every nonblank durable line as a
+    # failure (corrupt lines fail closed), and this tool must not re-filter.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+    ledger.fail_pending_append(lines=1, text='{"schema_version": "wrong"}')
+    ledger.fail_pending_append(lines=1, text="not json at all")
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
+
+    assert report["pending_append_failures"] == 3
+    assert report["served_total"] == 4
+    assert report["solver_first_served_total"] == 1
+    assert report["receipt_coverage"]["gap"] == 3
+    assert report["evidence_complete"] is False
+
+
+def test_served_total_invariant_with_failures(ledger: LedgerBuilder) -> None:
+    # per_route_served stays attributable main-ledger rows only; the
+    # difference from served_total is exactly the failure count.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.served("llm-0", route_type="llm")
+    ledger.receipt("llm-0")
+    ledger.fail_pending_append(lines=2, text=VALID_FAILURE_LINE)
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
+
+    assert report["served_total"] == sum(
+        report["per_route_served"].values()
+    ) + report["pending_append_failures"]
+    assert report["per_route_served"] == {"llm": 1, "solver": 1}
+
+
+def test_gap_terminal_with_zero_failures_keeps_evidence_complete(
+    ledger: LedgerBuilder,
+) -> None:
+    # Failures force incompleteness; a RESOLVED gap terminal alone does not
+    # (unchanged behavior, pinned so the new conjunct cannot drift wider).
+    ledger.served("sol-0", route_type="solver")
+    ledger.gap("sol-0")
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
+
+    assert report["pending_append_failures"] == 0
+    assert report["gapless"] is False
+    assert report["evidence_complete"] is True
+
+
+def test_failures_with_served_route_narrowing_reject(
+    ledger: LedgerBuilder,
+) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+            served_route_types=("solver",),
+        )
+    assert excinfo.value.reason == "pending_append_failures_cannot_be_scoped"
+
+
+def test_failures_with_time_window_reject(ledger: LedgerBuilder) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+            window_start="2026-08-21T00:00:00Z",
+        )
+    assert excinfo.value.reason == "pending_append_failures_cannot_be_scoped"
+
+
+def test_empty_failure_file_with_narrowing_still_derives(
+    ledger: LedgerBuilder,
+) -> None:
+    # An empty-but-present failure file is an explicit zero; there is nothing
+    # to mis-attribute, so narrowing stays allowed.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+        served_route_types=("solver",),
+        window_start="2026-08-21T00:00:00Z",
+        window_end="2026-08-21T23:59:59Z",
+    )
+
+    assert report["pending_append_failures"] == 0
+    assert report["served_total"] == 1
+
+
+def test_solver_route_narrowing_alone_with_failures_derives(
+    ledger: LedgerBuilder,
+) -> None:
+    # --solver-route-type narrows numerator MEMBERSHIP only; failures never
+    # enter the numerator, so nothing can be mis-attributed and the report
+    # must derive rather than reject.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+        solver_route_types=("solver", "causal"),
+    )
+
+    assert report["pending_append_failures"] == 1
+    assert report["served_total"] == 2
+    assert report["solver_first_served_total"] == 1
+
+
+def test_no_failure_path_leak_and_no_claim_safe(
+    ledger: LedgerBuilder,
+) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    report = derive_report(
+        ledger_path=str(ledger.path),
+        pending_failure_ledger_path=str(ledger.failures),
+    )
+    encoded = json.dumps(report)
+
+    assert str(ledger.failures) not in encoded
+    assert str(ledger.path) not in encoded
+    assert "claim_safe" not in encoded
+    assert report["flags"]["measurement_only"] is True
+    assert report["flags"]["runtime_authority_granted"] is False
+
+
+def test_plain_cli_prints_failures_and_telemetry_divergence(
+    ledger: LedgerBuilder, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    snapshot = tmp_path / "telemetry.json"
+    snapshot.write_text(
+        json.dumps({"solver_first_served_ratio": 0.25}), encoding="utf-8"
+    )
+
+    rc = main(
+        [
+            "--ledger",
+            str(ledger.path),
+            "--pending-failure-ledger",
+            str(ledger.failures),
+            "--telemetry-snapshot",
+            str(snapshot),
+        ]
+    )
+
+    assert rc == EXIT_OK
+    out = capsys.readouterr().out
+    assert "pending_append_failures=0" in out
+    assert "telemetry_ratio=0.250000" in out
+    assert "ledger_ratio=1.000000" in out
+    assert "abs_delta=0.750000" in out
+    assert "diverges=True" in out
+
+
+def test_cli_missing_failure_ledger_is_structured_rejection(
+    ledger: LedgerBuilder, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+
+    rc = main(
+        [
+            "--ledger",
+            str(ledger.path),
+            "--pending-failure-ledger",
+            str(tmp_path / "no_such_failures.jsonl"),
+            "--json",
+        ]
+    )
+
+    assert rc == EXIT_REJECTED
+    rejection = json.loads(capsys.readouterr().out)
+    assert rejection["derived"] is False
+    assert rejection["reason"] == "pending_failure_ledger_not_found"
+
+
+# --- P1/P2 correction regressions: stable-descriptor counting (Grok
+# --- PASS_PLAN, fable-5/served-ratio-pending-failure-fix-20260901).
+
+
+def test_toctou_unlink_race_rejects_never_zero(
+    ledger: LedgerBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # P1 pending_failure_path_toctou_silent_zero: the failure file vanishes
+    # between validation and the read. With the stable descriptor the vanish
+    # lands as an open failure and a named rejection - never as a silent
+    # zero that restores evidence_complete=True.
+    import tools.derive_served_ratio_from_ledger as tool
+
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    real_open = tool._open_failure_ledger_descriptor
+
+    def _race_open(path: str) -> int:
+        Path(path).unlink()
+        return real_open(path)
+
+    monkeypatch.setattr(tool, "_open_failure_ledger_descriptor", _race_open)
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_found"
+
+
+def test_toctou_symlink_swap_race_rejects(
+    ledger: LedgerBuilder, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Swap variant: the regular file is replaced by a symlink to an empty
+    # target in the race window. The no-follow open (POSIX) or the reparse
+    # fstat check (Windows) must reject it as not-regular, never count 0.
+    import tools.derive_served_ratio_from_ledger as tool
+
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+    target = tmp_path / "swap_target_empty.jsonl"
+    target.write_text("", encoding="utf-8")
+
+    real_open = tool._open_failure_ledger_descriptor
+
+    def _swap_open(path: str) -> int:
+        Path(path).unlink()
+        try:
+            Path(path).symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted on this platform")
+        return real_open(path)
+
+    monkeypatch.setattr(tool, "_open_failure_ledger_descriptor", _swap_open)
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_not_regular"
+
+
+def test_unreadable_reason_is_exact_token_without_path_or_exc(
+    ledger: LedgerBuilder, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # P2 raw_oserror_path_disclosure: the rejection payload must never carry
+    # the supplied path, errno text or codec details. The reason is the
+    # EXACT token, not a prefix.
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.failures.write_bytes(b"\xff\xfe invalid utf-8 \xff\n")
+
+    with pytest.raises(DerivationRejected) as excinfo:
+        derive_report(
+            ledger_path=str(ledger.path),
+            pending_failure_ledger_path=str(ledger.failures),
+        )
+    assert excinfo.value.reason == "pending_failure_ledger_unreadable"
+
+    rc = main(
+        [
+            "--ledger",
+            str(ledger.path),
+            "--pending-failure-ledger",
+            str(ledger.failures),
+            "--json",
+        ]
+    )
+    assert rc == EXIT_REJECTED
+    out = capsys.readouterr().out
+    rejection = json.loads(out)
+    assert rejection["reason"] == "pending_failure_ledger_unreadable"
+    assert str(ledger.failures) not in out
+    assert "codec" not in out
+    assert "Errno" not in out
+    assert "0xff" not in out
+
+
+def test_local_count_matches_canonical_helper_on_regular_file(
+    ledger: LedgerBuilder,
+) -> None:
+    # Parity lock, tests only: on a non-racy regular mixed file the local
+    # descriptor count must equal the canonical helper's count. The helper
+    # stays OUT of the tool; this pins rule equivalence, not a call path.
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+    ledger.fail_pending_append(lines=1, text='{"schema_version": "wrong"}')
+    ledger.fail_pending_append(lines=1, text="not json at all")
+    ledger.fail_pending_append(lines=1, text="   ")
+
+    from tools.derive_served_ratio_from_ledger import (
+        _count_pending_append_failures,
+    )
+
+    local = _count_pending_append_failures(str(ledger.failures))
+    canonical = chat_served_accounting.read_pending_append_failures(
+        str(ledger.failures)
+    )
+    assert local == canonical == 3
+
+
+def test_tool_no_longer_imports_canonical_helper() -> None:
+    # The helper re-resolves its path (the P1 mechanism); the tool must not
+    # be able to reach it even by accident.
+    import tools.derive_served_ratio_from_ledger as tool
+
+    assert not hasattr(tool, "read_pending_append_failures")
+
+
+def test_missing_nofollow_constant_rejects_before_any_open(
+    ledger: LedgerBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Grok refuse-on-sight regression: on a POSIX branch without O_NOFOLLOW
+    # the opener must fail closed, path-free, BEFORE calling os.open - a
+    # zero-fallback flag would silently follow a symlink and restore the
+    # false-complete zero.
+    import os as os_module
+
+    import tools.derive_served_ratio_from_ledger as tool
+
+    ledger.served("sol-0", route_type="solver")
+    ledger.receipt("sol-0")
+    ledger.fail_pending_append(lines=1, text=VALID_FAILURE_LINE)
+
+    monkeypatch.setattr(os_module, "name", "posix")
+    monkeypatch.delattr(os_module, "O_NOFOLLOW", raising=False)
+
+    def _must_not_open(*args: object, **kwargs: object) -> int:
+        raise AssertionError("os.open must not be reached without O_NOFOLLOW")
+
+    monkeypatch.setattr(os_module, "open", _must_not_open)
+    with pytest.raises(DerivationRejected) as excinfo:
+        tool._count_pending_append_failures(str(ledger.failures))
+    assert excinfo.value.reason == "pending_failure_ledger_nofollow_unavailable"

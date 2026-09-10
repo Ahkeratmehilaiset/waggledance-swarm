@@ -32,12 +32,23 @@ verification proves hash linkage only, so this tool walks the ledger in order
 and enforces the same lifecycle rule as ``chat_served_accounting`` itself
 instead of attributing it to the chain: one logical serve is never counted
 twice and an orphan terminal is never silently ignored.
+
+The durable pending-append FAILURE ledger is a required input for the same
+reason the main ledger path must exist: a failure is a served response whose
+ledger row never landed, so a ratio that ignores the failure ledger can read
+1.0 and complete over a holed window. Every durable failure line widens the
+denominator and the gap count, never the numerator, and forces
+``evidence_complete`` false; a report with failures present refuses window or
+served-route narrowing because failure records carry no trustworthy
+attribution.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import os
+import stat as stat_module
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
@@ -134,16 +145,144 @@ def lifecycle_violation(state: str | None, entry_type: object) -> str | None:
     return None
 
 
+def _open_failure_ledger_descriptor(path: str) -> int:
+    """Open ONE stable no-follow descriptor for the failure ledger.
+
+    The count must come from a descriptor held across the whole check, never
+    from a second path lookup: the canonical helper re-resolves its path and
+    maps a vanished file to a clean zero, which is the P1 TOCTOU fail-open.
+    POSIX gets O_NOFOLLOW | O_CLOEXEC. Windows CPython has no working
+    O_NOFOLLOW (os.open FOLLOWS a symlink even with the getattr fallback), so
+    the handle comes from CreateFileW with FILE_FLAG_OPEN_REPARSE_POINT,
+    which opens the reparse point itself; share mode stays
+    READ|WRITE|DELETE so the live emitter can keep appending.
+    """
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        generic_read = 0x80000000
+        share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+        open_existing = 3
+        # BACKUP_SEMANTICS lets a directory open succeed so fstat can reject
+        # it as not-regular instead of an ambiguous access-denied.
+        flags = 0x00200000 | 0x02000000  # OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        handle = kernel32.CreateFileW(
+            path, generic_read, share_read_write_delete, None,
+            open_existing, flags, None,
+        )
+        if handle in (None, wintypes.HANDLE(-1).value):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        except OSError:
+            kernel32.CloseHandle(handle)
+            raise
+    # O_NOFOLLOW is MANDATORY, never a zero fallback: a silently-dropped
+    # nofollow flag follows a symlink and restores the false-complete zero
+    # (strongest-Grok refuse-on-sight pattern). A platform without the
+    # constant fails closed, path-free, BEFORE any open call. O_CLOEXEC is
+    # descriptor hygiene, not a security property, so its fallback stays.
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise DerivationRejected("pending_failure_ledger_nofollow_unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow
+    return os.open(path, flags)
+
+
+def _reject_from_open_failure(path: str) -> None:
+    """Classify an open failure into a stable path-free rejection.
+
+    Only the ALREADY-FAILING path is lstat-ed, to keep directory ->
+    not_regular distinct from missing -> not_found; a racy mis-name between
+    two reject tokens is acceptable, a racy count of zero is not. Always
+    raises.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise DerivationRejected("pending_failure_ledger_not_found") from None
+    reparse_attr = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if not stat_module.S_ISREG(st.st_mode) or (
+        reparse_attr and getattr(st, "st_file_attributes", 0) & reparse_attr
+    ):
+        raise DerivationRejected("pending_failure_ledger_not_regular") from None
+    raise DerivationRejected("pending_failure_ledger_unreadable") from None
+
+
+def _count_pending_append_failures(path: object) -> int:
+    """Count durable pending-append failures from one stable descriptor.
+
+    The canonical helper maps ANY absent-looking path (missing file, empty
+    string, None, 0, False) to a clean zero and re-resolves the path on
+    every call, so this tool never consults it: the path is validated as a
+    required string, opened ONCE with a no-follow descriptor, fstat-checked
+    as a regular non-reparse file on THAT descriptor, and counted from THAT
+    descriptor with the helper-equivalent rule (every nonblank UTF-8 line,
+    no filtering). An empty-but-present regular file is an explicit zero; an
+    absent, swapped or non-regular path is no evidence at all. Every
+    rejection reason is a stable token carrying no path and no exception
+    text.
+    """
+    if not isinstance(path, str) or not path:
+        raise DerivationRejected("pending_failure_ledger_path_invalid")
+    try:
+        fd = _open_failure_ledger_descriptor(path)
+    except OSError:
+        _reject_from_open_failure(path)
+    try:
+        st = os.fstat(fd)
+        reparse_attr = getattr(
+            stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+        )
+        if not stat_module.S_ISREG(st.st_mode) or (
+            reparse_attr
+            and getattr(st, "st_file_attributes", 0) & reparse_attr
+        ):
+            raise DerivationRejected("pending_failure_ledger_not_regular")
+    except OSError:
+        os.close(fd)
+        raise DerivationRejected("pending_failure_ledger_unreadable") from None
+    except DerivationRejected:
+        os.close(fd)
+        raise
+    count = 0
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    count += 1
+    except (OSError, UnicodeError):
+        raise DerivationRejected("pending_failure_ledger_unreadable") from None
+    return count
+
+
 def derive_report(
     *,
     ledger_path: str,
+    pending_failure_ledger_path: str,
     solver_route_types: Sequence[str] = DEFAULT_SOLVER_ROUTE_TYPES,
     served_route_types: Sequence[str] | None = None,
     window_start: str | None = None,
     window_end: str | None = None,
 ) -> dict[str, Any]:
     """Derive the ratio report from ``ledger_path``; raise DerivationRejected on
-    anything that would make the number untrustworthy."""
+    anything that would make the number untrustworthy.
+
+    ``pending_failure_ledger_path`` is REQUIRED and has no default: a durable
+    pending-append failure is a served response whose ledger row was never
+    written, so a ratio derived without consulting the failure ledger can
+    read complete over a holed window. Failures enter the denominator and the
+    gap count, never the numerator, and force ``evidence_complete`` false.
+    When failures exist the report cannot be narrowed by time window or
+    served-route type -- failure records carry no trustworthy attribution --
+    so those combinations are rejected rather than scoped. Note that with
+    failures present ``served_total`` exceeds ``sum(per_route_served)``:
+    per-route counts stay attributable main-ledger rows only, and the
+    difference is exactly ``pending_append_failures``."""
     solver_set = frozenset(solver_route_types)
     served_set = frozenset(served_route_types) if served_route_types is not None else None
     if not solver_set:
@@ -160,6 +299,17 @@ def derive_report(
     if start_dt is not None and end_dt is not None and start_dt > end_dt:
         raise DerivationRejected("window_start_after_end")
     windowed = start_dt is not None or end_dt is not None
+
+    failure_count = _count_pending_append_failures(pending_failure_ledger_path)
+    if failure_count > 0 and (windowed or served_set is not None):
+        # A failure record has no trustworthy route or window attribution
+        # (its ts_utc is schema-valid as any non-empty string and route_type
+        # is optional emitter metadata), so a narrowed report with failures
+        # present cannot place them in or out of scope. Reject instead of
+        # guessing. --solver-route-type alone never triggers this: failures
+        # never enter the numerator, so numerator membership cannot
+        # mis-attribute them.
+        raise DerivationRejected("pending_append_failures_cannot_be_scoped")
 
     if not Path(ledger_path).exists():
         # A missing ledger must not read as a genuinely empty one: an
@@ -259,12 +409,21 @@ def derive_report(
         else:
             pending += 1
 
+    # Durable pending-append failures are served responses whose ledger row
+    # never landed: they widen the denominator and the gap exactly as
+    # chat_served_accounting.derive_coverage does, and can never prove
+    # solver-first membership, so the numerator is untouched (an undercount
+    # is the fail-closed direction). Any failure forces evidence_complete
+    # false: a failure is a MISSING row, not a resolved gap terminal.
+    served_total += failure_count
+    gap += failure_count
     ratio = (solver_total / served_total) if served_total else 0.0
     return {
         "schema": REPORT_SCHEMA,
         "solver_first_served_total": solver_total,
         "served_total": served_total,
         "solver_first_served_ratio": ratio,
+        "pending_append_failures": failure_count,
         "per_route_served": dict(sorted(per_route.items())),
         "receipt_coverage": {
             "receipted": receipted,
@@ -272,7 +431,9 @@ def derive_report(
             "pending": pending,
         },
         "gapless": gap == 0,
-        "evidence_complete": (not torn_tail) and pending == 0,
+        "evidence_complete": (
+            (not torn_tail) and pending == 0 and failure_count == 0
+        ),
         "torn_tail": torn_tail,
         "chain_ok": True,
         "window": {
@@ -335,6 +496,14 @@ def _parse_args(argv: Iterable[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--ledger", required=True, help="Path to the chat-served ledger JSONL.")
     parser.add_argument(
+        "--pending-failure-ledger",
+        required=True,
+        help=(
+            "Path to the durable pending-append failure ledger JSONL "
+            "(required; pass an existing empty file to assert zero failures)."
+        ),
+    )
+    parser.add_argument(
         "--solver-route-type",
         action="append",
         dest="solver_route_types",
@@ -364,6 +533,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         report = derive_report(
             ledger_path=args.ledger,
+            pending_failure_ledger_path=args.pending_failure_ledger,
             solver_route_types=tuple(args.solver_route_types or DEFAULT_SOLVER_ROUTE_TYPES),
             served_route_types=(
                 tuple(args.served_route_types) if args.served_route_types is not None else None
@@ -403,8 +573,20 @@ def main(argv: Iterable[str] | None = None) -> int:
             f"({report['solver_first_served_total']}/{report['served_total']}); "
             f"coverage receipted={report['receipt_coverage']['receipted']} "
             f"gap={report['receipt_coverage']['gap']} "
-            f"pending={report['receipt_coverage']['pending']}"
+            f"pending={report['receipt_coverage']['pending']} "
+            f"pending_append_failures={report['pending_append_failures']}"
         )
+        divergence = report.get("telemetry_divergence")
+        if isinstance(divergence, Mapping):
+            # The JSON report already carries telemetry_divergence; plain
+            # mode must surface the same comparison so a diverging telemetry
+            # ratio is never invisible to a human reading the one-line form.
+            print(
+                f"telemetry_ratio={divergence['telemetry_ratio']:.6f} "
+                f"ledger_ratio={divergence['ledger_ratio']:.6f} "
+                f"abs_delta={divergence['abs_delta']:.6f} "
+                f"diverges={divergence['diverges']}"
+            )
     return EXIT_OK
 
 

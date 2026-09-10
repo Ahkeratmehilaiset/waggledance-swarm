@@ -40,8 +40,9 @@ import re
 import stat
 import subprocess
 import sys
+from collections import namedtuple
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -418,7 +419,9 @@ def main(argv: list[str] | None = None) -> int:
 # ---------------------------------------------------------------------------
 
 
-class InventoryBinding(NamedTuple):
+class InventoryBinding(namedtuple(
+    "InventoryBinding", ("digests", "blockers", "details"), module=__name__,
+)):
     """Result of binding an exact source inventory to a commit.
 
     ``digests`` maps every inventory entry to its LF-normalized worktree
@@ -426,6 +429,12 @@ class InventoryBinding(NamedTuple):
     stable, path-free names; ``details`` carry the same names with the
     repository-relative inventory entry for operator output only.
     """
+
+    # Unlike typing.NamedTuple, the no-defaults factory does not mutate a
+    # generated function's __defaults__.  This preserves the tuple API under
+    # the read-only child's unchanged audit restrictions.  Explicit module
+    # also avoids ambient frame inspection by the factory.
+    __slots__ = ()
 
     digests: dict[str, str]
     blockers: list[str]

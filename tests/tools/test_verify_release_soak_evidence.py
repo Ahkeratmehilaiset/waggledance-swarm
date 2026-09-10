@@ -41,6 +41,28 @@ from tools.verify_release_soak_evidence import build_report, main
 
 COMMIT = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
 
+
+def test_inventory_binding_preserves_named_tuple_api() -> None:
+    import pickle
+
+    binding = verifier.InventoryBinding(digests={"source.py": "sha256:x"},
+                                        blockers=[], details=[])
+    assert isinstance(binding, tuple)
+    assert tuple(binding) == ({"source.py": "sha256:x"}, [], [])
+    assert binding[0] is binding.digests
+    assert binding._fields == ("digests", "blockers", "details")
+    assert binding._asdict() == {
+        "digests": {"source.py": "sha256:x"}, "blockers": [], "details": [],
+    }
+    assert verifier.InventoryBinding._make(binding) == binding
+    assert binding._replace(blockers=["missing"]).blockers == ["missing"]
+    assert pickle.loads(pickle.dumps(binding)) == binding
+    assert repr(binding).startswith("InventoryBinding(digests=")
+    with pytest.raises(AttributeError):
+        binding.digests = {}
+    with pytest.raises(TypeError):
+        verifier.InventoryBinding({}, [])
+
 ATTESTATION_BLOCKERS = {
     "audited_report_selection_blocked",
     "privacy_attestation_not_final",

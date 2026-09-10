@@ -575,6 +575,8 @@ _LIVE_CHILD_MODULE_PATHS = (
     "tools/run_release_ci_status_evidence.py",
     "tools/run_release_docker_policy_evidence.py",
     "tools/operator_decision_pack.py",
+    "tools/release_axis_a_attestation.py",
+    "tools/release_axis_b_attestation.py",
 )
 _LIVE_CHILD_MODULE_MAP = {
     "tools": "tools/__init__.py",
@@ -586,6 +588,23 @@ _LIVE_CHILD_MODULE_MAP = {
 _LIVE_CHILD_EXPECTED_SOAK_SOURCE_PATHS = (
     "docs/runs/error_log.jsonl",
     "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
+)
+# Fixed read-only inventory, deliberately not an executable module allowance.
+_LIVE_CHILD_AXIS_SOURCE_PATHS = (
+    "tools/run_solver_scale_proof.py",
+    "waggledance/core/autonomy_growth/gap_intake.py",
+    "waggledance/core/autonomy_growth/hot_path_cache.py",
+    "waggledance/core/autonomy_growth/runtime_query_router.py",
+    "waggledance/core/autonomy_growth/solver_dispatcher.py",
+    "waggledance/core/storage/control_plane.py",
+    "configs/hex_cells.yaml",
+    "tests/oracle_hex/bee_ops.yaml",
+    "tests/oracle_hex/environment.yaml",
+    "tests/oracle_hex/home_comfort.yaml",
+    "tests/oracle_hex/hub.yaml",
+    "tests/oracle_hex/logistics.yaml",
+    "tests/oracle_hex/production.yaml",
+    "tests/oracle_hex/safety_security.yaml",
 )
 _LIVE_CHILD_FIXED_DATA_PATHS = (
     "docs/release/RELEASE_READINESS.md",
@@ -616,6 +635,7 @@ _LIVE_CHILD_FIXED_DATA_PATHS = (
     "docker-compose.yml",
     "pyproject.toml",
     "docs/deployment/DOCKER_QUICKSTART.md",
+    *_LIVE_CHILD_AXIS_SOURCE_PATHS,
 )
 _LIVE_CHILD_DATA_PATHS = (
     *_LIVE_CHILD_FIXED_DATA_PATHS[:12],
@@ -2220,6 +2240,13 @@ def _build_live_git_manifest(
                 ),
             ))
         subjects[commit] = paths
+    # Axis verification reads only the envelope's declared subject, not an
+    # arbitrary report stamp or every historical Docker subject. Capture its
+    # authenticated object paths; the child derives exact binary Git replies
+    # from those objects without permitting any additional native subprocess.
+    axis_tree = _live_child_commit_tree(soak["commit"], cache)
+    for path in _LIVE_CHILD_AXIS_SOURCE_PATHS:
+        _live_child_resolve_blob(axis_tree, path, cache)
     unique_replays: list[dict[str, Any]] = []
     replay_by_key: dict[tuple[tuple[str, ...], bool], dict[str, Any]] = {}
     for replay in replays:
@@ -2739,6 +2766,7 @@ _EXPECTED_FILES = __EXPECTED_FILES__
 _MODULE_MAP = __MODULE_MAP__
 _OPTIONAL_ABSENT = __OPTIONAL_ABSENT__
 _DOCKER_PATHS = __DOCKER_PATHS__
+_AXIS_PATHS = __AXIS_PATHS__
 _PYYAML_SCHEMA = "__PYYAML_SCHEMA__"
 _PYYAML_VERSION = "__PYYAML_VERSION__"
 _PYYAML_MANIFEST = __PYYAML_MANIFEST__
@@ -3078,6 +3106,7 @@ def _resolve(tree_oid, relative, seen):
         return mode, oid, raw
     raise ValueError("path empty")
 
+_axis_git_records = {}
 if _test_mode:
     if (
         _bundle["head_tree"] is not None or _objects
@@ -3119,8 +3148,24 @@ else:
                 or resolved[2] != _b64(fact["content_b64"], "history content")
             ):
                 raise ValueError("history file proof")
+    axis_commit = _soak["commit"]
+    axis_tree = _commit_tree(axis_commit, _seen_objects)
+    _axis_git_records[("rev-parse", "--verify", "--quiet", axis_commit + "^{commit}")] = (
+        0, axis_commit.encode("ascii") + b"\n", b""
+    )
+    for path in _AXIS_PATHS:
+        resolved = _resolve(axis_tree, path, _seen_objects)
+        tree_args = ("ls-tree", "-z", axis_commit, "--", path)
+        if resolved is None:
+            _axis_git_records[tree_args] = (0, b"", b"")
+            continue
+        mode, oid, raw = resolved
+        tree_row = (mode + " blob " + oid + "\t" + path).encode("utf-8") + b"\0"
+        _axis_git_records[tree_args] = (0, tree_row, b"")
+        _axis_git_records[("cat-file", "blob", oid)] = (0, raw, b"")
     if set(_objects) != _seen_objects:
         raise ValueError("git object closure")
+_axis_git_records = types.MappingProxyType(dict(_axis_git_records))
 
 _pyyaml = _bundle["trusted_pyyaml"]
 if type(_pyyaml) is not dict or set(_pyyaml) != {
@@ -4030,6 +4075,25 @@ def _docker_git(
         return None
     return completed.stdout.strip() if text else completed.stdout
 
+def _axis_git(
+    root, *args, timeout=120, _deny=_violate, _key_for=_vkey,
+    _root_key=_ROOT_KEY, _records=_axis_git_records,
+    _completed=subprocess.CompletedProcess, _list=list, _type=type,
+    _int=int, _float=float,
+):
+    # Compatibility adapter for verifier.run_git, not a new process facility.
+    # Only exact S-bound requests already derived from authenticated Git
+    # objects are available; even HEAD/status requests remain unavailable.
+    if _key_for(root, "axis.git.root")[1] != _root_key:
+        _deny("axis.git.root", "unexpected Axis Git root")
+    if _type(timeout) not in {_int, _float} or timeout != 120:
+        _deny("axis.git.timeout", "unsupported Axis Git timeout")
+    record = _records.get(args)
+    if record is None:
+        _deny("axis.git", "unrecorded Axis Git command")
+    rc, stdout, stderr = record
+    return _completed(_list(args), rc, stdout, stderr)
+
 if _test_mode:
     if len(sys.argv) != 3 or re.fullmatch(
         r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
@@ -4082,6 +4146,7 @@ def _execute_exact_gate(
     _is_test=_test_mode, _import_module=importlib.import_module,
     _source_map=_sources, _modules=sys.modules, _yaml_version=_PYYAML_VERSION,
     _getattr=getattr, _value_error=ValueError, _docker_git_fn=_docker_git,
+    _axis_git_fn=_axis_git,
     _docker_git_executable_fn=_docker_trusted_git_executable,
     _docker_provenance_fn=_docker_git_runtime_provenance,
     _current_commit_fn=_collect_current_commit, _normalize=_normpath,
@@ -4112,10 +4177,12 @@ def _execute_exact_gate(
                 raise _value_error("pyyaml runtime")
             docker = _import_module("tools.run_release_docker_policy_evidence")
             collect = _import_module("tools.collect_soak_evidence")
+            verifier = _import_module("tools.verify_release_soak_evidence")
             docker._git = _docker_git_fn
             docker._trusted_git_executable = _docker_git_executable_fn
             docker.inspect_git_runtime_provenance = _docker_provenance_fn
             collect._current_commit = _current_commit_fn
+            verifier.run_git = _axis_git_fn
         main_relative, main_raw, _ = _source_map[
             "tools.run_release_gate_readonly_recheck"
         ]
@@ -4211,7 +4278,7 @@ for _sys_name in (
 # authority through guarded defaults before any exact-head module executes.
 for _authority_name in (
     "_bundle", "_files", "_objects", "_subjects", "_yaml_files",
-    "_yaml_authority", "_git_records", "_sources", "_VFILES", "_VDIRS",
+    "_yaml_authority", "_git_records", "_axis_git_records", "_sources", "_VFILES", "_VDIRS",
     "_VABSENT", "_external_nodes", "_selected_git", "_captured_out",
     "_captured_err", "_transport", "_native_alias_allow",
     "_native_backends", "_native_forbidden_ids", "_native_forbidden_objects",
@@ -4240,6 +4307,7 @@ _LIVE_CHILD_RUNTIME_SOURCE = (
     .replace("__MODULE_MAP__", repr(_LIVE_CHILD_MODULE_MAP))
     .replace("__OPTIONAL_ABSENT__", repr(_LIVE_CHILD_OPTIONAL_ABSENT_PATHS))
     .replace("__DOCKER_PATHS__", repr(_LIVE_CHILD_DOCKER_SOURCE_PATHS))
+    .replace("__AXIS_PATHS__", repr(_LIVE_CHILD_AXIS_SOURCE_PATHS))
     .replace("__PYYAML_SCHEMA__", _PYYAML_CHILD_BUNDLE_SCHEMA)
     .replace("__PYYAML_VERSION__", PYYAML_VERSION)
     .replace("__PYYAML_MANIFEST__", repr(PYYAML_SOURCE_MANIFEST))

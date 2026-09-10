@@ -2950,6 +2950,8 @@ LIVE_CHILD_MODULE_PATHS = (
     "tools/run_release_ci_status_evidence.py",
     "tools/run_release_docker_policy_evidence.py",
     "tools/operator_decision_pack.py",
+    "tools/release_axis_a_attestation.py",
+    "tools/release_axis_b_attestation.py",
 )
 
 LIVE_CHILD_DATA_PATHS = (
@@ -2983,6 +2985,20 @@ LIVE_CHILD_DATA_PATHS = (
     "docker-compose.yml",
     "pyproject.toml",
     "docs/deployment/DOCKER_QUICKSTART.md",
+    "tools/run_solver_scale_proof.py",
+    "waggledance/core/autonomy_growth/gap_intake.py",
+    "waggledance/core/autonomy_growth/hot_path_cache.py",
+    "waggledance/core/autonomy_growth/runtime_query_router.py",
+    "waggledance/core/autonomy_growth/solver_dispatcher.py",
+    "waggledance/core/storage/control_plane.py",
+    "configs/hex_cells.yaml",
+    "tests/oracle_hex/bee_ops.yaml",
+    "tests/oracle_hex/environment.yaml",
+    "tests/oracle_hex/home_comfort.yaml",
+    "tests/oracle_hex/hub.yaml",
+    "tests/oracle_hex/logistics.yaml",
+    "tests/oracle_hex/production.yaml",
+    "tests/oracle_hex/safety_security.yaml",
 )
 
 LIVE_CHILD_DOCKER_SOURCE_PATHS = (
@@ -3155,14 +3171,30 @@ def _assert_live_child_violation(result, *, operation: str | None = None) -> Non
     assert result.operation is None
 
 
-def test_live_child_manifest_is_exact_nine_module_thirty_file_closure() -> None:
+def test_live_child_declares_axis_validators_and_source_data() -> None:
+    from tools.release_axis_a_attestation import AXIS_A_EXPECTED_SOURCES
+    from tools.release_axis_b_attestation import AXIS_B_EXPECTED_SOURCES
+
+    for axis in ("a", "b"):
+        assert f"tools/release_axis_{axis}_attestation.py" in (
+            boundary._live_child_module_paths()
+        )
+    inventory = (*AXIS_A_EXPECTED_SOURCES, *AXIS_B_EXPECTED_SOURCES)
+    assert len(set(inventory)) == 14
+    assert boundary._LIVE_CHILD_AXIS_SOURCE_PATHS == inventory
+    assert set(inventory).issubset(boundary._LIVE_CHILD_DATA_PATHS)
+    assert set(inventory).isdisjoint(boundary._live_child_module_paths())
+
+
+def test_live_child_manifest_is_exact_eleven_module_forty_six_file_closure() -> None:
     assert boundary._live_child_module_paths() == LIVE_CHILD_MODULE_PATHS
     assert boundary._live_child_required_paths() == (
         *LIVE_CHILD_MODULE_PATHS,
         *LIVE_CHILD_DATA_PATHS,
     )
-    assert len(boundary._live_child_required_paths()) == 30
-    assert len(set(boundary._live_child_required_paths())) == 30
+    assert len(boundary._live_child_module_paths()) == 11
+    assert len(boundary._live_child_required_paths()) == 46
+    assert len(set(boundary._live_child_required_paths())) == 46
     assert boundary._live_child_dynamic_soak_paths() == (
         "docs/runs/error_log.jsonl",
         "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
@@ -3241,7 +3273,7 @@ def test_live_child_production_schema_executes_authenticated_git_closure(
     decoded = boundary._live_child_decode_bundle(bundle)
     assert decoded["schema_version"] == boundary._LIVE_CHILD_BUNDLE_SCHEMA
     assert decoded["head"] == head
-    assert len(decoded["files"]) == 30
+    assert len(decoded["files"]) == 46
     assert decoded["git_objects"]
 
     timestamp = "2026-09-02T05:00:00Z"

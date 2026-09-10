@@ -44,6 +44,18 @@ def test_default_dataclass_backend_is_chroma() -> None:
     assert WaggleSettings().vector_backend == "chroma"
 
 
+@pytest.mark.parametrize("property_name", ["vector_store", "memory_repository"])
+def test_legacy_settings_without_backend_do_not_opt_into_nonpersistent_memory(
+    monkeypatch, property_name: str,
+) -> None:
+    monkeypatch.setitem(sys.modules, "chromadb", None)
+    settings = SimpleNamespace(chroma_dir="./chroma_data_test", embed_model="nomic-embed-text")
+    container = Container(settings, stub=False)
+
+    with pytest.raises(RuntimeError, match=r"waggledance-swarm\[chroma\]"):
+        getattr(container, property_name)
+
+
 def test_non_stub_default_without_chromadb_fails_with_install_hint(monkeypatch) -> None:
     # sys.modules[name] = None makes `import chromadb` raise ImportError.
     monkeypatch.setitem(sys.modules, "chromadb", None)

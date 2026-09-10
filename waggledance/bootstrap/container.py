@@ -155,7 +155,7 @@ class Container:
             from waggledance.adapters.memory.in_memory_vector_store import InMemoryVectorStore
             return InMemoryVectorStore()
         backend = str(
-            getattr(self._settings, "vector_backend", "inmemory")
+            getattr(self._settings, "vector_backend", "chroma")
         ).strip().lower()
         if backend == "chroma":
             try:
@@ -200,7 +200,7 @@ class Container:
             from waggledance.adapters.memory.in_memory_repository import InMemoryRepository
             return InMemoryRepository()
         backend = str(
-            getattr(self._settings, "vector_backend", "inmemory")
+            getattr(self._settings, "vector_backend", "chroma")
         ).strip().lower()
         if backend == "chroma":
             from waggledance.adapters.memory.chroma_memory_repository import ChromaMemoryRepository

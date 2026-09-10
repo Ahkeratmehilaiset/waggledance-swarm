@@ -149,3 +149,85 @@ def test_yaml_loader_rejects_non_boolean_active_flag(tmp_path: Path) -> None:
 
     with pytest.raises(TunnelRegistryError, match="active must be boolean"):
         load_tunnel_registry_from_yaml(path)
+
+
+def _record_yaml_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
+    """Spy on yaml.load / yaml.safe_load without changing their behaviour."""
+    calls: dict[str, list] = {"load": [], "safe_load": []}
+    original_load = yaml.load
+    original_safe_load = yaml.safe_load
+
+    def spy_load(stream, Loader=None, **kwargs):
+        calls["load"].append({"Loader": Loader, **kwargs})
+        return original_load(stream, Loader=Loader, **kwargs)
+
+    def spy_safe_load(stream):
+        calls["safe_load"].append(stream)
+        return original_safe_load(stream)
+
+    monkeypatch.setattr(yaml, "load", spy_load)
+    monkeypatch.setattr(yaml, "safe_load", spy_safe_load)
+    return calls
+
+
+def test_yaml_loader_uses_literal_c_safe_loader_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fast path: the libyaml CSafeLoader is passed literally to yaml.load."""
+    if not hasattr(yaml, "CSafeLoader"):
+        # PyYAML built without libyaml: stand in with the pure-Python safe
+        # loader so the same branch is still exercised deterministically.
+        monkeypatch.setattr(yaml, "CSafeLoader", yaml.SafeLoader, raising=False)
+    calls = _record_yaml_calls(monkeypatch)
+    path = tmp_path / "tunnel_overlay.yaml"
+    path.write_text(yaml.safe_dump({"tunnels": [_tunnel()]}), encoding="utf-8")
+
+    registry = load_tunnel_registry_from_yaml(path)
+
+    assert [item.tunnel_id for item in registry.lookup_tunnels("home_comfort")] == [
+        "tun.home.thermal"
+    ]
+    assert len(calls["load"]) == 1
+    assert calls["load"][0]["Loader"] is yaml.CSafeLoader
+    assert calls["safe_load"] == []
+
+
+def test_yaml_loader_falls_back_to_safe_load_without_c_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fallback path: without CSafeLoader the loader uses yaml.safe_load only."""
+    monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    calls = _record_yaml_calls(monkeypatch)
+    path = tmp_path / "tunnel_overlay.yaml"
+    text = yaml.safe_dump({"tunnels": [_tunnel()]})
+    path.write_text(text, encoding="utf-8")
+
+    registry = load_tunnel_registry_from_yaml(path)
+
+    assert [item.tunnel_id for item in registry.lookup_tunnels("home_comfort")] == [
+        "tun.home.thermal"
+    ]
+    assert calls["safe_load"] == [text]
+    # PyYAML implements safe_load as load(stream, SafeLoader); the only
+    # yaml.load calls on this path must be that internal delegation.
+    assert calls["load"]
+    assert all(call["Loader"] is yaml.SafeLoader for call in calls["load"])
+
+
+def test_yaml_loader_source_names_safe_loaders_literally() -> None:
+    """Static regression: the loader must not hide the safe loader in a variable.
+
+    Bandit B506 only recognises a literal ``Loader=yaml.SafeLoader`` /
+    ``yaml.CSafeLoader`` keyword or ``yaml.safe_load``; a loader held in a
+    variable is reported as unsafe even when it is safe at runtime.
+    """
+    import inspect
+
+    from waggledance.core.reasoning import tunnel_registry
+
+    source = inspect.getsource(tunnel_registry.load_tunnel_registry_from_yaml)
+
+    assert "Loader=yaml.CSafeLoader" in source
+    assert "yaml.safe_load(" in source
+    assert "getattr(yaml" not in source
+    assert "nosec" not in source

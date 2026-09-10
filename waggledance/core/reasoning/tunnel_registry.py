@@ -176,8 +176,15 @@ def load_tunnel_registry_from_yaml(
 
     import yaml
 
-    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-    data = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=loader)
+    text = Path(path).read_text(encoding="utf-8")
+    # Safe loaders only: the fast libyaml CSafeLoader when PyYAML was built
+    # with it, otherwise the pure-Python SafeLoader through yaml.safe_load.
+    # Both branches are spelled out literally so static analysis (Bandit
+    # B506) can see the safe loader instead of a variable.
+    if hasattr(yaml, "CSafeLoader"):
+        data = yaml.load(text, Loader=yaml.CSafeLoader)
+    else:
+        data = yaml.safe_load(text)
     if data is None:
         data = {}
     if isinstance(data, list):

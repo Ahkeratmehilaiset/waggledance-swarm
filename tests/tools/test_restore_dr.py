@@ -4,10 +4,13 @@ Disaster Recovery regression tests for waggle_restore.py.
 Validates:
   - ChromaDB validation is non-blocking (uses SQLite, not PersistentClient)
   - check_chromadb handles all states: missing dir, empty dir, valid db, corrupt db
+  - check_chromadb reports a clear FAIL (and runs no data check) when the
+    optional chromadb package is absent
   - Latest backup selection finds the correct zip
   - Restore smoke helpers work correctly
 """
 
+import importlib.util
 import os
 import sqlite3
 import sys
@@ -22,12 +25,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # Import after path setup
 from tools.waggle_restore import CheckResult, check_chromadb, PROJECT_ROOT
 
+# chromadb is an optional ``[chroma]`` extra (de-scoped from the default
+# install on 2026-08-26), so it is absent from a plain CI environment.
+# check_chromadb records a FAIL and returns before any data check when the
+# package is missing, which means the SQLite-shape tests below can only
+# exercise the chroma-PRESENT path. The absent path has its own test class
+# that runs everywhere by forcing the import to fail.
+_HAS_CHROMADB = importlib.util.find_spec("chromadb") is not None
 
+
+@pytest.mark.skipif(
+    not _HAS_CHROMADB,
+    reason="chromadb is an optional [chroma] extra; these exercise the chroma-present path",
+)
 class TestCheckChromaDB:
     """Verify check_chromadb validates via SQLite, never PersistentClient."""
 
     def test_chromadb_import_check(self):
-        """ChromaDB import should succeed (it's installed)."""
+        """ChromaDB import should succeed when the optional extra is installed."""
         r = CheckResult()
         check_chromadb(r)
         import_checks = [c for c in r.checks if c[0] == "ChromaDB import"]
@@ -115,6 +130,33 @@ class TestCheckChromaDB:
         assert len(data_checks) == 1
         assert data_checks[0][1] == "WARN"
         assert "chroma.sqlite3 missing" in data_checks[0][2]
+
+
+class TestCheckChromaDBAbsent:
+    """check_chromadb without the optional chromadb package.
+
+    Runs in every environment: when chromadb is installed the import is
+    forced to fail for this test only, so the absent path is covered even
+    where the present path is also covered.
+    """
+
+    def test_missing_package_records_fail_and_runs_no_data_check(self):
+        r = CheckResult()
+        # ``sys.modules[name] = None`` makes ``import name`` raise
+        # ModuleNotFoundError for the duration of the block; nothing is
+        # installed or uninstalled and the entry is restored afterwards.
+        with patch.dict(sys.modules, {"chromadb": None}):
+            check_chromadb(r)
+
+        import_checks = [c for c in r.checks if c[0] == "ChromaDB import"]
+        assert len(import_checks) == 1
+        assert import_checks[0][1] == "FAIL"
+        assert "chromadb not installed" in import_checks[0][2]
+        assert "pip install chromadb" in import_checks[0][2]
+        assert r.has_failures
+        # The early return must skip every data check, so a missing optional
+        # package is never reported as a missing or corrupt database.
+        assert not [c for c in r.checks if c[0] == "ChromaDB data"]
 
 
 class TestCheckResultTracking:

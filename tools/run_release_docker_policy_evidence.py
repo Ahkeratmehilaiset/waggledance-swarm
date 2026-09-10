@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Write v3.12 Docker stable-policy evidence from repo and operator facts."""
+"""Write v3.12 Docker stable-policy evidence from repo and operator facts.
+
+A report binds to a declared source subject commit ``S``. Generating a report
+requires a checkout at ``S``; evaluating a stored report re-binds the required
+sources to the blobs tracked at ``S`` and to the current worktree bytes, and
+does not require the current ``HEAD`` to be ``S``, because tracked evidence is
+committed after its subject.
+"""
 
 from __future__ import annotations
 
@@ -398,8 +405,20 @@ def inspect_git_runtime_provenance() -> dict[str, str]:
 def inspect_git_source_binding(
     source_root: Path | str,
     commit: str,
+    *,
+    require_head: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Bind policy inputs to one exact Git HEAD and canonical text bytes."""
+    """Bind policy inputs to the declared subject ``commit`` and canonical text bytes.
+
+    ``require_head=True`` (report generation) additionally requires the
+    checked-out ``HEAD`` to be ``commit``: evidence is produced only on a
+    checkout at its subject. ``require_head=False`` (evaluation of a stored
+    report) keeps every subject binding - ``commit`` must resolve, every
+    required source must be a tracked regular blob at ``commit`` and the
+    worktree bytes must equal that blob - but does not require the current
+    ``HEAD`` to be the subject, because tracked evidence is stored in a later
+    evidence-only commit by design. ``head`` is recorded in both modes.
+    """
 
     root = Path(source_root).resolve()
     blockers: list[str] = []
@@ -428,7 +447,7 @@ def inspect_git_source_binding(
             resolved_commit = resolved
         else:
             blockers.append("source_commit_unresolvable")
-    if head and resolved_commit and head != resolved_commit:
+    if require_head and head and resolved_commit and head != resolved_commit:
         blockers.append("source_head_commit_mismatch")
 
     blob_oids: dict[str, str] = {}
@@ -1019,6 +1038,12 @@ def inspect_static_policy(source_root: Path | str = Path(".")) -> dict[str, Any]
     }
 
 
+def _subject_binding_view(binding: Mapping[str, Any]) -> dict[str, Any]:
+    """The subject-bound fields of a ``source_git`` binding, without ``head``."""
+
+    return {key: value for key, value in binding.items() if key != "head"}
+
+
 def evaluate_report(
     report: dict[str, Any],
     *,
@@ -1026,7 +1051,14 @@ def evaluate_report(
     target_version: str = DEFAULT_TARGET_VERSION,
     source_root: Path | str = Path("."),
 ) -> list[str]:
-    """Return fail-closed blockers for a Docker policy evidence report."""
+    """Return fail-closed blockers for a Docker policy evidence report.
+
+    The report is bound to its declared subject ``commit``: the subject must
+    resolve, every required source must match the blob tracked at the subject
+    and the current worktree, and ``source_git.head`` must equal the subject
+    (the report was generated at its subject). The commit currently checked
+    out is not required to be the subject.
+    """
 
     blockers: list[str] = []
     if report.get("schema_version") != SCHEMA_VERSION:
@@ -1042,9 +1074,12 @@ def evaluate_report(
     source_root = Path(source_root)
     inspected = inspect_static_policy(source_root)
     binding_commit = commit if isinstance(commit, str) else ""
+    # Evaluation binds to the declared subject, never to the current HEAD:
+    # a tracked report is stored in a later evidence-only commit by design.
     inspected_binding, binding_blockers = inspect_git_source_binding(
         source_root,
         binding_commit,
+        require_head=False,
     )
     blockers.extend(binding_blockers)
     source_files = report.get("source_files")
@@ -1066,8 +1101,16 @@ def evaluate_report(
     source_git = report.get("source_git")
     if not isinstance(source_git, dict):
         blockers.append("source_git_missing")
-    elif source_git != inspected_binding:
-        blockers.append("source_git_binding_mismatch")
+    else:
+        # Provenance stays mandatory: the stored binding must record that the
+        # report was generated on a checkout at its declared subject. Only the
+        # generation-time ``head`` is excluded from the subject comparison.
+        if binding_commit and source_git.get("head") != binding_commit:
+            blockers.append("source_head_commit_mismatch")
+        if _subject_binding_view(source_git) != _subject_binding_view(
+            inspected_binding
+        ):
+            blockers.append("source_git_binding_mismatch")
 
     static_checks = report.get("static_checks")
     if not isinstance(static_checks, dict):

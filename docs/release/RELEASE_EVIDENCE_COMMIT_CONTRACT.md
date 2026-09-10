@@ -48,8 +48,27 @@ The combined real-Git regression verifies source-S Axis attestations and the
 later evidence tree together. Its metric fixtures are synthetic: passing
 the regression is not evidence of product performance or release readiness.
 
-Implementation status: the tree-binding correction alone is insufficient to
-claim release readiness. The immutable live-child dependency/data/Git-record
-closure must also support the current Axis verifier before the complete
-production path can pass. Existing release and operator blockers remain in
-force; this document does not assert that they have been resolved.
+The immutable live child includes both Axis attestation helpers and the
+fourteen exact inventory paths as data, not extra executable modules. Its
+Axis Git adapter answers only source-S commit/blob requests derived from
+authenticated objects. It does not enable native Git processes, new paths,
+or producer preflight operations. Virtual Windows metadata explicitly
+identifies the already authenticated regular files/directories as non-reparse
+entries; real-filesystem source checks remain unchanged.
+
+Production-schema regression fixtures execute the unchanged candidate gate
+and verifier over a real Git S-to-E chain, including LF/CRLF source bytes,
+an executable regular blob, and shared blob content. Both correctly bound
+Axis proofs validate; an incorrectly stamped later proof still fails.
+Unrelated release blockers continue to produce HOLD in these synthetic
+fixtures. Neither a passing test nor an ordinary HOLD report asserts that
+the complete release gate is ready.
+
+Docker policy generation still requires the checkout HEAD to equal S.
+Evaluation of the stored report instead verifies the declared subject's
+tracked source blobs and unchanged worktree content. The stored
+`source_git.head` must still equal S, preserving generation provenance;
+only that historical generation head is excluded from comparison with the
+current evaluation checkout. Every other source binding and operator
+authorization check remains mandatory. Existing release and operator
+blockers remain in force; this document does not resolve them.

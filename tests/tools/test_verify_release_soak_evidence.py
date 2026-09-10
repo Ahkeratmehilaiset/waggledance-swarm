@@ -1286,6 +1286,7 @@ def test_production_child_verifies_axis_subject_after_evidence_commit(
     # deduplicate the blob without losing either path's binding.
     for relative in AXIS_A_EXPECTED_SOURCES[1:3]:
         (root / relative).write_bytes(b"# synthetic inventory fixture" + line_ending)
+    (root / AXIS_A_EXPECTED_SOURCES[0]).chmod(0o755)
     _git(root, "add", "-A")
     _git(root, "update-index", "--chmod=+x", AXIS_A_EXPECTED_SOURCES[0])
     _git(root, "commit", "-q", "-m", "complete synthetic release source fixture")
@@ -1303,6 +1304,11 @@ def test_production_child_verifies_axis_subject_after_evidence_commit(
     _write_json(docker_path, docker)
     head = _commit_all(root, "store fixture evidence after source subject")
     assert head != subject
+    changed_paths = set(_git(root, "diff", "--name-only", subject, head).stdout.splitlines())
+    assert boundary.SOAK_EVIDENCE_CARRIER_PATH in changed_paths
+    assert changed_paths <= {
+        boundary.SOAK_EVIDENCE_CARRIER_PATH, *boundary.SOAK_EVIDENCE_SIDECAR_PATHS,
+    }
     assert verifier._axis_attestation_blockers(
         carrier, carrier, evidence_root, root,
     ) == []

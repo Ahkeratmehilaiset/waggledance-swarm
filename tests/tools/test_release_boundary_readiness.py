@@ -3429,6 +3429,47 @@ def test_live_child_vfs_reads_known_and_hides_optional_missing_path() -> None:
     assert runtime.violation is None
 
 
+@pytest.mark.parametrize("supported_fields", [(), ("st_file_attributes",),
+                                             ("st_reparse_tag",),
+                                             ("st_file_attributes", "st_reparse_tag")])
+@pytest.mark.parametrize("kind", ["file", "dir"])
+def test_virtual_stat_supplies_only_platform_supported_fields(
+    supported_fields: tuple[str, ...], kind: str,
+) -> None:
+    import ast
+    import stat
+    from types import SimpleNamespace
+
+    # Exercise the production function with a strict structseq-constructor
+    # contract so Linux's missing Windows fields are covered on every host.
+    def strict_stat_result(values, fields):
+        if set(fields) - set(supported_fields):
+            raise TypeError("unexpected stat_result field")
+        return values, fields
+
+    for field in supported_fields:
+        setattr(strict_stat_result, field, None)
+    function = next(
+        node for node in ast.parse(boundary._LIVE_CHILD_RUNTIME_SOURCE).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_vstat"
+    )
+    namespace = {
+        "os": SimpleNamespace(stat_result=strict_stat_result),
+        "stat": stat,
+        "_vnode": lambda *args: ("declared", "declared", kind,
+                                 b"abc" if kind == "file" else None),
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]),
+                 "<virtual-stat-platform-contract>", "exec"), namespace)
+    values, fields = namespace["_vstat"]("declared")
+    assert values[0] == ((stat.S_IFREG | 0o444) if kind == "file"
+                         else (stat.S_IFDIR | 0o555))
+    assert values[6] == (3 if kind == "file" else 0)
+    expected = {"st_file_attributes": 0 if kind == "file" else 16,
+                "st_reparse_tag": 0}
+    assert fields == {key: expected[key] for key in supported_fields}
+
+
 def test_live_child_declared_stat_metadata_supports_reparse_checks() -> None:
     source = """
 import os, stat

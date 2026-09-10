@@ -3352,6 +3352,8 @@ def _vstat(
     _not_found=FileNotFoundError, _stat_result=os.stat_result,
     _regular=stat.S_IFREG, _directory=stat.S_IFDIR, _length=len,
     _directory_attribute=getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 16),
+    _has_attributes=hasattr(os.stat_result, "st_file_attributes"),
+    _has_reparse_tag=hasattr(os.stat_result, "st_reparse_tag"),
 ):
     _absolute, _key, kind, raw = _node(value, operation, True)
     if kind == "missing":
@@ -3362,10 +3364,15 @@ def _vstat(
     # valid input to the verifier's reparse-bit checks. These are virtual
     # regular files/directories already authenticated by the closed manifest;
     # no host filesystem metadata or link-following capability is introduced.
+    # structseq constructors reject supplemental fields absent on this host.
+    metadata = {}
+    if _has_attributes:
+        metadata["st_file_attributes"] = 0 if kind == "file" else _directory_attribute
+    if _has_reparse_tag:
+        metadata["st_reparse_tag"] = 0
     return _stat_result(
         (mode, 0, 0, 1, 0, 0, size, 0, 0, 0),
-        {"st_file_attributes": 0 if kind == "file" else _directory_attribute,
-         "st_reparse_tag": 0},
+        metadata,
     )
 '''
 

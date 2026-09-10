@@ -11,13 +11,19 @@ capabilities:
     max_latency_ms: 5
     trust_baseline: 0.99
 
+  # Metadata only. The builtin registry already defines this capability
+  # with a non-empty description, and load_yaml_configs() applies a YAML
+  # description ONLY when the existing one is empty - so this wording is
+  # file truth and does not replace the builtin description at runtime.
+  # max_latency_ms and trust_baseline below ARE applied to the builtin
+  # entry; they are deliberately left unchanged.
   - id: retrieve.semantic_search
     category: RETRIEVE
-    description: "ChromaDB semantic similarity search"
+    description: "Semantic similarity search over the bound vector backend (Chroma when selected and installed via the [chroma] extra; the non-persistent in-memory store only when explicitly requested)"
     legacy_module: core.memory_engine
     preconditions:
       - "embedding model available"
-      - "ChromaDB collection exists"
+      - "configured vector backend available"
     success_criteria:
       - "results returned with score > threshold"
     rollback_possible: true

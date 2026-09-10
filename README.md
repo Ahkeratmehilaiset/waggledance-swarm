@@ -341,6 +341,39 @@ python start_waggledance.py --preset=cottage-full
 For CI / Docker / minimal-deps reproduction use `requirements-ci.txt`
 (matches the published image; smaller surface than `requirements.txt`).
 
+### Vector backend and persistence
+
+`chromadb` is **not** in the default install (5 OSV advisories with no
+fixed release, de-scoped 2026-08-26). The backend is chosen by
+`WAGGLE_VECTOR_BACKEND`, and the runtime never substitutes one backend for
+another: Chroma is used only when it is **selected and installed**, and
+the in-memory store is reached **only by explicitly asking for it**.
+
+| `WAGGLE_VECTOR_BACKEND` | Store | Persistent | Requires |
+| --- | --- | --- | --- |
+| unset, or `chroma` | ChromaVectorStore | yes | the `[chroma]` extra, else startup fails |
+| `inmemory` (explicit only) | InMemoryVectorStore | **no** | nothing |
+| any other value, including empty | — | — | rejected at startup |
+
+* **Native, persistent:** `pip install .[chroma]` from a checkout, and
+  leave `WAGGLE_VECTOR_BACKEND` unset (or set it to `chroma`). Use
+  `.[chroma]` rather than the distribution name so the extra is installed
+  against the checkout you are running, not whatever the package index
+  resolves to.
+* **Native, extra not installed:** startup **fails closed** with a
+  `RuntimeError` naming the install command. It does not quietly degrade
+  to the non-persistent store — that degradation is the exact thing the
+  fail-closed contract forbids.
+* **Non-persistent:** set `WAGGLE_VECTOR_BACKEND=inmemory` explicitly.
+  Memory is lost when the process exits, and the run logs a warning.
+* **Docker:** `docker compose` *injects* `inmemory` when the variable is
+  unset, so `docker compose up` boots non-persistently on the stock image.
+  That is Compose supplying a value, not the runtime falling back. Asking
+  for `chroma` in Docker additionally requires a **derived image** that
+  installs the extra, and a volume-backed `CHROMA_DIR` — the base image
+  contains no `chromadb`, so env alone still fail-closes. See
+  `docs/deployment/DOCKER_QUICKSTART.md`.
+
 ## Reality View
 
 The `/hologram` page renders an 11-panel structured operator view. Each panel is one of:

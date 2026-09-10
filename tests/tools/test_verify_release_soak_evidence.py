@@ -1254,6 +1254,113 @@ def test_tracked_axis_evidence_can_follow_its_clean_source_commit(
     )
 
 
+@pytest.mark.parametrize("line_ending", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_production_child_verifies_axis_subject_after_evidence_commit(
+    tmp_path, monkeypatch, line_ending,
+) -> None:
+    """Real Git fixture + unmodified production child, not performance proof.
+
+    All executable modules are the actual candidate modules. Only fixture
+    data/metrics differ. Other release blockers must still yield HOLD.
+    """
+    import sys
+    import tools.run_release_boundary_readiness as boundary
+
+    executable = boundary._trusted_git_executable()
+    if executable is None:
+        pytest.skip("trusted Git executable unavailable")
+    if boundary._trusted_pyyaml_current_blocker() is not None:
+        pytest.skip("authenticated PyYAML 6.0.2 transport unavailable")
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    for relative in boundary._live_child_required_paths():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((boundary.ROOT / relative).read_bytes())
+    for relative in boundary._LIVE_CHILD_AXIS_SOURCE_PATHS:
+        target = root / relative
+        raw = target.read_bytes().replace(b"\r\n", b"\n")
+        target.write_bytes(raw.replace(b"\n", line_ending))
+    # Two valid inventory paths may share one object; object closure must
+    # deduplicate the blob without losing either path's binding.
+    for relative in AXIS_A_EXPECTED_SOURCES[1:3]:
+        (root / relative).write_bytes(b"# synthetic inventory fixture" + line_ending)
+    _git(root, "add", "-A")
+    _git(root, "update-index", "--chmod=+x", AXIS_A_EXPECTED_SOURCES[0])
+    _git(root, "commit", "-q", "-m", "complete synthetic release source fixture")
+    subject = _git(root, "rev-parse", "HEAD").stdout.strip()
+    evidence_root = root / "docs/runs/release_soak_evidence"
+    _write_json(evidence_root / AXIS_A_ARTIFACT, _axis_a_proof(root, subject))
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, subject))
+    carrier_path = root / boundary.SOAK_EVIDENCE_CARRIER_PATH
+    carrier = json.loads(carrier_path.read_text(encoding="utf-8"))
+    carrier.update(commit=subject, axis_a_regression="pass", axis_b_gate="pass")
+    _write_json(carrier_path, carrier)
+    docker_path = root / boundary._LIVE_CHILD_DOCKER_REPORT_PATH
+    docker = json.loads(docker_path.read_text(encoding="utf-8"))
+    docker["commit"] = subject
+    _write_json(docker_path, docker)
+    head = _commit_all(root, "store fixture evidence after source subject")
+    assert head != subject
+    assert verifier._axis_attestation_blockers(
+        carrier, carrier, evidence_root, root,
+    ) == []
+
+    def direct_git(*args):
+        completed = subprocess.run(
+            [str(executable), "--no-pager", "--no-optional-locks",
+             "--no-replace-objects", "--no-lazy-fetch", "--literal-pathspecs",
+             *args],
+            cwd=root, env=boundary._git_environment(),
+            capture_output=True, check=False,
+        )
+        assert completed.returncode == 0, (args, completed.stderr)
+        assert completed.stderr == b""
+        return completed.stdout
+
+    monkeypatch.setattr(boundary, "ROOT", root)
+    monkeypatch.setattr(boundary, "_git", direct_git)
+
+    def child_report(current_head):
+        bundle = boundary._build_live_child_bundle(git_state={
+            "toplevel": str(root), "head": current_head, "clean": True,
+            "tracked": True, "tracked_flags_normal": True,
+            "object_format": "sha1", "error": None,
+        })
+        completed = subprocess.run(
+            [sys.executable, "-B", "-I", "-S", "-c",
+             boundary._LIVE_CHILD_BOOTSTRAP,
+             "--release-readiness", str(root / "docs/release/RELEASE_READINESS.md"),
+             "--soak-evidence", str(carrier_path),
+             "--checked-at-utc", "2026-09-10T14:00:00Z", "--strict"],
+            cwd=root, env=boundary._child_environment(), input=bundle,
+            capture_output=True, timeout=300, check=False,
+        )
+        assert completed.stderr == b""
+        assert completed.returncode == boundary.STRICT_BLOCKED_EXIT_CODE
+        report = json.loads(completed.stdout)
+        assert report["release_gate_decision"] == "hold"
+        assert report["release_boundary"] == boundary.FALSE_RELEASE_BOUNDARY
+        repro = report["gate"]["soak_evidence_diagnostics"]["soak_reproducibility"]
+        assert repro["invoked"] is True
+        assert repro["available"] is True
+        assert "verifier_blockers" in repro, report["blockers"]
+        assert not any(
+            blocker.startswith("expected_evidence_unbuildable:")
+            for blocker in repro["verifier_blockers"]
+        )
+        return repro["verifier_blockers"]
+
+    blockers = child_report(head)
+    assert not any(blocker.startswith(("axis_a_", "axis_b_")) for blocker in blockers)
+    # Keep the same source subject and source tree: incorrect evidence stamps
+    # must remain an ordinary named validation HOLD, not a sandbox failure.
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, head))
+    later_head = _commit_all(root, "record incorrectly stamped fixture proof")
+    assert "axis_b_source_commit_mismatch" in child_report(later_head)
+
+
 def _mirror_expected(monkeypatch, **fields):
     """Rebuilt expected evidence = the actual commit plus ``fields``."""
 

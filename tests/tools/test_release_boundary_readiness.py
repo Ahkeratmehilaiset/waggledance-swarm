@@ -3424,6 +3424,32 @@ def test_live_child_vfs_reads_known_and_hides_optional_missing_path() -> None:
     assert runtime.violation is None
 
 
+def test_live_child_declared_stat_metadata_supports_reparse_checks() -> None:
+    source = """
+import os, stat
+from pathlib import Path
+for relative, directory in (('docs/release/RELEASE_READINESS.md', False),
+                            ('docs/release', True)):
+    path = Path(relative)
+    for info in (os.stat(path), os.lstat(path), path.stat(), path.lstat()):
+        attributes = getattr(info, 'st_file_attributes', 0)
+        assert type(attributes) is int
+        assert attributes & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 1024) == 0
+        assert getattr(info, 'st_reparse_tag', 0) == 0
+        assert stat.S_ISDIR(info.st_mode) is directory
+        assert stat.S_ISREG(info.st_mode) is not directory
+        if hasattr(info, 'st_file_attributes'):
+            assert bool(attributes & 16) is directory
+print('DECLARED_METADATA_OK')
+"""
+    result = boundary._live_child_execute_source(
+        _build_test_live_child_bundle(), source,
+    )
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert result.stdout.strip() == b"DECLARED_METADATA_OK"
+
+
 @pytest.mark.parametrize("method", ["exists", "is_file", "is_dir"])
 def test_live_child_parent_vfs_unknown_metadata_is_a_violation(method: str) -> None:
     runtime = boundary._live_child_runtime(_build_test_live_child_bundle())

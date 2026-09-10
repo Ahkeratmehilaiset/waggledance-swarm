@@ -25,11 +25,20 @@ Contract enforced here:
 4. the torch marker pair and the cu126 extra index line are preserved exactly,
    the no-fix and unused blocklists are unchanged, every entry is an exact pin.
 
-Known, documented limit (inherited from the previous Windows freeze): pins are
-resolved with platform markers evaluated on the resolving platform, so
-Linux-only conditional dependencies (``uvloop`` from ``uvicorn[standard]``,
-torch's CUDA runtime packages) are not pinned here and are resolved at install
-time on Linux exactly as before.
+Cross-platform completeness (2026-09-10 correction). The unconditional pins
+were resolved on Windows; ``pip --platform`` selects wheel tags but evaluates
+environment markers on the HOST, so Linux-only conditional dependencies are not
+visible to such a run. The lock therefore carries an explicit Linux-only
+section, taken from a target-marker-aware Linux resolution of the lock itself:
+on non-Windows the torch marker pair plus the operator-authorized nvidia-*-cu12
+floors make pip select the plain PyPI ``torch==2.13.0`` build (the cu126 wheel
+pins ``nvidia-cudnn-cu12==9.10.2.21``, below the authorized floor, so pip
+backtracks -- a property of the previous lock too), and that build's recursive
+CUDA-13/triton chain, the exact resolutions of the cu12 floors and ``uvloop``
+from ``uvicorn[standard]`` are pinned with the declaring packages' own markers
+(contract 5 below). Remaining limits: the Linux evidence is preview evidence
+(vendored-marker override on a Windows host; native Linux CI is the
+authoritative check) and macOS is not covered.
 """
 from __future__ import annotations
 
@@ -154,6 +163,53 @@ AUTHORIZED_CONDITIONAL_FLOORS = {
     "nvidia-cublas-cu12": (">=12.9.2.10", 'sys_platform != "win32"'),
     "nvidia-cuda-runtime-cu12": (">=12.6", 'sys_platform != "win32"'),
     "nvidia-cudnn-cu12": (">=9.23.2.1", 'sys_platform != "win32"'),
+}
+# Contract 5: Linux-only recursive dependencies, pinned with the declaring
+# package's own marker. Membership is the target-marker-aware Linux resolution
+# of this lock (plain PyPI torch 2.13.0 -> CUDA 13 runtime + triton; the cu12
+# floors -> their exact resolutions; uvicorn[standard] -> uvloop). Any entry
+# that carries a platform marker must be listed here, in the torch pair or in
+# the operator floors: an unlisted conditional pin is a contract violation.
+_LINUX = 'platform_system == "Linux"'
+_LINUX_PY = 'platform_system == "Linux" and python_version < "3.15"'
+_NOT_WIN = 'sys_platform != "win32"'
+LINUX_ONLY_PINS = {
+    # torch's own Linux-only declarations (PyPI 2.13.0 build)
+    "cuda-toolkit": _LINUX,
+    "nvidia-cudnn-cu13": _LINUX,
+    "nvidia-cusparselt-cu13": _LINUX,
+    "nvidia-nccl-cu13": _LINUX,
+    "nvidia-nvshmem-cu13": _LINUX,
+    "cuda-bindings": _LINUX_PY,
+    "triton": _LINUX_PY,
+    # pulled by cuda-bindings / cuda-toolkit[<components>]
+    "cuda-pathfinder": _LINUX_PY,
+    "nvidia-cublas": _LINUX,
+    "nvidia-cuda-cupti": _LINUX,
+    "nvidia-cuda-nvrtc": _LINUX,
+    "nvidia-cuda-runtime": _LINUX,
+    "nvidia-cufft": _LINUX,
+    "nvidia-cufile": _LINUX,
+    "nvidia-curand": _LINUX,
+    "nvidia-cusolver": _LINUX,
+    "nvidia-cusparse": _LINUX,
+    "nvidia-nvjitlink": _LINUX,
+    "nvidia-nvtx": _LINUX,
+    # exact resolutions of the operator cu12 floors (same marker as the floors)
+    "nvidia-cublas-cu12": _NOT_WIN,
+    "nvidia-cuda-runtime-cu12": _NOT_WIN,
+    "nvidia-cudnn-cu12": _NOT_WIN,
+    "nvidia-cuda-nvrtc-cu12": _NOT_WIN,
+    # uvicorn[standard] extra member, marker copied from uvicorn's metadata
+    "uvloop": (
+        'sys_platform != "win32" and sys_platform != "cygwin" '
+        'and platform_python_implementation != "PyPy"'
+    ),
+}
+# uvicorn[standard] members that are unconditional (or Windows-only) and so
+# must simply be pinned; uvloop is covered by LINUX_ONLY_PINS.
+UVICORN_STANDARD_UNCONDITIONAL = {
+    "httptools", "python-dotenv", "pyyaml", "watchfiles", "websockets", "colorama",
 }
 
 
@@ -336,24 +392,41 @@ def test_release_lock_retains_operator_authorized_conditional_floors() -> None:
     """Contract 2b: the operator-authorized nvidia-* CUDA floors for the Linux
     torch path are present verbatim (specifier and marker)."""
     _, requirements = _lock_lines(LOCK_PATH)
-    by_name = {
-        canonicalize_name(requirement.name): requirement
-        for requirement in requirements
-        if canonicalize_name(requirement.name) in AUTHORIZED_CONDITIONAL_FLOORS
-    }
+    floors = {}
+    exacts = {}
+    for requirement in requirements:
+        name = canonicalize_name(requirement.name)
+        if name not in AUTHORIZED_CONDITIONAL_FLOORS:
+            continue
+        operators = [spec.operator for spec in requirement.specifier]
+        if operators == [">="]:
+            assert name not in floors, f"duplicate floor line: {requirement}"
+            floors[name] = requirement
+        elif operators == ["=="]:
+            assert name not in exacts, f"duplicate exact pin: {requirement}"
+            exacts[name] = requirement
+        else:
+            raise AssertionError(f"unexpected specifier for a floor package: {requirement}")
 
     for package, (specifier, marker) in AUTHORIZED_CONDITIONAL_FLOORS.items():
         name = canonicalize_name(package)
-        assert name in by_name, f"operator-authorized floor missing from the lock: {package}"
-        requirement = by_name[name]
+        assert name in floors, f"operator-authorized floor missing from the lock: {package}"
+        requirement = floors[name]
         assert str(requirement.specifier) == specifier, (package, str(requirement.specifier))
         assert str(requirement.marker) == marker, (package, str(requirement.marker))
+        # The exact Linux resolution of the floor must sit at or above it.
+        assert name in exacts, f"floor {package} has no exact resolution pinned"
+        pinned = Version(next(iter(exacts[name].specifier)).version)
+        assert requirement.specifier.contains(pinned, prereleases=True), (
+            f"{package}=={pinned} does not satisfy operator floor {specifier}"
+        )
 
 
 def test_release_lock_entries_are_exact_and_unique() -> None:
     """Contract 4b: every requirement line is a single exact ``==`` pin (the
-    only exceptions are the operator-authorized conditional floors) and no
-    package appears twice, except the torch marker pair."""
+    only non-exact lines are the operator-authorized conditional floors, each
+    paired with its exact resolution) and no package appears twice, except the
+    torch marker pair and those floor/exact pairs."""
     _, requirements = _lock_lines(LOCK_PATH)
     floor_names = {canonicalize_name(p) for p in AUTHORIZED_CONDITIONAL_FLOORS}
 
@@ -362,11 +435,69 @@ def test_release_lock_entries_are_exact_and_unique() -> None:
         name = canonicalize_name(requirement.name)
         operators = [spec.operator for spec in requirement.specifier]
         if name in floor_names:
-            assert operators == [">="], f"authorized floor must be a lower bound: {requirement}"
+            assert operators in ([">="], ["=="]), f"floor package line must be a floor or an exact pin: {requirement}"
         else:
             assert operators == ["=="], f"not an exact pin: {requirement}"
         assert not requirement.extras, f"extras do not belong in a lock: {requirement}"
         seen[name] = seen.get(name, 0) + 1
     duplicates = sorted(name for name, count in seen.items() if count > 1)
-    assert duplicates == ["torch"], duplicates
+    assert duplicates == sorted(["torch", *floor_names]), duplicates
     assert seen["torch"] == len(TORCH_MARKER_PAIR)
+    for name in floor_names:
+        assert seen[name] == 2, f"{name}: expected exactly one floor and one exact pin"
+
+
+def test_release_lock_pins_linux_only_dependencies_with_declaring_markers() -> None:
+    """Contract 5: every Linux-only recursive dependency of the selected torch
+    build (plus the cu12 floor resolutions and uvloop) is an exact pin carrying
+    the declaring package's marker, and no other conditional entry exists."""
+    _, requirements = _lock_lines(LOCK_PATH)
+    floor_names = {canonicalize_name(p) for p in AUTHORIZED_CONDITIONAL_FLOORS}
+    conditional: dict[str, Requirement] = {}
+    for requirement in requirements:
+        if requirement.marker is None:
+            continue
+        name = canonicalize_name(requirement.name)
+        if name == "torch":
+            continue
+        operators = [spec.operator for spec in requirement.specifier]
+        if name in floor_names and operators == [">="]:
+            continue  # the operator floor line itself, covered by contract 2b
+        assert name not in conditional, f"duplicate conditional pin: {requirement}"
+        conditional[name] = requirement
+
+    expected = {canonicalize_name(p): m for p, m in LINUX_ONLY_PINS.items()}
+    unexpected = sorted(set(conditional) - set(expected))
+    assert not unexpected, f"conditional pins not covered by the contract: {unexpected}"
+    missing = sorted(set(expected) - set(conditional))
+    assert not missing, f"Linux-only dependencies missing from the lock: {missing}"
+    for name, marker in expected.items():
+        requirement = conditional[name]
+        operators = [spec.operator for spec in requirement.specifier]
+        assert operators == ["=="], f"Linux-only dependency must be an exact pin: {requirement}"
+        assert str(requirement.marker) == marker, (name, str(requirement.marker))
+
+    # Unconditional entries must never carry a Linux-only package: that would
+    # break a Windows install with a manylinux-only wheel.
+    unconditional = {
+        canonicalize_name(r.name) for r in requirements if r.marker is None
+    }
+    leaked = sorted(unconditional & set(expected))
+    assert not leaked, f"Linux-only packages pinned without a marker: {leaked}"
+
+
+def test_release_lock_covers_uvicorn_standard_extra() -> None:
+    """The declared ``uvicorn[standard]`` extra is honoured by the lock: its
+    unconditional members are pinned and uvloop is pinned for non-Windows."""
+    lock = _lock_pins(LOCK_PATH)
+    declared = _declared_direct_dependencies()
+    assert "standard" in declared["uvicorn"].extras
+
+    missing = sorted(
+        member for member in UVICORN_STANDARD_UNCONDITIONAL
+        if canonicalize_name(member) not in lock
+    )
+    assert not missing, f"uvicorn[standard] members missing from the lock: {missing}"
+    assert "uvloop" in lock and "uvloop" in {
+        canonicalize_name(p) for p in LINUX_ONLY_PINS
+    }

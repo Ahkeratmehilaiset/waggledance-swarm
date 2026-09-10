@@ -1,8 +1,16 @@
-# WaggleDance stable lock -- regenerated 2026-09-10T06:57:19Z from the declared release dependencies
+# WaggleDance stable lock -- regenerated 2026-09-10T12:06:25Z from the declared release dependencies
 # (pyproject.toml [project.dependencies] + the [dev] extra), not from a developer-environment pip freeze.
-# Python 3.13 (cp313). Identical pins on win_amd64 and manylinux x86_64 except the torch build (marker pair below).
-# Resolver: pip 26.1.2 install --dry-run --ignore-installed --only-binary=:all: --report (wheels only, nothing installed).
-# Evidence: fable-5 lane .codex-audit/release-runtime-lock-closure-20260910 (closure/OSV/resolver reports, SHA256SUMS.txt).
+# Python 3.13 (cp313). Windows (win_amd64) and Linux (manylinux x86_64) are BOTH covered:
+#   - the unconditional pins below were resolved on Windows (pip 26.1.2 install --dry-run --report, wheels only);
+#   - the torch build is selected by the marker pair (2.13.0+cu126 on win32 from the cu126 extra index;
+#     on non-Windows pip resolves torch==2.13.0 to the plain PyPI build, because the operator-authorized
+#     nvidia-*-cu12 floors are incompatible with the cu126 wheel's exact cu12 pins);
+#   - the Linux-only section at the end pins the recursive dependencies of that selection (CUDA 13 runtime
+#     packages, triton) and uvloop from uvicorn[standard], taken from a target-marker-aware Linux resolution
+#     of this very file (preview evidence: vendored-marker override on the Windows host; native Linux CI
+#     remains the authoritative check). macOS is not covered by this lock.
+# Evidence: fable-5 lane .codex-audit/release-runtime-lock-closure-20260910 and
+# .codex-audit/release-runtime-lock-implementation-20260910 (closure/OSV/resolver reports, SHA256SUMS.txt).
 # Restore: pip install -r requirements.lock.txt
 --extra-index-url https://download.pytorch.org/whl/cu126
 
@@ -106,3 +114,37 @@ torch==2.13.0 ; sys_platform != "win32"
 nvidia-cublas-cu12>=12.9.2.10 ; sys_platform != "win32"
 nvidia-cuda-runtime-cu12>=12.6 ; sys_platform != "win32"
 nvidia-cudnn-cu12>=9.23.2.1 ; sys_platform != "win32"
+
+# Linux-only recursive dependencies of the selected torch build (plain PyPI torch 2.13.0 on non-Windows):
+# CUDA 13 runtime packages and triton, exactly as resolved by a target-marker-aware Linux resolution of this
+# lock. Markers mirror torch's / cuda-toolkit's own declarations. Exact pins -- nothing is left to install-time
+# resolution on Linux any more.
+cuda-bindings==13.4.1 ; platform_system == "Linux" and python_version < "3.15"
+cuda-pathfinder==1.8.1 ; platform_system == "Linux" and python_version < "3.15"
+cuda-toolkit==13.0.3.0 ; platform_system == "Linux"
+nvidia-cublas==13.1.1.3 ; platform_system == "Linux"
+nvidia-cuda-cupti==13.0.85 ; platform_system == "Linux"
+nvidia-cuda-nvrtc==13.0.88 ; platform_system == "Linux"
+nvidia-cuda-runtime==13.0.96 ; platform_system == "Linux"
+nvidia-cudnn-cu13==9.20.0.48 ; platform_system == "Linux"
+nvidia-cufft==12.0.0.61 ; platform_system == "Linux"
+nvidia-cufile==1.15.1.6 ; platform_system == "Linux"
+nvidia-curand==10.4.0.35 ; platform_system == "Linux"
+nvidia-cusolver==12.0.4.66 ; platform_system == "Linux"
+nvidia-cusparse==12.6.3.3 ; platform_system == "Linux"
+nvidia-cusparselt-cu13==0.8.1 ; platform_system == "Linux"
+nvidia-nccl-cu13==2.29.7 ; platform_system == "Linux"
+nvidia-nvjitlink==13.4.52 ; platform_system == "Linux"
+nvidia-nvshmem-cu13==3.4.5 ; platform_system == "Linux"
+nvidia-nvtx==13.0.85 ; platform_system == "Linux"
+triton==3.7.1 ; platform_system == "Linux" and python_version < "3.15"
+
+# Exact resolutions of the operator-authorized cu12 floors above (same marker as the floors; the floors stay
+# verbatim and these pins satisfy them). nvidia-cuda-nvrtc-cu12 is pulled by nvidia-cublas-cu12.
+nvidia-cublas-cu12==12.9.2.10 ; sys_platform != "win32"
+nvidia-cuda-nvrtc-cu12==12.9.86 ; sys_platform != "win32"
+nvidia-cuda-runtime-cu12==12.9.79 ; sys_platform != "win32"
+nvidia-cudnn-cu12==9.25.1.1 ; sys_platform != "win32"
+
+# uvicorn[standard] declares uvloop on non-Windows CPython (marker copied from uvicorn's metadata).
+uvloop==0.22.1 ; sys_platform != "win32" and sys_platform != "cygwin" and platform_python_implementation != "PyPy"

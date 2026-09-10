@@ -1361,3 +1361,170 @@ def test_main_rejects_ambiguous_authorization_sources(tmp_path) -> None:
 
     assert rc == 2
     assert not output.exists()
+
+
+# --- Declared subject S versus the later evidence commit (real Git chain) ---
+
+EVIDENCE_RELATIVE = "docs/runs/release_soak_evidence/v3.12.0_docker_policy.json"
+
+
+def _commit_report_as_evidence(root: Path, report: dict) -> str:
+    """Store ``report`` as the tracked evidence sidecar in a later commit."""
+    evidence = root / EVIDENCE_RELATIVE
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return _commit_paths(root, EVIDENCE_RELATIVE)
+
+
+def test_evaluate_report_accepts_report_committed_after_its_clean_subject(
+    tmp_path,
+) -> None:
+    """A report generated at clean S stays valid when stored in a later commit.
+
+    Real Git chain, no mocked git result: S (source subject) -> E (adds only
+    the evidence sidecar). The evaluator must bind to the declared subject S,
+    not to whichever commit is currently checked out.
+    """
+    subject = _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=subject,
+        operator_authorization=_authorization(commit=subject),
+    )
+    assert report["docker_stable_policy"] == "finalized"
+    assert report["blockers"] == []
+    assert report["source_git"]["head"] == subject
+    assert report["source_git"]["commit"] == subject
+
+    evidence_head = _commit_report_as_evidence(tmp_path, report)
+    assert evidence_head != subject
+    assert (
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
+
+    assert evaluate_report(
+        report,
+        expected_commit=subject,
+        source_root=tmp_path,
+    ) == []
+
+
+def test_evaluate_report_holds_when_required_source_changes_after_subject(
+    tmp_path,
+) -> None:
+    """Binding to S is not a free pass: a later source change still HOLDS."""
+    subject = _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=subject,
+        operator_authorization=_authorization(commit=subject),
+    )
+    assert report["blockers"] == []
+    _commit_report_as_evidence(tmp_path, report)
+
+    quickstart_relative = "docs/deployment/DOCKER_QUICKSTART.md"
+    (tmp_path / quickstart_relative).write_text(
+        "changed after the subject\n", encoding="utf-8"
+    )
+    later_head = _commit_paths(tmp_path, quickstart_relative)
+    assert later_head != subject
+
+    blockers = evaluate_report(
+        report,
+        expected_commit=subject,
+        source_root=tmp_path,
+    )
+
+    assert f"source_worktree_blob_mismatch:{quickstart_relative}" in blockers
+    assert "source_hashes_mismatch" in blockers
+    assert "source_git_binding_mismatch" in blockers
+
+
+def test_evaluate_report_rejects_report_generated_away_from_its_subject(
+    tmp_path,
+) -> None:
+    """Provenance stays mandatory: the report must be generated AT its subject.
+
+    A report that names S but was generated on a checkout at a later commit
+    carries ``source_git.head != commit``; build marks it draft and the
+    evaluator keeps rejecting it wherever it is evaluated.
+    """
+    subject = _write_source_tree(tmp_path)
+    (tmp_path / "docs" / "deployment" / "DOCKER_QUICKSTART.md").write_text(
+        "second committed version\n", encoding="utf-8"
+    )
+    later_head = _commit_paths(tmp_path, "docs/deployment/DOCKER_QUICKSTART.md")
+    assert later_head != subject
+
+    report = build_report(
+        source_root=tmp_path,
+        commit=subject,
+        operator_authorization=_authorization(commit=subject),
+    )
+    assert report["docker_stable_policy"] == "draft"
+    assert report["source_git"]["head"] == later_head
+    assert "source_head_commit_mismatch" in report["blockers"]
+
+    blockers = evaluate_report(
+        report,
+        expected_commit=subject,
+        source_root=tmp_path,
+    )
+    assert "source_head_commit_mismatch" in blockers
+
+
+def test_evaluate_report_rejects_forged_generation_head(tmp_path) -> None:
+    """A stored ``source_git.head`` that is not the declared subject HOLDS."""
+    subject = _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=subject,
+        operator_authorization=_authorization(commit=subject),
+    )
+    assert report["blockers"] == []
+    evidence_head = _commit_report_as_evidence(tmp_path, report)
+
+    forged = json.loads(json.dumps(report))
+    forged["source_git"]["head"] = evidence_head
+
+    blockers = evaluate_report(
+        forged,
+        expected_commit=subject,
+        source_root=tmp_path,
+    )
+    assert "source_head_commit_mismatch" in blockers
+
+
+def test_evaluate_report_rejects_report_stamped_with_evidence_commit(
+    tmp_path,
+) -> None:
+    """A report stamped with the evidence commit instead of S is rejected."""
+    subject = _write_source_tree(tmp_path)
+    report = build_report(
+        source_root=tmp_path,
+        commit=subject,
+        operator_authorization=_authorization(commit=subject),
+    )
+    evidence_head = _commit_report_as_evidence(tmp_path, report)
+
+    restamped = build_report(
+        source_root=tmp_path,
+        commit=evidence_head,
+        operator_authorization=_authorization(commit=evidence_head),
+    )
+    assert restamped["docker_stable_policy"] == "finalized"
+
+    blockers = evaluate_report(
+        restamped,
+        expected_commit=subject,
+        source_root=tmp_path,
+    )
+    assert "commit_mismatch" in blockers

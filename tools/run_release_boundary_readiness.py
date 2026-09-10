@@ -9,8 +9,11 @@ external authority. Finalization remains operator-only.
 
 Readiness is granted only by the live canonical release gate, evaluated by an
 isolated child against immutable inputs. The soak subject commit must be an
-ancestor of exact clean HEAD, and their tree delta must contain exactly the
-canonical soak-evidence carrier path. Canonical inputs and Git state are bound
+ancestor of exact clean HEAD, and their tree delta must contain the canonical
+soak-evidence carrier and only the explicitly enumerated evidence sidecars.
+This tree classification never substitutes for the live gate's validation of
+the evidence contents and their exact source-subject binding.
+Canonical inputs and Git state are bound
 before and after evaluation. The --release-gate-recheck and
 --phase-synthesis-refresh inputs are continuity lineage only: they can add
 blockers but can never grant readiness. Production readiness additionally
@@ -496,7 +499,7 @@ _DECISION_PACK_MODULE: Any = None
 
 SCHEMA_VERSION = "waggledance.release_boundary_readiness.v0"
 DECISION_PACKET_SCHEMA_VERSION = "waggledance.release_boundary_decision_packet.v1"
-HEAD_SOAK_BINDING_SCHEMA_VERSION = "waggledance.head_soak_binding.v1"
+HEAD_SOAK_BINDING_SCHEMA_VERSION = "waggledance.head_soak_binding.v2"
 SPRINT_DIR = ROOT / "docs/runs/magma_100h_sprint_2026_05_26"
 DEFAULT_PHASE_SYNTHESIS_REFRESH = SPRINT_DIR / "phase_synthesis_refresh.json"
 DEFAULT_RELEASE_GATE_RECHECK = SPRINT_DIR / "release_gate_readonly_recheck.json"
@@ -537,6 +540,17 @@ _CANONICAL_RELATIVE_PATHS = tuple(
     path.relative_to(ROOT).as_posix() for path in CANONICAL_INPUTS.values()
 )
 SOAK_EVIDENCE_CARRIER_PATH = CANONICAL_SOAK_EVIDENCE.relative_to(ROOT).as_posix()
+# These are evidence outputs already consumed by the canonical live gate.
+# Never derive this set from caller input, a directory glob, or every readable
+# child input: source code, release policy, operator packs and raw soak logs
+# must remain byte-identical to the declared source subject.
+SOAK_EVIDENCE_SIDECAR_PATHS = (
+    "docs/runs/release_soak_evidence/v3.12.0_ci_status.json",
+    "docs/runs/release_soak_evidence/v3.12.0_docker_policy.json",
+    "docs/runs/release_soak_evidence/v3.12.0_axis_a_solver_scale/solver_scale_proof.json",
+    "docs/runs/release_soak_evidence/v3.12.0_axis_b_hex_aligned_eval.json",
+    "docs/runs/release_soak_evidence/v3.12.0_soak_log_audit.json",
+)
 TRACKED_REGULAR_MODES = {"100644", "100755"}
 
 _LIVE_CHILD_BUNDLE_SCHEMA = "waggledance.release_boundary_live_child_bundle.v1"
@@ -561,6 +575,8 @@ _LIVE_CHILD_MODULE_PATHS = (
     "tools/run_release_ci_status_evidence.py",
     "tools/run_release_docker_policy_evidence.py",
     "tools/operator_decision_pack.py",
+    "tools/release_axis_a_attestation.py",
+    "tools/release_axis_b_attestation.py",
 )
 _LIVE_CHILD_MODULE_MAP = {
     "tools": "tools/__init__.py",
@@ -572,6 +588,23 @@ _LIVE_CHILD_MODULE_MAP = {
 _LIVE_CHILD_EXPECTED_SOAK_SOURCE_PATHS = (
     "docs/runs/error_log.jsonl",
     "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
+)
+# Fixed read-only inventory, deliberately not an executable module allowance.
+_LIVE_CHILD_AXIS_SOURCE_PATHS = (
+    "tools/run_solver_scale_proof.py",
+    "waggledance/core/autonomy_growth/gap_intake.py",
+    "waggledance/core/autonomy_growth/hot_path_cache.py",
+    "waggledance/core/autonomy_growth/runtime_query_router.py",
+    "waggledance/core/autonomy_growth/solver_dispatcher.py",
+    "waggledance/core/storage/control_plane.py",
+    "configs/hex_cells.yaml",
+    "tests/oracle_hex/bee_ops.yaml",
+    "tests/oracle_hex/environment.yaml",
+    "tests/oracle_hex/home_comfort.yaml",
+    "tests/oracle_hex/hub.yaml",
+    "tests/oracle_hex/logistics.yaml",
+    "tests/oracle_hex/production.yaml",
+    "tests/oracle_hex/safety_security.yaml",
 )
 _LIVE_CHILD_FIXED_DATA_PATHS = (
     "docs/release/RELEASE_READINESS.md",
@@ -602,6 +635,7 @@ _LIVE_CHILD_FIXED_DATA_PATHS = (
     "docker-compose.yml",
     "pyproject.toml",
     "docs/deployment/DOCKER_QUICKSTART.md",
+    *_LIVE_CHILD_AXIS_SOURCE_PATHS,
 )
 _LIVE_CHILD_DATA_PATHS = (
     *_LIVE_CHILD_FIXED_DATA_PATHS[:12],
@@ -2206,6 +2240,13 @@ def _build_live_git_manifest(
                 ),
             ))
         subjects[commit] = paths
+    # Axis verification reads only the envelope's declared subject, not an
+    # arbitrary report stamp or every historical Docker subject. Capture its
+    # authenticated object paths; the child derives exact binary Git replies
+    # from those objects without permitting any additional native subprocess.
+    axis_tree = _live_child_commit_tree(soak["commit"], cache)
+    for path in _LIVE_CHILD_AXIS_SOURCE_PATHS:
+        _live_child_resolve_blob(axis_tree, path, cache)
     unique_replays: list[dict[str, Any]] = []
     replay_by_key: dict[tuple[tuple[str, ...], bool], dict[str, Any]] = {}
     for replay in replays:
@@ -2725,6 +2766,7 @@ _EXPECTED_FILES = __EXPECTED_FILES__
 _MODULE_MAP = __MODULE_MAP__
 _OPTIONAL_ABSENT = __OPTIONAL_ABSENT__
 _DOCKER_PATHS = __DOCKER_PATHS__
+_AXIS_PATHS = __AXIS_PATHS__
 _PYYAML_SCHEMA = "__PYYAML_SCHEMA__"
 _PYYAML_VERSION = "__PYYAML_VERSION__"
 _PYYAML_MANIFEST = __PYYAML_MANIFEST__
@@ -3064,6 +3106,7 @@ def _resolve(tree_oid, relative, seen):
         return mode, oid, raw
     raise ValueError("path empty")
 
+_axis_git_records = {}
 if _test_mode:
     if (
         _bundle["head_tree"] is not None or _objects
@@ -3105,8 +3148,24 @@ else:
                 or resolved[2] != _b64(fact["content_b64"], "history content")
             ):
                 raise ValueError("history file proof")
+    axis_commit = _soak["commit"]
+    axis_tree = _commit_tree(axis_commit, _seen_objects)
+    _axis_git_records[("rev-parse", "--verify", "--quiet", axis_commit + "^{commit}")] = (
+        0, axis_commit.encode("ascii") + b"\n", b""
+    )
+    for path in _AXIS_PATHS:
+        resolved = _resolve(axis_tree, path, _seen_objects)
+        tree_args = ("ls-tree", "-z", axis_commit, "--", path)
+        if resolved is None:
+            _axis_git_records[tree_args] = (0, b"", b"")
+            continue
+        mode, oid, raw = resolved
+        tree_row = (mode + " blob " + oid + "\t" + path).encode("utf-8") + b"\0"
+        _axis_git_records[tree_args] = (0, tree_row, b"")
+        _axis_git_records[("cat-file", "blob", oid)] = (0, raw, b"")
     if set(_objects) != _seen_objects:
         raise ValueError("git object closure")
+_axis_git_records = types.MappingProxyType(dict(_axis_git_records))
 
 _pyyaml = _bundle["trusted_pyyaml"]
 if type(_pyyaml) is not dict or set(_pyyaml) != {
@@ -3292,13 +3351,29 @@ def _vstat(
     value, operation="os.stat", _node=_vnode,
     _not_found=FileNotFoundError, _stat_result=os.stat_result,
     _regular=stat.S_IFREG, _directory=stat.S_IFDIR, _length=len,
+    _directory_attribute=getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 16),
+    _has_attributes=hasattr(os.stat_result, "st_file_attributes"),
+    _has_reparse_tag=hasattr(os.stat_result, "st_reparse_tag"),
 ):
     _absolute, _key, kind, raw = _node(value, operation, True)
     if kind == "missing":
         raise _not_found(_absolute)
     mode = (_regular | 0o444) if kind == "file" else (_directory | 0o555)
     size = _length(raw) if raw is not None else 0
-    return _stat_result((mode, 0, 0, 1, 0, 0, size, 0, 0, 0))
+    # Windows structseq attributes otherwise exist as None, which is not
+    # valid input to the verifier's reparse-bit checks. These are virtual
+    # regular files/directories already authenticated by the closed manifest;
+    # no host filesystem metadata or link-following capability is introduced.
+    # structseq constructors reject supplemental fields absent on this host.
+    metadata = {}
+    if _has_attributes:
+        metadata["st_file_attributes"] = 0 if kind == "file" else _directory_attribute
+    if _has_reparse_tag:
+        metadata["st_reparse_tag"] = 0
+    return _stat_result(
+        (mode, 0, 0, 1, 0, 0, size, 0, 0, 0),
+        metadata,
+    )
 '''
 
 _LIVE_CHILD_RUNTIME_SOURCE += r'''
@@ -4016,6 +4091,25 @@ def _docker_git(
         return None
     return completed.stdout.strip() if text else completed.stdout
 
+def _axis_git(
+    root, *args, timeout=120, _deny=_violate, _key_for=_vkey,
+    _root_key=_ROOT_KEY, _records=_axis_git_records,
+    _completed=subprocess.CompletedProcess, _list=list, _type=type,
+    _int=int, _float=float,
+):
+    # Compatibility adapter for verifier.run_git, not a new process facility.
+    # Only exact S-bound requests already derived from authenticated Git
+    # objects are available; even HEAD/status requests remain unavailable.
+    if _key_for(root, "axis.git.root")[1] != _root_key:
+        _deny("axis.git.root", "unexpected Axis Git root")
+    if _type(timeout) not in {_int, _float} or timeout != 120:
+        _deny("axis.git.timeout", "unsupported Axis Git timeout")
+    record = _records.get(args)
+    if record is None:
+        _deny("axis.git", "unrecorded Axis Git command")
+    rc, stdout, stderr = record
+    return _completed(_list(args), rc, stdout, stderr)
+
 if _test_mode:
     if len(sys.argv) != 3 or re.fullmatch(
         r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
@@ -4068,6 +4162,7 @@ def _execute_exact_gate(
     _is_test=_test_mode, _import_module=importlib.import_module,
     _source_map=_sources, _modules=sys.modules, _yaml_version=_PYYAML_VERSION,
     _getattr=getattr, _value_error=ValueError, _docker_git_fn=_docker_git,
+    _axis_git_fn=_axis_git,
     _docker_git_executable_fn=_docker_trusted_git_executable,
     _docker_provenance_fn=_docker_git_runtime_provenance,
     _current_commit_fn=_collect_current_commit, _normalize=_normpath,
@@ -4098,10 +4193,12 @@ def _execute_exact_gate(
                 raise _value_error("pyyaml runtime")
             docker = _import_module("tools.run_release_docker_policy_evidence")
             collect = _import_module("tools.collect_soak_evidence")
+            verifier = _import_module("tools.verify_release_soak_evidence")
             docker._git = _docker_git_fn
             docker._trusted_git_executable = _docker_git_executable_fn
             docker.inspect_git_runtime_provenance = _docker_provenance_fn
             collect._current_commit = _current_commit_fn
+            verifier.run_git = _axis_git_fn
         main_relative, main_raw, _ = _source_map[
             "tools.run_release_gate_readonly_recheck"
         ]
@@ -4140,7 +4237,7 @@ def _execute_exact_gate(
     raise _system_exit(status)
 
 _runtime_globals = globals()
-_protected_functions = set()
+_protected_functions = {}
 _function_candidates = list(_runtime_globals.values())
 _reachable_runtime_classes = []
 _pending_runtime_classes = [object]
@@ -4181,8 +4278,13 @@ for _candidate in _function_candidates:
         isinstance(_candidate, types.FunctionType)
         and _candidate.__globals__ is _runtime_globals
     ):
-        _protected_functions.add(id(_candidate))
-_protected_function_ids = frozenset(_protected_functions)
+        _protected_functions[id(_candidate)] = _candidate
+# The installed hook must retain the original function objects, not only
+# integer IDs. Temporary setup functions are removed below; without strong
+# references their IDs can be reused by ordinary generated module functions,
+# causing a false protected-object denial during an otherwise valid import.
+# The same immutable ID-membership check remains in force for the hook's life.
+_protected_function_ids = types.MappingProxyType(dict(_protected_functions))
 _install_audit_hook(_protected_function_ids)
 del _install_audit_hook
 for _sys_name in (
@@ -4197,7 +4299,7 @@ for _sys_name in (
 # authority through guarded defaults before any exact-head module executes.
 for _authority_name in (
     "_bundle", "_files", "_objects", "_subjects", "_yaml_files",
-    "_yaml_authority", "_git_records", "_sources", "_VFILES", "_VDIRS",
+    "_yaml_authority", "_git_records", "_axis_git_records", "_sources", "_VFILES", "_VDIRS",
     "_VABSENT", "_external_nodes", "_selected_git", "_captured_out",
     "_captured_err", "_transport", "_native_alias_allow",
     "_native_backends", "_native_forbidden_ids", "_native_forbidden_objects",
@@ -4226,6 +4328,7 @@ _LIVE_CHILD_RUNTIME_SOURCE = (
     .replace("__MODULE_MAP__", repr(_LIVE_CHILD_MODULE_MAP))
     .replace("__OPTIONAL_ABSENT__", repr(_LIVE_CHILD_OPTIONAL_ABSENT_PATHS))
     .replace("__DOCKER_PATHS__", repr(_LIVE_CHILD_DOCKER_SOURCE_PATHS))
+    .replace("__AXIS_PATHS__", repr(_LIVE_CHILD_AXIS_SOURCE_PATHS))
     .replace("__PYYAML_SCHEMA__", _PYYAML_CHILD_BUNDLE_SCHEMA)
     .replace("__PYYAML_VERSION__", PYYAML_VERSION)
     .replace("__PYYAML_MANIFEST__", repr(PYYAML_SOURCE_MANIFEST))
@@ -4511,6 +4614,7 @@ def _head_soak_binding(
         "head_tree": None,
         "subject_is_ancestor": False,
         "carrier_only_delta": False,
+        "evidence_only_delta": False,
         "carrier_delta_paths": [],
         "soak_evidence_path": SOAK_EVIDENCE_CARRIER_PATH,
         "carrier_blob": (
@@ -4574,10 +4678,20 @@ def _head_soak_binding(
             blockers.append("soak_subject_tree_delta_malformed")
             return binding, blockers
         binding["carrier_delta_paths"] = paths
-        if paths != [SOAK_EVIDENCE_CARRIER_PATH]:
+        if (
+            SOAK_EVIDENCE_CARRIER_PATH not in paths
+            or not set(paths).issubset({
+                SOAK_EVIDENCE_CARRIER_PATH, *SOAK_EVIDENCE_SIDECAR_PATHS,
+            })
+        ):
             blockers.append("soak_subject_noncarrier_tree_delta")
             return binding, blockers
-        binding["carrier_only_delta"] = True
+        # Retain the old field's literal meaning for v1-aware readers. Only
+        # the v2 evidence-only field covers a carrier plus tracked sidecars.
+        # _build_canonical_report still requires a PASS from the isolated,
+        # immutable live gate and a clean, unchanged Git/input window.
+        binding["carrier_only_delta"] = paths == [SOAK_EVIDENCE_CARRIER_PATH]
+        binding["evidence_only_delta"] = True
     except (OSError, RuntimeError, subprocess.SubprocessError, UnicodeError, ValueError):
         blockers.append("soak_subject_git_binding_unavailable")
     return binding, blockers

@@ -8,11 +8,20 @@ details live in `CHANGELOG.md` and `docs/runs/*`.
 * **Latest stable release**: `v3.8.0` (Phase 16F, released 2026-05-04).
 * **Latest R21 prerelease**:
   `v3.11.0-r20-axis-b-activated-alpha` (released 2026-05-10).
-* **Current mainline posture**: **v3.13.0 substrate-only landing on
-  top of the v3.12.0 candidate substrate**; no package-version bump,
-  no stable tag, no Docker `:latest` movement. v3.13.0 runtime
-  substrate (Shadow -> Hybrid -> Autonomous migration layer) lives
-  in `main` HEAD `6d2e59b` but no real-data activation has happened.
+* **Mainline posture (historical snapshot, 2026-05-13)**: **v3.13.0
+  substrate-only landing on top of the v3.12.0 candidate substrate**;
+  no package-version bump, no stable tag, no Docker `:latest`
+  movement. At that date the v3.13.0 runtime substrate (Shadow ->
+  Hybrid -> Autonomous migration layer) lived in `main` HEAD `6d2e59b`
+  and no real-data activation had happened. The SHA is a dated
+  snapshot, not the current `main` head.
+* **Current preparation (2026-09)**: the v3.12.0 candidate is being
+  integrated PR by PR under exact-head CI and bridge consensus (see
+  `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`); the dependency
+  lock has been regenerated from the declared dependencies (see
+  "Accepted lock exceptions" below). Readiness is decided only by the
+  executable gate in "R22.5 Stable Promotion Gates", never by this
+  summary; nothing here asserts that the gate passes.
 * **Next stable target**: `v3.12.0`, no earlier than 2026-05-24,
   after the R22.5 soak and promotion gates. v3.13.0 substrate does
   not move that target.
@@ -20,7 +29,11 @@ details live in `CHANGELOG.md` and `docs/runs/*`.
 * **GitHub Latest**: remains `v3.8.0` until the stable promotion
   explicitly moves it.
 
-## v3.13.0 Substrate Landing (2026-05-13)
+## v3.13.0 Substrate Landing (historical snapshot, 2026-05-13)
+
+Status and numbers in this section are a dated snapshot of `main` as
+of 2026-05-13; they are kept as the record of that landing and are not
+a description of the current `main` head.
 
 Substrate-only landing, **NOT** a release. Runtime layer for the
 Shadow -> Hybrid -> Autonomous solver migration. Full release notes:
@@ -146,9 +159,10 @@ stable-candidate surface:
 * R23.2: dedicated per-agent worktree bootstrap.
 * R23.1.1: orphan-job cleanup for watcher/heartbeat jobs.
 
-## Current Measured Claims
+## Measured Claims (historical snapshot, 2026-05-10)
 
-Latest local claim audit (scratch run on 2026-05-10; measured numbers repeated here):
+Local claim audit (scratch run on 2026-05-10; measured numbers repeated
+here as a dated snapshot, not re-measured since):
 
 | Measurement | Result |
 |---|---:|
@@ -297,31 +311,49 @@ release-surface update is required for that file.
 
 ## Accepted lock exceptions
 
-The v3.12.0 dependency lock carries exactly one documented exception
-to the otherwise-stable-only pin policy. The exception is honest,
-audit-traced, and time-bounded (tracked for upgrade to a final
-stable when one becomes available).
+The pin policy for `requirements.lock.txt` is stable-only: every
+exact pin must be a final release unless a documented, dated exception
+below says otherwise. `tests/test_release_readiness_lock_truth.py`
+checks this section against the lock that is actually in the tree.
 
-* **`safetensors==0.8.0rc0`** — pre-release pin.
+### Active exceptions
+
+None. The lock was regenerated from the declared release dependencies
+(`pyproject.toml` `[project.dependencies]` plus the `[dev]` extra) in
+September 2026 and carries no pre-release pin. The facts that closed
+the previous exception:
+
+* `safetensors==0.8.0` — the final `0.8.0` release is now pinned; the
+  `0.8.0rc0` pre-release pin is gone.
+* `diffusers` is not in the lock: it was never a declared dependency
+  and dropped out with the rest of the developer-environment freeze,
+  so the constraint that forced the pre-release pin no longer exists.
+
+### Historical exceptions (superseded, kept for the record)
+
+* **2026-05 → superseded 2026-09-10: `safetensors==0.8.0rc0`** —
+  pre-release pin, active in the v3.12.0 candidate lock from PR #581
+  until the lock regeneration. The four points as recorded at the time:
   * **Cause.** `diffusers==0.38.0` was bumped in PR #581 to clear
     four OSV vulnerabilities present in `diffusers==0.37.0`.
-    `diffusers==0.38.0` declares the floor
+    `diffusers==0.38.0` declared the floor
     `safetensors>=0.8.0-rc.0`, so the previous `safetensors==0.7.0`
-    no longer satisfies the resolver.
-  * **Why not pin a later stable?** As of release-cut time, the only
-    `safetensors` releases at or above `0.8.0` are `0.8.0.dev0` and
-    `0.8.0rc0`. There is no stable `0.8.0` final on PyPI.
-    `0.8.0rc0` is the least-bad satisfier (vs the `.dev0` build).
-  * **Why not downgrade `diffusers`?** Downgrading reintroduces the
-    four OSV vulnerabilities, which is strictly worse for the
+    no longer satisfied the resolver.
+  * **Why not pin a later stable?** As of that release-cut time, the
+    only `safetensors` releases at or above `0.8.0` were `0.8.0.dev0`
+    and `0.8.0rc0`; there was no stable `0.8.0` final on PyPI, and
+    `0.8.0rc0` was the least-bad satisfier (vs the `.dev0` build).
+  * **Why not downgrade `diffusers`?** Downgrading would have
+    reintroduced the four OSV vulnerabilities, strictly worse for the
     security gate.
   * **Vulnerability surface.** Both `safetensors==0.7.0` and
-    `safetensors==0.8.0rc0` are OSV-clean (0 advisories).
-  * **Tracking.** Upgrade to stable `safetensors>=0.8.0` final as
-    soon as upstream cuts it; revisit at the next lock refresh.
+    `safetensors==0.8.0rc0` were OSV-clean (0 advisories).
+  * **Resolution.** Upstream cut `safetensors` `0.8.0` final and the
+    lock regeneration pinned it; `diffusers` left the lock. The
+    exception is closed, not renewed.
 
-This exception does NOT confer any operator-side allowance to add
-more pre-release pins. New pre-release pins require a fresh
+No historical exception confers any operator-side allowance to add
+pre-release pins. New pre-release pins require a fresh
 documented exception with the same four points (cause,
 why-not-stable, why-not-downgrade, vulnerability surface) and an
 explicit tracking note.

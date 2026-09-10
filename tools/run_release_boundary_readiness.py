@@ -9,8 +9,11 @@ external authority. Finalization remains operator-only.
 
 Readiness is granted only by the live canonical release gate, evaluated by an
 isolated child against immutable inputs. The soak subject commit must be an
-ancestor of exact clean HEAD, and their tree delta must contain exactly the
-canonical soak-evidence carrier path. Canonical inputs and Git state are bound
+ancestor of exact clean HEAD, and their tree delta must contain the canonical
+soak-evidence carrier and only the explicitly enumerated evidence sidecars.
+This tree classification never substitutes for the live gate's validation of
+the evidence contents and their exact source-subject binding.
+Canonical inputs and Git state are bound
 before and after evaluation. The --release-gate-recheck and
 --phase-synthesis-refresh inputs are continuity lineage only: they can add
 blockers but can never grant readiness. Production readiness additionally
@@ -496,7 +499,7 @@ _DECISION_PACK_MODULE: Any = None
 
 SCHEMA_VERSION = "waggledance.release_boundary_readiness.v0"
 DECISION_PACKET_SCHEMA_VERSION = "waggledance.release_boundary_decision_packet.v1"
-HEAD_SOAK_BINDING_SCHEMA_VERSION = "waggledance.head_soak_binding.v1"
+HEAD_SOAK_BINDING_SCHEMA_VERSION = "waggledance.head_soak_binding.v2"
 SPRINT_DIR = ROOT / "docs/runs/magma_100h_sprint_2026_05_26"
 DEFAULT_PHASE_SYNTHESIS_REFRESH = SPRINT_DIR / "phase_synthesis_refresh.json"
 DEFAULT_RELEASE_GATE_RECHECK = SPRINT_DIR / "release_gate_readonly_recheck.json"
@@ -537,6 +540,17 @@ _CANONICAL_RELATIVE_PATHS = tuple(
     path.relative_to(ROOT).as_posix() for path in CANONICAL_INPUTS.values()
 )
 SOAK_EVIDENCE_CARRIER_PATH = CANONICAL_SOAK_EVIDENCE.relative_to(ROOT).as_posix()
+# These are evidence outputs already consumed by the canonical live gate.
+# Never derive this set from caller input, a directory glob, or every readable
+# child input: source code, release policy, operator packs and raw soak logs
+# must remain byte-identical to the declared source subject.
+SOAK_EVIDENCE_SIDECAR_PATHS = (
+    "docs/runs/release_soak_evidence/v3.12.0_ci_status.json",
+    "docs/runs/release_soak_evidence/v3.12.0_docker_policy.json",
+    "docs/runs/release_soak_evidence/v3.12.0_axis_a_solver_scale/solver_scale_proof.json",
+    "docs/runs/release_soak_evidence/v3.12.0_axis_b_hex_aligned_eval.json",
+    "docs/runs/release_soak_evidence/v3.12.0_soak_log_audit.json",
+)
 TRACKED_REGULAR_MODES = {"100644", "100755"}
 
 _LIVE_CHILD_BUNDLE_SCHEMA = "waggledance.release_boundary_live_child_bundle.v1"
@@ -4511,6 +4525,7 @@ def _head_soak_binding(
         "head_tree": None,
         "subject_is_ancestor": False,
         "carrier_only_delta": False,
+        "evidence_only_delta": False,
         "carrier_delta_paths": [],
         "soak_evidence_path": SOAK_EVIDENCE_CARRIER_PATH,
         "carrier_blob": (
@@ -4574,10 +4589,20 @@ def _head_soak_binding(
             blockers.append("soak_subject_tree_delta_malformed")
             return binding, blockers
         binding["carrier_delta_paths"] = paths
-        if paths != [SOAK_EVIDENCE_CARRIER_PATH]:
+        if (
+            SOAK_EVIDENCE_CARRIER_PATH not in paths
+            or not set(paths).issubset({
+                SOAK_EVIDENCE_CARRIER_PATH, *SOAK_EVIDENCE_SIDECAR_PATHS,
+            })
+        ):
             blockers.append("soak_subject_noncarrier_tree_delta")
             return binding, blockers
-        binding["carrier_only_delta"] = True
+        # Retain the old field's literal meaning for v1-aware readers. Only
+        # the v2 evidence-only field covers a carrier plus tracked sidecars.
+        # _build_canonical_report still requires a PASS from the isolated,
+        # immutable live gate and a clean, unchanged Git/input window.
+        binding["carrier_only_delta"] = paths == [SOAK_EVIDENCE_CARRIER_PATH]
+        binding["evidence_only_delta"] = True
     except (OSError, RuntimeError, subprocess.SubprocessError, UnicodeError, ValueError):
         blockers.append("soak_subject_git_binding_unavailable")
     return binding, blockers

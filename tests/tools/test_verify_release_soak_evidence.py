@@ -1170,6 +1170,68 @@ def _axis_env(tmp_path, *, axis_a=True, axis_b=True):
     return root, head, evidence_root
 
 
+def test_tracked_axis_evidence_can_follow_its_clean_source_commit(
+    tmp_path, monkeypatch,
+) -> None:
+    """One real Git chain must satisfy both Axis binding and tree binding.
+
+    Synthetic fixture metrics test the storage contract, not release quality.
+    No Git result or Axis attestation verdict is fabricated by a mock.
+    """
+    import tools.run_release_boundary_readiness as boundary
+
+    root = tmp_path / "repo"
+    subject = _init_source_repo(root)
+    assert verifier.source_subject_preflight(root, subject) == []
+    evidence_root = root / "docs/runs/release_soak_evidence"
+    _write_json(evidence_root / AXIS_A_ARTIFACT, _axis_a_proof(root, subject))
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, subject))
+    _commit_all(root, "record proofs generated against clean source subject")
+    carrier = {
+        "commit": subject,
+        "axis_a_regression": "pass",
+        "axis_b_gate": "pass",
+    }
+    _write_json(root / boundary.SOAK_EVIDENCE_CARRIER_PATH, carrier)
+    head = _commit_all(root, "record evidence envelope without changing source")
+    assert _git(root, "status", "--porcelain=v1").stdout == ""
+    assert verifier._axis_attestation_blockers(
+        carrier, carrier, evidence_root, root,
+    ) == []
+
+    def fixture_git_result(*args):
+        completed = _git(root, *args, check=False)
+        return subprocess.CompletedProcess(
+            completed.args, completed.returncode,
+            completed.stdout.encode(), completed.stderr.encode(),
+        )
+
+    def fixture_git(*args):
+        completed = fixture_git_result(*args)
+        completed.check_returncode()
+        return completed.stdout
+
+    monkeypatch.setattr(boundary, "_git", fixture_git)
+    monkeypatch.setattr(boundary, "_git_result", fixture_git_result)
+    _, blockers = boundary._head_soak_binding(
+        {"head": head}, {"raw": json.dumps(carrier).encode()},
+    )
+    assert blockers == []
+
+    # An eligible tree delta does not authorize an invalid proof. Existing
+    # source-S attestation must still reject a report stamped with its later
+    # containing commit instead of the declared subject.
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, head))
+    invalid_head = _commit_all(root, "record incorrectly stamped proof")
+    _, tree_blockers = boundary._head_soak_binding(
+        {"head": invalid_head}, {"raw": json.dumps(carrier).encode()},
+    )
+    assert tree_blockers == []
+    assert "axis_b_source_commit_mismatch" in verifier._axis_attestation_blockers(
+        carrier, carrier, evidence_root, root,
+    )
+
+
 def _mirror_expected(monkeypatch, **fields):
     """Rebuilt expected evidence = the actual commit plus ``fields``."""
 

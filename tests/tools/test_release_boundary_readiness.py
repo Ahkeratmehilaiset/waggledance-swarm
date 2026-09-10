@@ -1186,10 +1186,82 @@ def test_head_soak_binding_accepts_only_ancestor_carrier_delta(
         "head_tree": TEST_CARRIER_TREE,
         "subject_is_ancestor": True,
         "carrier_only_delta": True,
+        "evidence_only_delta": True,
         "carrier_delta_paths": [boundary.SOAK_EVIDENCE_CARRIER_PATH],
         "soak_evidence_path": boundary.SOAK_EVIDENCE_CARRIER_PATH,
         "carrier_blob": "c" * 40,
     }
+
+
+@pytest.mark.parametrize("sidecar", boundary.SOAK_EVIDENCE_SIDECAR_PATHS)
+def test_head_soak_binding_classifies_explicit_evidence_sidecar(
+    monkeypatch: pytest.MonkeyPatch, sidecar: str,
+) -> None:
+    paths = sorted([boundary.SOAK_EVIDENCE_CARRIER_PATH, sidecar])
+    _install_subject_carrier_git(
+        monkeypatch, delta=("\0".join(paths) + "\0").encode(),
+    )
+    binding, blockers = boundary._head_soak_binding(
+        _subject_binding_state(),
+        {"raw": json.dumps({"commit": CANONICAL_SOAK_COMMIT}).encode()},
+    )
+    assert blockers == []
+    assert binding["carrier_only_delta"] is False
+    assert binding["evidence_only_delta"] is True
+    assert binding["carrier_delta_paths"] == paths
+
+
+@pytest.mark.parametrize("path", [
+    "tools/verify_release_soak_evidence.py",
+    "configs/hex_cells.yaml",
+    "requirements.lock.txt",
+    "docs/release/RELEASE_READINESS.md",
+    "docs/releases/v3.12.0.md",
+    "docs/operator_inbox/torch-cuda-vs-cpu.yaml",
+    "docs/runs/error_log.jsonl",
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
+    "docs/runs/release_soak_evidence/v3.12.0_security_privacy_precheck.md",
+    "docs/runs/release_soak_evidence/v3.12.0_bandit_report_after_static_hardening_zero_medium.json",
+    "docs/runs/release_soak_evidence/v3.12.0_pip_audit_report_lock_after_prune_osv.json",
+    "docs/runs/release_soak_evidence/other.json",
+    "docs/runs/release_soak_evidence/v3.12.0_ci_status.json.bak",
+])
+def test_head_soak_binding_keeps_non_evidence_inputs_frozen(
+    monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    paths = [boundary.SOAK_EVIDENCE_CARRIER_PATH, path]
+    _install_subject_carrier_git(
+        monkeypatch, delta=("\0".join(paths) + "\0").encode(),
+    )
+    binding, blockers = boundary._head_soak_binding(
+        _subject_binding_state(),
+        {"raw": json.dumps({"commit": CANONICAL_SOAK_COMMIT}).encode()},
+    )
+    assert blockers == ["soak_subject_noncarrier_tree_delta"]
+    assert binding["evidence_only_delta"] is False
+
+
+def test_head_soak_binding_requires_carrier_even_for_known_sidecars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_subject_carrier_git(
+        monkeypatch,
+        delta=("\0".join(boundary.SOAK_EVIDENCE_SIDECAR_PATHS) + "\0").encode(),
+    )
+    binding, blockers = boundary._head_soak_binding(
+        _subject_binding_state(),
+        {"raw": json.dumps({"commit": CANONICAL_SOAK_COMMIT}).encode()},
+    )
+    assert blockers == ["soak_subject_noncarrier_tree_delta"]
+    assert binding["evidence_only_delta"] is False
+
+
+def test_evidence_sidecars_are_fixed_live_gate_inputs() -> None:
+    assert len(boundary.SOAK_EVIDENCE_SIDECAR_PATHS) == 5
+    assert len(set(boundary.SOAK_EVIDENCE_SIDECAR_PATHS)) == 5
+    assert set(boundary.SOAK_EVIDENCE_SIDECAR_PATHS).issubset(
+        boundary._LIVE_CHILD_FIXED_DATA_PATHS,
+    )
 
 
 @pytest.mark.parametrize(

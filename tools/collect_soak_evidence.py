@@ -37,6 +37,7 @@ from tools.check_release_gate import (
     STATUS_PASS_FIELDS,
     parse_release_readiness,
 )
+from tools.release_security_attestation import evaluate_privacy_attestation
 from tools.run_release_ci_status_evidence import (
     evaluate_report as evaluate_ci_status_report,
 )
@@ -364,13 +365,10 @@ def _pip_audit_blocker_count(report_path: Path) -> int | None:
 
 
 def _privacy_precheck_ok(path: Path) -> bool | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    blockers = evaluate_privacy_attestation(path)
+    if "privacy_attestation_unreadable" in blockers:
         return None
-    if "74 passed" in text and "SMOKE_OK" in text:
-        return True
-    return False
+    return not blockers
 
 
 def select_pip_audit_artifact(

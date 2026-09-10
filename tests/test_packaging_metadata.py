@@ -22,6 +22,27 @@ def cfg() -> dict:
         return tomllib.load(f)
 
 
+def test_embedding_http_client_declared_in_core(cfg):
+    """Embedding adapters must not rely on Chroma's transitive requests install."""
+    from packaging.requirements import Requirement
+
+    deps = [Requirement(dep) for dep in cfg["project"]["dependencies"]]
+    assert any(dep.name == "requests" for dep in deps)
+
+
+@pytest.mark.parametrize("filename", ["requirements.txt", "requirements-ci.txt"])
+def test_embedding_http_client_declared_in_install_inputs(filename):
+    from packaging.requirements import Requirement
+
+    lines = (_PYPROJECT.parent / filename).read_text(encoding="utf-8").splitlines()
+    deps = [
+        Requirement(line.split("#", 1)[0].strip())
+        for line in lines
+        if line.strip() and not line.lstrip().startswith(("#", "-"))
+    ]
+    assert any(dep.name == "requests" for dep in deps), filename
+
+
 def test_pyproject_has_explicit_package_discovery(cfg):
     """Without this, flat-layout auto-discovery fails with 'Multiple
     top-level packages'. Locks in the P4 fix."""

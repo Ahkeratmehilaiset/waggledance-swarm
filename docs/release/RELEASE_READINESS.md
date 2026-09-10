@@ -320,8 +320,11 @@ checks this section against the lock that is actually in the tree.
 
 None. The lock was regenerated from the declared release dependencies
 (`pyproject.toml` `[project.dependencies]` plus the `[dev]` extra) in
-September 2026 and carries no pre-release pin. The facts that closed
-the previous exception:
+September 2026 and carries no pre-release pin.
+
+### Current lock facts
+
+The facts that closed the previous exception (not active exceptions):
 
 * `safetensors==0.8.0` — the final `0.8.0` release is now pinned; the
   `0.8.0rc0` pre-release pin is gone.

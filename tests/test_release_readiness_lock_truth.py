@@ -34,6 +34,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -44,6 +46,7 @@ LOCK = ROOT / "requirements.lock.txt"
 
 SECTION = "## Accepted lock exceptions"
 ACTIVE_HEADING = "### Active exceptions"
+FACTS_HEADING = "### Current lock facts"
 HISTORICAL_HEADING = "### Historical exceptions"
 PIN_RE = re.compile(r"`([A-Za-z0-9][A-Za-z0-9._-]*)==([^`\s]+)`")
 ABSENT_RE = re.compile(r"`([A-Za-z0-9][A-Za-z0-9._-]*)` is not in the lock")
@@ -106,6 +109,8 @@ def test_active_lock_exceptions_equal_prerelease_pins_in_lock() -> None:
 
     undocumented = sorted(f"{n}=={v}" for n, v in prerelease - documented)
     assert not undocumented, f"pre-release pins in the lock without an exception: {undocumented}"
+    spurious = sorted(f"{n}=={v}" for n, v in documented - prerelease)
+    assert not spurious, f"spurious active exceptions not in the prerelease lock pins: {spurious}"
     if not prerelease:
         assert re.search(r"\bnone\b", active, flags=re.IGNORECASE), (
             "with no pre-release pins the active list must say so explicitly"
@@ -113,19 +118,33 @@ def test_active_lock_exceptions_equal_prerelease_pins_in_lock() -> None:
 
 
 def test_current_lock_facts_stated_in_the_section_are_true() -> None:
-    """Contract 2: every pin the active subsection states exists at that
-    version (some marker variant), and every package it says is absent has
-    no exact pin under any marker."""
+    """Contract 2: every active exception or current fact states a real pin,
+    and every package claimed absent has no exact pin under any marker."""
     section = _section(_doc(), SECTION, level="##")
     active = _section(section, ACTIVE_HEADING, level="###")
+    facts = _section(section, FACTS_HEADING, level="###")
+    current = active + facts
     lock = _lock_exact_pins()
     names = {name for name, _ in lock}
 
-    stated = _documented_pins(active)
+    stated = _documented_pins(current)
     stale = sorted(f"{n}=={v}" for n, v in stated - lock)
-    assert not stale, f"active subsection states pins the lock does not carry: {stale}"
-    for name in ABSENT_RE.findall(active):
+    assert not stale, f"current subsections state pins the lock does not carry: {stale}"
+    for name in ABSENT_RE.findall(current):
         assert canonicalize_name(name) not in names, f"{name} is claimed absent but is pinned"
+
+
+@pytest.mark.parametrize("pin", ["safetensors==0.8.0", "example-lib==1.0rc1"])
+def test_active_exceptions_reject_spurious_pin(monkeypatch: pytest.MonkeyPatch, pin: str) -> None:
+    """Neither a real final pin nor an absent prerelease is an active exception."""
+    text = _doc().replace(
+        ACTIVE_HEADING,
+        ACTIVE_HEADING + f"\n\n* Active exception: `{pin}`.\n",
+        1,
+    )
+    monkeypatch.setitem(globals(), "_doc", lambda: text)
+    with pytest.raises(AssertionError, match="spurious active exceptions"):
+        test_active_lock_exceptions_equal_prerelease_pins_in_lock()
 
 
 def test_superseded_exception_is_dated_history_not_active() -> None:

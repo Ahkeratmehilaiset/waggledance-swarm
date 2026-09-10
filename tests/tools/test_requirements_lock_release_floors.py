@@ -31,6 +31,9 @@ BIG_JUMP_OSV_FIXED_FLOORS = {
     "pyarrow": Version("23.0.1"),
     "starlette": Version("1.0.1"),
     "streamlit": Version("1.54.0"),
+    # GHSA-rrmf-rvhw-rf47: fixed in torch 2.13.0 (bumped from 2.11.0,
+    # operator-authorized dependency remediation 2026-08-26).
+    "torch": Version("2.13.0"),
 }
 LOCK_CONSISTENCY_FLOORS = {
     "safetensors": Version("0.8.0rc0"),
@@ -46,6 +49,9 @@ UNUSED_INCOMPATIBLE_LOCK_BLOCKLIST = {
     "pysmartdl",
 }
 NO_FIX_OSV_BLOCKLIST = {
+    # chromadb: 5 advisories with no fixed release as of 1.5.9 (PyPI latest
+    # 2026-08-26); de-scoped from the stable default to the [chroma] extra.
+    "chromadb",
     "deep-translator",
     "js2py",
     "paramiko",

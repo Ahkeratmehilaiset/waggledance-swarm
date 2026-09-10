@@ -132,27 +132,87 @@ class Container:
 
     @cached_property
     def vector_store(self):
-        """VectorStorePort implementation."""
+        """VectorStorePort implementation.
+
+        Dependency remediation 2026-08-26: chromadb carries 5 OSV
+        advisories with no fixed release, so it is de-scoped from the
+        stable default install. Backend selection is explicit and
+        fail-closed via ``settings.vector_backend``
+        (``WAGGLE_VECTOR_BACKEND``):
+
+          * ``"chroma"`` (default — preserves historical production
+            semantics) — ChromaVectorStore; requires the ``[chroma]``
+            extra. A missing chromadb package raises RuntimeError with the
+            install instruction instead of silently falling back.
+          * ``"inmemory"`` — InMemoryVectorStore; NON-persistent. Allowed
+            only as an explicit opt-in and logged loudly so non-stub
+            startup truth stays visible.
+
+        Any other value raises RuntimeError (mirrors the KNOWN_PROFILES
+        fail-closed pattern from Audit H30).
+        """
         if self._stub:
             from waggledance.adapters.memory.in_memory_vector_store import InMemoryVectorStore
             return InMemoryVectorStore()
-        from waggledance.adapters.memory.chroma_vector_store import ChromaVectorStore
-        return ChromaVectorStore(
-            persist_directory=self._settings.chroma_dir,
-            embedding_model=self._settings.embed_model,
+        backend = str(
+            getattr(self._settings, "vector_backend", "inmemory")
+        ).strip().lower()
+        if backend == "chroma":
+            try:
+                import chromadb  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError(
+                    "vector_backend=chroma but the chromadb package is not "
+                    "installed. Install the opt-in extra "
+                    "(`pip install waggledance-swarm[chroma]`) or set "
+                    "WAGGLE_VECTOR_BACKEND=inmemory. Refusing to fall back "
+                    "silently."
+                ) from exc
+            from waggledance.adapters.memory.chroma_vector_store import ChromaVectorStore
+            return ChromaVectorStore(
+                persist_directory=self._settings.chroma_dir,
+                embedding_model=self._settings.embed_model,
+            )
+        if backend == "inmemory":
+            from waggledance.adapters.memory.in_memory_vector_store import InMemoryVectorStore
+            log.warning(
+                "vector_backend=inmemory: semantic memory is NON-PERSISTENT "
+                "for this run (chromadb de-scoped per the dependency-security "
+                "decision; opt back in with the [chroma] extra and "
+                "WAGGLE_VECTOR_BACKEND=chroma)."
+            )
+            return InMemoryVectorStore()
+        raise RuntimeError(
+            f"Unknown vector_backend {backend!r} (expected 'inmemory' or "
+            "'chroma'). Refusing to guess a memory backend."
         )
 
     @cached_property
     def memory_repository(self):
-        """MemoryRepositoryPort. Stub -> InMemoryRepository. Non-stub -> ChromaMemoryRepository."""
+        """MemoryRepositoryPort.
+
+        Stub or ``vector_backend=inmemory`` -> InMemoryRepository;
+        ``vector_backend=chroma`` -> ChromaMemoryRepository. Backend
+        validation (including the fail-closed unknown-value and
+        missing-chromadb paths) lives in ``vector_store``.
+        """
         if self._stub:
             from waggledance.adapters.memory.in_memory_repository import InMemoryRepository
             return InMemoryRepository()
-        from waggledance.adapters.memory.chroma_memory_repository import ChromaMemoryRepository
-        return ChromaMemoryRepository(
-            vector_store=self.vector_store,
-            collection="waggle_memory",
-        )
+        backend = str(
+            getattr(self._settings, "vector_backend", "inmemory")
+        ).strip().lower()
+        if backend == "chroma":
+            from waggledance.adapters.memory.chroma_memory_repository import ChromaMemoryRepository
+            return ChromaMemoryRepository(
+                vector_store=self.vector_store,
+                collection="waggle_memory",
+            )
+        # Reuse vector_store's gate: validates the backend value and emits
+        # the non-persistence warning exactly once (cached_property).
+        _ = self.vector_store
+        from waggledance.adapters.memory.in_memory_repository import InMemoryRepository
+        return InMemoryRepository()
 
     @cached_property
     def trust_store(self):

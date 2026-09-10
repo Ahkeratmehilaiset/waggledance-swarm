@@ -18,6 +18,18 @@ sys.path.insert(0, str(_here.parent))
 # Force in-memory chromadb
 os.environ.setdefault("CHROMA_IMPL", "ephemeral")
 
+# Dependency remediation 2026-08-26: chromadb is de-scoped to the opt-in
+# [chroma] extra, so the Chroma-backed suites below run only when the
+# package is installed (e.g. dev lock env) and skip cleanly on the stable
+# CI input. AuditLog and other non-Chroma suites always run.
+import importlib.util
+
+_CHROMADB_AVAILABLE = importlib.util.find_spec("chromadb") is not None
+_CHROMA_SKIP_REASON = (
+    "chromadb not installed (de-scoped to the [chroma] extra 2026-08-26); "
+    "legacy Chroma-adapter tests execute only with the extra present"
+)
+
 
 class TestAuditLog(unittest.TestCase):
     """AuditLog: append-only SQLite audit trail."""
@@ -74,6 +86,7 @@ class TestAuditLog(unittest.TestCase):
         self.assertNotEqual(h, AuditLog.content_hash("hello world!"))
 
 
+@unittest.skipIf(not _CHROMADB_AVAILABLE, _CHROMA_SKIP_REASON)
 class TestChromaDBAdapter(unittest.TestCase):
     """ChromaDBAdapter: thin wrapper over in-memory ChromaDB."""
 
@@ -129,6 +142,7 @@ class TestChromaDBAdapter(unittest.TestCase):
         self.assertEqual(results[0]["document"], "hello bees")
 
 
+@unittest.skipIf(not _CHROMADB_AVAILABLE, _CHROMA_SKIP_REASON)
 class TestMemoryWriteProxy(unittest.TestCase):
     """MemoryWriteProxy: role-based write guard."""
 
@@ -260,6 +274,7 @@ class TestMemoryWriteProxy(unittest.TestCase):
             self.assertFalse(meta.get("_invalidated", False))
 
 
+@unittest.skipIf(not _CHROMADB_AVAILABLE, _CHROMA_SKIP_REASON)
 class TestAgentRollback(unittest.TestCase):
     """AgentRollback: undo agent writes by session."""
 

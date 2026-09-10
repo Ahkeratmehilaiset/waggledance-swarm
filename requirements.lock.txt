@@ -35,7 +35,9 @@ cachetools==6.2.6
 certifi==2025.4.26
 cffi==2.0.0
 charset-normalizer==3.4.2
-chromadb==1.5.9
+# chromadb==1.5.9 removed 2026-08-26: 5 OSV advisories with no fixed release
+# (GHSA-2wm9-hf6c-p5cr, GHSA-36p7-vc44-83pf, GHSA-f4j7-r4q5-qw2c,
+#  GHSA-xph7-9rjv-w5fr, PYSEC-2026-311). Opt-in extra only: .[chroma].
 click==8.2.1
 cloudpickle==3.1.2
 colorama==0.4.6
@@ -44,7 +46,8 @@ comtypes==1.4.11
 consciousness==0.1.0
 cryptography==46.0.7
 ctranslate2==4.6.0
-cut-cross-entropy==25.1.1
+# cut-cross-entropy==25.1.1 removed 2026-08-26 with the unsloth family
+# (torch<2.13 constraint chain); not imported anywhere in this repository.
 cyclonedx-python-lib==11.7.0
 datasets==4.3.0
 decorator==5.2.1
@@ -293,13 +296,12 @@ toml==0.10.2
 tomli==2.4.0
 tomli_w==1.2.0
 tools==1.0.23
-torch==2.11.0+cu126 ; sys_platform == "win32"
-torch==2.11.0 ; sys_platform != "win32"
-torchao==0.17.0
-torchaudio==2.11.0+cu126 ; sys_platform == "win32"
-torchaudio==2.11.0 ; sys_platform != "win32"
-torchvision==0.26.0+cu126 ; sys_platform == "win32"
-torchvision==0.26.0 ; sys_platform != "win32"
+# torch bumped 2.11.0 -> 2.13.0 (2026-08-26): fixes GHSA-rrmf-rvhw-rf47.
+# torchao/torchaudio/torchvision removed: not imported anywhere in this
+# repository, and the cu126 Windows channel publishes no 2.13-matched
+# companion wheels (torchaudio+cu126/win ends at 2.11.0).
+torch==2.13.0+cu126 ; sys_platform == "win32"
+torch==2.13.0 ; sys_platform != "win32"
 tornado==6.5.5
 tqdm==4.67.3
 transformers==5.2.0
@@ -316,8 +318,13 @@ typing_extensions==4.15.0
 tyro==1.0.8
 tzdata==2025.2
 tzlocal==5.3.1
-unsloth==2026.3.3
-unsloth_zoo==2026.6.7
+# unsloth==2026.3.3 / unsloth_zoo==2026.6.7 removed 2026-08-26: even the
+# newest releases (unsloth 2026.8.21: torch<2.12; unsloth_zoo 2026.8.15:
+# torch<2.13) are incompatible with the security-required torch 2.13.0
+# (GHSA-rrmf-rvhw-rf47). Imported only by the OPTIONAL LoRA training tool
+# tools/train_micromodel_v3.py, which therefore cannot run against a
+# secure torch until upstream adds torch>=2.13 support; the runtime and
+# test suite do not import it. Reintroduce only when upstream catches up.
 uritemplate==4.2.0
 urllib3==2.7.0
 uvicorn==0.48.0
@@ -335,7 +342,8 @@ wheel==0.47.0
 whisper==1.1.10
 wrapt==2.1.1
 wsproto==1.2.0
-xformers==0.0.35
+# xformers==0.0.35 removed 2026-08-26: torch-2.11-ABI-locked build, not
+# imported anywhere in this repository; incompatible with torch 2.13.
 xlrd==2.0.2
 xxhash==3.6.0
 yarl==1.24.2

@@ -362,6 +362,11 @@ def evaluate_soak_log_source_attestation(
     fresh_metadata_valid = True
     if fresh:
         fresh_metadata_valid = _fresh_metadata_valid(loaded, Path(source_root))
+        if not (
+            type(max_gap_hours) is int and 0 < max_gap_hours <= 24
+        ):
+            _append_once(blockers, "soak_log_gap_policy_invalid")
+            fresh_metadata_valid = False
         if require_fresh_contract and "contract_version" not in loaded:
             _append_once(blockers, "soak_log_fresh_contract_required")
         if not fresh_metadata_valid:

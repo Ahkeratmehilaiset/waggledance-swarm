@@ -428,7 +428,15 @@ def test_validate_coverage_record_rules() -> None:
     assert validate_coverage_record(nested) == "nested_value:probe"
     two_keys = dict(healthy, started_at_utc=healthy["ts_utc"])
     assert validate_coverage_record(two_keys) == "timestamp_key_count:2"
-    assert validate_coverage_record(dict(healthy, failures=0)) == "counted_key:failures"
+    # Counted keys are allowed only as strict ints; zero keeps the record
+    # healthy (the standalone helper's rule), anything else makes it
+    # non-healthy, and a non-int is invalid.
+    assert validate_coverage_record(dict(healthy, failures=0)) is None
+    assert is_healthy_coverage_record(dict(healthy, failures=0)) is True
+    assert is_healthy_coverage_record(dict(healthy, error_count=0)) is True
+    assert is_healthy_coverage_record(dict(healthy, connection_errors=1)) is False
+    assert validate_coverage_record(dict(healthy, failures="0")) == "counted_value_invalid:failures"
+    assert validate_coverage_record(dict(healthy, fatal=True)) == "counted_value_invalid:fatal"
     assert validate_coverage_record(dict(healthy, state="failed")) == "scanner_word:state"
     naive = dict(healthy, ts_utc="2026-09-15T00:00:00")
     assert validate_coverage_record(naive) == "timestamp_not_utc_zero"
@@ -452,7 +460,8 @@ def test_validate_coverage_record_rules() -> None:
     )
     assert validate_coverage_record(probe_error, source_commit=commit, lock_digest=LOCK_DIGEST) is None
     assert is_healthy_coverage_record(probe_error) is False
-    assert validate_coverage_record(dict(probe_error, error_count=-1)) == "error_count_invalid"
+    assert validate_coverage_record(dict(probe_error, error_count=-1)) == "counted_value_invalid:error_count"
+    assert is_healthy_coverage_record(dict(healthy, state="degraded")) is False
     assert validate_coverage_record("not a record") == "record_not_object"
 
 
@@ -546,11 +555,76 @@ def test_bound_report_probe_error_record_blocks_and_never_counts_as_coverage(sub
     assert report["audit_result"] == "blocked"
     assert "errors_detected" in report["blockers"]
     assert report["error_count"] == 1
+    assert f"coverage_nonhealthy_records:{COVERAGE_REL}" in report["blockers"]
     assert f"coverage_record_invalid:{COVERAGE_REL}" not in report["blockers"]
     stats = report["coverage"][COVERAGE_REL]
     assert stats["records_healthy"] == 337
     assert stats["records_nonhealthy"] == 1
     assert stats["records_in_window"] == 337
+
+
+def test_bound_report_blocks_degraded_record_even_without_counted_error(subject_repo) -> None:
+    # A degraded/stopped record without error_count is invisible to the
+    # legacy scanner; the producer must still block because the standalone
+    # helper rejects every non-healthy record.
+    repo, commit = subject_repo
+    lines = _stream(commit).splitlines()
+    degraded = _heartbeat(T0 + dt.timedelta(hours=336, minutes=5), 400, commit, state="degraded")
+    _write_lf(repo / COVERAGE_REL, "\n".join([*lines, json.dumps(degraded)]) + "\n")
+
+    report = _bound(repo, commit, ended_at_utc=T1 + dt.timedelta(hours=1))
+
+    assert report["audit_result"] == "blocked"
+    assert f"coverage_nonhealthy_records:{COVERAGE_REL}" in report["blockers"]
+    assert "errors_detected" not in report["blockers"]
+    assert report["coverage"][COVERAGE_REL]["records_nonhealthy"] == 1
+
+
+def test_bound_report_accepts_strict_zero_counted_keys_on_healthy_records(subject_repo) -> None:
+    repo, commit = subject_repo
+    lines = [
+        json.dumps(_heartbeat(T0 + dt.timedelta(hours=hour), hour, commit, error_count=0, connection_errors=0))
+        for hour in range(0, 337)
+    ]
+    _write_lf(repo / COVERAGE_REL, "\n".join(lines) + "\n")
+
+    report = _bound(repo, commit)
+
+    assert report["blockers"] == []
+    assert report["coverage"][COVERAGE_REL]["records_healthy"] == 337
+
+
+def test_bound_report_requires_the_fixed_fresh_inventory_and_lock_path(subject_repo) -> None:
+    repo, commit = subject_repo
+    _write_lf(repo / COVERAGE_REL, _stream(commit))
+    other_cov = "docs/runs/release_soak_evidence/other_heartbeat.jsonl"
+    _write_lf(repo / other_cov, _stream(commit))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "S with an extra coverage-shaped file")
+    commit = _git(repo, "rev-parse", "HEAD")
+    _write_lf(repo / COVERAGE_REL, _stream(commit))
+    _write_lf(repo / other_cov, _stream(commit))
+    _write_lf(repo / "requirements.txt", LOCK_TEXT)
+
+    wrong_coverage = _bound(
+        repo, commit,
+        sources=[Path(ERROR_LOG_REL), Path(HISTORY_REL), Path(other_cov)],
+        coverage_sources=[Path(other_cov)],
+    )
+    extra_source = _bound(
+        repo, commit,
+        sources=[Path(ERROR_LOG_REL), Path(HISTORY_REL), Path(COVERAGE_REL), Path(other_cov)],
+    )
+    missing_diagnostic = _bound(repo, commit, sources=[Path(ERROR_LOG_REL), Path(COVERAGE_REL)])
+    wrong_lock = _bound(repo, commit, lock_path="requirements.txt")
+
+    assert "source_inventory_not_fresh_contract" in wrong_coverage["blockers"]
+    assert "source_inventory_not_fresh_contract" in extra_source["blockers"]
+    assert "source_inventory_not_fresh_contract" in missing_diagnostic["blockers"]
+    assert "lock_path_not_fresh_contract" in wrong_lock["blockers"]
+    assert wrong_lock["lock_digest"] is None
+    for report in (wrong_coverage, extra_source, missing_diagnostic, wrong_lock):
+        assert report["audit_result"] == "blocked"
 
 
 def test_bound_report_blocks_commit_mismatch_and_invalid_commit(subject_repo) -> None:

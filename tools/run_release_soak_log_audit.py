@@ -86,10 +86,12 @@ TIMESTAMP_KEYS = (
 LINE_TIMESTAMP_PATTERN = re.compile(
     r"^\s*(?P<ts>\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+Z?)\b"
 )
-# Keys whose values the JSON scanner counts (see ``_scan_json_value``). A
-# coverage record may carry only ``error_count`` from this set, so that a
-# probe failure is counted honestly while a healthy heartbeat never looks
-# like a suppressed failure.
+# Keys whose values count as failures: the JSON scanner's counted keys (see
+# ``_scan_json_value``) plus the harness counters the standalone attester
+# treats the same way. On a coverage record every present counted key must
+# be a strict int; a healthy heartbeat carries only zeros, and any positive
+# count (for example ``error_count: 1`` on a probe failure) makes the record
+# non-healthy, which blocks the audit.
 COUNTED_RECORD_KEYS = frozenset({
     "silent_failure",
     "silent_failures",
@@ -103,12 +105,23 @@ COUNTED_RECORD_KEYS = frozenset({
     "exception",
     "traceback",
     "fatal",
+    "app_errors",
+    "connection_errors",
 })
-COVERAGE_ALLOWED_COUNTED_KEYS = frozenset({"error_count"})
 COVERAGE_TIMESTAMP_KEY = "ts_utc"
 COVERAGE_REQUIRED_KEYS = ("kind", "state", "source_commit", "lock_digest", "seq")
 HEALTHY_COVERAGE_KIND = "soak_heartbeat"
 HEALTHY_COVERAGE_STATE = "ok"
+# The v3.12.0 fresh-soak contract fixes the source inventory: the two legacy
+# diagnostic files stay byte-identical to the subject and exactly one typed
+# coverage journal proves the window. Any other inventory, role map or lock
+# path blocks, because the standalone attester rejects it anyway.
+FRESH_COVERAGE_SOURCE = "docs/runs/release_soak_evidence/v3.12.0_soak_heartbeat.jsonl"
+FRESH_SOURCE_ROLES = {
+    "docs/runs/error_log.jsonl": ROLE_DIAGNOSTIC,
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl": ROLE_DIAGNOSTIC,
+    FRESH_COVERAGE_SOURCE: ROLE_COVERAGE,
+}
 ALLOWED_SOURCE_SUFFIXES = (".log", ".json", ".jsonl")
 GIT_EXECUTABLE = "git"
 GIT_TIMEOUT_SECONDS = 120
@@ -606,11 +619,11 @@ def validate_coverage_record(
     Rules (what the scanner and the standalone attester need): a JSON object;
     exactly one recognized timestamp key, which must be ``ts_utc`` with an
     explicit UTC-zero value; every value a scalar (a nested object or list
-    would be scanned as an undated record); no counted key other than
-    ``error_count`` (a non-negative int); no scanner word in any string;
-    ``kind``, ``state``, ``source_commit``, ``lock_digest`` and ``seq``
-    present, with ``source_commit``/``lock_digest`` equal to the report's
-    values when given and ``seq`` a non-negative int.
+    would be scanned as an undated record); every present counted key a
+    non-negative strict int; no scanner word in any string; ``kind``,
+    ``state``, ``source_commit``, ``lock_digest`` and ``seq`` present, with
+    ``source_commit``/``lock_digest`` equal to the report's values when
+    given and ``seq`` a non-negative int.
     """
     if not isinstance(record, dict):
         return "record_not_object"
@@ -627,10 +640,8 @@ def validate_coverage_record(
         if value is None:
             return f"null_value:{key}"
         lowered = str(key).lower()
-        if lowered in COUNTED_RECORD_KEYS and lowered not in COVERAGE_ALLOWED_COUNTED_KEYS:
-            return f"counted_key:{key}"
-        if lowered == "error_count" and (type(value) is not int or value < 0):
-            return "error_count_invalid"
+        if lowered in COUNTED_RECORD_KEYS and (type(value) is not int or value < 0):
+            return f"counted_value_invalid:{key}"
         if isinstance(value, str) and (
             ERROR_PATTERN.search(value) or SILENT_FAILURE_PATTERN.search(value)
         ):
@@ -650,11 +661,20 @@ def validate_coverage_record(
 
 
 def is_healthy_coverage_record(record: dict[str, Any]) -> bool:
-    """Only healthy heartbeats count as coverage; failure records never do."""
-    return (
-        record.get("kind") == HEALTHY_COVERAGE_KIND
-        and record.get("state") == HEALTHY_COVERAGE_STATE
-        and "error_count" not in record
+    """Only healthy heartbeats count as coverage; failure records never do.
+
+    Healthy means ``kind == soak_heartbeat``, ``state == ok`` and every
+    present counted key a strict-int zero (the standalone attester's rule).
+    """
+    if (
+        record.get("kind") != HEALTHY_COVERAGE_KIND
+        or record.get("state") != HEALTHY_COVERAGE_STATE
+    ):
+        return False
+    return all(
+        type(value) is int and value == 0
+        for key, value in record.items()
+        if str(key).lower() in COUNTED_RECORD_KEYS
     )
 
 
@@ -851,6 +871,10 @@ def build_bound_report(
         key: ROLE_COVERAGE if key in coverage_keys else ROLE_DIAGNOSTIC
         for key in normalized_sources
     }
+    if roles != FRESH_SOURCE_ROLES or coverage_keys != [FRESH_COVERAGE_SOURCE]:
+        blockers.append("source_inventory_not_fresh_contract")
+    if lock_path != DEFAULT_LOCK_PATH:
+        blockers.append("lock_path_not_fresh_contract")
 
     report = build_report(
         source_paths,
@@ -891,7 +915,7 @@ def build_bound_report(
                 blockers.append("source_worktree_dirty")
         subject = commit or head
         lock_rel = _normalize_rel_path(lock_path, suffixes=None)
-        if lock_rel is None:
+        if lock_rel is None or lock_rel != DEFAULT_LOCK_PATH:
             blockers.append("lock_blob_unreadable")
         else:
             data, lock_blob, blocker = _git_tracked_blob(root, subject, lock_rel)
@@ -955,6 +979,11 @@ def build_bound_report(
                 coverage[key] = {**counts, "invalid": reason}
                 blockers.append(f"coverage_record_invalid:{key}")
                 continue
+            if counts["records_nonhealthy"]:
+                # The standalone attester rejects every non-healthy record;
+                # a degraded or stopped record must block even when other
+                # records would still cover the window.
+                blockers.append(f"coverage_nonhealthy_records:{key}")
             if (
                 started_at_utc is not None
                 and ended_at_utc is not None

@@ -139,6 +139,119 @@ def _source_digest(path: Path) -> str | None:
     return "sha256:" + digest.hexdigest()
 
 
+def _snapshot_text(raw: bytes) -> str | None:
+    """Decode a snapshot exactly like ``Path.read_text(encoding="utf-8")``.
+
+    ``read_text`` applies universal-newline translation (CRLF and lone CR
+    become LF), so the snapshot decoder does the same; the digest below is
+    therefore identical to ``_source_digest`` for the same bytes.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _snapshot_digest(raw: bytes) -> str | None:
+    text = _snapshot_text(raw)
+    if text is None:
+        return None
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_source_snapshot(
+    candidate: Path, *, require_single_link: bool
+) -> bytes | None:
+    """Capture one source's bytes once, from a verified regular file.
+
+    The pre-open ``lstat`` must describe a regular file (a single hard link
+    when ``require_single_link``); the object actually opened is then
+    checked again through ``fstat`` on the same descriptor (regular file,
+    link count, and the same device/inode as the pre-open view where the
+    platform reports inodes), so a path swapped between the metadata check
+    and the open is rejected instead of read. Every later stage - digest,
+    diagnostic rescan and coverage parsing - reuses the returned bytes; no
+    stage re-reads the path. This is still a local, non-atomic view of a
+    host that may be mutated concurrently.
+    """
+    try:
+        link_info = os.lstat(candidate)
+        if not stat.S_ISREG(link_info.st_mode):
+            return None
+        if require_single_link and link_info.st_nlink != 1:
+            return None
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        descriptor = os.open(candidate, flags)
+    except (OSError, ValueError):
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if require_single_link and info.st_nlink != 1:
+            return None
+        if (
+            link_info.st_ino
+            and info.st_ino
+            and (link_info.st_dev, link_info.st_ino) != (info.st_dev, info.st_ino)
+        ):
+            return None
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _snapshot_scan_counts(
+    text: str,
+    suffix: str,
+    *,
+    started_at_utc: dt.datetime,
+    ended_at_utc: dt.datetime,
+) -> tuple[int, int, int]:
+    """The producer's ``_scan_source`` dispatch, applied to snapshot text.
+
+    Mirrors ``tools.run_release_soak_log_audit._scan_source`` line for line
+    (``.json`` document, ``.jsonl`` per ``splitlines`` record, otherwise a
+    text log) so the recomputed counts stay comparable with the producer's
+    own; only the bytes come from the snapshot instead of a second read.
+    """
+    from tools.run_release_soak_log_audit import _scan_json_value, _scan_text
+
+    if suffix == ".json":
+        return _scan_json_value(
+            json.loads(text), started_at_utc=started_at_utc, ended_at_utc=ended_at_utc
+        )
+    if suffix == ".jsonl":
+        silent_failures = 0
+        errors = 0
+        undated = 0
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            child_silent, child_errors, child_undated = _scan_json_value(
+                json.loads(line), started_at_utc=started_at_utc, ended_at_utc=ended_at_utc
+            )
+            silent_failures += child_silent
+            errors += child_errors
+            undated += child_undated
+        return silent_failures, errors, undated
+    return _scan_text(text, started_at_utc=started_at_utc, ended_at_utc=ended_at_utc)
+
+
 def _dict_record_instants(record: dict) -> list[dt.datetime] | None:
     """The single event instant of one record; None = invalid record.
 
@@ -172,8 +285,12 @@ def _file_record_instants(path: Path) -> list[dt.datetime] | None:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    return _text_record_instants(text, path.suffix.lower())
+
+
+def _text_record_instants(text: str, suffix: str) -> list[dt.datetime] | None:
+    """``_file_record_instants`` over already-captured text (see snapshot)."""
     instants: list[dt.datetime] = []
-    suffix = path.suffix.lower()
     if suffix == ".jsonl":
         for line in text.splitlines():
             if not line.strip():
@@ -261,10 +378,14 @@ def _fresh_metadata_valid(report: dict, root: Path) -> bool:
     return digest is not None and report.get("lock_digest") == digest
 
 
-def _fresh_record_instants(path: Path, commit: str, lock_digest: str):
-    """Typed coverage only; no historical envelope can count as runtime."""
+def _fresh_record_instants(source: Path | bytes, commit: str, lock_digest: str):
+    """Typed coverage only; no historical envelope can count as runtime.
+
+    ``source`` is the captured snapshot bytes (a path is still accepted for
+    standalone use and is read once here).
+    """
     try:
-        raw = path.read_bytes()
+        raw = source if isinstance(source, bytes) else Path(source).read_bytes()
         if not raw or not raw.endswith(b"\n") or b"\r" in raw.replace(b"\r\n", b""):
             return None
         instants = []
@@ -333,10 +454,15 @@ def evaluate_soak_log_source_attestation(
     window with endpoints and interior gaps within ``max_gap_hours``.
     The opt-in fresh contract keeps all three fixed sources hash-bound, but
     derives coverage only from the typed journal. Diagnostics are independently
-    rescanned, never accepted from the report's declared zero counts. This does
-    not verify Git ancestry, append-only S-to-E deltas or runtime process identity;
-    callers must enforce those separately before release. Legacy behavior remains
-    available unless ``require_fresh_contract=True`` is explicitly requested.
+    rescanned, never accepted from the report's declared zero counts. Every
+    source is captured once from a verified regular file (``_read_source_snapshot``)
+    and that single snapshot feeds the digest, the rescan and the coverage
+    parse; fresh sources must also be single-link regular files, matching the
+    producer. This does not verify Git ancestry, append-only S-to-E deltas or
+    runtime process identity, and it is not atomic against concurrent host
+    mutation; callers must enforce those separately before release. Legacy
+    behavior remains available unless ``require_fresh_contract=True`` is
+    explicitly requested.
     All blockers are path-free; hostile nested types fold into
     blockers, never exceptions.
     """
@@ -416,6 +542,10 @@ def evaluate_soak_log_source_attestation(
     source_hashes = loaded.get("source_hashes")
     source_root_path = Path(source_root)
     bound_files: list[tuple[str, Path]] = []
+    # One captured byte snapshot per bound source; the digest, the fresh
+    # diagnostic rescan and the coverage parse all consume this single
+    # observation instead of re-reading the path.
+    snapshots: dict[str, bytes] = {}
     sources_bound = True
     if (
         not isinstance(source_files, list)
@@ -497,6 +627,13 @@ def evaluate_soak_log_source_attestation(
                 # pathlib resolution raises on.
                 sources_bound = False
                 break
+            # Fresh sources must be single-link regular files, matching the
+            # producer's current-source rule; legacy keeps its prior shape.
+            snapshot = _read_source_snapshot(candidate, require_single_link=fresh)
+            if snapshot is None:
+                sources_bound = False
+                break
+            snapshots[entry] = snapshot
             bound_files.append((entry, candidate))
         if sources_bound and set(source_hashes.keys()) != {
             entry for entry, _ in bound_files
@@ -509,7 +646,7 @@ def evaluate_soak_log_source_attestation(
     if sources_bound:
         for entry, candidate in bound_files:
             expected_digest = source_hashes.get(entry)
-            actual_digest = _source_digest(candidate)
+            actual_digest = _snapshot_digest(snapshots[entry])
             if (
                 not isinstance(expected_digest, str)
                 or actual_digest is None
@@ -524,13 +661,17 @@ def evaluate_soak_log_source_attestation(
         instants: list[dt.datetime] = []
         if fresh and fresh_metadata_valid:
             # Reuse the existing scanner interpretation, not the untrusted
-            # manifest counts. Local import keeps standalone import side-effect
-            # free; future immutable-child wiring must include this module too.
-            from tools.run_release_soak_log_audit import _scan_json_value, _scan_source
+            # manifest counts, over the captured snapshots. Local import keeps
+            # standalone import side-effect free; future immutable-child
+            # wiring must include this module too.
+            from tools.run_release_soak_log_audit import _scan_json_value
 
             try:
                 counts = [0, 0, 0]
-                for entry, candidate in bound_files:
+                for entry, _candidate in bound_files:
+                    text = _snapshot_text(snapshots[entry])
+                    if text is None:
+                        raise UnicodeError("snapshot is not valid UTF-8")
                     if entry == FRESH_COVERAGE_SOURCE:
                         # Use the same literal JSONL boundaries as coverage
                         # validation; legacy diagnostic parsing stays unchanged.
@@ -539,12 +680,13 @@ def evaluate_soak_log_source_attestation(
                                 json.loads(line), started_at_utc=started,
                                 ended_at_utc=ended,
                             )
-                            for line in candidate.read_text(encoding="utf-8").split("\n")
+                            for line in text.split("\n")
                             if line
                         )
                     else:
-                        scans = [_scan_source(
-                            candidate, started_at_utc=started, ended_at_utc=ended,
+                        scans = [_snapshot_scan_counts(
+                            text, Path(entry).suffix.lower(),
+                            started_at_utc=started, ended_at_utc=ended,
                         )]
                     for scanned in scans:
                         counts = [a + b for a, b in zip(counts, scanned)]
@@ -553,13 +695,19 @@ def evaluate_soak_log_source_attestation(
             except (OSError, UnicodeError, ValueError, RecursionError):
                 _append_once(blockers, "soak_log_source_scan_unreadable")
         if coverage_ok:
-            for entry, candidate in bound_files:
+            for entry, _candidate in bound_files:
                 if fresh and entry != FRESH_COVERAGE_SOURCE:
                     continue
-                file_instants = (
-                    _fresh_record_instants(candidate, expected_commit, loaded["lock_digest"])
-                    if fresh else _file_record_instants(candidate)
-                )
+                if fresh:
+                    file_instants = _fresh_record_instants(
+                        snapshots[entry], expected_commit, loaded["lock_digest"]
+                    )
+                else:
+                    text = _snapshot_text(snapshots[entry])
+                    file_instants = (
+                        None if text is None
+                        else _text_record_instants(text, Path(entry).suffix.lower())
+                    )
                 if file_instants is None:
                     coverage_ok = False
                     break

@@ -737,3 +737,163 @@ def test_unreadable_and_non_object_fail_closed(tmp_path) -> None:
     assert evaluate_soak_log_source_attestation(
         not_object, tmp_path, COMMIT
     ) == ["soak_log_report_unreadable"]
+
+
+# --- read-once source snapshot (single-read scope note, 2026-09-11) --------
+
+
+def _forbid_path_reads_under(monkeypatch, forbidden_root) -> dict:
+    """Make every Path.read_text/read_bytes under ``forbidden_root`` fail.
+
+    The attester must capture each source exactly once through its own
+    snapshot read and reuse that snapshot for the digest, the diagnostic
+    rescan and the coverage parse; any convenience re-read of a source path
+    is a second, non-atomic observation and is rejected here.
+    """
+    from pathlib import Path
+
+    original_text = Path.read_text
+    original_bytes = Path.read_bytes
+    forbidden = Path(forbidden_root).resolve()
+    seen = {"forbidden_calls": 0}
+
+    def _guard(path):
+        try:
+            resolved = Path(path).resolve()
+        except OSError:
+            return
+        if resolved == forbidden or forbidden in resolved.parents:
+            seen["forbidden_calls"] += 1
+            raise AssertionError(f"convenience re-read of source {path}")
+
+    def read_text(self, *args, **kwargs):
+        _guard(self)
+        return original_text(self, *args, **kwargs)
+
+    def read_bytes(self):
+        _guard(self)
+        return original_bytes(self)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    return seen
+
+
+def test_fresh_sources_are_read_once_via_snapshot(tmp_path, monkeypatch) -> None:
+    report = _fresh_report(tmp_path)
+    report_path = _write_report(tmp_path, report)
+    seen = _forbid_path_reads_under(monkeypatch, tmp_path / "docs")
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, require_fresh_contract=True
+    )
+
+    assert blockers == []
+    assert seen["forbidden_calls"] == 0
+
+
+def test_legacy_sources_are_read_once_via_snapshot(tmp_path, monkeypatch) -> None:
+    files = _write_daily_sources(tmp_path)
+    report_path = _write_report(tmp_path, _clean_report(tmp_path, files))
+    seen = _forbid_path_reads_under(monkeypatch, tmp_path / "logs")
+
+    blockers = evaluate_soak_log_source_attestation(report_path, tmp_path, COMMIT)
+
+    assert blockers == []
+    assert seen["forbidden_calls"] == 0
+
+
+def test_snapshot_text_and_digest_match_the_legacy_read_text_convention(tmp_path) -> None:
+    from tools import release_soak_log_attestation as attester
+
+    source = tmp_path / "mixed.log"
+    source.write_bytes(b"2026-05-10T00:00:00Z a\r\n2026-05-10T12:00:00Z b\r2026-05-11T00:00:00Z c\n")
+    raw = source.read_bytes()
+
+    assert attester._snapshot_text(raw) == source.read_text(encoding="utf-8")
+    assert attester._snapshot_digest(raw) == attester._source_digest(source)
+    assert attester._snapshot_text(b"\xff\xfe") is None
+    assert attester._snapshot_digest(b"\xff\xfe") is None
+
+
+def _fake_fstat(monkeypatch, target, **overrides):
+    """Return a fstat view of ``target`` with selected fields overridden."""
+    from types import SimpleNamespace
+
+    real_lstat = os.lstat(target)
+    original_fstat = os.fstat
+
+    def fstat(fd):
+        info = original_fstat(fd)
+        if (info.st_dev, info.st_ino) != (real_lstat.st_dev, real_lstat.st_ino):
+            return info
+        fields = {
+            "st_mode": info.st_mode,
+            "st_nlink": info.st_nlink,
+            "st_dev": info.st_dev,
+            "st_ino": info.st_ino,
+            "st_size": info.st_size,
+        }
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr(os, "fstat", fstat)
+
+
+def test_fresh_multi_link_source_is_unbound_but_legacy_keeps_behavior(tmp_path, monkeypatch) -> None:
+    report = _fresh_report(tmp_path)
+    report_path = _write_report(tmp_path, report)
+    _fake_fstat(monkeypatch, tmp_path / FRESH_COVERAGE, st_nlink=2)
+
+    fresh_blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, require_fresh_contract=True
+    )
+
+    assert "soak_log_sources_unbound" in fresh_blockers
+
+    legacy_files = _write_daily_sources(tmp_path)
+    legacy_path = _write_report(tmp_path, _clean_report(tmp_path, legacy_files))
+    _fake_fstat(monkeypatch, tmp_path / "logs" / "runtime.jsonl", st_nlink=2)
+
+    assert evaluate_soak_log_source_attestation(legacy_path, tmp_path, COMMIT) == []
+
+
+def test_snapshot_identity_mismatch_between_lstat_and_open_fails_closed(tmp_path, monkeypatch) -> None:
+    # Mocked metadata only: the opened object must be the same file that the
+    # pre-open lstat approved, or the snapshot is rejected.
+    report = _fresh_report(tmp_path)
+    report_path = _write_report(tmp_path, report)
+    real = os.lstat(tmp_path / FRESH_COVERAGE)
+    _fake_fstat(monkeypatch, tmp_path / FRESH_COVERAGE, st_ino=real.st_ino + 1)
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, require_fresh_contract=True
+    )
+
+    assert "soak_log_sources_unbound" in blockers
+
+
+def test_snapshot_non_regular_open_object_fails_closed(tmp_path, monkeypatch) -> None:
+    import stat as stat_module
+
+    report = _fresh_report(tmp_path)
+    report_path = _write_report(tmp_path, report)
+    _fake_fstat(monkeypatch, tmp_path / FRESH_COVERAGE, st_mode=stat_module.S_IFDIR | 0o755)
+
+    blockers = evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, require_fresh_contract=True
+    )
+
+    assert "soak_log_sources_unbound" in blockers
+
+
+def test_fresh_gap_cap_still_enforced_with_snapshots(tmp_path) -> None:
+    report = _fresh_report(tmp_path)
+    report_path = _write_report(tmp_path, report)
+
+    assert "soak_log_gap_policy_invalid" in evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, max_gap_hours=25, require_fresh_contract=True
+    )
+    assert evaluate_soak_log_source_attestation(
+        report_path, tmp_path, COMMIT, max_gap_hours=12, require_fresh_contract=True
+    ) == []

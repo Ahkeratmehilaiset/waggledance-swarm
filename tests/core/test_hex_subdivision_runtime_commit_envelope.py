@@ -267,3 +267,77 @@ def test_runtime_commit_envelope_rejects_weak_rollback_policy():
 
     assert envelope["ok"] is False
     assert "auto_rollback_policy_bound" in envelope["blockers"]
+
+
+@pytest.mark.parametrize(
+    "malformed_policy",
+    [
+        False,
+        0,
+        "",
+        [],
+        True,
+        1,
+        "invalid",
+        [
+            ("post_merge_canary_required", True),
+            ("signal_kind", "p4b_confirmed_regress"),
+            ("min_confirmations", 2),
+            ("fp_threshold", 0.01),
+        ],
+    ],
+)
+def test_runtime_commit_envelope_rejects_non_mapping_canary_policy(
+    malformed_policy: object,
+):
+    preflight = _preflight()
+
+    envelope = build_subdivision_runtime_commit_envelope(
+        preflight=preflight,
+        operator_signature=_signature(preflight),
+        canary_policy=malformed_policy,  # type: ignore[arg-type]
+    )
+
+    assert envelope["ok"] is False
+    assert envelope["ready_for_runtime_commit_executor"] is False
+    assert "canary_policy_input_well_formed" in envelope["blockers"]
+    assert "post_merge_canary_policy_bound" in envelope["blockers"]
+    assert envelope["post_merge_canary_required"] is False
+
+
+@pytest.mark.parametrize(
+    "malformed_policy",
+    [
+        False,
+        0,
+        "",
+        [],
+        True,
+        1,
+        "invalid",
+        [
+            ("auto_rollback_eligibility_required", True),
+            ("target_must_be_known_green_consensus", True),
+            ("result_tree_must_equal_target_tree", True),
+            ("failure_signal_must_be_debounced", True),
+            ("operator_escalate_on_uncertainty", True),
+            ("forbidden_surfaces_blocked", True),
+        ],
+    ],
+)
+def test_runtime_commit_envelope_rejects_non_mapping_rollback_policy(
+    malformed_policy: object,
+):
+    preflight = _preflight()
+
+    envelope = build_subdivision_runtime_commit_envelope(
+        preflight=preflight,
+        operator_signature=_signature(preflight),
+        rollback_policy=malformed_policy,  # type: ignore[arg-type]
+    )
+
+    assert envelope["ok"] is False
+    assert envelope["ready_for_runtime_commit_executor"] is False
+    assert "rollback_policy_input_well_formed" in envelope["blockers"]
+    assert "auto_rollback_policy_bound" in envelope["blockers"]
+    assert envelope["auto_rollback_eligibility_required"] is False

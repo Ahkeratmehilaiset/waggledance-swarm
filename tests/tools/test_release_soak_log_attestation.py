@@ -91,6 +91,120 @@ def test_truthful_daily_mix_passes(tmp_path) -> None:
     assert blockers == []
 
 
+FRESH_COVERAGE = "docs/runs/release_soak_evidence/v3.12.0_soak_heartbeat.jsonl"
+FRESH_DIAGNOSTICS = [
+    "docs/runs/error_log.jsonl",
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
+]
+
+
+def _fresh_report(tmp_path):
+    # Synthetic unit-test coverage, never a receipt of actual runtime hours.
+    import shutil
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for rel in FRESH_DIAGNOSTICS:
+        destination = tmp_path / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / rel, destination)
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("example==1.0\n", encoding="utf-8")
+    start = dt.datetime(2026, 9, 11, tzinfo=dt.UTC)
+    end = start + dt.timedelta(hours=336)
+    records = [
+        {
+            "ts_utc": _iso(start + dt.timedelta(hours=hour)),
+            "kind": "soak_heartbeat", "state": "ok", "source_commit": COMMIT,
+            "seq": index, "lock_digest": _lf_sha256(lock),
+        }
+        for index, hour in enumerate(range(0, 337, 12))
+    ]
+    (tmp_path / FRESH_COVERAGE).write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    files = [*FRESH_DIAGNOSTICS, FRESH_COVERAGE]
+    return _clean_report(
+        tmp_path, files,
+        contract_version="waggledance.release_soak_log_audit_fields.v2",
+        target_version="v3.12.0",
+        source_tree="a" * 40,
+        source_roles={**dict.fromkeys(FRESH_DIAGNOSTICS, "diagnostic"),
+                      FRESH_COVERAGE: "coverage"},
+        coverage_sources=[FRESH_COVERAGE],
+        lock_path="requirements.lock.txt", lock_digest=_lf_sha256(lock),
+        started_at_utc=_iso(start), ended_at_utc=_iso(end),
+        generated_at=_iso(end + dt.timedelta(minutes=1)),
+    )
+
+
+def test_fresh_contract_preserves_real_historical_diagnostic_records(tmp_path):
+    report = _fresh_report(tmp_path)
+    assert _evaluate(tmp_path, report) == []
+
+
+@pytest.mark.parametrize("change", [
+    {"contract_version": "unknown"},
+    {"coverage_sources": FRESH_DIAGNOSTICS},
+    {"source_roles": {}},
+    {"lock_path": "different.lock"},
+    {"lock_digest": "sha256:" + "0" * 64},
+    {"source_tree": "not-a-tree"},
+])
+def test_fresh_contract_rejects_inconsistent_metadata(tmp_path, change):
+    report = _fresh_report(tmp_path)
+    report.update(change)
+    assert _evaluate(tmp_path, report)
+
+
+@pytest.mark.parametrize("change", [
+    {"source_commit": "b" * 40},
+    {"lock_digest": "sha256:" + "0" * 64},
+    {"state": "degraded"},
+    {"seq": True},
+    {"seq": 0},
+    {"created_at": "2026-09-11T00:00:00Z"},
+    {"error_count": -1},
+    {"error_count": False},
+    {"app_errors": 1},
+    {"connection_errors": "0"},
+    {"probe": {"status_http": 200}},
+])
+def test_fresh_coverage_requires_consistent_typed_records(tmp_path, change):
+    report = _fresh_report(tmp_path)
+    coverage = tmp_path / FRESH_COVERAGE
+    records = [json.loads(line) for line in coverage.read_text().splitlines()]
+    records[1].update(change)
+    coverage.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    report["source_hashes"][FRESH_COVERAGE] = _lf_sha256(coverage)
+    assert "soak_log_coverage_insufficient" in _evaluate(tmp_path, report)
+
+
+def test_fresh_diagnostic_counts_are_recomputed(tmp_path):
+    report = _fresh_report(tmp_path)
+    diagnostic = tmp_path / FRESH_DIAGNOSTICS[0]
+    with diagnostic.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"ts_utc": "2026-09-12T00:00:00Z", "error_count": 1}) + "\n")
+    report["source_hashes"][FRESH_DIAGNOSTICS[0]] = _lf_sha256(diagnostic)
+    assert "soak_log_source_counts_mismatch" in _evaluate(tmp_path, report)
+
+
+def test_fresh_coverage_requires_complete_jsonl_record(tmp_path):
+    report = _fresh_report(tmp_path)
+    coverage = tmp_path / FRESH_COVERAGE
+    coverage.write_bytes(coverage.read_bytes().rstrip(b"\r\n"))
+    report["source_hashes"][FRESH_COVERAGE] = _lf_sha256(coverage)
+    assert "soak_log_coverage_insufficient" in _evaluate(tmp_path, report)
+
+
+def test_required_fresh_contract_does_not_fall_back_to_legacy(tmp_path):
+    report = _clean_report(tmp_path, _write_daily_sources(tmp_path))
+    blockers = evaluate_soak_log_source_attestation(
+        _write_report(tmp_path, report), tmp_path, COMMIT, require_fresh_contract=True,
+    )
+    assert "soak_log_fresh_contract_required" in blockers
+
+
 def test_one_line_nominal_window_forgery_blocks_coverage(tmp_path) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()

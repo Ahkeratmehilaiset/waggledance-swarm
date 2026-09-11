@@ -81,6 +81,10 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "cluster_window",
 )
 
+_ALLOWED_RISK_LABELS: frozenset[str] = frozenset(
+    {"low_risk", "medium_risk", "high_risk"}
+)
+
 _FORBIDDEN_KEY_SUBSTRINGS: tuple[str, ...] = (
     "token",
     "password",
@@ -308,7 +312,16 @@ def normalize_runtime_gap_event(
     evidence_ref = str(raw.get("evidence_ref") or "")
     raw_query = str(raw.get("raw_query") or "")
     miss_reason = str(raw.get("miss_reason") or "")
-    risk_label = str(raw.get("risk_label") or "low_risk")
+    risk_label_raw = raw["risk_label"]
+    if (
+        type(risk_label_raw) is not str
+        or risk_label_raw not in _ALLOWED_RISK_LABELS
+    ):
+        raise GapEventSchemaError(
+            "risk_label must be a plain string equal to one of: "
+            "high_risk, low_risk, medium_risk"
+        )
+    risk_label = risk_label_raw
 
     try:
         confidence_hint = float(raw["confidence_hint"])

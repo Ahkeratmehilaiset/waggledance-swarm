@@ -94,8 +94,16 @@ class AutonomyMetrics:
                     chain_length=str(chain_length))
 
     def record_verification(self, passed: bool, confidence: float = 0.0) -> None:
-        """Record verifier result."""
-        self.record("verifier_pass", 1.0 if passed else 0.0, confidence=str(confidence))
+        """Record verifier result.
+
+        Fail closed: only the literal ``True`` counts as a pass. The
+        ``verifier_pass`` rate feeds the ``verifier_pass_rate`` KPI and the
+        caller forwards whatever the runtime result carried, so a truthy
+        stand-in (``"false"``, ``1``, a non-empty container) must not be
+        recorded as a pass. Identity comparison never consults ``__bool__``.
+        """
+        self.record("verifier_pass", 1.0 if passed is True else 0.0,
+                    confidence=str(confidence))
 
     def record_specialist_prediction(self, model_name: str,
                                      correct: bool) -> None:

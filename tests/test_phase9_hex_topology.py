@@ -2,6 +2,7 @@
 """Targeted tests for Phase 9 §K Real Hex Runtime Topology."""
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import sys
 from pathlib import Path
@@ -627,6 +628,39 @@ def test_apply_plan_rejects_unknown_parent():
     )
     with pytest.raises(ValueError, match="unknown parent_cell_id"):
         so.apply_plan_to_topology(_topo(), plan)
+
+
+@pytest.mark.parametrize(
+    "malformed_children",
+    [
+        None,
+        False,
+        0,
+        "legacy.child",
+        {},
+        {"legacy.child": True},
+        ("legacy.child",),
+        ["legacy.child", 1],
+        ["legacy.child", True],
+    ],
+)
+def test_apply_plan_rejects_malformed_parent_child_ids(
+    malformed_children: object,
+):
+    topology = _topo()
+    topology["cells"]["b"]["child_cell_ids"] = malformed_children
+    before = deepcopy(topology)
+    plan = so.plan_subdivision(
+        parent_cell_id="b",
+        new_child_cell_ids=("b1", "b2"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="parent child_cell_ids must be a plain list of plain strings",
+    ):
+        so.apply_plan_to_topology(topology, plan)
+    assert topology == before
 
 
 # ═══════════════════ no runtime mutation in this session ─────────-

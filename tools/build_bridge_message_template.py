@@ -15,9 +15,13 @@ arguments instead of improvising them:
   and repeated verbatim in the message text; optional bare-integer ``pr``;
 * ``payload.decision_status`` on decision kinds (the closed enum the dormant
   bridge event taxonomy reads) - never a substring parse;
-* bounded single-line ASCII summary, a bounded evidence reference list and an
-  optional ``supersedes_event_id`` (a prior event's ``ts_utc`` or its
-  ``sha256:<line digest>`` as reported by ``validate_bridge_event``);
+* bounded single-line summary and evidence references (Unicode text accepted;
+  control, format and line-break code points refused) and an optional
+  ``supersedes_event_id``: the compact reader's bare 64-hex canonical-JSON event
+  digest (``tools/bridge_compact_view.event_id``), a legacy ``sha256:<raw line
+  digest>`` (``validate_bridge_event``) or a legacy prior ``ts_utc``, labelled in
+  ``payload.supersedes_event_ref_kind`` and always reference-only (no authority,
+  retraction or closure is implied);
 * the envelope key order of ``.agent-bridge/bin/Write-AgentEvent.ps1`` with
   ``pid=0`` and ``cwd="template_not_emitted"``, validated through the canonical
   ``waggledance.core.bridge_event_schema`` model.
@@ -37,7 +41,8 @@ Usage:
         --summary "PR #1234 ready for review at exact head" \\
         --evidence "tests/tools: 41 passed" --evidence "CI: 6 of 6 green"
 
-Exit codes: 0 template rendered (JSON on stdout); 2 invalid input (JSON
+Exit codes: 0 template rendered (JSON on stdout; ``--writer-args-only`` prints
+just the writer argument values, ``--compact`` one line); 2 invalid input (JSON
 ``{"error": <reason>, ...}`` on stderr, nothing on stdout).
 """
 from __future__ import annotations
@@ -50,6 +55,7 @@ from pathlib import Path
 import re
 import sys
 from typing import Any
+import unicodedata
 
 from pydantic import ValidationError
 
@@ -106,6 +112,12 @@ MAX_TASK_ID_CHARS = 180
 RESERVED_TEXT_CHARS = ("|", ";")
 # Same markers Write-AgentEvent.ps1 refuses (case-insensitive) before any write.
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
+# supersedes_event_id reference kinds (payload.supersedes_event_ref_kind). The
+# reference never carries authority, retraction or closure (payload.supersedes_effect).
+SUPERSEDES_REF_CANONICAL_JSON = "canonical_json_sha256"  # bare 64-hex compact reader event id
+SUPERSEDES_REF_RAW_LINE = "raw_line_sha256"  # legacy sha256:<raw jsonl line digest>
+SUPERSEDES_REF_TS_UTC = "ts_utc"  # legacy prior event timestamp
+SUPERSEDES_EFFECT = "reference_only"
 
 ENVELOPE_KEY_ORDER: tuple[str, ...] = (
     "ts_utc",
@@ -132,7 +144,10 @@ _FULL_GIT_SHA_RE = re.compile(FULL_GIT_SHA_PATTERN)
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9._/-]{1,180}$")
 _EVENT_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$")
 _LINE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CANONICAL_JSON_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _GENERATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
+# Every code point str.splitlines() treats as a line break.
+_LINE_BREAK_CHARS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 class BridgeMessageTemplateError(ValueError):
@@ -189,7 +204,7 @@ def build_bridge_message_template(
     safe_session_id = _validate_optional(session_id, _SESSION_ID_RE, "session_id_invalid")
     safe_role = _validate_optional(role, _AGENT_ID_RE, "role_invalid")
     safe_run_id = _validate_optional(run_id, _SESSION_ID_RE, "run_id_invalid")
-    supersedes = _validate_supersedes_event_id(supersedes_event_id)
+    supersedes, supersedes_kind = _validate_supersedes_event_id(supersedes_event_id)
     ts_utc = _format_generated_at(generated_at)
 
     message = render_message(
@@ -214,6 +229,8 @@ def build_bridge_message_template(
     payload["evidence"] = list(evidence_refs)
     if supersedes:
         payload["supersedes_event_id"] = supersedes
+        payload["supersedes_event_ref_kind"] = supersedes_kind
+        payload["supersedes_effect"] = SUPERSEDES_EFFECT
     payload["template"] = {
         "version": TEMPLATE_VERSION,
         "kind": kind,
@@ -262,7 +279,7 @@ def build_bridge_message_template(
         "SessionId": safe_session_id,
         "RunId": safe_run_id,
         "PayloadJson": json.dumps(
-            payload, separators=(",", ":"), allow_nan=False, ensure_ascii=True
+            payload, separators=(",", ":"), allow_nan=False, ensure_ascii=False
         ),
     }
     return {
@@ -378,12 +395,12 @@ def _validate_text(
     text = value.strip()
     if not text:
         raise BridgeMessageTemplateError(empty_reason)
-    if "\n" in text or "\r" in text:
+    if any(char in _LINE_BREAK_CHARS for char in text):
         raise BridgeMessageTemplateError(f"{label}_multiline")
-    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+    # Unicode text is accepted; control (Cc), format (Cf), surrogate, private-use
+    # and unassigned code points are not.
+    if any(unicodedata.category(char).startswith("C") for char in text):
         raise BridgeMessageTemplateError(f"{label}_control_char")
-    if not text.isascii():
-        raise BridgeMessageTemplateError(f"{label}_non_ascii")
     if any(char in text for char in RESERVED_TEXT_CHARS):
         raise BridgeMessageTemplateError(f"{label}_reserved_char")
     if len(text) > max_chars:
@@ -423,16 +440,21 @@ def _validate_optional(value: Any, pattern: re.Pattern[str], reason: str) -> str
     return value
 
 
-def _validate_supersedes_event_id(value: Any) -> str:
+def _validate_supersedes_event_id(value: Any) -> tuple[str, str]:
+    """Return ``(reference, kind)``; ``("", "")`` when no reference was given."""
     if value is None:
-        return ""
+        return "", ""
     if type(value) is not str:
         raise BridgeMessageTemplateError("supersedes_event_id_invalid")
     if not value:
-        return ""
-    if not (_EVENT_TS_RE.fullmatch(value) or _LINE_DIGEST_RE.fullmatch(value)):
-        raise BridgeMessageTemplateError("supersedes_event_id_invalid")
-    return value
+        return "", ""
+    if _CANONICAL_JSON_DIGEST_RE.fullmatch(value):
+        return value, SUPERSEDES_REF_CANONICAL_JSON
+    if _LINE_DIGEST_RE.fullmatch(value):
+        return value, SUPERSEDES_REF_RAW_LINE
+    if _EVENT_TS_RE.fullmatch(value):
+        return value, SUPERSEDES_REF_TS_UTC
+    raise BridgeMessageTemplateError("supersedes_event_id_invalid")
 
 
 def _format_generated_at(value: Any) -> str:
@@ -497,11 +519,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--generated-at", default="", help="UTC ISO-8601 ending in Z (default: now)")
     parser.add_argument("--compact", action="store_true", help="single-line JSON output")
+    parser.add_argument(
+        "--writer-args-only",
+        action="store_true",
+        help="print only the Write-AgentEvent.ps1 argument values (no event/report wrapper)",
+    )
     return parser
+
+
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _configure_utf8_stdio()
     try:
         report = build_bridge_message_template(
             kind=args.kind,
@@ -527,10 +566,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    output: dict[str, Any] = report["writer_args"] if args.writer_args_only else report
     if args.compact:
-        print(json.dumps(report, separators=(",", ":"), allow_nan=False))
+        print(json.dumps(output, separators=(",", ":"), allow_nan=False, ensure_ascii=False))
     else:
-        print(json.dumps(report, indent=2, allow_nan=False))
+        print(json.dumps(output, indent=2, allow_nan=False, ensure_ascii=False))
     return 0
 
 
@@ -544,6 +584,10 @@ __all__ = [
     "RECOGNIZED_RCO_AGENTS",
     "RCO_PASS_FORBIDDEN_PAYLOAD_KEYS",
     "ENVELOPE_KEY_ORDER",
+    "SUPERSEDES_REF_CANONICAL_JSON",
+    "SUPERSEDES_REF_RAW_LINE",
+    "SUPERSEDES_REF_TS_UTC",
+    "SUPERSEDES_EFFECT",
     "BridgeMessageTemplateError",
     "build_bridge_message_template",
     "render_message",

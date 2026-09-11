@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import builtins
 from datetime import datetime, timedelta, timezone
+import hashlib
 import inspect
 import json
 import os
@@ -262,16 +263,45 @@ def test_progress_head_is_optional_and_message_omits_absent_fields() -> None:
     assert f" head={HEAD} | " in with_head["event"]["message"]
 
 
-def test_supersedes_event_id_accepts_only_bridge_event_reference_forms() -> None:
-    ts_form = "2026-09-11T08:01:55.1234567Z"
-    report = _build(supersedes_event_id=ts_form)
-    assert report["event"]["payload"]["supersedes_event_id"] == ts_form
-    assert f" supersedes={ts_form} | " in report["event"]["message"]
+def test_supersedes_event_id_accepts_three_reference_forms_with_distinct_labels() -> None:
+    assert builder.SUPERSEDES_REF_CANONICAL_JSON == "canonical_json_sha256"
+    assert builder.SUPERSEDES_REF_RAW_LINE == "raw_line_sha256"
+    assert builder.SUPERSEDES_REF_TS_UTC == "ts_utc"
+    assert builder.SUPERSEDES_EFFECT == "reference_only"
 
-    for accepted in ("2026-09-11T08:01:55Z", "sha256:" + "a" * 64):
-        assert _build(supersedes_event_id=accepted)["event"]["payload"][
-            "supersedes_event_id"
-        ] == accepted
+    # The compact reader's event id: sha256 over canonical JSON, bare 64-hex.
+    prior_event = _build(kind="progress", agent="fable-5", pr=None, to="")["event"]
+    canonical = hashlib.sha256(
+        json.dumps(
+            prior_event, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    assert re.fullmatch(r"[0-9a-f]{64}", canonical)
+    report = _build(supersedes_event_id=canonical)
+    payload = report["event"]["payload"]
+    assert payload["supersedes_event_id"] == canonical
+    assert payload["supersedes_event_ref_kind"] == "canonical_json_sha256"
+    assert payload["supersedes_effect"] == "reference_only"
+    assert f" supersedes={canonical} | " in report["event"]["message"]
+
+    raw_line = "sha256:" + "a" * 64
+    payload = _build(supersedes_event_id=raw_line)["event"]["payload"]
+    assert payload["supersedes_event_id"] == raw_line
+    assert payload["supersedes_event_ref_kind"] == "raw_line_sha256"
+    assert payload["supersedes_effect"] == "reference_only"
+
+    for ts_form in ("2026-09-11T08:01:55.1234567Z", "2026-09-11T08:01:55Z"):
+        report = _build(supersedes_event_id=ts_form)
+        payload = report["event"]["payload"]
+        assert payload["supersedes_event_id"] == ts_form
+        assert payload["supersedes_event_ref_kind"] == "ts_utc"
+        assert payload["supersedes_effect"] == "reference_only"
+        assert f" supersedes={ts_form} | " in report["event"]["message"]
+
+    absent = _build(supersedes_event_id="")["event"]["payload"]
+    for key in ("supersedes_event_id", "supersedes_event_ref_kind", "supersedes_effect"):
+        assert key not in absent
+    assert "supersedes_event_id" not in _build(supersedes_event_id=None)["event"]["payload"]
 
     for rejected in (
         "yesterday",
@@ -280,7 +310,12 @@ def test_supersedes_event_id_accepts_only_bridge_event_reference_forms() -> None
         "sha256:" + "A" * 64,
         "sha256:" + "a" * 63,
         "SHA256:" + "a" * 64,
+        "C" * 64,
+        "c" * 63,
+        "c" * 65,
+        " " + "c" * 64,
         1726040515,
+        ["c" * 64],
     ):
         assert _error(supersedes_event_id=rejected) == "supersedes_event_id_invalid"
 
@@ -404,13 +439,35 @@ def test_summary_bounds() -> None:
     assert _build(summary="x" * 400)["event"]["payload"]["summary"] == "x" * 400
     assert _error(summary="line1\nline2") == "summary_multiline"
     assert _error(summary="line1\rline2") == "summary_multiline"
+    assert _error(summary="rivi1\u2028rivi2") == "summary_multiline"
+    assert _error(summary="rivi1\x85rivi2") == "summary_multiline"
     assert _error(summary="a | b") == "summary_reserved_char"
     assert _error(summary="a; b") == "summary_reserved_char"
-    assert _error(summary="ok ä") == "summary_non_ascii"
     assert _error(summary="ctrl\x07") == "summary_control_char"
+    assert _error(summary="tab\there") == "summary_control_char"
+    assert _error(summary="c1\x9fctrl") == "summary_control_char"
+    assert _error(summary="zero\u200bwidth") == "summary_control_char"
+    assert _error(summary="bidi\u202eoverride") == "summary_control_char"
     assert _error(summary="see synthetic_secret_DO_NOT_LEAK note") == "private_marker"
     assert _error(summary="see private_marker note") == "private_marker"
     assert _build(summary="  padded  ")["event"]["payload"]["summary"] == "padded"
+
+
+def test_unicode_text_is_accepted_and_kept_unescaped() -> None:
+    summary = "kaikki 86 testiä läpi, ei löydöksiä ✅"
+    evidence = ["testit: 86 läpi", "käännös: 日本語 ok"]
+    report = _build(summary=summary, evidence=evidence)
+    payload = report["event"]["payload"]
+    assert payload["summary"] == summary
+    assert payload["evidence"] == evidence
+    message = report["event"]["message"]
+    assert f" | {summary} | evidence: testit: 86 läpi; käännös: 日本語 ok | " in message
+    validate_event(report["event"])
+    payload_json = report["writer_args"]["PayloadJson"]
+    assert "läpi" in payload_json and "\\u00e4" not in payload_json
+    assert json.loads(payload_json) == payload
+    assert _build(summary="ä" * 400)["event"]["payload"]["summary"] == "ä" * 400
+    assert _error(summary="ä" * 401) == "summary_too_long"
 
 
 def test_evidence_bounds() -> None:
@@ -424,10 +481,12 @@ def test_evidence_bounds() -> None:
     assert _error(evidence=["x" * 201]) == "evidence_item_too_long"
     assert _build(evidence=["x" * 200])["event"]["payload"]["evidence"] == ["x" * 200]
     assert _error(evidence=["a\nb"]) == "evidence_item_multiline"
+    assert _error(evidence=["a\u2029b"]) == "evidence_item_multiline"
     assert _error(evidence=["a|b"]) == "evidence_item_reserved_char"
     assert _error(evidence=["a;b"]) == "evidence_item_reserved_char"
-    assert _error(evidence=["café"]) == "evidence_item_non_ascii"
+    assert _build(evidence=["café"])["event"]["payload"]["evidence"] == ["café"]
     assert _error(evidence=["a\x1bb"]) == "evidence_item_control_char"
+    assert _error(evidence=["a\u200db"]) == "evidence_item_control_char"
     assert _error(evidence=["ref synthetic_secret_DO_NOT_LEAK"]) == "private_marker"
     assert _error(evidence=[f"e{i}" for i in range(13)]) == "evidence_too_many"
     twelve = [f"e{i}" for i in range(12)]
@@ -524,6 +583,59 @@ def test_cli_success_emits_validated_json_report() -> None:
     assert event["payload"]["pr"] == 1680
     assert event["payload"]["evidence"] == ["tests/tools: 41 passed", "CI: pending"]
     assert json.loads(report["writer_args"]["PayloadJson"]) == event["payload"]
+
+
+def test_cli_writer_args_only_prints_only_dispatch_values() -> None:
+    base_args = (
+        "--kind",
+        "build_consensus",
+        "--task-id",
+        TASK,
+        "--agent",
+        "codex-tools-1",
+        "--head-sha",
+        HEAD,
+        "--pr",
+        "1680",
+        "--summary",
+        "fokusoidut testit läpi: 136 passed",
+        "--evidence",
+        "receipt: .codex-audit/tools-live-continuity-fix-20260911/receipt.md",
+        "--generated-at",
+        "2026-09-11T08:30:00Z",
+    )
+    full = _run_cli(*base_args)
+    assert full.returncode == 0, full.stderr
+    report = json.loads(full.stdout)
+    assert "ä" in full.stdout and "\\u00e4" not in full.stdout
+
+    only = _run_cli(*base_args, "--writer-args-only")
+    assert only.returncode == 0, only.stderr
+    assert only.stderr == ""
+    writer_args = json.loads(only.stdout)
+    assert writer_args == report["writer_args"]
+    assert set(writer_args) == {
+        "Agent",
+        "Type",
+        "Status",
+        "TaskId",
+        "To",
+        "Message",
+        "Role",
+        "AgentUuid",
+        "SessionId",
+        "RunId",
+        "PayloadJson",
+    }
+    assert "event" not in writer_args and "template_version" not in writer_args
+    assert writer_args["Status"] == "build_consensus_pass"
+    assert json.loads(writer_args["PayloadJson"])["exact_head"] == HEAD
+    assert only.stdout.count("\n") > 1
+
+    compact = _run_cli(*base_args, "--writer-args-only", "--compact")
+    assert compact.returncode == 0, compact.stderr
+    assert compact.stdout.count("\n") == 1
+    assert json.loads(compact.stdout) == writer_args
 
 
 def test_cli_compact_flag_emits_single_line_json() -> None:

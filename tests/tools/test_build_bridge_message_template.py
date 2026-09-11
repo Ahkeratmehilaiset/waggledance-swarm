@@ -448,8 +448,6 @@ def test_summary_bounds() -> None:
     assert _error(summary="c1\x9fctrl") == "summary_control_char"
     assert _error(summary="zero\u200bwidth") == "summary_control_char"
     assert _error(summary="bidi\u202eoverride") == "summary_control_char"
-    assert _error(summary="see synthetic_secret_DO_NOT_LEAK note") == "private_marker"
-    assert _error(summary="see private_marker note") == "private_marker"
     assert _build(summary="  padded  ")["event"]["payload"]["summary"] == "padded"
 
 
@@ -487,11 +485,29 @@ def test_evidence_bounds() -> None:
     assert _build(evidence=["café"])["event"]["payload"]["evidence"] == ["café"]
     assert _error(evidence=["a\x1bb"]) == "evidence_item_control_char"
     assert _error(evidence=["a\u200db"]) == "evidence_item_control_char"
-    assert _error(evidence=["ref synthetic_secret_DO_NOT_LEAK"]) == "private_marker"
     assert _error(evidence=[f"e{i}" for i in range(13)]) == "evidence_too_many"
     twelve = [f"e{i}" for i in range(12)]
     assert _build(evidence=twelve)["event"]["payload"]["evidence"] == twelve
     assert _build(evidence=["  padded ref  "])["event"]["payload"]["evidence"] == ["padded ref"]
+
+
+@pytest.mark.parametrize("marker", builder.PRIVATE_MARKERS)
+def test_every_configured_private_marker_is_refused_in_summary_and_evidence(
+    marker: str,
+) -> None:
+    """Parametrized over the production marker tuple imported from the tool.
+
+    The resolved inputs reproduce the earlier literal fixtures exactly (the marker
+    embedded in a longer token, and the marker lowercased) and exercise every
+    configured marker in both text fields, so the tool's own tuple is the single
+    source of the sentinel values.
+    """
+    embedded = f"synthetic_secret{marker}"
+    lowered = marker.lower()
+    assert _error(summary=f"see {embedded} note") == "private_marker"
+    assert _error(summary=f"see {lowered} note") == "private_marker"
+    assert _error(evidence=[f"ref {embedded}"]) == "private_marker"
+    assert _error(evidence=[f"ref {lowered}"]) == "private_marker"
 
 
 def test_identity_fields_validated() -> None:

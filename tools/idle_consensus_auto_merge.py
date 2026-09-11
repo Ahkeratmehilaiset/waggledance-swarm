@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_check import DEFAULT_EVENTS_PATH  # noqa: E402
+from tools.bridge_diff_privacy import find_diff_private_marker  # noqa: E402
 from tools.check_bridge_changes_requested import (  # noqa: E402
     _is_blocking_status as _bridge_is_blocking_status,
     _is_clear_status as _bridge_is_clear_status,
@@ -341,9 +342,13 @@ def evaluate_auto_merge_gate(
         artifact_writer=artifact_writer,
         accepted_queue_checker=accepted_queue_checker,
     )
+    diff_text = _diff_text(pr_status)
+    diff_marker = find_diff_private_marker(diff_text)
+    if diff_marker is not None:
+        _assert_no_private_markers(diff_marker)
     _assert_no_private_markers(
         {
-            "pr_status": pr_status,
+            "pr_status": {key: value for key, value in pr_status.items() if key != "diff_text"},
             "expected_head": expected_head,
             "expected_base_sha": expected_base_sha,
             "consensus_proposal_id": consensus_proposal_id,

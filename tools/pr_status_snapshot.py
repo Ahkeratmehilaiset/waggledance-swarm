@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_pr_author import (  # noqa: E402
     github_pr_git_identity_evidence,
 )
+from tools.bridge_diff_privacy import find_diff_private_marker  # noqa: E402
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -216,7 +217,7 @@ def build_pr_status_snapshot(
         failure_decision="gh_pr_diff_failed",
         label="gh pr diff",
     )
-    _assert_no_private_markers(diff_text)
+    _assert_no_private_markers_in_diff(diff_text)
     verified_base_tip = _fetch_base_ref_tip(
         run=run,
         repo=repo,
@@ -684,7 +685,8 @@ def _normalize_snapshot(
         "git_identities": git_identities,
         "git_identity_evidence": git_identity_evidence,
     }
-    _assert_no_private_markers(snapshot)
+    _assert_no_private_markers({key: value for key, value in snapshot.items() if key != "diff_text"})
+    _assert_no_private_markers_in_diff(diff_text)
     return snapshot
 
 
@@ -860,6 +862,13 @@ def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
     )
 
 
+def _assert_no_private_markers_in_diff(diff_text: str) -> None:
+    marker = find_diff_private_marker(diff_text)
+    if marker is not None:
+        # Reuse the strict error path without exposing the source payload.
+        _assert_no_private_markers(marker)
+
+
 def _assert_no_private_markers(value: object) -> None:
     marker = _find_private_marker(value)
     if marker is not None:
@@ -873,48 +882,9 @@ def _assert_no_private_markers(value: object) -> None:
         )
 
 
-def _is_allowed_private_marker_helper_reference(
-    value: str, start: int, marker: str
-) -> bool:
-    end = start + len(marker)
-    while start > 0 and _is_private_marker_identifier_char(value[start - 1]):
-        start -= 1
-    while end < len(value) and _is_private_marker_identifier_char(value[end]):
-        end += 1
-    if value[start:end] != f"{marker}S":
-        return False
-    line_start = value.rfind("\n", 0, start) + 1
-    line_end = value.find("\n", end)
-    if line_end == -1:
-        line_end = len(value)
-    line = value[line_start:line_end]
-    if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
-        return False
-    before = value[start - 1] if start > line_start else ""
-    after = value[end] if end < line_end else ""
-    return before not in {"'", '"'} and after not in {"'", '"'}
-
-
-def _is_private_marker_identifier_char(character: str) -> bool:
-    return (
-        character == "_"
-        or "0" <= character <= "9"
-        or "A" <= character <= "Z"
-        or "a" <= character <= "z"
-    )
-
-
 def _find_private_marker(value: object) -> str | None:
     if isinstance(value, str):
         for marker in PRIVATE_MARKERS:
-            if marker == PRIVATE_MARKERS[0]:
-                for match in re.finditer(re.escape(marker), value):
-                    if _is_allowed_private_marker_helper_reference(
-                        value, match.start(), marker
-                    ):
-                        continue
-                    return marker
-                continue
             if marker in value:
                 return marker
         return None

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "standing_sign_receipt_replay_canary.py"
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 OTHER_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
+ACTIVATION_HEAD = "0f0e0d0c0b0a09080706050403020100abcdef12"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
 TASK = "idle-consensus-001"
 AGENT_UUIDS = {
@@ -29,10 +30,58 @@ AGENT_UUIDS = {
 }
 
 
+def _activation_receipt(tmp_path: Path) -> Path:
+    verifier = (
+        ROOT
+        / "ops"
+        / "windows"
+        / "reboot"
+        / "check_rule9b_activation_receipt.py"
+    )
+    namespace = {"__name__": "rule9b_replay_test_verifier", "__file__": str(verifier)}
+    exec(compile(verifier.read_bytes(), str(verifier), "exec"), namespace)
+    now = datetime.now(timezone.utc)
+    body = {
+        "schema": namespace["RECEIPT_SCHEMA_ID"],
+        "activation_pr_number": 1657,
+        "activation_head": ACTIVATION_HEAD,
+        "activation_base_sha": BASE,
+        "activation_tree_sha": "9" * 40,
+        "activation_pr_changed_paths": ["tools/idle_consensus_auto_merge.py"],
+        "runtime_generation_id": "replay-canary-test",
+        "runtime_manifest_sha256": "a" * 64,
+        "runtime_file_count": 12,
+        "driver_sha256": "b" * 64,
+        "verifier_sha256": "c" * 64,
+        "previous_driver_sha256": "",
+        "cause_b_blob_ids": ["d" * 40, "e" * 40],
+        "applied_at_utc": (now - timedelta(minutes=5)).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "effective_expiry_utc": (now + timedelta(days=7)).isoformat().replace(
+            "+00:00", "Z"
+        ),
+    }
+    receipt = dict(body)
+    receipt["confirm_digest"] = namespace["canonical_receipt_digest"](body)
+    path = tmp_path / "rule9b-activation-receipt.json"
+    path.write_bytes(namespace["canonical_json_bytes"](receipt) + b"\n")
+    return path
+
+
+def _replay(tmp_path: Path, **kwargs):
+    return replay_standing_sign_receipt(
+        rule9b_activation_receipt_path=str(_activation_receipt(tmp_path)),
+        expected_rule9b_activation_head=ACTIVATION_HEAD,
+        **kwargs,
+    )
+
+
 def test_replays_standing_sign_receipt_pass(tmp_path: Path) -> None:
     events_path = _events_path(tmp_path, _dual_rco_events())
 
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=_status(),
         receipt_payload=_receipt_payload(),
         events_path=events_path,
@@ -60,7 +109,8 @@ def test_replays_standing_sign_receipt_pass(tmp_path: Path) -> None:
 
 
 def test_stale_head_blocks_replay(tmp_path: Path) -> None:
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=_status(),
         receipt_payload=_receipt_payload(),
         events_path=_events_path(tmp_path, _dual_rco_events()),
@@ -76,7 +126,8 @@ def test_stale_head_blocks_replay(tmp_path: Path) -> None:
 
 
 def test_missing_second_rco_blocks_standing_sign_replay(tmp_path: Path) -> None:
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=_status(),
         receipt_payload=_receipt_payload(),
         events_path=_events_path(tmp_path, _dual_rco_events()[:-1]),
@@ -94,7 +145,8 @@ def test_author_rco_slot_blocks_dual_rco_replay(tmp_path: Path) -> None:
     events = _dual_rco_events()
     events[0] = _claim("claude-rco-1", TASK, ts="2026-06-07T17:30:00Z")
 
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=_status(author_agent="claude-rco-1"),
         receipt_payload=_receipt_payload(),
         events_path=_events_path(tmp_path, events),
@@ -109,7 +161,8 @@ def test_author_rco_slot_blocks_dual_rco_replay(tmp_path: Path) -> None:
 
 
 def test_no_ci_blocks_replay(tmp_path: Path) -> None:
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=_status(checks=[]),
         receipt_payload=_receipt_payload(),
         events_path=_events_path(tmp_path, _dual_rco_events()),
@@ -128,7 +181,8 @@ def test_a_class_changed_path_blocks_replay(tmp_path: Path) -> None:
     status = _status(changed_paths=["tools/idle_consensus_auto_merge.py"])
     payload = _receipt_payload(changed_paths=["tools/idle_consensus_auto_merge.py"])
 
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=status,
         receipt_payload=payload,
         events_path=_events_path(tmp_path, _dual_rco_events()),
@@ -146,7 +200,8 @@ def test_a_class_changed_path_blocks_replay(tmp_path: Path) -> None:
 def test_receipt_changed_paths_mismatch_blocks_replay(tmp_path: Path) -> None:
     payload = _receipt_payload(changed_paths=["docs/runs/other_board.md"])
 
-    report = replay_standing_sign_receipt(
+    report = _replay(
+        tmp_path,
         pr_status=_status(),
         receipt_payload=payload,
         events_path=_events_path(tmp_path, _dual_rco_events()),
@@ -163,6 +218,7 @@ def test_receipt_changed_paths_mismatch_blocks_replay(tmp_path: Path) -> None:
 def test_cli_json_returns_exit_three_on_blocker(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     payload_path = tmp_path / "payload.json"
+    activation_path = _activation_receipt(tmp_path)
     status_path.write_text(json.dumps(_status(checks=[])), encoding="utf-8")
     payload_path.write_text(json.dumps(_receipt_payload()), encoding="utf-8")
 
@@ -182,6 +238,10 @@ def test_cli_json_returns_exit_three_on_blocker(tmp_path: Path) -> None:
             BASE,
             "--consensus-proposal-id",
             TASK,
+            "--rule9b-activation-receipt-path",
+            str(activation_path),
+            "--expected-rule9b-activation-head",
+            ACTIVATION_HEAD,
             "--bridge-task-id",
             TASK,
             "--json",

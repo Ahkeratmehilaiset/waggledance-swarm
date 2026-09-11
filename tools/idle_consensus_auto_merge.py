@@ -114,6 +114,110 @@ MergeVerifier = Callable[[int, str, str], Mapping[str, Any]]
 AcceptedQueueChecker = Callable[..., Mapping[str, Any]]
 
 
+RECEIPT_VERIFIER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "ops"
+    / "windows"
+    / "reboot"
+    / "check_rule9b_activation_receipt.py"
+)
+
+
+def _load_receipt_verifier() -> Any:
+    """Return the protected verify_receipt_file, or None if unavailable.
+
+    Loaded by path and compiled from bytes rather than imported, so no
+    __pycache__ artifact and no package-layout assumption sits between the
+    admission and the code that actually verifies the receipt.
+    """
+    path = RECEIPT_VERIFIER_PATH
+    try:
+        if not path.is_file():
+            return None
+        namespace: dict[str, Any] = {
+            "__name__": "wd_rule9b_receipt_verifier",
+            "__file__": str(path),
+        }
+        exec(compile(path.read_bytes(), str(path), "exec"), namespace)
+    except (OSError, SyntaxError, ValueError):
+        return None
+    verify = namespace.get("verify_receipt_file")
+    return verify if callable(verify) else None
+
+
+def _independent_activation_receipt_gate(
+    *,
+    activation_receipt_path: str,
+    expected_activation_head: str,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    """Open and verify the standing-authority activation receipt.
+
+    This is deliberately separate from ``receipt_bundle_path``. That existing
+    path is the per-merge MAGMA artifact and is not a Rule 9b activation
+    receipt. Conflating the two either breaks every legacy caller or, worse,
+    lets a per-merge artifact stand in for operator-signed standing authority.
+
+    Every failure path returns verified False with a named blocker; there is no
+    branch that returns verified True without a successful verification.
+    """
+    if not activation_receipt_path:
+        return {
+            "checked": False,
+            "verified": False,
+            "blockers": ["Rule 9b activation receipt path is empty"],
+        }
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_activation_head):
+        return {
+            "checked": False,
+            "verified": False,
+            "blockers": ["expected Rule 9b activation head is missing or malformed"],
+        }
+    verify = _load_receipt_verifier()
+    if verify is None:
+        return {
+            "checked": False,
+            "verified": False,
+            "blockers": [
+                "receipt verifier is unavailable at "
+                f"{RECEIPT_VERIFIER_PATH.name}; refusing rather than assuming"
+            ],
+        }
+    try:
+        report = verify(
+            Path(activation_receipt_path),
+            expected_activation_head=expected_activation_head,
+            now_utc=now_utc,
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure here is a refusal
+        return {
+            "checked": True,
+            "verified": False,
+            "blockers": [
+                f"receipt verification raised {exc.__class__.__name__}"
+            ],
+        }
+    if not isinstance(report, dict):
+        return {
+            "checked": True,
+            "verified": False,
+            "blockers": ["receipt verifier returned a malformed report"],
+        }
+    blockers = report.get("blockers")
+    if not isinstance(blockers, list) or not all(
+        isinstance(item, str) for item in blockers
+    ):
+        return {
+            "checked": True,
+            "verified": False,
+            "blockers": ["receipt verifier returned a malformed blocker list"],
+        }
+    # Both conditions, deliberately: a verdict that says verified while
+    # carrying blockers is inconsistent and is refused rather than resolved.
+    verified = report.get("verified") is True and not blockers
+    return {"checked": True, "verified": verified, "blockers": list(blockers)}
+
+
 class AutoMergeGateError(ValueError):
     """Raised when auto-merge input cannot be evaluated safely."""
 
@@ -298,6 +402,8 @@ def evaluate_auto_merge_gate(
     consensus_proposal_id: str,
     expected_base_sha: str = "",
     receipt_bundle_path: str = "",
+    rule9b_activation_receipt_path: str = "",
+    expected_rule9b_activation_head: str = "",
     events_path: Path | None = None,
     charter_path: Path = DEFAULT_CHARTER_PATH,
     utc_date: str | None = None,
@@ -323,6 +429,8 @@ def evaluate_auto_merge_gate(
         consensus_proposal_id=consensus_proposal_id,
         expected_base_sha=expected_base_sha,
         receipt_bundle_path=receipt_bundle_path,
+        rule9b_activation_receipt_path=rule9b_activation_receipt_path,
+        expected_rule9b_activation_head=expected_rule9b_activation_head,
         events_path=events_path,
         charter_path=charter_path,
         utc_date=utc_date,
@@ -341,20 +449,31 @@ def evaluate_auto_merge_gate(
         artifact_writer=artifact_writer,
         accepted_queue_checker=accepted_queue_checker,
     )
-    _assert_no_private_markers(
-        {
-            "pr_status": pr_status,
-            "expected_head": expected_head,
-            "expected_base_sha": expected_base_sha,
-            "consensus_proposal_id": consensus_proposal_id,
-            "receipt_bundle_path": receipt_bundle_path,
-            "events_path": str(events_path) if events_path is not None else "",
-            "charter_path": str(charter_path),
-            "repo": repo,
-            "from_agent": from_agent,
-            "bridge_task_id": bridge_task_id,
-        }
-    )
+    if standing_consensus_sign and apply:
+        raise _invalid(
+            "standing_consensus_direct_apply_disabled",
+            "standing consensus direct Apply is disabled; protected broker required",
+        )
+    private_marker_inputs = {
+        "pr_status": pr_status,
+        "expected_head": expected_head,
+        "expected_base_sha": expected_base_sha,
+        "consensus_proposal_id": consensus_proposal_id,
+        "receipt_bundle_path": receipt_bundle_path,
+        "events_path": str(events_path) if events_path is not None else "",
+        "charter_path": str(charter_path),
+        "repo": repo,
+        "from_agent": from_agent,
+        "bridge_task_id": bridge_task_id,
+    }
+    if standing_consensus_sign:
+        private_marker_inputs.update(
+            {
+                "rule9b_activation_receipt_path": rule9b_activation_receipt_path,
+                "expected_rule9b_activation_head": expected_rule9b_activation_head,
+            }
+        )
+    _assert_no_private_markers(private_marker_inputs)
     _validate_sha(expected_head, "expected_head")
     if expected_base_sha:
         _validate_sha(expected_base_sha, "expected_base_sha")
@@ -553,8 +672,31 @@ def evaluate_auto_merge_gate(
         head_matches=(head_sha == expected_head),
         receipt_present=receipt_present,
     )
+    activation_receipt_gate: dict[str, Any] = {
+        "checked": False,
+        "verified": False,
+        "blockers": ["standing consensus sign is not admitted"],
+    }
     if standing_sign_gate.get("admitted"):
-        blockers = [b for b in blockers if not b.startswith("path gate failed")]
+        activation_receipt_gate = _independent_activation_receipt_gate(
+            activation_receipt_path=rule9b_activation_receipt_path,
+            expected_activation_head=expected_rule9b_activation_head,
+            now_utc=datetime.now(timezone.utc),
+        )
+        if activation_receipt_gate["verified"] is not True:
+            detail = "; ".join(activation_receipt_gate["blockers"][:3]) or "unknown"
+            blockers.append(
+                f"Rule 9b activation receipt verification failed: {detail}"
+            )
+        elif apply:
+            # A caller-controlled path/head pair is useful for pure evaluation
+            # tests but can never activate a merge. Production Apply must come
+            # from the later fixed-root protected broker and sealed generation.
+            blockers.append(
+                "standing consensus direct Apply is disabled; protected broker required"
+            )
+        else:
+            blockers = [b for b in blockers if not b.startswith("path gate failed")]
 
     command = _merge_command(
         pr_number=pr_number,
@@ -570,6 +712,7 @@ def evaluate_auto_merge_gate(
         command=command,
         rate_gate=rate_gate,
         receipt_verified=receipt_verified,
+        rule9b_activation_receipt_gate=activation_receipt_gate,
         artifact_hook_configured=artifact_hook_configured,
         bridge_peer_gate=bridge_peer_gate,
         rco_pass_gate=rco_pass_gate,
@@ -979,6 +1122,7 @@ def _base_report(
     command: Sequence[str],
     rate_gate: Mapping[str, Any],
     receipt_verified: bool,
+    rule9b_activation_receipt_gate: Mapping[str, Any],
     artifact_hook_configured: bool,
     bridge_peer_gate: Mapping[str, Any],
     rco_pass_gate: Mapping[str, Any],
@@ -1004,6 +1148,9 @@ def _base_report(
             "verified": receipt_verified,
             "artifact_hook_configured": artifact_hook_configured,
         },
+        "rule9b_activation_receipt_gate": dict(
+            rule9b_activation_receipt_gate
+        ),
         "path_gate": dict(path_gate),
         "diff_gate": dict(diff_gate),
         "base_gate": dict(base_gate),
@@ -2389,6 +2536,8 @@ def _validate_evaluate_inputs(
     consensus_proposal_id: object,
     expected_base_sha: object,
     receipt_bundle_path: object,
+    rule9b_activation_receipt_path: object,
+    expected_rule9b_activation_head: object,
     events_path: object,
     charter_path: object,
     utc_date: object,
@@ -2412,6 +2561,8 @@ def _validate_evaluate_inputs(
         ("consensus_proposal_id", consensus_proposal_id),
         ("expected_base_sha", expected_base_sha),
         ("receipt_bundle_path", receipt_bundle_path),
+        ("rule9b_activation_receipt_path", rule9b_activation_receipt_path),
+        ("expected_rule9b_activation_head", expected_rule9b_activation_head),
         ("repo", repo),
         ("from_agent", from_agent),
         ("bridge_task_id", bridge_task_id),

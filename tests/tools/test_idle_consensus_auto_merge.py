@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,74 @@ from tools.idle_consensus_auto_merge import (
 
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"
+ACTIVATION_HEAD = "fedcba0987654321fedcba0987654321fedcba09"
+
+# The admission gate opens and verifies the receipt artifact, so the fixture
+# is separate from the legacy per-merge receipt bundle. Rule 9b verification
+# binds this artifact to the operator-signed activation generation, never to a
+# later candidate PR head.
+_RECEIPT_VERIFIER = (
+    Path(__file__).resolve().parents[2]
+    / "ops"
+    / "windows"
+    / "reboot"
+    / "check_rule9b_activation_receipt.py"
+)
+
+
+def _receipt_module() -> dict:
+    namespace: dict = {
+        "__name__": "rule9b_verifier_for_admission_tests",
+        "__file__": str(_RECEIPT_VERIFIER),
+    }
+    exec(
+        compile(_RECEIPT_VERIFIER.read_bytes(), str(_RECEIPT_VERIFIER), "exec"),
+        namespace,
+    )
+    return namespace
+
+
+def _write_sealed_receipt(directory: Path, **overrides) -> Path:
+    """Write a receipt whose confirm_digest is correct for its own contents."""
+    ns = _receipt_module()
+    now = datetime.now(timezone.utc)
+    body = {
+        "schema": ns["RECEIPT_SCHEMA_ID"],
+        "activation_pr_number": 1657,
+        "activation_head": ACTIVATION_HEAD,
+        "activation_base_sha": BASE,
+        "activation_tree_sha": "9" * 40,
+        "activation_pr_changed_paths": ["tools/idle_consensus_auto_merge.py"],
+        "runtime_generation_id": "gen-test-0001",
+        "runtime_manifest_sha256": "a" * 64,
+        "runtime_file_count": 12,
+        "driver_sha256": "b" * 64,
+        "verifier_sha256": "c" * 64,
+        "previous_driver_sha256": "",
+        "cause_b_blob_ids": ["d" * 40, "e" * 40],
+        "applied_at_utc": (now - timedelta(minutes=5))
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "effective_expiry_utc": (now + timedelta(days=7))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+    body.update(overrides)
+    receipt = dict(body)
+    receipt["confirm_digest"] = ns["canonical_receipt_digest"](body)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "receipt.json"
+    path.write_bytes(ns["canonical_json_bytes"](receipt) + b"\n")
+    return path
+
+
+RECEIPT_BUNDLE = str(
+    _write_sealed_receipt(Path(tempfile.mkdtemp(prefix="wd-receipt-")))
+)
+
+
+def _sealed_receipt(tmp_path: Path, **overrides) -> Path:
+    return _write_sealed_receipt(tmp_path, **overrides)
 OTHER_BASE = "fedcba9876543210fedcba9876543210fedcba98"
 MERGE_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 AGENT_UUIDS = {
@@ -314,7 +383,7 @@ def test_dry_run_ready_never_invokes_runner() -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         repo="Ahkeratmehilaiset/waggledance-swarm",
         runner=runner,
     )
@@ -344,7 +413,7 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -370,7 +439,7 @@ def test_unresolved_accepted_queue_blocks_an_otherwise_ready_plan(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         accepted_queue_checker=lambda **kwargs: {
@@ -415,7 +484,7 @@ def test_fresh_apply_recheck_sees_new_accepted_queue_item(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -442,7 +511,7 @@ def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=events_path,
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -465,7 +534,7 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
         events.append("artifact")
         return {
             "receipt_bundle": {
-                "manifest": "docs/receipts/manifest.json",
+                "manifest": RECEIPT_BUNDLE,
                 "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
             }
         }
@@ -490,7 +559,7 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
     assert events.index("artifact") < events.index("merge")
     assert report["decision"] == "auto_merged"
     assert report["auto_merge_event_payload"]["receipt_bundle_path"] == (
-        "docs/receipts/manifest.json"
+        RECEIPT_BUNDLE
     )
 
 
@@ -506,7 +575,7 @@ def test_apply_rechecks_full_snapshot_before_merge(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -532,7 +601,7 @@ def test_zero_exit_without_confirmed_merged_state_fails_closed(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -554,7 +623,7 @@ def test_head_mismatch_blocks_without_runner() -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -582,7 +651,7 @@ def test_closed_or_draft_pr_snapshot_fails_closed(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
     )
@@ -597,7 +666,7 @@ def test_apply_requires_expected_base_sha_before_runner(tmp_path: Path) -> None:
         pr_status=_status(),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -617,7 +686,7 @@ def test_expected_base_mismatch_blocks_without_runner(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=OTHER_BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -639,7 +708,7 @@ def test_expected_base_requires_snapshot_base_sha(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -657,7 +726,7 @@ def test_invalid_expected_base_sha_refused() -> None:
             expected_head=HEAD,
             expected_base_sha="abc123",
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
         )
     assert excinfo.value.report["decision"] == "invalid_sha"
     assert (
@@ -673,7 +742,7 @@ def test_denylisted_changed_path_blocks_without_runner() -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -694,7 +763,7 @@ def test_code_pattern_denylist_blocks_without_runner() -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -713,7 +782,7 @@ def test_missing_changed_paths_snapshot_fails_closed() -> None:
             pr_status=status,
             expected_head=HEAD,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
         )
     assert excinfo.value.report["decision"] == "invalid_pr_status"
     assert "changed_paths must be a list" in excinfo.value.report["errors"]
@@ -727,7 +796,7 @@ def test_missing_diff_text_snapshot_fails_closed() -> None:
             pr_status=status,
             expected_head=HEAD,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
         )
     assert excinfo.value.report["decision"] == "invalid_pr_status"
     assert "diff_text must be a string" in excinfo.value.report["errors"]
@@ -744,7 +813,7 @@ def test_daily_rate_limit_blocks_without_runner(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             [_auto_merge_event(index) for index in range(1, 6)],
@@ -779,7 +848,7 @@ def test_quota_date_requires_exact_iso_calendar_date(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             utc_date=utc_date,
             apply=True,
             runner=lambda command: calls.append(list(command)),
@@ -803,7 +872,7 @@ def test_apply_rejects_historical_quota_date_before_runner(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(
                 tmp_path,
                 [
@@ -826,7 +895,7 @@ def test_pending_check_blocks_merge() -> None:
         pr_status=_status(checks=[{"name": "unified", "state": "pending"}]),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
     )
     assert report["decision"] == "operator_review_required"
     assert report["would_merge"] is False
@@ -840,7 +909,7 @@ def test_bridge_peer_block_blocks_automerge_without_runner(tmp_path: Path) -> No
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             [
@@ -881,7 +950,7 @@ def test_exact_head_rco_pass_required_when_bridge_events_checked(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -902,7 +971,7 @@ def test_rco_gate_not_checked_defaults_fail_closed_report() -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
     )
     assert report["decision"] == "operator_review_required"
     assert report["rco_pass_gate"]["ok"] is False
@@ -931,7 +1000,7 @@ def test_operator_merge_required_rco_status_does_not_satisfy_merge_gate(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [rco]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -961,7 +1030,7 @@ def test_pending_ci_rco_status_with_non_green_ci_refuses_merge_gate(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [rco]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -1002,7 +1071,7 @@ def test_consensus_rejects_operator_merge_required_rco_status(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1044,7 +1113,7 @@ def test_bridge_consensus_accepts_exact_head_payload_alias(tmp_path: Path) -> No
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1097,7 +1166,9 @@ def _standing_gate(tmp_path: Path, *, events: list[dict] | None = None, **over):
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
+        rule9b_activation_receipt_path=RECEIPT_BUNDLE,
+        expected_rule9b_activation_head=ACTIVATION_HEAD,
         events_path=_events_path(tmp_path, _dual_rco_events() if events is None else events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1199,7 +1270,7 @@ def test_bridge_consensus_waives_build_author_slot_with_independent_peer(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1260,7 +1331,7 @@ def test_bridge_consensus_build_author_waiver_still_requires_peer_build_slot(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1313,7 +1384,7 @@ def test_bridge_consensus_accepts_exact_head_alias_with_stale_legacy_head_key(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1353,7 +1424,7 @@ def test_bridge_consensus_rejects_stale_exact_head_payload_alias(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1397,7 +1468,7 @@ def test_bridge_consensus_ignores_non_string_exact_head_payload_alias(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1441,7 +1512,7 @@ def test_bridge_consensus_allows_clear_preflight_status_with_block_context(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1483,7 +1554,7 @@ def test_bridge_consensus_rejects_build_pass_with_noncanonical_task_id(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id=canonical_task,
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             events,
@@ -1538,7 +1609,7 @@ def test_bridge_consensus_allows_no_changes_requested_status(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1579,7 +1650,7 @@ def test_bridge_consensus_allows_no_changes_requested_approved_status(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1620,7 +1691,7 @@ def test_bridge_consensus_allows_changes_requested_resolved_status(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1660,7 +1731,7 @@ def test_bridge_consensus_resolved_status_resets_prior_same_agent_block(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1709,7 +1780,7 @@ def test_bridge_consensus_cleared_status_resets_prior_same_agent_block(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1760,7 +1831,7 @@ def test_bridge_consensus_no_changes_requested_text_does_not_clear_real_block(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, events),
             bridge_task_id="idle-consensus-001",
             require_bridge_consensus=True,
@@ -1806,7 +1877,7 @@ def test_lead_stall_failover_is_default_off(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, _lead_stall_failover_events()),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1828,7 +1899,7 @@ def test_lead_stall_failover_engages_from_durable_idle_proof(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, _lead_stall_failover_events()),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1863,7 +1934,7 @@ def test_lead_stall_failover_refuses_tools_authored_pr(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             _lead_stall_failover_events(),
@@ -1894,7 +1965,7 @@ def test_lead_stall_failover_refuses_gate_self_modification(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, _lead_stall_failover_events()),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1926,7 +1997,7 @@ def test_lead_stall_failover_refuses_lead_veto(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1951,7 +2022,7 @@ def test_lead_stall_failover_refuses_recent_substantive_lead_event(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -1978,7 +2049,7 @@ def test_lead_stall_failover_refuses_missing_lead_uuid_idle_evidence(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2008,7 +2079,7 @@ def test_lead_stall_failover_refuses_stale_tools_head(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2037,7 +2108,7 @@ def test_lead_stall_failover_refuses_rco_veto(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2078,7 +2149,7 @@ def test_lead_stall_failover_refuses_future_observation_timestamp(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2106,7 +2177,7 @@ def test_lead_stall_failover_refuses_denylisted_diff_content(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, _lead_stall_failover_events()),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2145,7 +2216,7 @@ def test_lead_stall_failover_refuses_when_lead_directly_approved(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2187,7 +2258,7 @@ def _failover_report(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             events,
@@ -2382,7 +2453,7 @@ def test_bridge_consensus_veto_statuses_with_negation_words_still_block(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, events),
         bridge_task_id="idle-consensus-001",
         require_bridge_consensus=True,
@@ -2399,7 +2470,7 @@ def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
         calls.append("artifact")
         return {
             "receipt_bundle": {
-                "manifest": "docs/receipts/manifest.json",
+                "manifest": RECEIPT_BUNDLE,
                 "verifier_report": {"ok": True, "receipt_count": 1, "errors": []},
             }
         }
@@ -2449,7 +2520,7 @@ def test_bridge_peer_block_matches_pr_number_when_task_id_differs(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [event]),
         from_agent="claude",
         bridge_task_id="implementation-task-without-pr-number",
@@ -2468,7 +2539,7 @@ def test_apply_requires_bridge_events_path() -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -2485,7 +2556,7 @@ def test_apply_requires_explicit_bridge_task_id(tmp_path: Path) -> None:
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path),
         apply=True,
         runner=lambda command: calls.append(list(command)),
@@ -2500,7 +2571,7 @@ def test_bridge_peer_approval_clears_same_peer_block(tmp_path: Path) -> None:
         pr_status=_status(),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             [
@@ -2544,7 +2615,7 @@ def test_author_resolves_from_bridge_claim_not_operator_github_login(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id=task,
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             [
@@ -2579,7 +2650,7 @@ def test_unresolvable_author_fails_closed_instead_of_guessing_task_prefix(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id=task,
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             [_rco_pass(task_id=task)],
@@ -2626,7 +2697,7 @@ def test_missing_or_incomplete_identity_evidence_blocks_with_bridge_events(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
     )
@@ -2647,7 +2718,7 @@ def test_non_string_author_assertion_blocks_instead_of_coercing(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
     )
@@ -2664,7 +2735,7 @@ def test_missing_from_agent_treats_all_bridge_decisions_as_peer_signals(
         pr_status=_status(),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(
             tmp_path,
             [
@@ -2690,7 +2761,7 @@ def test_status_check_rollup_is_supported(tmp_path: Path) -> None:
         pr_status=status,
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
     )
@@ -2702,7 +2773,7 @@ def test_empty_status_check_snapshot_blocks_merge() -> None:
         pr_status=_status(checks=[]),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
     )
     assert report["decision"] == "operator_review_required"
     assert "status checks snapshot is required before merge" in report["reasons"]
@@ -2715,7 +2786,7 @@ def test_operator_approval_snapshot_metadata_is_not_required(
         pr_status=_status(operator_approved=False),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
     )
@@ -2729,7 +2800,7 @@ def test_receipt_verification_required() -> None:
         pr_status=_status(receipt_verified=False),
         expected_head=HEAD,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
     )
     assert report["decision"] == "operator_review_required"
     assert "receipt bundle verification is required before merge" in report["reasons"]
@@ -2769,7 +2840,7 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -2803,7 +2874,7 @@ def test_idle_merge_result_requires_exact_integer_returncode(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -2845,7 +2916,7 @@ def test_missing_merge_returncode_recovers_then_reports_unknown_effect(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -2875,7 +2946,7 @@ def test_malformed_merge_result_recovers_confirmed_exact_merge(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -2910,7 +2981,7 @@ def test_merge_runner_exception_after_dispatch_reports_unknown_effect(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -2953,7 +3024,7 @@ def test_merge_returncode_property_exception_is_recovered(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -2986,7 +3057,7 @@ def test_merge_runner_exception_recovers_confirmed_exact_merge(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -3013,7 +3084,7 @@ def test_post_dispatch_private_verifier_state_is_controlled(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -3052,7 +3123,7 @@ def test_post_dispatch_hostile_verifier_mapping_is_not_invoked(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -3127,7 +3198,7 @@ def test_falsey_callable_idle_runner_is_used_without_default_fallback(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         apply=True,
@@ -3161,7 +3232,7 @@ def test_runner_failure_recovers_when_pr_view_confirms_merge(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
         repo="Ahkeratmehilaiset/waggledance-swarm",
@@ -3313,7 +3384,7 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
             apply=True,
@@ -3459,7 +3530,7 @@ def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> No
     def artifact_writer() -> dict:
         return {
             "receipt_bundle": {
-                "manifest": "docs/receipts/manifest.json",
+                "manifest": RECEIPT_BUNDLE,
                 "verifier_report": {"ok": False, "receipt_count": 1, "errors": []},
             }
         }
@@ -3486,7 +3557,7 @@ def test_private_marker_refused() -> None:
             pr_status=_status(title="PRIVATE_MARKER"),
             expected_head=HEAD,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
         )
     assert excinfo.value.report["decision"] == "privacy_marker_refused"
 
@@ -3524,7 +3595,7 @@ def test_cli_defaults_events_to_runtime_bridge_root(
             "--consensus-proposal-id",
             "idle-consensus-001",
             "--receipt-bundle-path",
-            "docs/receipts/manifest.json",
+            RECEIPT_BUNDLE,
             "--bridge-task-id",
             "idle-consensus-001",
             "--utc-date",
@@ -3549,7 +3620,7 @@ def test_receipt_verified_requires_exact_boolean(
         expected_head=HEAD,
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
-        receipt_bundle_path="docs/receipts/manifest.json",
+        receipt_bundle_path=RECEIPT_BUNDLE,
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
     )
@@ -3597,7 +3668,7 @@ def test_malformed_public_inputs_raise_controlled_gate_error_before_effects(
         "expected_head": HEAD,
         "expected_base_sha": BASE,
         "consensus_proposal_id": "idle-consensus-001",
-        "receipt_bundle_path": "docs/receipts/manifest.json",
+        "receipt_bundle_path": RECEIPT_BUNDLE,
         "runner": lambda command: calls.append(list(command)),
     }
     kwargs[field] = value
@@ -3634,7 +3705,7 @@ def test_effect_and_control_flags_require_exact_booleans(
         "expected_head": HEAD,
         "expected_base_sha": BASE,
         "consensus_proposal_id": "idle-consensus-001",
-        "receipt_bundle_path": "docs/receipts/manifest.json",
+        "receipt_bundle_path": RECEIPT_BUNDLE,
         "runner": lambda command: calls.append(list(command)),
     }
     kwargs[field] = value
@@ -3670,7 +3741,7 @@ def test_bridge_events_use_strict_json_and_utf8(
             expected_head=HEAD,
             expected_base_sha=BASE,
             consensus_proposal_id="idle-consensus-001",
-            receipt_bundle_path="docs/receipts/manifest.json",
+            receipt_bundle_path=RECEIPT_BUNDLE,
             events_path=events_path,
             runner=lambda command: calls.append(list(command)),
         )
@@ -3714,3 +3785,261 @@ def test_cli_pr_status_uses_strict_json_and_utf8(
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "invalid_pr_status"
     assert report["external_effect"] is False
+
+
+# ---------------------------------------------------------------------------
+# Independent Rule 9b activation-receipt admission (v5 slice 2)
+# ---------------------------------------------------------------------------
+# The activation receipt is distinct from the existing per-merge MAGMA bundle.
+# It binds standing authority to the operator-signed activation generation,
+# while each later candidate PR keeps its own independent exact-head checks.
+def _receipt_reasons(report) -> list:
+    """Only the reasons that are about the receipt.
+
+    The gate blocks this fixture for several unrelated causes, so asserting
+    merely that it blocked would pass with the defect still present.
+    """
+    return [r for r in report["reasons"] if "receipt" in r.lower()]
+
+
+def test_standing_sign_refuses_absent_activation_receipt(tmp_path: Path) -> None:
+    report = _standing_gate(
+        tmp_path,
+        standing_consensus_sign=True,
+        rule9b_activation_receipt_path="",
+    )
+    assert report["decision"] == "operator_review_required"
+    assert any("activation receipt" in r.lower() for r in report["reasons"])
+    assert any("path gate failed" in r for r in report["reasons"])
+
+
+def test_standing_sign_refuses_wrong_activation_generation(tmp_path: Path) -> None:
+    path = _sealed_receipt(tmp_path)
+    report = _standing_gate(
+        tmp_path,
+        standing_consensus_sign=True,
+        rule9b_activation_receipt_path=str(path),
+        expected_rule9b_activation_head="0" * 40,
+    )
+    assert report["decision"] == "operator_review_required"
+    assert any("activation receipt" in r.lower() for r in report["reasons"])
+
+
+def test_standing_sign_binds_activation_head_not_candidate_head(tmp_path: Path) -> None:
+    assert ACTIVATION_HEAD != HEAD
+    report = _standing_gate(tmp_path, standing_consensus_sign=True)
+    gate = report["rule9b_activation_receipt_gate"]
+    assert gate["checked"] is True
+    assert gate["verified"] is True, gate
+    assert report["decision"] == "auto_merge_plan_ready"
+
+
+def test_standing_sign_refuses_tampered_activation_receipt(tmp_path: Path) -> None:
+    path = _sealed_receipt(tmp_path)
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    receipt["runtime_file_count"] += 1
+    path.write_bytes(_receipt_module()["canonical_json_bytes"](receipt) + b"\n")
+    report = _standing_gate(
+        tmp_path,
+        standing_consensus_sign=True,
+        rule9b_activation_receipt_path=str(path),
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["rule9b_activation_receipt_gate"]["verified"] is False
+
+
+@pytest.mark.parametrize("verifier_mode", ["success", "exception"])
+def test_standing_sign_direct_apply_is_rejected_before_every_gate_and_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verifier_mode: str,
+) -> None:
+    reached: list[str] = []
+
+    def verifier(*_args, **_kwargs):
+        reached.append("verifier")
+        if verifier_mode == "exception":
+            raise RuntimeError("verifier must be unreachable")
+        return {"verified": True, "blockers": [], "receipt": {}}
+
+    def load_verifier():
+        reached.append("load_verifier")
+        return verifier
+
+    def forbidden(name: str):
+        def call(*_args, **_kwargs):
+            reached.append(name)
+            raise AssertionError(f"{name} must be unreachable")
+
+        return call
+
+    monkeypatch.setattr(idle_merge_tool, "_load_receipt_verifier", load_verifier)
+    monkeypatch.setattr(
+        idle_merge_tool,
+        "_assert_no_private_markers",
+        forbidden("privacy_scan"),
+    )
+    monkeypatch.setattr(idle_merge_tool, "load_charter", forbidden("charter"))
+    monkeypatch.setattr(
+        idle_merge_tool,
+        "evaluate_standing_consensus_sign",
+        forbidden("standing_gate"),
+    )
+    monkeypatch.setattr(idle_merge_tool, "_merge_command", forbidden("merge_command"))
+
+    with pytest.raises(AutoMergeGateError) as excinfo:
+        _standing_gate(
+            tmp_path,
+            standing_consensus_sign=True,
+            apply=True,
+            rule9b_activation_receipt_path=(
+                str(tmp_path / "missing-PRIVATE_MARKER-receipt.json")
+            ),
+            runner=forbidden("runner"),
+            merge_verifier=forbidden("merge_verifier"),
+            artifact_writer=forbidden("artifact_writer"),
+            accepted_queue_checker=forbidden("accepted_queue"),
+        )
+
+    assert reached == []
+    assert excinfo.value.report == {
+        "decision": "standing_consensus_direct_apply_disabled",
+        "ok": False,
+        "dry_run": True,
+        "external_effect": False,
+        "would_merge": False,
+        "errors": [
+            "standing consensus direct Apply is disabled; protected broker required"
+        ],
+        "exit_code": 2,
+    }
+
+
+def test_cli_standing_sign_direct_apply_exits_nonzero_before_gate_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pr_status = tmp_path / "status.json"
+    pr_status.write_text("{}", encoding="utf-8")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("post-validation gate work must be unreachable")
+
+    for name in (
+        "_load_receipt_verifier",
+        "_assert_no_private_markers",
+        "load_charter",
+        "evaluate_standing_consensus_sign",
+        "_merge_command",
+        "_run_command",
+    ):
+        monkeypatch.setattr(idle_merge_tool, name, forbidden)
+
+    exit_code = main(
+        [
+            "--pr-status-file",
+            str(pr_status),
+            "--expected-head",
+            HEAD,
+            "--consensus-proposal-id",
+            "idle-consensus-001",
+            "--standing-consensus-sign",
+            "--apply",
+            "--json",
+        ]
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert report["decision"] == "standing_consensus_direct_apply_disabled"
+    assert report["ok"] is False
+    assert report["dry_run"] is True
+    assert report["would_merge"] is False
+    assert report["external_effect"] is False
+
+
+def test_rule9_apply_ignores_even_poisoned_rule9b_receipt_without_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("standing receipt verification must be unreachable")
+
+    monkeypatch.setattr(
+        idle_merge_tool,
+        "_independent_activation_receipt_gate",
+        forbidden,
+    )
+    calls: list[list[str]] = []
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path=RECEIPT_BUNDLE,
+        rule9b_activation_receipt_path=(
+            str(tmp_path / "missing-PRIVATE_MARKER-receipt.json")
+        ),
+        expected_rule9b_activation_head="PRIVATE_MARKER-not-a-head",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        standing_consensus_sign=False,
+        apply=True,
+        runner=_canonical_apply_runner(calls),
+    )
+    merge_calls = [call for call in calls if call[:3] == ["gh", "pr", "merge"]]
+    assert report["decision"] == "auto_merged"
+    assert report["external_effect"] is True
+    assert len(merge_calls) == 1
+    assert f"--match-head-commit={HEAD}" in merge_calls[0]
+
+
+def test_rule9_dry_run_ignores_poisoned_rule9b_receipt_without_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("standing receipt verification must be unreachable")
+
+    monkeypatch.setattr(
+        idle_merge_tool,
+        "_independent_activation_receipt_gate",
+        forbidden,
+    )
+    common = dict(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path=RECEIPT_BUNDLE,
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001",
+        standing_consensus_sign=False,
+    )
+    baseline = evaluate_auto_merge_gate(**common)
+    poisoned = evaluate_auto_merge_gate(
+        **common,
+        rule9b_activation_receipt_path=(
+            str(tmp_path / "missing-PRIVATE_MARKER-receipt.json")
+        ),
+        expected_rule9b_activation_head="PRIVATE_MARKER-not-a-head",
+    )
+    assert poisoned["decision"] == baseline["decision"]
+    assert poisoned["ok"] is baseline["ok"]
+    assert poisoned["external_effect"] is baseline["external_effect"]
+    assert poisoned["rule9b_activation_receipt_gate"] == (
+        baseline["rule9b_activation_receipt_gate"]
+    )
+
+
+def test_legacy_merge_receipt_contract_is_not_repurposed(tmp_path: Path) -> None:
+    fake_manifest = str(tmp_path / "legacy-magma-manifest.json")
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(receipt_verified=True),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path=fake_manifest,
+    )
+    assert report["receipt_gate"]["verified"] is True
+    assert _receipt_reasons(report) == []

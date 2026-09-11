@@ -887,6 +887,92 @@ def test_grok_response_requires_freshness_payload_before_runtime_write(
 
 
 @WINDOWS_APPEND_V1
+def test_powershell_writer_accepts_new_coordination_types(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    triage = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "triage_disposition",
+        "-TaskId",
+        "triage-smoke",
+        "-Status",
+        "recorded",
+        "-PayloadJson",
+        json.dumps(
+            {
+                "disposition": "ack_dispatch",
+                "target_event_id": "event:1",
+            }
+        ),
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+    tick = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "consumer_tick",
+        "-Status",
+        "started",
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+
+    assert triage.returncode == 0, triage.stderr
+    assert tick.returncode == 0, tick.stderr
+    rows = [
+        json.loads(line)
+        for line in (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["type"] for row in rows] == [
+        "triage_disposition",
+        "consumer_tick",
+    ]
+
+
+def test_powershell_writer_rejects_invalid_triage_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "triage_disposition",
+        "-TaskId",
+        "triage-smoke",
+        "-Status",
+        "acknowledged",
+        "-PayloadJson",
+        json.dumps(
+            {
+                "disposition": "ack_dispatch",
+                "target_event_id": "event:1",
+            }
+        ),
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+
+    assert completed.returncode != 0
+    assert "triage_disposition" in completed.stderr
+    assert not runtime_root.exists()
+
+
+@WINDOWS_APPEND_V1
 def test_grok_response_with_freshness_payload_writes_valid_event(
     tmp_path: Path,
 ) -> None:

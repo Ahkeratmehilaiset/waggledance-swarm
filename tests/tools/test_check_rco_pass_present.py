@@ -268,6 +268,36 @@ def test_changes_requested_after_pass_refuses() -> None:
     )  # pass existed but superseded
 
 
+def test_triage_disposition_cannot_clear_rco_veto_after_pass() -> None:
+    events = [
+        _rco_event(
+            ts="2026-08-26T10:00:00Z",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}.",
+        ),
+        _rco_event(
+            ts="2026-08-26T10:01:00Z",
+            status="changes_requested",
+            type_="decision",
+            message="blocking defect",
+        ),
+        _rco_event(
+            ts="2026-08-26T10:02:00Z",
+            agent="codex-lead-1",
+            status="recorded",
+            type_="triage_disposition",
+            message="ack_dispatch",
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is False
+    assert result["decision"] == "vetoed_after_pass"
+    assert result["latest_rco_is_veto"] is True
+
+
 def test_message_changes_requested_after_pass_does_not_veto() -> None:
     events = [
         _rco_event(

@@ -12,6 +12,7 @@ import pytest
 from waggledance.core.bridge_event_schema import (
     BRIDGE_EVENT_SCHEMA_VERSION,
     BridgeEvent,
+    KNOWN_EVENT_TYPES,
     validate_event,
     validate_event_file,
     validate_event_line,
@@ -203,6 +204,70 @@ def test_invalid_event_fields_raise_clear_validation_errors(
 def test_wake_request_requires_explicit_target() -> None:
     with pytest.raises(Exception, match="wake_request requires to"):
         validate_event(_good_event(type="wake_request", to=""))
+
+
+def test_new_coordination_types_are_known_and_validated() -> None:
+    assert {"triage_disposition", "consumer_tick"} <= KNOWN_EVENT_TYPES
+    tick = validate_event(
+        _good_event(type="consumer_tick", status="started", task_id="")
+    )
+    assert tick.type == "consumer_tick"
+
+    disposition = validate_event(
+        _good_event(
+            type="triage_disposition",
+            status="recorded",
+            payload={
+                "disposition": "ack_dispatch",
+                "target_event_id": "sha256:" + "a" * 64,
+            },
+        )
+    )
+    assert disposition.payload["disposition"] == "ack_dispatch"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "acknowledged"},
+        {"payload": {}},
+        {"payload": {"disposition": "ack_dispatch", "target_event_id": ""}},
+        {
+            "payload": {
+                "disposition": "defer",
+                "target_event_id": "event:1",
+                "reason": "",
+                "next_condition": "after CI",
+            }
+        },
+        {
+            "payload": {
+                "disposition": "defer",
+                "target_event_id": "event:1",
+                "reason": "waiting",
+                "next_condition": "",
+            }
+        },
+        {
+            "payload": {
+                "disposition": "resolved",
+                "target_event_id": "event:1",
+            }
+        },
+    ],
+)
+def test_triage_disposition_contract_fails_closed(overrides: dict) -> None:
+    event = _good_event(
+        type="triage_disposition",
+        status="recorded",
+        payload={
+            "disposition": "ack_dispatch",
+            "target_event_id": "event:1",
+        },
+    )
+    event.update(overrides)
+    with pytest.raises(Exception, match="triage_disposition"):
+        validate_event(event)
 
 
 def test_claim_like_events_require_task_id() -> None:

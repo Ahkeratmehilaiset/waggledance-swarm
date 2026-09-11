@@ -51,7 +51,7 @@ function Test-BridgeInfrastructureEvent {
     # so it must reach the request-like classifier instead of being dropped here.
     # It is kept out of the answer/closure path separately (see Test-BridgeAnswerEvent),
     # matching the Python REQUEST_TYPES parity merged in #1101.
-    return @('heartbeat','liveness') -contains [string]$Event.type
+    return @('heartbeat','liveness','consumer_tick') -contains [string]$Event.type
 }
 
 function Test-BridgeMessageAnswerStatus {

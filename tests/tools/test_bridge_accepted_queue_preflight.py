@@ -1069,6 +1069,15 @@ event = {
     "type": "message",
     "task_id": "accepted-queue-publication-fence-racer",
     "status": "info",
+    "severity": "",
+    "to": "",
+    "message": "publication-fence race probe",
+    "paths": [],
+    "write_scope": [],
+    "run_id": "",
+    "pid": 1234,
+    "cwd": str(root),
+    "payload": {},
 }
 result = writer.write_bridge_event(
     bridge_root=root,

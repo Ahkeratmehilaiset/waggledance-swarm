@@ -12,7 +12,11 @@ param(
     [switch] $ShowScoreboard,
     [switch] $NoContinuity,
     [switch] $NoAckReceived,
-    [switch] $Raw
+    [switch] $Raw,
+    [switch] $Compact,
+    [string] $AfterEvent = '',
+    [string] $EventId = '',
+    [string] $PythonExecutable = 'python'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +28,23 @@ $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
     [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
 } else {
     Split-Path -Parent $PSScriptRoot
+}
+if ($Compact) {
+    foreach ($legacyOption in @('Agent','Tail','OtherOnly','ShowClaims','ShowLiveness','ShowScoreboard','NoContinuity','NoAckReceived','Raw')) {
+        if ($PSBoundParameters.ContainsKey($legacyOption)) {
+            throw "Compact view does not accept legacy option $legacyOption; it is always read-only. Read next-action/claims separately."
+        }
+    }
+    # Pure read path: deliberately before drain, sweep, ACK and mkdir.
+    $compactTool = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'tools/bridge_compact_view.py'
+    $compactArgs = @($compactTool, '--events', (Join-Path $bridgeRoot 'shared/events.jsonl'), '--tail', $ContinuityTail)
+    if ($AfterEvent) { $compactArgs += @('--after', $AfterEvent) }
+    if ($EventId) { $compactArgs += @('--event-id', $EventId) }
+    & $PythonExecutable @compactArgs
+    exit $LASTEXITCODE
+}
+foreach ($compactOption in @('AfterEvent','EventId','PythonExecutable')) {
+    if ($PSBoundParameters.ContainsKey($compactOption)) { throw "$compactOption requires -Compact." }
 }
 if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $bridgeRoot -Force -ErrorAction Stop)

@@ -432,7 +432,12 @@ class CaseTrajectory:
             c.category in (CapabilityCategory.SOLVE, CapabilityCategory.DETECT)
             for c in self.selected_capabilities
         )
-        verifier_pass = self.verifier_result.get("passed", False)
+        # Fail closed at the grade boundary: only the literal ``True``
+        # counts as a verifier pass. Truthy stand-ins (``"false"``,
+        # ``1``, ``[0]``, a non-empty mapping) previously graded GOLD with
+        # a solver and could reach QualityGate auto_promote; the value is
+        # compared by identity so no ``__bool__`` coercion path is taken.
+        verifier_pass = self.verifier_result.get("passed") is True
         has_conflict = self.verifier_result.get("conflict", False)
         has_hallucination = self.verifier_result.get("hallucination", False)
 

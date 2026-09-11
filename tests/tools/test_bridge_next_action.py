@@ -1015,7 +1015,7 @@ def test_autonomous_merge_receipt_closes_same_task_incoming_request() -> None:
         },
         {
             "ts_utc": "2026-06-16T00:22:05Z",
-            "agent": "claude-rco-1",
+            "agent": "codex-tools-1",
             "to": "codex-lead-1,codex-tools-1,operator",
             "type": "decision",
             "task_id": "codex-lead-1/wake-delivery-wall-clock-now-20260616",

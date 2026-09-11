@@ -5,10 +5,17 @@ current claims, exact Git heads, and explicit role permissions remain binding.
 
 ## Reboot continuation
 
-Each lane keeps one compact checkpoint at
-`<worktree>\.codex-audit\wd-current-state.json` using
-`C:\Python\Write-WdLaneCurrentState.ps1`. Update it after every bounded slice
-and before any planned stop. It contains the task, exact branch/HEAD, write
+Each lane keeps its canonical compact checkpoint at
+`<fleet-manifest lane worktree>\.codex-audit\wd-current-state.json` using
+`C:\Python\Write-WdLaneCurrentState.ps1 -Worktree <fleet-manifest lane worktree>`.
+Resolve that worktree from the current reboot pointer's fleet manifest, not
+from the shell's current directory. Update it after every bounded slice,
+after re-reading current Git/bridge state at each wake, and before any planned
+stop. Optional task-worktree checkpoints do not replace the canonical one.
+For work in an alternate worktree, record its exact path, branch, commit and
+next action in the checkpoint's evidence fields; retain the canonical
+worktree's own derived branch/HEAD without substituting the task commit.
+The checkpoint contains the task, exact branch/HEAD, write
 scope, dirty paths, tests, bridge evidence, blockers, and the next executable
 action. The bridge is authoritative for newer events. Large Markdown handoffs
 are audit history and fallback only.

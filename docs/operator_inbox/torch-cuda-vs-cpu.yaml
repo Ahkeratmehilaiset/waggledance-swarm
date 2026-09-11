@@ -50,6 +50,17 @@ operator_signoff:
   scope_updates:
     - recorded_utc: 2026-08-26T05:06:00Z
       recorded_by: "codex-lead-1"
+      signed_by: "operator:jani:2026-09-11T05:55:35Z"
+      signature_source: "operator-direct-reply:2026-09-11:release-continuation"
+      signature_recorded_by: "codex-lead-1"
+      signature_note: >
+        Operator replied "juu allekirjoitan ja jatkz" after the lead identified
+        this unsigned Torch scope update and requested scoped release
+        continuation. The timestamp is the contemporaneous bridge recording
+        time, not a backdated August signature. Codex records the operator's
+        decision as scribe. This signs the existing remediation below; it does
+        not change package pins, waive fresh audit or CI, approve a release,
+        activate standing approval, or authorize a runtime flip.
       source: "operator-directive:2026-08-26:swarm-efficiency-overhaul-release-burndown-E1-E2"
       summary: >
         The operator explicitly directed the release burndown to remediate

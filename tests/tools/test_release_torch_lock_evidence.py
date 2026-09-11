@@ -522,7 +522,14 @@ def test_main_writes_current_repository_lock_evidence(tmp_path) -> None:
         str(output),
     ])
 
-    assert rc == 1
+    assert rc == 0
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["torch_lock_status"] == "blocked"
-    assert "operator_scope_update_signature_required" in report["blockers"]
+    assert report["torch_lock_status"] == "implemented"
+    assert report["blockers"] == []
+    assert report["active_scope_update"]["operator_signed"] is True
+    assert report["active_scope_update"]["operator_id"] == "jani"
+    assert report["active_scope_update"]["authorized_at_utc"] == "2026-09-11T05:55:35Z"
+    assert report["pending_scope_update"] is None
+    assert report["fresh_pip_audit_required"] is True
+    assert report["security_privacy_gate_status"] == "unchanged"
+    assert report["release_gate_effect"] == "none"

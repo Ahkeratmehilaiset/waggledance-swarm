@@ -31,6 +31,31 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - PYTHONUTF8=1
       - WAGGLE_PROFILE=HOME
+      # Vector backend for this container. The base image installs
+      # requirements-ci.txt, which intentionally omits chromadb, so an
+      # unset variable injects the NON-PERSISTENT in-memory store here.
+      #
+      # The single-dash form is required and load-bearing:
+      #   unset          -> inmemory  (the documented Compose default)
+      #   =chroma        -> chroma    (preserved; runtime fail-closes
+      #                                unless the image was derived with
+      #                                the [chroma] extra)
+      #   =  (empty)     -> empty     (preserved, NOT defaulted; the
+      #                                runtime rejects it as an unknown
+      #                                backend)
+      #
+      # Do NOT use `:-` here: it treats an explicit empty value as unset
+      # and would silently select the non-persistent backend, which
+      # contradicts the never-fall-back-silently contract. Do NOT hard-pin
+      # either: entries under `environment:` override `env_file:`, so a
+      # literal `=inmemory` would clobber an operator who asked for chroma.
+      - WAGGLE_VECTOR_BACKEND=${WAGGLE_VECTOR_BACKEND-inmemory}
+      # Keep the Chroma store inside the ./data:/app/data bind mount above.
+      # The runtime default is ./chroma_data, which resolves to
+      # /app/chroma_data (WORKDIR /app) -- NOT covered by any mount, so a
+      # derived-image Chroma run would lose its store on container
+      # replacement. This value is volume-backed.
+      - CHROMA_DIR=${CHROMA_DIR-/app/data/chroma_data}
     command: ["python", "-m", "waggledance.adapters.cli.start_runtime"]
     depends_on:
       - ollama

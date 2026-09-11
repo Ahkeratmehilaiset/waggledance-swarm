@@ -12,6 +12,7 @@ import pytest
 
 from tools.check_release_gate import evaluate_release_gate
 from tools.collect_soak_evidence import (
+    _privacy_precheck_ok,
     build_soak_evidence,
     local_artifact_statuses,
     main,
@@ -23,6 +24,31 @@ from tools.run_release_docker_policy_evidence import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("74 passed\nSMOKE_OK\n", True),
+        ("87 passed\nSMOKE_OK\n", True),
+        ("73 passed\nSMOKE_OK\n", False),
+        ("Status: preliminary\n74 passed\nSMOKE_OK\n", False),
+        ("Historical result: 74 passed\nSMOKE_OK\n", False),
+        ("74 passed\nSMOKE_OK_PENDING\n", False),
+    ],
+)
+def test_privacy_precheck_matches_exact_final_attestation(tmp_path, text, expected):
+    receipt = tmp_path / "privacy-test-fixture.md"
+    receipt.write_text(text, encoding="utf-8")
+    assert _privacy_precheck_ok(receipt) is expected
+
+
+@pytest.mark.parametrize("raw", [None, b"\xff\xfe"])
+def test_privacy_precheck_unreadable_is_unknown(tmp_path, raw):
+    receipt = tmp_path / "unreadable-privacy-test-fixture.md"
+    if raw is not None:
+        receipt.write_bytes(raw)
+    assert _privacy_precheck_ok(receipt) is None
 
 
 def _write_bandit_report(root, *, high: int = 0, medium: int = 0) -> None:

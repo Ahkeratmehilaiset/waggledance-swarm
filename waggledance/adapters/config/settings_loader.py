@@ -55,6 +55,15 @@ class WaggleSettings:
     profile: str = "HOME"
     ollama_host: str = "http://localhost:11434"
     chroma_dir: str = "./chroma_data"
+    # Dependency remediation 2026-08-26 (+ lead implementation guidance):
+    # chromadb is de-scoped from the stable default INSTALL, but the
+    # non-stub default BACKEND stays "chroma" so historical production
+    # semantics are preserved. With the package absent, startup fails
+    # immediately with the explicit `pip install waggledance-swarm[chroma]`
+    # instruction. "inmemory" (non-persistent) is allowed ONLY as an
+    # explicit WAGGLE_VECTOR_BACKEND=inmemory opt-in — never a silent
+    # fallback in either direction.
+    vector_backend: str = "chroma"
     # Audit H38: db_path moved from "./shared_memory.db" (project root)
     # to "data/shared_memory.db" so it lands next to audit_log.db /
     # world_store.db / case_store.db / control_plane.db instead of
@@ -213,6 +222,8 @@ class WaggleSettings:
                 _preset_profile).upper(),
             ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
             chroma_dir=os.environ.get("CHROMA_DIR", "./chroma_data"),
+            vector_backend=os.environ.get(
+                "WAGGLE_VECTOR_BACKEND", "chroma").strip().lower(),
             # H38: env-var default mirrors the dataclass field default
             # (data/shared_memory.db). Operators on WAGGLE_DB_PATH override
             # see no behavior change; only the unset case moves.

@@ -69,15 +69,30 @@ class TestNonStubContainer(unittest.TestCase):
     """Non-stub Container validation (no HTTP calls — just construction)."""
 
     def test_non_stub_uses_chroma_memory_repository(self):
-        """Container(stub=False).memory_repository is ChromaMemoryRepository (R-4)."""
+        """Container(stub=False).memory_repository honors the chroma default (R-4).
+
+        Dependency remediation 2026-08-26: chromadb is de-scoped from the
+        stable default INSTALL while the non-stub default BACKEND stays
+        "chroma". With the package present, the default still constructs
+        ChromaMemoryRepository (original R-4 assertion). With it absent
+        (e.g. CI installing requirements-ci.txt), the SAME default must
+        fail closed with the documented RuntimeError carrying the
+        [chroma] install instruction — never a silent in-memory fallback.
+        """
+        import importlib.util
+
         from waggledance.adapters.config.settings_loader import WaggleSettings
         from waggledance.bootstrap.container import Container
 
         settings = WaggleSettings.from_env()
         container = Container(settings=settings, stub=False)
-        repo = container.memory_repository
-        class_name = type(repo).__name__
-        self.assertEqual(class_name, "ChromaMemoryRepository")
+        if importlib.util.find_spec("chromadb") is not None:
+            repo = container.memory_repository
+            self.assertEqual(type(repo).__name__, "ChromaMemoryRepository")
+        else:
+            with self.assertRaises(RuntimeError) as ctx:
+                _ = container.memory_repository
+            self.assertIn("waggledance-swarm[chroma]", str(ctx.exception))
 
     def test_non_stub_uses_bridge_or_ollama_adapter(self):
         """Container(stub=False).llm is BridgeLLMAdapter (or OllamaAdapter as fallback).

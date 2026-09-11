@@ -41,6 +41,28 @@ from tools.verify_release_soak_evidence import build_report, main
 
 COMMIT = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
 
+
+def test_inventory_binding_preserves_named_tuple_api() -> None:
+    import pickle
+
+    binding = verifier.InventoryBinding(digests={"source.py": "sha256:x"},
+                                        blockers=[], details=[])
+    assert isinstance(binding, tuple)
+    assert tuple(binding) == ({"source.py": "sha256:x"}, [], [])
+    assert binding[0] is binding.digests
+    assert binding._fields == ("digests", "blockers", "details")
+    assert binding._asdict() == {
+        "digests": {"source.py": "sha256:x"}, "blockers": [], "details": [],
+    }
+    assert verifier.InventoryBinding._make(binding) == binding
+    assert binding._replace(blockers=["missing"]).blockers == ["missing"]
+    assert pickle.loads(pickle.dumps(binding)) == binding
+    assert repr(binding).startswith("InventoryBinding(digests=")
+    with pytest.raises(AttributeError):
+        binding.digests = {}
+    with pytest.raises(TypeError):
+        verifier.InventoryBinding({}, [])
+
 ATTESTATION_BLOCKERS = {
     "audited_report_selection_blocked",
     "privacy_attestation_not_final",
@@ -1168,6 +1190,182 @@ def _axis_env(tmp_path, *, axis_a=True, axis_b=True):
     if axis_b:
         _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, head))
     return root, head, evidence_root
+
+
+def test_tracked_axis_evidence_can_follow_its_clean_source_commit(
+    tmp_path, monkeypatch,
+) -> None:
+    """One real Git chain must satisfy both Axis binding and tree binding.
+
+    Synthetic fixture metrics test the storage contract, not release quality.
+    No Git result or Axis attestation verdict is fabricated by a mock.
+    """
+    import tools.run_release_boundary_readiness as boundary
+
+    root = tmp_path / "repo"
+    subject = _init_source_repo(root)
+    assert verifier.source_subject_preflight(root, subject) == []
+    evidence_root = root / "docs/runs/release_soak_evidence"
+    _write_json(evidence_root / AXIS_A_ARTIFACT, _axis_a_proof(root, subject))
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, subject))
+    _commit_all(root, "record proofs generated against clean source subject")
+    carrier = {
+        "commit": subject,
+        "axis_a_regression": "pass",
+        "axis_b_gate": "pass",
+    }
+    _write_json(root / boundary.SOAK_EVIDENCE_CARRIER_PATH, carrier)
+    head = _commit_all(root, "record evidence envelope without changing source")
+    assert _git(root, "status", "--porcelain=v1").stdout == ""
+    assert verifier._axis_attestation_blockers(
+        carrier, carrier, evidence_root, root,
+    ) == []
+
+    def fixture_git_result(*args):
+        completed = _git(root, *args, check=False)
+        return subprocess.CompletedProcess(
+            completed.args, completed.returncode,
+            completed.stdout.encode(), completed.stderr.encode(),
+        )
+
+    def fixture_git(*args):
+        completed = fixture_git_result(*args)
+        completed.check_returncode()
+        return completed.stdout
+
+    monkeypatch.setattr(boundary, "_git", fixture_git)
+    monkeypatch.setattr(boundary, "_git_result", fixture_git_result)
+    _, blockers = boundary._head_soak_binding(
+        {"head": head}, {"raw": json.dumps(carrier).encode()},
+    )
+    assert blockers == []
+
+    # An eligible tree delta does not authorize an invalid proof. Existing
+    # source-S attestation must still reject a report stamped with its later
+    # containing commit instead of the declared subject.
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, head))
+    invalid_head = _commit_all(root, "record incorrectly stamped proof")
+    _, tree_blockers = boundary._head_soak_binding(
+        {"head": invalid_head}, {"raw": json.dumps(carrier).encode()},
+    )
+    assert tree_blockers == []
+    assert "axis_b_source_commit_mismatch" in verifier._axis_attestation_blockers(
+        carrier, carrier, evidence_root, root,
+    )
+
+
+@pytest.mark.parametrize("line_ending", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_production_child_verifies_axis_subject_after_evidence_commit(
+    tmp_path, monkeypatch, line_ending,
+) -> None:
+    """Real Git fixture + unmodified production child, not performance proof.
+
+    All executable modules are the actual candidate modules. Only fixture
+    data/metrics differ. Other release blockers must still yield HOLD.
+    """
+    import sys
+    import tools.run_release_boundary_readiness as boundary
+
+    executable = boundary._trusted_git_executable()
+    if executable is None:
+        pytest.skip("trusted Git executable unavailable")
+    if boundary._trusted_pyyaml_current_blocker() is not None:
+        pytest.skip("authenticated PyYAML 6.0.2 transport unavailable")
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    for relative in boundary._live_child_required_paths():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((boundary.ROOT / relative).read_bytes())
+    for relative in boundary._LIVE_CHILD_AXIS_SOURCE_PATHS:
+        target = root / relative
+        raw = target.read_bytes().replace(b"\r\n", b"\n")
+        target.write_bytes(raw.replace(b"\n", line_ending))
+    # Two valid inventory paths may share one object; object closure must
+    # deduplicate the blob without losing either path's binding.
+    for relative in AXIS_A_EXPECTED_SOURCES[1:3]:
+        (root / relative).write_bytes(b"# synthetic inventory fixture" + line_ending)
+    (root / AXIS_A_EXPECTED_SOURCES[0]).chmod(0o755)
+    _git(root, "add", "-A")
+    _git(root, "update-index", "--chmod=+x", AXIS_A_EXPECTED_SOURCES[0])
+    _git(root, "commit", "-q", "-m", "complete synthetic release source fixture")
+    subject = _git(root, "rev-parse", "HEAD").stdout.strip()
+    evidence_root = root / "docs/runs/release_soak_evidence"
+    _write_json(evidence_root / AXIS_A_ARTIFACT, _axis_a_proof(root, subject))
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, subject))
+    carrier_path = root / boundary.SOAK_EVIDENCE_CARRIER_PATH
+    carrier = json.loads(carrier_path.read_text(encoding="utf-8"))
+    carrier.update(commit=subject, axis_a_regression="pass", axis_b_gate="pass")
+    _write_json(carrier_path, carrier)
+    docker_path = root / boundary._LIVE_CHILD_DOCKER_REPORT_PATH
+    docker = json.loads(docker_path.read_text(encoding="utf-8"))
+    docker["commit"] = subject
+    _write_json(docker_path, docker)
+    head = _commit_all(root, "store fixture evidence after source subject")
+    assert head != subject
+    changed_paths = set(_git(root, "diff", "--name-only", subject, head).stdout.splitlines())
+    assert boundary.SOAK_EVIDENCE_CARRIER_PATH in changed_paths
+    assert changed_paths <= {
+        boundary.SOAK_EVIDENCE_CARRIER_PATH, *boundary.SOAK_EVIDENCE_SIDECAR_PATHS,
+    }
+    assert verifier._axis_attestation_blockers(
+        carrier, carrier, evidence_root, root,
+    ) == []
+
+    def direct_git(*args):
+        completed = subprocess.run(
+            [str(executable), "--no-pager", "--no-optional-locks",
+             "--no-replace-objects", "--no-lazy-fetch", "--literal-pathspecs",
+             *args],
+            cwd=root, env=boundary._git_environment(),
+            capture_output=True, check=False,
+        )
+        assert completed.returncode == 0, (args, completed.stderr)
+        assert completed.stderr == b""
+        return completed.stdout
+
+    monkeypatch.setattr(boundary, "ROOT", root)
+    monkeypatch.setattr(boundary, "_git", direct_git)
+
+    def child_report(current_head):
+        bundle = boundary._build_live_child_bundle(git_state={
+            "toplevel": str(root), "head": current_head, "clean": True,
+            "tracked": True, "tracked_flags_normal": True,
+            "object_format": "sha1", "error": None,
+        })
+        completed = subprocess.run(
+            [sys.executable, "-B", "-X", f"pycache_prefix={boundary._PYCACHE_PREFIX}",
+             "-I", "-S", "-c",
+             boundary._LIVE_CHILD_BOOTSTRAP,
+             "--release-readiness", str(root / "docs/release/RELEASE_READINESS.md"),
+             "--soak-evidence", str(carrier_path),
+             "--checked-at-utc", "2026-09-10T14:00:00Z", "--strict"],
+            cwd=root, env=boundary._child_environment(), input=bundle,
+            capture_output=True, timeout=300, check=False,
+        )
+        assert completed.stderr == b""
+        assert completed.returncode == boundary.STRICT_BLOCKED_EXIT_CODE
+        report = json.loads(completed.stdout)
+        assert report["release_gate_decision"] == "hold"
+        assert report["release_boundary"] == boundary.FALSE_RELEASE_BOUNDARY
+        repro = report["gate"]["soak_evidence_diagnostics"]["soak_reproducibility"]
+        assert repro["invoked"] is True
+        assert repro["available"] is True
+        assert "verifier_blockers" in repro, report["blockers"]
+        assert not any(
+            blocker.startswith("expected_evidence_unbuildable:")
+            for blocker in repro["verifier_blockers"]
+        )
+        return repro["verifier_blockers"]
+
+    blockers = child_report(head)
+    assert not any(blocker.startswith(("axis_a_", "axis_b_")) for blocker in blockers)
+    # Keep the same source subject and source tree: incorrect evidence stamps
+    # must remain an ordinary named validation HOLD, not a sandbox failure.
+    _write_json(evidence_root / AXIS_B_ARTIFACT, _axis_b_report(root, head))
+    later_head = _commit_all(root, "record incorrectly stamped fixture proof")
+    assert "axis_b_source_commit_mismatch" in child_report(later_head)
 
 
 def _mirror_expected(monkeypatch, **fields):

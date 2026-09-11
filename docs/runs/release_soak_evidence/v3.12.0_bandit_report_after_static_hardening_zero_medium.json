@@ -1,17 +1,17 @@
 {
   "errors": [],
-  "generated_at": "2026-05-22T10:03:44Z",
+  "generated_at": "2026-09-10T18:38:44Z",
   "metrics": {
     "_totals": {
-      "CONFIDENCE.HIGH": 225,
+      "CONFIDENCE.HIGH": 219,
       "CONFIDENCE.LOW": 0,
-      "CONFIDENCE.MEDIUM": 12,
+      "CONFIDENCE.MEDIUM": 13,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 237,
+      "SEVERITY.LOW": 232,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 98050,
+      "loc": 123159,
       "nosec": 0,
       "skipped_tests": 28
     },
@@ -128,7 +128,7 @@
       "SEVERITY.LOW": 2,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 152,
+      "loc": 151,
       "nosec": 0,
       "skipped_tests": 1
     },
@@ -297,7 +297,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 252,
+      "loc": 260,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -705,12 +705,12 @@
       "skipped_tests": 0
     },
     "core\\micro_model.py": {
-      "CONFIDENCE.HIGH": 4,
+      "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 4,
+      "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 992,
@@ -809,12 +809,12 @@
       "skipped_tests": 0
     },
     "core\\opus_mt_adapter.py": {
-      "CONFIDENCE.HIGH": 2,
+      "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 2,
+      "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 79,
@@ -934,7 +934,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 101,
+      "loc": 138,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1082,12 +1082,12 @@
       "skipped_tests": 0
     },
     "core\\translation_proxy.py": {
-      "CONFIDENCE.HIGH": 2,
+      "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 2,
+      "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 1380,
@@ -1510,6 +1510,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\adapters\\cli\\air01_advisory.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 286,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\adapters\\cli\\email01_classify_inbox.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -1545,7 +1558,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 360,
+      "loc": 381,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1623,7 +1636,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 357,
+      "loc": 360,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1637,6 +1650,58 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 1,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\feeds\\advisory_refresh_ticker.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 175,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\feeds\\air01_advisory_refresher.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 41,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\feeds\\eng01_advisory_refresher.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 43,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\feeds\\eng06_advisory_refresher.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 99,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1675,7 +1740,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 175,
+      "loc": 200,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\autogrowth_alert_feed.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 89,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1689,6 +1767,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 27,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\magma_handoff_metrics_alert_feed.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 492,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1731,6 +1822,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\adapters\\http\\route_stage_latency_feed.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 549,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\adapters\\http\\routes\\__init__.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -1741,6 +1845,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 0,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\routes\\_advisory_snapshot.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 58,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1767,6 +1884,32 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 8,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\routes\\advisory_dashboard.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 242,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\routes\\air01_advisory.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 37,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1810,15 +1953,15 @@
       "skipped_tests": 0
     },
     "waggledance\\adapters\\http\\routes\\chat.py": {
-      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.HIGH": 2,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 1,
+      "SEVERITY.LOW": 2,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 123,
+      "loc": 457,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1831,7 +1974,7 @@
       "SEVERITY.LOW": 12,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 1029,
+      "loc": 3241,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1857,7 +2000,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 67,
+      "loc": 36,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\routes\\eng06_advisory.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 38,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1935,7 +2091,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 151,
+      "loc": 1434,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\adapters\\http\\routes\\solvers.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 216,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2039,7 +2208,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 23,
+      "loc": 38,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2364,7 +2533,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 24,
+      "loc": 25,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2429,7 +2598,7 @@
       "SEVERITY.LOW": 5,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 530,
+      "loc": 758,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2468,7 +2637,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 689,
+      "loc": 704,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2481,7 +2650,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 239,
+      "loc": 257,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2507,7 +2676,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 382,
+      "loc": 396,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2533,7 +2702,7 @@
       "SEVERITY.LOW": 1,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 146,
+      "loc": 159,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2702,7 +2871,7 @@
       "SEVERITY.LOW": 4,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 666,
+      "loc": 1117,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3027,7 +3196,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 1150,
+      "loc": 1460,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3040,7 +3209,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 269,
+      "loc": 324,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3053,7 +3222,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 652,
+      "loc": 846,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3066,7 +3235,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 443,
+      "loc": 455,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3080,6 +3249,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 71,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\autonomy_growth\\counterfactual_replay.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 466,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3183,7 +3365,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 164,
+      "loc": 210,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3223,6 +3405,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 426,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\autonomy_growth\\operator_feedback_amplifier.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1001,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3330,6 +3525,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\bridge_event_hmac.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 194,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\bridge_event_schema.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -3339,7 +3547,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 250,
+      "loc": 401,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\bridge_identity_registry.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 89,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3391,7 +3612,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 226,
+      "loc": 237,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3404,7 +3625,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 25,
+      "loc": 32,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3417,7 +3638,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 117,
+      "loc": 140,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3495,7 +3716,7 @@
       "SEVERITY.LOW": 1,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 177,
+      "loc": 193,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3521,7 +3742,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 81,
+      "loc": 95,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\bridge_log_reader.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 831,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3625,7 +3859,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 100,
+      "loc": 108,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -3717,6 +3951,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 84,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\cell_identity.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 192,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4006,6 +4253,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\genesis_lineage.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 398,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\goals\\__init__.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -4084,6 +4344,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\hex_topology\\canary_mirror.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 197,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\hex_topology\\cell_local_state.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -4106,7 +4379,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 63,
+      "loc": 65,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4119,7 +4392,33 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 86,
+      "loc": 100,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\express_lane.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 475,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\hex_promotion_evidence.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 219,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4145,7 +4444,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 73,
+      "loc": 153,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\subdivision_commit.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 313,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4158,7 +4470,72 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 104,
+      "loc": 250,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\subdivision_preflight.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 146,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\subdivision_rehearsal.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 242,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\subdivision_runtime_commit.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 293,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\subdivision_runtime_execution_request.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 320,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\hex_topology\\subdivision_runtime_executor_admission.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 259,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4184,7 +4561,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 199,
+      "loc": 430,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4197,7 +4574,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 283,
+      "loc": 301,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4211,6 +4588,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 215,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\idle_protocol_deferred_lift.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 56,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4406,6 +4796,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 92,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\leak_policy.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 152,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4695,6 +5098,32 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\magma\\adversarial_corpus_eval.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 193,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\adversarial_gate.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 225,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\magma\\audit_projector.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -4721,6 +5150,123 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\magma\\chat_query_route_evidence.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 21,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_accounting.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 326,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_claim_window_evidence.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 974,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_emitter.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 413,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_ledger.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 299,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_metadata.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 89,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_per_query_coverage.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 310,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_receipt.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 380,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\chat_served_sink.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 202,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\magma\\confidence_decay.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -4734,6 +5280,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\magma\\consensus_receipt.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 189,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\magma\\demo_policy.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -4743,7 +5302,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 76,
+      "loc": 193,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4756,7 +5315,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 64,
+      "loc": 148,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4808,7 +5367,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 103,
+      "loc": 105,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4847,7 +5406,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 241,
+      "loc": 300,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\magma\\runtime_summary_receipt.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 380,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4877,6 +5449,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\magma\\share_manifest.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1856,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\magma\\trust_adapter.py": {
       "CONFIDENCE.HIGH": 1,
       "CONFIDENCE.LOW": 0,
@@ -4886,7 +5471,7 @@
       "SEVERITY.LOW": 1,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 211,
+      "loc": 218,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -4926,6 +5511,32 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 160,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\memory_palace\\__init__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 36,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\memory_palace\\projection.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 1154,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -5185,7 +5796,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 130,
+      "loc": 168,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6056,7 +6667,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 416,
+      "loc": 459,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6086,6 +6697,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\reasoning\\tunnel_registry.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 249,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\reasoning\\verifier.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -6096,6 +6720,32 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 236,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\seed_solver_adapter.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 198,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\seed_work_contracts.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 925,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6199,7 +6849,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 217,
+      "loc": 1426,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6329,7 +6979,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 784,
+      "loc": 792,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6472,7 +7122,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 250,
+      "loc": 226,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6512,6 +7162,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 290,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\v3_13_0\\chat_dispatch.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 361,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6732,7 +7395,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 47,
+      "loc": 56,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6758,7 +7421,20 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 909,
+      "loc": 963,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "waggledance\\core\\v3_13_0\\solver_receipt_sink.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 70,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6801,6 +7477,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "waggledance\\core\\v3_13_0\\ssrf_host_guard.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 64,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "waggledance\\core\\v3_13_0\\write_rco_gate.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -6810,7 +7499,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 822,
+      "loc": 1100,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -6875,7 +7564,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 473,
+      "loc": 565,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -7291,7 +7980,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 290,
+      "loc": 317,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -7436,7 +8125,7 @@
       "test_name": "blacklist"
     },
     {
-      "code": "51     try:\n52         subprocess.check_call(\n53             cmd,\n54             stdout=subprocess.DEVNULL if quiet else None,\n55             stderr=subprocess.DEVNULL if quiet else None,\n56         )\n57         return True\n",
+      "code": "54     try:\n55         subprocess.check_call(\n56             cmd,\n57             stdout=subprocess.DEVNULL if quiet else None,\n58             stderr=subprocess.DEVNULL if quiet else None,\n59         )\n60         return True\n",
       "col_offset": 8,
       "end_col_offset": 9,
       "filename": "core\\auto_install.py",
@@ -7447,13 +8136,13 @@
       },
       "issue_severity": "LOW",
       "issue_text": "subprocess call - check for execution of untrusted input.",
-      "line_number": 52,
+      "line_number": 55,
       "line_range": [
-        52,
-        53,
-        54,
         55,
-        56
+        56,
+        57,
+        58,
+        59
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
       "test_id": "B603",
@@ -8688,90 +9377,6 @@
       "test_name": "try_except_pass"
     },
     {
-      "code": "257                 return len(data.get(\"promoted\", {}))\n258         except Exception:\n259             pass\n260         return 0\n",
-      "col_offset": 8,
-      "end_col_offset": 16,
-      "filename": "core\\micro_model.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 258,
-      "line_range": [
-        258,
-        259
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "478                 }, ensure_ascii=False) + \"\\n\")\n479         except Exception:\n480             pass\n481 \n",
-      "col_offset": 8,
-      "end_col_offset": 16,
-      "filename": "core\\micro_model.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 479,
-      "line_range": [
-        479,
-        480
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "924                 }, ensure_ascii=False) + \"\\n\")\n925         except Exception:\n926             pass\n927 \n",
-      "col_offset": 8,
-      "end_col_offset": 16,
-      "filename": "core\\micro_model.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 925,
-      "line_range": [
-        925,
-        926
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "1219                 results.append(result)\n1220             except Exception:\n1221                 pass\n1222         return len(results)\n",
-      "col_offset": 12,
-      "end_col_offset": 20,
-      "filename": "core\\micro_model.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 1220,
-      "line_range": [
-        1220,
-        1221
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
       "code": "280                     + \"\\n- \".join(snippets))\n281         except Exception:\n282             pass\n283         return \"\"\n",
       "col_offset": 8,
       "end_col_offset": 16,
@@ -9274,48 +9879,6 @@
       "test_name": "try_except_pass"
     },
     {
-      "code": "44                 return str(result)\n45             except Exception:\n46                 pass\n47         return self._direct_translate(text, \"fi\", \"en\")\n",
-      "col_offset": 12,
-      "end_col_offset": 20,
-      "filename": "core\\opus_mt_adapter.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 45,
-      "line_range": [
-        45,
-        46
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "59                 return str(result)\n60             except Exception:\n61                 pass\n62         return self._direct_translate(text, \"en\", \"fi\")\n",
-      "col_offset": 12,
-      "end_col_offset": 20,
-      "filename": "core\\opus_mt_adapter.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 60,
-      "line_range": [
-        60,
-        61
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
       "code": "117                                 was_hallucination=False)\n118                         except Exception:\n119                             pass\n120 \n",
       "col_offset": 24,
       "end_col_offset": 32,
@@ -9708,48 +10271,6 @@
       "line_range": [
         337,
         338
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "87                         return lemmas\n88             except Exception:\n89                 pass\n90 \n",
-      "col_offset": 12,
-      "end_col_offset": 20,
-      "filename": "core\\translation_proxy.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 88,
-      "line_range": [
-        88,
-        89
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
-    },
-    {
-      "code": "117                 self.voikko.terminate()\n118             except Exception:\n119                 pass\n120 \n",
-      "col_offset": 12,
-      "end_col_offset": 20,
-      "filename": "core\\translation_proxy.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 118,
-      "line_range": [
-        118,
-        119
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
@@ -10218,7 +10739,7 @@
       "test_name": "try_except_pass"
     },
     {
-      "code": "149         }))\n150     except Exception:\n151         pass  # WS broadcast is best-effort\n152 \n",
+      "code": "404         metrics.record(trace, request_latency_ms, disabled_route_stages)\n405     except Exception:\n406         pass\n407 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\chat.py",
@@ -10229,17 +10750,38 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 150,
+      "line_number": 405,
       "line_range": [
-        150,
-        151
+        405,
+        406
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "49             degraded.append(\"embeddings\")\n50     except Exception:\n51         pass\n52     return degraded\n",
+      "code": "520         )\n521     except Exception:\n522         pass  # WS broadcast is best-effort\n523 \n",
+      "col_offset": 4,
+      "end_col_offset": 12,
+      "filename": "waggledance\\adapters\\http\\routes\\chat.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Try, Except, Pass detected.",
+      "line_number": 521,
+      "line_range": [
+        521,
+        522
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
+      "test_id": "B110",
+      "test_name": "try_except_pass"
+    },
+    {
+      "code": "57             degraded.append(\"embeddings\")\n58     except Exception:\n59         pass\n60     return degraded\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10250,17 +10792,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 50,
+      "line_number": 58,
       "line_range": [
-        50,
-        51
+        58,
+        59
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "77             return rt.stats()\n78         except Exception:\n79             pass\n80     return {}\n",
+      "code": "85             return rt.stats()\n86         except Exception:\n87             pass\n88     return {}\n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10271,17 +10813,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 78,
+      "line_number": 86,
       "line_range": [
-        78,
-        79
+        86,
+        87
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "85     try:\n86         import subprocess\n87         r = subprocess.run(\n",
+      "code": "93     try:\n94         import subprocess\n95         r = subprocess.run(\n",
       "col_offset": 8,
       "end_col_offset": 25,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10292,16 +10834,16 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Consider possible security implications associated with the subprocess module.",
-      "line_number": 86,
+      "line_number": 94,
       "line_range": [
-        86
+        94
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
       "test_id": "B404",
       "test_name": "blacklist"
     },
     {
-      "code": "86         import subprocess\n87         r = subprocess.run(\n88             [\"nvidia-smi\", \"--query-gpu=utilization.gpu,memory.used,memory.total\",\n89              \"--format=csv,noheader,nounits\"],\n90             capture_output=True, text=True, timeout=3,\n91         )\n92         if r.returncode == 0:\n",
+      "code": "94         import subprocess\n95         r = subprocess.run(\n96             [\"nvidia-smi\", \"--query-gpu=utilization.gpu,memory.used,memory.total\",\n97              \"--format=csv,noheader,nounits\"],\n98             capture_output=True, text=True, timeout=3,\n99         )\n100         if r.returncode == 0:\n",
       "col_offset": 12,
       "end_col_offset": 9,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10312,20 +10854,20 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Starting a process with a partial executable path",
-      "line_number": 87,
+      "line_number": 95,
       "line_range": [
-        87,
-        88,
-        89,
-        90,
-        91
+        95,
+        96,
+        97,
+        98,
+        99
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b607_start_process_with_partial_path.html",
       "test_id": "B607",
       "test_name": "start_process_with_partial_path"
     },
     {
-      "code": "86         import subprocess\n87         r = subprocess.run(\n88             [\"nvidia-smi\", \"--query-gpu=utilization.gpu,memory.used,memory.total\",\n89              \"--format=csv,noheader,nounits\"],\n90             capture_output=True, text=True, timeout=3,\n91         )\n92         if r.returncode == 0:\n",
+      "code": "94         import subprocess\n95         r = subprocess.run(\n96             [\"nvidia-smi\", \"--query-gpu=utilization.gpu,memory.used,memory.total\",\n97              \"--format=csv,noheader,nounits\"],\n98             capture_output=True, text=True, timeout=3,\n99         )\n100         if r.returncode == 0:\n",
       "col_offset": 12,
       "end_col_offset": 9,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10336,20 +10878,20 @@
       },
       "issue_severity": "LOW",
       "issue_text": "subprocess call - check for execution of untrusted input.",
-      "line_number": 87,
+      "line_number": 95,
       "line_range": [
-        87,
-        88,
-        89,
-        90,
-        91
+        95,
+        96,
+        97,
+        98,
+        99
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
       "test_id": "B603",
       "test_name": "subprocess_without_shell_equals_true"
     },
     {
-      "code": "98             }\n99     except Exception:\n100         pass\n101     return {\"gpu_percent\": 0, \"gpu_mem_used\": 0, \"gpu_mem_total\": 0}\n",
+      "code": "106             }\n107     except Exception:\n108         pass\n109     return {\"gpu_percent\": 0, \"gpu_mem_used\": 0, \"gpu_mem_total\": 0}\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10360,17 +10902,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 99,
+      "line_number": 107,
       "line_range": [
-        99,
-        100
+        107,
+        108
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "211         promise_count = len(service._runtime.goal_engine.get_promises_to_user())\n212     except Exception:\n213         pass\n214 \n",
+      "code": "219         promise_count = len(service._runtime.goal_engine.get_promises_to_user())\n220     except Exception:\n221         pass\n222 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10381,17 +10923,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 212,
+      "line_number": 220,
       "line_range": [
-        212,
-        213
+        220,
+        221
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "418             return auth_header[7:] == container._settings.api_key\n419         except Exception:\n420             pass\n421     return False\n",
+      "code": "2816             return auth_header[7:] == container._settings.api_key\n2817         except Exception:\n2818             pass\n2819     return False\n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10402,17 +10944,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 419,
+      "line_number": 2817,
       "line_range": [
-        419,
-        420
+        2817,
+        2818
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "555             return val\n556     except Exception:\n557         pass\n558     # Fallback: parse from document text\n",
+      "code": "2953             return val\n2954     except Exception:\n2955         pass\n2956     # Fallback: parse from document text\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10423,17 +10965,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 556,
+      "line_number": 2954,
       "line_range": [
-        556,
-        557
+        2954,
+        2955
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "689 \n690     except Exception:\n691         pass  # Leave defaults (truthful empty state)\n692 \n",
+      "code": "3087 \n3088     except Exception:\n3089         pass  # Leave defaults (truthful empty state)\n3090 \n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10444,17 +10986,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 690,
+      "line_number": 3088,
       "line_range": [
-        690,
-        691
+        3088,
+        3089
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "705             return vs.collection\n706     except Exception:\n707         pass\n708     return None\n",
+      "code": "3103             return vs.collection\n3104     except Exception:\n3105         pass\n3106     return None\n",
       "col_offset": 4,
       "end_col_offset": 12,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10465,17 +11007,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 706,
+      "line_number": 3104,
       "line_range": [
-        706,
-        707
+        3104,
+        3105
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "962             rs = rt.stats()\n963         except Exception:\n964             pass\n965     states = derive_capability_state(rt, rs)\n",
+      "code": "3360             rs = rt.stats()\n3361         except Exception:\n3362             pass\n3363     states = derive_capability_state(rt, rs)\n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\adapters\\http\\routes\\compat_dashboard.py",
@@ -10486,10 +11028,10 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 963,
+      "line_number": 3361,
       "line_range": [
-        963,
-        964
+        3361,
+        3362
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
@@ -11215,7 +11757,7 @@
       "test_name": "try_except_pass"
     },
     {
-      "code": "384             self._telemetry.record(route_type, latency_ms, success)\n385         except Exception:\n386             pass\n387         try:\n",
+      "code": "536             self._telemetry.record(route_type, latency_ms, success)\n537         except Exception:\n538             pass\n539         try:\n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\application\\services\\chat_service.py",
@@ -11226,17 +11768,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 385,
+      "line_number": 537,
       "line_range": [
-        385,
-        386
+        537,
+        538
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "398                 )\n399         except Exception:\n400             pass\n401 \n",
+      "code": "550                 )\n551         except Exception:\n552             pass\n553 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\application\\services\\chat_service.py",
@@ -11247,17 +11789,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 399,
+      "line_number": 551,
       "line_range": [
-        399,
-        400
+        551,
+        552
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "463                                     _specs[_ax[\"model_id\"]] = _ax.get(\"solver_output_schema\", {})\n464                             except Exception:\n465                                 pass\n466                     self._hybrid_observer = HybridObserver(\n",
+      "code": "705                                     _specs[_ax[\"model_id\"]] = _ax.get(\"solver_output_schema\", {})\n706                             except Exception:\n707                                 pass\n708                     self._hybrid_observer = HybridObserver(\n",
       "col_offset": 28,
       "end_col_offset": 36,
       "filename": "waggledance\\application\\services\\chat_service.py",
@@ -11268,17 +11810,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 464,
+      "line_number": 706,
       "line_range": [
-        464,
-        465
+        706,
+        707
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "477                 ))\n478             except Exception:\n479                 pass\n480 \n",
+      "code": "719                 ))\n720             except Exception:\n721                 pass\n722 \n",
       "col_offset": 12,
       "end_col_offset": 20,
       "filename": "waggledance\\application\\services\\chat_service.py",
@@ -11289,17 +11831,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 478,
+      "line_number": 720,
       "line_range": [
-        478,
-        479
+        720,
+        721
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "575                 return None\n576         except Exception:\n577             pass\n578         return None\n",
+      "code": "823                 return None\n824         except Exception:\n825             pass\n826         return None\n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\application\\services\\chat_service.py",
@@ -11310,17 +11852,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 576,
+      "line_number": 824,
       "line_range": [
-        576,
-        577
+        824,
+        825
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "28     ) -> None:\n29         assert memory is not None, \"MemoryRepositoryPort must not be None\"\n30         self._vector_store = vector_store\n",
+      "code": "40     ) -> None:\n41         assert memory is not None, \"MemoryRepositoryPort must not be None\"\n42         self._vector_store = vector_store\n",
       "col_offset": 8,
       "end_col_offset": 74,
       "filename": "waggledance\\application\\services\\memory_service.py",
@@ -11331,16 +11873,16 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
-      "line_number": 29,
+      "line_number": 41,
       "line_range": [
-        29
+        41
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
       "test_id": "B101",
       "test_name": "assert_used"
     },
     {
-      "code": "575                 embed_fn = _embed\n576         except Exception:\n577             pass\n578 \n",
+      "code": "1006                 embed_fn = _embed\n1007         except Exception:\n1008             pass\n1009 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\bootstrap\\container.py",
@@ -11351,17 +11893,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 576,
+      "line_number": 1007,
       "line_range": [
-        576,
-        577
+        1007,
+        1008
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "612                         specs[axiom[\"model_id\"]] = axiom.get(\"solver_output_schema\", {})\n613                 except Exception:\n614                     pass\n615 \n",
+      "code": "1043                         specs[axiom[\"model_id\"]] = axiom.get(\"solver_output_schema\", {})\n1044                 except Exception:\n1045                     pass\n1046 \n",
       "col_offset": 16,
       "end_col_offset": 24,
       "filename": "waggledance\\bootstrap\\container.py",
@@ -11372,17 +11914,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 613,
+      "line_number": 1044,
       "line_range": [
-        613,
-        614
+        1044,
+        1045
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "637             case_store = rt.case_store\n638         except Exception:\n639             pass\n640 \n",
+      "code": "1068             case_store = rt.case_store\n1069         except Exception:\n1070             pass\n1071 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\bootstrap\\container.py",
@@ -11393,17 +11935,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 638,
+      "line_number": 1069,
       "line_range": [
-        638,
-        639
+        1069,
+        1070
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "699             magma_audit = rt.audit\n700         except Exception:\n701             pass\n702 \n",
+      "code": "1130             magma_audit = rt.audit\n1131         except Exception:\n1132             pass\n1133 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "waggledance\\bootstrap\\container.py",
@@ -11414,10 +11956,10 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 700,
+      "line_number": 1131,
       "line_range": [
-        700,
-        701
+        1131,
+        1132
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
@@ -11580,7 +12122,7 @@
       "test_name": "blacklist"
     },
     {
-      "code": "77 EMAIL_PLACEHOLDER = \"EMAIL\"\n78 TOKEN_PLACEHOLDER = \"TOKEN\"   # credit-card / opaque digit token\n79 HETU_PLACEHOLDER = \"HETU\"\n",
+      "code": "85 EMAIL_PLACEHOLDER = \"EMAIL\"\n86 TOKEN_PLACEHOLDER = \"TOKEN\"   # credit-card / opaque digit token\n87 HETU_PLACEHOLDER = \"HETU\"\n",
       "col_offset": 20,
       "end_col_offset": 27,
       "filename": "waggledance\\core\\bridge_llm\\redactor.py",
@@ -11591,13 +12133,33 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Possible hardcoded password: 'TOKEN'",
-      "line_number": 78,
+      "line_number": 86,
       "line_range": [
-        78
+        86
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
       "test_id": "B105",
       "test_name": "hardcoded_password_string"
+    },
+    {
+      "code": "681         try:\n682             assert generation_file is not None\n683             generation_before = _read_generation(generation_file)\n",
+      "col_offset": 12,
+      "end_col_offset": 46,
+      "filename": "waggledance\\core\\bridge_log_reader.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 703,
+        "link": "https://cwe.mitre.org/data/definitions/703.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.",
+      "line_number": 682,
+      "line_range": [
+        682
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b101_assert_used.html",
+      "test_id": "B101",
+      "test_name": "assert_used"
     },
     {
       "code": "262                 reg.add(hashfn(axiom))\n263             except Exception:\n264                 pass  # skip unparseable\n265         return reg\n",
@@ -11659,6 +12221,26 @@
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b311-random",
       "test_id": "B311",
       "test_name": "blacklist"
+    },
+    {
+      "code": "38 LANGUAGE_OTHER = \"other\"\n39 TOKEN_UNKNOWN = \"unknown\"\n40 \n",
+      "col_offset": 16,
+      "end_col_offset": 25,
+      "filename": "waggledance\\core\\magma\\chat_served_metadata.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 259,
+        "link": "https://cwe.mitre.org/data/definitions/259.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Possible hardcoded password: 'unknown'",
+      "line_number": 39,
+      "line_range": [
+        39
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
+      "test_id": "B105",
+      "test_name": "hardcoded_password_string"
     },
     {
       "code": "113                 self._ledger.log_case_trajectory(case_id, quality_grade, intent, capability)\n114             except Exception:\n115                 pass\n116 \n",
@@ -11766,7 +12348,7 @@
       "test_name": "try_except_continue"
     },
     {
-      "code": "172                     return self._engine.get_capability_trust(target_id)\n173                 except Exception:\n174                     pass\n175             return 0.5  # neutral prior\n",
+      "code": "174                     return self._engine.get_capability_trust(target_id)\n175                 except Exception:\n176                     pass\n177             return 0.5  # neutral prior\n",
       "col_offset": 16,
       "end_col_offset": 24,
       "filename": "waggledance\\core\\magma\\trust_adapter.py",
@@ -11777,10 +12359,10 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 173,
+      "line_number": 175,
       "line_range": [
-        173,
-        174
+        175,
+        176
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",

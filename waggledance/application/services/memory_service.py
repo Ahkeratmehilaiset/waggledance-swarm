@@ -1,6 +1,18 @@
 """Memory service — sole writer of persistent memory per STATE_OWNERSHIP.md.
 
 Ported from core/memory_engine.py service-level operations.
+
+Durability note: this service writes through the injected
+``VectorStorePort``. Whether those writes SURVIVE the process depends on
+the backend the container bound — persistent under Chroma, which
+requires both selection (``WAGGLE_VECTOR_BACKEND`` unset or ``chroma``)
+and the ``[chroma]`` extra, and NOT persistent under an explicit
+``WAGGLE_VECTOR_BACKEND=inmemory``. The in-memory store is never selected
+automatically; a missing Chroma package fails startup instead. Under
+docker-compose an unset variable is injected as ``inmemory`` by Compose,
+so the default compose deployment is non-persistent by configuration.
+The service neither selects nor validates the backend and behaves
+identically either way.
 """
 
 import logging
@@ -44,11 +56,14 @@ class MemoryService:
         agent_id: str | None = None,
         intent: str = "chat",
     ) -> MemoryRecord:
-        """Store a new fact in persistent memory and vector store.
+        """Store a new fact in the memory repository and vector store.
 
         When hybrid retrieval is enabled, additionally mirrors to
         the correct cell-local FAISS index. Failure does not block
-        the global ChromaDB path.
+        the global vector-store path.
+
+        Persistence of the vector-store write follows the configured
+        backend; see the module docstring.
         """
         record = MemoryRecord(
             id=str(uuid.uuid4()),

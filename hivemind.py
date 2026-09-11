@@ -70,6 +70,43 @@ except ImportError:
 
 log = logging.getLogger("hivemind")
 
+# ── Legacy memory preflight ───────────────────────────────────
+# chromadb is an optional ``[chroma]`` extra (de-scoped from the default
+# install 2026-08-26). ``core.memory_engine`` and ``core.agent_levels`` import
+# it lazily inside their constructors, so ``from core.memory_engine import
+# Consciousness`` succeeds without the package and the ModuleNotFoundError only
+# surfaces at construction — inside the catch-and-continue block below, where
+# it used to be swallowed into ``consciousness = None`` (silent memory loss).
+# The preflight runs OUTSIDE that block so a missing package stops startup
+# with an explicit, checkout-bound install hint. Nothing is auto-installed and
+# no alternative backend is selected.
+LEGACY_CHROMA_PACKAGE = "chromadb"
+
+
+def legacy_chroma_missing_message(checkout: Optional[Path] = None) -> str:
+    """Return the operator-facing message for a missing ``chromadb`` package."""
+    checkout = checkout if checkout is not None else Path(__file__).resolve().parent
+    return (
+        "Legacy HiveMind memory (Consciousness / AgentLevelManager) requires the "
+        f"optional '{LEGACY_CHROMA_PACKAGE}' package, which is not installed. "
+        "Install the opt-in extra from this checkout: "
+        f'pip install -e "{checkout}[chroma]" '
+        '(equivalently `pip install -e ".[chroma]"` run inside that directory). '
+        "Nothing is installed automatically and no alternative backend is used."
+    )
+
+
+def require_legacy_chroma(checkout: Optional[Path] = None) -> None:
+    """Fail closed when the legacy memory path is enabled but chromadb is absent.
+
+    Uses ``importlib.util.find_spec`` so the check never imports chromadb
+    (importing it would be far heavier than the check) and never installs
+    anything. Raises RuntimeError with a checkout-bound ``[chroma]`` hint.
+    """
+    import importlib.util
+    if importlib.util.find_spec(LEGACY_CHROMA_PACKAGE) is None:
+        raise RuntimeError(legacy_chroma_missing_message(checkout))
+
 try:
     from core.en_validator import ENValidator
     _EN_VALIDATOR_AVAILABLE = True
@@ -326,6 +363,24 @@ class HiveMind:
             print("  -- All checks passed --", flush=True)
         return issues
 
+    def _legacy_memory_preflight(self):
+        """Gate the legacy memory path before its catch-and-continue block.
+
+        Returns the ``Consciousness`` class when the legacy memory path is
+        enabled, or ``None`` when it is disabled (``core.memory_engine`` not
+        importable) — exactly the previous ``_CONSCIOUSNESS_OK`` behaviour.
+        When enabled, the optional ``chromadb`` package must be installed:
+        ``require_legacy_chroma`` raises RuntimeError with a checkout-bound
+        ``[chroma]`` install hint instead of letting the missing package be
+        swallowed into ``self.consciousness = None`` further down.
+        """
+        try:
+            from core.memory_engine import Consciousness
+        except ImportError:
+            return None
+        require_legacy_chroma()
+        return Consciousness
+
     async def start(self):
         print("🐝 WaggleDance Swarm AI käynnistyy...", flush=True)
 
@@ -485,12 +540,11 @@ DELEGATION RULES (IMPORTANT):
 
         # ── Tietoisuuskerros v2 ──
         print("  ⏳ Consciousness alustetaan...", flush=True)
-        try:
-            from core.memory_engine import Consciousness
-            _CONSCIOUSNESS_OK = True
-        except ImportError:
-            _CONSCIOUSNESS_OK = False
-        if _CONSCIOUSNESS_OK:
+        # Explicit missing-package preflight, OUTSIDE the catch-and-continue
+        # block below: without it a missing chromadb was swallowed into
+        # ``consciousness = None`` and the hive started without memory.
+        Consciousness = self._legacy_memory_preflight()
+        if Consciousness is not None:
             try:
                 _ollama_url = self.config.get('ollama', {}).get('base_url', 'http://localhost:11434')
                 self.consciousness = Consciousness(

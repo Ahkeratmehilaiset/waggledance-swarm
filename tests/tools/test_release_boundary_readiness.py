@@ -1186,10 +1186,82 @@ def test_head_soak_binding_accepts_only_ancestor_carrier_delta(
         "head_tree": TEST_CARRIER_TREE,
         "subject_is_ancestor": True,
         "carrier_only_delta": True,
+        "evidence_only_delta": True,
         "carrier_delta_paths": [boundary.SOAK_EVIDENCE_CARRIER_PATH],
         "soak_evidence_path": boundary.SOAK_EVIDENCE_CARRIER_PATH,
         "carrier_blob": "c" * 40,
     }
+
+
+@pytest.mark.parametrize("sidecar", boundary.SOAK_EVIDENCE_SIDECAR_PATHS)
+def test_head_soak_binding_classifies_explicit_evidence_sidecar(
+    monkeypatch: pytest.MonkeyPatch, sidecar: str,
+) -> None:
+    paths = sorted([boundary.SOAK_EVIDENCE_CARRIER_PATH, sidecar])
+    _install_subject_carrier_git(
+        monkeypatch, delta=("\0".join(paths) + "\0").encode(),
+    )
+    binding, blockers = boundary._head_soak_binding(
+        _subject_binding_state(),
+        {"raw": json.dumps({"commit": CANONICAL_SOAK_COMMIT}).encode()},
+    )
+    assert blockers == []
+    assert binding["carrier_only_delta"] is False
+    assert binding["evidence_only_delta"] is True
+    assert binding["carrier_delta_paths"] == paths
+
+
+@pytest.mark.parametrize("path", [
+    "tools/verify_release_soak_evidence.py",
+    "configs/hex_cells.yaml",
+    "requirements.lock.txt",
+    "docs/release/RELEASE_READINESS.md",
+    "docs/releases/v3.12.0.md",
+    "docs/operator_inbox/torch-cuda-vs-cpu.yaml",
+    "docs/runs/error_log.jsonl",
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
+    "docs/runs/release_soak_evidence/v3.12.0_security_privacy_precheck.md",
+    "docs/runs/release_soak_evidence/v3.12.0_bandit_report_after_static_hardening_zero_medium.json",
+    "docs/runs/release_soak_evidence/v3.12.0_pip_audit_report_lock_after_prune_osv.json",
+    "docs/runs/release_soak_evidence/other.json",
+    "docs/runs/release_soak_evidence/v3.12.0_ci_status.json.bak",
+])
+def test_head_soak_binding_keeps_non_evidence_inputs_frozen(
+    monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    paths = [boundary.SOAK_EVIDENCE_CARRIER_PATH, path]
+    _install_subject_carrier_git(
+        monkeypatch, delta=("\0".join(paths) + "\0").encode(),
+    )
+    binding, blockers = boundary._head_soak_binding(
+        _subject_binding_state(),
+        {"raw": json.dumps({"commit": CANONICAL_SOAK_COMMIT}).encode()},
+    )
+    assert blockers == ["soak_subject_noncarrier_tree_delta"]
+    assert binding["evidence_only_delta"] is False
+
+
+def test_head_soak_binding_requires_carrier_even_for_known_sidecars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_subject_carrier_git(
+        monkeypatch,
+        delta=("\0".join(boundary.SOAK_EVIDENCE_SIDECAR_PATHS) + "\0").encode(),
+    )
+    binding, blockers = boundary._head_soak_binding(
+        _subject_binding_state(),
+        {"raw": json.dumps({"commit": CANONICAL_SOAK_COMMIT}).encode()},
+    )
+    assert blockers == ["soak_subject_noncarrier_tree_delta"]
+    assert binding["evidence_only_delta"] is False
+
+
+def test_evidence_sidecars_are_fixed_live_gate_inputs() -> None:
+    assert len(boundary.SOAK_EVIDENCE_SIDECAR_PATHS) == 5
+    assert len(set(boundary.SOAK_EVIDENCE_SIDECAR_PATHS)) == 5
+    assert set(boundary.SOAK_EVIDENCE_SIDECAR_PATHS).issubset(
+        boundary._LIVE_CHILD_FIXED_DATA_PATHS,
+    )
 
 
 @pytest.mark.parametrize(
@@ -2878,6 +2950,8 @@ LIVE_CHILD_MODULE_PATHS = (
     "tools/run_release_ci_status_evidence.py",
     "tools/run_release_docker_policy_evidence.py",
     "tools/operator_decision_pack.py",
+    "tools/release_axis_a_attestation.py",
+    "tools/release_axis_b_attestation.py",
 )
 
 LIVE_CHILD_DATA_PATHS = (
@@ -2911,6 +2985,20 @@ LIVE_CHILD_DATA_PATHS = (
     "docker-compose.yml",
     "pyproject.toml",
     "docs/deployment/DOCKER_QUICKSTART.md",
+    "tools/run_solver_scale_proof.py",
+    "waggledance/core/autonomy_growth/gap_intake.py",
+    "waggledance/core/autonomy_growth/hot_path_cache.py",
+    "waggledance/core/autonomy_growth/runtime_query_router.py",
+    "waggledance/core/autonomy_growth/solver_dispatcher.py",
+    "waggledance/core/storage/control_plane.py",
+    "configs/hex_cells.yaml",
+    "tests/oracle_hex/bee_ops.yaml",
+    "tests/oracle_hex/environment.yaml",
+    "tests/oracle_hex/home_comfort.yaml",
+    "tests/oracle_hex/hub.yaml",
+    "tests/oracle_hex/logistics.yaml",
+    "tests/oracle_hex/production.yaml",
+    "tests/oracle_hex/safety_security.yaml",
 )
 
 LIVE_CHILD_DOCKER_SOURCE_PATHS = (
@@ -3083,14 +3171,30 @@ def _assert_live_child_violation(result, *, operation: str | None = None) -> Non
     assert result.operation is None
 
 
-def test_live_child_manifest_is_exact_nine_module_thirty_file_closure() -> None:
+def test_live_child_declares_axis_validators_and_source_data() -> None:
+    from tools.release_axis_a_attestation import AXIS_A_EXPECTED_SOURCES
+    from tools.release_axis_b_attestation import AXIS_B_EXPECTED_SOURCES
+
+    for axis in ("a", "b"):
+        assert f"tools/release_axis_{axis}_attestation.py" in (
+            boundary._live_child_module_paths()
+        )
+    inventory = (*AXIS_A_EXPECTED_SOURCES, *AXIS_B_EXPECTED_SOURCES)
+    assert len(set(inventory)) == 14
+    assert boundary._LIVE_CHILD_AXIS_SOURCE_PATHS == inventory
+    assert set(inventory).issubset(boundary._LIVE_CHILD_DATA_PATHS)
+    assert set(inventory).isdisjoint(boundary._live_child_module_paths())
+
+
+def test_live_child_manifest_is_exact_eleven_module_forty_six_file_closure() -> None:
     assert boundary._live_child_module_paths() == LIVE_CHILD_MODULE_PATHS
     assert boundary._live_child_required_paths() == (
         *LIVE_CHILD_MODULE_PATHS,
         *LIVE_CHILD_DATA_PATHS,
     )
-    assert len(boundary._live_child_required_paths()) == 30
-    assert len(set(boundary._live_child_required_paths())) == 30
+    assert len(boundary._live_child_module_paths()) == 11
+    assert len(boundary._live_child_required_paths()) == 46
+    assert len(set(boundary._live_child_required_paths())) == 46
     assert boundary._live_child_dynamic_soak_paths() == (
         "docs/runs/error_log.jsonl",
         "docs/runs/release_soak_evidence/v3.12.0_history.jsonl",
@@ -3125,8 +3229,10 @@ def test_live_child_bundle_records_both_docker_commits_and_absence() -> None:
     assert stale["tools/operator_decision_pack.py"] == {"present": False}
 
 
+@pytest.mark.parametrize("production_pycache_prefix", [False, True])
 def test_live_child_production_schema_executes_authenticated_git_closure(
     monkeypatch: pytest.MonkeyPatch,
+    production_pycache_prefix: bool,
 ) -> None:
     executable = boundary._trusted_git_executable()
     if executable is None:
@@ -3169,13 +3275,16 @@ def test_live_child_production_schema_executes_authenticated_git_closure(
     decoded = boundary._live_child_decode_bundle(bundle)
     assert decoded["schema_version"] == boundary._LIVE_CHILD_BUNDLE_SCHEMA
     assert decoded["head"] == head
-    assert len(decoded["files"]) == 30
+    assert len(decoded["files"]) == 46
     assert decoded["git_objects"]
 
     timestamp = "2026-09-02T05:00:00Z"
     completed = subprocess.run(
         [
-            sys.executable, "-B", "-I", "-S", "-c",
+            sys.executable, "-B",
+            *(["-X", f"pycache_prefix={boundary._PYCACHE_PREFIX}"]
+              if production_pycache_prefix else []),
+            "-I", "-S", "-c",
             boundary._LIVE_CHILD_BOOTSTRAP,
             "--release-readiness", str(boundary.CANONICAL_RELEASE_READINESS),
             "--soak-evidence", str(CANONICAL_SOAK_EVIDENCE),
@@ -3318,6 +3427,73 @@ def test_live_child_vfs_reads_known_and_hides_optional_missing_path() -> None:
     assert runtime.is_file(absent) is False
     assert runtime.is_dir(absent) is False
     assert runtime.violation is None
+
+
+@pytest.mark.parametrize("supported_fields", [(), ("st_file_attributes",),
+                                             ("st_reparse_tag",),
+                                             ("st_file_attributes", "st_reparse_tag")])
+@pytest.mark.parametrize("kind", ["file", "dir"])
+def test_virtual_stat_supplies_only_platform_supported_fields(
+    supported_fields: tuple[str, ...], kind: str,
+) -> None:
+    import ast
+    import stat
+    from types import SimpleNamespace
+
+    # Exercise the production function with a strict structseq-constructor
+    # contract so Linux's missing Windows fields are covered on every host.
+    def strict_stat_result(values, fields):
+        if set(fields) - set(supported_fields):
+            raise TypeError("unexpected stat_result field")
+        return values, fields
+
+    for field in supported_fields:
+        setattr(strict_stat_result, field, None)
+    function = next(
+        node for node in ast.parse(boundary._LIVE_CHILD_RUNTIME_SOURCE).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_vstat"
+    )
+    namespace = {
+        "os": SimpleNamespace(stat_result=strict_stat_result),
+        "stat": stat,
+        "_vnode": lambda *args: ("declared", "declared", kind,
+                                 b"abc" if kind == "file" else None),
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]),
+                 "<virtual-stat-platform-contract>", "exec"), namespace)
+    values, fields = namespace["_vstat"]("declared")
+    assert values[0] == ((stat.S_IFREG | 0o444) if kind == "file"
+                         else (stat.S_IFDIR | 0o555))
+    assert values[6] == (3 if kind == "file" else 0)
+    expected = {"st_file_attributes": 0 if kind == "file" else 16,
+                "st_reparse_tag": 0}
+    assert fields == {key: expected[key] for key in supported_fields}
+
+
+def test_live_child_declared_stat_metadata_supports_reparse_checks() -> None:
+    source = """
+import os, stat
+from pathlib import Path
+for relative, directory in (('docs/release/RELEASE_READINESS.md', False),
+                            ('docs/release', True)):
+    path = Path(relative)
+    for info in (os.stat(path), os.lstat(path), path.stat(), path.lstat()):
+        attributes = getattr(info, 'st_file_attributes', 0)
+        assert type(attributes) is int
+        assert attributes & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 1024) == 0
+        assert getattr(info, 'st_reparse_tag', 0) == 0
+        assert stat.S_ISDIR(info.st_mode) is directory
+        assert stat.S_ISREG(info.st_mode) is not directory
+        if hasattr(info, 'st_file_attributes'):
+            assert bool(attributes & 16) is directory
+print('DECLARED_METADATA_OK')
+"""
+    result = boundary._live_child_execute_source(
+        _build_test_live_child_bundle(), source,
+    )
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert result.stdout.strip() == b"DECLARED_METADATA_OK"
 
 
 @pytest.mark.parametrize("method", ["exists", "is_file", "is_dir"])

@@ -4,11 +4,14 @@
 Examples::
 
     python tools/bridge_compact_view.py --events PATH --tail 5000
-    python tools/bridge_compact_view.py --events PATH --after FULL_EVENT_DIGEST
+    python tools/bridge_compact_view.py --events PATH --after POSITION_CURSOR
     python tools/bridge_compact_view.py --events PATH --event-id FULL_EVENT_DIGEST
 
-Reuse the bounded stable snapshot reader. Cursor loss (rotation/window eviction)
-is explicit: read a fresh view, never silently assume there was no new work.
+Reuse the bounded stable snapshot and position-cursor reader. File rotation or
+truncation fails explicitly. Event content hashes are NEVER position cursors.
+Initial tails retain the legacy reader's historical normalization; deltas use
+the canonical writer's strict complete-JSON-object contract. A newly appended
+blank/null/malformed record stops the delta without advancing its cursor.
 Digests identify canonical JSON content, not authenticated agent identities.
 No ACK, event append, claim sweep, cursor write or audit-log mutation occurs.
 The literal private-marker guard is not a general secret or PII scanner.
@@ -16,6 +19,8 @@ The literal private-marker guard is not a general secret or PII scanner.
 from __future__ import annotations
 
 import argparse
+import base64
+from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
@@ -31,6 +36,10 @@ if str(ROOT) not in sys.path:
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":"), allow_nan=False)
+
+
+class CompactViewError(ValueError):
+    """Fixed diagnostic codes safe to print without echoing source content."""
 
 
 def event_id(event: Mapping[str, Any]) -> str:
@@ -49,18 +58,14 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
         raise ValueError("event must be an object")
     if any(not isinstance(row.get("type", ""), str) for row in events):
         raise ValueError("event type must be a string")
-    ids = [event_id(row) for row in events]
-    start = 0
     if after:
-        if not re.fullmatch(r"[0-9a-f]{64}", after) or after not in ids:
-            raise ValueError("cursor unavailable; fresh bounded view required")
-        # First occurrence avoids dropping intervening rows on duplicate replay.
-        start = ids.index(after) + 1
+        raise ValueError("position cursor requires the log reader, not event content")
+    ids = [event_id(row) for row in events]
     visible = []
     observed = {}
     seen = set()
     heartbeats = duplicates = 0
-    for row, ref in zip(events[start:], ids[start:]):
+    for row, ref in zip(events, ids):
         if ref in seen:
             duplicates += 1
             continue
@@ -98,12 +103,60 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
     return {
         "schema": "wd.bridge.compact-view.v1", "authority": "none",
         "scope": "bounded_snapshot_not_complete_history",
-        "cursor": ids[-1] if ids else after,
-        "stats": {"snapshot_events": len(events), "delta_events": len(events) - start,
+        "last_event_ref": ids[-1] if ids else "",
+        "stats": {"snapshot_events": len(events), "delta_events": len(events),
                   "heartbeats": heartbeats, "duplicates": duplicates,
                   "visible_events": len(visible),
-                  "source_json_bytes": len(_json(events[start:]).encode("utf-8"))},
+                  "source_json_bytes": len(_json(events).encode("utf-8"))},
         "events": visible, "observations": list(observed.values()),
+    }
+
+
+def _read_view_rows(path: Path, tail: int, after: str):
+    from waggledance.core.bridge_log_reader import (
+        BridgeCursor, BridgeReadStatus, MAX_MAX_BYTES, MAX_MAX_ROWS,
+        read_bridge_log, read_bridge_log_tail_lines,
+    )
+    from tools.bridge_next_action import _parse_selected_bridge_row
+    generation_path = path.with_name("events.generation.json")
+    if after:
+        if len(after) > 2048 or not re.fullmatch(r"bc1\.[A-Za-z0-9_-]+", after):
+            raise CompactViewError("position_cursor_invalid")
+        encoded = after[4:]
+        data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        if not isinstance(data, dict) or set(data) != {"offset", "file_identity", "generation"}:
+            raise CompactViewError("position_cursor_invalid")
+        cursor = BridgeCursor(**data)
+        result = read_bridge_log(
+            path, cursor=cursor, max_bytes=MAX_MAX_BYTES, max_rows=tail or MAX_MAX_ROWS,
+            generation_path=generation_path if cursor.generation is not None or generation_path.exists() else None,
+        )
+        if result.status not in {BridgeReadStatus.OK, BridgeReadStatus.IDLE} or result.candidate_cursor is None:
+            raise CompactViewError("position_cursor_unavailable_fresh_snapshot_required")
+        rows = list(result.rows)
+        next_cursor = result.candidate_cursor
+    else:
+        result = read_bridge_log_tail_lines(
+            path, tail_rows=tail or MAX_MAX_ROWS, max_bytes=MAX_MAX_BYTES,
+            generation_path=generation_path,
+        )
+        if result.status not in {BridgeReadStatus.OK, BridgeReadStatus.IDLE}:
+            raise CompactViewError("stable_snapshot_unavailable")
+        rows = []
+        for line in result.lines:
+            if line.strip(" \t\r") in {"", "null"}:
+                continue
+            rows.extend(_parse_selected_bridge_row(line))
+        next_cursor = (BridgeCursor(result.end_offset, result.file_identity, result.generation)
+                       if result.end_offset is not None and result.file_identity else None)
+    token = ("bc1." + base64.urlsafe_b64encode(_json(asdict(next_cursor)).encode()).decode().rstrip("=")
+             if next_cursor is not None else "")
+    return rows, token, {
+        "bytes_read": result.bytes_read,
+        "snapshot_length": result.snapshot_length,
+        "position": next_cursor.offset if next_cursor else None,
+        "unconsumed_bytes": (result.snapshot_length - next_cursor.offset
+                             if result.snapshot_length is not None and next_cursor else 0),
     }
 
 
@@ -117,9 +170,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not 0 <= args.tail <= 100000:
         parser.error("--tail must be 0..100000 (0 = bounded full snapshot)")
-    from tools.bridge_next_action import read_events, BridgeNextActionError
+    from tools.bridge_next_action import BridgeNextActionError
     try:
-        rows = read_events(args.events, tail=args.tail)
+        rows, cursor, reader_stats = _read_view_rows(args.events, args.tail, args.after)
         if args.event_id:
             matches = [row for row in rows if event_id(row) == args.event_id]
             if not matches:
@@ -127,7 +180,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = {"schema": "wd.bridge.event-detail.v1", "authority": "none",
                       "ref": args.event_id, "event": matches[0]}
         else:
-            report = compact_view(rows, after=args.after)
+            report = compact_view(rows)
+            report["cursor"] = cursor
+            report["reader"] = reader_stats
+            if args.after:
+                report["scope"] = "position_delta_batch_not_complete_history"
         rendered = _json(report)
         if any(marker in rendered for marker in ("PRIVATE_MARKER", "_DO_NOT_LEAK")):
             raise ValueError("private marker in selected output")
@@ -136,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, BridgeNextActionError) as exc:
         # Avoid printing event content in parse errors.
         print(_json({"ok": False, "error": type(exc).__name__,
+                     "reason": str(exc) if isinstance(exc, CompactViewError) else "invalid_source_or_input",
                      "action": "inspect raw snapshot; do not infer no work"}),
               file=sys.stderr)
         return 2

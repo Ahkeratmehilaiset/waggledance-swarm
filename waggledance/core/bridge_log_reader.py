@@ -73,6 +73,8 @@ class BridgeLineReadResult:
     snapshot_length: int | None = None
     file_identity: str | None = None
     generation: str | None = None
+    # End of the last LF-complete row, excluding any trailing partial row.
+    end_offset: int | None = None
 
 
 class _GenerationError(Exception):
@@ -907,6 +909,7 @@ def read_bridge_log_tail_lines(
                 snapshot_length=snapshot_length,
                 file_identity=identity,
                 generation=generation_before,
+                end_offset=window_start + selected_end,
             )
         )
     finally:

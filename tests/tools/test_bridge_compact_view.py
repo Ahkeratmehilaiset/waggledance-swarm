@@ -28,7 +28,6 @@ def test_heartbeat_separate_exact_duplicates_removed_and_input_unchanged():
 
 def test_delta_and_unknown_cursor():
     first, second = event(), event("test")
-    assert len(compact_view([first, second], after=event_id(first))["events"]) == 1
     with pytest.raises(ValueError, match="cursor"):
         compact_view([second], after=event_id(first))
 
@@ -74,17 +73,18 @@ def test_reference_is_key_order_independent():
 
 
 def test_empty_delta_has_no_events():
-    row = event()
-    assert compact_view([row], after=event_id(row))["events"] == []
+    assert compact_view([])["events"] == []
 
 
-def test_cli_delta_detail_and_no_log_mutation(tmp_path):
+def test_cli_delta_detail_and_no_log_mutation(tmp_path, capsys):
     from tools.bridge_compact_view import main
     path = tmp_path / "events.jsonl"
     row = event()
     original = json.dumps(row).encode() + b"\n"
     path.write_bytes(original)
-    assert main(["--events", str(path), "--after", event_id(row)]) == 0
+    assert main(["--events", str(path)]) == 0
+    cursor = json.loads(capsys.readouterr().out)["cursor"]
+    assert main(["--events", str(path), "--after", cursor]) == 0
     assert main(["--events", str(path), "--event-id", event_id(row)]) == 0
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
@@ -101,8 +101,62 @@ def test_cli_invalid_input_reports_error_not_empty_work(tmp_path, capsys, conten
 
 def test_duplicate_cursor_replays_instead_of_skipping_intervening_events():
     first, second = event(), event("test")
-    result = compact_view([first, second, first], after=event_id(first))
-    assert any(row["ref"] == event_id(second) for row in result["events"])
+    with pytest.raises(ValueError, match="cursor"):
+        compact_view([second, first], after=event_id(first))
+
+
+def test_position_cursor_retains_work_before_later_identical_event(tmp_path, capsys):
+    from tools.bridge_compact_view import main
+    path = tmp_path / "events.jsonl"
+    first, second = event(), event("test")
+    first_line = json.dumps(first) + "\n"
+    path.write_text(first_line, encoding="utf-8")
+    assert main(["--events", str(path), "--tail", "2"]) == 0
+    cursor = json.loads(capsys.readouterr().out)["cursor"]
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(second) + "\n" + first_line)
+    assert main(["--events", str(path), "--tail", "2", "--after", cursor]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert any(row["ref"] == event_id(second) for row in report["events"])
+    assert main(["--events", str(path), "--after", report["cursor"]]) == 0
+    assert json.loads(capsys.readouterr().out)["events"] == []
+
+
+def test_tail_cursor_does_not_skip_incomplete_line(tmp_path, capsys):
+    from tools.bridge_compact_view import main
+    path = tmp_path / "events.jsonl"
+    first, second = event(), event("test")
+    line = json.dumps(second).encode()
+    path.write_bytes(json.dumps(first).encode() + b"\n" + line[:20])
+    assert main(["--events", str(path)]) == 0
+    cursor = json.loads(capsys.readouterr().out)["cursor"]
+    with path.open("ab") as stream:
+        stream.write(line[20:] + b"\n")
+    assert main(["--events", str(path), "--after", cursor]) == 0
+    assert json.loads(capsys.readouterr().out)["events"][0]["ref"] == event_id(second)
+
+
+@pytest.mark.parametrize("change", ["truncate", "replace", "blank", "bad_token"])
+def test_position_cursor_changes_fail_explicitly(tmp_path, capsys, change):
+    from tools.bridge_compact_view import main
+    path = tmp_path / "events.jsonl"
+    path.write_text(json.dumps(event()) + "\n", encoding="utf-8")
+    assert main(["--events", str(path)]) == 0
+    cursor = json.loads(capsys.readouterr().out)["cursor"]
+    if change == "truncate":
+        path.write_bytes(b"")
+    elif change == "replace":
+        path.rename(tmp_path / "old.jsonl")
+        path.write_text(json.dumps(event("test")) + "\n", encoding="utf-8")
+    elif change == "blank":
+        with path.open("ab") as stream:
+            stream.write(b"\n")
+    else:
+        cursor = "not-a-position-cursor"
+    assert main(["--events", str(path), "--after", cursor]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "position_cursor" in captured.err
 
 
 def test_private_marker_is_not_printed(tmp_path, capsys):

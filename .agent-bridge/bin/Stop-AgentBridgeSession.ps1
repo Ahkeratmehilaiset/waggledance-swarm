@@ -44,6 +44,9 @@ param(
 $ErrorActionPreference = 'Continue'
 Set-StrictMode -Version Latest
 
+# B7: the one shared claim-lease / session-heartbeat implementation.
+. (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
+
 $pattern = if ($Agent) {
     "agent-bridge-*-$Agent"
 } else {
@@ -78,9 +81,37 @@ if (-not $Agent -or $Agent -eq 'claude' -or $Agent -eq 'codex' -or $Agent -eq 'o
     }
 }
 
+# B7: retire this session's durable heartbeat and drop the owner token.
+# Stopping the jobs is not enough on its own: while the artifact is
+# inside its TTL the sweeper would keep treating this session's claims as
+# live work, so a clean stop must free them immediately rather than make
+# peers wait out the TTL. Dropping the token also means nothing left in
+# this process can extend a lease afterwards.
+$retiredSessionHeartbeat = $false
+$sessionRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {
+    [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+} else {
+    Split-Path -Parent $PSScriptRoot
+}
+$stopSessionId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
+if ($stopSessionId -and $PSCmdlet.ShouldProcess($stopSessionId, 'Retire session heartbeat')) {
+    try {
+        # Identity-checked removal: stopping this session must not be
+        # able to delete a successor session's artifact.
+        $stopIdentity = Get-BridgeOwnerIdentity -SessionId $stopSessionId
+        $retiredSessionHeartbeat = [bool](Remove-BridgeSessionHeartbeat `
+            -Root $sessionRoot -SessionId $stopSessionId -Identity $stopIdentity)
+    } catch {
+        Write-Warning ("Stop-AgentBridgeSession: could not retire session heartbeat: {0}" -f `
+            $_.Exception.Message)
+    }
+    Remove-Item Env:AGENT_BRIDGE_OWNER_TOKEN -ErrorAction SilentlyContinue
+}
+
 [pscustomobject]@{
     pattern = $pattern
     stopped = $stopped
+    session_heartbeat_retired = $retiredSessionHeartbeat
     note    = if ($stopped -eq 0) {
         'no agent-bridge jobs found in this host (clean state, or jobs are in another process)'
     } else {

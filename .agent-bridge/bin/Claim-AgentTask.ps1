@@ -17,6 +17,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# B7: the one shared claim-lease / session-heartbeat implementation.
+# Every lease writer goes through it, so there is a single CAS to review.
+. (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
+
 # R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
 # per-agent worktrees can share one runtime state directory. Codex
 # blocker 2026-05-09T13:11Z: if the env var is SET, USE IT - do not
@@ -156,7 +160,22 @@ if ($LeaseSeconds -le 0 -and $env:AGENT_BRIDGE_STALE_LEASE_SECONDS) {
         $LeaseSeconds = $parsedLease
     }
 }
-if ($LeaseSeconds -le 0) { $LeaseSeconds = 300 }
+$readOnlyLeaseCapSeconds = 120
+if ($LeaseSeconds -le 0) {
+    # B7: split the default by mode. Read-only claims are cheap to
+    # re-acquire and must free fast; write claims are the ones a long
+    # legitimate turn used to lose mid-work. The longer write default is
+    # only safe because the sweeper now also requires the owning session
+    # to have stopped beating, and the keepalive no longer depends on
+    # bridge event traffic succeeding.
+    $LeaseSeconds = if ($Mode -eq 'read-only') { $readOnlyLeaseCapSeconds } else { 1800 }
+}
+if ($Mode -eq 'read-only' -and $LeaseSeconds -gt $readOnlyLeaseCapSeconds) {
+    # Hard cap: neither AGENT_BRIDGE_STALE_LEASE_SECONDS nor an explicit
+    # -LeaseSeconds may lengthen a read-only lease. A read-only claim
+    # that outlives its reader blocks write work for no benefit.
+    $LeaseSeconds = $readOnlyLeaseCapSeconds
+}
 
 $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
 $leaseExpiresUtc = ([DateTime]::Parse($nowUtc).ToUniversalTime()).AddSeconds($LeaseSeconds).ToString('o')
@@ -180,6 +199,17 @@ $claim = [ordered]@{
     pid                 = $PID
     cwd                 = (Get-Location).Path
     git_branch          = Get-CurrentGitBranch
+}
+# B7: bind the claim to this session's identity. owner_token_sha256 is
+# the SHA-256 of a per-session secret that never touches disk, so only
+# the owning process can extend this lease; pid and agent name are
+# recorded for humans and are deliberately not authority. A session with
+# no identity still gets a claim - it simply cannot be kept alive by a
+# heartbeat, and ages out normally.
+$ownerIdentity = Get-BridgeOwnerIdentity
+if ($null -ne $ownerIdentity) {
+    $claim['owner_session_id'] = [string]$ownerIdentity.owner_session_id
+    $claim['owner_token_sha256'] = [string]$ownerIdentity.owner_token_sha256
 }
 if ($Role) { $claim['role'] = $Role }
 if ($AgentUuid) { $claim['agent_uuid'] = $AgentUuid }

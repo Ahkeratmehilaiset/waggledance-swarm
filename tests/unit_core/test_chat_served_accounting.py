@@ -229,6 +229,35 @@ def test_claim_window_invalidates_unclean_or_torn_window() -> None:
     assert torn.reason == "ledger_torn_tail"
 
 
+@pytest.mark.parametrize("value", ["false", "true", 1, 0, None])
+@pytest.mark.parametrize(
+    ("gate", "reason", "reported_value"),
+    [
+        ("enabled_across_window", "not_enabled_across_window", False),
+        ("clean_shutdown", "unclean_shutdown_window_invalid", False),
+        ("torn_tail", "ledger_torn_tail", True),
+    ],
+)
+def test_claim_window_boolean_gates_require_literal_bool(
+    gate, reason, reported_value, value
+) -> None:
+    entries = _chain([("pending", "q1"), ("receipt", "q1")])
+    kwargs = {
+        "expected_head": L.head_hash(entries),
+        "enabled_across_window": True,
+        "clean_shutdown": True,
+        "instrumented_served_points": _ALL_POINTS,
+        "torn_tail": False,
+    }
+    kwargs[gate] = value
+
+    report = derive_claim_window(entries, **kwargs)
+
+    assert report.eligible is False
+    assert report.reason == reason
+    assert getattr(report, gate) is reported_value
+
+
 def test_claim_window_requires_enabled_window_and_source_completeness() -> None:
     entries = _chain([("pending", "q1"), ("receipt", "q1")])
     head = L.head_hash(entries)

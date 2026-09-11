@@ -1,0 +1,119 @@
+schema_version: waggledance.profile.v4
+release_target: 4.0.0
+contract_status: target_state_unwired
+runtime_wiring: false
+profile_id: COTTAGE
+excluded_profiles: [APIARY]
+
+digest_policy: {algorithm: sha256, manifest_preimage: exact_utf8_file_bytes, config_preimage: canonical_json_rfc8785, snapshot_preimage: canonical_json_rfc8785, artifact_preimage: exact_artifact_bytes, source_binding: exact_git_head}
+vector_policy: {backend: faiss, fallback: none, authoritative_only_when_ready: true, chroma_mode: migration_only, chroma_serving_allowed: false, migration_source_read_only: true, migration_target: faiss}
+budgets: {max_memory_mb: 256, max_replay_concurrency: 4, l1_prefetch_k: 64, l3_elevated_budget: 8192}
+
+readiness_policy:
+  only_servable_state: READY
+  unknown_observation_state: BLOCKED
+  required_failure_scope: capability_and_profile_readiness
+  supervisor_survives_capability_failure: true
+  diagnostics_remain_available: true
+  profile_ready_requires_claim_safe: true
+  profile_ready_requires_all_release_items: true
+receipt_evidence_policy: {window_id_required: true, exact_head_required: true, served_count_equals_runtime_covered_count: true, served_count_equals_chat_covered_count: true, gap_count: 0, chain_head_digest_required: true, evidence_digest_required: true}
+
+claim_safe_policy:
+  initial_value: false
+  activation_authority: none
+  requires_foundation_ready: true
+  requires_complete_receipts: true
+  requires_exact_config_digest: true
+  requires_exact_artifact_digests: true
+  foundation_capabilities: [audit.chat_served_receipts, audit.claim_safe_evaluator, audit.receipt_chain_verifier, audit.runtime_receipts, routing.deterministic_solver_first, safety.child_privacy, safety.credential_non_exposure, safety.deny_by_default, safety.external_write_gate, safety.redaction]
+  receipt_capabilities: [audit.runtime_receipts, audit.chat_served_receipts, audit.receipt_chain_verifier]
+  gated_capabilities: [autonomy.autofix, autonomy.canary, autonomy.eig2, autonomy.high_risk_gated_pipeline, autonomy.learned_tunnels, autonomy.low_risk_autogrowth, autonomy.query_api, autonomy.stage2_execution, autonomy.virtual_dimensions, governance.write_rco, mesh.dynamic_subdivision, mesh.hex_2d, mesh.ring_messaging, providers.real_http, retrieval.hybrid_faiss]
+
+capabilities:
+  safety.redaction: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: []}
+  safety.credential_non_exposure: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: []}
+  safety.external_write_gate: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: []}
+  safety.deny_by_default: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: []}
+  safety.child_privacy: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: []}
+  audit.runtime_receipts: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: [safety.redaction, safety.credential_non_exposure]}
+  audit.chat_served_receipts: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: [safety.redaction, safety.credential_non_exposure]}
+  audit.receipt_chain_verifier: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: [audit.runtime_receipts, audit.chat_served_receipts]}
+  audit.claim_safe_evaluator: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: [audit.receipt_chain_verifier, safety.child_privacy, safety.credential_non_exposure, safety.deny_by_default, safety.external_write_gate, safety.redaction]}
+  routing.deterministic_solver_first: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: foundation, activation_requires_claim_safe: false, dependencies: [safety.deny_by_default, safety.redaction]}
+  retrieval.hybrid_faiss: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [routing.deterministic_solver_first]}
+  mesh.hex_2d: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [routing.deterministic_solver_first]}
+  mesh.ring_messaging: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [mesh.hex_2d]}
+  mesh.dynamic_subdivision: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [mesh.ring_messaging]}
+  autonomy.eig2: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [mesh.dynamic_subdivision]}
+  autonomy.virtual_dimensions: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [autonomy.eig2]}
+  autonomy.learned_tunnels: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [autonomy.virtual_dimensions]}
+  autonomy.canary: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [autonomy.learned_tunnels]}
+  autonomy.low_risk_autogrowth: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [autonomy.canary, safety.external_write_gate]}
+  providers.real_http: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [safety.credential_non_exposure, safety.external_write_gate, safety.redaction]}
+  autonomy.query_api: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [routing.deterministic_solver_first]}
+  governance.write_rco: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [safety.external_write_gate]}
+  autonomy.autofix: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [autonomy.canary, governance.write_rco]}
+  autonomy.stage2_execution: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [governance.write_rco, safety.external_write_gate]}
+  autonomy.high_risk_gated_pipeline: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: true, dependencies: [autonomy.stage2_execution, safety.external_write_gate]}
+  packaging.production_container: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED, readiness_phase: release, activation_requires_claim_safe: false, dependencies: [safety.credential_non_exposure]}
+
+integrations:
+  alertmanager: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Factory alert routing is outside the COTTAGE integration surface."}
+  alerts: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  device_enrollment: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Factory device enrollment is outside the COTTAGE integration surface."}
+  electricity: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  frigate: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Frigate camera events are outside the COTTAGE integration surface."}
+  home_assistant: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Home Assistant is outside the standalone COTTAGE integration surface."}
+  local_model: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "GADGET-local model packaging is outside the COTTAGE integration surface."}
+  mqtt: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  offline_queue: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  otel: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Factory OTEL export is outside the COTTAGE integration surface."}
+  power_loss_recovery: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "GADGET power-loss recovery is outside the COTTAGE integration surface."}
+  prometheus: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Factory Prometheus export is outside the COTTAGE integration surface."}
+  sensors: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "GADGET direct sensor binding is outside the COTTAGE integration surface."}
+  signed_ota: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "GADGET signed OTA is outside the COTTAGE integration surface."}
+  voice_audio: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  watchdogs: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "Factory hardware watchdogs are outside the COTTAGE integration surface."}
+  weather: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+
+probes:
+  backup_restore: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  clock_sync: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  config_schema: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  hardware_readiness: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  integration_readiness: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  receipt_chain: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  required_capabilities: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  secret_non_exposure: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+  unexpected_remote_provider_reachability: {classification: not_applicable, enabled_by_default: false, release_required: false, initial_state: ABSENT, rationale: "COTTAGE requires the remote provider plane, so its absence probe is not applicable."}
+  unexpected_vector_backend_reachability: {classification: required, enabled_by_default: true, release_required: true, initial_state: UNPROVISIONED}
+
+catalog_crosswalk:
+  analyze.routing: {classification: required, target_kind: catalog_capability, target_id: analyze.routing}
+  detect.anomaly: {classification: required, target_kind: catalog_capability, target_id: detect.anomaly}
+  detect.seasonal_rules: {classification: required, target_kind: catalog_capability, target_id: detect.seasonal_rules}
+  explain.llm_reasoning: {classification: required, target_kind: catalog_capability, target_id: explain.llm_reasoning}
+  normalize.finnish: {classification: required, target_kind: catalog_capability, target_id: normalize.finnish}
+  normalize.translate_fi_en: {classification: required, target_kind: catalog_capability, target_id: normalize.translate_fi_en}
+  optimize.schedule: {classification: required, target_kind: catalog_capability, target_id: optimize.schedule}
+  retrieve.hot_cache: {classification: required, target_kind: catalog_capability, target_id: retrieve.hot_cache}
+  retrieve.semantic_search: {classification: not_applicable, target_kind: migration_only, target_id: retrieve.semantic_search, rationale: "The legacy Chroma serving capability is migration-only in v4."}
+  retrieve.vector_search: {classification: required, target_kind: catalog_capability, target_id: retrieve.vector_search}
+  sense.audio: {classification: required, target_kind: catalog_capability, target_id: sense.audio}
+  sense.camera_frigate: {classification: not_applicable, target_kind: none, target_id: none, rationale: "Frigate camera events are outside the COTTAGE profile."}
+  sense.fusion: {classification: required, target_kind: catalog_capability, target_id: sense.fusion}
+  sense.home_assistant: {classification: not_applicable, target_kind: none, target_id: none, rationale: "Home Assistant is outside the COTTAGE profile."}
+  sense.intent_classify: {classification: required, target_kind: catalog_capability, target_id: sense.intent_classify}
+  sense.mqtt_ingest: {classification: required, target_kind: catalog_capability, target_id: sense.mqtt_ingest}
+  solve.causal: {classification: required, target_kind: catalog_capability, target_id: solve.causal}
+  solve.constraints: {classification: required, target_kind: catalog_capability, target_id: solve.constraints}
+  solve.math: {classification: required, target_kind: catalog_capability, target_id: solve.math}
+  solve.neural_classifier: {classification: required, target_kind: catalog_capability, target_id: solve.neural_classifier}
+  solve.pattern_match: {classification: required, target_kind: catalog_capability, target_id: solve.pattern_match}
+  solve.stats: {classification: required, target_kind: catalog_capability, target_id: solve.stats}
+  solve.symbolic: {classification: required, target_kind: catalog_capability, target_id: solve.symbolic}
+  solve.thermal: {classification: required, target_kind: catalog_capability, target_id: solve.thermal}
+  verify.consensus: {classification: required, target_kind: catalog_capability, target_id: verify.consensus}
+  verify.english_output: {classification: required, target_kind: catalog_capability, target_id: verify.english_output}
+  verify.hallucination: {classification: required, target_kind: catalog_capability, target_id: verify.hallucination}

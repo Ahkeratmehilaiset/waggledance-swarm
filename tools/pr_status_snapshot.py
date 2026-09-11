@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
 from tools.bridge_pr_author import (  # noqa: E402
     github_pr_git_identity_evidence,
 )
+from tools.bridge_diff_privacy import find_diff_private_marker  # noqa: E402
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
@@ -216,7 +217,7 @@ def build_pr_status_snapshot(
         failure_decision="gh_pr_diff_failed",
         label="gh pr diff",
     )
-    _assert_no_private_markers(diff_text)
+    _assert_no_private_markers_in_diff(diff_text)
     verified_base_tip = _fetch_base_ref_tip(
         run=run,
         repo=repo,
@@ -684,7 +685,8 @@ def _normalize_snapshot(
         "git_identities": git_identities,
         "git_identity_evidence": git_identity_evidence,
     }
-    _assert_no_private_markers(snapshot)
+    _assert_no_private_markers({key: value for key, value in snapshot.items() if key != "diff_text"})
+    _assert_no_private_markers_in_diff(diff_text)
     return snapshot
 
 
@@ -858,6 +860,13 @@ def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
         check=False,
         capture_output=True,
     )
+
+
+def _assert_no_private_markers_in_diff(diff_text: str) -> None:
+    marker = find_diff_private_marker(diff_text)
+    if marker is not None:
+        # Reuse the strict error path without exposing the source payload.
+        _assert_no_private_markers(marker)
 
 
 def _assert_no_private_markers(value: object) -> None:

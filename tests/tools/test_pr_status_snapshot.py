@@ -316,7 +316,11 @@ def test_private_marker_in_diff_refused() -> None:
 
 def test_plural_private_marker_helper_name_is_not_sensitive_content() -> None:
     helper_name = "PRIVATE" + "_MARKERS"
-    diff_text = f"+ assert all({helper_name})\n"
+    diff_text = (
+        "diff --git a/tools/example.py b/tools/example.py\n"
+        "--- a/tools/example.py\n+++ b/tools/example.py\n"
+        f"@@ -0,0 +1 @@\n+ assert all({helper_name})\n"
+    )
     calls, runner = _runner(diff_text=diff_text)
 
     snapshot = build_pr_status_snapshot(pr_number=479, runner=runner)

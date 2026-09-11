@@ -1,8 +1,9 @@
 """FastAPI application factory."""
 
+import inspect
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -37,169 +38,197 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup verification and graceful shutdown."""
     container = app.state.container
-
-    # ---- STARTUP ----
-    # Initialize shared memory if the adapter is wired
-    if hasattr(container, "shared_memory"):
-        try:
-            await container.shared_memory.initialize()
-        except Exception as exc:
-            logger.error("SharedMemory initialization failed: %s", exc, exc_info=True)
-
-    # Verify required adapters are constructible (fail-fast)
-    _verify = container.llm
-    _verify = container.vector_store
-    _verify = container.memory_repository
-    _verify = container.trust_store
-
-    # Audit D2.1: warm ControlPlaneDB so data/control_plane.db exists
-    # before any autonomy-growth consumer tries to write to it. The
-    # cached_property runs ControlPlaneDB.__init__ which opens the
-    # connection, sets WAL, and calls migrate().
-    if hasattr(container, "control_plane_db"):
-        try:
-            cp_db = container.control_plane_db
-            if cp_db is not None:
-                logger.info(
-                    "ControlPlaneDB warmed: %s (schema v%d)",
-                    cp_db.db_path, cp_db.schema_version(),
-                )
-        except Exception as exc:
-            logger.error(
-                "ControlPlaneDB warmup failed; autonomy-growth track "
-                "inactive: %s", exc, exc_info=True,
-            )
-
-    # Start low-risk autogrowth queue drain if the runtime wired it.
-    autogrowth_ticker = getattr(container, "autogrowth_background_ticker", None)
-    if autogrowth_ticker is not None:
-        try:
-            await autogrowth_ticker.start()
-            logger.info("AutogrowthBackgroundTicker started")
-        except Exception as exc:
-            logger.warning("AutogrowthBackgroundTicker start failed: %s", exc)
-
-    # Start the advisory snapshot refresh loop if configured
-    advisory_ticker = getattr(container, "advisory_refresh_ticker", None)
-    if advisory_ticker is not None:
-        try:
-            if await advisory_ticker.start():
-                logger.info(
-                    "AdvisoryRefreshTicker started (%s)",
-                    ", ".join(advisory_ticker.configured_verticals),
-                )
-        except Exception as exc:
-            logger.warning("AdvisoryRefreshTicker start failed: %s", exc)
-
-    # Start autonomy runtime if available
-    if hasattr(container, "autonomy_service"):
-        try:
-            container.autonomy_service.start()
-            logger.info("AutonomyService started")
-        except Exception as exc:
-            logger.warning("AutonomyService start failed: %s", exc)
-
-    # Start DataFeedScheduler (weather / electricity / RSS) if wired + enabled
-    scheduler = getattr(container, "data_feed_scheduler", None)
-    if scheduler is not None:
-        try:
-            ready = True
+    async with AsyncExitStack() as resource_stack:
+        # ---- STARTUP ----
+        # Retain and register the exact adapter before initialization. If
+        # initialize() opens SQLite and then fails, the same instance is still
+        # closed rather than leaking its worker until loop teardown.
+        shared_memory = getattr(container, "shared_memory", None)
+        if shared_memory is not None:
+            shared_memory_close = getattr(shared_memory, "close", None)
+            if not inspect.iscoroutinefunction(shared_memory_close):
+                raise TypeError("shared_memory.close must be async")
+            resource_stack.push_async_callback(shared_memory_close)
             try:
-                ready = await container.vector_store.is_ready()
+                await shared_memory.initialize()
             except Exception as exc:
-                logger.warning("vector_store readiness probe failed: %s", exc)
-                ready = False
-            if not ready:
-                logger.warning(
-                    "Skipping DataFeedScheduler start: vector_store not ready"
+                try:
+                    await shared_memory_close()
+                except Exception:
+                    logger.exception(
+                        "SharedMemory cleanup failed after initialization failure"
+                    )
+                    raise
+                logger.error(
+                    "SharedMemory initialization failed: %s", exc, exc_info=True
                 )
-            else:
-                await container.feed_ingest_sink.start()
-                await scheduler.start()
-                logger.info(
-                    "DataFeedScheduler started (%d feeds)",
-                    len(getattr(scheduler, "_feeds", {}) or {}),
+
+        # Verify required adapters are constructible (fail-fast)
+        _verify = container.llm
+        _verify = container.vector_store
+        _verify = container.memory_repository
+        trust_store = container.trust_store
+        missing_close = object()
+        trust_store_close = getattr(trust_store, "close", missing_close)
+        if trust_store_close is not missing_close:
+            if not inspect.iscoroutinefunction(trust_store_close):
+                raise TypeError("trust_store.close must be async")
+            resource_stack.push_async_callback(trust_store_close)
+
+        # Audit D2.1: warm ControlPlaneDB so data/control_plane.db exists
+        # before any autonomy-growth consumer tries to write to it. The
+        # cached_property runs ControlPlaneDB.__init__ which opens the
+        # connection, sets WAL, and calls migrate().
+        if hasattr(container, "control_plane_db"):
+            try:
+                cp_db = container.control_plane_db
+                if cp_db is not None:
+                    logger.info(
+                        "ControlPlaneDB warmed: %s (schema v%d)",
+                        cp_db.db_path, cp_db.schema_version(),
+                    )
+            except Exception as exc:
+                logger.error(
+                    "ControlPlaneDB warmup failed; autonomy-growth track "
+                    "inactive: %s", exc, exc_info=True,
                 )
-        except Exception as exc:
-            logger.warning("DataFeedScheduler start failed: %s", exc)
 
-    logger.info("WaggleDance startup complete")
+        # Start low-risk autogrowth queue drain if the runtime wired it.
+        autogrowth_ticker = getattr(container, "autogrowth_background_ticker", None)
+        if autogrowth_ticker is not None:
+            try:
+                await autogrowth_ticker.start()
+                logger.info("AutogrowthBackgroundTicker started")
+            except Exception as exc:
+                logger.warning("AutogrowthBackgroundTicker start failed: %s", exc)
 
-    yield  # application is running
+        # Start the advisory snapshot refresh loop if configured
+        advisory_ticker = getattr(container, "advisory_refresh_ticker", None)
+        if advisory_ticker is not None:
+            try:
+                if await advisory_ticker.start():
+                    logger.info(
+                        "AdvisoryRefreshTicker started (%s)",
+                        ", ".join(advisory_ticker.configured_verticals),
+                    )
+            except Exception as exc:
+                logger.warning("AdvisoryRefreshTicker start failed: %s", exc)
 
-    # ---- SHUTDOWN ----
-    # Stop autogrowth ticker before closing ControlPlaneDB.
-    autogrowth_ticker = getattr(container, "autogrowth_background_ticker", None)
-    if autogrowth_ticker is not None:
+        # Start autonomy runtime if available
+        if hasattr(container, "autonomy_service"):
+            try:
+                container.autonomy_service.start()
+                logger.info("AutonomyService started")
+            except Exception as exc:
+                logger.warning("AutonomyService start failed: %s", exc)
+
+        # Start DataFeedScheduler (weather / electricity / RSS) if wired + enabled
+        scheduler = getattr(container, "data_feed_scheduler", None)
+        if scheduler is not None:
+            try:
+                ready = True
+                try:
+                    ready = await container.vector_store.is_ready()
+                except Exception as exc:
+                    logger.warning("vector_store readiness probe failed: %s", exc)
+                    ready = False
+                if not ready:
+                    logger.warning(
+                        "Skipping DataFeedScheduler start: vector_store not ready"
+                    )
+                else:
+                    await container.feed_ingest_sink.start()
+                    await scheduler.start()
+                    logger.info(
+                        "DataFeedScheduler started (%d feeds)",
+                        len(getattr(scheduler, "_feeds", {}) or {}),
+                    )
+            except Exception as exc:
+                logger.warning("DataFeedScheduler start failed: %s", exc)
+
+        logger.info("WaggleDance startup complete")
+
         try:
-            await autogrowth_ticker.stop()
-            logger.info("AutogrowthBackgroundTicker stopped")
-        except Exception as exc:
-            logger.warning("AutogrowthBackgroundTicker stop failed: %s", exc)
-
-    # Stop the advisory snapshot refresh loop
-    advisory_ticker = getattr(container, "advisory_refresh_ticker", None)
-    if advisory_ticker is not None:
-        try:
-            await advisory_ticker.stop()
-            logger.info("AdvisoryRefreshTicker stopped")
-        except Exception as exc:
-            logger.warning("AdvisoryRefreshTicker stop failed: %s", exc)
-
-    # Stop DataFeedScheduler first so in-flight feed tasks can drain into the sink
-    scheduler = getattr(container, "data_feed_scheduler", None)
-    if scheduler is not None:
-        try:
-            await scheduler.stop()
-            await container.feed_ingest_sink.stop()
-            logger.info("DataFeedScheduler stopped")
-        except Exception as exc:
-            logger.warning("DataFeedScheduler stop failed: %s", exc)
-
-    # Stop autonomy runtime
-    if hasattr(container, "autonomy_service"):
-        try:
-            container.autonomy_service.stop()
-            logger.info("AutonomyService stopped")
-        except Exception as exc:
-            logger.warning("AutonomyService stop failed: %s", exc)
-
-    # Audit D2.1: close ControlPlaneDB. Calling close() on an
-    # already-closed handle is safe (idempotent).
-    if hasattr(container, "control_plane_db"):
-        try:
-            cp_db = container.control_plane_db
-            if cp_db is not None:
-                cp_db.close()
-                logger.info("ControlPlaneDB closed")
-        except Exception as exc:
-            logger.warning("ControlPlaneDB close failed: %s", exc)
-
-    # Close OllamaAdapter httpx client if present
-    llm = container.llm
-    if hasattr(llm, "close"):
-        try:
-            await llm.close()
-        except Exception as exc:
-            logger.warning("Error closing LLM client: %s", exc)
-    elif hasattr(llm, "_client"):
-        try:
-            await llm._client.aclose()
-        except Exception as exc:
-            logger.warning("Error closing LLM httpx client: %s", exc)
-
-    # Emit shutdown event
-    try:
-        await container.event_bus.publish(
-            DomainEvent(
-                type=EventType.APP_SHUTDOWN,
-                payload={},
-                timestamp=time.time(),
-                source="lifespan",
+            yield  # application is running
+        finally:
+            # ---- SHUTDOWN ----
+            # Stop autogrowth ticker before closing ControlPlaneDB.
+            autogrowth_ticker = getattr(
+                container, "autogrowth_background_ticker", None
             )
-        )
-    except Exception as exc:
-        logger.warning("Error publishing shutdown event: %s", exc)
+            if autogrowth_ticker is not None:
+                try:
+                    await autogrowth_ticker.stop()
+                    logger.info("AutogrowthBackgroundTicker stopped")
+                except Exception as exc:
+                    logger.warning(
+                        "AutogrowthBackgroundTicker stop failed: %s", exc
+                    )
+
+            # Stop the advisory snapshot refresh loop
+            advisory_ticker = getattr(container, "advisory_refresh_ticker", None)
+            if advisory_ticker is not None:
+                try:
+                    await advisory_ticker.stop()
+                    logger.info("AdvisoryRefreshTicker stopped")
+                except Exception as exc:
+                    logger.warning("AdvisoryRefreshTicker stop failed: %s", exc)
+
+            # Stop DataFeedScheduler first so in-flight feed tasks can drain
+            # into the sink.
+            scheduler = getattr(container, "data_feed_scheduler", None)
+            if scheduler is not None:
+                try:
+                    await scheduler.stop()
+                    await container.feed_ingest_sink.stop()
+                    logger.info("DataFeedScheduler stopped")
+                except Exception as exc:
+                    logger.warning("DataFeedScheduler stop failed: %s", exc)
+
+            # Stop autonomy runtime
+            if hasattr(container, "autonomy_service"):
+                try:
+                    container.autonomy_service.stop()
+                    logger.info("AutonomyService stopped")
+                except Exception as exc:
+                    logger.warning("AutonomyService stop failed: %s", exc)
+
+            # Audit D2.1: close ControlPlaneDB. Calling close() on an
+            # already-closed handle is safe (idempotent).
+            if hasattr(container, "control_plane_db"):
+                try:
+                    cp_db = container.control_plane_db
+                    if cp_db is not None:
+                        cp_db.close()
+                        logger.info("ControlPlaneDB closed")
+                except Exception as exc:
+                    logger.warning("ControlPlaneDB close failed: %s", exc)
+
+            # Close OllamaAdapter httpx client if present
+            llm = container.llm
+            if hasattr(llm, "close"):
+                try:
+                    await llm.close()
+                except Exception as exc:
+                    logger.warning("Error closing LLM client: %s", exc)
+            elif hasattr(llm, "_client"):
+                try:
+                    await llm._client.aclose()
+                except Exception as exc:
+                    logger.warning("Error closing LLM httpx client: %s", exc)
+
+            # Emit shutdown event
+            try:
+                await container.event_bus.publish(
+                    DomainEvent(
+                        type=EventType.APP_SHUTDOWN,
+                        payload={},
+                        timestamp=time.time(),
+                        source="lifespan",
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Error publishing shutdown event: %s", exc)
 
     logger.info("WaggleDance shutdown complete")
 

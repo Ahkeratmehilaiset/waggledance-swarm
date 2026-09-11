@@ -47,3 +47,29 @@ def test_metadata_stays_strict():
     from tools.pr_status_snapshot import _assert_no_private_markers, PrStatusSnapshotError
     with pytest.raises(PrStatusSnapshotError):
         _assert_no_private_markers({"title": 'PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")'})
+
+
+def test_downstream_charter_still_requires_review():
+    from tools.idle_consensus_auto_merge import evaluate_auto_merge_gate
+    from tests.tools.test_idle_consensus_auto_merge import _status, HEAD, BASE
+
+    diff = python_diff('PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")')
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(diff_text=diff),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+    )
+    assert report["decision"] == "operator_review_required"
+    assert report["diff_gate"]["allowed"] is False
+    assert report["would_merge"] is False
+    assert report["external_effect"] is False
+
+
+def test_removed_and_context_statements_are_scanned():
+    declaration = 'PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")'
+    header = "diff --git a/tools/example.py b/tools/example.py\n--- a/tools/example.py\n+++ b/tools/example.py\n"
+    assert find_diff_private_marker(header + f"@@ -1 +0,0 @@\n-{declaration}\n") is None
+    assert find_diff_private_marker(header + f"@@ -1 +1 @@\n {declaration}\n") is None
+    assert find_diff_private_marker(header + '@@ -1 +0,0 @@\n-message = "PRIVATE_MARKER sample"\n')

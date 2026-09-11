@@ -47,6 +47,14 @@ def test_latest_observation_is_per_author_session_task_and_head_not_a_verdict():
     assert len(result["events"]) == 2
 
 
+def test_canonical_exact_head_separates_observations_and_conflict_is_visible():
+    rows = [event("rco_review", payload={"exact_head": head, "head": "c" * 40})
+            for head in ("a" * 40, "b" * 40)]
+    result = compact_view(rows)
+    assert {row["head"] for row in result["observations"]} == {"a" * 40, "b" * 40}
+    assert all(row["head_conflict"] for row in result["events"])
+
+
 def test_unknown_fields_require_original_and_explicit_supersession_is_only_reference():
     first = event()
     second = event("handoff", payload={"supersedes_event_id": event_id(first)})
@@ -121,4 +129,35 @@ def test_powershell_compact_path_is_read_only(tmp_path):
                             env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["events"] == []
+    assert not (tmp_path / "missing").exists()
+
+
+def test_zero_tail_keeps_documented_bounded_snapshot_semantics(tmp_path):
+    from tools.bridge_compact_view import main
+    assert main(["--events", str(tmp_path / "absent"), "--tail", "0"]) == 0
+
+
+@pytest.mark.parametrize("kind", [[], {}, None, 42])
+def test_malformed_type_has_explicit_validation_error(kind):
+    with pytest.raises(ValueError, match="type"):
+        compact_view([event(kind)])
+
+
+@pytest.mark.parametrize("extra", [
+    ["-Agent", "codex-tools-1"], ["-Tail", "1"], ["-NoContinuity"],
+    ["-NoAckReceived"],
+])
+def test_compact_rejects_ignored_legacy_options(tmp_path, extra):
+    import os
+    import shutil
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if shell is None:
+        pytest.skip("PowerShell unavailable")
+    env = dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path / "missing"))
+    script = Path(__file__).resolve().parents[2] / ".agent-bridge/bin/Read-AgentBridge.ps1"
+    result = subprocess.run([shell, "-NoProfile", "-File", str(script), "-Compact",
+                             "-PythonExecutable", sys.executable, *extra],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert "legacy" in result.stderr
     assert not (tmp_path / "missing").exists()

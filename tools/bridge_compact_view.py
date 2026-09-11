@@ -11,6 +11,7 @@ Reuse the bounded stable snapshot reader. Cursor loss (rotation/window eviction)
 is explicit: read a fresh view, never silently assume there was no new work.
 Digests identify canonical JSON content, not authenticated agent identities.
 No ACK, event append, claim sweep, cursor write or audit-log mutation occurs.
+The literal private-marker guard is not a general secret or PII scanner.
 """
 from __future__ import annotations
 
@@ -46,6 +47,8 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
     """
     if any(not isinstance(row, Mapping) for row in events):
         raise ValueError("event must be an object")
+    if any(not isinstance(row.get("type", ""), str) for row in events):
+        raise ValueError("event type must be a string")
     ids = [event_id(row) for row in events]
     start = 0
     if after:
@@ -68,7 +71,9 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
             continue
         payload = row.get("payload", {})
         payload = payload if isinstance(payload, Mapping) else {}
-        head = payload.get("head_sha", payload.get("head", ""))
+        bindings = {key: payload[key] for key in ("exact_head", "head_sha", "head")
+                    if key in payload}
+        head = next(iter(bindings.values()), "")
         item = {
             "ref": ref, "ts": row.get("ts_utc", ""),
             "agent": row.get("agent", ""), "session": row.get("session_id", ""),
@@ -76,6 +81,8 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
             "type": kind, "status": row.get("status", ""),
             "to": row.get("to", ""),
         }
+        item["head_bindings"] = bindings
+        item["head_conflict"] = len({_json(value) for value in bindings.values()}) > 1
         message = str(row.get("message", ""))
         item["summary"] = message[:240]
         item["requires_detail"] = True
@@ -86,7 +93,8 @@ def compact_view(events: Sequence[Mapping[str, Any]], *, after: str = "") -> dic
         visible.append(item)
         key = _json([item[k] for k in ("agent", "session", "task", "head")])
         observed[key] = {k: item[k] for k in
-                         ("agent", "session", "task", "head", "status", "ref")}
+                         ("agent", "session", "task", "head", "head_bindings",
+                          "head_conflict", "status", "ref")}
     return {
         "schema": "wd.bridge.compact-view.v1", "authority": "none",
         "scope": "bounded_snapshot_not_complete_history",
@@ -107,8 +115,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     group.add_argument("--after", default="")
     group.add_argument("--event-id", default="")
     args = parser.parse_args(argv)
-    if not 1 <= args.tail <= 100000:
-        parser.error("--tail must be 1..100000")
+    if not 0 <= args.tail <= 100000:
+        parser.error("--tail must be 0..100000 (0 = bounded full snapshot)")
     from tools.bridge_next_action import read_events, BridgeNextActionError
     try:
         rows = read_events(args.events, tail=args.tail)

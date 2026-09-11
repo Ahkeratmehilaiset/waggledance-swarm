@@ -86,9 +86,10 @@ def build_subdivision_runtime_execution_request(
     candidate_topology = _mapping_as_dict(
         runtime_application.get("commit_candidate_topology")
     )
+    request_metadata_snapshot = _mapping_as_dict(request_metadata)
     application_digest = runtime_application.get("application_digest")
     request_metadata_digest = (
-        sha256_digest(request_metadata)
+        sha256_digest(request_metadata_snapshot)
         if isinstance(request_metadata, Mapping)
         else None
     )
@@ -190,29 +191,33 @@ def build_subdivision_runtime_execution_request(
         ),
         "request_metadata_present": isinstance(request_metadata, Mapping),
         "request_action_matches": (
-            request_metadata.get("requested_action")
+            request_metadata_snapshot.get("requested_action")
             == SUBDIVISION_RUNTIME_EXECUTION_REQUEST_ACTION
         ),
         "request_application_digest_matches": (
             isinstance(application_digest, str)
-            and request_metadata.get("application_digest")
+            and request_metadata_snapshot.get("application_digest")
             == application_digest
         ),
         "request_plan_id_matches": (
-            request_metadata.get("plan_id") == runtime_application.get("plan_id")
+            request_metadata_snapshot.get("plan_id")
+            == runtime_application.get("plan_id")
         ),
         "requester_identity_present": _non_empty_field(
-            request_metadata,
+            request_metadata_snapshot,
             "requested_by",
         ),
         "request_timestamp_utc": _timestamp_utc(
-            request_metadata.get("requested_at_utc")
+            request_metadata_snapshot.get("requested_at_utc")
         ),
         "request_contains_no_operator_approval": (
-            request_metadata.get("operator_approval") is not True
+            _flag_is_false_or_absent(
+                request_metadata_snapshot,
+                "operator_approval",
+            )
         ),
         "request_contains_no_runtime_claim": (
-            _contains_no_forbidden_true_flags(request_metadata)
+            _forbidden_flags_are_false_or_absent(request_metadata_snapshot)
         ),
         "no_live_runtime_execution_authorized": True,
         "no_runtime_executor_invoked": True,
@@ -280,7 +285,7 @@ def build_subdivision_runtime_execution_request(
         **core,
         "execution_request_digest": sha256_digest(core),
         "runtime_application": dict(runtime_application),
-        "request_metadata": dict(request_metadata),
+        "request_metadata": request_metadata_snapshot,
     }
 
 
@@ -310,10 +315,20 @@ def _runtime_flags_false(document: Mapping[str, Any]) -> bool:
     return all(document.get(flag) is False for flag in _RUNTIME_FALSE_FLAGS)
 
 
-def _contains_no_forbidden_true_flags(value: Any) -> bool:
+def _flag_is_false_or_absent(value: Any, flag: str) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and (flag not in value or value[flag] is False)
+    )
+
+
+def _forbidden_flags_are_false_or_absent(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
-    return all(value.get(flag) is not True for flag in _REQUEST_FORBIDDEN_TRUE_FLAGS)
+    return all(
+        _flag_is_false_or_absent(value, flag)
+        for flag in _REQUEST_FORBIDDEN_TRUE_FLAGS
+    )
 
 
 def _non_empty_field(value: Any, key: str) -> bool:

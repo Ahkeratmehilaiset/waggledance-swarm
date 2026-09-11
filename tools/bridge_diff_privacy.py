@@ -7,9 +7,7 @@ replace the original diff with a filtered copy: review and hashing use all bytes
 """
 from __future__ import annotations
 
-import io
 import re
-import tokenize
 
 PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")
 
@@ -20,6 +18,8 @@ _PUBLIC_STATEMENTS = frozenset((
     'if any(marker in rendered for marker in ("PRIVATE_MARKER", "_DO_NOT_LEAK")):',
     'row["message"] = "PRIVATE_MARKER"',
     'assert "PRIVATE_MARKER" not in captured.out + captured.err',
+    'for marker in PRIVATE_MARKERS:',
+    '@pytest.mark.parametrize("marker", builder.PRIVATE_MARKERS)',
 ))
 _HEADER = re.compile(r"diff --git a/([A-Za-z0-9_./-]+) b/\1\Z")
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?\Z")
@@ -30,20 +30,7 @@ def _marker(text: str) -> str | None:
 
 
 def _public_statement(text: str) -> bool:
-    statement = text.lstrip(" \t")
-    if statement in _PUBLIC_STATEMENTS:
-        return True
-    # Retain the existing bare plural-identifier allowance, but only within
-    # an actual Python hunk. Quoted values and larger identifiers remain data.
-    try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(statement).readline))
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        return False
-    marked = [token for token in tokens if _marker(token.string)]
-    return bool(marked) and all(
-        token.type == tokenize.NAME and token.string == "PRIVATE_MARKERS"
-        for token in marked
-    )
+    return text.lstrip(" \t") in _PUBLIC_STATEMENTS
 
 
 def find_diff_private_marker(diff: str) -> str | None:

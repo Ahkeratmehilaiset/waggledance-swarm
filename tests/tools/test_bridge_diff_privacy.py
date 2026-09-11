@@ -15,6 +15,7 @@ def python_diff(statement, path="tools/example.py"):
     '    row["message"] = "PRIVATE_MARKER"',
     '    assert "PRIVATE_MARKER" not in captured.out + captured.err',
     '    for marker in PRIVATE_MARKERS:',
+    '@pytest.mark.parametrize("marker", builder.PRIVATE_MARKERS)',
 ])
 def test_known_public_statements(statement):
     diff = python_diff(statement)
@@ -34,6 +35,21 @@ def test_known_public_statements(statement):
 ])
 def test_other_marker_data_still_refused(statement):
     assert find_diff_private_marker(python_diff(statement)) is not None
+
+
+@pytest.mark.parametrize("statement", [
+    "PRIVATE_MARKERS",
+    "    PRIVATE_MARKERS",
+    "for marker in PRIVATE_MARKERS: # not the exact public statement",
+])
+def test_only_complete_enumerated_statements_are_public(statement):
+    assert find_diff_private_marker(python_diff(statement)) is not None
+
+
+def test_diff_shaped_metadata_is_not_source_code():
+    from tools.pr_status_snapshot import _assert_no_private_markers, PrStatusSnapshotError
+    with pytest.raises(PrStatusSnapshotError):
+        _assert_no_private_markers({"title": "+ for marker in PRIVATE_MARKERS:\n"})
 
 
 def test_non_python_and_incomplete_diff_refused():

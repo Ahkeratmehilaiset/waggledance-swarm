@@ -197,6 +197,20 @@ def test_fresh_coverage_requires_complete_jsonl_record(tmp_path):
     assert "soak_log_coverage_insufficient" in _evaluate(tmp_path, report)
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_fresh_coverage_keeps_unicode_separator_inside_json_string(tmp_path, separator):
+    report = _fresh_report(tmp_path)
+    coverage = tmp_path / FRESH_COVERAGE
+    records = [json.loads(line) for line in coverage.read_text().splitlines()]
+    records[1]["note"] = "hello" + separator + "world"
+    coverage.write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    report["source_hashes"][FRESH_COVERAGE] = _lf_sha256(coverage)
+    assert _evaluate(tmp_path, report) == []
+
+
 def test_required_fresh_contract_does_not_fall_back_to_legacy(tmp_path):
     report = _clean_report(tmp_path, _write_daily_sources(tmp_path))
     blockers = evaluate_soak_log_source_attestation(

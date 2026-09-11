@@ -269,7 +269,9 @@ def _fresh_record_instants(path: Path, commit: str, lock_digest: str):
             return None
         instants = []
         previous_seq = -1
-        for line in raw.decode("utf-8").splitlines():
+        # JSONL is LF-delimited. Unicode separators inside a valid JSON string
+        # are data, not additional records (str.splitlines would split them).
+        for line in raw.decode("utf-8").replace("\r\n", "\n").split("\n")[:-1]:
             if not line:
                 return None
             record = json.loads(line)
@@ -519,15 +521,28 @@ def evaluate_soak_log_source_attestation(
             # Reuse the existing scanner interpretation, not the untrusted
             # manifest counts. Local import keeps standalone import side-effect
             # free; future immutable-child wiring must include this module too.
-            from tools.run_release_soak_log_audit import _scan_source
+            from tools.run_release_soak_log_audit import _scan_json_value, _scan_source
 
             try:
                 counts = [0, 0, 0]
-                for _, candidate in bound_files:
-                    scanned = _scan_source(
-                        candidate, started_at_utc=started, ended_at_utc=ended,
-                    )
-                    counts = [a + b for a, b in zip(counts, scanned)]
+                for entry, candidate in bound_files:
+                    if entry == FRESH_COVERAGE_SOURCE:
+                        # Use the same literal JSONL boundaries as coverage
+                        # validation; legacy diagnostic parsing stays unchanged.
+                        scans = (
+                            _scan_json_value(
+                                json.loads(line), started_at_utc=started,
+                                ended_at_utc=ended,
+                            )
+                            for line in candidate.read_text(encoding="utf-8").split("\n")
+                            if line
+                        )
+                    else:
+                        scans = [_scan_source(
+                            candidate, started_at_utc=started, ended_at_utc=ended,
+                        )]
+                    for scanned in scans:
+                        counts = [a + b for a, b in zip(counts, scanned)]
                 if counts != [0, 0, 0]:
                     _append_once(blockers, "soak_log_source_counts_mismatch")
             except (OSError, UnicodeError, ValueError, RecursionError):

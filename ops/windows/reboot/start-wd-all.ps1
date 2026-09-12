@@ -2308,7 +2308,11 @@ function Assert-DeployedBundle {
       )) {
       throw "deployment manifest path escapes the bundle: $relativeName"
     }
-    [void](Read-NonEmptyFile -Path $candidate -Label 'deployed bundle file')
+    # Packages include empty Python initializers and binary dependencies.
+    # The externally anchored byte hash, not decoded text, verifies content.
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+      throw "deployed bundle file is missing: $candidate"
+    }
     $expectedHash = ([string]$property.Value).ToUpperInvariant()
     $actualHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($expectedHash -cne $actualHash) {
@@ -3029,6 +3033,10 @@ if ($toolsLive.Count -eq 1) {
 }
 
 Write-Host '  Grok model viability probe:'
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'deployment-manifest.json')) {
+  Write-Host '  Passive Grok role, history and hourly-budget recovery:'
+  & (Join-Path $PSScriptRoot 'Initialize-WdGrokRecovery.ps1') | Format-List | Out-Host
+}
 $grokPreflight = @(
   & $resolver -DryRun -OutputDirectory ([string]$manifest.grok_output_directory)
 )

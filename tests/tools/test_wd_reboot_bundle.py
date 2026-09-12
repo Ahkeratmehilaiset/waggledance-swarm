@@ -6584,8 +6584,10 @@ exit 7
         (tmp_path / "WD_GROK_MODEL_CURRENT.json").read_text(encoding="utf-8")
     )
     assert persisted["model"] == "grok-9.9"
-    assert "--model 'grok-9.9'" in persisted["usage"]["single_turn"]
-    assert "--effort high" in persisted["usage"]["single_turn"]
+    assert "Invoke-WdGrok.ps1" in persisted["usage"]["single_turn"]
+    assert "-TaskId" in persisted["usage"]["single_turn"]
+    assert "--always-approve" not in persisted["usage"]["single_turn"]
+    assert "-Status" in persisted["usage"]["interactive"]
 
     repeated = _run_powershell(
         f"& '{resolver}' -GrokCommand '{fake_quoted}' "

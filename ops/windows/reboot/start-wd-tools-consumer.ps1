@@ -1186,6 +1186,77 @@ $pythonExecutableHash = (
     Get-FileHash -LiteralPath $pythonExecutable -Algorithm SHA256
 ).Hash
 
+# Pinned bridge communication-code package for the Tools lane. Only the
+# WD_BRIDGE_* discovery variables are exported, so every codex exec tick
+# inherits them while ordinary task-worktree Python imports stay untouched;
+# Python isolation is applied per tool call inside Invoke-WdBridgePython.ps1.
+$bridgeCodeContextScript = [IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot 'BridgeCodeContext.ps1')
+)
+$bridgeCodeDefinitionPath = [IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot 'bridge-code-files.json')
+)
+$bridgeCodeWrapperPath = [IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot 'Invoke-WdBridgePython.ps1')
+)
+$toolsDeploymentManifestPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
+$bridgeCodeContext = $null
+if (Test-Path -LiteralPath $toolsDeploymentManifestPath -PathType Leaf) {
+    $toolsTrustedDrive = [IO.Path]::GetPathRoot(
+        [IO.Path]::GetFullPath($PSScriptRoot)
+    )
+    Assert-FilePathWithoutReparse `
+        -Candidate $toolsDeploymentManifestPath -Root $toolsTrustedDrive
+    $toolsDeploymentSnapshot = Read-Utf8FileSnapshot -Path $toolsDeploymentManifestPath
+    $toolsExpectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+    if (
+        $toolsExpectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$toolsDeploymentSnapshot.Hash -cne
+            $toolsExpectedManifestHash.ToUpperInvariant()
+    ) {
+        throw 'Tools deployment manifest changed before bridge code context initialization'
+    }
+    $toolsDeployment = [string]$toolsDeploymentSnapshot.Text |
+        ConvertFrom-Json -ErrorAction Stop
+    foreach ($bridgeCodeInput in @(
+            @{ Name = 'BridgeCodeContext.ps1'; Path = $bridgeCodeContextScript },
+            @{ Name = 'bridge-code-files.json'; Path = $bridgeCodeDefinitionPath },
+            @{ Name = 'Invoke-WdBridgePython.ps1'; Path = $bridgeCodeWrapperPath }
+        )) {
+        Assert-FilePathWithoutReparse `
+            -Candidate $bridgeCodeInput.Path -Root $toolsTrustedDrive
+        $bridgeCodeProperty = $toolsDeployment.files.PSObject.Properties[
+            $bridgeCodeInput.Name
+        ]
+        if (
+            $null -eq $bridgeCodeProperty -or
+            -not (Test-Path -LiteralPath $bridgeCodeInput.Path -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $bridgeCodeInput.Path -Algorithm SHA256).Hash -cne
+                ([string]$bridgeCodeProperty.Value).ToUpperInvariant()
+        ) {
+            throw "pinned bridge code input is not covered by the anchored Tools bundle: $($bridgeCodeInput.Name)"
+        }
+    }
+    . $bridgeCodeContextScript
+    $bridgeCodeContext = Initialize-WdBridgeCodeContext `
+        -BundleRoot $PSScriptRoot `
+        -Deployment $toolsDeployment `
+        -DefinitionPath $bridgeCodeDefinitionPath `
+        -PythonExecutable $pythonExecutable `
+        -Generation $Generation `
+        -RuntimeRoot $runtimeRoot `
+        -SkipImportSmoke:$ValidateOnly
+}
+elseif ($ValidateOnly) {
+    $bridgeCodeContext = [pscustomobject]@{
+        schema = 'wd.bridge-code-context.v1'
+        mode = 'source_tree_validation_without_pinned_package'
+    }
+}
+else {
+    throw 'source Tools consumer cannot run live without a deployed pinned bridge code package'
+}
+
 $validation = [pscustomobject]@{
     schema = 'wd.tools-consumer-validation.v1'
     config_path = $configFull
@@ -1212,6 +1283,7 @@ $validation = [pscustomobject]@{
     sandbox_shell = $sandboxShell
     python_executable = $pythonExecutable
     python_executable_sha256 = $pythonExecutableHash
+    bridge_code_context = $bridgeCodeContext
     codex_additional_writable_directories = @($codexWritableDirectories)
     windows_apps_path_entries_removed = @(
         $codexPathPlan.RemovedWindowsAppsEntries
@@ -1569,6 +1641,10 @@ $readinessRecord = [ordered]@{
     initial_tick_exit_code = [int]$initialResult.exit_code
     initial_tick_timed_out = $initialTickTimedOut
     initial_tick_log_path = [string]$initialResult.log_path
+    bridge_code_root = [string]$bridgeCodeContext.code_root
+    bridge_bin = [string]$bridgeCodeContext.bridge_bin
+    bridge_python_wrapper = [string]$bridgeCodeContext.python_wrapper
+    bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
     ready_at_utc = [DateTime]::UtcNow.ToString('o')
 }
 $utf8NoBom = New-Object Text.UTF8Encoding($false)

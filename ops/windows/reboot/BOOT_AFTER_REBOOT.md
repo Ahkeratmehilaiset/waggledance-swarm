@@ -157,6 +157,89 @@ The resolved Grok model and exact invocation examples are written to:
 - `C:\Python\WD_GROK_MODEL_CURRENT.json`
 - `C:\Python\WD_GROK_MODEL_CURRENT.md`
 
+## Pinned bridge code package
+
+Every reboot bundle carries the bridge communication code that lanes execute
+after launch, so no session depends on a worktree-relative or mutable helper:
+
+- `tools-bootstrap\.agent-bridge\bin\*` (all bridge PowerShell helpers);
+- `tools-bootstrap\tools\*.py`, `tools-bootstrap\waggledance\core\*.py` and
+  `tools-bootstrap\configs\*.json` listed in `bridge-code-files.json`;
+- `tools-bootstrap\python-wheels\*.whl`, the exact dependency closure
+  (pydantic and its four dependencies) pinned by version and sha256;
+- `tools-bootstrap\python-site\`, those wheels extracted without bytecode.
+
+Every file is hashed in `deployment-manifest.json`. `BridgeCodeContext.ps1`
+re-verifies the package before each lane or Tools launch: a missing file, a
+hash mismatch, an unlisted file, a `__pycache__` directory or a bundle that
+predates the package fails closed. There is no fallback to local copies.
+
+The interpreter is the per-user `bridge_python.executable` from
+`wd-fleet.json` (the same trust rules as the Tools lane: absolute `.exe`
+under the per-user `Programs\Python` root, never WindowsApps, no reparse
+points, sha256 recorded). Only its standard library is used; every
+third-party import resolves inside `python-site`, and a launch-time import
+smoke proves it.
+
+The launcher exports only these discovery variables to the CLI process, and
+the Tools consumer exports them to each `codex exec` tick. No `PYTHONPATH`,
+`PYTHONSAFEPATH` or `PYTHONNOUSERSITE` reaches the model shell, so the task
+worktree's own `waggledance` and `tools` imports, tests and development are
+unaffected:
+
+| variable | value |
+|---|---|
+| `WD_BRIDGE_CODE_ROOT` | `<bundle>\tools-bootstrap` |
+| `WD_BRIDGE_BIN` | `<bundle>\tools-bootstrap\.agent-bridge\bin` |
+| `WD_BRIDGE_PYTHON`, `WD_BRIDGE_PYTHON_SHA256` | pinned interpreter and its hash |
+| `WD_BRIDGE_PYTHON_SITE` | `<bundle>\tools-bootstrap\python-site` |
+| `WD_BRIDGE_GENERATION` | the bundle source commit |
+| `WD_BRIDGE_PYTHON_WRAPPER` | `<bundle>\Invoke-WdBridgePython.ps1` |
+| `WD_BRIDGE_BUNDLE_ROOT`, `WD_BRIDGE_RUNTIME_ROOT` | bundle directory; bridge data root |
+
+Invoke bridge helpers through those variables, never through a
+worktree-relative `.agent-bridge\bin` copy:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:WD_BRIDGE_BIN\Get-BridgeNextAction.ps1" -Agent <agent> -Json
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:WD_BRIDGE_BIN\Read-AgentBridge.ps1" -Compact
+& "$env:WD_BRIDGE_PYTHON_WRAPPER" tools/bridge_next_action.py --agent <agent> --json
+```
+
+Python isolation exists only inside `Invoke-WdBridgePython.ps1`: it verifies
+the tool and definition hashes, then runs the tool with `-S -B`, `PYTHONPATH`
+set to the pinned code root plus `python-site`, `PYTHONSAFEPATH`,
+`PYTHONNOUSERSITE` and `PYTHONDONTWRITEBYTECODE`, restores the process
+environment afterwards and preserves the caller's working directory. Global
+and user site-packages are never on its import path.
+`Read-AgentBridge.ps1 -Compact` uses the wrapper automatically. The wrapper
+keeps the tool's output on the pipeline and publishes its exit code as
+`$LASTEXITCODE`; from a separate process call it through `-Command` and
+forward that code. The
+operator-owned role prompts under `C:\Python\wd-agent-prompts\` should be
+migrated to the same forms. Git, build, test and merge commands keep the lane
+worktree as their cwd; the pinned code root is never a task repository.
+
+Staging a new generation without touching the live fleet:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ops\windows\reboot\Deploy-WdRebootBundle.ps1 -StageOnly
+```
+
+`-StageOnly` materializes the pushed commit, downloads the pinned wheels with
+`pip download --require-hashes` (or reads them from `-WheelSource <dir>` with
+the same hash check), extracts the site with `--no-compile`, verifies the
+commit-addressed directory recursively and returns before any machine
+wrapper, data copy, state pointer, Grok resolve or task registration is
+written. The running supervisor, its watchers and every live session keep
+the previous generation. Activation is a separate, coordinated cold switch:
+run the installer without `-StageOnly` only after the supervisor task has
+been disabled and its current invocation has exited naturally, then verify
+and re-enable. The installer's rollback is exception-only (a failed machine
+write restores the timestamped backup under `C:\Python\wd-reboot-backups`);
+it is not crash-atomic, so keep that backup inventory until the switch is
+verified.
+
 ## Source and integrity
 
 The Git repository is the only source of truth. A pushed commit is installed

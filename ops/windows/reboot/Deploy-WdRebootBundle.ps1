@@ -19,6 +19,11 @@ param(
     [string] $BundleStore = 'C:\Python\wd-reboot-bundles',
     [switch] $SkipTaskRegistration,
     [switch] $SkipGrokResolve,
+    # Optional offline wheel directory; every wheel is still hash-verified.
+    [string] $WheelSource = '',
+    # Verify and stage the commit-addressed bundle only: no machine wrapper,
+    # data copy, state pointer, Grok resolve or task registration is touched.
+    [switch] $StageOnly,
     [switch] $DryRun
 )
 
@@ -515,16 +520,30 @@ if (-not $commonGit.Equals(
     throw "reboot source is not a worktree of C:\Python\project2: $gitRoot"
 }
 
+# The pinned bridge code package definition is data only here; its files
+# join the dirty-tree gate and the exact-commit archive below.
+$bridgeCodeDefinitionSourcePath = Join-Path $sourceRoot 'bridge-code-files.json'
+if (-not (Test-Path -LiteralPath $bridgeCodeDefinitionSourcePath -PathType Leaf)) {
+    throw "bridge code package definition is missing: $bridgeCodeDefinitionSourcePath"
+}
+$bridgeCodeSourceFiles = @(
+    (Get-Content -LiteralPath $bridgeCodeDefinitionSourcePath -Raw |
+        ConvertFrom-Json -ErrorAction Stop).python_files |
+        ForEach-Object { [string]$_ }
+)
+if ($bridgeCodeSourceFiles.Count -lt 1) {
+    throw 'bridge code package definition lists no python files'
+}
 $statusProbe = Invoke-GitCapture `
     -Worktree $gitRoot `
-    -ArgumentList @(
+    -ArgumentList (@(
         'status',
         '--porcelain',
         '--',
         'ops/windows/reboot',
         '.agent-bridge/bin',
         'configs/bridge_identity_registry.json'
-    )
+    ) + $bridgeCodeSourceFiles)
 if ($statusProbe.ExitCode -ne 0) {
     throw 'git status failed for reboot sources'
 }
@@ -571,7 +590,7 @@ try {
 $archivePath = Join-Path $materializationRoot 'head.zip'
 $archiveProbe = Invoke-GitCapture `
     -Worktree $gitRoot `
-    -ArgumentList @(
+    -ArgumentList (@(
         'archive',
         '--format=zip',
         "--output=$archivePath",
@@ -580,7 +599,7 @@ $archiveProbe = Invoke-GitCapture `
         'ops/windows/reboot',
         '.agent-bridge/bin',
         'configs/bridge_identity_registry.json'
-    )
+    ) + $bridgeCodeSourceFiles)
 if (
     $archiveProbe.ExitCode -ne 0 -or
     -not (Test-Path -LiteralPath $archivePath -PathType Leaf)
@@ -630,6 +649,58 @@ $sourceHashes[$identityRegistryRelative] = (
     Get-FileHash -LiteralPath $identityRegistrySource -Algorithm SHA256
 ).Hash.ToUpperInvariant()
 $sourcePaths[$identityRegistryRelative] = $identityRegistrySource
+
+# Pinned bridge communication-code package: exact-commit Python files plus
+# the hash-pinned wheel closure and its extracted site, all manifest-hashed.
+. (Join-Path $materializedRebootRoot 'BridgeCodeContext.ps1')
+$bridgeCodePackage = Get-WdBridgeCodePackageDefinition `
+    -Path (Join-Path $materializedRebootRoot 'bridge-code-files.json')
+$bridgeCodeDefinition = $bridgeCodePackage.Definition
+foreach ($relativeCodeFile in @($bridgeCodeDefinition.python_files | ForEach-Object { [string]$_ })) {
+    $codeSource = Join-Path $archiveRoot ($relativeCodeFile.Replace('/', '\'))
+    if (-not (Test-Path -LiteralPath $codeSource -PathType Leaf)) {
+        throw "commit archive is missing pinned bridge code file: $relativeCodeFile"
+    }
+    $relativeName = 'tools-bootstrap/' + $relativeCodeFile
+    $sourceHashes[$relativeName] = (
+        Get-FileHash -LiteralPath $codeSource -Algorithm SHA256
+    ).Hash.ToUpperInvariant()
+    $sourcePaths[$relativeName] = $codeSource
+}
+$materializedFleet = Get-Content -LiteralPath (
+    Join-Path $materializedRebootRoot 'wd-fleet.json'
+) -Raw | ConvertFrom-Json -ErrorAction Stop
+$bridgePythonProperty = $materializedFleet.PSObject.Properties['bridge_python']
+if (
+    $null -eq $bridgePythonProperty -or
+    [string]::IsNullOrWhiteSpace([string]$bridgePythonProperty.Value.executable)
+) {
+    throw 'fleet manifest is missing bridge_python.executable'
+}
+$bridgePython = Resolve-WdBridgePythonExecutable `
+    -ConfiguredPath ([string]$bridgePythonProperty.Value.executable)
+$bridgeWheelStaging = Join-Path $materializationRoot ([string]$bridgeCodeDefinition.wheel_store_relative)
+$bridgeSiteStaging = Join-Path $materializationRoot ([string]$bridgeCodeDefinition.python_site_relative)
+Write-Host 'Staging the hash-pinned bridge Python dependency closure...'
+$bridgePythonStage = Install-WdBridgePythonSite `
+    -Definition $bridgeCodeDefinition `
+    -PythonExecutable $bridgePython.Path `
+    -WheelDirectory $bridgeWheelStaging `
+    -SiteDirectory $bridgeSiteStaging `
+    -WorkDirectory (Join-Path $materializationRoot 'python-work') `
+    -WheelSource $WheelSource
+foreach ($stagedName in @($bridgePythonStage.Wheels.Keys)) {
+    $sourceHashes['tools-bootstrap/' + $stagedName] = [string]$bridgePythonStage.Wheels[$stagedName]
+    $sourcePaths['tools-bootstrap/' + $stagedName] = Join-Path $materializationRoot (
+        ([string]$stagedName).Replace('/', '\')
+    )
+}
+foreach ($stagedName in @($bridgePythonStage.Site.Keys)) {
+    $sourceHashes['tools-bootstrap/' + $stagedName] = [string]$bridgePythonStage.Site[$stagedName]
+    $sourcePaths['tools-bootstrap/' + $stagedName] = Join-Path $materializationRoot (
+        ([string]$stagedName).Replace('/', '\')
+    )
+}
 foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
@@ -645,6 +716,9 @@ foreach ($required in @(
         'Register-WdScheduledTasks.ps1',
         'Set-WdTaskConsoleContainment.ps1',
         'BOOT_AFTER_REBOOT.md',
+        'BridgeCodeContext.ps1',
+        'Invoke-WdBridgePython.ps1',
+        'bridge-code-files.json',
         'WD_LOCAL_GPU_GUIDE.md',
         'WD_SWARM_PARALLEL_POLICY_V1.md',
         'WD_SWARM_TARGET_STATE_V1.md',
@@ -675,6 +749,15 @@ $manifestObject = [ordered]@{
     source_branch = $branch
     source_upstream = $upstream
     installed_at_utc = [DateTime]::UtcNow.ToString('o')
+    bridge_code_package = [ordered]@{
+        schema = [string]$bridgeCodeDefinition.schema
+        definition_sha256 = $bridgeCodePackage.Hash
+        python_executable = $bridgePython.Path
+        python_executable_sha256 = $bridgePython.Sha256
+        wheel_count = @($bridgePythonStage.Wheels.Keys).Count
+        site_file_count = @($bridgePythonStage.Site.Keys).Count
+        isolation_scope = 'per_tool_call_only'
+    }
     files = $sourceHashes
 }
 
@@ -682,13 +765,16 @@ Write-Host "WD reboot bundle source: $branch@$head"
 Write-Host "Install target: $targetRoot"
 
 Write-Host 'Running mutation-free deployment preflight...'
-if (-not $SkipGrokResolve) {
+if ($StageOnly) {
+    Write-Host '  stage-only: Grok resolution and task registration preflight skipped by the installer itself'
+}
+if (-not $SkipGrokResolve -and -not $StageOnly) {
     & (Join-Path $materializedRebootRoot 'Resolve-WdGrokModel.ps1') `
         -DryRun `
         -OutputDirectory $machineFull |
         Out-Host
 }
-if (-not $SkipTaskRegistration) {
+if (-not $SkipTaskRegistration -and -not $StageOnly) {
     & (Join-Path $materializedRebootRoot 'Register-WdScheduledTasks.ps1') `
         -SupervisorScript (Join-Path $materializedRebootRoot 'wd_supervisor.ps1')
 }
@@ -826,6 +912,16 @@ foreach ($file in $actualInstalledFiles) {
     if (-not $expectedInstalledSet.ContainsKey($relativeName.ToLowerInvariant())) {
         throw "installed reboot bundle contains unexpected file: $relativeName"
     }
+}
+
+if ($StageOnly) {
+    Write-Host ''
+    Write-Host 'STAGE ONLY: commit-addressed bundle verified and left staged.' -ForegroundColor Green
+    Write-Host ('  staged bundle:              {0}' -f $targetRoot)
+    Write-Host ('  deployment manifest sha256: {0}' -f $installedManifestHash)
+    Write-Host '  untouched: machine wrappers, data copies, reboot state pointers, integrity files, Grok resolution, scheduled tasks, live supervisor, watchers and sessions.'
+    Write-Host '  activation is a separate cold switch: run this installer without -StageOnly only after the supervisor task is disabled and its invocation has exited.'
+    return
 }
 
 $wrapperSpecs = @(

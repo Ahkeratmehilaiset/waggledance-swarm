@@ -15,6 +15,7 @@ PS = shutil.which("powershell.exe") or shutil.which("pwsh")
 def test_tools_initializes_pinned_context_before_consumer():
     source = (REBOOT / "start-wd-tools-consumer.ps1").read_text()
     assert "Initialize-WdBridgeCodeContext" in source
+    assert source.count("Initialize-WdBridgeCodeContext") == 1
     assert source.index("Initialize-WdBridgeCodeContext") < source.index("$commonConsumerArguments =")
 
 
@@ -25,6 +26,35 @@ def test_package_entrypoints_exist_and_include_release_helpers():
     assert set(definition["python_entrypoints"].values()) <= set(definition["python_files"])
     assert "tools/build_bridge_message_template.py" in definition["python_files"]
     assert "tools/agent_next_task.py" in definition["python_files"]
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+def test_fleet_integrity_accepts_hash_pinned_empty_and_binary_files(tmp_path):
+    import hashlib
+
+    files = {"__init__.py": b"", "dependency.pyd": bytes(range(256))}
+    for name, content in files.items():
+        (tmp_path / name).write_bytes(content)
+    manifest = {"schema_version": 1, "files": {
+        name: hashlib.sha256(content).hexdigest().upper() for name, content in files.items()
+    }}
+    manifest_path = tmp_path / "deployment-manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    anchor = hashlib.sha256(manifest_path.read_bytes()).hexdigest().upper()
+    launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
+    bundle = str(tmp_path).replace("'", "''")
+    script = f"""
+    $ErrorActionPreference = 'Stop'
+    $ast = [Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$null,[ref]$null)
+    foreach ($function in $ast.FindAll({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]}},$false)) {{
+        . ([scriptblock]::Create($function.Extent.Text.Replace('$PSScriptRoot', "'{bundle}'")))
+    }}
+    $env:WD_REBOOT_EXPECTED_MANIFEST_HASH = '{anchor}'
+    $fleet = [pscustomobject]@{{ deployment = [pscustomobject]@{{ manifest_file='deployment-manifest.json'; required_bundle_files=@('__init__.py','dependency.pyd') }} }}
+        if ((Assert-DeployedBundle -Manifest $fleet) -cne 'deployed') {{ throw 'verification failed' }}
+    """
+    result = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(PS is None, reason="PowerShell unavailable")

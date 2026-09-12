@@ -2308,7 +2308,11 @@ function Assert-DeployedBundle {
       )) {
       throw "deployment manifest path escapes the bundle: $relativeName"
     }
-    [void](Read-NonEmptyFile -Path $candidate -Label 'deployed bundle file')
+    # Packages include empty Python initializers and binary dependencies.
+    # The externally anchored byte hash, not decoded text, verifies content.
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+      throw "deployed bundle file is missing: $candidate"
+    }
     $expectedHash = ([string]$property.Value).ToUpperInvariant()
     $actualHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($expectedHash -cne $actualHash) {

@@ -1127,37 +1127,6 @@ Assert-ToolsBootstrapIntegrity `
     -BootstrapRoot $bootstrapRoot `
     -ConfigPath $configFull `
     -LoadedConfigHash $loadedConfigHash
-# Keep task Git cwd and runtime data separate from the pinned bridge code.
-# Source validation never starts a consumer and has no installed package.
-if ($isDeployedLauncher) {
-    $bridgeDeploymentSnapshot = Read-Utf8FileSnapshot -Path (
-        Join-Path $PSScriptRoot 'deployment-manifest.json'
-    )
-    if ([string]$bridgeDeploymentSnapshot.Hash -cne $env:WD_REBOOT_EXPECTED_MANIFEST_HASH) {
-        throw 'Tools bridge package manifest changed after external attestation'
-    }
-    $bridgeDeployment = [string]$bridgeDeploymentSnapshot.Text | ConvertFrom-Json
-    foreach ($bridgeInput in @('BridgeCodeContext.ps1', 'Invoke-WdBridgePython.ps1', 'bridge-code-files.json', 'wd-fleet.json')) {
-        $bridgeInputPath = Join-Path $PSScriptRoot $bridgeInput
-        Assert-FilePathWithoutReparse -Candidate $bridgeInputPath -Root $toolsTrustedDrive
-        $bridgeInputHash = $bridgeDeployment.files.PSObject.Properties[$bridgeInput]
-        if ($null -eq $bridgeInputHash -or
-            (Get-FileHash -LiteralPath $bridgeInputPath -Algorithm SHA256).Hash -cne
-                ([string]$bridgeInputHash.Value).ToUpperInvariant()) {
-            throw "Tools bridge package input is not anchored: $bridgeInput"
-        }
-    }
-    . (Join-Path $PSScriptRoot 'BridgeCodeContext.ps1')
-    $bridgeFleet = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wd-fleet.json') -Raw | ConvertFrom-Json
-    $bridgeCodeContext = Initialize-WdBridgeCodeContext `
-        -BundleRoot $PSScriptRoot `
-        -Deployment $bridgeDeployment `
-        -DefinitionPath (Join-Path $PSScriptRoot 'bridge-code-files.json') `
-        -PythonExecutable ([string]$bridgeFleet.bridge_python.executable) `
-        -Generation $bundleGeneration `
-        -RuntimeRoot $runtimeRoot `
-        -SkipImportSmoke:$ValidateOnly
-}
 $sessionScript = Resolve-ContainedScript `
     $bootstrapRoot `
     ([IO.Path]::GetFileName($sessionScriptRelative)) `

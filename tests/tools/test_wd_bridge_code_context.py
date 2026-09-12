@@ -28,7 +28,10 @@ def test_package_entrypoints_exist_and_include_release_helpers():
     assert "tools/agent_next_task.py" in definition["python_files"]
 
 
-@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.skipif(
+    PS is None or sys.platform != "win32",
+    reason="Exercises the Windows-only fleet launcher's native path checks",
+)
 def test_fleet_integrity_accepts_hash_pinned_empty_and_binary_files(tmp_path):
     import hashlib
 

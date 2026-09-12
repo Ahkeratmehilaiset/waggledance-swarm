@@ -547,6 +547,53 @@ Assert-LaneBootstrapIntegrity `
 [void](Read-NonEmptyFile -Path $replayer -Label "lane '$Agent' targeted replayer")
 [void](Read-NonEmptyFile -Path $starter -Label "lane '$Agent' bridge starter")
 [void](Read-NonEmptyFile -Path $writer -Label "lane '$Agent' bridge writer")
+
+# Pinned bridge communication-code package: verified against the anchored
+# deployment manifest before any CLI launch. Only WD_BRIDGE_* discovery
+# variables are exported; Python isolation stays inside the invocation
+# wrapper per call. The task worktree remains the Git cwd.
+$bridgeCodeContextScript = Join-Path $PSScriptRoot 'BridgeCodeContext.ps1'
+$bridgeCodeDefinitionPath = Join-Path $PSScriptRoot 'bridge-code-files.json'
+$bridgeCodeContext = $null
+if ($sourceTreeMode) {
+  $bridgeCodeContext = [pscustomobject]@{
+    schema = 'wd.bridge-code-context.v1'
+    mode = 'source_tree_rehearsal_without_pinned_package'
+  }
+} else {
+  foreach ($bridgeCodeInput in @(
+      @{ Name = 'BridgeCodeContext.ps1'; Path = $bridgeCodeContextScript },
+      @{ Name = 'bridge-code-files.json'; Path = $bridgeCodeDefinitionPath },
+      @{ Name = 'Invoke-WdBridgePython.ps1'; Path = (Join-Path $PSScriptRoot 'Invoke-WdBridgePython.ps1') }
+    )) {
+    [void](Assert-LanePathWithoutReparse `
+      -Path $bridgeCodeInput.Path -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+    $bridgeCodeProperty = $deploymentAnchor.files.PSObject.Properties[$bridgeCodeInput.Name]
+    if (
+      $null -eq $bridgeCodeProperty -or
+      (Get-FileHash -LiteralPath $bridgeCodeInput.Path -Algorithm SHA256).Hash -cne
+        ([string]$bridgeCodeProperty.Value).ToUpperInvariant()
+    ) {
+      throw "pinned bridge code input is not covered by the anchored bundle: $($bridgeCodeInput.Name)"
+    }
+  }
+  . $bridgeCodeContextScript
+  $bridgePythonProperty = $manifest.PSObject.Properties['bridge_python']
+  if (
+    $null -eq $bridgePythonProperty -or
+    [string]::IsNullOrWhiteSpace([string]$bridgePythonProperty.Value.executable)
+  ) {
+    throw 'fleet manifest is missing bridge_python.executable'
+  }
+  $bridgeCodeContext = Initialize-WdBridgeCodeContext `
+    -BundleRoot $PSScriptRoot `
+    -Deployment $deploymentAnchor `
+    -DefinitionPath $bridgeCodeDefinitionPath `
+    -PythonExecutable ([string]$bridgePythonProperty.Value.executable) `
+    -Generation $bundleGeneration `
+    -RuntimeRoot $runtimeRoot `
+    -SkipImportSmoke:$DryRun
+}
 $targetState = $manifest.target_state
 if (
   $null -eq $targetState -or
@@ -782,6 +829,15 @@ if ($cliName -ieq 'claude.cmd') {
     "missed-wakeup backstop, not permission to duplicate or steal a claim."
   )
 }
+$startupPrompt += (
+  ' Bridge helpers are pinned for this session: invoke Get-BridgeNextAction.ps1, ' +
+  'Read-AgentBridge.ps1, Claim-AgentTask.ps1, Release-AgentTask.ps1 and Write-AgentEvent.ps1 ' +
+  'from $env:WD_BRIDGE_BIN, and run packaged bridge Python tools only through ' +
+  '$env:WD_BRIDGE_PYTHON_WRAPPER (for example & $env:WD_BRIDGE_PYTHON_WRAPPER ' +
+  'tools/bridge_next_action.py --agent ' + $Agent + ' --json). Never use worktree-relative ' +
+  '.agent-bridge\bin copies or a bare python for bridge tools. Git, build and test commands ' +
+  'keep this worktree as their cwd; the pinned code root is not a task repository.'
+)
 
 if (-not $HandshakeDirectory) {
   $HandshakeDirectory = Join-Path ([string]$manifest.handshake_root) $RunId
@@ -834,6 +890,7 @@ if ($DryRun) {
     parallel_policy_id = [string]$parallelPolicy.id
     compact_state_path = $laneCurrentStatePath
     compact_state_status = $laneCurrentStateStatus
+    bridge_code_context = $bridgeCodeContext
     dry_run = $true
   }
 }
@@ -1052,6 +1109,12 @@ $handshake = [ordered]@{
   append_canary_event_utc = [string]$canaryEvents[0].ts_utc
   append_canary_latency_ms = $canaryLatencyMs
   bundle_generation = $bundleGeneration
+  bridge_code_root = [string]$bridgeCodeContext.code_root
+  bridge_bin = [string]$bridgeCodeContext.bridge_bin
+  bridge_python_wrapper = [string]$bridgeCodeContext.python_wrapper
+  bridge_python = [string]$bridgeCodeContext.python_executable
+  bridge_python_sha256 = [string]$bridgeCodeContext.python_executable_sha256
+  bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
   created_at_utc = (Get-Date).ToUniversalTime().ToString('o')
 }
 try {

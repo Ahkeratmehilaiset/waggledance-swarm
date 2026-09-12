@@ -89,7 +89,8 @@ def test_reboot_uses_pinned_passive_grok_entrypoint():
 
 
 @pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
-def test_passive_recovery_preserves_budget_and_legacy_history(tmp_path):
+@pytest.mark.parametrize("shell", sorted({p for p in (PS, shutil.which("pwsh")) if p}))
+def test_passive_recovery_preserves_budget_and_legacy_history(tmp_path, shell):
     # All machine paths and OS probes are isolated; no real task or model call.
     machine = tmp_path / "machine"
     reports = machine / "grok-scout-reports"
@@ -107,14 +108,18 @@ def test_passive_recovery_preserves_budget_and_legacy_history(tmp_path):
     function Get-CimInstance {{ @() }}
     & '{script}' -Apply | Out-Null
     $before = [IO.File]::ReadAllText('{reports / 'hourly-state.json'}')
-    & '{script}' | Out-Null
+    & '{script}' | ConvertTo-Json -Compress
     if ([IO.File]::ReadAllText('{reports / 'hourly-state.json'}') -cne $before) {{ throw 'Budget reset' }}
     """
-    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", command],
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     state = json.loads((reports / "hourly-state.json").read_text())
     assert state["status"] == "initialized_conservative_cooldown"
+    recovery = json.loads(result.stdout.strip().splitlines()[-1])
+    assert datetime.fromisoformat(recovery["next_eligible_utc"]) == (
+        datetime.fromisoformat(state["last_attempt_utc"]) + timedelta(hours=1)
+    )
     assert Path(state["previous_report"]) == report
     assert not status(reports)["eligible"]
     assert report.read_text() == "Previous result"

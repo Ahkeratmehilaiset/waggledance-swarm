@@ -69,7 +69,15 @@ if (-not (Test-Path -LiteralPath $state)) {
 }
 $saved = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
 if ($saved.schema -cne 'wd.grok-hourly.v1') { throw 'Invalid Grok recovery state' }
-$last = [DateTimeOffset]::Parse([string]$saved.last_attempt_utc)
+# PowerShell 7 can materialize JSON timestamps as DateTime; converting that
+# back through a culture-specific string swaps day/month and loses precision.
+$stamp = $saved.last_attempt_utc
+$last = if ($stamp -is [DateTime] -or $stamp -is [DateTimeOffset]) {
+    [DateTimeOffset]$stamp
+} else {
+    [DateTimeOffset]::Parse([string]$stamp, [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind)
+}
 [pscustomobject]@{
     schema = 'wd.grok-recovery.v1'
     agent = 'grok-scout-1'
@@ -77,7 +85,7 @@ $last = [DateTimeOffset]::Parse([string]$saved.last_attempt_utc)
     state_path = $state
     state_status = [string]$saved.status
     previous_task = [string]$saved.task_id
-    next_eligible_utc = $last.AddHours(1).ToString('o')
+    next_eligible_utc = $last.ToUniversalTime().AddHours(1).ToString('o')
     model_started = $false
     invocation = 'C:\Python\Invoke-WdGrok.ps1 -PromptPath <evidence-request.md> -TaskId <task-id>'
 }

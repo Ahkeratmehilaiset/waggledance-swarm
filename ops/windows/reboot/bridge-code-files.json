@@ -1,0 +1,91 @@
+{
+  "schema": "wd.bridge-code-package.v1",
+  "purpose": "Hash-pinned bridge communication code shipped inside the commit-addressed reboot bundle under tools-bootstrap. BridgeCodeContext.ps1 verifies it against the externally anchored deployment manifest before any lane or Tools CLI launch and exports only WD_BRIDGE_* discovery variables to the model shell. Python isolation (PYTHONPATH, PYTHONSAFEPATH, PYTHONNOUSERSITE, PYTHONDONTWRITEBYTECODE, -S -B) exists only inside Invoke-WdBridgePython.ps1 for one tool call and is restored afterwards, so task-worktree imports, tests and development stay untouched. Task worktrees stay the Git cwd, the bridge runtime root stays the data root; this package is code only and never a task repository.",
+  "package_relative_root": "tools-bootstrap",
+  "invocation_wrapper_relative": "Invoke-WdBridgePython.ps1",
+  "python_files": [
+    "configs/bridge_event_validation_waivers.json",
+    "configs/bridge_identity_registry.json",
+    "tools/__init__.py",
+    "tools/agent_next_task.py",
+    "tools/bridge_compact_view.py",
+    "tools/bridge_next_action.py",
+    "tools/build_bridge_message_template.py",
+    "tools/validate_bridge_event.py",
+    "waggledance/__init__.py",
+    "waggledance/core/__init__.py",
+    "waggledance/core/bridge_event_schema.py",
+    "waggledance/core/bridge_identity_registry.py",
+    "waggledance/core/bridge_log_reader.py",
+    "waggledance/core/idle_protocol_deferred_lift.py",
+    "waggledance/core/work_queue.py"
+  ],
+  "python_entrypoints": {
+    "next_action": "tools/bridge_next_action.py",
+    "agent_next_task": "tools/agent_next_task.py",
+    "compact_view": "tools/bridge_compact_view.py",
+    "message_template": "tools/build_bridge_message_template.py",
+    "validate_event": "tools/validate_bridge_event.py"
+  },
+  "python_platform": {
+    "implementation": "cp",
+    "python_version": "3.13",
+    "abi": "cp313",
+    "platform": "win_amd64"
+  },
+  "python_requirements": [
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "wheel": "annotated_types-0.8.0-py3-none-any.whl",
+      "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0",
+      "import_path": "annotated_types/__init__.py"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.5",
+      "wheel": "pydantic-2.13.5-py3-none-any.whl",
+      "sha256": "346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73",
+      "import_path": "pydantic/__init__.py"
+    },
+    {
+      "name": "pydantic-core",
+      "version": "2.46.5",
+      "wheel": "pydantic_core-2.46.5-cp313-cp313-win_amd64.whl",
+      "sha256": "15f4a94963c95accac15b7b657bb177d3ad82bb90b0d0526d9a9b85079925db5",
+      "import_path": "pydantic_core/__init__.py"
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "wheel": "typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "import_path": "typing_extensions.py"
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "wheel": "typing_inspection-0.4.4-py3-none-any.whl",
+      "sha256": "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147",
+      "import_path": "typing_inspection/__init__.py"
+    }
+  ],
+  "wheel_store_relative": "python-wheels",
+  "python_site_relative": "python-site",
+  "import_smoke": {
+    "third_party_module": "pydantic",
+    "package_modules": [
+      "tools.bridge_next_action",
+      "tools.agent_next_task",
+      "tools.bridge_compact_view",
+      "tools.build_bridge_message_template",
+      "tools.validate_bridge_event",
+      "waggledance.core.idle_protocol_deferred_lift"
+    ]
+  },
+  "isolation_environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONSAFEPATH": "1"
+  }
+}

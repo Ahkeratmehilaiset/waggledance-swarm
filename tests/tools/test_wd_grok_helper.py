@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -67,3 +70,73 @@ def test_competing_process_lock_blocks_second_request(tmp_path):
         with pytest.raises(OSError):
             with exclusive(tmp_path):
                 pytest.fail("Second lock acquired")
+
+
+ROOT = Path(__file__).resolve().parents[2]
+REBOOT = ROOT / "ops/windows/reboot"
+PS = shutil.which("powershell.exe") or shutil.which("pwsh")
+
+
+def test_reboot_uses_pinned_passive_grok_entrypoint():
+    definition = json.loads((REBOOT / "bridge-code-files.json").read_text())
+    assert definition["python_entrypoints"]["grok_helper"] == "tools/wd_grok_helper.py"
+    assert "tools/wd_grok_helper.py" in definition["python_files"]
+    assert "Initialize-WdGrokRecovery.ps1" in (REBOOT / "start-wd-all.ps1").read_text()
+    assert "Invoke-WdGrok.ps1 -Status" in (REBOOT / "start-wd-agent.ps1").read_text()
+    wrapper = (REBOOT / "Invoke-WdGrok.ps1").read_text()
+    assert "WD_REBOOT_EXPECTED_MANIFEST_HASH" in wrapper
+    assert "-VerifyPackage" in wrapper
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+def test_passive_recovery_preserves_budget_and_legacy_history(tmp_path):
+    # All machine paths and OS probes are isolated; no real task or model call.
+    machine = tmp_path / "machine"
+    reports = machine / "grok-scout-reports"
+    reports.mkdir(parents=True)
+    legacy = machine / "Update-GrokWorktree.ps1"
+    legacy.write_text("old worktree updater", encoding="utf-8")
+    report = reports / "grok-old-result.md"
+    report.write_text("Previous result", encoding="utf-8")
+    script = tmp_path / "recovery.ps1"
+    source = (REBOOT / "Initialize-WdGrokRecovery.ps1").read_text()
+    script.write_text(source.replace("C:\\Python", str(machine)), encoding="utf-8")
+    command = f"""
+    $ErrorActionPreference = 'Stop'
+    function Get-ScheduledTask {{ @() }}
+    function Get-CimInstance {{ @() }}
+    & '{script}' -Apply | Out-Null
+    $before = [IO.File]::ReadAllText('{reports / 'hourly-state.json'}')
+    & '{script}' | Out-Null
+    if ([IO.File]::ReadAllText('{reports / 'hourly-state.json'}') -cne $before) {{ throw 'Budget reset' }}
+    """
+    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    state = json.loads((reports / "hourly-state.json").read_text())
+    assert state["status"] == "initialized_conservative_cooldown"
+    assert Path(state["previous_report"]) == report
+    assert not status(reports)["eligible"]
+    assert report.read_text() == "Previous result"
+    assert "throw 'Use" in legacy.read_text()
+    assert any(p.read_text() == "old worktree updater" for p in
+               (machine / "wd-reboot-backups").rglob("Update-GrokWorktree.ps1"))
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+def test_active_grok_blocks_migration_without_mutation(tmp_path):
+    script = tmp_path / "recovery.ps1"
+    source = (REBOOT / "Initialize-WdGrokRecovery.ps1").read_text()
+    machine = tmp_path / "absent-machine"
+    script.write_text(source.replace("C:\\Python", str(machine)), encoding="utf-8")
+    command = f"""
+    $ErrorActionPreference = 'Stop'
+    function Get-ScheduledTask {{ @() }}
+    function Get-CimInstance {{ [pscustomobject]@{{ Name='grok.exe' }} }}
+    & '{script}' -Apply
+    """
+    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert "invocation is active" in result.stderr
+    assert not machine.exists()

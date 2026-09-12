@@ -3033,6 +3033,10 @@ if ($toolsLive.Count -eq 1) {
 }
 
 Write-Host '  Grok model viability probe:'
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'deployment-manifest.json')) {
+  Write-Host '  Passive Grok role, history and hourly-budget recovery:'
+  & (Join-Path $PSScriptRoot 'Initialize-WdGrokRecovery.ps1') | Format-List | Out-Host
+}
 $grokPreflight = @(
   & $resolver -DryRun -OutputDirectory ([string]$manifest.grok_output_directory)
 )

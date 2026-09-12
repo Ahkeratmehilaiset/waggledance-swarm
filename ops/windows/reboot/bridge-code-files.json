@@ -12,6 +12,7 @@
     "tools/bridge_next_action.py",
     "tools/build_bridge_message_template.py",
     "tools/validate_bridge_event.py",
+    "tools/wd_grok_helper.py",
     "waggledance/__init__.py",
     "waggledance/core/__init__.py",
     "waggledance/core/bridge_event_schema.py",
@@ -25,7 +26,8 @@
     "agent_next_task": "tools/agent_next_task.py",
     "compact_view": "tools/bridge_compact_view.py",
     "message_template": "tools/build_bridge_message_template.py",
-    "validate_event": "tools/validate_bridge_event.py"
+    "validate_event": "tools/validate_bridge_event.py",
+    "grok_helper": "tools/wd_grok_helper.py"
   },
   "python_platform": {
     "implementation": "cp",

@@ -199,12 +199,17 @@ function New-ForwardingWrapper {
         [Parameter(Mandatory)] [string] $ExpectedHash,
         [Parameter(Mandatory)] [string] $ExpectedManifestHash,
         [Parameter(Mandatory)]
-        [ValidateSet('fleet', 'agent', 'tools', 'supervisor')]
+        [ValidateSet('fleet', 'agent', 'tools', 'supervisor', 'grok')]
         [string] $WrapperKind,
         [string] $FixedAgent = ''
     )
 
     $parameterBlock = switch ($WrapperKind) {
+        'grok' {
+@'
+param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status)
+'@
+        }
         'fleet' {
 @'
 param(
@@ -924,7 +929,10 @@ if ($StageOnly) {
     return
 }
 
+# Migration is explicit and must finish before changing the fleet's pointers.
+& (Join-Path $targetRoot 'Initialize-WdGrokRecovery.ps1') | Out-Host
 $wrapperSpecs = @(
+    [pscustomobject]@{ Name = 'Invoke-WdGrok.ps1'; Target = 'Invoke-WdGrok.ps1'; Kind = 'grok'; Agent = '' },
     [pscustomobject]@{ Name = 'start-wd-all.ps1'; Target = 'start-wd-all.ps1'; Kind = 'fleet'; Agent = '' },
     [pscustomobject]@{ Name = 'start-wd-agent.ps1'; Target = 'start-wd-agent.ps1'; Kind = 'agent'; Agent = '' },
     [pscustomobject]@{ Name = 'start-wd-codex-lead.ps1'; Target = 'start-wd-agent.ps1'; Kind = 'agent'; Agent = 'codex-lead-1' },

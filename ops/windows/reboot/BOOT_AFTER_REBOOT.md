@@ -242,6 +242,35 @@ verified.
 
 ## Source and integrity
 
+### Grok: passive recovery, lead-requested consultations only
+
+On the first upgrade, stage the committed bundle, then explicitly run its
+`Initialize-WdGrokRecovery.ps1 -Apply` before activation. This refuses active
+Grok invocations, backs up legacy task definitions and scripts, disables their
+schedules, retires bypass/reset entry points, and initializes a conservative
+one-hour hold only if no hourly state exists. Existing reports and budget state
+are preserved. Normal installation checks this migration before switching
+machine pointers; subsequent startup performs only passive validation.
+
+The same fleet startup validates Grok's persistent role and hourly state without
+calling a model. Lead invokes `C:\Python\Invoke-WdGrok.ps1 -Status` to inspect the
+previous task/report and next eligible time, or supplies `-PromptPath` and
+`-TaskId` for one evidence-based advisory consultation. This is not a persistent
+CLI conversation: the previous bounded report and current saved lead work state
+are included as context. No tool execution, subagents, automatic research,
+merge/deploy authority, worktree reset or retry is granted.
+
+All attempted consultations share one OS lock and one durable hourly reservation
+under `C:\Python\grok-scout-reports`. Failures/timeouts consume the hour too.
+Initial migration conservatively holds one hour because old scripts did not
+reliably record failed attempts. Legacy autonomous Grok scheduled tasks must
+remain disabled. Direct CLI/API calls outside this controlled entry point are
+not governed by its budget and must not be used by the fleet.
+
+Model metadata is refreshed by the existing startup resolver; an expired or
+unavailable model/authentication can still block a consultation. No wrapper can
+guarantee provider availability or override the hourly limit.
+
 The Git repository is the only source of truth. A pushed commit is installed
 into `C:\Python\wd-reboot-bundles\<full-commit-sha>`. Machine-local
 `start-wd-*.ps1` files are small, hash-checking wrappers only.

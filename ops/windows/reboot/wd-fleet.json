@@ -48,6 +48,8 @@
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
       "Resolve-WdGrokModel.ps1",
+      "Initialize-WdGrokRecovery.ps1",
+      "Invoke-WdGrok.ps1",
       "Set-WdTaskConsoleContainment.ps1",
       "WD_LOCAL_GPU_GUIDE.md",
       "WD_SWARM_PARALLEL_POLICY_V1.md",

@@ -830,6 +830,12 @@ if ($cliName -ieq 'claude.cmd') {
   )
 }
 $startupPrompt += (
+  ' Grok is an on-demand advisory helper for the lead, not a continuously running lane. ' +
+  'Its shared persistent budget permits at most one attempted consultation per 60 minutes, including failed attempts. ' +
+  'Use C:\Python\Invoke-WdGrok.ps1 -Status to read its previous task/report and next eligible time. ' +
+  'Only the lead requests a consultation with -PromptPath <evidence-request.md> -TaskId <task-id>. ' +
+  'Never use the legacy Invoke-Grok scripts, bare Grok commands, automatic research jobs or a bypass of the shared budget. ' +
+  'Its previous report and current saved lead state are context, not new authority. ' +
   ' Bridge helpers are pinned for this session: invoke Get-BridgeNextAction.ps1, ' +
   'Read-AgentBridge.ps1, Claim-AgentTask.ps1, Release-AgentTask.ps1 and Write-AgentEvent.ps1 ' +
   'from $env:WD_BRIDGE_BIN, and run packaged bridge Python tools only through ' +

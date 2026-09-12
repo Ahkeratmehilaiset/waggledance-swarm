@@ -155,8 +155,10 @@ def main() -> int:
                 report_path = Path(previous_path).resolve()
                 if not report_path.is_relative_to(STATE_ROOT.resolve()):
                     raise ValueError("Previous report is outside Grok's report directory")
-                if report_path.is_file() and report_path.stat().st_size <= 6000:
-                    prompt += "\n\nPREVIOUS GROK RESULT\n" + report_path.read_text(encoding="utf-8-sig")
+                if report_path.is_file():
+                    with report_path.open(encoding="utf-8-sig") as saved_report:
+                        excerpt = saved_report.read(1500)
+                    prompt += "\n\nPREVIOUS GROK RESULT (bounded excerpt; full report at recorded path)\n" + excerpt
             report = consult(STATE_ROOT, args.task_id or "", prompt,
                              [str(executable), "--model", model["model"], "--effort", "high"])
         print(json.dumps(report, ensure_ascii=False))

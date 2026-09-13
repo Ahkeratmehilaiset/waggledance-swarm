@@ -1,5 +1,27 @@
 # WaggleDance Swarm AI — CHANGELOG
 
+## [Bridge reboot and compact-read improvements] -- 2026-09-13
+
+Component-scoped bridge prerelease changes, not a stable WD runtime release.
+
+- Pin bridge code and Python dependencies in the commit-addressed reboot
+  bundle; isolate tool imports without overwriting task worktrees.
+- Restore Grok's advisory role and previous report with a shared durable
+  one-attempt-per-hour budget, including failed attempts. Retire legacy
+  autonomous/bypass launch paths through explicit backup-first migration.
+- Read initial log tails backwards in 64 KiB blocks, stopping after enough
+  complete rows instead of reading the entire byte budget. Preserve snapshot,
+  generation, byte-limit, partial-record and cursor checks.
+- Force UTF-8 output only inside bridge Python invocations, fixing Windows
+  Unicode output failures without changing the parent development environment.
+- Fix recovery timestamp handling across Windows PowerShell and PowerShell 7.
+
+On one existing 5,000-row log sample, initial read bytes dropped from
+67,108,864 to 6,029,312 with identical rows and end offset. This is not a
+general latency, token-cost, or fleet-throughput guarantee. Compact views
+remain opt-in; the canonical log is not rewritten. Full-fleet live soak and
+the unrelated stable WD release gates remain separate requirements.
+
 ## [10-agent substrate wave: bridge parity + worktree isolation] -- 2026-05-18
 
 Eight PRs merged via Claude + Codex mutual RCO + autonomous-merge in

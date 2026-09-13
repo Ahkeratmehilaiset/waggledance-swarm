@@ -830,7 +830,10 @@ function Invoke-WdBridgePythonTool {
     }
     $isolation = Get-WdBridgeCodeIsolationEnvironment -Definition $definition -CodeRoot $codeRoot
     $previous = @{}
-    foreach ($key in @($script:WdBridgeCodeIsolationKeys)) {
+    # Restore every variable actually overridden by the pinned definition,
+    # including encoding and any future scoped settings, not just legacy keys.
+    $restoreKeys = @(@($script:WdBridgeCodeIsolationKeys) + @($isolation.Keys) | Select-Object -Unique)
+    foreach ($key in $restoreKeys) {
         $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
     }
     $previousPreference = $ErrorActionPreference
@@ -854,7 +857,7 @@ function Invoke-WdBridgePythonTool {
     }
     finally {
         $ErrorActionPreference = $previousPreference
-        foreach ($key in @($script:WdBridgeCodeIsolationKeys)) {
+        foreach ($key in $restoreKeys) {
             [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process')
         }
         $script:WdBridgeCodeLastExitCode = $exitCode

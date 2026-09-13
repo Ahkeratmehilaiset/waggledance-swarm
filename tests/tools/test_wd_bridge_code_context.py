@@ -341,6 +341,7 @@ def _fake_definition(wheel_name: str, sha256: str, module: str) -> dict:
             "package_modules": ["tools.bridge_next_action"],
         },
         "isolation_environment": {
+            "PYTHONIOENCODING": "utf-8",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
@@ -554,6 +555,7 @@ def test_wrapper_isolates_one_call_restores_env_and_refuses_unpackaged_tools(tmp
     script = f"""
 $ErrorActionPreference = 'Stop'
 $env:PYTHONPATH = 'C:\\task\\worktree'
+$env:PYTHONIOENCODING = 'cp1252'
 $env:PYTHONSAFEPATH = $null
 Set-Location -LiteralPath '{str(caller_cwd).replace("'", "''")}'
 $output = & '{wrapper}' tools/bridge_next_action.py --agent fable-5
@@ -563,6 +565,7 @@ $restored = [pscustomobject]@{{
     tool = $report
     exit_code = $LASTEXITCODE
     after_pythonpath = [string]$env:PYTHONPATH
+    after_encoding = [string]$env:PYTHONIOENCODING
     after_safepath = [string]$env:PYTHONSAFEPATH
     after_cwd = (Get-Location).Path
 }}
@@ -580,6 +583,7 @@ $restored | ConvertTo-Json -Depth 5 -Compress
     assert report["tool"]["no_site"] is True
     assert str(bundle / "tools-bootstrap") in report["tool"]["pythonpath"]
     assert report["after_pythonpath"] == "C:\\task\\worktree"
+    assert report["after_encoding"] == "cp1252"
     assert report["after_safepath"] == ""
     assert report["after_cwd"].rstrip("\\") == str(caller_cwd).rstrip("\\")
     assert report["exit_code"] == 0

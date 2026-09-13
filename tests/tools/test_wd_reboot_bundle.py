@@ -6286,6 +6286,7 @@ param(
   [string] $RunId = '',
   [ValidateRange(10, 300)] [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
+  [switch] $NoBridgeConversation,
   [switch] $Apply,
   [switch] $DryRun
 )
@@ -6294,6 +6295,7 @@ $global:LASTEXITCODE = 7
   run_id = $RunId
   timeout = $HandshakeTimeoutSeconds
   skip_update = [bool]$SkipCliUpdate
+  no_conversation = [bool]$NoBridgeConversation
   apply = [bool]$Apply
   dry_run = [bool]$DryRun
   handled_native_status = $LASTEXITCODE
@@ -6460,6 +6462,7 @@ $fleetDry = @(& '{fleet_wrapper}' `
   -RunId reboot-123 `
   -HandshakeTimeoutSeconds 42 `
   -SkipCliUpdate `
+  -NoBridgeConversation `
   -DryRun) | Where-Object {{ $_.PSObject.Properties['run_id'] }} |
     Select-Object -Last 1
 $fleetApply = @(& '{fleet_wrapper}' `
@@ -6478,12 +6481,14 @@ $tools = @(& '{tools_wrapper}' `
   fleet_dry_run_id = [string]$fleetDry.run_id
   fleet_dry_timeout = [int]$fleetDry.timeout
   fleet_dry_skip_update = [bool]$fleetDry.skip_update
+  fleet_dry_no_conversation = [bool]$fleetDry.no_conversation
   fleet_dry_apply = [bool]$fleetDry.apply
   fleet_dry_dry_run = [bool]$fleetDry.dry_run
   fleet_dry_native_status = [int]$fleetDry.handled_native_status
   fleet_apply_run_id = [string]$fleetApply.run_id
   fleet_apply_timeout = [int]$fleetApply.timeout
   fleet_apply_skip_update = [bool]$fleetApply.skip_update
+  fleet_apply_no_conversation = [bool]$fleetApply.no_conversation
   fleet_apply_apply = [bool]$fleetApply.apply
   fleet_apply_dry_run = [bool]$fleetApply.dry_run
   fleet_apply_native_status = [int]$fleetApply.handled_native_status
@@ -6503,12 +6508,14 @@ $tools = @(& '{tools_wrapper}' `
         "fleet_dry_run_id": "reboot-123",
         "fleet_dry_timeout": 42,
         "fleet_dry_skip_update": True,
+        "fleet_dry_no_conversation": True,
         "fleet_dry_apply": False,
         "fleet_dry_dry_run": True,
         "fleet_dry_native_status": 7,
         "fleet_apply_run_id": "reboot-apply-123",
         "fleet_apply_timeout": 43,
         "fleet_apply_skip_update": False,
+        "fleet_apply_no_conversation": False,
         "fleet_apply_apply": True,
         "fleet_apply_dry_run": False,
         "fleet_apply_native_status": 7,
@@ -6640,3 +6647,79 @@ def test_grok_contract_uses_provider_default_without_strength_guessing() -> None
     assert "does not guess a “strongest” model" in runbook
     assert "strongest current general model" not in launcher
     assert "default/strongest" not in runbook
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+def test_conversation_window_launch_is_visible_file_invocation(tmp_path):
+    paths = [tmp_path / name for name in ("host space.exe", "viewer space.ps1", "reader space.ps1")]
+    for path in paths:
+        path.write_text("fixture", encoding="utf-8")
+    script = f"""
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile('{REBOOT / 'start-wd-all.ps1'}', [ref]$tokens, [ref]$errors)
+$function = $ast.Find({{ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-WdBridgeConversationWindow' }}, $true)
+if (-not $function) {{ throw 'Missing conversation launcher' }}
+Invoke-Expression $function.Extent.Text
+function Start-Process {{
+ param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
+ [pscustomobject]@{{ file=$FilePath; arguments=$ArgumentList; style=[string]$WindowStyle; pass=[bool]$PassThru }}
+}}
+Start-WdBridgeConversationWindow -HostExecutable '{paths[0]}' -ViewerPath '{paths[1]}' -ReaderPath '{paths[2]}' -RuntimeRoot '{tmp_path}' | ConvertTo-Json -Compress
+"""
+    result = _run_powershell(script)
+    data = json.loads(result.stdout)
+    assert data["style"] == "Normal"
+    assert data["file"] == str(paths[0])
+    assert '-File "' + str(paths[1]) + '"' in data["arguments"]
+    assert '-ReaderPath "' + str(paths[2]) + '"' in data["arguments"]
+    assert "-Command" not in data["arguments"]
+    assert data["pass"] is True
+
+
+def test_conversation_window_is_opt_out_and_only_after_successful_restore():
+    launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    assert "[switch] $NoBridgeConversation" in launcher
+    assert "[switch] $NoBridgeConversation" in deployer
+    assert "$targetParameters['NoBridgeConversation']" in deployer
+    assert "Show-WdBridgeConversation.ps1" in manifest["deployment"]["required_bundle_files"]
+    call = launcher.rindex("Start-WdBridgeConversationWindow")
+    assert call > launcher.index("if ($DryRun) {")
+    assert call > launcher.index("Fleet restore complete;")
+    assert "if (-not $NoBridgeConversation)" in launcher[call - 250:call]
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
+def test_conversation_does_not_extend_elevated_restore_wait():
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    start = deployer.index("        $elevated = Start-Process")
+    end = deployer.index("\n    }\n    catch", start)
+    launch = deployer[start:end]
+    # Start-Process -Wait follows descendants on Windows, including the
+    # indefinite conversation viewer. Only the restore process may be awaited.
+    assert "-Wait `" not in launch
+    assert "$elevated.WaitForExit()" in launch
+    result = _run_powershell(f"""
+$ErrorActionPreference = 'Stop'
+$elevationHost = 'unused-fixture-host'
+$encodedCommand = 'unused-fixture-command'
+$global:steps = New-Object 'System.Collections.Generic.List[string]'
+function Start-Process {{
+  param($FilePath, $Verb, $ArgumentList, $WindowStyle, [switch]$PassThru, $ErrorAction)
+  [void]$global:steps.Add('start')
+  $process = [pscustomobject]@{{ ExitCode = $null; Handle = 123 }}
+  $process | Add-Member ScriptMethod WaitForExit {{
+    [void]$global:steps.Add('wait-parent'); $this.ExitCode = 7
+  }}
+  $process | Add-Member ScriptMethod Refresh {{
+    [void]$global:steps.Add('refresh')
+  }}
+  return $process
+}}
+{launch}
+[pscustomobject]@{{ steps = @($global:steps); exit_code = $elevated.ExitCode }} |
+  ConvertTo-Json -Compress
+""")
+    data = json.loads(result.stdout)
+    assert data == {"steps": ["start", "wait-parent", "refresh"], "exit_code": 7}

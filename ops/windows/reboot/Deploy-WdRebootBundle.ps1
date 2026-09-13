@@ -218,6 +218,7 @@ param(
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
+    [switch] $NoBridgeConversation,
     [switch] $Auto,
     [switch] $Apply,
     [switch] $DryRun
@@ -329,6 +330,9 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     if ([bool]$targetParameters['SkipCliUpdate']) {
         [void]$commandParts.Add('-SkipCliUpdate')
     }
+    if ([bool]$targetParameters['NoBridgeConversation']) {
+        [void]$commandParts.Add('-NoBridgeConversation')
+    }
     $elevationLogRoot = Join-Path (
         Split-Path -Parent $PSCommandPath
     ) 'wd-reboot-runtime\elevated-auto'
@@ -382,9 +386,14 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
                 '-ExecutionPolicy', 'Bypass',
                 '-EncodedCommand', $encodedCommand
             ) `
-            -Wait `
+            -WindowStyle Hidden `
             -PassThru `
             -ErrorAction Stop
+        # Wait for restore itself, not its long-lived conversation-viewer child.
+        # Retain a process handle so exit status remains available after exit.
+        $null = $elevated.Handle
+        $elevated.WaitForExit()
+        $elevated.Refresh()
     }
     catch {
         throw "automatic Administrator elevation was declined or failed: $($_.Exception.Message)"

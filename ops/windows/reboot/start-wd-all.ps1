@@ -18,6 +18,7 @@ param(
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
+  [switch] $NoBridgeConversation,
   [switch] $Apply,
   [switch] $DryRun
 )
@@ -25,6 +26,33 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $script:WdGitExecutable = ''
+
+function Start-WdBridgeConversationWindow {
+  param(
+    [Parameter(Mandatory)] [string] $HostExecutable,
+    [Parameter(Mandatory)] [string] $ViewerPath,
+    [Parameter(Mandatory)] [string] $ReaderPath,
+    [Parameter(Mandatory)] [string] $RuntimeRoot
+  )
+  foreach ($path in @($HostExecutable, $ViewerPath, $ReaderPath)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "conversation window input is missing: $path"
+    }
+  }
+  $runtime = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\')
+  if (-not (Test-Path -LiteralPath $runtime -PathType Container)) {
+    throw 'conversation window runtime directory is missing'
+  }
+  # File invocation only: message text is never interpolated into executable code.
+  $arguments = @(
+    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    ('"{0}"' -f [IO.Path]::GetFullPath($ViewerPath)),
+    '-RuntimeRoot', ('"{0}"' -f $runtime),
+    '-ReaderPath', ('"{0}"' -f [IO.Path]::GetFullPath($ReaderPath))
+  ) -join ' '
+  Start-Process -FilePath $HostExecutable -ArgumentList $arguments `
+    -WindowStyle Normal -PassThru
+}
 
 function Set-WdFleetWindowsPowerShellModulePath {
   if ($PSVersionTable.PSEdition -cne 'Desktop') { return }
@@ -3143,6 +3171,9 @@ Write-Host (
 
 if ($DryRun) {
   Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
+  if (-not $NoBridgeConversation) {
+    Write-Host '  Bridge conversation: would open one colored read-only window after successful restore.'
+  }
   Write-Host ''
   Write-Host 'DRY RUN: no updates, file writes, task starts, WT tabs, or agent processes were started.' -ForegroundColor Yellow
   return
@@ -3756,6 +3787,18 @@ try {
     )
   }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
+  if (-not $NoBridgeConversation) {
+    try {
+      $conversationProcess = Start-WdBridgeConversationWindow `
+        -HostExecutable (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') `
+        -ViewerPath (Join-Path $PSScriptRoot 'Show-WdBridgeConversation.ps1') `
+        -ReaderPath (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1') `
+        -RuntimeRoot ([string]$manifest.runtime_root)
+      Write-Host ("  Bridge conversation window: started viewer PID {0}; read-only" -f $conversationProcess.Id)
+    } catch {
+      Write-Warning ("Fleet restored, but conversation window could not open: {0}" -f $_.Exception.Message)
+    }
+  }
   Write-Host ("  CLI versions: Codex {0} -> {1}; Claude {2} -> {3}" -f $codexVersion, $codexAfterVersion, $claudeVersion, $claudeAfterVersion)
 } finally {
   if ($mutexAcquired) {

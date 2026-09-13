@@ -24,6 +24,48 @@ blue (Fable), and gray (other agents). Errors override the color with red;
 warnings use yellow. Text labels identify sender, event type, status, and
 severity, so meaning does not depend on color alone.
 
+In an interactive console the top status band and bounded discussion pane are
+updated in place, only when their text/color or window geometry changes. There
+is no clear-screen polling or appended per-poll status log. The display retains
+at most 200 rendered lines in memory and shows the newest lines that fit the
+window (at most 60 screen rows). Long screen lines have a `>` clipping marker;
+this is a view, not an export of the canonical record. Unicode cell widths are
+used to avoid wide characters wrapping over the next row.
+
+The band shows `FOLLOW`/`PAUSED`, `READ-ONLY`, reader status/reason, unread bytes
+from the **last bounded snapshot**, and session read-observation counts:
+`rows`, `visible`, hidden heartbeat/liveness (`hb`), wake, message receipt/ACK,
+filter, and deliberately skipped initial sample rows. These categories sum to
+the rows read successfully. They are not whole-log totals, unique-event counts,
+task completions or productive-work measurements; replay can count a row again.
+`-InitialTail 0` samples at most one row to seed the cursor, so its skipped count
+does not estimate the unseen historical row count. Missing/blocked reads and
+pause show unknown lag rather than implying an up-to-date reader.
+
+Controls affect only this window:
+
+- `P` or Space pauses/resumes. Pause does not read or advance the cursor; resume
+  continues bounded reads from the retained cursor, with normal gap detection.
+- `A` cycles ALL/Lead/Tools/RCO1/RCO2/Fable; `T` cycles ALL and common event types.
+  A changed filter clears the displayed pane and applies to subsequent reads;
+  it does not rescan history or reset session counts. Startup `-AgentFilter` and
+  `-TypeFilter` accept exact, case-sensitive values, not wildcard expressions.
+- `Q` exits the viewer only. None of these keys sends a command to an agent.
+
+Rows include `[LEAD]`, `[TOOLS]`, `[RCO1]`, `[RCO2]`, `[FABLE]` or `[OTHER]`, plus
+explicit `[ERROR]`/`[WARN]` when indicated by severity **or** status. Sender,
+recipient and task labels remain textual in plain output; the narrow dashboard
+uses short UTC time and role/type/status badges to leave room for the message.
+ACK suppression follows message
+receipt statuses, not hypothetical extra event types.
+
+`-PlainText` forces streaming output without keyboard controls; redirected
+input/output selects it automatically. Plain mode emits discussion and changed
+diagnostics, with one final counters summary on a normal bounded run or exit,
+not a new summary for every heartbeat-only poll. An unavailable interactive
+console visibly falls back to the plain stream. This version has no web server,
+second event store, progress estimate, or provider-token counter.
+
 The viewer shows at most 40 physical rows initially and then follows bounded
 byte deltas. Heartbeat/liveness, wake, and message-ACK traffic is hidden. This
 is a discussion view, not a complete audit transcript or proof of activity.

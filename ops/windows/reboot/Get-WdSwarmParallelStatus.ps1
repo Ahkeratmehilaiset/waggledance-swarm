@@ -71,8 +71,9 @@ function Get-WdStatusProperty {
 function Read-WdStatusRecord {
     param([string] $Path)
     # Bound memory and I/O even if a concurrently written record grows.
+    # Permit atomic checkpoint/readiness replacement while this snapshot is open.
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
-        [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     try {
         $buffer = New-Object byte[] 32769
         $count = 0

@@ -215,3 +215,45 @@ def test_free_form_checkpoint_status_does_not_imply_runnable(fleet, status, expe
     lane = run_status(fleet)["lanes"][-1]
     assert lane["runnable"] is True
     assert lane["runnable_evidence"] == expected
+
+
+def test_record_read_allows_concurrent_atomic_replacement(fleet):
+    """A writer may replace the canonical record while its old snapshot is read."""
+    path = fleet["ready"]
+    replacement = path.with_suffix(".next.json")
+    path.write_text('{"value":"before"}', encoding="utf-8")
+    replacement.write_text('{"value":"after"}', encoding="utf-8")
+    command = rf"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile({quote(SCRIPT)}, [ref]$tokens, [ref]$errors)
+$reader = $ast.Find({{ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Read-WdStatusRecord'
+}}, $true)
+if (-not $reader -or $errors.Count) {{ throw 'Status reader could not be parsed' }}
+Invoke-Expression $reader.Extent.Text
+# Parsing occurs inside the reader's try/finally while its read handle is
+# still held. This deterministic interleaving requires no timing or retries.
+function ConvertFrom-Json {{
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline)] [string] $InputObject)
+    process {{
+        [IO.File]::Replace({quote(replacement)}, {quote(path)}, {quote(path.with_suffix('.previous.json'))})
+        Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject $InputObject
+    }}
+}}
+$snapshot = Read-WdStatusRecord -Path {quote(path)}
+$current = Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject ([IO.File]::ReadAllText({quote(path)}))
+# The old snapshot is now the backup. Exclusive access proves its read handle
+# was disposed after parsing, rather than leaked across subsequent observations.
+$exclusive = [IO.File]::Open({quote(path.with_suffix('.previous.json'))}, [IO.FileMode]::Open,
+    [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+$exclusive.Dispose()
+[pscustomobject]@{{ snapshot = $snapshot.value; current = $current.value }} | ConvertTo-Json -Compress
+"""
+    result = subprocess.run([fleet["shell"], "-NoProfile", "-NonInteractive", "-Command", command],
+                            cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"snapshot": "before", "current": "after"}
+    assert not replacement.exists()

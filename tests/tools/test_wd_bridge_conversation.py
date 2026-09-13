@@ -418,3 +418,53 @@ Format-WdConversationEvent $event | ConvertTo-Json -Compress
         assert "[truncated]" in text
         assert "\n" not in text and "\t" not in text
     assert len(report["ScreenText"]) < len(report["Text"])
+
+
+def test_dashboard_geometry_offsets_and_resizes_redraw_without_idle_repaints(runtime):
+    report = run_view_functions(runtime, r"""
+$global:geometry = [pscustomobject]@{Width=79; Height=10; Left=20; Top=0}
+$global:writes = [Collections.Generic.List[object]]::new()
+$global:notices = [Collections.Generic.List[string]]::new()
+function Get-WdConversationGeometry { return $global:geometry }
+function Write-WdConversationScreenLine {
+    param($X, $Y, $Text, $Color, $Width)
+    $global:writes.Add(@{x=$X; y=$Y; text=$Text; color=$Color; width=$Width})
+}
+function Write-Host { param($Object, $ForegroundColor) $global:notices.Add([string]$Object) }
+$view = New-WdConversationView
+$view.Interactive = $true
+$view.Controls = $true
+Add-WdConversationLine $view 'ordinary visible discussion' 'Green'
+Show-WdConversationFrame $view
+$first = @($global:writes.ToArray())
+$global:writes.Clear()
+Show-WdConversationFrame $view
+$idleWrites = $global:writes.Count
+$global:geometry.Left = 30
+Show-WdConversationFrame $view
+$scrolled = @($global:writes.ToArray())
+$global:writes.Clear()
+$global:geometry.Width = 59
+$global:geometry.Height = 8
+$global:geometry.Top = 3
+Show-WdConversationFrame $view
+$resized = @($global:writes.ToArray())
+$global:writes.Clear()
+Show-WdConversationFrame $view
+@{first=$first; idle_writes=$idleWrites; scrolled=$scrolled; resized=$resized;
+    resized_idle_writes=$global:writes.Count; interactive=$view.Interactive;
+    notices=@($global:notices.ToArray())} | ConvertTo-Json -Depth 6 -Compress
+""")
+    assert report["interactive"] is True, report["notices"]
+    assert len(report["first"]) == 10
+    assert all(line["x"] == 20 and line["width"] == 79 for line in report["first"])
+    assert [line["y"] for line in report["first"]] == list(range(10))
+    assert report["idle_writes"] == 0
+    assert len(report["scrolled"]) == 10
+    assert all(line["x"] == 30 and line["width"] == 79 for line in report["scrolled"])
+    assert [line["text"] for line in report["scrolled"]] == [line["text"] for line in report["first"]]
+    assert len(report["resized"]) == 8
+    assert all(line["x"] == 30 and line["width"] == 59 for line in report["resized"])
+    assert [line["y"] for line in report["resized"]] == list(range(3, 11))
+    assert report["resized_idle_writes"] == 0
+    assert report["notices"] == []

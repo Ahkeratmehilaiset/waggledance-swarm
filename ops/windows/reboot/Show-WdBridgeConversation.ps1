@@ -206,24 +206,35 @@ function ConvertTo-WdConversationCellText {
 }
 
 function Write-WdConversationScreenLine {
-    param([int] $Y, [string] $Text, [string] $Color, [int] $Width)
+    param([int] $Y, [string] $Text, [string] $Color, [int] $Width, [int] $X = 0)
     $savedColor = [Console]::ForegroundColor
     try {
-        [Console]::SetCursorPosition(0, $Y)
+        [Console]::SetCursorPosition($X, $Y)
         [Console]::ForegroundColor = [ConsoleColor]$Color
         [Console]::Write((ConvertTo-WdConversationCellText $Text $Width))
     } finally { [Console]::ForegroundColor = $savedColor }
+}
+
+function Get-WdConversationGeometry {
+    $left = [Console]::WindowLeft
+    [pscustomobject]@{
+        Left = $left; Top = [Console]::WindowTop
+        Width = [Math]::Min([Console]::WindowWidth, [Console]::BufferWidth - $left) - 1
+        Height = [Math]::Min([Console]::WindowHeight, 60) - 1
+    }
 }
 
 function Show-WdConversationFrame {
     param($View)
     if (-not $View.Interactive) { return }
     try {
-        $width = [Math]::Min([Console]::WindowWidth, [Console]::BufferWidth) - 1
-        $height = [Math]::Min([Console]::WindowHeight, 60) - 1
-        $top = [Console]::WindowTop
+        $viewport = Get-WdConversationGeometry
+        $width = $viewport.Width
+        $height = $viewport.Height
+        $top = $viewport.Top
+        $left = $viewport.Left
         if ($width -lt 20 -or $height -lt 6) { throw 'terminal too small' }
-        $geometry = "$width/$height/$top"
+        $geometry = "$width/$height/$top/$left"
         $summary = Get-WdConversationSummary $View
         $split = $summary.IndexOf(' | rows=')
         $agent = if ($View.Agent) { ConvertTo-WdConversationText $View.Agent 128 } else { 'ALL' }
@@ -243,7 +254,7 @@ function Show-WdConversationFrame {
             $line = $frame[$i]
             if ($geometry -cne $View.Geometry -or $i -ge $View.Frame.Count -or
                 $line.Text -cne $View.Frame[$i].Text -or $line.Color -cne $View.Frame[$i].Color) {
-                Write-WdConversationScreenLine -Y ($top + $i) -Text $line.Text -Color $line.Color -Width $width
+                Write-WdConversationScreenLine -X $left -Y ($top + $i) -Text $line.Text -Color $line.Color -Width $width
             }
         }
         $View.Frame = @($frame.ToArray())

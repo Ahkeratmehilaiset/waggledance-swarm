@@ -19,6 +19,18 @@ def test_tools_initializes_pinned_context_before_consumer():
     assert source.index("Initialize-WdBridgeCodeContext") < source.index("$commonConsumerArguments =")
 
 
+def test_bridge_output_is_utf8_even_with_legacy_parent_encoding():
+    import os
+    definition = json.loads((REBOOT / "bridge-code-files.json").read_text())
+    environment = dict(os.environ, PYTHONIOENCODING="cp1252")
+    environment.update(definition["isolation_environment"])
+    result = subprocess.run([sys.executable, "-S", "-B", "-c",
+                             "print('\\u03bb\\U0001f41d')"],
+                            env=environment, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.decode("utf-8").strip() == "\u03bb\U0001f41d"
+
+
 def test_package_entrypoints_exist_and_include_release_helpers():
     definition = json.loads((REBOOT / "bridge-code-files.json").read_text())
     for name in definition["python_files"]:

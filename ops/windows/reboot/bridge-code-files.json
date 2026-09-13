@@ -86,6 +86,7 @@
     ]
   },
   "isolation_environment": {
+    "PYTHONIOENCODING": "utf-8",
     "PYTHONDONTWRITEBYTECODE": "1",
     "PYTHONNOUSERSITE": "1",
     "PYTHONSAFEPATH": "1"

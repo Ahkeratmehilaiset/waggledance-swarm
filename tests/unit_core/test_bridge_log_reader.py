@@ -422,6 +422,17 @@ def test_larger_replacement_with_fewer_rows_is_not_treated_as_append(
     assert result.candidate_cursor is None
 
 
+def test_small_tail_does_not_read_the_entire_byte_budget(tmp_path: Path) -> None:
+    path = tmp_path / "large.jsonl"
+    row = b'{"message":"' + b'x' * 1000 + b'"}\n'
+    path.write_bytes(row * 6000)
+    result = read_bridge_log_tail_lines(path, tail_rows=10)
+    assert result.status is BridgeReadStatus.OK
+    assert result.lines == (row[:-1].decode(),) * 10
+    assert result.end_offset == path.stat().st_size
+    assert result.bytes_read <= 65536
+
+
 def test_tail_lines_are_row_and_byte_bounded(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_bytes(b'{"row":1}\n{"row":2}\n{"row":3}\n')

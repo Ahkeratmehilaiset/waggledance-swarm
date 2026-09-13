@@ -758,10 +758,29 @@ def read_bridge_log_tail_lines(
                 )
             )
 
-        requested = min(snapshot_length, max_bytes)
-        window_start = snapshot_length - requested
+        # Freeze the same snapshot as before, but read backwards in disjoint
+        # blocks until the requested rows have a complete leading boundary.
+        # Do not read the entire (potentially 64 MiB) budget for a small tail.
+        budget = min(snapshot_length, max_bytes)
+        requested = 0
+        window_start = snapshot_length
+        chunks: list[bytes] = []
+        seen_boundaries = 0
         preceding_is_lf = False
         try:
+            while requested < budget:
+                block_size = min(65536, budget - requested)
+                window_start -= block_size
+                stream.seek(window_start, os.SEEK_SET)
+                block = stream.read(block_size)
+                chunks.append(block)
+                requested += block_size
+                if len(block) != block_size:
+                    break
+                seen_boundaries += block.count(b"\n")
+                if seen_boundaries >= tail_rows + 1:
+                    break
+            data = b"".join(reversed(chunks))
             if window_start > 0:
                 stream.seek(window_start - 1, os.SEEK_SET)
                 preceding = stream.read(1)
@@ -777,8 +796,6 @@ def read_bridge_log_tail_lines(
                         )
                     )
                 preceding_is_lf = preceding == b"\n"
-            stream.seek(window_start, os.SEEK_SET)
-            data = stream.read(requested)
         except OSError:
             return finish(
                 BridgeLineReadResult(
@@ -811,13 +828,14 @@ def read_bridge_log_tail_lines(
             elif selected_end > 0:
                 required_boundary = tail_rows + 1
                 seen_lf = 0
-                for index in range(selected_end - 1, -1, -1):
-                    if data[index] != 0x0A:
-                        continue
-                    seen_lf += 1
-                    if seen_lf >= required_boundary:
-                        selected_start = index + 1
+                boundary = selected_end
+                while seen_lf < required_boundary:
+                    boundary = data.rfind(b"\n", 0, boundary)
+                    if boundary < 0:
                         break
+                    seen_lf += 1
+                if seen_lf >= required_boundary:
+                    selected_start = boundary + 1
                 else:
                     if window_start == 0:
                         selected_start = 0

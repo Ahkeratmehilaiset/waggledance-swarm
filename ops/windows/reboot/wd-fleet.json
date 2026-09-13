@@ -5,6 +5,11 @@
   "primary_repo_root": "C:\\Python\\project2",
   "repo_common_git_dir": "C:\\Python\\project2\\.git",
   "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
+  "bridge_python": {
+    "executable": "C:\\Users\\janik\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+    "trust": "per_user_programs_python_no_windowsapps_no_reparse_sha256_recorded",
+    "site_packages_policy": "stdlib_only; every third-party import comes from the hash-pinned bundle python-site"
+  },
   "handshake_root": "C:\\Python\\wd-reboot-runtime\\handshakes",
   "grok_output_directory": "C:\\Python",
   "grok_markdown": "C:\\Python\\WD_GROK_MODEL_CURRENT.md",
@@ -43,6 +48,8 @@
       "Invoke-WdToolsCodex.ps1",
       "wd-fleet.json",
       "Resolve-WdGrokModel.ps1",
+      "Initialize-WdGrokRecovery.ps1",
+      "Invoke-WdGrok.ps1",
       "Set-WdTaskConsoleContainment.ps1",
       "WD_LOCAL_GPU_GUIDE.md",
       "WD_SWARM_PARALLEL_POLICY_V1.md",
@@ -60,7 +67,10 @@
       "tools-bootstrap/.agent-bridge/bin/Test-BridgeWake.ps1",
       "tools-bootstrap/.agent-bridge/bin/Watch-Bridge.ps1",
       "tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1",
-      "tools-bootstrap/configs/bridge_identity_registry.json"
+      "tools-bootstrap/configs/bridge_identity_registry.json",
+      "BridgeCodeContext.ps1",
+      "Invoke-WdBridgePython.ps1",
+      "bridge-code-files.json"
     ]
   },
   "tools_supervisor": {

@@ -37,10 +37,20 @@ if ($Compact) {
     }
     # Pure read path: deliberately before drain, sweep, ACK and mkdir.
     $compactTool = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'tools/bridge_compact_view.py'
-    $compactArgs = @($compactTool, '--events', (Join-Path $bridgeRoot 'shared/events.jsonl'), '--tail', $ContinuityTail)
+    $compactArgs = @('--events', (Join-Path $bridgeRoot 'shared/events.jsonl'), '--tail', $ContinuityTail)
     if ($AfterEvent) { $compactArgs += @('--after', $AfterEvent) }
     if ($EventId) { $compactArgs += @('--event-id', $EventId) }
-    & $PythonExecutable @compactArgs
+    # Pinned lane sessions export WD_BRIDGE_PYTHON_WRAPPER (reboot bundle root). It runs
+    # the packaged tool under scoped Python isolation and restores the environment.
+    $pinnedWrapper = [string]$env:WD_BRIDGE_PYTHON_WRAPPER
+    if (-not $PSBoundParameters.ContainsKey('PythonExecutable') -and $pinnedWrapper) {
+        if (-not (Test-Path -LiteralPath $pinnedWrapper -PathType Leaf)) {
+            throw "pinned bridge python wrapper is missing: $pinnedWrapper"
+        }
+        & $pinnedWrapper 'tools/bridge_compact_view.py' @compactArgs
+        exit $LASTEXITCODE
+    }
+    & $PythonExecutable $compactTool @compactArgs
     exit $LASTEXITCODE
 }
 foreach ($compactOption in @('AfterEvent','EventId','PythonExecutable')) {

@@ -187,15 +187,9 @@ function New-UsageExamples {
         [Parameter(Mandatory = $true)][string]$Model
     )
 
-    $quotedExecutable = ConvertTo-PowerShellSingleQuotedLiteral -Value $Executable
-    $quotedModel = ConvertTo-PowerShellSingleQuotedLiteral -Value $Model
-    $quotedProject = ConvertTo-PowerShellSingleQuotedLiteral -Value 'C:\Python\project2'
-
     return [pscustomobject][ordered]@{
-        single_turn = ('& {0} -p ''<prompt>'' --always-approve --no-alt-screen --cwd {1} --model {2} --effort high' -f
-            $quotedExecutable, $quotedProject, $quotedModel)
-        interactive = ('& {0} --no-alt-screen --cwd {1} --model {2} --effort high' -f
-            $quotedExecutable, $quotedProject, $quotedModel)
+        single_turn = "& 'C:\Python\Invoke-WdGrok.ps1' -PromptPath '<evidence-request.md>' -TaskId '<task-id>'"
+        interactive = "& 'C:\Python\Invoke-WdGrok.ps1' -Status"
     }
 }
 
@@ -264,6 +258,9 @@ function Get-CacheRecord {
         $null -eq $cache.usage.PSObject.Properties['interactive']) {
         throw 'Grok model cache is missing exact usage examples.'
     }
+    # A valid provider cache may contain retired direct-CLI examples. Never
+    # return those as instructions that bypass the fleet's shared hourly gate.
+    $cache.usage = New-UsageExamples -Executable ([string]$cache.grok_command) -Model $model
 
     return [pscustomobject][ordered]@{
         Cache = $cache
@@ -334,7 +331,7 @@ function New-MarkdownDocument {
         [string]$Record.usage.single_turn,
         '```',
         '',
-        'Interactive:',
+        'Read-only status (interactive model sessions are not fleet entry points):',
         '',
         '```powershell',
         [string]$Record.usage.interactive,

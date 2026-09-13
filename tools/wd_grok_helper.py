@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from time import monotonic
 import uuid
 
 STATE_ROOT = Path(r"C:\Python\grok-scout-reports")
@@ -94,6 +95,7 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         # Persist before model launch: failure, timeout and reboot all consume
         # the same hour. No retry path and no alternate state path in the CLI.
         write_state(root, state)
+        started = monotonic()
         prompt_path = root / (request_id + "-request.md")
         report_path = root / (request_id + "-response.md")
         rules = (
@@ -119,6 +121,11 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                          exit_code=result.returncode, report_path=str(report_path))
         except Exception as exc:
             state.update(status="failed", error_type=type(exc).__name__)
+        state.update(
+            duration_seconds=round(max(0.0, monotonic() - started), 6),
+            finished_at_utc=datetime.now(timezone.utc).isoformat(),
+            timing_scope="consultation_after_budget_reservation",
+        )
         write_state(root, state)
         return status(root, now)
 

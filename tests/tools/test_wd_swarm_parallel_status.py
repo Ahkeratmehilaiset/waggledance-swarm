@@ -42,7 +42,8 @@ def fleet(request):
                 "blockers": [],
             }
             (worktree / ".codex-audit/wd-current-state.json").write_text(json.dumps(checkpoint), encoding="utf-8")
-            lanes.append({"agent": agent, "worktree": str(worktree)})
+            lanes.append({"agent": agent, "worktree": str(worktree),
+                          "turn_mode": "managed" if agent == "codex-lead-1" else "interactive"})
         ready = root / "ready.json"
         started = (now - timedelta(minutes=2)).isoformat()
         ready.write_text(json.dumps({
@@ -54,7 +55,7 @@ def fleet(request):
         manifest = root / "fleet.json"
         manifest.write_text(json.dumps({
             "schema_version": 2, "git_executable": shutil.which("git"),
-            "runtime_root": str(root), "lanes": lanes[:-1],
+            "runtime_root": str(root), "handshake_root": str(root / "handshakes"), "lanes": lanes[:-1],
             "tools_supervisor": dict(lanes[-1], task_name="WD-Supervisor", readiness_path=str(ready)),
         }), encoding="utf-8")
         pointer = root / "pointer.json"
@@ -79,7 +80,7 @@ def checkpoint(fleet, index=-1):
 
 
 def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
-               started=None):
+               started=None, lane_processes=None):
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in fleet["root"].rglob("*") if p.is_file()}
     process_body = {
         "absent": "return",
@@ -89,19 +90,84 @@ def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
     }[process]
     task_body = "throw 'task query unavailable'" if task == "unknown" else "[pscustomobject]@{ State = " + quote(task) + " }"
     command = """
-function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) PROCESS_BODY }
+function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
+    if (-not $Filter) { LANE_PROCESS_BODY; return }
+    PROCESS_BODY
+}
 function Get-ScheduledTask { param($TaskName, $ErrorAction) TASK_BODY }
 function Start-Process { throw 'status attempted process start' }
 function Set-Content { throw 'status attempted write' }
 function Enable-ScheduledTask { throw 'status attempted task enable' }
 & SCRIPT -ManifestPath MANIFEST POINTER -Json
-""".replace("PROCESS_BODY", process_body).replace("TASK_BODY", task_body).replace("SCRIPT", quote(SCRIPT)).replace("MANIFEST", quote(fleet["manifest"])).replace("POINTER", "-CurrentStatePath " + quote(fleet["pointer"]))
+""".replace("LANE_PROCESS_BODY", "throw 'process query unavailable'" if process == "unknown" else
+             "foreach ($row in (ConvertFrom-Json -InputObject " + quote(json.dumps(lane_processes or [])) + ")) { $row }").replace("PROCESS_BODY", process_body).replace("TASK_BODY", task_body).replace("SCRIPT", quote(SCRIPT)).replace("MANIFEST", quote(fleet["manifest"])).replace("POINTER", "-CurrentStatePath " + quote(fleet["pointer"]))
     result = subprocess.run([fleet["shell"], "-NoProfile", "-NonInteractive", "-Command", command], cwd=ROOT,
                             capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stderr
     after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in fleet["root"].rglob("*") if p.is_file()}
     assert before == after, "status mutated its evidence or runtime directory"
     return json.loads(result.stdout)
+
+
+def lane_handshake(fleet, mode="interactive"):
+    run_id = "retained-session"
+    directory = fleet["root"] / "handshakes" / run_id
+    directory.mkdir(parents=True)
+    path = directory / "codex-lead-1.json"
+    record = {
+        "schema_version": 1, "status": "bridge_bootstrapped", "agent": "codex-lead-1",
+        "pid": 54321, "run_id": run_id, "session_id": run_id,
+        "created_at_utc": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        "worktree": fleet["lanes"][0]["worktree"], "runtime_root": str(fleet["root"]),
+        "bundle_generation": GENERATION,
+    }
+    if mode is not None:
+        record["turn_mode"] = mode
+    path.write_text(json.dumps(record), encoding="utf-8")
+    process = {"Name": "powershell.exe", "ProcessId": 54321, "CreationDate": fleet["started"],
+               "CommandLine": f'powershell.exe -File C:\\Python\\start-wd-agent.ps1 -Agent codex-lead-1 -RunId {run_id} -HandshakeDirectory "{directory}"'}
+    return path, process
+
+
+@pytest.mark.parametrize("mode,observed,support", [
+    (None, "legacy_interactive", "unsupported_existing_interactive"),
+    ("interactive", "interactive", "unsupported_existing_interactive"),
+    ("managed", "managed", "not_verified"),
+])
+def test_configured_mode_is_not_retained_live_mode_or_turn_proof(fleet, mode, observed, support):
+    _, process = lane_handshake(fleet, mode)
+    lane = run_status(fleet, lane_processes=[process])["lanes"][0]
+    assert lane["configured_turn_mode"] == "managed"
+    assert lane["turn_execution"]["observed_turn_mode"] == observed, lane["turn_execution"]["reason"]
+    assert lane["turn_execution"]["external_wake_support"] == support
+    assert lane["turn_execution"]["observed_pid"] == 54321
+    assert lane["turn_execution"]["turn_execution_verified"] is False
+    assert lane["runnable_evidence"] == "unknown"
+
+
+@pytest.mark.parametrize("case", ["absent", "query_unknown", "multiple", "pid_mismatch", "reused_pid", "session_mismatch", "missing_handshake", "unknown_mode", "outside_handshake_root", "missing_worktree"])
+def test_unproved_live_mode_stays_unknown_despite_managed_configuration(fleet, case):
+    path, process = lane_handshake(fleet)
+    processes = [process]
+    kwargs = {}
+    if case == "absent": processes = []
+    if case == "query_unknown": kwargs["process"] = "unknown"
+    if case == "multiple": processes.append(dict(process, ProcessId=54322))
+    if case == "pid_mismatch": update(path, pid=54322)
+    if case == "reused_pid": process["CreationDate"] = datetime.now(timezone.utc).isoformat()
+    if case == "session_mismatch": update(path, session_id="another-session")
+    if case == "missing_handshake": path.unlink()
+    if case == "unknown_mode": update(path, turn_mode="guess")
+    if case == "missing_worktree":
+        record = json.loads(path.read_text())
+        del record["worktree"]
+        path.write_text(json.dumps(record))
+    if case == "outside_handshake_root": process["CommandLine"] = process["CommandLine"].replace(str(path.parent), str(fleet["root"]))
+    lane = run_status(fleet, lane_processes=processes, **kwargs)["lanes"][0]
+    assert lane["configured_turn_mode"] == "managed"
+    assert lane["turn_execution"]["observed_turn_mode"] == "unknown"
+    assert lane["turn_execution"]["external_wake_support"] == "unknown"
+    assert lane["turn_execution"]["turn_execution_verified"] is False
 
 
 def test_stale_checkpoint_keeps_legacy_plan_but_has_no_fresh_runnable_evidence(fleet):

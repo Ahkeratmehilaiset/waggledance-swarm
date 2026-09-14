@@ -26,7 +26,7 @@
   "parallel_policy": {
     "id": "wd-swarm-parallel-policy-v1",
     "relative_path": "WD_SWARM_PARALLEL_POLICY_V1.md",
-    "sha256": "BF167398C1458C32757A6F1415C00A55AA390CB8DCA12F03DBD60E8225B1984A",
+    "sha256": "B6F1DFF018B4FEEB4110ABCD577A78E7675BF92B94DA50EB78014FFE0FB3F87D",
     "capability_effect": "none"
   },
   "state_precedence": {
@@ -42,6 +42,7 @@
     "required_bundle_files": [
       "start-wd-all.ps1",
       "start-wd-agent.ps1",
+      "Invoke-WdLaneTurnLoop.ps1",
       "Get-WdSwarmParallelStatus.ps1",
       "Show-WdBridgeConversation.ps1",
       "Write-WdLaneCurrentState.ps1",
@@ -120,6 +121,7 @@
         "work_queue"
       ],
       "cli": "codex.cmd",
+      "turn_mode": "managed",
       "model": "gpt-5.6-sol",
       "effort": "ultra",
       "resume_policy": "current_worktree",
@@ -146,6 +148,7 @@
         "work_queue"
       ],
       "cli": "claude.cmd",
+      "turn_mode": "interactive",
       "model": "sonnet",
       "effort": "max",
       "resume_policy": "current_worktree",
@@ -171,6 +174,7 @@
         "work_queue"
       ],
       "cli": "claude.cmd",
+      "turn_mode": "interactive",
       "model": "sonnet",
       "effort": "max",
       "resume_policy": "current_worktree",
@@ -196,6 +200,7 @@
         "work_queue"
       ],
       "cli": "claude.cmd",
+      "turn_mode": "interactive",
       "model": "fable",
       "effort": "max",
       "resume_policy": "current_worktree",

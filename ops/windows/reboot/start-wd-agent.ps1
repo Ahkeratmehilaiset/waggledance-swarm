@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Starts one integrity-pinned WaggleDance interactive bridge lane.
+  Starts one integrity-pinned WaggleDance interactive or managed bridge lane.
 
 .DESCRIPTION
   This script never creates, fetches, checks out, resets, or advances a Git
@@ -23,11 +23,15 @@ param(
   [string] $ManifestPath = '',
   [string] $HandshakeDirectory = '',
   [string] $ExpectedManifestHash = '',
-  [switch] $DryRun
+  [switch] $DryRun,
+  [switch] $CheckManagedAdmission
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($CheckManagedAdmission -and -not $DryRun) {
+  throw 'CheckManagedAdmission requires -DryRun'
+}
 $script:WdGitExecutable = ''
 if (-not $ManifestPath) {
   $ManifestPath = Join-Path $PSScriptRoot 'wd-fleet.json'
@@ -49,17 +53,25 @@ function Assert-LanePathWithoutReparse {
     [Parameter(Mandatory)] [string] $TrustedRoot,
     [ValidateSet('Directory', 'Leaf')] [string] $ExpectedType
   )
-  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $separator = [IO.Path]::DirectorySeparatorChar
+  $comparison = if ($separator -eq '\') {
+    [StringComparison]::OrdinalIgnoreCase
+  } else { [StringComparison]::Ordinal }
+  $candidate = [IO.Path]::GetFullPath($Path)
+  if (-not $candidate.Equals([IO.Path]::GetPathRoot($candidate), $comparison)) {
+    $candidate = $candidate.TrimEnd($separator)
+  }
   $rootCandidate = [IO.Path]::GetFullPath($TrustedRoot)
   $root = if ($rootCandidate.Equals(
       [IO.Path]::GetPathRoot($rootCandidate),
-      [StringComparison]::OrdinalIgnoreCase
-    )) { $rootCandidate } else { $rootCandidate.TrimEnd('\') }
+      $comparison
+    )) { $rootCandidate } else { $rootCandidate.TrimEnd($separator) }
+  $rootPrefix = $root.TrimEnd($separator) + $separator
   if (
-    -not $candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
+    -not $candidate.Equals($root, $comparison) -and
     -not $candidate.StartsWith(
-      $root.TrimEnd('\') + '\',
-      [StringComparison]::OrdinalIgnoreCase
+      $rootPrefix,
+      $comparison
     )
   ) {
     throw "lane trusted path escaped its root: $candidate"
@@ -71,9 +83,9 @@ function Assert-LanePathWithoutReparse {
   if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "lane trusted path root is a reparse point: $root"
   }
-  $relative = $candidate.Substring($root.Length).TrimStart('\')
+  $relative = $candidate.Substring($root.Length).TrimStart($separator)
   $current = $root
-  foreach ($segment in @($relative -split '\\')) {
+  foreach ($segment in @($relative.Split([char[]]@($separator), [StringSplitOptions]::RemoveEmptyEntries))) {
     if (-not $segment) { continue }
     $current = Join-Path $current $segment
     if (-not (Test-Path -LiteralPath $current)) {
@@ -123,6 +135,135 @@ function Read-NonEmptyFile {
     throw "$Label is empty: $Path"
   }
   return $text
+}
+
+function Get-WdLaneTurnMode {
+  param([Parameter(Mandatory)] [object] $Lane)
+
+  $property = $Lane.PSObject.Properties['turn_mode']
+  if ($null -eq $property) { return 'interactive' }
+  $mode = [string]$property.Value
+  if ($mode -cnotin @('interactive', 'managed')) {
+    throw "unsupported lane turn_mode '$mode'"
+  }
+  return $mode
+}
+
+function Read-WdLaneTurnRunnerSnapshot {
+  param(
+    [Parameter(Mandatory)] [string] $ScriptRoot,
+    [AllowNull()] [object] $DeploymentAnchor = $null,
+    [switch] $SourceTreeMode
+  )
+
+  $runnerPath = Join-Path $ScriptRoot 'Invoke-WdLaneTurnLoop.ps1'
+  [void](Assert-LanePathWithoutReparse `
+    -Path $runnerPath `
+    -TrustedRoot ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($ScriptRoot))) `
+    -ExpectedType Leaf)
+  $snapshot = Read-Utf8LaneSnapshot -Path $runnerPath
+  if ($null -eq $DeploymentAnchor) {
+    if (-not $SourceTreeMode) {
+      throw 'lane turn runner requires an anchored deployment manifest'
+    }
+  } else {
+    $pin = $DeploymentAnchor.files.PSObject.Properties['Invoke-WdLaneTurnLoop.ps1']
+    if ($null -eq $pin -or [string]$snapshot.Hash -cne [string]$pin.Value) {
+      throw 'lane turn runner bundle hash mismatch'
+    }
+  }
+  return $snapshot
+}
+
+function Assert-WdLaneLaunchAvailable {
+  param(
+    [Parameter(Mandatory)] [object] $Lane,
+    [object[]] $KnownLanes = @(),
+    [int] $CurrentPid = $PID
+  )
+
+  $agentPattern = '(?i)(?:^|\s)-Agent\s+["'']?' +
+    [regex]::Escape([string]$Lane.agent) + '["'']?(?=\s|$)'
+  $filePattern = '(?i)(?:^|\s)-File\s+(?:"(?<path>[^"]+)"|''(?<path>[^'']+)''|(?<path>\S+))(?=\s|$)'
+  $agentCapturePattern = '(?i)(?:^|\s)-Agent\s+["'']?(?<agent>[a-z][a-z0-9_-]{1,32})["'']?(?=\s|$)'
+  $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  $byPid = @{}
+  $launcherOwners = @{}
+  $knownAgents = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+  foreach ($process in $processes) {
+    $processIdValue = [int]$process.ProcessId
+    if ($byPid.ContainsKey($processIdValue)) { throw 'cannot prove lane ownership: duplicate PID in process snapshot' }
+    $byPid[$processIdValue] = $process
+  }
+  foreach ($process in $processes) {
+    if ([int]$process.ProcessId -eq $CurrentPid) { continue }
+    if ([string]$process.Name -notmatch '^(powershell|pwsh)\.exe$') { continue }
+    if ([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
+      throw 'cannot prove lane ownership: PowerShell command line is unavailable'
+    }
+    $fileMatch = [regex]::Match([string]$process.CommandLine, $filePattern)
+    if (-not $fileMatch.Success) { continue }
+    # These are Win32 command lines even when a readonly test runs on POSIX.
+    $leaf = [IO.Path]::GetFileName(($fileMatch.Groups['path'].Value -split '\\')[-1])
+    $sameLane = (
+      $leaf -ieq 'start-wd-agent.ps1' -and
+      [string]$process.CommandLine -match $agentPattern
+    ) -or @($Lane.legacy_process_markers) -icontains $leaf
+    if ($sameLane) {
+      throw "lane '$($Lane.agent)' already has a live launcher (PID $($process.ProcessId)); leave its session running"
+    }
+    $ownerAgent = ''
+    $agentMatches = @([regex]::Matches([string]$process.CommandLine, $agentCapturePattern))
+    if ($leaf -ieq 'start-wd-agent.ps1' -and $agentMatches.Count -eq 1) {
+      $candidateAgent = $agentMatches[0].Groups['agent'].Value.ToLowerInvariant()
+      if ($candidateAgent -cin $knownAgents) { $ownerAgent = $candidateAgent }
+    }
+    foreach ($knownLane in @($KnownLanes) + @($Lane)) {
+      if (@($knownLane.legacy_process_markers) -icontains $leaf) {
+        if ($ownerAgent -and $ownerAgent -cne [string]$knownLane.agent) { throw 'ambiguous legacy launcher identity' }
+        $ownerAgent = [string]$knownLane.agent
+      }
+    }
+    if ($leaf -iin @('start-wd-tools-consumer.ps1','Invoke-WdToolsCodex.ps1')) {
+      $ownerAgent = 'codex-tools-1'
+    } elseif ($leaf -ieq 'Start-AgentBridgeConsumerLoop.ps1' -and $agentMatches.Count -eq 1 -and
+      $agentMatches[0].Groups['agent'].Value -ceq 'codex-tools-1') {
+      $ownerAgent = 'codex-tools-1'
+    }
+    if ($ownerAgent) { $launcherOwners[[int]$process.ProcessId] = $ownerAgent }
+  }
+  # Updaters can rename an executable while its existing native process lives.
+  # Recognize only the installed CLI names and their numeric old-file suffix.
+  foreach ($native in @($processes | Where-Object { [string]$_.Name -imatch '^(codex|claude)\.exe(?:\.old\.[0-9]+)?$' })) {
+    $node = $native
+    $visited = @{}
+    $attributed = $false
+    for ($depth = 0; $depth -lt 64; $depth++) {
+      $nodePid = [int]$node.ProcessId
+      if ($visited.ContainsKey($nodePid)) { break }
+      $visited[$nodePid] = $true
+      $parentProperty = $node.PSObject.Properties['ParentProcessId']
+      if ($null -eq $parentProperty -or -not $byPid.ContainsKey([int]$parentProperty.Value)) { break }
+      $parent = $byPid[[int]$parentProperty.Value]
+      $childStart = $node.PSObject.Properties['CreationDate']
+      $parentStart = $parent.PSObject.Properties['CreationDate']
+      if ($null -eq $childStart -or $null -eq $parentStart -or $null -eq $childStart.Value -or $null -eq $parentStart.Value) { break }
+      try {
+        if ([DateTimeOffset]$parentStart.Value -gt [DateTimeOffset]$childStart.Value) { break }
+      } catch { break }
+      if ($launcherOwners.ContainsKey([int]$parent.ProcessId)) {
+        if ([string]$launcherOwners[[int]$parent.ProcessId] -ceq [string]$Lane.agent) {
+          throw "lane '$($Lane.agent)' already owns native CLI PID $($native.ProcessId); leave its session running"
+        }
+        $attributed = $true
+        break
+      }
+      $node = $parent
+    }
+    if (-not $attributed) {
+      throw "cannot prove lane availability: unmarked native $($native.Name) PID $($native.ProcessId) has no verified launcher ancestry; leave it running"
+    }
+  }
 }
 
 function Resolve-WdLaneGitApplication {
@@ -421,6 +562,7 @@ if ($matches.Count -ne 1) {
   throw "manifest must contain exactly one lane for '$Agent'; found $($matches.Count)"
 }
 $lane = $matches[0]
+$turnMode = Get-WdLaneTurnMode -Lane $lane
 
 $worktree = Resolve-NormalizedPath -Path ([string]$lane.worktree)
 $primaryRepo = Resolve-NormalizedPath -Path ([string]$manifest.primary_repo_root)
@@ -766,6 +908,14 @@ $cliPath = Resolve-WdLaneCliApplication -Name $cliName
 $cliExecutableHash = (
   Get-FileHash -LiteralPath $cliPath -Algorithm SHA256
 ).Hash
+$turnRunnerHash = ''
+if ($turnMode -ceq 'managed') {
+  $turnRunnerSnapshot = Read-WdLaneTurnRunnerSnapshot `
+    -ScriptRoot $PSScriptRoot `
+    -DeploymentAnchor $deploymentAnchor `
+    -SourceTreeMode:$sourceTreeMode
+  $turnRunnerHash = [string]$turnRunnerSnapshot.Hash
+}
 $targetImageDelivery = if ($cliName -ieq 'codex.cmd') {
   'codex_cli_initial_image'
 } else {
@@ -819,14 +969,33 @@ $startupPrompt = (
   $stateRule,
   $laneStateWriter
 )
-if ($cliName -ieq 'claude.cmd') {
+if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
+    ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
+    'role permissions, task scope, claims, and merge authority remain unchanged. ' +
     " This is Claude lane $Agent. On the first turn use CronList, keep exactly " +
-    "one lane-specific durable recurring five-minute CronCreate backstop, delete " +
-    "duplicates with CronDelete, and refresh it before its seven-day expiry. Its " +
-    "prompt must re-read compact state and bridge next action for $Agent. Dynamic " +
-    "/loop turns must still call ScheduleWakeup every turn. The durable cron is a " +
+    "one lane-specific session-only recurring five-minute CronCreate backstop, " +
+    "delete duplicates with CronDelete, and recreate it after every restart. Its " +
+    "prompt must re-read compact state and bridge next action for $Agent. Use CronList " +
+    'to preserve an existing pending one-shot on no-op cron, Monitor, and dynamic-loop turns. ' +
+    'Do not rearm merely because a no-op turn ran. The absolute deadline must be the scheduler-confirmed target, not an estimate. ' +
+    'Call ScheduleWakeup only when no valid pending one-shot remains. If a missing wake must be rebuilt, use ' +
+    "the remaining time to its confirmed deadline, never a fresh fixed delay. A due " +
+    'deadline means resume the bounded turn now. After a one-shot has fired and its bounded slice has run, ' +
+    'choose a new future deadline from the next eligible action or backstop; this is not recovery of a missing pending wake. ' +
+    'Record the new scheduler-confirmed target, not the expired deadline. The session-only cron is a ' +
     "missed-wakeup backstop, not permission to duplicate or steal a claim."
+  )
+}
+if ($turnMode -ceq 'managed') {
+  $startupPrompt += (
+    ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
+    'role permissions, task scope, claims, and merge authority remain unchanged. ' +
+    ' This lane uses one launcher-owned turn loop; its visible window reports bounded turn lifecycle. ' +
+    'Do not invoke /loop or native Cron scheduling, even if a legacy prompt requests it. ' +
+    'Do not create CronCreate or ScheduleWakeup jobs or another polling process. ' +
+    'At the end of each bounded turn, persist compact state with the pinned writer. ' +
+    'The launcher owns bridge wake consumption and the recurring backstop.'
   )
 }
 $startupPrompt += (
@@ -844,6 +1013,7 @@ $startupPrompt += (
   '.agent-bridge\bin copies or a bare python for bridge tools. Git, build and test commands ' +
   'keep this worktree as their cwd; the pinned code root is not a task repository.'
 )
+$continuationPrompt = $startupPrompt.Substring($visualBootstrapPrompt.Length)
 
 if (-not $HandshakeDirectory) {
   $HandshakeDirectory = Join-Path ([string]$manifest.handshake_root) $RunId
@@ -871,10 +1041,14 @@ Write-Host ("  head:     {0}" -f $actualHead)
 Write-Host ("  run_id:   {0}" -f $RunId)
 Write-Host ("  cli:      {0}" -f $cliName)
 Write-Host ("  model:    {0} ({1})" -f $model, $effort)
+Write-Host ("  mode:     {0}" -f $turnMode)
 Write-Host ("  target:   {0}" -f [string]$targetState.id)
 Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
 
 if ($DryRun) {
+  if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
   return [pscustomobject]@{
     agent = $Agent
@@ -887,6 +1061,8 @@ if ($DryRun) {
     cli_executable_sha256 = $cliExecutableHash
     model = $model
     effort = $effort
+    turn_mode = $turnMode
+    turn_runner_sha256 = $turnRunnerHash
     resume_policy = $resumePolicy
     target_state_id = [string]$targetState.id
     target_state_image_path = $targetImagePath
@@ -901,7 +1077,10 @@ if ($DryRun) {
   }
 }
 
-if ([Console]::IsInputRedirected) {
+if ($turnMode -ceq 'managed') {
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+}
+if ($turnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
 }
 
@@ -967,6 +1146,8 @@ $targetPayload = [ordered]@{
   capability_effect = 'none'
   model = $model
   effort = $effort
+  turn_mode = $turnMode
+  turn_runner_sha256 = $turnRunnerHash
   cli_executable = $cliPath
   cli_executable_sha256 = $cliExecutableHash
   resume_policy = $resumePolicy
@@ -1098,6 +1279,8 @@ $handshake = [ordered]@{
   model_selection = 'explicit'
   model = $model
   effort = $effort
+  turn_mode = $turnMode
+  turn_runner_sha256 = $turnRunnerHash
   cli_executable = $cliPath
   cli_executable_sha256 = $cliExecutableHash
   resume_policy = $resumePolicy
@@ -1135,6 +1318,53 @@ try {
 }
 Write-Host ("  handshake: {0}" -f $handshakePath)
 
+$finalCliPath = Resolve-WdLaneCliApplication -Name $cliName
+if (
+  -not $finalCliPath.Equals(
+    $cliPath,
+    [StringComparison]::OrdinalIgnoreCase
+  ) -or
+  (Get-FileHash -LiteralPath $finalCliPath -Algorithm SHA256).Hash -cne
+    $cliExecutableHash
+) {
+  throw "lane '$Agent' CLI application changed after its handshake"
+}
+
+if ($turnMode -ceq 'managed') {
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  $turnRunnerSnapshot = Read-WdLaneTurnRunnerSnapshot `
+    -ScriptRoot $PSScriptRoot -DeploymentAnchor $deploymentAnchor
+  if ([string]$turnRunnerSnapshot.Hash -cne $turnRunnerHash) {
+    throw 'lane turn runner changed after its handshake'
+  }
+  $backend = if ($cliName -ieq 'codex.cmd') { 'codex' } else { 'claude' }
+  $managedTurnParameters = @{
+    Agent = $Agent; Backend = $backend; CliPath = $cliPath
+    Model = $model; Effort = $effort; Worktree = $worktree
+    RuntimeRoot = $runtimeRoot; SessionId = $RunId; Generation = $bundleGeneration
+    CompactStatePath = $laneCurrentStatePath; StartupPrompt = $startupPrompt
+    ContinuationPrompt = $continuationPrompt; ImagePath = $targetImagePath
+    Forever = $true; ShowLifecycle = $true
+  }
+  if ($backend -ceq 'claude') {
+    # This opt-in mode reuses the already approved interactive Claude posture;
+    # it does not grant role, task, claim, or merge authority.
+    $managedTurnParameters['ClaudePermissionPosture'] = 'existing_interactive'
+  }
+  # Isolate the runner's script parameter defaults from the launcher variables.
+  # Execute exactly the bytes verified above; do not reopen the script by path.
+  $turnResult = & {
+    param($VerifiedRunnerText, $LaneTurnParameters)
+    . ([scriptblock]::Create([string]$VerifiedRunnerText))
+    Invoke-WdLaneTurnLoop @LaneTurnParameters
+  } ([string]$turnRunnerSnapshot.Text) $managedTurnParameters
+  $turnResult | Out-Host
+  if ([string]$turnResult.status -cne 'stopped') {
+    throw "lane '$Agent' managed turn loop stopped with status '$($turnResult.status)'"
+  }
+  return
+}
+
 $launchArguments = @()
 if ($cliName -ieq 'claude.cmd') {
   $launchArguments += @(
@@ -1153,18 +1383,6 @@ if ($cliName -ieq 'claude.cmd') {
   throw "lane '$Agent' uses unsupported CLI '$cliName'"
 }
 $launchArguments += $startupPrompt
-
-$finalCliPath = Resolve-WdLaneCliApplication -Name $cliName
-if (
-  -not $finalCliPath.Equals(
-    $cliPath,
-    [StringComparison]::OrdinalIgnoreCase
-  ) -or
-  (Get-FileHash -LiteralPath $finalCliPath -Algorithm SHA256).Hash -cne
-    $cliExecutableHash
-) {
-  throw "lane '$Agent' CLI application changed after its handshake"
-}
 
 $previousPreference = $ErrorActionPreference
 try {

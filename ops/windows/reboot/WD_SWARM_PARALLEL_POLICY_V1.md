@@ -70,12 +70,30 @@ a waived review and never grants merge, deploy, or signature authority.
 
 ## Claude wake backstop
 
-Each Claude lane maintains exactly one lane-specific durable five-minute cron
-backstop with `CronList`/`CronCreate` and removes duplicates with `CronDelete`.
-The cron prompt tells that lane to read its compact state and bridge next action
-and execute one eligible bounded slice. Dynamic `/loop` turns still call
-`ScheduleWakeup` every turn. The durable cron is the recovery backstop when one
-dynamic wakeup is missed; it is not permission to duplicate a live claim.
+Each interactive Claude lane maintains exactly one lane-specific session-only
+five-minute cron backstop with `CronList`/`CronCreate` and removes duplicates
+with `CronDelete`. Recreate it after every restart; the installed build does not
+persist these jobs across sessions. The cron prompt tells that lane to read its
+compact state and bridge next action and execute one eligible bounded slice.
 
-Durable Claude cron jobs expire after seven days, so each lane verifies and
-refreshes its one exact job during normal daily work and after reboot.
+Keep one current dynamic wake with its confirmed absolute deadline recorded.
+On a no-op cron, Monitor or dynamic-loop turn, use `CronList` to retain an
+already-pending one-shot; do not call `ScheduleWakeup` just to end the turn.
+Create a new one-shot only when none is pending or a real scheduling change
+requires it. Relative-delay rearming can round the target to a later minute
+even when remaining-time arithmetic is used. Read the clock immediately before
+an intentional rearm and record the confirmed target returned by the scheduler
+or `CronList`, not a placeholder estimate. When the deadline is due, resume the
+bounded turn now. The cron is a missed-wakeup backstop, not permission to
+duplicate a live claim.
+
+The current launcher's `turn_mode` scheduling instruction supersedes only
+legacy self-pacing sections of external role prompts, including durable-cron
+claims, mandatory rearming every turn, and fixed-delay idle loops. Role identity,
+write scope, task ownership, review and promotion permissions are unchanged.
+
+An explicitly managed lane instead uses its launcher-owned turn loop and must
+not create native cron or `ScheduleWakeup` jobs alongside it. Selecting managed
+mode applies only to new launches; it does not resume an existing interactive
+CLI session. Native dynamic firing, cron firing, and managed turn completion
+are separate evidence and must not be reported interchangeably.

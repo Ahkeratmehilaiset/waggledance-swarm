@@ -17,7 +17,7 @@
   "parallel_policy": {
     "id": "wd-swarm-parallel-policy-v1",
     "relative_path": "WD_SWARM_PARALLEL_POLICY_V1.md",
-    "sha256": "BF167398C1458C32757A6F1415C00A55AA390CB8DCA12F03DBD60E8225B1984A",
+    "sha256": "B6F1DFF018B4FEEB4110ABCD577A78E7675BF92B94DA50EB78014FFE0FB3F87D",
     "capability_effect": "none"
   },
   "watchers": {

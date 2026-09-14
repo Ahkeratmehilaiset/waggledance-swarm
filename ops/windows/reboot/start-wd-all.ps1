@@ -1554,6 +1554,41 @@ function Get-WdCodexPromptWatcherState {
   }
 }
 
+function Get-WdLeadPromptWatcherPolicy {
+  param(
+    [Parameter(Mandatory)] $Lane,
+    [Parameter(Mandatory)] $WatcherState
+  )
+  if ([string]$Lane.agent -cne 'codex-lead-1' -or
+      [string]$Lane.cli -cne 'codex.cmd') {
+    throw 'Lead prompt-watcher policy requires the canonical Codex Lead lane'
+  }
+  $mode = 'interactive'
+  if ($Lane.PSObject.Properties.Name -contains 'turn_mode') {
+    $mode = [string]$Lane.turn_mode
+  }
+  if ($mode -cnotin @('interactive', 'managed')) {
+    throw 'Lead prompt-watcher policy received an unsupported turn mode'
+  }
+  $action = [string]$WatcherState.action
+  if ($action -cnotin @('launch', 'current', 'conflict')) {
+    throw 'Lead prompt-watcher policy received an unknown watcher state'
+  }
+  if ($mode -ceq 'managed') {
+    if ($action -cne 'launch') {
+      throw 'Managed Lead requires no UI prompt watcher; close the identified legacy watcher through a controlled handoff, never terminate an ambiguous process'
+    }
+    return [pscustomobject]@{
+      required = $false
+      summary = 'disabled for managed Lead; native workspace-write/never policy applies'
+    }
+  }
+  if ($action -ceq 'conflict') {
+    throw "Codex Lead prompt watcher conflict: $($WatcherState.summary)"
+  }
+  return [pscustomobject]@{ required = $true; summary = [string]$WatcherState.summary }
+}
+
 function Get-LaneProcesses {
   param(
     [Parameter(Mandatory)] $Lane,
@@ -2479,7 +2514,7 @@ if (
   throw 'fleet parallel-policy document hash mismatch'
 }
 if (@($manifest.lanes).Count -ne 4) {
-  throw "fleet manifest must pin exactly four interactive lanes"
+  throw "fleet manifest must pin exactly four windowed lanes"
 }
 
 Write-Host ''
@@ -2564,6 +2599,13 @@ $expectedLaneRuntimes = @{
   'fable-5' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'fable'; effort = 'max' }
 }
 foreach ($lane in @($manifest.lanes)) {
+  $laneTurnMode = 'interactive'
+  if ($lane.PSObject.Properties.Name -contains 'turn_mode') {
+    $laneTurnMode = [string]$lane.turn_mode
+  }
+  if ($laneTurnMode -cnotin @('interactive', 'managed')) {
+    throw "lane '$($lane.agent)' has an unsupported turn mode"
+  }
   $expectedRuntime = $expectedLaneRuntimes[[string]$lane.agent]
   if (
     $null -eq $expectedRuntime -or
@@ -2625,6 +2667,17 @@ foreach ($lane in @($manifest.lanes)) {
     -ActualHead $actualHead `
     -LiveCount $pinLiveCount `
     -LiveGenerationAttested:$liveGenerationAttested
+  if ($bundleMode -ceq 'deployed' -and $laneTurnMode -ceq 'managed' -and $live.Count -eq 0) {
+    # Reuse the lane launcher's read-only native occupancy guard before any
+    # Apply mutation. It rechecks again at actual launch; this is not a lease
+    # reservation or proof of a completed model turn.
+    $admission = & $agentLauncherTarget -Agent ([string]$lane.agent) `
+      -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor
+    if ($null -eq $admission -or -not [bool]$admission.dry_run -or
+        [string]$admission.turn_mode -cne 'managed') {
+      throw "managed admission preflight did not return a valid result for $($lane.agent)"
+    }
+  }
   if (-not [bool]$pinState.exact) {
     Write-Warning (
       "lane '$($lane.agent)' uses resume_policy=current_worktree and has moved from baseline " +
@@ -2779,7 +2832,7 @@ $leadPromptWatcherLane = @(
   }
 )
 if ($leadPromptWatcherLane.Count -ne 1) {
-  throw 'Codex prompt watcher requires exactly one interactive codex-lead-1 lane'
+  throw 'Codex prompt watcher requires exactly one codex-lead-1 lane'
 }
 $promptWatcherState = Get-WdCodexPromptWatcherState `
   -Processes $processes `
@@ -2787,15 +2840,19 @@ $promptWatcherState = Get-WdCodexPromptWatcherState `
   -TargetTitle $promptWatcherTargetTitle `
   -LogPath $promptWatcherLogPath `
   -ExpectedExecutable $expectedSupervisorExecutable
-if ([string]$promptWatcherState.action -ceq 'conflict') {
-  throw "Codex Lead prompt watcher conflict: $($promptWatcherState.summary)"
-}
-Write-Host (
+$promptWatcherPolicy = Get-WdLeadPromptWatcherPolicy `
+  -Lane $leadPromptWatcherLane[0].lane -WatcherState $promptWatcherState
+$promptWatcherRequired = [bool]$promptWatcherPolicy.required
+if ($promptWatcherRequired) {
+  Write-Host (
   '  Codex Lead prompt watcher: {0}; DANGEROUS AllowAll, strict title={1}, log={2}' -f
     [string]$promptWatcherState.summary,
     $promptWatcherTargetTitle,
     $promptWatcherLogPath
-)
+  )
+} else {
+  Write-Host ("  Codex Lead prompt watcher: {0}" -f $promptWatcherPolicy.summary)
+}
 
 $toolsSnapshotPath = if ($bundleMode -ceq 'source') {
   $bundleToolsConfig
@@ -3594,6 +3651,8 @@ try {
   # The UI prompt watcher is intentionally separate from the five bridge
   # watchers. Start it only after every newly launched interactive lane has
   # completed and passed its bridge-bootstrap handshake.
+  $promptWatcherAvailable = $false
+  if ($promptWatcherRequired) {
   $promptWatcherApplyState = Get-WdCodexPromptWatcherState `
     -Processes (Get-AllProcessSnapshots) `
     -WatcherScript $promptWatcherScript `
@@ -3676,6 +3735,8 @@ try {
     )
   }
 
+  }
+
   $finalProcesses = Get-AllProcessSnapshots
   $promptWatcherFinalState = Get-WdCodexPromptWatcherState `
     -Processes $finalProcesses `
@@ -3683,11 +3744,10 @@ try {
     -TargetTitle $promptWatcherTargetTitle `
     -LogPath $promptWatcherLogPath `
     -ExpectedExecutable $expectedSupervisorExecutable
-  if ([string]$promptWatcherFinalState.action -ceq 'conflict') {
-    throw "final Codex Lead prompt watcher verification found an ambiguous process set: $($promptWatcherFinalState.summary)"
-  }
+  [void](Get-WdLeadPromptWatcherPolicy `
+    -Lane $leadPromptWatcherLane[0].lane -WatcherState $promptWatcherFinalState)
   $promptWatcherAvailable = (
-    [string]$promptWatcherFinalState.action -ceq 'current'
+    $promptWatcherRequired -and [string]$promptWatcherFinalState.action -ceq 'current'
   )
   foreach ($state in $laneStates) {
     $finalLaneProcesses = @(
@@ -3774,17 +3834,22 @@ try {
 
   Write-Host ''
   Write-Host ("Fleet restore complete; run_id={0}" -f $RunId) -ForegroundColor Green
-  Write-Host ("  interactive lanes launched: {0}" -f $(if ($launched.Count) { $launched -join ', ' } else { 'none (all already live)' }))
+  if (@($laneStates | Where-Object { $_.lane.PSObject.Properties.Name -contains 'turn_mode' -and [string]$_.lane.turn_mode -ceq 'managed' }).Count) {
+    Write-Host '  Managed lanes: bootstrap identity verified; inspect owner state and fresh turn receipt separately for wake health.'
+  }
+  Write-Host ("  windowed lanes launched: {0}" -f $(if ($launched.Count) { $launched -join ', ' } else { 'none (all already live)' }))
   Write-Host '  Tools: supervisor-managed'
   if ($promptWatcherAvailable) {
     Write-Host (
       '  Codex Lead prompt watcher: PID {0}; DANGEROUS AllowAll' -f
         [int]$promptWatcherFinalState.exact[0].ProcessId
     )
-  } else {
+  } elseif ($promptWatcherRequired) {
     Write-Warning (
       'Codex Lead prompt watcher: unavailable; fleet restore still succeeded'
     )
+  } else {
+    Write-Host '  Codex Lead prompt watcher: disabled for managed Lead'
   }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
   if (-not $NoBridgeConversation) {

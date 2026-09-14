@@ -76,6 +76,7 @@ _LEGACY_BARE_CR_EVENT_FINGERPRINTS = (
 )
 REQUEST_TYPES = {
     "message",
+    "done",
     "finding",
     "handoff",
     "wake_request",
@@ -192,7 +193,7 @@ PRODUCTION_LIVENESS_SUPPRESSION_FILENAME = "production_liveness_suppression.json
 TASK_CLOSURE_KEY_PREFIX = "task:"
 EMPTY_TASK_CLOSURE_KEY_PREFIX = "empty-task:"
 PR_CLOSURE_KEY_PREFIX = "pr:"
-PR_REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
+REQUESTER_TERMINAL_AGENT_PREFIX = "requester-terminal:"
 
 
 class BridgeNextActionError(ValueError):
@@ -830,10 +831,8 @@ def _build_request_closure_index(
             task_closures = closure_index.setdefault(closure_key, {})
             if event_ts > task_closures.get(event_agent, ""):
                 task_closures[event_agent] = event_ts
-            if closure_key.startswith(
-                PR_CLOSURE_KEY_PREFIX
-            ) and _is_explicit_terminal_pr_closure(event):
-                terminal_agent = _pr_requester_terminal_agent_key(event_agent)
+            if _is_explicit_requester_closure(event):
+                terminal_agent = _requester_terminal_agent_key(event_agent)
                 if event_ts > task_closures.get(terminal_agent, ""):
                     task_closures[terminal_agent] = event_ts
     return closure_index
@@ -864,7 +863,7 @@ def _request_closed_by_index(
             target_agent = agent.lower()
             if task_closures.get(target_agent, "") > request_ts:
                 return True
-            requester_terminal_agent = _pr_requester_terminal_agent_key(
+            requester_terminal_agent = _requester_terminal_agent_key(
                 _event_agent(request)
             )
             if task_closures.get(requester_terminal_agent, "") > request_ts:
@@ -873,7 +872,10 @@ def _request_closed_by_index(
         task_closures = closure_index.get(closure_key, {})
         if not task_closures:
             continue
-        for closing_agent in {agent.lower(), _event_agent(request)}:
+        for closing_agent in {
+            agent.lower(),
+            _requester_terminal_agent_key(_event_agent(request)),
+        }:
             if task_closures.get(closing_agent, "") > request_ts:
                 return True
     return False
@@ -913,15 +915,35 @@ def _pr_closure_key_for_event(event: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _is_explicit_terminal_pr_closure(event: Mapping[str, Any]) -> bool:
-    return (
-        _event_type(event) == "done"
-        or _event_status(event) in CLOSED_REQUEST_STATUSES
+def _is_explicit_requester_closure(event: Mapping[str, Any]) -> bool:
+    """Separate requester closeouts from receipts, reminders, and review replies."""
+    if _is_ack_or_infrastructure(event):
+        return False
+    event_type = _event_type(event)
+    status = _event_status(event)
+    if event_type not in {"message", "done", "decision", "release"}:
+        return False
+    terminal_statuses = {"closed", "superseded", "cancelled", "canceled"}
+    if event_type != "message":
+        terminal_statuses.update(
+            {
+                "done", "merged", "abandoned", "completed", "approved",
+                "autonomous_merge_receipt", "deferred_with_reason",
+            }
+        )
+    if any(
+        status == word or status.startswith(word + "_")
+        for word in terminal_statuses
+    ):
+        return True
+    # Preserve the selector's explicit finding/review retraction vocabulary.
+    return status in CLOSED_REQUEST_STATUSES and _status_has_any(
+        status, ("resolved", "retracted", "withdrawn")
     )
 
 
-def _pr_requester_terminal_agent_key(agent: str) -> str:
-    return f"{PR_REQUESTER_TERMINAL_AGENT_PREFIX}{agent}"
+def _requester_terminal_agent_key(agent: str) -> str:
+    return f"{REQUESTER_TERMINAL_AGENT_PREFIX}{agent}"
 
 
 def _deduplicate_repeated_wake_requests(
@@ -965,7 +987,9 @@ def _closes_request_for_agent(
     if not _is_answer_like(event):
         return False
     event_agent = _event_agent(event)
-    return event_agent == agent or event_agent == _event_agent(request)
+    return event_agent == agent.lower() or (
+        event_agent == _event_agent(request) and _is_explicit_requester_closure(event)
+    )
 
 
 def _split_fresh_and_stale_requests(
@@ -1133,7 +1157,11 @@ def _idle_protocol_progressed_by_index(
 
 
 def _is_request_like(event: Mapping[str, Any]) -> bool:
-    if _is_bridge_follow_nudge(event):
+    if (
+        _is_bridge_follow_nudge(event)
+        or _is_ack_or_infrastructure(event)
+        or _is_explicit_requester_closure(event)
+    ):
         return False
     status = _event_status(event)
     if _is_closed_request_status(status):
@@ -1224,16 +1252,13 @@ def _direct_rco_pass_block_request_closed(
         event_agent = _event_agent(event)
         if event_agent == target and _is_substantive_rco_pass_block_response(event):
             return True
-        if event_agent == requester and _is_explicit_terminal_pr_closure(event):
+        if event_agent == requester and _is_explicit_requester_closure(event):
             return True
     return False
 
 
 def _is_substantive_rco_pass_block_response(event: Mapping[str, Any]) -> bool:
-    status_tokens = _status_tokens(_event_status(event))
-    if status_tokens.intersection(KNOWN_ACK_STATUSES) or {"wake", "ack"}.issubset(
-        status_tokens
-    ):
+    if _is_ack_or_infrastructure(event):
         return False
     if _event_type(event) == "finding":
         return True
@@ -1288,8 +1313,18 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", text.lower()) if token}
 
 
+def _is_ack_or_infrastructure(event: Mapping[str, Any]) -> bool:
+    return _event_type(event) in {"heartbeat", "liveness"} or bool(
+        _status_tokens(_event_status(event)).intersection({*KNOWN_ACK_STATUSES, "ack"})
+    )
+
+
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
+    if _is_ack_or_infrastructure(event):
+        return False
     if _event_type(event) == "done":
+        return not _is_request_like(event)
+    if _is_explicit_requester_closure(event):
         return True
     status = _event_status(event)
     return _event_type(event) in ANSWER_TYPES and (

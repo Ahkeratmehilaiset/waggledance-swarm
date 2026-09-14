@@ -155,10 +155,12 @@ for line in sys.stdin:
 @pytest.mark.skipif(os.name != "nt", reason="Windows job containment")
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("scenario", ["complete", "steer", "late_start", "late_steer", "steer_rejected", "tool_progress", "interrupt", "interrupt_repeated", "interrupt_lost", "missing", "disconnect", "question", "approval", "timeout", "output", "spontaneous", "wake_during", "resume", "paused_resume", "large_resume", "resume_missing_initial", "human_chat", "human_tool_missing", "reconcile_readonly"])
-def test_owned_fake_conversation(tmp_path, shell, scenario, agent="codex-lead-1", workflow_permissions=False, compatibility=False):
+def test_owned_fake_conversation(tmp_path, shell, scenario, agent="codex-lead-1", workflow_permissions=False, compatibility=False, return_script=False):
     model, effort = ("gpt-5.6-sol", "ultra") if agent == "codex-lead-1" else ("gpt-5.6-terra", "high")
     runtime = tmp_path / "bridge"
     runtime.mkdir()
+    if scenario == "fresh_paused":
+        (runtime / f"wake_{agent}").write_text("pending wake must not arm automation")
     extra_root = tmp_path / "common-git"
     extra_root.mkdir()
     (tmp_path / ".codex-audit").mkdir()
@@ -186,7 +188,7 @@ function New-WdConversationNativeProcess {{ param($CliPath,$Worktree)
     Initialize-WdConversationNativeType
     New-Object WdConversationProcess({q(python)}, [string[]]@({q(fake)}, {q(tmp_path)}, {q(scenario)}, {q(agent)}), $Worktree)
 }}
-$script:status=@{{active=$false;send=$false;reconcile=$false;text='';epoch='';turn='';automatic=$true}}; $script:sent=0; $script:tick=0; $script:question=''
+$script:status=@{{active=$false;send=$false;reconcile=$false;text='';epoch='';turn='';automatic=$true}}; $script:sent=0; $script:tick=0; $script:question=''; $script:armed=$false
 $script:messages=[Collections.Generic.List[object]]::new()
 $script:transportFacts=[Collections.Generic.List[object]]::new(); $script:turnFacts=[Collections.Generic.List[object]]::new()
 function New-WdOperatorConversationView {{ param([switch]$Headless,$AgentLabel,$ModelLabel,$Title) $script:label=$ModelLabel; return @{{}} }}
@@ -201,6 +203,12 @@ function Show-WdOperatorConversationQuestion {{ param($View,$RequestId,$Question
 function Clear-WdOperatorConversationQuestion {{ param($View,$RequestId) $script:question='' }}
 function Get-WdOperatorConversationActions {{ param($View)
     $script:tick++
+    if (${str(compatibility).lower()} -and {q(scenario)} -notin @('paused_resume','fresh_paused','fresh_send') -and -not $script:armed -and $script:status.send -and -not $script:status.automatic) {{
+        $script:armed=$true; return @{{kind='automation_toggle';id='explicit-arm';enabled=$true;owner_epoch=$script:status.epoch}}
+    }}
+    if ({q(scenario)} -ceq 'fresh_send' -and $script:sent -eq 0 -and $script:status.send -and -not $script:status.active) {{
+        $script:sent++; return @{{kind='send';id='first-human';text='Explicit first human instruction';owner_epoch=$script:status.epoch;observed_turn_id=''}}
+    }}
     if ({q(scenario)} -in @('human_chat','human_tool_missing') -and $script:sent -eq 0 -and $script:status.send -and -not $script:status.active) {{
         $script:sent++; return @{{kind='send';id='question-text';text='How are things?';owner_epoch=$script:status.epoch;observed_turn_id=''}}
     }}
@@ -270,6 +278,8 @@ if ({q(scenario)} -in @('missing','interrupt_lost')) {{
         assert identity["codex_permission_posture"] == "existing_interactive"
     if scenario == "disconnect":
         assert identity["initial_context_delivered"] is False
+    elif scenario == "fresh_paused":
+        assert identity["initial_context_delivered"] is False
     elif scenario != "paused_resume":
         assert identity["initial_context_delivered"] is True
     if scenario in ["steer", "late_steer"]:
@@ -300,7 +310,7 @@ if ({q(scenario)} -in @('missing','interrupt_lost')) {{
     else:
         assert value["owner"]["status"] == "stopped", value
         assert not list((tmp_path / ".codex-audit/wd-turn-loop").glob("*.pending"))
-        if scenario != "paused_resume":
+        if scenario not in ["paused_resume", "fresh_paused"]:
             assert any(x["role"] == "assistant" for x in value["messages"])
     if scenario in ["resume", "paused_resume", "large_resume"]:
         assert next(x for x in calls if x.get("method") == "thread/resume")["params"].get("excludeTurns") is True
@@ -308,6 +318,17 @@ if ({q(scenario)} -in @('missing','interrupt_lost')) {{
     if scenario == "paused_resume":
         assert not any(x.get("method") == "turn/start" for x in calls)
         assert value["status"]["automatic"] is False
+    if scenario == "fresh_paused":
+        assert not any(x.get("method") == "turn/start" for x in calls)
+        assert value["status"]["automatic"] is False
+        assert identity["automatic_enabled"] is False
+        assert (runtime / f"wake_{agent}").is_file()
+    if scenario == "fresh_send":
+        turns = [x for x in calls if x.get("method") == "turn/start"]
+        assert len(turns) == 1
+        assert "Explicit first human instruction" in turns[0]["params"]["input"][0]["text"]
+        assert value["status"]["automatic"] is False
+        assert identity["automatic_enabled"] is False
     if scenario in ["interrupt", "interrupt_lost", "paused_resume"]:
         identity = json.loads((tmp_path / ".codex-audit/wd-turn-loop/conversation.json").read_text())
         assert identity["automatic_enabled"] is False
@@ -346,6 +367,8 @@ if ({q(scenario)} -in @('missing','interrupt_lost')) {{
         journal = tmp_path / ".codex-audit/wd-turn-loop"
         assert len(list(journal.glob("*.pending"))) == 1
         assert len(list(journal.glob("*.reconciliation.json"))) == 1
+    if return_script:
+        return script, value, calls
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -473,9 +496,30 @@ def test_workflow_posture_reaches_native_but_not_recovery(tmp_path, shell, scena
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native backend")
 @pytest.mark.parametrize("shell", SHELLS)
-@pytest.mark.parametrize("scenario", ["complete", "resume", "reconcile_readonly"])
+@pytest.mark.parametrize("scenario", ["complete", "resume", "paused_resume", "fresh_paused", "fresh_send", "reconcile_readonly"])
 def test_existing_interactive_posture_native_and_recovery(tmp_path, shell, scenario):
     test_owned_fake_conversation(tmp_path, shell, scenario, compatibility=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native backend")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("scenario", ["fresh_paused", "complete"])
+def test_operator_automation_choice_survives_real_owner_restart(tmp_path, shell, scenario):
+    script, _, before = test_owned_fake_conversation(tmp_path, shell, scenario, compatibility=True, return_script=True)
+    # A new owner process resumes the identity actually written by the first.
+    # Never arm in this second process: the persisted choice is the sole source.
+    result = run(script.replace("$script:armed=$false", "$script:armed=$true"), shell, timeout=25)
+    assert result.returncode == 0, result.stdout + result.stderr
+    value = json.loads(result.stdout)
+    after = [json.loads(line) for line in (tmp_path / "rpc.jsonl").read_text().splitlines()][len(before):]
+    assert [call["method"] for call in after if call.get("method", "").startswith("thread/")] == ["thread/resume"]
+    turns = [call for call in after if call.get("method") == "turn/start"]
+    assert len(turns) == (0 if scenario == "fresh_paused" else 1)
+    assert value["status"]["automatic"] is (scenario == "complete")
+    assert value["owner"]["status"] == "stopped"
+    identity = json.loads((tmp_path / ".codex-audit/wd-turn-loop/conversation.json").read_text())
+    assert identity["automatic_enabled"] is (scenario == "complete")
+    assert not list((tmp_path / ".codex-audit/wd-turn-loop").glob("*.pending"))
 
 
 @pytest.mark.parametrize("shell", SHELLS)

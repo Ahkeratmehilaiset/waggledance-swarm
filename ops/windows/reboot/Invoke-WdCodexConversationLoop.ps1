@@ -569,7 +569,9 @@ function Invoke-WdCodexConversationLoop {
             cli_permission_posture=$(if($CodexPermissionPosture -ceq 'existing_interactive'){'danger-full-access_never'}else{'workspace-write_never'})}
         $ownerPath=Join-Path $journal 'owner.json'; Write-WdTurnOwner $pointer $ownerPath $owner
         Write-WdTurnJson $boot @{owner_epoch=$epoch;phase='appserver_initializing'}
-        $thread=''; $automatic=$true; $initialDelivered=$false; $identity=Join-Path $journal 'conversation.json'
+        # Full-access automation requires an explicit first operator arming.
+        # A matching saved identity below restores that operator's last choice.
+        $thread=''; $automatic=($CodexPermissionPosture -cne 'existing_interactive'); $initialDelivered=$false; $identity=Join-Path $journal 'conversation.json'
         if ([IO.File]::Exists($identity)) {
             [void](Assert-WdTurnPath $identity)
             if ((Get-Item -LiteralPath $identity).Length -gt 32768) { throw 'conversation identity too large' }
@@ -588,6 +590,9 @@ function Invoke-WdCodexConversationLoop {
         $view=New-WdOperatorConversationView -Headless:$Headless -AgentLabel $agentLabel -Title ("WaggleDance - $agentLabel conversation") -ModelLabel ("${agentLabel}: $Model / $Effort (pinned)")
         if ($CodexPermissionPosture -ceq 'existing_interactive') {
             Add-WdOperatorConversationMessage -View $view -Role system -Text 'Explicit Lead compatibility: full access with approval never. This preserves the approved interactive execution posture; it grants no new task authority. Read-only reconciliation remains sandboxed without network.'
+            if (-not $thread) {
+                Add-WdOperatorConversationMessage -View $view -Role system -Text 'New Lead conversation: automation is paused. Send starts only your requested turn; enable Automation explicitly to allow bridge-wake turns. Your choice persists across clean restart.'
+            }
         }
         $native=New-WdConversationNativeProcess $cliFull $worktreeFull
         $nativeStart=(Get-Process -Id $native.Pid -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')

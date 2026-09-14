@@ -1646,6 +1646,7 @@ if ($manualLeadAction) {
         -Reason $RetirementReason `
         -DryRun:$DryRun
       Write-Host ("  retirement archive: {0}" -f $retirement.archive_path)
+      Write-Host ("  retirement manifest: {0}" -f $retirement.manifest_path)
       Write-Host ("  reviewed digest:    {0}" -f $retirement.reviewed_digest)
       Write-Host ("  retirement reason:  {0}" -f $RetirementReason)
       Write-Warning 'Start a genuinely new managed Lead thread PAUSED, then paste the printed manifest path, digest and reason before directing further work.'

@@ -25,16 +25,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 For a manual two-step recovery, run `-DryRun` and then `-Apply`. With no mode
 switch the launcher defaults to byte-inert DryRun. After a successful restore,
-leave its four Windows Terminal tabs open. The fifth, headless Tools
-lane and exactly five real-time bridge watchers are reconciled by the same
-command through `WD-Supervisor`.
+leave each agent's conversation window open. Lead and Tools have separate local
+conversation windows; RCO1, RCO2 and Fable retain their native interactive windows.
+Their contexts are independent, not multiple views of Lead. Tools and exactly
+five real-time bridge watchers are reconciled through `WD-Supervisor`; the Tools
+window never creates an additional consumer alongside its existing parent.
 
-The first headless Tools tick runs before its readiness record is published and
-can take several minutes. During that bounded wait, `-Auto` prints progress
-every 30 seconds. A readiness record that is present but not attested is a
-launcher/process-identity problem, not a reason to wait silently.
+Tools local-window readiness v2 reports verified transport availability separately
+from native checkpoint progress. An open window is not evidence of useful work.
+In legacy headless mode, readiness v1 follows the first tick, which can take
+several minutes. During the bounded readiness wait, `-Auto` prints progress every
+30 seconds. A present but unattested record is a launcher/process-identity problem.
+The colored read-only bridge monitor opens after successful fleet restoration;
+use `-NoBridgeConversation` only when deliberately opting out of that extra view.
+This separate colored monitor is the default operational bridge view. The bridge
+tab inside either conversation GUI is currently an unconnected placeholder, not
+an integrated monitor. Closing the Tools window stops only its consumer; because
+the supervisor is returned to Disabled/HOLD after restore, it stays stopped until
+a later deliberate supervisor run.
 
-The elevated restore never launches the five bridge watchers or headless Tools
+The elevated restore never launches the five bridge watchers or Tools
 directly. It demand-starts the exact `RunLevel=Limited` WD-Supervisor task once,
 waits for that scheduled path to finish successfully, and returns the task to
 Disabled/HOLD while the interactive lanes are restored. This keeps every
@@ -51,7 +61,7 @@ intentionally dangerous: `-AllowAll` bypasses both that script's command
 allowlist and denylist and can approve any Codex command prompt it recognizes
 after the desktop-idle guard permits input. Keep the prompt-watcher window open
 only while this unattended behavior is intended. Claude lanes already use
-`--dangerously-skip-permissions`, and headless Tools uses approval policy
+`--dangerously-skip-permissions`, and Tools uses approval policy
 `never`; neither receives a UI prompt watcher.
 
 DryRun verifies the prompt-watcher script and reports whether it would keep or
@@ -92,6 +102,17 @@ The explicit runtime choices are:
 - Tools: `gpt-5.6-terra`, effort `high`;
 - RCO1 and RCO2: Claude `sonnet`, effort `max`;
 - Fable: Claude `fable`, effort `max`.
+
+Lead's local conversation explicitly preserves its approved full-access/never
+workflow through the pinned `existing_interactive` permission setting. This is
+visible in the window and does not grant new task, merge or deployment authority.
+Its reviewed Codex configuration fingerprint is checked at launcher admission
+and again immediately before native dispatch; it is not continuous runtime policy
+revocation after the process starts.
+Tools keeps workspace-write/never with network access; Codex protected-Git paths
+remain protected. Read-only reconciliation never inherits Lead full access.
+See `docs/architecture/BRIDGE_OPERATOR_CONVERSATION_V1.md` in the source repository
+for pending-work recovery and the difference between transport and completed work.
 
 Durable bridge state, compact lane checkpoints, current Git worktrees, and
 pushed savepoints are the resume substrate; a provider transcript is not the
@@ -149,34 +170,111 @@ target is already due, read the bridge and execute the eligible slice now.
 The launcher's current scheduling instruction supersedes legacy role-prompt
 self-pacing clauses only; it does not change role permissions or task authority.
 
-An explicitly managed lane uses the launcher-owned `Invoke-WdLaneTurnLoop.ps1`
-instead of an interactive CLI prompt. Its window belongs to the bounded turn
-runner; turn receipts and local diagnostics are under the worktree's
+An explicitly managed lane uses a launcher-owned runner instead of an interactive
+CLI prompt. Without a conversation surface this is `Invoke-WdLaneTurnLoop.ps1`;
+the managed Codex Lead's `local_window` selects
+`Invoke-WdCodexConversationLoop.ps1` and `Show-WdOperatorConversation.ps1`.
+All three scripts are hash-pinned and loaded from the verified byte snapshots.
+The conversation window requires an STA PowerShell host, which the fleet
+launcher supplies. Each managed Lead turn has a deliberate 3,600-second
+wall-clock limit. Turn receipts and local diagnostics are under the worktree's
 `.codex-audit/wd-turn-loop/`. It must not also create a competing native cron.
 A valid fresh task-blocked checkpoint keeps future wakes/backstops available;
 waiting for a peer or CI does not finish that task or disable the lane. Missing
 or invalid receipts and ambiguous/crashed turns still require reconciliation
 before another model turn.
-The next Lead startup is configured as `managed` in this operator-requested
-release. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
+The next Lead startup is configured as `managed` with `conversation_surface:
+local_window` in this operator-requested change. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
 canonical supervised consumer. Validate and deploy the matching bundle before
-this configuration takes effect. The Lead window then shows turn lifecycle
-status, not an interactive prompt, and needs no UI approval watcher.
+this configuration takes effect. The Lead conversation window accepts messages
+while idle and steering during active work, streams replies, and offers interrupt
+and separate automation controls. A new full-access Lead thread starts PAUSED;
+Send does not arm automation, and the separate toggle is required. Only an exact
+matching saved identity restores its recorded automation choice. It needs no UI
+approval watcher. The read-only
+colored bridge monitor remains a separate view; it is not the conversational
+control window. Peers keep independent sessions, context and compact checkpoints.
+Those contexts are not pooled into one unlimited Lead memory. On a clean restart,
+the new conversation backend resumes its own recorded thread without loading all
+old transcript text into the GUI. The model retains its context; the window says
+that previous display history was not loaded. It never discovers or adopts the
+already-open interactive Lead's conversation.
 Do not edit an installed hash-pinned manifest in place. An already-open
 interactive Lead is preserved and is not externally resumable through a wake
 sentinel. Installing source files does not transform that live session into a
-managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` in the repo.
+managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` and
+`docs/architecture/BRIDGE_OPERATOR_CONVERSATION_V1.md` in the repo.
 Deployed whole-fleet preflight checks native occupancy for a missing managed
 lane before Apply changes other processes. The lane rechecks at launch; this
 read-only check does not reserve ownership. Unresolved turn journals are checked
 under the runner lease and can still stop a later turn. Fleet restore completion
 proves bootstrap identity, not that a managed model turn has completed or that
 an owner in termination hold is healthy. Inspect owner state and fresh receipts.
-The status view reports configured and observed modes separately; a retained
+The status view reports configured and observed modes separately. Its
+`configured_conversation_surface` is only a next-start setting;
+`conversation_control_verified: false` does not assert a working GUI or RPC
+channel from a manifest or bootstrap handshake. A retained
 interactive Lead remains externally unsupported. Unknown native processes
 must first be attributed to their owning sessions and deliberately closed after
 saving their work, or relaunched through marked launchers. Do not kill or adopt
 them merely to clear a launch guard, and do not delete unresolved turn journals.
+
+### Operator-only inspection and retirement of an unresolved Lead attempt
+
+If the old managed Lead is no longer live but its owner/pending journal blocks
+startup, first ask the installed launcher for a byte-inert plan:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RecoverInteractive -DryRun
+```
+
+After reviewing the printed pointer, pending record and 64-hex digest, start the
+manual inspection only from an interactive Windows Terminal:
+
+```powershell
+powershell -STA -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RecoverInteractive
+```
+
+This is a Lead-only, operator-explicit read-only inspection prompt. It verifies
+the original managed/local-window/full-access configuration and config baseline,
+canonical paths, bundle/CLI pins, a cold lane lease, owner/native inactivity and
+the unresolved evidence. It rejects ambiguous PIDs, any live owner/native,
+`-NonInteractive`/redirected input, and Codex/Claude/Lead-launcher ancestry. A
+signed same-user, same-session Microsoft Windows Terminal is the narrowly allowed
+boundary when that terminal's own parent has already exited. This is an advisory
+same-user operator boundary plus typed confirmation below, not cryptographic
+human attestation. The launcher holds the lane lease for the whole inspection.
+It does not replay work, mutate the journal, fabricate a checkpoint, release a
+claim, or establish whether an external effect occurred.
+
+If inspection supports abandoning the uncertain attempt, copy the exact printed
+digest, record a reason, and run the retirement plan before the real operation:
+
+```powershell
+$Digest = '<exact 64-hex review digest>'
+$Reason = '<why this uncertain attempt is being abandoned>'
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RetireManagedAttempt -ReviewedJournalDigest $Digest -RetirementReason $Reason -DryRun
+powershell -STA -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RetireManagedAttempt -ReviewedJournalDigest $Digest -RetirementReason $Reason
+```
+
+The real retirement command requires an interactive console and typing the
+displayed first 12 digest characters. It recomputes the digest while holding the
+cold lease, archives the original journal byte-for-byte to
+`<worktree>\.codex-audit\wd-retired-conversations\<digest>\journal`, writes a
+verified sibling `retirement-manifest.json`, and moves the runtime owner pointer
+to sibling `runtime-owner-pointer.json` **last**. A failure before that final move
+restores the journal when possible and leaves the original pointer blocking.
+Existing/partial archives are never overwritten. The operation records an
+operator-abandoned uncertain attempt; it does not assert success, prove effects
+were undone, alter compact state, release/transfer bridge claims, or mark a bridge
+task complete.
+
+After successful retirement, use the ordinary fleet DryRun/Apply flow to create a
+genuinely new managed Lead thread. It starts PAUSED and does not automatically
+inherit the retired transcript or record. Before directing further work, paste
+the printed manifest path, digest and reason into that window as advisory context.
+This explicit human handoff is not new authority and does not make the old result
+verified.
 
 Before each lane invokes its model, the launcher verifies
 `WaggleDanceSwarmAi.png` by its pinned hash and delivers that exact image once

@@ -719,6 +719,8 @@ foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
         'Invoke-WdLaneTurnLoop.ps1',
+        'Invoke-WdCodexConversationLoop.ps1',
+        'Show-WdOperatorConversation.ps1',
         'Get-WdSwarmParallelStatus.ps1',
         'Write-WdLaneCurrentState.ps1',
         'Watch-CodexPrompts.ps1',

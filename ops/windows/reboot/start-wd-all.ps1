@@ -1580,7 +1580,7 @@ function Get-WdLeadPromptWatcherPolicy {
     }
     return [pscustomobject]@{
       required = $false
-      summary = 'disabled for managed Lead; native workspace-write/never policy applies'
+      summary = 'disabled for managed Lead; explicit native conversation permission posture applies'
     }
   }
   if ($action -ceq 'conflict') {
@@ -2004,6 +2004,12 @@ function Test-ToolsProcessReadiness {
     }
     $record = (Get-Content -LiteralPath $readinessPath -Raw) |
       ConvertFrom-Json -ErrorAction Stop
+    $surfaceProperty = $ToolsConfig.PSObject.Properties['conversation_surface']
+    $surface = if ($null -eq $surfaceProperty) { 'none' } else { [string]$surfaceProperty.Value }
+    if ($surface -cnotin @('none', 'local_window')) { return $false }
+    $expectedSchema = if ($surface -ceq 'local_window') {
+      'wd.tools-consumer-ready.v2'
+    } else { 'wd.tools-consumer-ready.v1' }
     $expectedCodex = Resolve-ApplicationPath -Name 'codex.cmd'
     $expectedCodexHash = (
       Get-FileHash -LiteralPath $expectedCodex -Algorithm SHA256
@@ -2029,7 +2035,7 @@ function Test-ToolsProcessReadiness {
       [string]$record.head -ceq [string]$ToolsConfig.head
     }
     if (
-      [string]$record.schema -cne 'wd.tools-consumer-ready.v1' -or
+      [string]$record.schema -cne $expectedSchema -or
       [string]$record.generation -cne $Generation -or
       [int]$record.pid -ne [int]$Process.ProcessId -or
       -not $pinValid -or
@@ -2090,6 +2096,35 @@ function Test-ToolsProcessReadiness {
     $canaryAt = ConvertTo-UtcDateTimeOffset `
       -Value $record.append_canary_event_utc `
       -Label 'Tools append canary creation'
+    if ($surface -ceq 'local_window') {
+      if ([string]$record.status -cne 'transport_ready' -or
+          [string]$record.conversation_surface -cne 'local_window' -or
+          [string]$record.readiness_scope -cne 'ui_transport_only' -or
+          -not (Test-WdJsonBooleanTrue -Object $record -Name 'transport_ready') -or
+          $record.native_checkpoint_verified -isnot [bool] -or
+          $record.task_completion_verified -isnot [bool] -or $record.task_completion_verified -or
+          [string]::IsNullOrWhiteSpace([string]$record.thread_id) -or
+          [string]$record.thread_id -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or
+          -not (Test-WdJsonIntegerRange -Object $record -Name 'native_pid' -Minimum 1 -Maximum ([int]::MaxValue)) -or
+          -not (Test-WdJsonIntegerRange -Object $record -Name 'native_parent_pid' -Minimum 1 -Maximum ([int]::MaxValue)) -or
+          [int]$record.native_parent_pid -ne [int]$Process.ProcessId) { return $false }
+      $transportAt = ConvertTo-UtcDateTimeOffset -Value $record.transport_ready_at_utc -Label 'Tools transport readiness'
+      $nativeAt = ConvertTo-UtcDateTimeOffset -Value $record.native_process_start_utc -Label 'Tools native creation'
+      if ($transportAt -ne $readyAt -or $readyAt -gt [DateTimeOffset]::UtcNow.AddSeconds(5) -or
+          $nativeAt -lt $recordCreated -or $nativeAt -gt $transportAt) { return $false }
+      $nativeProcesses = @(Get-CimInstance -ClassName Win32_Process `
+        -Filter ("ProcessId={0}" -f [int]$record.native_pid) -ErrorAction Stop)
+      if ($nativeProcesses.Count -ne 1) { return $false }
+      $native = $nativeProcesses[0]
+      $observedNativeAt = ConvertTo-UtcDateTimeOffset -Value $native.CreationDate -Label 'observed Tools native creation'
+      if ([int]$native.ProcessId -ne [int]$record.native_pid -or
+          [int]$native.ParentProcessId -ne [int]$Process.ProcessId -or
+          [string]$native.Name -ine 'codex.exe' -or
+          -not ([string]$native.ExecutablePath).Equals($expectedCodex, [StringComparison]::OrdinalIgnoreCase) -or
+          [Math]::Abs(($observedNativeAt - $nativeAt).TotalSeconds) -gt 1) { return $false }
+      # Transport attestation prevents duplicate ownership; it is never a
+      # substitute for native checkpoint or task/release acceptance evidence.
+    }
     return (
       [Math]::Abs(($recordCreated - $processCreated).TotalSeconds) -le 1 -and
       $readyAt -ge $recordCreated -and
@@ -2111,6 +2146,11 @@ function Write-ToolsReadinessWarning {
     -Path $readinessPath `
     -Label 'Tools readiness record') |
     ConvertFrom-Json -ErrorAction Stop
+  if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v2') {
+    Write-Host ('codex-tools-1 conversation transport is live; latest native checkpoint verified: ' +
+      [string]$record.native_checkpoint_verified + '. Transport is not task completion.')
+    return
+  }
   if ([string]$record.status -ceq 'degraded') {
     Write-Warning (
       'codex-tools-1 is headless and live, but its initial Codex tick was ' +
@@ -2774,6 +2814,14 @@ $toolsConfig = $manifest.tools_supervisor
 $bundleToolsConfig = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
 $bundleToolsLauncher = Join-Path $PSScriptRoot 'start-wd-tools-consumer.ps1'
 [void](Read-NonEmptyFile -Path $bundleToolsConfig -Label 'bundled Tools consumer config')
+$bundledTools = (Get-Content -LiteralPath $bundleToolsConfig -Raw | ConvertFrom-Json -ErrorAction Stop).tools_consumer
+$fleetSurfaceProperty = $toolsConfig.PSObject.Properties['conversation_surface']
+$bundleSurfaceProperty = $bundledTools.PSObject.Properties['conversation_surface']
+$fleetToolsSurface = if ($null -eq $fleetSurfaceProperty) { 'none' } else { [string]$fleetSurfaceProperty.Value }
+$bundleToolsSurface = if ($null -eq $bundleSurfaceProperty) { 'none' } else { [string]$bundleSurfaceProperty.Value }
+if ($fleetToolsSurface -cnotin @('none', 'local_window') -or $fleetToolsSurface -cne $bundleToolsSurface) {
+  throw 'Tools conversation surface differs between fleet and supervisor config'
+}
 [void](Read-NonEmptyFile -Path $bundleToolsLauncher -Label 'bundled Tools consumer launcher')
 $supervisorTask = Get-WdSingleScheduledTask `
   -TaskName ([string]$toolsConfig.task_name)
@@ -3521,6 +3569,7 @@ try {
       '--suppressApplicationTitle',
       '-d', [string]$state.lane.worktree,
       $expectedSupervisorExecutable,
+      '-STA',
       '-NoProfile',
       '-ExecutionPolicy', 'Bypass',
       '-File', $agentLauncher,

@@ -6,8 +6,9 @@
 .DESCRIPTION
     Validates the configured C-drive worktree, branch, full commit, and exact
     tracked bootstrap scripts before loading any bridge code. The process
-    receives one initial bounded Codex tick so a reboot handoff is read even
-    when no wake sentinel exists, then remains in the wake-only consumer loop.
+    starts one owned native Codex conversation when conversation_surface is
+    local_window. A missing/none surface preserves the legacy initial bounded
+    tick followed by the wake-only consumer loop.
 
     This wrapper supplies an explicit balanced model and reasoning effort from
     the hash-anchored supervisor configuration.
@@ -39,6 +40,56 @@ function Get-RequiredText {
         throw "tools consumer configuration is missing '$Name'"
     }
     return [string]$property.Value
+}
+
+function Get-WdToolsConversationSurface {
+    param([Parameter(Mandatory)] [psobject] $Tools)
+
+    $property = $Tools.PSObject.Properties['conversation_surface']
+    if ($null -eq $property) { return 'none' }
+    $surface = [string]$property.Value
+    if ($surface -cnotin @('none', 'local_window')) {
+        throw "unsupported Tools conversation_surface '$surface'"
+    }
+    return $surface
+}
+
+function Get-WdToolsConversationPermissions {
+    param([Parameter(Mandatory)] [psobject] $Tools)
+
+    $property = $Tools.PSObject.Properties['conversation_permissions']
+    if ($null -eq $property) {
+        return @{
+            NetworkAccess = $false
+            AdditionalWritableRoots = @()
+        }
+    }
+    $policy = $property.Value
+    if (
+        $null -eq $policy -or
+        $policy -isnot [pscustomobject] -or
+        @($policy.PSObject.Properties.Name | Where-Object {
+                $_ -cnotin @('network_access', 'additional_writable_roots')
+            }).Count -gt 0 -or
+        $null -eq $policy.PSObject.Properties['network_access'] -or
+        $policy.network_access -isnot [bool] -or
+        $null -eq $policy.PSObject.Properties['additional_writable_roots'] -or
+        $policy.additional_writable_roots -isnot [array]
+    ) {
+        throw (
+            'Tools conversation permissions must explicitly contain a boolean ' +
+            'network_access and array additional_writable_roots'
+        )
+    }
+    foreach ($root in @($policy.additional_writable_roots)) {
+        if ($root -isnot [string] -or [string]::IsNullOrWhiteSpace($root)) {
+            throw 'Tools conversation writable roots must be nonempty strings'
+        }
+    }
+    return @{
+        NetworkAccess = [bool]$policy.network_access
+        AdditionalWritableRoots = @($policy.additional_writable_roots)
+    }
 }
 
 function Get-InitialTickDisposition {
@@ -206,6 +257,64 @@ function Read-Utf8FileSnapshot {
     return [pscustomobject]@{
         Hash = $hash
         Text = $text
+    }
+}
+
+function Read-WdToolsConversationCodeSnapshot {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptRoot,
+        [Parameter(Mandatory)]
+        [ValidateSet(
+            'Invoke-WdLaneTurnLoop.ps1',
+            'Show-WdOperatorConversation.ps1',
+            'Invoke-WdCodexConversationLoop.ps1'
+        )]
+        [string] $FileName,
+        [switch] $SourceTreeMode
+    )
+
+    $trustedDrive = [IO.Path]::GetPathRoot(
+        [IO.Path]::GetFullPath($ScriptRoot)
+    )
+    $path = [IO.Path]::GetFullPath((Join-Path $ScriptRoot $FileName))
+    Assert-FilePathWithoutReparse -Candidate $path -Root $trustedDrive
+    $snapshot = Read-Utf8FileSnapshot -Path $path
+
+    $deploymentPath = Join-Path $ScriptRoot 'deployment-manifest.json'
+    if (-not (Test-Path -LiteralPath $deploymentPath -PathType Leaf)) {
+        if (-not $SourceTreeMode) {
+            throw 'Tools conversation code requires an anchored deployment manifest'
+        }
+    }
+    else {
+        Assert-FilePathWithoutReparse `
+            -Candidate $deploymentPath `
+            -Root $trustedDrive
+        $manifestSnapshot = Read-Utf8FileSnapshot -Path $deploymentPath
+        $expectedManifestHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+        if (
+            $expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            [string]$manifestSnapshot.Hash -cne
+                $expectedManifestHash.ToUpperInvariant()
+        ) {
+            throw 'Tools conversation deployment manifest is not externally anchored'
+        }
+        $deployment = [string]$manifestSnapshot.Text |
+            ConvertFrom-Json -ErrorAction Stop
+        $pin = $deployment.files.PSObject.Properties[$FileName]
+        if (
+            [int]$deployment.schema_version -ne 1 -or
+            $null -eq $pin -or
+            [string]$pin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            [string]$snapshot.Hash -cne ([string]$pin.Value).ToUpperInvariant()
+        ) {
+            throw "Tools conversation bundle hash mismatch: $FileName"
+        }
+    }
+    return [pscustomobject]@{
+        Path = $path
+        Hash = [string]$snapshot.Hash
+        Text = [string]$snapshot.Text
     }
 }
 
@@ -736,6 +845,262 @@ function Resolve-ToolsCodexApplication {
     return $candidate
 }
 
+function ConvertTo-WdToolsUtc {
+    param([Parameter(Mandatory)] $Value)
+
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).ToUniversalTime()
+    }
+    if ($Value -is [DateTime]) {
+        $dateTime = [DateTime]$Value
+        if ($dateTime.Kind -eq [DateTimeKind]::Unspecified) {
+            $dateTime = [DateTime]::SpecifyKind($dateTime, [DateTimeKind]::Utc)
+        }
+        return ([DateTimeOffset]$dateTime).ToUniversalTime()
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+            [string]$Value,
+            [Globalization.CultureInfo]::InvariantCulture,
+            (
+                [Globalization.DateTimeStyles]::AssumeUniversal -bor
+                [Globalization.DateTimeStyles]::AdjustToUniversal
+            ),
+            [ref]$parsed
+        )) {
+        throw 'invalid Tools conversation timestamp'
+    }
+    return $parsed.ToUniversalTime()
+}
+
+function Get-WdToolsConversationFact {
+    param(
+        [Parameter(Mandatory)] [psobject] $Facts,
+        [Parameter(Mandatory)] [string] $Name
+    )
+
+    $property = $Facts.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw "Tools conversation callback is missing '$Name'"
+    }
+    return $property.Value
+}
+
+function Write-WdToolsConversationReadiness {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [Collections.IDictionary] $BaseRecord,
+        [Parameter(Mandatory)] [Collections.IDictionary] $State,
+        [Parameter(Mandatory)] [psobject] $Facts,
+        [Parameter(Mandatory)]
+        [ValidateSet('transport', 'terminal')]
+        [string] $Phase
+    )
+
+    $factAgent = [string](Get-WdToolsConversationFact $Facts 'agent')
+    $factSession = [string](Get-WdToolsConversationFact $Facts 'session_id')
+    $factGeneration = [string](Get-WdToolsConversationFact $Facts 'generation')
+    $factWorktree = [IO.Path]::GetFullPath(
+        [string](Get-WdToolsConversationFact $Facts 'worktree')
+    )
+    $factCompact = [IO.Path]::GetFullPath(
+        [string](Get-WdToolsConversationFact $Facts 'compact_state_path')
+    )
+    $factModel = [string](Get-WdToolsConversationFact $Facts 'model')
+    $factEffort = [string](Get-WdToolsConversationFact $Facts 'effort')
+    $threadId = [string](Get-WdToolsConversationFact $Facts 'thread_id')
+    $ownerPidValue = Get-WdToolsConversationFact $Facts 'owner_pid'
+    $nativePidValue = Get-WdToolsConversationFact $Facts 'native_pid'
+    $nativeParentPidValue = Get-WdToolsConversationFact $Facts 'native_parent_pid'
+    $checkpointValue = Get-WdToolsConversationFact $Facts 'checkpoint_verified'
+    $taskCompletionValue = Get-WdToolsConversationFact `
+        $Facts `
+        'task_completion_verified'
+    $completionScope = [string](Get-WdToolsConversationFact `
+        $Facts `
+        'completion_scope')
+    if (
+        $ownerPidValue -isnot [int] -or
+        $nativePidValue -isnot [int] -or
+        $nativeParentPidValue -isnot [int] -or
+        $checkpointValue -isnot [bool] -or
+        $taskCompletionValue -isnot [bool]
+    ) {
+        throw 'Tools conversation callback contains an invalid typed fact'
+    }
+    $ownerPid = [int]$ownerPidValue
+    $nativePid = [int]$nativePidValue
+    $nativeParentPid = [int]$nativeParentPidValue
+    $ownerStarted = ConvertTo-WdToolsUtc (
+        Get-WdToolsConversationFact $Facts 'owner_process_start_utc'
+    )
+    $nativeStarted = ConvertTo-WdToolsUtc (
+        Get-WdToolsConversationFact $Facts 'native_process_start_utc'
+    )
+    $expectedOwnerStarted = ConvertTo-WdToolsUtc $BaseRecord.process_start_utc
+    $expectedCompact = Join-Path `
+        ([string]$BaseRecord.worktree) `
+        '.codex-audit\wd-current-state.json'
+    if (
+        $factAgent -cne [string]$BaseRecord.agent -or
+        $factSession -cne [string]$BaseRecord.session_id -or
+        $factGeneration -cne [string]$BaseRecord.generation -or
+        -not $factWorktree.Equals(
+            [string]$BaseRecord.worktree,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $factCompact.Equals(
+            $expectedCompact,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        $factModel -cne [string]$BaseRecord.model -or
+        $factEffort -cne [string]$BaseRecord.reasoning_effort -or
+        $threadId -cnotmatch '^[A-Za-z0-9._:-]{1,256}$' -or
+        $ownerPid -ne [int]$BaseRecord.pid -or
+        $nativePid -le 0 -or
+        $nativePid -eq $ownerPid -or
+        $nativeParentPid -ne $ownerPid -or
+        [Math]::Abs(($ownerStarted - $expectedOwnerStarted).TotalSeconds) -gt 1 -or
+        $nativeStarted -lt $ownerStarted.AddSeconds(-1) -or
+        $nativeStarted -gt [DateTimeOffset]::UtcNow.AddSeconds(5) -or
+        $completionScope -cne 'native_conversation' -or
+        [bool]$taskCompletionValue
+    ) {
+        throw 'Tools conversation callback identity is not lane-bound'
+    }
+
+    $nextState = @{}
+    foreach ($key in $State.Keys) {
+        $nextState[$key] = $State[$key]
+    }
+    $now = [DateTimeOffset]::UtcNow.ToString('o')
+    if ($Phase -ceq 'transport') {
+        if ([bool]$nextState.transport_ready) {
+            throw 'Tools conversation transport callback was repeated'
+        }
+        if ([bool]$checkpointValue) {
+            throw 'transport readiness cannot assert a verified checkpoint'
+        }
+        $nextState.transport_ready = $true
+        $nextState.transport_ready_at_utc = $now
+        $nextState.thread_id = $threadId
+        $nextState.native_pid = $nativePid
+        $nextState.native_parent_pid = $nativeParentPid
+        $nextState.native_process_start_utc = $nativeStarted.ToString('o')
+    }
+    else {
+        if (-not [bool]$nextState.transport_ready) {
+            throw 'Tools terminal callback preceded transport readiness'
+        }
+        if (
+            $threadId -cne [string]$nextState.thread_id -or
+            $nativePid -ne [int]$nextState.native_pid -or
+            $nativeParentPid -ne [int]$nextState.native_parent_pid -or
+            [Math]::Abs((
+                    $nativeStarted -
+                    (ConvertTo-WdToolsUtc $nextState.native_process_start_utc)
+                ).TotalSeconds) -gt 1
+        ) {
+            throw 'Tools terminal callback changed the native transport identity'
+        }
+        $turnId = [string](Get-WdToolsConversationFact $Facts 'turn_id')
+        $nativeTurnId = [string](Get-WdToolsConversationFact `
+            $Facts `
+            'native_turn_id')
+        $nativeStatus = [string](Get-WdToolsConversationFact `
+            $Facts `
+            'native_status')
+        $disposition = [string](Get-WdToolsConversationFact `
+            $Facts `
+            'disposition')
+        if (
+            $turnId -cnotmatch '^turn-[0-9a-f]{32}$' -or
+            $nativeTurnId -cnotmatch '^[A-Za-z0-9._:-]{1,256}$' -or
+            $nativeStatus -cnotmatch '^[A-Za-z][A-Za-z0-9._:-]{0,63}$' -or
+            [string]::IsNullOrWhiteSpace($disposition) -or
+            $disposition.Length -gt 1024 -or
+            $disposition.IndexOfAny([char[]]@("`r", "`n", [char]0)) -ge 0 -or
+            (
+                [bool]$checkpointValue -and
+                (
+                    $nativeStatus -cne 'completed' -or
+                    $disposition -cnotin @('completed', 'blocked', 'idle')
+                )
+            )
+        ) {
+            throw 'Tools terminal callback is not a verified native disposition'
+        }
+        $nextState.last_turn_id = $turnId
+        $nextState.last_native_turn_id = $nativeTurnId
+        $nextState.last_native_status = $nativeStatus
+        $nextState.last_turn_disposition = $disposition
+        $nextState.last_turn_finalized_at_utc = $now
+        $nextState.native_checkpoint_verified = [bool]$checkpointValue
+        if ([bool]$checkpointValue) {
+            $nextState.last_checkpoint_turn_id = $turnId
+            $nextState.last_checkpoint_native_turn_id = $nativeTurnId
+            $nextState.last_checkpoint_disposition = $disposition
+            $nextState.last_checkpoint_verified_at_utc = $now
+        }
+    }
+
+    $record = [ordered]@{
+        schema = 'wd.tools-consumer-ready.v2'
+        status = 'transport_ready'
+        readiness_scope = 'ui_transport_only'
+        conversation_surface = 'local_window'
+    }
+    foreach ($key in $BaseRecord.Keys) {
+        $record[$key] = $BaseRecord[$key]
+    }
+    foreach ($key in @(
+            'transport_ready',
+            'transport_ready_at_utc',
+            'thread_id',
+            'native_pid',
+            'native_parent_pid',
+            'native_process_start_utc',
+            'last_turn_id',
+            'last_native_turn_id',
+            'last_native_status',
+            'last_turn_disposition',
+            'last_turn_finalized_at_utc',
+            'native_checkpoint_verified',
+            'last_checkpoint_turn_id',
+            'last_checkpoint_native_turn_id',
+            'last_checkpoint_disposition',
+            'last_checkpoint_verified_at_utc'
+        )) {
+        $record[$key] = $nextState[$key]
+    }
+    $record['ready_at_utc'] = $nextState.transport_ready_at_utc
+    $record['task_completion_verified'] = $false
+
+    $temporary = "$Path.$PID.tmp"
+    $utf8NoBom = New-Object Text.UTF8Encoding($false)
+    try {
+        [IO.File]::WriteAllText(
+            $temporary,
+            (($record | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+            $utf8NoBom
+        )
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+            Remove-Item `
+                -LiteralPath $temporary `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+    $State.Clear()
+    foreach ($key in $nextState.Keys) {
+        $State[$key] = $nextState[$key]
+    }
+    return [pscustomobject]$record
+}
+
 function Test-CodexSandboxShell {
     param(
         [Parameter(Mandatory)] [string] $CodexCommand,
@@ -815,6 +1180,8 @@ $tools = $configuration.tools_consumer
 if (-not [bool]$tools.enabled) {
     throw 'tools consumer is disabled in configuration'
 }
+$conversationSurface = Get-WdToolsConversationSurface -Tools $tools
+$conversationPermissions = Get-WdToolsConversationPermissions -Tools $tools
 
 $runtimeRoot = [IO.Path]::GetFullPath((Get-RequiredText $configuration 'runtime_root'))
 $worktree = [IO.Path]::GetFullPath((Get-RequiredText $tools 'worktree'))
@@ -931,6 +1298,47 @@ if ($model -cne 'gpt-5.6-terra') {
 }
 if ($reasoningEffort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')) {
     throw "unsupported Tools reasoning_effort: $reasoningEffort"
+}
+if (
+    $conversationSurface -ceq 'local_window' -and
+    (
+        $agent -cne 'codex-tools-1' -or
+        $model -cne 'gpt-5.6-terra' -or
+        $reasoningEffort -cne 'high' -or
+        $sandbox -cne 'workspace-write' -or
+        $approvalPolicy -cne 'never'
+    )
+) {
+    throw 'Tools local conversation differs from its pinned lane posture'
+}
+$conversationWritableRoots = @()
+if ($conversationSurface -ceq 'local_window') {
+    $seenConversationRoots = New-Object `
+        'System.Collections.Generic.HashSet[string]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($configuredRoot in @($conversationPermissions.AdditionalWritableRoots)) {
+        if (-not [IO.Path]::IsPathRooted([string]$configuredRoot)) {
+            throw 'Tools conversation writable roots must be absolute'
+        }
+        $rootFull = [IO.Path]::GetFullPath([string]$configuredRoot).TrimEnd(
+            [char]92,
+            [char]47
+        )
+        if (
+            [IO.Path]::GetPathRoot($rootFull).TrimEnd('\') -cne 'C:' -or
+            $rootFull.Equals(
+                [IO.Path]::GetPathRoot($rootFull).TrimEnd('\'),
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not $seenConversationRoots.Add($rootFull)
+        ) {
+            throw 'Tools conversation writable root is unsafe or duplicated'
+        }
+        Assert-DirectoryPathWithoutReparse `
+            -Candidate $rootFull `
+            -Root ([IO.Path]::GetPathRoot($rootFull))
+        $conversationWritableRoots += $rootFull
+    }
 }
 
 $codexWritableDirectories = @(
@@ -1122,6 +1530,23 @@ $laneStateWriter = Join-Path $PSScriptRoot 'Write-WdLaneCurrentState.ps1'
 if (-not (Test-Path -LiteralPath $laneStateWriter -PathType Leaf)) {
     throw 'Tools compact-state writer is missing'
 }
+$conversationCodeNames = @(
+    'Invoke-WdLaneTurnLoop.ps1',
+    'Show-WdOperatorConversation.ps1',
+    'Invoke-WdCodexConversationLoop.ps1'
+)
+$conversationCodeHashes = @{}
+$verifiedConversationCode = @{}
+if ($conversationSurface -ceq 'local_window') {
+    foreach ($conversationCodeName in $conversationCodeNames) {
+        $conversationSnapshot = Read-WdToolsConversationCodeSnapshot `
+            -ScriptRoot $PSScriptRoot `
+            -FileName $conversationCodeName `
+            -SourceTreeMode:(-not $isDeployedLauncher)
+        $conversationCodeHashes[$conversationCodeName] = [string]$conversationSnapshot.Hash
+        $verifiedConversationCode[$conversationCodeName] = [string]$conversationSnapshot.Text
+    }
+}
 Assert-ToolsBootstrapIntegrity `
     -ScriptRoot $PSScriptRoot `
     -BootstrapRoot $bootstrapRoot `
@@ -1290,6 +1715,10 @@ $validation = [pscustomobject]@{
     )
     model = $model
     reasoning_effort = $reasoningEffort
+    conversation_surface = $conversationSurface
+    conversation_code_sha256 = [pscustomobject]$conversationCodeHashes
+    conversation_network_access = [bool]$conversationPermissions.NetworkAccess
+    conversation_additional_writable_roots = @($conversationWritableRoots)
     resume_policy = $resumePolicy
     baseline_branch = $expectedBranch
     baseline_head = $expectedHead
@@ -1419,6 +1848,10 @@ $targetPayload = [ordered]@{
     capability_effect = 'none'
     model = $model
     effort = $reasoningEffort
+    conversation_surface = $conversationSurface
+    conversation_code_sha256 = $conversationCodeHashes
+    conversation_network_access = [bool]$conversationPermissions.NetworkAccess
+    conversation_additional_writable_roots = @($conversationWritableRoots)
     resume_policy = $resumePolicy
     baseline_branch = $expectedBranch
     baseline_head = $expectedHead
@@ -1529,6 +1962,156 @@ Assert-ToolsBootstrapIntegrity `
     -BootstrapRoot $bootstrapRoot `
     -ConfigPath $configFull `
     -LoadedConfigHash $loadedConfigHash
+
+if ($conversationSurface -ceq 'local_window') {
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+        throw 'Tools conversation window requires an STA PowerShell host'
+    }
+    foreach ($conversationCodeName in $conversationCodeNames) {
+        $conversationSnapshot = Read-WdToolsConversationCodeSnapshot `
+            -ScriptRoot $PSScriptRoot `
+            -FileName $conversationCodeName
+        if (
+            [string]$conversationSnapshot.Hash -cne
+                [string]$conversationCodeHashes[$conversationCodeName]
+        ) {
+            throw "Tools conversation code changed after validation: $conversationCodeName"
+        }
+        $verifiedConversationCode[$conversationCodeName] =
+            [string]$conversationSnapshot.Text
+    }
+
+    $conversationReadinessBase = [ordered]@{
+        generation = $Generation
+        pid = $PID
+        process_start_utc = $processStartUtc.ToString('o')
+        config_path = $configFull
+        worktree = $worktree
+        branch = $actualBranch
+        head = $actualHead
+        baseline_branch = $expectedBranch
+        baseline_head = $expectedHead
+        resume_policy = $resumePolicy
+        agent = $agent
+        agent_uuid = $agentUuid
+        role = $role
+        model = $model
+        reasoning_effort = $reasoningEffort
+        codex_command = $codexCommand
+        codex_command_sha256 = $codexCommandHash
+        python_executable = $pythonExecutable
+        python_executable_sha256 = $pythonExecutableHash
+        conversation_code_sha256 = $conversationCodeHashes
+        conversation_network_access = [bool]$conversationPermissions.NetworkAccess
+        conversation_additional_writable_roots = @($conversationWritableRoots)
+        target_state_id = [string]$targetState.id
+        target_state_sha256 = [string]$targetState.sha256
+        target_state_image_path = $targetImagePath
+        target_state_image_sha256 = [string]$targetState.image_sha256
+        target_state_image_delivery = 'codex_cli_initial_image'
+        target_state_image_initial_tick_only = $true
+        target_state_image_initial_turn_only = $true
+        target_state_manifested = $true
+        run_id = $runId
+        session_id = $runId
+        append_canary = $true
+        append_canary_task_id = $canaryTaskId
+        append_canary_event_utc = [string]$canaryEvents[0].ts_utc
+        append_canary_latency_ms = $canaryLatencyMs
+        bridge_code_root = [string]$bridgeCodeContext.code_root
+        bridge_bin = [string]$bridgeCodeContext.bridge_bin
+        bridge_python_wrapper = [string]$bridgeCodeContext.python_wrapper
+        bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
+    }
+    $conversationReadinessState = @{
+        transport_ready = $false
+        transport_ready_at_utc = $null
+        thread_id = $null
+        native_pid = $null
+        native_parent_pid = $null
+        native_process_start_utc = $null
+        last_turn_id = $null
+        last_native_turn_id = $null
+        last_native_status = $null
+        last_turn_disposition = $null
+        last_turn_finalized_at_utc = $null
+        native_checkpoint_verified = $false
+        last_checkpoint_turn_id = $null
+        last_checkpoint_native_turn_id = $null
+        last_checkpoint_disposition = $null
+        last_checkpoint_verified_at_utc = $null
+    }
+    $onTransportReady = {
+        param($Facts)
+        Write-WdToolsConversationReadiness `
+            -Path $readinessPath `
+            -BaseRecord $conversationReadinessBase `
+            -State $conversationReadinessState `
+            -Facts $Facts `
+            -Phase transport | Out-Null
+    }.GetNewClosure()
+    $onTurnFinalized = {
+        param($Facts)
+        Write-WdToolsConversationReadiness `
+            -Path $readinessPath `
+            -BaseRecord $conversationReadinessBase `
+            -State $conversationReadinessState `
+            -Facts $Facts `
+            -Phase terminal | Out-Null
+    }.GetNewClosure()
+    $conversationStartupPrompt = (
+        'FIRST receive the attached PNG once as the primary north-star; do not ' +
+        'replace it with a prose interpretation. It is direction, not evidence of ' +
+        'current capability, and grants no authority. ' + $prompt +
+        ' This supervisor-owned window and native thread are the sole Tools ' +
+        'conversation; keep every peer in its separate verified worktree and session.'
+    )
+    $conversationParameters = @{
+        Agent = $agent
+        Backend = 'codex'
+        CliPath = $codexCommand
+        Model = $model
+        Effort = $reasoningEffort
+        Worktree = $worktree
+        RuntimeRoot = $runtimeRoot
+        SessionId = $runId
+        Generation = $Generation
+        CompactStatePath = (Join-Path `
+            $worktree `
+            '.codex-audit\wd-current-state.json')
+        StartupPrompt = $conversationStartupPrompt
+        ContinuationPrompt = $prompt
+        ImagePath = $targetImagePath
+        NetworkAccess = [bool]$conversationPermissions.NetworkAccess
+        AdditionalWritableRoots = @($conversationWritableRoots)
+        Forever = $true
+        ShowLifecycle = $true
+        TurnTimeoutSeconds = $codexTimeoutSeconds
+        OnTransportReady = $onTransportReady
+        OnTurnFinalized = $onTurnFinalized
+    }
+    $conversationResult = & {
+        param($VerifiedCode, $Parameters)
+        . ([scriptblock]::Create(
+                [string]$VerifiedCode['Invoke-WdLaneTurnLoop.ps1']
+            ))
+        . ([scriptblock]::Create(
+                [string]$VerifiedCode['Show-WdOperatorConversation.ps1']
+            ))
+        . ([scriptblock]::Create(
+                [string]$VerifiedCode['Invoke-WdCodexConversationLoop.ps1']
+            ))
+        Invoke-WdCodexConversationLoop @Parameters
+    } $verifiedConversationCode $conversationParameters
+    $conversationResult | Out-Host
+    if ([string]$conversationResult.status -cne 'stopped') {
+        throw (
+            'Tools conversation loop stopped with status ' +
+            "'$([string]$conversationResult.status)'"
+        )
+    }
+    return
+}
 
 $commonConsumerArguments = @{
     Agent = $agent

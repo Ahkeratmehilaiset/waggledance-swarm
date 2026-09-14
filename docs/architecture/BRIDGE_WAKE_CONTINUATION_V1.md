@@ -26,9 +26,11 @@ for every other recipient. Existing exact-task and age rules remain in force.
 | Lane/mode | Turn owner | Meaning of a wake |
 | --- | --- | --- |
 | Tools, existing supervised consumer | Its one canonical consumer | Run a bounded tick through the existing backend. |
+| Tools with `local_window` | The same supervisor-owned Tools parent | Run one bounded turn in its independent persistent thread; no additional headless consumer. |
 | Existing interactive Claude RCO1/RCO2/Fable | Native session scheduler | Native wake/backstop reads current bridge state; do not launch a twin. |
 | Existing interactive Codex Lead | Existing interactive session | Notification only; no verified external same-session turn adapter. |
-| Explicit managed startup | Launcher-owned turn loop | Start one owned, bounded CLI child after validating occupancy. |
+| Managed startup without a conversation surface | Launcher-owned turn loop | Start one owned, bounded CLI child after validating occupancy. |
+| Managed Codex Lead with `local_window` | Launcher-owned conversation loop | Start a bounded turn in its one owned app-server thread when idle and automation is enabled. |
 
 The managed runner must own a lane from startup. It must not take over an
 already-open interactive session, use `SendKeys`, inject approval responses, or
@@ -59,10 +61,15 @@ sections of external role prompts (including mandatory every-turn rearming and
 durable-cron claims). It never supersedes role permissions or task authority.
 
 The operator-requested release configures the next Lead startup as
-`turn_mode: managed`; native Claude lanes retain `interactive` and Tools retains
-its existing consumer. This takes effect only after validation and deployment
-of the matching bundle. It changes the new Lead window into a lifecycle display
-rather than an interactive model prompt. The fleet launcher does not create a
+`turn_mode: managed` with `conversation_surface: local_window`; native Claude
+lanes retain `interactive`; Tools selects its own `local_window` inside the
+existing supervisor-owned parent, replacing the headless tick loop. This takes
+effect only after validation and deployment of the matching bundle. The new Lead
+has a conversational control window with streamed replies, active-turn steering,
+interrupt and separate automation control. It is not merely a lifecycle display.
+Peer sessions remain separate; extra views do not multiply one thread's context.
+See [the conversation contract](BRIDGE_OPERATOR_CONVERSATION_V1.md) for the
+app-server lifecycle, recovery and evidence boundaries. The fleet launcher does not create a
 UI approval watcher for managed Lead. An existing approval watcher blocks that
 startup until a controlled handoff removes it; it is never automatically killed.
 Never modify an installed hash-pinned manifest to switch modes in place.
@@ -99,7 +106,10 @@ interactive permission posture. The opted-in managed path uses the same CLI
 permission setting as the already-approved interactive path; absent that
 explicit posture the runner refuses before creating turn files or launching a
 child. Role, task, claim and promotion limits still apply. This is not a new
-filesystem sandbox. Codex retains its workspace-write/never posture. Fake-child
+filesystem sandbox. Codex defaults to workspace-write/never. The conversation
+configuration explicitly selects the reviewed Lead-only `existing_interactive`
+full-access compatibility posture; Tools stays workspace-write. Missing or changed
+saved posture never silently upgrades a thread. Fake-child
 tests establish argument and receipt behavior, not real model willingness or
 successful live activation.
 
@@ -116,7 +126,7 @@ The runtime-root owner pointer also identifies the previous worktree journal.
 A new worktree must not hide an unresolved prior turn after its process exits.
 Recovery checks that pointer under the same lane lease before starting work.
 
-Each turn follows:
+For the per-turn CLI runner, each turn follows:
 
 `pending wake → owned start → bounded CLI turn → fresh checkpoint + receipt → result`
 
@@ -143,6 +153,13 @@ that still requires the canonical recipient response and applicable gates.
 The loop's own journal is separate
 from the model-owned `wd-current-state.json`. A successful CLI exit, a process
 PID, an ACK, a heartbeat or deletion of the wake file is not task completion.
+
+The conversational runner instead retains one contained app-server process
+across turns in the same thread. Native turn completion is not process exit or
+proof that every tool descendant has drained. Its separate contract specifies
+turn-bound receipts, explicit interrupt evidence and whole-job shutdown before
+releasing ownership. Do not describe the persistent backend as a fresh drained
+CLI child on every turn.
 
 Blocked outcomes must name the cause: unsupported live interactive ownership,
 missing backend, held lease, timeout, surviving child, missing or invalid receipt,

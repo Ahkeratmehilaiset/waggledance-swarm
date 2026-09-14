@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import hashlib
 import os
 import shutil
 import subprocess
@@ -19,6 +21,115 @@ pytestmark = pytest.mark.skipif(os.name != "nt" or not SHELLS, reason="Windows c
 
 def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_actual_hard_hold_retirement_starts_new_paused_owner(shell, tmp_path):
+    """Real contained backend -> cold archive helpers -> real paused backend.
+
+    Only isolated fixtures are retired. The operator-facing launcher and its
+    console confirmation are deliberately not invoked by this model-owned test.
+    """
+    helper_spec = importlib.util.spec_from_file_location(
+        "wd_owned_conversation_fixture", ROOT / "tests/tools/test_wd_codex_conversation.py"
+    )
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
+    script, blocked, before_calls = helper.test_owned_fake_conversation(
+        tmp_path, shell, "timeout", compatibility=True, return_script=True
+    )
+    assert blocked["owner"]["status"] == "blocked"
+    journal = tmp_path / ".codex-audit/wd-turn-loop"
+    runtime = tmp_path / "bridge"
+    pointer = runtime / ".wd-turn-codex-lead-1.owner.json"
+    original = {
+        "journal/" + path.relative_to(journal).as_posix(): path.read_bytes()
+        for path in journal.rglob("*") if path.is_file()
+    }
+    original["runtime-owner-pointer.json"] = pointer.read_bytes()
+    assert any(path.endswith(".pending") for path in original)
+    old_identity = json.loads(original["journal/conversation.json"])
+    compact = tmp_path / ".codex-audit/wd-current-state.json"
+    compact.write_text(json.dumps({
+        "schema": "wd.lane-current.v1", "agent": "codex-lead-1",
+        "worktree": str(tmp_path), "task_id": "original-unresolved-work",
+        "status": "blocked", "next_action": "Review unknown external effects",
+    }), encoding="utf-8")
+    claims = runtime / "work_queue/claims/original.json"
+    claims.parent.mkdir(parents=True)
+    claims.write_text('{"task_id":"original-unresolved-work","status":"claimed"}')
+    protected = {path: path.read_bytes() for path in (compact, claims)}
+    command = f"""
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({quote(REBOOT / 'start-wd-agent.ps1')},[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'Recovery launcher source did not parse' }}
+foreach ($name in @('Resolve-NormalizedPath','Assert-LanePathWithoutReparse','Read-Utf8LaneSnapshot',
+    'Get-WdManagedAttemptInventory','Assert-WdManagedOwnerInactive','Get-WdManagedAttemptEvidence',
+    'Enter-WdManagedAttemptLease','Invoke-WdManagedAttemptRetirement')) {{
+    $definition=$ast.Find({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name}},$true)
+    if ($null -eq $definition) {{ throw "Recovery function absent: $name" }}
+    . ([scriptblock]::Create($definition.Extent.Text))
+}}
+$lease=Enter-WdManagedAttemptLease -RuntimeRoot {quote(runtime)} -Agent codex-lead-1
+try {{
+    # Use the actual process snapshot, including Windows' PID-zero sentinel.
+    $evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)}
+    Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'Isolated regression: abandon uncertain fake-native attempt' | ConvertTo-Json -Depth 8 -Compress
+}} finally {{ $lease.Dispose() }}
+"""
+    retired = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=ROOT, capture_output=True, text=True, timeout=45,
+    )
+    assert retired.returncode == 0, retired.stdout + retired.stderr
+    result = json.loads(retired.stdout)
+    assert result["status"] == "managed_attempt_retired"
+    assert not pointer.exists() and not journal.exists()
+    archive = Path(result["archive_path"])
+    manifest_bytes = Path(result["manifest_path"]).read_bytes()
+    assert hashlib.sha256(manifest_bytes).hexdigest().upper() == result["manifest_sha256"]
+    manifest = json.loads(manifest_bytes)
+    assert manifest["disposition"] == "operator_abandoned_uncertain_attempt"
+    assert manifest["external_effects_unknown"] is True
+    assert manifest["operator_handoff_required"] is True
+    for key in ("task_completion_verified", "replay_performed", "bridge_claims_affected"):
+        assert manifest[key] is False
+    assert manifest["prior_session_id"] == "test-session"
+    assert manifest["prior_generation"] == "a" * 40
+    assert {entry["path"] for entry in manifest["inventory"]} == set(original)
+    for entry in manifest["inventory"]:
+        saved = (archive / entry["path"]).read_bytes()
+        assert saved == original[entry["path"]]
+        assert len(saved) == entry["length"]
+        assert hashlib.sha256(saved).hexdigest().upper() == entry["sha256"]
+
+    # This is a second actual owner process. No synthetic saved conversation is
+    # planted and no automatic arming action is submitted to the new UI.
+    fresh_script = script.replace("'timeout'", "'fresh_paused'")
+    fresh_script = fresh_script.replace("-SessionId test-session", "-SessionId recovered-session")
+    fresh_script = fresh_script.replace("-Generation " + "a" * 40, "-Generation " + "b" * 40)
+    fresh = helper.run(fresh_script, shell, timeout=25)
+    assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+    recovered = json.loads(fresh.stdout)
+    assert recovered["owner"]["status"] == "stopped"
+    assert recovered["owner"]["task_completion_verified"] is False
+    assert recovered["status"]["automatic"] is False
+    assert len(recovered["transport"]) == 1 and recovered["terminals"] == []
+    calls = [json.loads(line) for line in (tmp_path / "rpc.jsonl").read_text().splitlines()]
+    new_calls = calls[len(before_calls):]
+    assert sum(call.get("method") == "thread/start" for call in new_calls) == 1
+    assert not any(call.get("method") in ("thread/resume", "turn/start") for call in new_calls)
+    identity = json.loads((journal / "conversation.json").read_text())
+    assert identity["automatic_enabled"] is False
+    assert identity["initial_context_delivered"] is False
+    assert not list(journal.glob("*.pending"))
+    assert json.loads((archive / "journal/conversation.json").read_bytes()) == old_identity
+    assert Path(result["manifest_path"]).read_bytes() == manifest_bytes
+    for logical_path, content in original.items():
+        assert (archive / logical_path).read_bytes() == content
+    for path, content in protected.items():
+        assert path.read_bytes() == content
 
 
 @pytest.mark.parametrize("shell", SHELLS)

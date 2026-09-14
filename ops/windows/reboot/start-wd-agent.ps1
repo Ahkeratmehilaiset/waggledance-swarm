@@ -24,13 +24,33 @@ param(
   [string] $HandshakeDirectory = '',
   [string] $ExpectedManifestHash = '',
   [switch] $DryRun,
-  [switch] $CheckManagedAdmission
+  [switch] $CheckManagedAdmission,
+  [switch] $RecoverInteractive,
+  [switch] $RetireManagedAttempt,
+  [string] $ReviewedJournalDigest = '',
+  [string] $RetirementReason = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($CheckManagedAdmission -and -not $DryRun) {
   throw 'CheckManagedAdmission requires -DryRun'
+}
+if ($RecoverInteractive -and $RetireManagedAttempt) {
+  throw 'RecoverInteractive and RetireManagedAttempt are mutually exclusive'
+}
+if ($CheckManagedAdmission -and ($RecoverInteractive -or $RetireManagedAttempt)) {
+  throw 'manual Lead recovery cannot be combined with managed admission probing'
+}
+if (-not $RetireManagedAttempt -and ($ReviewedJournalDigest -or $RetirementReason)) {
+  throw 'retirement digest and reason require -RetireManagedAttempt'
+}
+if ($RetireManagedAttempt -and (
+    $ReviewedJournalDigest -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+    [string]::IsNullOrWhiteSpace($RetirementReason) -or
+    $RetirementReason.Length -gt 512 -or
+    $RetirementReason -match '[\x00-\x1F\x7F]')) {
+  throw 'RetireManagedAttempt requires a 64-hex reviewed digest and a 1-512 character reason without control characters'
 }
 $script:WdGitExecutable = ''
 if (-not $ManifestPath) {
@@ -392,6 +412,514 @@ function Assert-WdLaneLaunchAvailable {
   }
 }
 
+function Get-WdManagedAttemptInventory {
+  param(
+    [Parameter(Mandatory)] [string] $PointerPath,
+    [Parameter(Mandatory)] [string] $JournalPath
+  )
+
+  $pointer = [IO.Path]::GetFullPath($PointerPath)
+  $journal = [IO.Path]::GetFullPath($JournalPath).TrimEnd('\')
+  [void](Assert-LanePathWithoutReparse -Path $pointer `
+    -TrustedRoot ([IO.Path]::GetPathRoot($pointer)) -ExpectedType Leaf)
+  [void](Assert-LanePathWithoutReparse -Path $journal `
+    -TrustedRoot ([IO.Path]::GetPathRoot($journal)) -ExpectedType Directory)
+
+  $files = [Collections.ArrayList]::new()
+  $directories = [Collections.Generic.Stack[string]]::new()
+  $directories.Push($journal)
+  $directoryCount = 0
+  while ($directories.Count -gt 0) {
+    $directoryPath = $directories.Pop()
+    [void](Assert-LanePathWithoutReparse -Path $directoryPath `
+      -TrustedRoot ([IO.Path]::GetPathRoot($journal)) -ExpectedType Directory)
+    $directoryCount++
+    if ($directoryCount -gt 4096) {
+      throw 'managed attempt journal exceeds the directory traversal bound'
+    }
+    foreach ($child in @(Get-ChildItem -LiteralPath $directoryPath -Force -ErrorAction Stop)) {
+      if ($child.PSIsContainer) {
+        # Validate before adding the child to the traversal stack. A recursive
+        # provider enumeration could otherwise cross a junction before refusal.
+        [void](Assert-LanePathWithoutReparse -Path $child.FullName `
+          -TrustedRoot ([IO.Path]::GetPathRoot($journal)) -ExpectedType Directory)
+        $directories.Push([string]$child.FullName)
+      } else {
+        [void]$files.Add($child)
+      }
+    }
+  }
+  if ($files.Count -lt 1 -or $files.Count -gt 4096) {
+    throw 'managed attempt journal must contain 1-4096 files'
+  }
+
+  $records = @{}
+  $totalBytes = [int64]0
+  $inputs = @([pscustomobject]@{
+      LogicalPath = 'runtime-owner-pointer.json'; FullName = $pointer
+    })
+  foreach ($file in $files) {
+    [void](Assert-LanePathWithoutReparse -Path $file.FullName `
+      -TrustedRoot ([IO.Path]::GetPathRoot($journal)) -ExpectedType Leaf)
+    $relative = $file.FullName.Substring($journal.Length).TrimStart('\').Replace('\', '/')
+    if ([string]::IsNullOrWhiteSpace($relative) -or $relative -match '[\x00-\x1F\x7F]') {
+      throw 'managed attempt journal contains an unsafe relative path'
+    }
+    $inputs += [pscustomobject]@{ LogicalPath = "journal/$relative"; FullName = $file.FullName }
+  }
+  foreach ($input in $inputs) {
+    $length = [int64](Get-Item -LiteralPath ([string]$input.FullName) -Force -ErrorAction Stop).Length
+    if ($length -lt 0 -or $length -gt (67108864 - $totalBytes)) {
+      throw 'managed attempt evidence exceeds 64 MiB'
+    }
+    $bytes = [IO.File]::ReadAllBytes([string]$input.FullName)
+    if ($bytes.LongLength -ne $length) {
+      throw 'managed attempt evidence changed while it was being read'
+    }
+    $totalBytes += $bytes.LongLength
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
+    finally { $sha.Dispose() }
+    if ($records.ContainsKey([string]$input.LogicalPath)) {
+      throw 'managed attempt journal contains duplicate logical paths'
+    }
+    $records[[string]$input.LogicalPath] = [pscustomobject]@{
+      path = [string]$input.LogicalPath
+      length = [int64]$bytes.LongLength
+      sha256 = $hash
+    }
+  }
+  $paths = [string[]]@($records.Keys)
+  [Array]::Sort($paths, [StringComparer]::Ordinal)
+  $canonical = [Text.StringBuilder]::new('wd.managed-attempt-review.v1' + "`n")
+  $entries = @()
+  foreach ($path in $paths) {
+    $entry = $records[$path]
+    [void]$canonical.Append($entry.path).Append("`t").Append($entry.length).Append("`t").Append($entry.sha256).Append("`n")
+    $entries += $entry
+  }
+  $digestAlgorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    $digest = ([BitConverter]::ToString($digestAlgorithm.ComputeHash(
+      [Text.Encoding]::UTF8.GetBytes($canonical.ToString())
+    ))).Replace('-', '')
+  } finally { $digestAlgorithm.Dispose() }
+  return [pscustomobject]@{
+    schema = 'wd.managed-attempt-review.v1'
+    digest = $digest
+    total_bytes = $totalBytes
+    entries = @($entries)
+  }
+}
+
+function Assert-WdManagedOwnerInactive {
+  param(
+    [Parameter(Mandatory)] [object] $Owner,
+    [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [object[]] $ProcessSnapshot
+  )
+
+  $byPid = @{}
+  foreach ($process in @($ProcessSnapshot | Where-Object { $null -ne $_ })) {
+    $processId = [int]$process.ProcessId
+    if ($processId -eq 0) { continue }
+    if ($processId -lt 0 -or $byPid.ContainsKey($processId)) {
+      throw 'cannot prove old managed owner inactivity from the process snapshot'
+    }
+    $byPid[$processId] = $process
+  }
+  foreach ($binding in @(
+      [pscustomobject]@{ PidName='pid'; StartName='process_start_utc'; Label='managed owner' },
+      [pscustomobject]@{ PidName='child_pid'; StartName='native_process_start_utc'; Label='managed native child' }
+    )) {
+    $pidProperty = $Owner.PSObject.Properties[[string]$binding.PidName]
+    if ($null -eq $pidProperty -or $null -eq $pidProperty.Value -or [int]$pidProperty.Value -le 0) {
+      if ([string]$binding.PidName -ceq 'pid') { throw 'managed owner PID is missing' }
+      continue
+    }
+    $boundPid = [int]$pidProperty.Value
+    if (-not $byPid.ContainsKey($boundPid)) { continue }
+    $startProperty = $Owner.PSObject.Properties[[string]$binding.StartName]
+    $processStart = $byPid[$boundPid].PSObject.Properties['CreationDate']
+    if ($null -eq $startProperty -or [string]::IsNullOrWhiteSpace([string]$startProperty.Value) -or
+        $null -eq $processStart -or $null -eq $processStart.Value) {
+      throw "cannot disambiguate live or reused $($binding.Label) PID $boundPid"
+    }
+    try {
+      if ($startProperty.Value -is [DateTime] -or $startProperty.Value -is [DateTimeOffset]) {
+        $recordedStart = ([DateTimeOffset]$startProperty.Value).ToUniversalTime()
+      } else {
+        $recordedStart = [DateTimeOffset]::ParseExact(
+          [string]$startProperty.Value, 'o', [Globalization.CultureInfo]::InvariantCulture
+        ).ToUniversalTime()
+      }
+      $observedStart = ([DateTimeOffset]$processStart.Value).ToUniversalTime()
+    } catch {
+      throw "cannot parse $($binding.Label) creation time for PID $boundPid"
+    }
+    if ($recordedStart.Ticks -eq $observedStart.Ticks) {
+      throw "$($binding.Label) PID $boundPid is still live"
+    }
+  }
+}
+
+function Get-WdManagedAttemptEvidence {
+  param(
+    [Parameter(Mandatory)] [string] $Agent,
+    [Parameter(Mandatory)] [string] $Worktree,
+    [Parameter(Mandatory)] [string] $RuntimeRoot,
+    [AllowNull()] [AllowEmptyCollection()] [object[]] $ProcessSnapshot
+  )
+
+  if ($Agent -cne 'codex-lead-1') {
+    throw 'manual managed-attempt recovery is Lead-only'
+  }
+  $worktreeFull = [IO.Path]::GetFullPath($Worktree).TrimEnd('\')
+  $runtimeFull = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\')
+  [void](Assert-LanePathWithoutReparse -Path $worktreeFull `
+    -TrustedRoot ([IO.Path]::GetPathRoot($worktreeFull)) -ExpectedType Directory)
+  [void](Assert-LanePathWithoutReparse -Path $runtimeFull `
+    -TrustedRoot ([IO.Path]::GetPathRoot($runtimeFull)) -ExpectedType Directory)
+  $pointer = Join-Path $runtimeFull ".wd-turn-$Agent.owner.json"
+  $journal = Join-Path $worktreeFull '.codex-audit\wd-turn-loop'
+  [void](Assert-LanePathWithoutReparse -Path $pointer `
+    -TrustedRoot ([IO.Path]::GetPathRoot($runtimeFull)) -ExpectedType Leaf)
+  [void](Assert-LanePathWithoutReparse -Path $journal `
+    -TrustedRoot ([IO.Path]::GetPathRoot($worktreeFull)) -ExpectedType Directory)
+  $pointerSnapshot = Read-Utf8LaneSnapshot -Path $pointer
+  if ([Text.Encoding]::UTF8.GetByteCount([string]$pointerSnapshot.Text) -gt 32768) {
+    throw 'managed owner pointer exceeds 32 KiB'
+  }
+  $jsonCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
+  $owner = if ($jsonCommand.Parameters.ContainsKey('DateKind')) {
+    ConvertFrom-Json -InputObject ([string]$pointerSnapshot.Text) -DateKind String -ErrorAction Stop
+  } else {
+    ConvertFrom-Json -InputObject ([string]$pointerSnapshot.Text) -ErrorAction Stop
+  }
+  if ([string]$owner.schema -cne 'wd.lane-turn-owner.v1' -or
+      [string]$owner.agent -cne $Agent -or
+      [string]$owner.session_id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$' -or
+      [string]$owner.generation -cnotmatch '^[0-9a-f]{40}$' -or
+      -not ([string]$owner.worktree).Equals($worktreeFull, [StringComparison]::OrdinalIgnoreCase) -or
+      -not ([string]$owner.journal_root).Equals($journal, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'managed owner identity, worktree, journal or generation is invalid'
+  }
+  $journalOwner = Join-Path $journal 'owner.json'
+  [void](Assert-LanePathWithoutReparse -Path $journalOwner `
+    -TrustedRoot ([IO.Path]::GetPathRoot($worktreeFull)) -ExpectedType Leaf)
+  if ((Read-Utf8LaneSnapshot -Path $journalOwner).Hash -cne [string]$pointerSnapshot.Hash) {
+    throw 'runtime and journal owner records differ; manual recovery cannot choose one'
+  }
+  $pendingFiles = @(Get-ChildItem -LiteralPath $journal -Filter '*.pending' -File -Force)
+  if ($pendingFiles.Count -ne 1 -or
+      [string]$owner.pending_path -cnotmatch 'turn-[0-9a-f]{32}\.pending$') {
+    throw 'manual recovery requires exactly one owner-bound unresolved pending record'
+  }
+  $pendingPath = [IO.Path]::GetFullPath([string]$owner.pending_path)
+  if (-not $pendingPath.Equals($pendingFiles[0].FullName, [StringComparison]::OrdinalIgnoreCase) -or
+      -not (Split-Path -Parent $pendingPath).Equals($journal, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'managed pending record is outside or differs from the owner journal'
+  }
+  $processes = if ($PSBoundParameters.ContainsKey('ProcessSnapshot')) {
+    @($ProcessSnapshot | Where-Object { $null -ne $_ })
+  } else { @(Get-CimInstance Win32_Process -ErrorAction Stop) }
+  Assert-WdManagedOwnerInactive -Owner $owner -ProcessSnapshot $processes
+  $inventory = Get-WdManagedAttemptInventory -PointerPath $pointer -JournalPath $journal
+  return [pscustomobject]@{
+    schema = [string]$inventory.schema
+    agent = $Agent
+    worktree = $worktreeFull
+    runtime_root = $runtimeFull
+    pointer_path = $pointer
+    journal_path = $journal
+    digest = [string]$inventory.digest
+    total_bytes = [int64]$inventory.total_bytes
+    entries = @($inventory.entries)
+    pending_count = $pendingFiles.Count
+    pending_path = $pendingPath
+    owner = $owner
+  }
+}
+
+function Enter-WdManagedAttemptLease {
+  param(
+    [Parameter(Mandatory)] [string] $RuntimeRoot,
+    [Parameter(Mandatory)] [string] $Agent
+  )
+
+  $runtimeFull = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\')
+  $lockPath = Join-Path $runtimeFull ".wd-turn-$Agent.lock"
+  [void](Assert-LanePathWithoutReparse -Path $lockPath `
+    -TrustedRoot ([IO.Path]::GetPathRoot($runtimeFull)) -ExpectedType Leaf)
+  try {
+    return [IO.File]::Open($lockPath, [IO.FileMode]::Open,
+      [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  } catch [IO.IOException] {
+    throw "managed lane lease is held or unavailable; leave the existing owner untouched: $($_.Exception.Message)"
+  }
+}
+
+function Assert-WdTrustedInteractiveBoundary {
+  param(
+    [Parameter(Mandatory)] [object] $BoundaryProcess,
+    [Parameter(Mandatory)] [object] $InvokerProcess
+  )
+
+  if ([string]$BoundaryProcess.Name -cne 'WindowsTerminal.exe' -or
+      $null -eq $BoundaryProcess.PSObject.Properties['ExecutablePath'] -or
+      [string]::IsNullOrWhiteSpace([string]$BoundaryProcess.ExecutablePath)) {
+    throw 'incomplete ancestry did not terminate at a verified Windows Terminal'
+  }
+  $terminalPath = [IO.Path]::GetFullPath([string]$BoundaryProcess.ExecutablePath)
+  if ($terminalPath -cnotmatch '(?i)^C:\\Program Files\\WindowsApps\\Microsoft\.WindowsTerminal_[^\\]+_x64__8wekyb3d8bbwe\\WindowsTerminal\.exe$') {
+    throw 'interactive boundary is not the installed Microsoft Windows Terminal package'
+  }
+  [void](Assert-LanePathWithoutReparse -Path $terminalPath `
+    -TrustedRoot ([IO.Path]::GetPathRoot($terminalPath)) -ExpectedType Leaf)
+  $signature = Get-AuthenticodeSignature -LiteralPath $terminalPath -ErrorAction Stop
+  if ([string]$signature.Status -cne 'Valid' -or
+      $null -eq $signature.SignerCertificate -or
+      [string]$signature.SignerCertificate.Subject -cnotmatch '(?:^|,\s*)O=Microsoft Corporation(?:,|$)') {
+    throw 'interactive boundary does not have a valid Microsoft signature'
+  }
+  $boundarySession = $BoundaryProcess.PSObject.Properties['SessionId']
+  $invokerSession = $InvokerProcess.PSObject.Properties['SessionId']
+  if ($null -eq $boundarySession -or $null -eq $invokerSession -or
+      [int]$boundarySession.Value -ne [int]$invokerSession.Value) {
+    throw 'interactive boundary and launcher are not in the same session'
+  }
+  $boundaryOwner = Invoke-CimMethod -InputObject $BoundaryProcess -MethodName GetOwnerSid -ErrorAction Stop
+  $invokerOwner = Invoke-CimMethod -InputObject $InvokerProcess -MethodName GetOwnerSid -ErrorAction Stop
+  if ([uint32]$boundaryOwner.ReturnValue -ne 0 -or [uint32]$invokerOwner.ReturnValue -ne 0 -or
+      [string]::IsNullOrWhiteSpace([string]$boundaryOwner.Sid) -or
+      [string]$boundaryOwner.Sid -cne [string]$invokerOwner.Sid) {
+    throw 'interactive boundary and launcher do not have the same verified owner SID'
+  }
+}
+
+function Assert-WdOperatorInvocationLineage {
+  param(
+    [int] $CurrentPid = $PID,
+    [AllowNull()] [AllowEmptyCollection()] [object[]] $ProcessSnapshot
+  )
+
+  $processes = if ($PSBoundParameters.ContainsKey('ProcessSnapshot')) {
+    @($ProcessSnapshot | Where-Object { $null -ne $_ })
+  } else { @(Get-CimInstance Win32_Process -ErrorAction Stop) }
+  $byPid = @{}
+  foreach ($process in $processes) {
+    $processId = [int]$process.ProcessId
+    if ($processId -eq 0) { continue }
+    if ($processId -lt 0 -or $byPid.ContainsKey($processId)) {
+      throw 'cannot prove operator invocation lineage from the process snapshot'
+    }
+    $byPid[$processId] = $process
+  }
+  if (-not $byPid.ContainsKey($CurrentPid)) {
+    throw 'current launcher is absent from the process snapshot'
+  }
+  $invoker = $byPid[$CurrentPid]
+  $child = $invoker
+  if ([string]$child.CommandLine -imatch '(?:^|\s)-NonInteractive(?:\s|$)') {
+    throw 'manual recovery refuses a non-interactive PowerShell host'
+  }
+  $visited = @{}
+  for ($depth = 0; $depth -lt 64; $depth++) {
+    $childPid = [int]$child.ProcessId
+    if ($visited.ContainsKey($childPid)) { throw 'operator invocation ancestry contains a PID cycle' }
+    $visited[$childPid] = $true
+    $parentProperty = $child.PSObject.Properties['ParentProcessId']
+    if ($null -eq $parentProperty -or [int]$parentProperty.Value -le 0) {
+      Assert-WdTrustedInteractiveBoundary -BoundaryProcess $child -InvokerProcess $invoker
+      return
+    }
+    $parentPid = [int]$parentProperty.Value
+    if (-not $byPid.ContainsKey($parentPid)) {
+      Assert-WdTrustedInteractiveBoundary -BoundaryProcess $child -InvokerProcess $invoker
+      return
+    }
+    $parent = $byPid[$parentPid]
+    $childStartProperty = $child.PSObject.Properties['CreationDate']
+    $parentStartProperty = $parent.PSObject.Properties['CreationDate']
+    if ($null -eq $childStartProperty -or $null -eq $parentStartProperty -or
+        $null -eq $childStartProperty.Value -or $null -eq $parentStartProperty.Value) {
+      throw 'operator invocation ancestry has unknown creation time'
+    }
+    try {
+      $childStart = ([DateTimeOffset]$childStartProperty.Value).ToUniversalTime()
+      $parentStart = ([DateTimeOffset]$parentStartProperty.Value).ToUniversalTime()
+    } catch { throw 'operator invocation ancestry has an invalid creation time' }
+    if ($parentStart -gt $childStart) {
+      throw 'operator invocation ancestry is inconsistent with process creation times'
+    }
+    $parentName = [string]$parent.Name
+    if ($parentName -imatch '^(codex|claude)\.exe(?:\.old\.[0-9]+)?$') {
+      throw 'manual recovery cannot be invoked by a model-owned native process'
+    }
+    if ($parentName -imatch '^(powershell|pwsh)\.exe$') {
+      $commandLine = [string]$parent.CommandLine
+      if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        throw 'operator invocation PowerShell ancestry is ambiguous'
+      }
+      $fileMatch = [regex]::Match($commandLine,
+        '(?i)(?:^|\s)-File\s+(?:"(?<path>[^"]+)"|''(?<path>[^'']+)''|(?<path>\S+))(?=\s|$)')
+      $launcherLeaf = if ($fileMatch.Success) {
+        [IO.Path]::GetFileName(($fileMatch.Groups['path'].Value -split '\\')[-1])
+      } else { '' }
+      if ($launcherLeaf -iin @('start-wd-agent.ps1', 'start-wd-codex-lead.ps1') -and
+          $commandLine -imatch '(?:^|\s)-Agent\s+["'']?codex-lead-1["'']?(?:\s|$)') {
+        throw 'manual recovery cannot be invoked by another Lead launcher'
+      }
+    }
+    $child = $parent
+  }
+  throw 'operator invocation ancestry exceeds the verification bound'
+}
+
+function Invoke-WdManagedAttemptRetirement {
+  param(
+    [Parameter(Mandatory)] [object] $Evidence,
+    [Parameter(Mandatory)] [string] $ReviewedJournalDigest,
+    [Parameter(Mandatory)] [string] $Reason,
+    [switch] $DryRun
+  )
+
+  if ($ReviewedJournalDigest -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      [string]::IsNullOrWhiteSpace($Reason) -or $Reason.Length -gt 512 -or
+      $Reason -match '[\x00-\x1F\x7F]') {
+    throw 'retirement requires a 64-hex digest and bounded printable reason'
+  }
+  $reviewed = $ReviewedJournalDigest.ToUpperInvariant()
+  $current = Get-WdManagedAttemptInventory `
+    -PointerPath ([string]$Evidence.pointer_path) `
+    -JournalPath ([string]$Evidence.journal_path)
+  if ([string]$Evidence.digest -cne $reviewed -or [string]$current.digest -cne $reviewed) {
+    throw 'managed attempt evidence changed or does not match the reviewed digest'
+  }
+  $auditRoot = Join-Path ([string]$Evidence.worktree) '.codex-audit'
+  [void](Assert-LanePathWithoutReparse -Path $auditRoot `
+    -TrustedRoot ([IO.Path]::GetPathRoot([string]$Evidence.worktree)) -ExpectedType Directory)
+  $archiveRoot = Join-Path $auditRoot 'wd-retired-conversations'
+  $archivePath = Join-Path $archiveRoot $reviewed.ToLowerInvariant()
+  $archiveJournal = Join-Path $archivePath 'journal'
+  $manifestPath = Join-Path $archivePath 'retirement-manifest.json'
+  $archivedPointer = Join-Path $archivePath 'runtime-owner-pointer.json'
+  if (Test-Path -LiteralPath $archivePath) {
+    throw "retirement archive already exists or is partial: $archivePath"
+  }
+  $result = [pscustomobject]@{
+    status = if ([bool]$DryRun) { 'retirement_plan_verified' } else { 'managed_attempt_retired' }
+    dry_run = [bool]$DryRun
+    reviewed_digest = $reviewed
+    archive_path = $archivePath
+    manifest_path = $manifestPath
+    external_effects_unknown = $true
+    task_completion_verified = $false
+  }
+  if ([bool]$DryRun) { return $result }
+
+  $archiveRootCreated = $false
+  $archiveCreated = $false
+  $journalMoved = $false
+  $manifestCreated = $false
+  $temporaryManifest = ''
+  try {
+    if (-not (Test-Path -LiteralPath $archiveRoot -PathType Container)) {
+      [void](New-Item -ItemType Directory -Path $archiveRoot)
+      $archiveRootCreated = $true
+    }
+    [void](Assert-LanePathWithoutReparse -Path $archiveRoot `
+      -TrustedRoot ([IO.Path]::GetPathRoot([string]$Evidence.worktree)) -ExpectedType Directory)
+    [void](New-Item -ItemType Directory -Path $archivePath)
+    $archiveCreated = $true
+    [void](Assert-LanePathWithoutReparse -Path $archivePath `
+      -TrustedRoot ([IO.Path]::GetPathRoot([string]$Evidence.worktree)) -ExpectedType Directory)
+    Move-Item -LiteralPath ([string]$Evidence.journal_path) -Destination $archiveJournal
+    $journalMoved = $true
+    $archivedInventory = Get-WdManagedAttemptInventory `
+      -PointerPath ([string]$Evidence.pointer_path) -JournalPath $archiveJournal
+    if ([string]$archivedInventory.digest -cne $reviewed) {
+      throw 'archived journal bytes differ from the reviewed evidence'
+    }
+    $retirementManifest = [ordered]@{
+      schema = 'wd.managed-attempt-retirement.v1'
+      disposition = 'operator_abandoned_uncertain_attempt'
+      agent = [string]$Evidence.agent
+      reviewed_digest = $reviewed
+      retirement_reason = $Reason
+      retired_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+      prior_session_id = [string]$Evidence.owner.session_id
+      prior_generation = [string]$Evidence.owner.generation
+      prior_status = [string]$Evidence.owner.status
+      original_journal_path = [string]$Evidence.journal_path
+      archive_path = $archivePath
+      external_effects_unknown = $true
+      task_completion_verified = $false
+      replay_performed = $false
+      bridge_claims_affected = $false
+      operator_handoff_required = $true
+      inventory = @($archivedInventory.entries)
+    }
+    $temporaryManifest = "$manifestPath.$PID.tmp"
+    $manifestBytes = [Text.Encoding]::UTF8.GetBytes(
+      ($retirementManifest | ConvertTo-Json -Depth 8)
+    )
+    $stream = [IO.File]::Open($temporaryManifest, [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($manifestBytes, 0, $manifestBytes.Length); $stream.Flush($true) }
+    finally { $stream.Dispose() }
+    Move-Item -LiteralPath $temporaryManifest -Destination $manifestPath
+    $manifestCreated = $true
+    $verifiedManifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json -ErrorAction Stop
+    if ([string]$verifiedManifest.schema -cne 'wd.managed-attempt-retirement.v1' -or
+        [string]$verifiedManifest.reviewed_digest -cne $reviewed -or
+        $verifiedManifest.external_effects_unknown -isnot [bool] -or
+        $verifiedManifest.external_effects_unknown -ne $true -or
+        $verifiedManifest.task_completion_verified -isnot [bool] -or
+        $verifiedManifest.task_completion_verified -ne $false) {
+      throw 'retirement manifest failed verification'
+    }
+    $finalInventory = Get-WdManagedAttemptInventory `
+      -PointerPath ([string]$Evidence.pointer_path) -JournalPath $archiveJournal
+    if ([string]$finalInventory.digest -cne $reviewed) {
+      throw 'managed attempt evidence changed before pointer retirement'
+    }
+    $result | Add-Member -NotePropertyName manifest_sha256 `
+      -NotePropertyValue ((Read-Utf8LaneSnapshot -Path $manifestPath).Hash)
+    # This is deliberately the final filesystem mutation. Until this atomic
+    # same-volume move succeeds, the original runtime pointer keeps managed
+    # startup blocked. Nothing writes or verifies on disk after it succeeds.
+    Move-Item -LiteralPath ([string]$Evidence.pointer_path) -Destination $archivedPointer
+    return $result
+  } catch {
+    $failure = $_
+    if ($temporaryManifest -and (Test-Path -LiteralPath $temporaryManifest -PathType Leaf)) {
+      Remove-Item -LiteralPath $temporaryManifest -Force -ErrorAction SilentlyContinue
+    }
+    if ($manifestCreated -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+      Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($journalMoved -and -not (Test-Path -LiteralPath ([string]$Evidence.journal_path)) -and
+        (Test-Path -LiteralPath $archiveJournal -PathType Container)) {
+      try {
+        $rollbackInventory = Get-WdManagedAttemptInventory `
+          -PointerPath ([string]$Evidence.pointer_path) -JournalPath $archiveJournal
+        if ([string]$rollbackInventory.digest -cne $reviewed) {
+          throw 'archived bytes changed; refusing to contaminate the original journal during rollback'
+        }
+        Move-Item -LiteralPath $archiveJournal -Destination ([string]$Evidence.journal_path)
+      }
+      catch { throw "retirement failed and journal rollback also failed; runtime pointer remains blocking: $($failure.Exception.Message); $($_.Exception.Message)" }
+    }
+    if ($archiveCreated -and (Test-Path -LiteralPath $archivePath -PathType Container)) {
+      Remove-Item -LiteralPath $archivePath -ErrorAction SilentlyContinue
+    }
+    if ($archiveRootCreated -and (Test-Path -LiteralPath $archiveRoot -PathType Container)) {
+      Remove-Item -LiteralPath $archiveRoot -ErrorAction SilentlyContinue
+    }
+    throw $failure
+  }
+}
+
 function Resolve-WdLaneGitApplication {
   param([Parameter(Mandatory)] [string] $ConfiguredPath)
 
@@ -706,6 +1234,17 @@ if ($conversationSurface -ceq 'local_window' -and
   $conversationConfigBaseline = Assert-WdLeadInteractivePostureBaseline `
     -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath
 }
+$manualLeadAction = $RecoverInteractive -or $RetireManagedAttempt
+if ($manualLeadAction -and (
+    $Agent -cne 'codex-lead-1' -or
+    $turnMode -cne 'managed' -or
+    $conversationSurface -cne 'local_window' -or
+    $conversationPermissions.CodexPermissionPosture -cne 'existing_interactive' -or
+    $null -eq $conversationConfigBaseline)) {
+  throw 'manual recovery requires the original reviewed managed/local-window/full-access Lead configuration'
+}
+$launchTurnMode = if ($RecoverInteractive) { 'interactive' } else { $turnMode }
+$launchConversationSurface = if ($RecoverInteractive) { 'none' } else { $conversationSurface }
 
 if (-not $worktree.StartsWith('C:\', [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "lane worktree must be on persistent C: drive: $worktree"
@@ -1064,6 +1603,67 @@ if ($turnMode -ceq 'managed') {
     }
   }
 }
+$manualAttemptEvidence = $null
+$manualAttemptLease = $null
+if ($manualLeadAction) {
+  try {
+    $manualAttemptLease = Enter-WdManagedAttemptLease `
+      -RuntimeRoot $runtimeRoot -Agent $Agent
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+    $manualAttemptEvidence = Get-WdManagedAttemptEvidence `
+      -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
+    if (-not $DryRun) {
+      if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        throw 'actual manual recovery requires an interactive operator console; -NonInteractive and redirected input are refused'
+      }
+      Assert-WdOperatorInvocationLineage
+    }
+    if ($RetireManagedAttempt) {
+      if ([string]$manualAttemptEvidence.digest -cne $ReviewedJournalDigest.ToUpperInvariant()) {
+        throw 'reviewed journal digest does not match the lease-protected managed attempt'
+      }
+      if (-not $DryRun) {
+        $digestPrefix = $ReviewedJournalDigest.ToUpperInvariant().Substring(0, 12)
+        Write-Warning 'Retirement abandons an uncertain attempt; it does not prove external effects were undone or release bridge claims.'
+        $confirmation = Read-Host "Type the reviewed digest prefix $digestPrefix to retire this attempt"
+        if ([string]$confirmation -cne $digestPrefix) {
+          throw 'managed attempt retirement confirmation did not match the reviewed digest prefix'
+        }
+        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+        Assert-WdOperatorInvocationLineage
+        [void](Assert-WdLeadInteractivePostureBaseline `
+          -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
+        $confirmedEvidence = Get-WdManagedAttemptEvidence `
+          -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
+        if ([string]$confirmedEvidence.digest -cne [string]$manualAttemptEvidence.digest) {
+          throw 'managed attempt evidence changed during operator confirmation'
+        }
+        $manualAttemptEvidence = $confirmedEvidence
+      }
+      $retirement = Invoke-WdManagedAttemptRetirement `
+        -Evidence $manualAttemptEvidence `
+        -ReviewedJournalDigest $ReviewedJournalDigest `
+        -Reason $RetirementReason `
+        -DryRun:$DryRun
+      Write-Host ("  retirement archive: {0}" -f $retirement.archive_path)
+      Write-Host ("  reviewed digest:    {0}" -f $retirement.reviewed_digest)
+      Write-Host ("  retirement reason:  {0}" -f $RetirementReason)
+      Write-Warning 'Start a genuinely new managed Lead thread PAUSED, then paste the printed manifest path, digest and reason before directing further work.'
+      return $retirement
+    }
+  } catch {
+    if ($null -ne $manualAttemptLease) {
+      $manualAttemptLease.Dispose()
+      $manualAttemptLease = $null
+    }
+    throw
+  } finally {
+    if ($RetireManagedAttempt -and $null -ne $manualAttemptLease) {
+      $manualAttemptLease.Dispose()
+      $manualAttemptLease = $null
+    }
+  }
+}
 $targetImageDelivery = if ($cliName -ieq 'codex.cmd') {
   'codex_cli_initial_image'
 } else {
@@ -1169,6 +1769,20 @@ $startupPrompt += (
   '.agent-bridge\bin copies or a bare python for bridge tools. Git, build and test commands ' +
   'keep this worktree as their cwd; the pinned code root is not a task repository.'
 )
+if ($RecoverInteractive) {
+  $startupPrompt = $visualBootstrapPrompt + (
+    'OPERATOR-EXPLICIT READ-ONLY INSPECTION SESSION. Do not resume task work, ' +
+    'run mutating tools, replay a command, publish completion, change compact state, ' +
+    'release or transfer a bridge claim, or treat this session as a checkpoint. ' +
+    'Automation is disabled. First inspect and explain only the unresolved managed ' +
+    "owner pointer $($manualAttemptEvidence.pointer_path) and pending record " +
+    "$($manualAttemptEvidence.pending_path), whose lease-protected review digest is " +
+    "$($manualAttemptEvidence.digest). External effects remain unknown. Report the " +
+    'facts to the operator and wait for an explicit next instruction. Retirement, if ' +
+    'chosen, must be performed later by the separate guarded launcher command after ' +
+    'this CLI exits; this conversation cannot self-retire the attempt.'
+  )
+}
 $continuationPrompt = $startupPrompt.Substring($visualBootstrapPrompt.Length)
 
 if (-not $HandshakeDirectory) {
@@ -1197,51 +1811,71 @@ Write-Host ("  head:     {0}" -f $actualHead)
 Write-Host ("  run_id:   {0}" -f $RunId)
 Write-Host ("  cli:      {0}" -f $cliName)
 Write-Host ("  model:    {0} ({1})" -f $model, $effort)
-Write-Host ("  mode:     {0}" -f $turnMode)
-Write-Host ("  control:  {0}" -f $conversationSurface)
+Write-Host ("  mode:     {0} (configured: {1})" -f $launchTurnMode, $turnMode)
+Write-Host ("  control:  {0} (configured: {1})" -f $launchConversationSurface, $conversationSurface)
 Write-Host ("  target:   {0}" -f [string]$targetState.id)
 Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
+if ($RecoverInteractive) {
+  Write-Host ("  unresolved pointer: {0}" -f $manualAttemptEvidence.pointer_path)
+  Write-Host ("  pending record:      {0}" -f $manualAttemptEvidence.pending_path)
+  Write-Host ("  review digest:       {0}" -f $manualAttemptEvidence.digest)
+  Write-Warning 'This is read-only inspection of an uncertain attempt, not replay, completion, or rollback of external effects.'
+}
 
 if ($DryRun) {
   if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
     Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
   }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
-  return [pscustomobject]@{
-    agent = $Agent
-    run_id = $RunId
-    worktree = $worktree
-    branch = $actualBranch
-    head = $actualHead
-    cli = $cliName
-    cli_executable = $cliPath
-    cli_executable_sha256 = $cliExecutableHash
-    model = $model
-    effort = $effort
-    turn_mode = $turnMode
-    turn_runner_sha256 = $turnRunnerHash
-    conversation_surface = $conversationSurface
-    conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
-    conversation_config_baseline = $conversationConfigBaseline
-    conversation_code_sha256 = $conversationCodeHashes
-    resume_policy = $resumePolicy
-    target_state_id = [string]$targetState.id
-    target_state_image_path = $targetImagePath
-    target_state_image_sha256 = [string]$targetState.image_sha256
-    target_state_image_delivery = $targetImageDelivery
-    target_state_image_initial_turn_only = $true
-    parallel_policy_id = [string]$parallelPolicy.id
-    compact_state_path = $laneCurrentStatePath
-    compact_state_status = $laneCurrentStateStatus
-    bridge_code_context = $bridgeCodeContext
-    dry_run = $true
+  try {
+    return [pscustomobject]@{
+      agent = $Agent
+      run_id = $RunId
+      worktree = $worktree
+      branch = $actualBranch
+      head = $actualHead
+      cli = $cliName
+      cli_executable = $cliPath
+      cli_executable_sha256 = $cliExecutableHash
+      model = $model
+      effort = $effort
+      turn_mode = $launchTurnMode
+      configured_turn_mode = $turnMode
+      turn_runner_sha256 = $turnRunnerHash
+      conversation_surface = $launchConversationSurface
+      configured_conversation_surface = $conversationSurface
+      conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
+      conversation_config_baseline = $conversationConfigBaseline
+      conversation_code_sha256 = $conversationCodeHashes
+      resume_policy = $resumePolicy
+      target_state_id = [string]$targetState.id
+      target_state_image_path = $targetImagePath
+      target_state_image_sha256 = [string]$targetState.image_sha256
+      target_state_image_delivery = $targetImageDelivery
+      target_state_image_initial_turn_only = $true
+      parallel_policy_id = [string]$parallelPolicy.id
+      compact_state_path = $laneCurrentStatePath
+      compact_state_status = $laneCurrentStateStatus
+      bridge_code_context = $bridgeCodeContext
+      interactive_recovery = [bool]$RecoverInteractive
+      managed_attempt_digest = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.digest } else { '' }
+      managed_attempt_pointer = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.pointer_path } else { '' }
+      managed_attempt_pending_count = if ($null -ne $manualAttemptEvidence) { [int]$manualAttemptEvidence.pending_count } else { 0 }
+      dry_run = $true
+    }
+  } finally {
+    if ($null -ne $manualAttemptLease) {
+      $manualAttemptLease.Dispose()
+      $manualAttemptLease = $null
+    }
   }
 }
 
+try {
 if ($turnMode -ceq 'managed') {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
 }
-if ($turnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
+if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
 }
 
@@ -1307,9 +1941,12 @@ $targetPayload = [ordered]@{
   capability_effect = 'none'
   model = $model
   effort = $effort
-  turn_mode = $turnMode
+  turn_mode = $launchTurnMode
+  configured_turn_mode = $turnMode
   turn_runner_sha256 = $turnRunnerHash
-  conversation_surface = $conversationSurface
+  conversation_surface = $launchConversationSurface
+  configured_conversation_surface = $conversationSurface
+  interactive_recovery = [bool]$RecoverInteractive
   conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
   conversation_config_baseline = $conversationConfigBaseline
   conversation_code_sha256 = $conversationCodeHashes
@@ -1444,9 +2081,14 @@ $handshake = [ordered]@{
   model_selection = 'explicit'
   model = $model
   effort = $effort
-  turn_mode = $turnMode
+  turn_mode = $launchTurnMode
+  configured_turn_mode = $turnMode
   turn_runner_sha256 = $turnRunnerHash
-  conversation_surface = $conversationSurface
+  conversation_surface = $launchConversationSurface
+  configured_conversation_surface = $conversationSurface
+  interactive_recovery = [bool]$RecoverInteractive
+  managed_attempt_digest = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.digest } else { '' }
+  managed_attempt_pointer = if ($null -ne $manualAttemptEvidence) { [string]$manualAttemptEvidence.pointer_path } else { '' }
   conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
   conversation_config_baseline = $conversationConfigBaseline
   conversation_code_sha256 = $conversationCodeHashes
@@ -1499,7 +2141,7 @@ if (
   throw "lane '$Agent' CLI application changed after its handshake"
 }
 
-if ($turnMode -ceq 'managed') {
+if ($launchTurnMode -ceq 'managed') {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
   if ($null -ne $conversationConfigBaseline) {
     [void](Assert-WdLeadInteractivePostureBaseline `
@@ -1533,6 +2175,9 @@ if ($turnMode -ceq 'managed') {
     Forever = $true; ShowLifecycle = $true
   }
   if ($conversationSurface -ceq 'local_window') {
+    # A Lead operator turn has an explicit one-hour wall-clock bound. This is
+    # not inherited by peer managed modes or by the manual inspection CLI.
+    $managedTurnParameters['TurnTimeoutSeconds'] = 3600
     $managedTurnParameters['NetworkAccess'] = $conversationPermissions.NetworkAccess
     $managedTurnParameters['AdditionalWritableRoots'] = @($conversationPermissions.AdditionalWritableRoots)
     $managedTurnParameters['CodexPermissionPosture'] = $conversationPermissions.CodexPermissionPosture
@@ -1562,6 +2207,17 @@ if ($turnMode -ceq 'managed') {
   return
 }
 
+if ($RecoverInteractive) {
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdOperatorInvocationLineage
+  [void](Assert-WdLeadInteractivePostureBaseline `
+    -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
+  $finalRecoveryEvidence = Get-WdManagedAttemptEvidence `
+    -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
+  if ([string]$finalRecoveryEvidence.digest -cne [string]$manualAttemptEvidence.digest) {
+    throw 'managed attempt evidence changed before interactive recovery launch'
+  }
+}
 $launchArguments = @()
 if ($cliName -ieq 'claude.cmd') {
   $launchArguments += @(
@@ -1591,4 +2247,10 @@ try {
 }
 if ($null -ne $cliExitCode -and $cliExitCode -ne 0) {
   throw "lane '$Agent' CLI exited with code $cliExitCode"
+}
+} finally {
+  if ($null -ne $manualAttemptLease) {
+    $manualAttemptLease.Dispose()
+    $manualAttemptLease = $null
+  }
 }

@@ -71,10 +71,15 @@ trust entries, remain covered. Ambiguous multiline syntax is refused. The whole
 file hash is recorded for audit but not used to block cosmetic counter updates.
 After a deliberate security-relevant config change, review and release a
 new baseline through the normal workflow; never rewrite an installed manifest.
-The requested unattended mode starts new conversations with automation enabled;
-automatic turns use the same full access as ordinary Lead work. Pause/interrupt
-is explicit and persists across restart. A Job Object contains process lifetime,
-not filesystem or network access; it is not an external sandbox.
+This fingerprint is a launch-time admission check, not continuous policy
+revocation after the native process has started. A fresh full-access Lead thread
+starts **PAUSED**. Sending a message does not arm automation: the operator must
+use the separate automation toggle, and only an exactly matching saved thread
+identity resumes its recorded automation choice. Automatic turns use the same
+full access as ordinary Lead work. Pause/interrupt is explicit and persists
+across restart. Each Lead turn has an explicit 3,600-second wall-clock bound.
+A Job Object contains process lifetime, not filesystem or network access; it is
+not an external sandbox.
 Existing authenticated plugin connections remain technically reachable under
 full access. This setting does not authorize using mail, design or other external
 accounts outside the operator's task; those permissions are not a UI sandbox.
@@ -181,6 +186,61 @@ before local acknowledgement is lost. Unknown-effect work stays on hold; neither
 RPC timeout nor a new message authorizes replay, and remote idempotency is not
 claimed by the journal.
 
+If the original contained server is no longer live, the normal launcher remains
+blocked on that unresolved owner and journal. The only fallback in this version
+is an operator-explicit Lead inspection session:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RecoverInteractive -DryRun
+powershell -STA -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RecoverInteractive
+```
+
+The launcher first verifies the original managed/local-window/full-access Lead
+configuration and its launch-time config baseline, bundle and CLI pins, canonical
+worktree, cold lane lease, owner/native inactivity, and exact pending evidence.
+It refuses an ambiguous PID, a live native or owner, a non-interactive host, and
+an invocation descended from Codex, Claude, or another Lead launcher. If a
+terminal's parent has exited, the ancestry walk accepts only a non-reparse,
+validly Microsoft-signed Windows Terminal in the same user SID and desktop
+session. This same-user boundary plus typed confirmation is an advisory guard,
+not cryptographic human attestation. The launcher holds the managed lane lease
+for the entire interactive subprocess. The prompt allows
+read-only inspection first; it does not replay the turn, mutate the journal,
+manufacture a checkpoint, continue task work, or infer that external effects did
+not occur. This switch is never selected by fleet startup or an automatic
+fallback.
+
+After inspection, the operator may deliberately abandon the uncertain attempt
+and return the lane to a genuinely new managed thread. First copy the exact
+64-hex digest printed by recovery and choose a bounded reason, then plan and run:
+
+```powershell
+$Digest = '<exact 64-hex review digest>'
+$Reason = '<why the inspected uncertain attempt is being abandoned>'
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RetireManagedAttempt -ReviewedJournalDigest $Digest -RetirementReason $Reason -DryRun
+powershell -STA -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 -RetireManagedAttempt -ReviewedJournalDigest $Digest -RetirementReason $Reason
+```
+
+Actual retirement must run in an interactive operator console and requires the
+operator to type the displayed 12-character digest prefix. Under the cold lease,
+the launcher recomputes the digest, archives the journal byte-for-byte under
+`<worktree>\.codex-audit\wd-retired-conversations\<digest>\journal`, writes and
+verifies a sibling `retirement-manifest.json`, then moves the runtime owner
+pointer to sibling `runtime-owner-pointer.json` as the final filesystem mutation.
+Failure before that last move restores the original journal when possible and
+leaves the pointer blocking; an existing or partial destination refuses reuse.
+The manifest states `operator_abandoned_uncertain_attempt`,
+`external_effects_unknown: true`, and `task_completion_verified: false`.
+Retirement does not release or transfer bridge claims, prove remote/local effects
+were undone, mark bridge work complete, edit compact state, or replay anything.
+
+The next ordinary managed startup therefore creates a new, paused thread. It
+does not automatically inherit the retired provider transcript or archive.
+Before directing further work, the operator must paste the printed retirement
+manifest path, digest, and reason into that paused window as advisory context.
+That explicit human handoff is not authority or hidden history recovery; the old
+provider identity and all local evidence remain in the immutable archive.
+
 Local journaling and display buffers are bounded. Unresolved evidence is retained
 for reconciliation; do not delete it simply to clear a guard. Native provider
 transcripts are outside local journal retention and are not guaranteed unlimited.
@@ -208,7 +268,11 @@ completion. Latest-turn checkpoint state and last verified checkpoint are distin
 Legacy headless mode retains readiness v1; a v1 record cannot attest a v2 window.
 The separate colored, read-only bridge monitor remains on by default after a
 successful fleet restore (`-NoBridgeConversation` opts out). It includes bridge
-events from all emitters; it does not itself make Grok an always-running agent.
+events from all emitters. The GUI's bridge tab is currently an unconnected
+placeholder, not an integrated monitor. Closing the Tools window stops only its
+consumer; because the supervisor is returned to HOLD after restore, it remains
+stopped until a later deliberate supervisor run. Neither view makes Grok an
+always-running agent.
 
 Do not replace the current interactive Lead while it is running. Keep all peers
 and existing work intact while validating the replacement. Stage the committed

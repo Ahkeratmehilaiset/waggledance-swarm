@@ -1354,6 +1354,153 @@ $managedTurnParameters=@{{Agent=$Agent;Model=$Model;Effort='ultra';ImagePath='ex
     }
 
 
+def test_lead_manual_recovery_is_explicit_and_never_fleet_scheduled() -> None:
+    launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    fleet_launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    assert "[switch] $RecoverInteractive" in launcher
+    assert "[switch] $RetireManagedAttempt" in launcher
+    assert "[string] $ReviewedJournalDigest" in launcher
+    assert "[string] $RetirementReason" in launcher
+    assert "Read-Host" in launcher
+    assert "operator_abandoned_uncertain_attempt" in launcher
+    assert "external_effects_unknown = $true" in launcher
+    assert "task_completion_verified = $false" in launcher
+    assert "$managedTurnParameters['TurnTimeoutSeconds'] = 3600" in launcher
+    for switch in ("RecoverInteractive", "RetireManagedAttempt"):
+        assert switch not in fleet_launcher
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path and lease semantics")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_lead_manual_recovery_inventory_and_retirement_are_byte_preserving(
+    tmp_path: Path, ps: str,
+) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    root = str(tmp_path).replace("'", "''")
+    result = _run_powershell(fr"""
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+foreach ($name in @(
+  'Resolve-NormalizedPath','Assert-LanePathWithoutReparse','Read-Utf8LaneSnapshot',
+  'Get-WdManagedAttemptInventory','Assert-WdManagedOwnerInactive',
+  'Get-WdManagedAttemptEvidence','Enter-WdManagedAttemptLease',
+  'Invoke-WdManagedAttemptRetirement'
+)) {{
+  $fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}},$true)
+  if (-not $fn) {{ throw "missing recovery function $name" }}
+  . ([scriptblock]::Create($fn.Extent.Text))
+}}
+$worktree=Join-Path '{root}' 'worktree'; $runtime=Join-Path '{root}' 'runtime'
+$audit=Join-Path $worktree '.codex-audit'; $journal=Join-Path $audit 'wd-turn-loop'
+[void][IO.Directory]::CreateDirectory($journal); [void][IO.Directory]::CreateDirectory($runtime)
+$pending=Join-Path $journal 'turn-0123456789abcdef0123456789abcdef.pending'
+[IO.File]::WriteAllBytes($pending,[byte[]](0,1,2,3,255))
+[IO.File]::WriteAllText((Join-Path $journal 'conversation.json'),'{{"thread":"provider-thread"}}',[Text.UTF8Encoding]::new($false))
+$pointer=Join-Path $runtime '.wd-turn-codex-lead-1.owner.json'
+$owner=[ordered]@{{schema='wd.lane-turn-owner.v1';agent='codex-lead-1';session_id='old-session';generation=('a'*40);
+  pid=2147483000;process_start_utc='2026-09-14T08:00:00.0000000Z';child_pid=$null;status='blocked';
+  worktree=$worktree;journal_root=$journal;pending_path=$pending;last_disposition='native_completion_uncertain'}}
+$ownerText=$owner | ConvertTo-Json -Depth 8
+[IO.File]::WriteAllText($pointer,$ownerText,[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $journal 'owner.json'),$ownerText,[Text.UTF8Encoding]::new($false))
+$idle=[pscustomobject]@{{ProcessId=0;ParentProcessId=0;Name='System Idle Process';CreationDate=$null;CommandLine=$null}}
+$live=[pscustomobject]@{{ProcessId=2147483000;ParentProcessId=0;Name='powershell.exe';CommandLine='powershell';CreationDate=[datetimeoffset]'2026-09-14T08:00:00Z'}}
+$liveBlocked=$false
+try {{ [void](Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree $worktree -RuntimeRoot $runtime -ProcessSnapshot @($idle,$live)) }} catch {{ $liveBlocked=$true }}
+$live.CreationDate=[datetimeoffset]'2026-09-14T08:00:01Z'
+$reusedAccepted=$null -ne (Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree $worktree -RuntimeRoot $runtime -ProcessSnapshot @($idle,$live))
+$before=@{{}}
+foreach($file in @($pointer)+(Get-ChildItem -LiteralPath $journal -File -Recurse)) {{
+  $filePath=if($file -is [IO.FileInfo]){{$file.FullName}}else{{[string]$file}}
+  $before[[IO.Path]::GetFileName($filePath)]=(Read-Utf8LaneSnapshot -Path $filePath).Hash
+}}
+$evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree $worktree -RuntimeRoot $runtime -ProcessSnapshot @()
+$lockPath=Join-Path $runtime '.wd-turn-codex-lead-1.lock'
+[IO.File]::WriteAllBytes($lockPath,[byte[]]@())
+$held=[IO.File]::Open($lockPath,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+$leaseBlocked=$false
+try {{ [void](Enter-WdManagedAttemptLease -RuntimeRoot $runtime -Agent codex-lead-1) }} catch {{ $leaseBlocked=$true }}
+$held.Dispose()
+$lease=Enter-WdManagedAttemptLease -RuntimeRoot $runtime -Agent codex-lead-1
+try {{
+  $wrongRejected=$false
+  try {{ [void](Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest ('0'*64) -Reason 'reviewed and abandoned' -DryRun) }} catch {{ $wrongRejected=$true }}
+  $dry=Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'reviewed and abandoned' -DryRun
+  $pointerHold=[IO.File]::Open($pointer,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  $partialBlocked=$false
+  try {{ [void](Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'reviewed and abandoned') }} catch {{ $partialBlocked=$true }}
+  finally {{ $pointerHold.Dispose() }}
+  $restored=(Test-Path -LiteralPath $pointer -PathType Leaf) -and (Test-Path -LiteralPath $journal -PathType Container)
+  $evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree $worktree -RuntimeRoot $runtime -ProcessSnapshot @()
+  $done=Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'reviewed and abandoned'
+}} finally {{ $lease.Dispose() }}
+$manifest=Get-Content -LiteralPath $done.manifest_path -Raw | ConvertFrom-Json
+$after=@{{}}
+foreach($file in @(Join-Path $done.archive_path 'runtime-owner-pointer.json')+(Get-ChildItem -LiteralPath (Join-Path $done.archive_path 'journal') -File -Recurse)) {{
+  $filePath=if($file -is [IO.FileInfo]){{$file.FullName}}else{{[string]$file}}
+  $after[[IO.Path]::GetFileName($filePath)]=(Read-Utf8LaneSnapshot -Path $filePath).Hash
+}}
+$rerunRejected=$false
+try {{ [void](Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'reviewed and abandoned') }} catch {{ $rerunRejected=$true }}
+[pscustomobject]@{{digest=$evidence.digest;pending=$evidence.pending_count;live_blocked=$liveBlocked;reused_accepted=$reusedAccepted;lease_blocked=$leaseBlocked;
+  wrong_rejected=$wrongRejected;dry=$dry.dry_run;partial_blocked=$partialBlocked;restored=$restored;
+  archived=(-not (Test-Path -LiteralPath $pointer) -and -not (Test-Path -LiteralPath $journal));
+  exact=(@(Compare-Object $before.GetEnumerator() $after.GetEnumerator()).Count -eq 0);
+  disposition=[string]$manifest.disposition;unknown=[bool]$manifest.external_effects_unknown;
+  verified=[bool]$manifest.task_completion_verified;rerun_rejected=$rerunRejected}} | ConvertTo-Json -Compress
+""", executable=ps, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout)
+    assert re.fullmatch(r"[0-9A-F]{64}", observed["digest"])
+    assert observed == {
+        "digest": observed["digest"], "pending": 1, "live_blocked": True,
+        "reused_accepted": True, "lease_blocked": True,
+        "wrong_rejected": True, "dry": True, "partial_blocked": True,
+        "restored": True, "archived": True, "exact": True,
+        "disposition": "operator_abandoned_uncertain_attempt", "unknown": True,
+        "verified": False, "rerun_rejected": True,
+    }
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_retirement_operator_boundary_rejects_model_ancestry(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(fr"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+foreach($name in @('Assert-WdTrustedInteractiveBoundary','Assert-WdOperatorInvocationLineage')) {{
+ $fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}},$true)
+ if (-not $fn) {{ throw "missing operator-lineage function $name" }}
+ . ([scriptblock]::Create($fn.Extent.Text))
+}}
+function Assert-LanePathWithoutReparse {{ param($Path,$TrustedRoot,$ExpectedType) return $Path }}
+function Get-AuthenticodeSignature {{ param($LiteralPath,$ErrorAction) [pscustomobject]@{{Status='Valid';SignerCertificate=[pscustomobject]@{{Subject='CN=Microsoft Corporation, O=Microsoft Corporation, C=US'}}}} }}
+function Invoke-CimMethod {{ param($InputObject,$MethodName,$ErrorAction) [pscustomobject]@{{ReturnValue=[uint32]0;Sid='S-1-5-21-test'}} }}
+function Row($processId,$parent,$name,$command,$second) {{ [pscustomobject]@{{ProcessId=$processId;ParentProcessId=$parent;Name=$name;
+  CommandLine=$command;CreationDate=([datetimeoffset]'2026-09-14T08:00:00Z').AddSeconds($second);SessionId=1;ExecutablePath=$null}} }}
+$terminal=@((Row 100 99 'powershell.exe' 'powershell -File start-wd-agent.ps1 -Agent codex-lead-1' 2),(Row 99 8592 'WindowsTerminal.exe' 'WindowsTerminal.exe' 1))
+$terminal[1].ExecutablePath='C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe'
+$model=@($terminal[0],(Row 99 98 'powershell.exe' 'powershell -Command child' 1),(Row 98 0 'codex.exe' 'codex app-server' 0))
+$lane=@($terminal[0],(Row 99 0 'powershell.exe' 'powershell -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1' 1))
+$ok=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $terminal; $ok=$true }} catch {{}}
+$modelRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $model }} catch {{ $modelRejected=$true }}
+$laneRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $lane }} catch {{ $laneRejected=$true }}
+$terminal[0].CommandLine='powershell -NonInteractive -File start-wd-agent.ps1'
+$nonInteractiveRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $terminal }} catch {{ $nonInteractiveRejected=$true }}
+$terminal[0].CommandLine='powershell -File start-wd-agent.ps1'
+$terminal[1].ExecutablePath='C:\Temp\WindowsTerminal.exe'
+$fakeTerminalRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $terminal }} catch {{ $fakeTerminalRejected=$true }}
+[pscustomobject]@{{ok=$ok;model=$modelRejected;lane=$laneRejected;noninteractive=$nonInteractiveRejected;fake_terminal=$fakeTerminalRejected}} | ConvertTo-Json -Compress
+""", executable=ps, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {
+        "ok": True, "model": True, "lane": True,
+        "noninteractive": True, "fake_terminal": True,
+    }
+
+
 def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> None:
     launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     policy = (REBOOT / "WD_SWARM_PARALLEL_POLICY_V1.md").read_text(encoding="utf-8")

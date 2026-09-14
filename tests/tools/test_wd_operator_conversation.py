@@ -31,6 +31,131 @@ def test_operator_view_exists():
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+def test_agent_labels_are_backend_supplied_without_pooled_context(shell):
+    record = run_ps(shell, """
+$labels=@()
+foreach ($entry in @(@('codex-lead-1','gpt-5.6-sol / ultra'),@('codex-tools-1','gpt-5.6-terra / high'),@('claude-rco-1','sonnet / max'),@('claude-rco-2','sonnet / max'),@('fable-5','fable / max'))) {
+  $view=New-WdOperatorConversationView -Headless -AgentLabel $entry[0] -ModelLabel $entry[1] -Title ($entry[0] + ' conversation')
+  $labels += [pscustomobject]@{agent=$view.State.AgentLabel;model=$view.State.ModelLabel;title=$view.State.Title;scope=$view.State.ContextNotice}
+}
+$labels | ConvertTo-Json -Depth 4 -Compress
+""")
+    assert [row["agent"] for row in record] == ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"]
+    assert [row["model"] for row in record] == ["gpt-5.6-sol / ultra", "gpt-5.6-terra / high", "sonnet / max", "sonnet / max", "fable / max"]
+    assert all(row["title"] == row["agent"] + " conversation" for row in record)
+    assert all("separate sessions" in row["scope"] for row in record)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_interrupt_is_latched_until_terminal_not_polling_or_rpc_ack(shell):
+    record = run_ps(shell, """
+$view=New-WdOperatorConversationView -Headless
+Set-WdOperatorConversationStatus -View $view -TurnActive $true -CanInterrupt $true -OwnerEpoch e1 -ObservedTurnId t1
+Submit-WdOperatorConversationAction -View $view -Kind interrupt
+[void]@(Get-WdOperatorConversationActions -View $view)
+Set-WdOperatorConversationStatus -View $view -TurnActive $true -CanInterrupt $true -OwnerEpoch e1 -ObservedTurnId t1
+$blocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind interrupt } catch { $blocked=$true }
+$waiting=$view.State.Interrupting
+Set-WdOperatorConversationStatus -View $view -TurnActive $true -CanInterrupt $true -Interrupting $false
+$stillBlocked=-not $view.State.CanInterrupt
+Set-WdOperatorConversationStatus -View $view -TurnActive $false -CanInterrupt $false -ObservedTurnId ''
+$cleared=-not $view.State.Interrupting
+Set-WdOperatorConversationStatus -View $view -TurnActive $true -CanInterrupt $true -ObservedTurnId t2
+Submit-WdOperatorConversationAction -View $view -Kind interrupt
+[pscustomobject]@{blocked=$blocked;waiting=$waiting;stillBlocked=$stillBlocked;cleared=$cleared;nextCount=@(Get-WdOperatorConversationActions -View $view).Count} | ConvertTo-Json -Compress
+""")
+    assert record == {"blocked": True, "waiting": True, "stillBlocked": True, "cleared": True, "nextCount": 1}
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_user_rows_distinguish_pending_native_acceptance_rejection_and_unknown(shell):
+    record = run_ps(shell, """
+$view=New-WdOperatorConversationView -Headless
+Set-WdOperatorConversationStatus -View $view -CanSend $true
+$before=@(); $after=@()
+foreach ($outcome in @('accepted','rejected','unknown')) {
+  Submit-WdOperatorConversationAction -View $view -Kind send -Text ($outcome + ' message')
+  $action=@(Get-WdOperatorConversationActions -View $view)[0]
+  $row=@($view.State.Messages | Where-Object {$_.ItemId -ceq $action.id})[0]
+  $before += $row.DeliveryState
+  Resolve-WdOperatorConversationAction -View $view -ActionId $action.id -DeliveryState $outcome -Reason 'native outcome'
+  $after += $row.DeliveryState
+}
+[pscustomobject]@{before=$before;after=$after;rows=$view.State.Messages.Count;pending=$view.PendingSends.Count;status=$view.State.Status} | ConvertTo-Json -Compress
+""")
+    assert record["before"] == ["pending"] * 3
+    assert record["after"] == ["accepted", "rejected", "unknown"]
+    assert record["rows"] == 3 and record["pending"] == 0
+    assert "unknown" in record["status"].lower() and "Draft retained" in record["status"]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_reconciliation_is_explicit_idle_text_only_and_not_ordinary_resume(shell):
+    record = run_ps(shell, """
+$view=New-WdOperatorConversationView -Headless
+$unavailable=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text 'Inspect the outcome without changing files' } catch { $unavailable=$true }
+Set-WdOperatorConversationStatus -View $view -CanReconcile $true -RecoveryReason 'Known terminal turn needs read-only reconciliation' -TurnActive $false -CanSend $true -CanToggleAutomation $true -AutomationEnabled $false -OwnerEpoch e1 -ObservedTurnId t1
+$ordinaryBlocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind send -Text 'Continue.' } catch { $ordinaryBlocked=$true }
+$automaticBlocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind automation_toggle -Enabled $true } catch { $automaticBlocked=$true }
+$emptyBlocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind reconcile } catch { $emptyBlocked=$true }
+$imagesBlocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text 'Inspect' -Paths @('image.png') } catch { $imagesBlocked=$true }
+Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text 'Inspect the outcome without changing files'
+$action=@(Get-WdOperatorConversationActions -View $view)[0]
+$repeatBlocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text 'again' } catch { $repeatBlocked=$true }
+Resolve-WdOperatorConversationAction -View $view -ActionId $action.id -DeliveryState accepted
+Set-WdOperatorConversationStatus -View $view -TurnActive $true -CanReconcile $true
+$activeBlocked=$false
+try { Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text 'again' } catch { $activeBlocked=$true }
+[pscustomobject]@{unavailable=$unavailable;ordinaryBlocked=$ordinaryBlocked;automaticBlocked=$automaticBlocked;emptyBlocked=$emptyBlocked;imagesBlocked=$imagesBlocked;repeatBlocked=$repeatBlocked;activeBlocked=$activeBlocked;action=$action;delivery=$view.State.Messages[0].DeliveryState;automation=$view.State.AutomationEnabled} | ConvertTo-Json -Depth 5 -Compress
+""")
+    assert all(record[key] for key in ["unavailable", "ordinaryBlocked", "automaticBlocked", "emptyBlocked", "imagesBlocked", "repeatBlocked", "activeBlocked"])
+    assert record["action"]["kind"] == "reconcile" and record["action"]["text"] == "Inspect the outcome without changing files"
+    assert record["action"]["owner_epoch"] == "e1" and record["delivery"] == "accepted"
+    assert record["automation"] is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="WinForms needs Windows")
+@pytest.mark.parametrize("shell", SHELLS)
+def test_offscreen_agent_delivery_interrupt_and_reconcile_controls(shell):
+    record = run_ps(shell, """
+$view=New-WdOperatorConversationView -Hidden -Title 'Tools conversation' -AgentLabel codex-tools-1 -ModelLabel 'gpt-5.6-terra / high (pinned)'
+$click=[Reflection.BindingFlags]'Instance,NonPublic'
+Set-WdOperatorConversationStatus -View $view -CanSend $true -CanInterrupt $true -TurnActive $true -OwnerEpoch e1 -ObservedTurnId t1
+$view.Controls.Input.Text='adjust this turn'
+[void]$view.Controls.Send.GetType().GetMethod('OnClick',$click).Invoke($view.Controls.Send,@([EventArgs]::Empty))
+$send=@(Get-WdOperatorConversationActions -View $view)[0]
+$pending=$view.Controls.Transcript.Text.Contains('[user - pending]')
+Resolve-WdOperatorConversationAction -View $view -ActionId $send.id -DeliveryState unknown
+$unknown=$view.Controls.Transcript.Text.Contains('[user - unknown]') -and $view.Controls.Input.Text -ceq 'adjust this turn'
+[void]$view.Controls.Interrupt.GetType().GetMethod('OnClick',$click).Invoke($view.Controls.Interrupt,@([EventArgs]::Empty))
+[void]@(Get-WdOperatorConversationActions -View $view)
+Set-WdOperatorConversationStatus -View $view -CanInterrupt $true -TurnActive $true
+$stopping=-not $view.Controls.Interrupt.Enabled -and $view.Controls.Interrupt.Text -ceq 'Stopping...'
+Set-WdOperatorConversationStatus -View $view -CanReconcile $true -RecoveryReason 'Original work remains unresolved' -CanSend $false -CanToggleAutomation $false -TurnActive $false -CanInterrupt $false
+$onlyRecovery=$view.Controls.Reconcile.Enabled -and -not $view.Controls.Send.Enabled -and -not $view.Controls.Continue.Enabled -and -not $view.Controls.Automation.Enabled
+$view.Controls.Input.Text='Inspect the existing outcome read-only'
+[void]$view.Controls.Reconcile.GetType().GetMethod('OnClick',$click).Invoke($view.Controls.Reconcile,@([EventArgs]::Empty))
+$reconcile=@(Get-WdOperatorConversationActions -View $view)[0]
+$retained=$view.Controls.Input.Text -ceq $reconcile.text
+Resolve-WdOperatorConversationAction -View $view -ActionId $reconcile.id -DeliveryState accepted
+$accepted=$view.Controls.Transcript.Text.Contains('[user - accepted]') -and $view.Controls.Input.Text.Length -eq 0
+$title=$view.Form.Text
+Close-WdOperatorConversationView -View $view
+[pscustomobject]@{title=$title;pending=$pending;unknown=$unknown;stopping=$stopping;onlyRecovery=$onlyRecovery;kind=$reconcile.kind;retained=$retained;accepted=$accepted} | ConvertTo-Json -Compress
+""")
+    assert record == {"title": "Tools conversation", "pending": True, "unknown": True,
+                      "stopping": True, "onlyRecovery": True, "kind": "reconcile",
+                      "retained": True, "accepted": True}
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_actions_require_backend_availability_and_are_not_falsely_sent(shell):
     record = run_ps(shell, """
 $view=New-WdOperatorConversationView -Headless
@@ -41,13 +166,14 @@ Submit-WdOperatorConversationAction -View $view -Kind send -Text 'Adjust this sa
 Submit-WdOperatorConversationAction -View $view -Kind automation_toggle -Enabled $false
 Submit-WdOperatorConversationAction -View $view -Kind interrupt
 $actions=@(Get-WdOperatorConversationActions -View $view)
-[pscustomobject]@{blocked=$blocked;actions=$actions;remaining=@(Get-WdOperatorConversationActions -View $view).Count;messages=$view.State.Messages.Count;automation=$view.State.AutomationEnabled;status=$view.State.Status} | ConvertTo-Json -Depth 8 -Compress
+[pscustomobject]@{blocked=$blocked;actions=$actions;remaining=@(Get-WdOperatorConversationActions -View $view).Count;messages=$view.State.Messages.Count;delivery=$view.State.Messages[0].DeliveryState;automation=$view.State.AutomationEnabled;status=$view.State.Status} | ConvertTo-Json -Depth 8 -Compress
 """)
     assert record["blocked"] is True
     assert [action["kind"] for action in record["actions"]] == ["send", "automation_toggle", "interrupt"]
     assert record["actions"][0]["owner_epoch"] == "e1"
     assert record["actions"][0]["observed_turn_id"] == "t1"
-    assert record["remaining"] == record["messages"] == 0
+    assert record["remaining"] == 0 and record["messages"] == 1
+    assert record["delivery"] == "pending"
     assert record["automation"] is True  # Backend, not the click, confirms state.
     assert "Queued" in record["status"]
 
@@ -210,7 +336,11 @@ Close-WdOperatorConversationView -View $view
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows contained fake transport")
 @pytest.mark.parametrize("shell", SHELLS)
-def test_real_headless_view_backend_steer_question_and_checkpoint(shell, tmp_path):
+@pytest.mark.parametrize("agent,model,effort,label", [
+    ("codex-lead-1", "gpt-5.6-sol", "ultra", "Lead"),
+    ("codex-tools-1", "gpt-5.6-terra", "high", "Tools"),
+])
+def test_real_headless_view_backend_steer_question_and_checkpoint(shell, tmp_path, agent, model, effort, label):
     """Real UI API and real owner loop; only the native model process is fake."""
     runtime = tmp_path / "bridge"
     runtime.mkdir()
@@ -259,8 +389,8 @@ function New-WdConversationNativeProcess {{ param($CliPath,$Worktree)
 $script:actualFactory=${{function:New-WdOperatorConversationView}}
 $script:actualPump=${{function:Update-WdOperatorConversationView}}
 $script:stage=0; $script:initial=$true
-function New-WdOperatorConversationView {{ param([switch]$Headless)
-    $script:actualView=& $script:actualFactory -Headless
+function New-WdOperatorConversationView {{ param([switch]$Headless,[string]$AgentLabel,[string]$ModelLabel,[string]$Title)
+    $script:actualView=& $script:actualFactory @PSBoundParameters
     $script:initial=$script:actualView.State.CanSend
     return $script:actualView
 }}
@@ -276,11 +406,14 @@ function Update-WdOperatorConversationView {{ param($View)
         Submit-WdOperatorConversationAction -View $View -Kind close
     }}
 }}
-$owner=Invoke-WdCodexConversationLoop -CliPath {quote(native_python)} -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} -SessionId ui-integration -Generation {'b'*40} -CompactStatePath {quote(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt 'Scoped fake test' -Headless -RpcTimeoutSeconds 3 -TurnTimeoutSeconds 8 -MaxIterations 160
-[pscustomobject]@{{initial=$script:initial;stage=$script:stage;closed=$script:actualView.State.Closed;owner=$owner;messages=$script:actualView.State.Messages.ToArray()}} | ConvertTo-Json -Depth 12 -Compress
+$owner=Invoke-WdCodexConversationLoop -Agent {quote(agent)} -Model {quote(model)} -Effort {quote(effort)} -CliPath {quote(native_python)} -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} -SessionId ui-integration -Generation {'b'*40} -CompactStatePath {quote(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt 'Scoped fake test' -Headless -RpcTimeoutSeconds 3 -TurnTimeoutSeconds 8 -MaxIterations 160
+[pscustomobject]@{{initial=$script:initial;stage=$script:stage;closed=$script:actualView.State.Closed;label=$script:actualView.State.AgentLabel;model=$script:actualView.State.ModelLabel;owner=$owner;messages=$script:actualView.State.Messages.ToArray()}} | ConvertTo-Json -Depth 12 -Compress
 """)
     assert record["initial"] is False and record["stage"] == 2 and record["closed"] is True
     assert record["owner"]["last_disposition"] == "idle"
+    assert record["label"] == label and record["model"] == f"{label}: {model} / {effort} (pinned)"
+    user_rows = [message for message in record["messages"] if message["Role"] == "user"]
+    assert len(user_rows) == 1 and user_rows[0]["DeliveryState"] == "accepted"
     calls = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
     assert sum(call.get("method") == "thread/start" for call in calls) == 1
     assert sum(call.get("method") == "turn/start" for call in calls) == 1

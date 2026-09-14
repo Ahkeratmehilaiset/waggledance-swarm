@@ -78,6 +78,7 @@
     ]
   },
   "tools_supervisor": {
+    "conversation_surface": "local_window",
     "task_name": "WD-Supervisor",
     "snapshot_path": "C:\\Python\\wd_supervisor_loop_snapshot.json",
     "snapshot_schema": "wd.supervisor-loop.v2",
@@ -125,6 +126,15 @@
       "cli": "codex.cmd",
       "turn_mode": "managed",
       "conversation_surface": "local_window",
+      "conversation_permissions": {
+        "posture": "existing_interactive",
+        "network_access": true,
+        "additional_writable_roots": []
+      },
+      "conversation_config_baseline": {
+        "path": "C:\\Users\\janik\\.codex\\config.toml",
+        "security_sha256": "4DF9B547F7B2E3F2864E7C2D599E1D94CDF7DA56E26E41EDCF7575A854CDC67E"
+      },
       "model": "gpt-5.6-sol",
       "effort": "ultra",
       "resume_policy": "current_worktree",

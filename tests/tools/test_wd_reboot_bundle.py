@@ -763,6 +763,133 @@ def test_managed_lead_has_a_conversation_surface_without_combining_peer_sessions
         assert f"'{filename}'," in (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
 
 
+def test_tools_window_is_supervisor_owned_and_permissions_are_explicit() -> None:
+    fleet = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    tools = json.loads((REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8"))["tools_consumer"]
+    assert fleet["tools_supervisor"]["conversation_surface"] == "local_window"
+    assert tools["conversation_surface"] == "local_window"
+    assert "codex-tools-1" not in [lane["agent"] for lane in fleet["lanes"]]
+    lead = next(lane for lane in fleet["lanes"] if lane["agent"] == "codex-lead-1")
+    assert lead["conversation_permissions"] == {
+        "posture": "existing_interactive",
+        "network_access": True,
+        "additional_writable_roots": [],
+    }
+    assert tools["conversation_permissions"] == {
+        "network_access": True, "additional_writable_roots": [],
+    }
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_conversation_permission_config_does_not_coerce_invalid_values(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+$fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-WdLaneConversationPermissions'}},$true)
+if (-not $fn) {{ throw 'missing permission parser' }}
+. ([scriptblock]::Create($fn.Extent.Text))
+$default=Get-WdLaneConversationPermissions -Lane ([pscustomobject]@{{}})
+$valid=Get-WdLaneConversationPermissions -Lane ([pscustomobject]@{{conversation_permissions=[pscustomobject]@{{network_access=$true;additional_writable_roots=@('C:\\Python\\project2\\.git')}}}})
+$compat=Get-WdLaneConversationPermissions -Lane ([pscustomobject]@{{agent='codex-lead-1';conversation_permissions=[pscustomobject]@{{posture='existing_interactive';network_access=$true;additional_writable_roots=@()}}}})
+$blocked=0
+foreach ($policy in @(
+  [pscustomobject]@{{network_access='false';additional_writable_roots=@()}},
+  [pscustomobject]@{{network_access=$true;additional_writable_roots='C:\\Python'}},
+  [pscustomobject]@{{network_access=$true;additional_writable_roots=@(123)}},
+  [pscustomobject]@{{network_access=$true;additional_writable_roots=@();arbitrary=$true}}
+  [pscustomobject]@{{posture='existing_interactive';network_access=$true;additional_writable_roots=@()}}
+)) {{ try {{ [void](Get-WdLaneConversationPermissions -Lane ([pscustomobject]@{{conversation_permissions=$policy}})) }} catch {{ $blocked++ }} }}
+[pscustomobject]@{{default_network=$default.NetworkAccess;default_count=@($default.AdditionalWritableRoots).Count;network=$valid.NetworkAccess;roots=@($valid.AdditionalWritableRoots);posture=$compat.CodexPermissionPosture;blocked=$blocked}} | ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {"default_network": False, "default_count": 0,
+        "network": True, "roots": [r"C:\Python\project2\.git"], "posture": "existing_interactive", "blocked": 5}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launch paths")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_lead_compatibility_refuses_changed_user_or_project_config(tmp_path: Path, ps: str) -> None:
+    config = tmp_path / "user-config.toml"
+    config.write_text('approval_policy = "never"\nsandbox_mode = "danger-full-access"\n', encoding="utf-8")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    digest = hashlib.sha256(config.read_bytes()).hexdigest().upper()
+    security_digest = hashlib.sha256(config.read_text(encoding="utf-8").encode("utf-8")).hexdigest().upper()
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+foreach ($name in @('Resolve-NormalizedPath','Assert-LanePathWithoutReparse','Read-Utf8LaneSnapshot','Get-WdCodexSecurityFingerprint','Assert-WdLeadInteractivePostureBaseline')) {{
+ $fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}},$true)
+ if (-not $fn) {{ throw "missing function $name" }}
+ . ([scriptblock]::Create($fn.Extent.Text))
+}}
+$lane=[pscustomobject]@{{conversation_config_baseline=[pscustomobject]@{{path='{config}';security_sha256='{security_digest}'}}}}
+$ok=Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}'
+$original=[IO.File]::ReadAllText('{config}')
+[IO.File]::AppendAllText('{config}', '[notice]'+"`n"+'hidden = true'+"`n"+'[tui.model_availability_nux]'+"`n"+'count = 999'+"`n")
+$ui=Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}'
+[IO.File]::WriteAllText('{config}', $original)
+$blocked=0
+try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{tmp_path / 'other.toml'}' | Out-Null }} catch {{ $blocked++ }}
+[IO.File]::AppendAllText('{config}', '# operator changed configuration')
+try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}' | Out-Null }} catch {{ $blocked++ }}
+[IO.File]::WriteAllText('{config}', 'approval_policy = "never"'+[Environment]::NewLine+'sandbox_mode = "read-only"')
+$lane.conversation_config_baseline.security_sha256=Get-WdCodexSecurityFingerprint -Text (Read-Utf8LaneSnapshot -Path '{config}').Text
+try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}' | Out-Null }} catch {{ $blocked++ }}
+[IO.File]::WriteAllText('{config}', 'approval_policy = "never"'+[Environment]::NewLine+'sandbox_mode = "danger-full-access"')
+$lane.conversation_config_baseline.security_sha256=Get-WdCodexSecurityFingerprint -Text (Read-Utf8LaneSnapshot -Path '{config}').Text
+[void][IO.Directory]::CreateDirectory('{worktree / '.codex'}')
+[IO.File]::WriteAllText('{worktree / '.codex/config.toml'}', 'sandbox_mode = "read-only"')
+try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}' | Out-Null }} catch {{ $blocked++ }}
+[pscustomobject]@{{hash=$ok.sha256;sandbox=$ok.sandbox_mode;approval=$ok.approval_policy;blocked=$blocked;ui_accepted=($ui.security_sha256 -ceq $ok.security_sha256 -and $ui.sha256 -cne $ok.sha256)}} | ConvertTo-Json -Compress
+""", executable=ps, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {"hash": digest, "sandbox": "danger-full-access", "approval": "never", "blocked": 4, "ui_accepted": True}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_codex_security_fingerprint_ignores_only_exact_ui_tables(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+$fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-WdCodexSecurityFingerprint'}},$true)
+if (-not $fn) {{ throw 'missing security fingerprint helper' }}
+. ([scriptblock]::Create($fn.Extent.Text))
+$base='approval_policy = "never"'+"`n"+'sandbox_mode = "danger-full-access"'+"`n"
+$ui1='[notice]'+"`n"+'hide = true'+"`n"+'[tui.model_availability_nux]'+"`n"+'count = 1'+"`n"
+$ui2=$ui1.Replace('true','false').Replace('1','999')
+$protected='[plugins.example]'+"`n"+'enabled = false'+"`n"+'[projects.example]'+"`n"+'trust_level = "trusted"'+"`n"
+$expected=Get-WdCodexSecurityFingerprint ($base+$protected)
+$same=@(
+ (Get-WdCodexSecurityFingerprint ($base+$ui1+$protected)),
+ (Get-WdCodexSecurityFingerprint ($base+$ui2+$protected)),
+ (Get-WdCodexSecurityFingerprint (($base+$ui2+$protected).Replace("`n","`r`n")))
+)
+$different=@()
+foreach ($text in @(
+ ($base.Replace('danger-full-access','read-only')+$ui2+$protected),
+ ($base+$ui2+$protected.Replace('false','true')),
+ ($base+$ui2+$protected.Replace('trusted','untrusted')),
+ ($base+$ui2+$protected+"# unknown change`n"),
+ ($base+$ui2+'[notice.child]'+"`n"+'value = 1'+"`n"+$protected),
+ ($base+$ui2+'[mcp_servers.example]'+"`n"+'enabled = true'+"`n"+$protected)
+)) {{ $different+=((Get-WdCodexSecurityFingerprint $text) -cne $expected) }}
+$ambiguous=$false
+try {{ Get-WdCodexSecurityFingerprint ($base+'[notice]'+"`n"+'value = '+([string][char]34)*3+"`n"+'[plugins.example]') | Out-Null }} catch {{ $ambiguous=$true }}
+[pscustomobject]@{{expected=$expected;same=$same;different=$different;ambiguous=$ambiguous}} | ConvertTo-Json -Compress
+""", executable=ps, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    value = json.loads(result.stdout)
+    assert value["same"] == [value["expected"]] * 3
+    assert value["different"] == [True] * 6
+    assert value["ambiguous"] is True
+
+
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
 def test_conversation_surface_rejects_unknown_or_other_lane_modes(ps: str) -> None:
     launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
@@ -4842,8 +4969,9 @@ $rootResult = Invoke-AttestationCase -Bundle $rootJunction
     os.name != "nt",
     reason="Tools generation probe requires Windows path semantics",
 )
+@pytest.mark.parametrize("conversation", [False, True], ids=["legacy", "conversation"])
 def test_tools_process_generation_distinguishes_current_stale_and_legacy(
-    tmp_path: Path,
+    tmp_path: Path, conversation: bool,
 ) -> None:
     launcher_path = REBOOT / "start-wd-all.ps1"
     launcher = str(launcher_path).replace("'", "''")
@@ -4895,6 +5023,7 @@ $config = [pscustomobject]@{{
   model = 'gpt-5.6-terra'
   reasoning_effort = 'high'
   python_executable = '{python_executable}'
+  conversation_surface = '{"local_window" if conversation else "none"}'
 }}
 $bundleGeneration = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 $targetState = [pscustomobject]@{{
@@ -4946,6 +5075,25 @@ $ready = [ordered]@{{
   append_canary_latency_ms = 100
   ready_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
 }}
+if ($config.conversation_surface -ceq 'local_window') {{
+  $ready.schema='wd.tools-consumer-ready.v2'
+  $ready.status='transport_ready'
+  $ready.conversation_surface='local_window'
+  $ready.readiness_scope='ui_transport_only'
+  $ready.transport_ready=$true
+  $ready.native_checkpoint_verified=$false
+  $ready.task_completion_verified=$false
+  $ready.thread_id='fixture-owned-thread'
+  $ready.native_pid=201
+  $ready.native_parent_pid=101
+  $ready.native_process_start_utc=$processStarted.AddMilliseconds(200).ToString('o')
+  $ready.transport_ready_at_utc=$ready.ready_at_utc
+}}
+function Get-CimInstance {{
+  param($ClassName,$Filter,$ErrorAction)
+  if ($ClassName -cne 'Win32_Process' -or $Filter -cne 'ProcessId=201') {{ throw 'unexpected native process query' }}
+  return [pscustomobject]@{{ProcessId=201;ParentProcessId=$ready.native_parent_pid;Name='codex.exe';CreationDate=$processStarted.AddMilliseconds(200);ExecutablePath=$codexExecutable}}
+}}
 $ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
 $stale = [pscustomobject]@{{
   ProcessId = 102
@@ -4987,6 +5135,7 @@ $bundleCurrent = [pscustomobject]@{{
   )
 }}
 $ready.pid = 105
+if ($config.conversation_surface -ceq 'local_window') {{ $ready.native_parent_pid=105 }}
 $ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
 $bundleState = Get-ToolsProcessState `
   -ToolsConfig $config `
@@ -4994,6 +5143,7 @@ $bundleState = Get-ToolsProcessState `
   -Processes @($bundleCurrent) `
   -BundleLauncherScript $bundleLauncher
 $ready.pid = 101
+if ($config.conversation_surface -ceq 'local_window') {{ $ready.native_parent_pid=101 }}
 $ready.target_state_manifested = 'false'
 $ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
 $stringTargetRejected = -not (Test-ToolsProcessReadiness $current $config $bundleGeneration)
@@ -5005,6 +5155,23 @@ $ready.append_canary = $true
 $ready.append_canary_latency_ms = '100'
 $ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
 $stringLatencyRejected = -not (Test-ToolsProcessReadiness $current $config $bundleGeneration)
+$ready.append_canary_latency_ms=100
+$v2InvalidRejected=$true
+if ($config.conversation_surface -ceq 'local_window') {{
+  foreach ($mutation in @('schema','native_process_start_utc','native_checkpoint_verified','transport_ready','task_completion_verified')) {{
+    $saved=$ready[$mutation]
+    switch ($mutation) {{
+      schema {{ $ready.schema='wd.tools-consumer-ready.v1' }}
+      native_process_start_utc {{ $ready.native_process_start_utc=$processStarted.AddMinutes(-10).ToString('o') }}
+      native_checkpoint_verified {{ $ready.native_checkpoint_verified='false' }}
+      transport_ready {{ $ready.transport_ready='true' }}
+      task_completion_verified {{ $ready.task_completion_verified=$true }}
+    }}
+    $ready | ConvertTo-Json | Set-Content -LiteralPath '{readiness_path}' -Encoding UTF8
+    if (Test-ToolsProcessReadiness $current $config $bundleGeneration) {{ $v2InvalidRejected=$false }}
+    $ready[$mutation]=$saved
+  }}
+}}
 [pscustomobject]@{{
   current = @($state.current).Count
   current_pid = [int](@($state.current)[0].ProcessId)
@@ -5018,6 +5185,7 @@ $stringLatencyRejected = -not (Test-ToolsProcessReadiness $current $config $bund
   string_target_rejected = $stringTargetRejected
   string_canary_rejected = $stringCanaryRejected
   string_latency_rejected = $stringLatencyRejected
+  v2_invalid_rejected = $v2InvalidRejected
 }} | ConvertTo-Json -Compress
 """
     )
@@ -5034,6 +5202,7 @@ $stringLatencyRejected = -not (Test-ToolsProcessReadiness $current $config $bund
         "string_target_rejected": True,
         "string_canary_rejected": True,
         "string_latency_rejected": True,
+        "v2_invalid_rejected": True,
     }
 
 

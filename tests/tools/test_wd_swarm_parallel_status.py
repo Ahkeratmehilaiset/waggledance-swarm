@@ -56,7 +56,8 @@ def fleet(request):
         manifest.write_text(json.dumps({
             "schema_version": 2, "git_executable": shutil.which("git"),
             "runtime_root": str(root), "handshake_root": str(root / "handshakes"), "lanes": lanes[:-1],
-            "tools_supervisor": dict(lanes[-1], task_name="WD-Supervisor", readiness_path=str(ready)),
+            "tools_supervisor": dict(lanes[-1], task_name="WD-Supervisor", readiness_path=str(ready),
+                                     model="gpt-5.6-terra", reasoning_effort="high"),
         }), encoding="utf-8")
         pointer = root / "pointer.json"
         pointer.write_text(json.dumps({
@@ -80,7 +81,7 @@ def checkpoint(fleet, index=-1):
 
 
 def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
-               started=None, lane_processes=None):
+               started=None, lane_processes=None, runtime_processes=None):
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in fleet["root"].rglob("*") if p.is_file()}
     process_body = {
         "absent": "return",
@@ -88,6 +89,8 @@ def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
         "present": "[pscustomobject]@{ ProcessId = 12345; CreationDate = [datetime]" + quote(started or fleet["started"]) +
         "; CommandLine = " + quote("powershell.exe -File start-wd-tools-consumer.ps1 -Generation " + generation) + " }",
     }[process]
+    if runtime_processes is not None:
+        process_body = "$wanted=[int]($Filter -replace '^ProcessId=',''); foreach ($row in (ConvertFrom-Json -InputObject " + quote(json.dumps(runtime_processes)) + ")) { if ([int]$row.ProcessId -eq $wanted) { $row } }"
     task_body = "throw 'task query unavailable'" if task == "unknown" else "[pscustomobject]@{ State = " + quote(task) + " }"
     command = """
 function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
@@ -140,6 +143,155 @@ def test_conversation_configuration_is_not_live_window_or_context_proof(fleet):
     assert lead["conversation_control_verified"] is False
     assert lead["turn_execution"]["observed_turn_mode"] == "legacy_interactive"
     assert lead["turn_execution"]["turn_execution_verified"] is False
+
+
+def test_tools_and_lead_configured_windows_are_separate_from_live_control_evidence(fleet):
+    manifest = json.loads(fleet["manifest"].read_text())
+    manifest["lanes"][0].update(turn_mode="managed", conversation_surface="local_window")
+    manifest["tools_supervisor"]["conversation_surface"] = "local_window"
+    fleet["manifest"].write_text(json.dumps(manifest))
+    report = run_status(fleet)
+    assert [lane["configured_conversation_surface"] for lane in report["lanes"]] == ["local_window", "none", "none", "none", "local_window"]
+    assert all(lane["conversation_control_verified"] is False for lane in report["lanes"])
+    tools = report["lanes"][-1]
+    assert tools["runtime"]["identity"] == "unknown"
+    assert tools["runtime"]["reason"] == "conversation_readiness_v2_required"
+    assert tools["runnable_evidence"] != "observed"
+
+
+@pytest.mark.parametrize("posture,expected", [
+    (None, "workspace_write"), ("workspace_write", "workspace_write"),
+    ("existing_interactive", "existing_interactive"), ("guess", "unknown"),
+    ("malformed_policy", "unknown"),
+])
+def test_configured_permission_posture_is_not_live_permission_evidence(fleet, posture, expected):
+    manifest = json.loads(fleet["manifest"].read_text())
+    manifest["lanes"][0]["conversation_surface"] = "local_window"
+    if posture is not None:
+        manifest["lanes"][0]["conversation_permissions"] = (
+            "invalid policy object" if posture == "malformed_policy" else
+            {"posture": posture, "network_access": True, "additional_writable_roots": []}
+        )
+    manifest["tools_supervisor"]["conversation_surface"] = "local_window"
+    fleet["manifest"].write_text(json.dumps(manifest))
+    _, process = lane_handshake(fleet, mode=None)
+    report = run_status(fleet, lane_processes=[process])
+    assert [lane["configured_permission_posture"] for lane in report["lanes"]] == [
+        expected, "not_applicable", "not_applicable", "not_applicable", "workspace_write"
+    ]
+    assert report["lanes"][0]["turn_execution"]["observed_turn_mode"] == "legacy_interactive"
+    assert all(lane["conversation_control_verified"] is False for lane in report["lanes"])
+    assert "not live" in report["semantics"]["configured_permission_posture"]
+    assert "Name='cfg_posture'" in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_unknown_tools_surface_cannot_reuse_legacy_readiness(fleet):
+    manifest = json.loads(fleet["manifest"].read_text())
+    manifest["tools_supervisor"]["conversation_surface"] = "guess"
+    fleet["manifest"].write_text(json.dumps(manifest))
+    tools = run_status(fleet)["lanes"][-1]
+    assert tools["configured_conversation_surface"] == "unknown"
+    assert tools["runtime"]["identity"] == "unknown"
+    assert tools["runnable_evidence"] != "observed"
+
+
+def tools_conversation_ready(fleet):
+    manifest = json.loads(fleet["manifest"].read_text())
+    manifest["tools_supervisor"]["conversation_surface"] = "local_window"
+    fleet["manifest"].write_text(json.dumps(manifest))
+    now = datetime.now(timezone.utc)
+    native_started = (now - timedelta(seconds=90)).isoformat()
+    native_path = str(fleet["root"] / "codex.exe")
+    update(fleet["ready"], schema="wd.tools-consumer-ready.v2", status="transport_ready",
+           readiness_scope="ui_transport_only", conversation_surface="local_window",
+           transport_ready=True, task_completion_verified=False,
+           transport_ready_at_utc=(now - timedelta(seconds=60)).isoformat(),
+           agent="codex-tools-1", model="gpt-5.6-terra", reasoning_effort="high",
+           run_id="tools-session", session_id="tools-session", thread_id="tools-thread",
+           native_pid=23456, native_parent_pid=12345, native_process_start_utc=native_started,
+           codex_command=native_path, native_checkpoint_verified=False)
+    return [
+        {"Name": "powershell.exe", "ProcessId": 12345, "CreationDate": fleet["started"],
+         "CommandLine": f'powershell.exe -STA -File "{fleet["root"] / "start-wd-tools-consumer.ps1"}" -Generation {GENERATION}'},
+        {"Name": "codex.exe", "ProcessId": 23456, "ParentProcessId": 12345,
+         "CreationDate": native_started, "ExecutablePath": native_path,
+         "CommandLine": f'"{native_path}" app-server --listen stdio://'},
+    ]
+
+
+def test_tools_v2_transport_identity_does_not_imply_checkpoint_or_progress(fleet):
+    processes = tools_conversation_ready(fleet)
+    tools = run_status(fleet, runtime_processes=processes)["lanes"][-1]
+    assert tools["runtime"]["identity"] == "matched"
+    assert tools["runtime"]["readiness_scope"] == "ui_transport_only"
+    assert tools["runtime"]["transport_ready_verified"] is True
+    assert tools["runtime"]["observed_native_pid"] == 23456
+    assert tools["runtime"]["thread_id"] == "tools-thread"
+    assert tools["runtime"]["native_checkpoint"]["latest_final_recorded_verified"] is False
+    assert tools["runnable_evidence"] == "unknown"
+    assert tools["conversation_control_verified"] is False
+    assert tools["progress"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("case", ["native_absent", "native_pid_reused", "native_parent", "native_path", "wrapper_file", "wrapper_generation_quote", "wrapper_generation_duplicate", "multiple_native", "thread_missing", "session_mismatch", "truthy_transport", "future_transport", "wrong_pin"])
+def test_tools_v2_unbound_transport_is_never_positive(fleet, case):
+    processes = tools_conversation_ready(fleet)
+    if case == "native_absent": processes.pop()
+    if case == "native_pid_reused": processes[1]["CreationDate"] = datetime.now(timezone.utc).isoformat()
+    if case == "native_parent": processes[1]["ParentProcessId"] = 999
+    if case == "native_path": processes[1]["ExecutablePath"] = str(fleet["root"] / "other-codex.exe")
+    if case == "wrapper_file": processes[0]["CommandLine"] = processes[0]["CommandLine"].replace("start-wd-tools-consumer.ps1", "unrelated.ps1")
+    if case == "wrapper_generation_quote": processes[0]["CommandLine"] = processes[0]["CommandLine"].replace(GENERATION, '"' + GENERATION + "'")
+    if case == "wrapper_generation_duplicate": processes[0]["CommandLine"] += " -Generation " + GENERATION
+    if case == "multiple_native": processes.append(dict(processes[1]))
+    if case == "thread_missing": update(fleet["ready"], thread_id="")
+    if case == "session_mismatch": update(fleet["ready"], session_id="other-session")
+    if case == "truthy_transport": update(fleet["ready"], transport_ready="true")
+    if case == "future_transport": update(fleet["ready"], transport_ready_at_utc="2099-01-01T00:00:00Z")
+    if case == "wrong_pin": update(fleet["ready"], model="other-model")
+    tools = run_status(fleet, runtime_processes=processes)["lanes"][-1]
+    assert tools["runtime"]["identity"] != "matched"
+    assert tools["runtime"]["transport_ready_verified"] is False
+    assert tools["runtime"]["observed_native_pid"] is None
+    assert tools["conversation_control_verified"] is False
+    assert tools["runnable_evidence"] != "observed"
+
+
+def test_tools_v2_latest_final_is_separate_from_previous_checkpoint(fleet):
+    processes = tools_conversation_ready(fleet)
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat()
+    update(fleet["ready"], last_turn_id="turn-"+"b"*32, last_native_turn_id="native-second",
+           last_native_status="interrupted", last_turn_disposition="interrupted",
+           last_turn_finalized_at_utc=stamp, native_checkpoint_verified=False,
+           last_checkpoint_turn_id="turn-"+"c"*32, last_checkpoint_native_turn_id="native-first",
+           last_checkpoint_disposition="blocked", last_checkpoint_verified_at_utc=stamp)
+    tools = run_status(fleet, runtime_processes=processes)["lanes"][-1]
+    checkpoint_record = tools["runtime"]["native_checkpoint"]
+    assert checkpoint_record["status"] == "recorded"
+    assert checkpoint_record["latest_final_recorded_verified"] is False
+    assert checkpoint_record["last_turn_id"] == "turn-"+"b"*32
+    assert checkpoint_record["last_checkpoint_turn_id"] == "turn-"+"c"*32
+    assert tools["progress"]["status"] == "unknown" and tools["runnable_evidence"] == "unknown"
+
+
+@pytest.mark.parametrize("case", ["valid", "truthy_flag", "wrong_turn", "future_time"])
+def test_tools_v2_checkpoint_record_does_not_replace_transport_or_progress_evidence(fleet, case):
+    processes = tools_conversation_ready(fleet)
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=20)).isoformat()
+    update(fleet["ready"], last_turn_id="turn-"+"b"*32, last_native_turn_id="native-turn",
+           last_native_status="completed", last_turn_disposition="blocked",
+           last_turn_finalized_at_utc=stamp, native_checkpoint_verified=True,
+           last_checkpoint_turn_id="turn-"+"b"*32, last_checkpoint_native_turn_id="native-turn",
+           last_checkpoint_disposition="blocked", last_checkpoint_verified_at_utc=stamp)
+    if case == "truthy_flag": update(fleet["ready"], native_checkpoint_verified="true")
+    if case == "wrong_turn": update(fleet["ready"], last_checkpoint_turn_id="turn-"+"c"*32)
+    if case == "future_time": update(fleet["ready"], last_checkpoint_verified_at_utc="2099-01-01T00:00:00Z")
+    tools = run_status(fleet, runtime_processes=processes)["lanes"][-1]
+    assert tools["runtime"]["identity"] == "matched" and tools["runtime"]["transport_ready_verified"] is True
+    assert tools["runtime"]["native_checkpoint"]["latest_final_recorded_verified"] is (case == "valid")
+    assert tools["runtime"]["native_checkpoint"]["status"] == ("recorded" if case == "valid" else "invalid_record")
+    assert tools["conversation_control_verified"] is False
+    assert tools["progress"]["status"] == "unknown" and tools["runnable_evidence"] == "unknown"
 
 
 @pytest.mark.parametrize("mode,observed,support", [

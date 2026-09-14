@@ -25,16 +25,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 For a manual two-step recovery, run `-DryRun` and then `-Apply`. With no mode
 switch the launcher defaults to byte-inert DryRun. After a successful restore,
-leave its four Windows Terminal tabs open. The fifth, headless Tools
-lane and exactly five real-time bridge watchers are reconciled by the same
-command through `WD-Supervisor`.
+leave each agent's conversation window open. Lead and Tools have separate local
+conversation windows; RCO1, RCO2 and Fable retain their native interactive windows.
+Their contexts are independent, not multiple views of Lead. Tools and exactly
+five real-time bridge watchers are reconciled through `WD-Supervisor`; the Tools
+window never creates an additional consumer alongside its existing parent.
 
-The first headless Tools tick runs before its readiness record is published and
-can take several minutes. During that bounded wait, `-Auto` prints progress
-every 30 seconds. A readiness record that is present but not attested is a
-launcher/process-identity problem, not a reason to wait silently.
+Tools local-window readiness v2 reports verified transport availability separately
+from native checkpoint progress. An open window is not evidence of useful work.
+In legacy headless mode, readiness v1 follows the first tick, which can take
+several minutes. During the bounded readiness wait, `-Auto` prints progress every
+30 seconds. A present but unattested record is a launcher/process-identity problem.
+The colored read-only bridge monitor opens after successful fleet restoration;
+use `-NoBridgeConversation` only when deliberately opting out of that extra view.
 
-The elevated restore never launches the five bridge watchers or headless Tools
+The elevated restore never launches the five bridge watchers or Tools
 directly. It demand-starts the exact `RunLevel=Limited` WD-Supervisor task once,
 waits for that scheduled path to finish successfully, and returns the task to
 Disabled/HOLD while the interactive lanes are restored. This keeps every
@@ -51,7 +56,7 @@ intentionally dangerous: `-AllowAll` bypasses both that script's command
 allowlist and denylist and can approve any Codex command prompt it recognizes
 after the desktop-idle guard permits input. Keep the prompt-watcher window open
 only while this unattended behavior is intended. Claude lanes already use
-`--dangerously-skip-permissions`, and headless Tools uses approval policy
+`--dangerously-skip-permissions`, and Tools uses approval policy
 `never`; neither receives a UI prompt watcher.
 
 DryRun verifies the prompt-watcher script and reports whether it would keep or
@@ -92,6 +97,14 @@ The explicit runtime choices are:
 - Tools: `gpt-5.6-terra`, effort `high`;
 - RCO1 and RCO2: Claude `sonnet`, effort `max`;
 - Fable: Claude `fable`, effort `max`.
+
+Lead's local conversation explicitly preserves its approved full-access/never
+workflow through the pinned `existing_interactive` permission setting. This is
+visible in the window and does not grant new task, merge or deployment authority.
+Tools keeps workspace-write/never with network access; Codex protected-Git paths
+remain protected. Read-only reconciliation never inherits Lead full access.
+See `docs/architecture/BRIDGE_OPERATOR_CONVERSATION_V1.md` in the source repository
+for pending-work recovery and the difference between transport and completed work.
 
 Durable bridge state, compact lane checkpoints, current Git worktrees, and
 pushed savepoints are the resume substrate; a provider transcript is not the

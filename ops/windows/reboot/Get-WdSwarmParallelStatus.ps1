@@ -83,8 +83,10 @@ function Read-WdStatusRecord {
             $count += $read
         }
         if ($count -gt 32768) { throw 'record exceeds 32 KiB' }
+        $jsonArguments=@{ErrorAction='Stop'}
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArguments.DateKind='String' }
         return ([Text.Encoding]::UTF8.GetString($buffer, 0, $count).TrimStart(
-            [char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop)
+            [char]0xFEFF) | ConvertFrom-Json @jsonArguments)
     }
     finally { $stream.Dispose() }
 }
@@ -182,6 +184,105 @@ function Get-WdStatusTurnExecution {
     return $result
 }
 
+function ConvertTo-WdStatusUtc {
+    param($Value)
+    if ($Value -is [datetime]) { return ([DateTimeOffset]$Value).ToUniversalTime() }
+    if ([string]$Value -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$') { throw 'timestamp requires explicit timezone' }
+    return [DateTimeOffset]::Parse([string]$Value,[Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
+}
+
+function Get-WdStatusToolsConversationRuntime {
+    param($Definition, $InstalledBundle, [DateTimeOffset] $Now, $Result)
+    try {
+        $Result.reason='conversation_readiness_v2_required'
+        $record=Read-WdStatusRecord $Result.readiness_path
+        if ([string]$record.schema -cne 'wd.tools-consumer-ready.v2') { return $Result }
+        $Result.reason='conversation_readiness_invalid'
+        $created=ConvertTo-WdStatusUtc $record.process_start_utc
+        $nativeCreated=ConvertTo-WdStatusUtc $record.native_process_start_utc
+        $readyAt=ConvertTo-WdStatusUtc $record.ready_at_utc
+        $transportAt=ConvertTo-WdStatusUtc $record.transport_ready_at_utc
+        if ([string]$record.status -cne 'transport_ready' -or [string]$record.readiness_scope -cne 'ui_transport_only' -or
+            [string]$record.conversation_surface -cne 'local_window' -or $record.transport_ready -isnot [bool] -or -not $record.transport_ready -or
+            $record.task_completion_verified -isnot [bool] -or $record.task_completion_verified -or
+            [string]$record.generation -cnotmatch '^[0-9a-f]{40}$' -or
+            [string]$record.model -cne 'gpt-5.6-terra' -or [string]$record.reasoning_effort -cne 'high' -or
+            [string]$record.session_id -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or [string]$record.run_id -cne [string]$record.session_id -or
+            [string]$record.thread_id -cnotmatch '^[A-Za-z0-9._:-]{1,256}$' -or
+            -not ([string]$record.worktree).Equals([string]$Definition.worktree,[StringComparison]::OrdinalIgnoreCase) -or
+            $nativeCreated -lt $created -or $readyAt -lt $nativeCreated -or $transportAt -lt $nativeCreated -or
+            $readyAt -gt $Now.AddSeconds(5) -or $transportAt -gt $Now.AddSeconds(5)) { return $Result }
+        foreach ($name in @('pid','native_pid','native_parent_pid')) {
+            $value=Get-WdStatusProperty $record $name
+            if ([string]$value -cnotmatch '^[1-9][0-9]{0,9}$' -or [int64]$value -gt [int]::MaxValue) { return $Result }
+        }
+        if ([int]$record.native_parent_pid -ne [int]$record.pid -or [int]$record.native_pid -eq [int]$record.pid) { return $Result }
+        $Result.reason='process_query_unavailable'
+        $wrapper=@(Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId={0}" -f $record.pid) -ErrorAction Stop)
+        $native=@(Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId={0}" -f $record.native_pid) -ErrorAction Stop)
+        $Result.reason='conversation_process_identity_unproved'
+        if ($wrapper.Count -ne 1 -or $native.Count -ne 1) { return $Result }
+        $wrapper=$wrapper[0]; $native=$native[0]
+        $wrapperStart=ConvertTo-WdStatusUtc $wrapper.CreationDate
+        $nativeStart=ConvertTo-WdStatusUtc $native.CreationDate
+        if ([int]$wrapper.ProcessId -ne [int]$record.pid -or [string]$wrapper.Name -notmatch '^(powershell|pwsh)\.exe$' -or
+            [int]$native.ProcessId -ne [int]$record.native_pid -or [int]$native.ParentProcessId -ne [int]$record.pid -or
+            [string]$native.Name -notmatch '^codex\.exe(?:\.old\.\d+)?$' -or
+            [Math]::Abs(($wrapperStart-$created).TotalSeconds) -gt 1 -or [Math]::Abs(($nativeStart-$nativeCreated).TotalSeconds) -gt 1 -or
+            -not [IO.Path]::IsPathRooted([string]$record.codex_command) -or
+            -not ([IO.Path]::GetFullPath([string]$native.ExecutablePath)).Equals([IO.Path]::GetFullPath([string]$record.codex_command),[StringComparison]::OrdinalIgnoreCase) -or
+            [string]$native.CommandLine -cnotmatch '(?:^|\s)app-server\s+--listen\s+(?:"stdio://"|stdio://)(?=\s|$)') { return $Result }
+        $files=[regex]::Matches([string]$wrapper.CommandLine,'(?i)(?:^|\s)-File\s+(?:"(?<v>[^"]+)"|''(?<v>[^'']+)''|(?<v>\S+))(?=\s|$)')
+        $generations=[regex]::Matches([string]$wrapper.CommandLine,'(?i)(?:^|\s)-Generation\s+(?:"(?<v>[0-9a-f]{40})"|''(?<v>[0-9a-f]{40})''|(?<v>[0-9a-f]{40}))(?=\s|$)')
+        if ($files.Count -ne 1 -or $generations.Count -ne 1 -or $generations[0].Groups['v'].Value -cne [string]$record.generation) { return $Result }
+        $Result.reason='installed_generation_unknown'
+        if ($InstalledBundle.status -cne 'recorded' -or -not $InstalledBundle.matches_selected_manifest -or
+            [string]$record.generation -cne [string]$InstalledBundle.source_commit) { return $Result }
+        $launcher=[IO.Path]::GetFullPath($files[0].Groups['v'].Value)
+        $allowedLaunchers=@((Join-Path $InstalledBundle.active_bundle 'start-wd-tools-consumer.ps1'))
+        if ($Definition.launcher_script) { $allowedLaunchers += [string]$Definition.launcher_script }
+        $Result.reason='conversation_wrapper_path_unproved'
+        if (-not @($allowedLaunchers | Where-Object { $launcher.Equals([IO.Path]::GetFullPath($_),[StringComparison]::OrdinalIgnoreCase) }).Count) { return $Result }
+        # Publish positive transport observations only after both process identities
+        # bind. This is not a GUI-interaction, checkpoint, or useful-progress proof.
+        $Result.identity='matched'; $Result.reason='wrapper_and_native_transport_identity_match'
+        $Result.readiness_status='transport_ready'; $Result.readiness_scope='ui_transport_only'
+        $Result.readiness_age_seconds=[Math]::Max(0,[int64][Math]::Floor(($Now-$transportAt).TotalSeconds))
+        $Result.recorded_pid=[int]$record.pid; $Result.observed_pid=[int]$wrapper.ProcessId
+        $Result.recorded_process_start_utc=$created.ToString('o'); $Result.observed_process_start_utc=$wrapperStart.ToString('o')
+        $Result.recorded_generation=[string]$record.generation; $Result.observed_generation=[string]$record.generation
+        $Result.observed_native_pid=[int]$native.ProcessId; $Result.observed_native_process_start_utc=$nativeStart.ToString('o')
+        $Result.thread_id=[string]$record.thread_id; $Result.transport_ready_verified=$true
+        try {
+            if ($record.native_checkpoint_verified -isnot [bool]) { throw 'checkpoint flag is not boolean' }
+            $checkpoint=[ordered]@{source_domain='tools_readiness_checkpoint_record';status='recorded';latest_final_recorded_verified=[bool]$record.native_checkpoint_verified}
+            foreach ($name in @('last_turn_id','last_native_turn_id','last_native_status','last_turn_disposition','last_turn_finalized_at_utc',
+                    'last_checkpoint_turn_id','last_checkpoint_native_turn_id','last_checkpoint_disposition','last_checkpoint_verified_at_utc')) {
+                $value=[string](Get-WdStatusProperty $record $name)
+                if ($value.Length -gt 256) { throw 'checkpoint field oversized' }
+                $checkpoint[$name]=$value
+            }
+            foreach ($prefix in @('last_turn','last_checkpoint')) {
+                $idName=if($prefix -ceq 'last_turn'){'last_turn_id'}else{'last_checkpoint_turn_id'}
+                $id=$checkpoint[$idName]; $timeName=if($prefix -ceq 'last_turn'){'last_turn_finalized_at_utc'}else{'last_checkpoint_verified_at_utc'}
+                if ($id -or $checkpoint[$timeName]) {
+                    if ($id -cnotmatch '^turn-[0-9a-f]{32}$') { throw 'checkpoint turn id invalid' }
+                    $stamp=ConvertTo-WdStatusUtc $checkpoint[$timeName]
+                    if ($stamp -lt $nativeCreated -or $stamp -gt $Now.AddSeconds(5)) { throw 'checkpoint time invalid' }
+                }
+            }
+            if ($checkpoint.latest_final_recorded_verified -and (-not $checkpoint.last_turn_id -or
+                $checkpoint.last_native_status -cne 'completed' -or $checkpoint.last_turn_disposition -cnotin @('completed','idle','blocked') -or
+                $checkpoint.last_checkpoint_turn_id -cne $checkpoint.last_turn_id -or
+                -not $checkpoint.last_native_turn_id -or
+                $checkpoint.last_checkpoint_native_turn_id -cne $checkpoint.last_native_turn_id -or
+                $checkpoint.last_checkpoint_disposition -cne $checkpoint.last_turn_disposition)) { throw 'latest checkpoint binding invalid' }
+            $Result.native_checkpoint=[pscustomobject]$checkpoint
+        } catch { $Result.native_checkpoint.status='invalid_record' }
+    } catch { <# No positive identity is published before all transport checks pass. #> }
+    return $Result
+}
+
 function Get-WdStatusRuntime {
     param($Definition, $InstalledBundle, [DateTimeOffset] $Now)
     $result = [pscustomobject]@{
@@ -197,8 +298,23 @@ function Get-WdStatusRuntime {
         observed_pid = $null
         observed_process_start_utc = $null
         observed_generation = $null
+        readiness_scope = 'unknown'
+        transport_ready_verified = $false
+        observed_native_pid = $null
+        observed_native_process_start_utc = $null
+        thread_id = $null
+        native_checkpoint = [pscustomobject]@{
+            source_domain='tools_readiness_checkpoint_record';status='not_observed';latest_final_recorded_verified=$false
+        }
     }
     if (-not $result.readiness_path) { return $result }
+    if ($Definition.configured_conversation_surface -ceq 'unknown') {
+        $result.reason='configured_conversation_surface_unknown'
+        return $result
+    }
+    if ($Definition.configured_conversation_surface -ceq 'local_window') {
+        return Get-WdStatusToolsConversationRuntime -Definition $Definition -InstalledBundle $InstalledBundle -Now $Now -Result $result
+    }
     try {
         $result.reason = 'readiness_missing_or_invalid'
         $record = Read-WdStatusRecord -Path $result.readiness_path
@@ -299,15 +415,37 @@ foreach ($lane in @($manifest.lanes)) {
          ([string]$lane.agent -cne 'codex-lead-1' -or $configuredMode -cne 'managed'))) {
         $configuredSurface = 'unknown'
     }
+    $configuredPosture = if ($configuredSurface -ceq 'unknown') { 'unknown' } else { 'not_applicable' }
+    if ($configuredSurface -ceq 'local_window') {
+        $permissionsProperty = $lane.PSObject.Properties['conversation_permissions']
+        $configuredPosture = 'workspace_write'
+        if ($null -ne $permissionsProperty) {
+            if ($permissionsProperty.Value -isnot [pscustomobject]) { $configuredPosture='unknown' }
+            else {
+                $postureProperty = $permissionsProperty.Value.PSObject.Properties['posture']
+                if ($null -ne $postureProperty) {
+                    $configuredPosture = if ($postureProperty.Value -is [string] -and
+                        $postureProperty.Value -cin @('workspace_write','existing_interactive')) { [string]$postureProperty.Value } else { 'unknown' }
+                }
+            }
+        }
+    }
     $definitions.Add([pscustomobject]@{
         agent = [string]$lane.agent
         worktree = [IO.Path]::GetFullPath([string]$lane.worktree)
         readiness_path = ''
         configured_turn_mode = $configuredMode
         configured_conversation_surface = $configuredSurface
+        configured_permission_posture = $configuredPosture
         legacy_process_markers = @(Get-WdStatusProperty $lane 'legacy_process_markers')
     })
 }
+$toolsSurfaceProperty = $manifest.tools_supervisor.PSObject.Properties['conversation_surface']
+$toolsSurface = if ($null -eq $toolsSurfaceProperty) { 'none' } else { [string]$toolsSurfaceProperty.Value }
+if ($toolsSurface -cnotin @('none','local_window') -or
+    ($toolsSurface -ceq 'local_window' -and ([string]$manifest.tools_supervisor.agent -cne 'codex-tools-1' -or
+        [string](Get-WdStatusProperty $manifest.tools_supervisor 'model') -cne 'gpt-5.6-terra' -or
+        [string](Get-WdStatusProperty $manifest.tools_supervisor 'reasoning_effort') -cne 'high'))) { $toolsSurface='unknown' }
 $definitions.Add([pscustomobject]@{
     agent = [string]$manifest.tools_supervisor.agent
     worktree = [IO.Path]::GetFullPath(
@@ -315,7 +453,9 @@ $definitions.Add([pscustomobject]@{
     )
     readiness_path = [string](Get-WdStatusProperty $manifest.tools_supervisor 'readiness_path')
     configured_turn_mode = 'tools_consumer'
-    configured_conversation_surface = 'none'
+    configured_conversation_surface = $toolsSurface
+    configured_permission_posture = if ($toolsSurface -ceq 'local_window') { 'workspace_write' } elseif ($toolsSurface -ceq 'none') { 'not_applicable' } else { 'unknown' }
+    launcher_script = [string](Get-WdStatusProperty $manifest.tools_supervisor 'launcher_script')
     legacy_process_markers = @()
 })
 if (@($definitions).Count -ne 5) {
@@ -479,6 +619,7 @@ foreach ($definition in @($definitions)) {
         agent = $agent
         configured_turn_mode = $definition.configured_turn_mode
         configured_conversation_surface = $definition.configured_conversation_surface
+        configured_permission_posture = $definition.configured_permission_posture
         # A manifest/handshake does not prove the GUI is open or a RPC was accepted.
         conversation_control_verified = $false
         turn_execution = Get-WdStatusTurnExecution -Definition $definition `
@@ -550,6 +691,9 @@ $report = [pscustomobject]@{
         installed_bundle = 'installation pointer record, not proof of running code or package integrity'
         configured_turn_mode = 'selected manifest startup setting (missing legacy field defaults interactive), never live-mode evidence'
         configured_conversation_surface = 'next-start UI setting only; not live window, native RPC, shared context or task-completion proof'
+        configured_permission_posture = 'configuration-only posture projection, not live permissions or validation of the full launch policy; native interactive peers are not_applicable'
+        tools_conversation_runtime = 'v2 transport_ready binds wrapper/native PID, creation, generation and recorded thread only; not useful progress, accepted interaction or full package attestation; v1 remains valid only in none mode'
+        native_checkpoint = 'bounded producer-reported latest terminal and previous verified checkpoint facts, kept separate; this status command does not reverify receipts or infer useful progress'
         turn_execution = 'known launcher and bounded PID/time/session-bound handshake observation; legacy missing mode means legacy interactive; neither bootstrap nor process existence proves a model turn started or completed'
         progress = 'not inferred from checkpoint, readiness, wake or heartbeat timestamps'
     }
@@ -585,10 +729,17 @@ if ($Json) {
         agent, state_health, age_seconds, status, task_id, head_matches,
         runnable_evidence, wake_pending -AutoSize
     $report.summary | Format-List
-    $report.lanes | Select-Object agent, configured_turn_mode,
+    $report.lanes | Select-Object agent, configured_turn_mode, configured_conversation_surface,
+        @{Name='cfg_posture';Expression={$_.configured_permission_posture}},
         @{Name='observed_turn_mode';Expression={$_.turn_execution.observed_turn_mode}},
         @{Name='external_wake_support';Expression={$_.turn_execution.external_wake_support}},
         @{Name='observation_reason';Expression={$_.turn_execution.reason}} | Format-Table -AutoSize -Wrap
+    $report.lanes | Where-Object { $_.configured_conversation_surface -ceq 'local_window' } |
+        Select-Object agent, @{Name='transport_identity';Expression={$_.runtime.identity}},
+        @{Name='readiness_scope';Expression={$_.runtime.readiness_scope}},
+        @{Name='native_pid';Expression={$_.runtime.observed_native_pid}},
+        @{Name='latest_final_checkpoint_recorded';Expression={$_.runtime.native_checkpoint.latest_final_recorded_verified}} |
+        Format-Table -AutoSize -Wrap
     if ($collisions.Count -gt 0) {
         $collisions | Format-Table write_scope, agents -AutoSize
     }

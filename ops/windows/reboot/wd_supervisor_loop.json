@@ -40,6 +40,11 @@
   },
   "tools_consumer": {
     "enabled": true,
+    "conversation_surface": "local_window",
+    "conversation_permissions": {
+      "network_access": true,
+      "additional_writable_roots": []
+    },
     "launcher_script": "C:\\Python\\start-wd-tools-consumer.ps1",
     "config_path": "C:\\Python\\wd_supervisor_loop.json",
     "readiness_path": "C:\\Python\\wd-reboot-runtime\\codex-tools-1-ready.json",

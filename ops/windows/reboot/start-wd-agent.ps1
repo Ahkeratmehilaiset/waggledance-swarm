@@ -166,6 +166,113 @@ function Get-WdLaneConversationSurface {
   return $surface
 }
 
+function Get-WdLaneConversationPermissions {
+  param([Parameter(Mandatory)] [object] $Lane)
+
+  $property = $Lane.PSObject.Properties['conversation_permissions']
+  if ($null -eq $property) {
+    return @{ NetworkAccess = $false; AdditionalWritableRoots = @(); CodexPermissionPosture = 'workspace_write' }
+  }
+  $policy = $property.Value
+  if ($null -eq $policy -or $policy -isnot [pscustomobject] -or
+      @($policy.PSObject.Properties.Name | Where-Object {
+        $_ -cnotin @('posture', 'network_access', 'additional_writable_roots')
+      }).Count -gt 0 -or
+      $null -eq $policy.PSObject.Properties['network_access'] -or
+      $policy.network_access -isnot [bool] -or
+      $null -eq $policy.PSObject.Properties['additional_writable_roots'] -or
+      $policy.additional_writable_roots -isnot [array]) {
+    throw 'conversation permissions must explicitly contain a boolean network_access and array additional_writable_roots'
+  }
+  foreach ($root in @($policy.additional_writable_roots)) {
+    if ($root -isnot [string] -or [string]::IsNullOrWhiteSpace($root)) {
+      throw 'conversation writable roots must be nonempty strings'
+    }
+  }
+  $postureProperty = $policy.PSObject.Properties['posture']
+  $posture = if ($null -eq $postureProperty) { 'workspace_write' } else { [string]$postureProperty.Value }
+  if ($posture -cnotin @('workspace_write', 'existing_interactive')) {
+    throw 'unsupported conversation permission posture'
+  }
+  if ($posture -ceq 'existing_interactive' -and (
+      $null -eq $Lane.PSObject.Properties['agent'] -or [string]$Lane.agent -cne 'codex-lead-1' -or
+      -not $policy.network_access -or @($policy.additional_writable_roots).Count -ne 0)) {
+    throw 'existing_interactive is an explicit Lead-only full-access compatibility posture, not scoped writable roots'
+  }
+  # The backend validates existence, C-drive containment and every path component
+  # for reparse points before starting the native process. Policy bytes are pinned
+  # by the deployment manifest; filesystem access is not task/claim authority.
+  return @{ NetworkAccess = $policy.network_access; CodexPermissionPosture = $posture
+    AdditionalWritableRoots = @($policy.additional_writable_roots) }
+}
+
+function Get-WdCodexSecurityFingerprint {
+  param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+  $normalized = $Text.Replace("`r`n", "`n")
+  # This deliberately is not a TOML parser. Multiline strings could contain
+  # apparent table headers; refuse ambiguous syntax rather than omit policy.
+  if ($normalized.Contains("`r") -or
+      $normalized.Contains(([string][char]34) * 3) -or
+      $normalized.Contains(([string][char]39) * 3)) {
+    throw 'Ambiguous Codex configuration requires explicit security-baseline review'
+  }
+  $securityText = [Text.StringBuilder]::new()
+  $ignoreUiTable = $false
+  foreach ($line in [regex]::Matches($normalized, '[^\n]*(?:\n|$)')) {
+    if ($line.Length -eq 0) { continue }
+    $trimmed = $line.Value.Trim()
+    if ($trimmed.StartsWith('[')) {
+      # Only these exact canonical table headers are cosmetic. Any other
+      # header, including child/quoted/array tables, ends the exclusion.
+      $ignoreUiTable = $trimmed -ceq '[notice]' -or $trimmed -ceq '[tui.model_availability_nux]'
+    }
+    if (-not $ignoreUiTable) { [void]$securityText.Append($line.Value) }
+  }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($securityText.ToString())))).Replace('-', '') }
+  finally { $sha.Dispose() }
+}
+
+function Assert-WdLeadInteractivePostureBaseline {
+  param([Parameter(Mandatory)] [object] $Lane,
+    [Parameter(Mandatory)] [string] $Worktree,
+    [Parameter(Mandatory)] [string] $UserConfigPath)
+
+  $property = $Lane.PSObject.Properties['conversation_config_baseline']
+  if ($null -eq $property -or $null -eq $property.Value) {
+    throw 'Lead compatibility requires a reviewed user-config baseline'
+  }
+  $baseline = $property.Value
+  $path = [IO.Path]::GetFullPath($UserConfigPath)
+  if (-not $path.Equals([string]$baseline.path, [StringComparison]::OrdinalIgnoreCase) -or
+      [string]$baseline.security_sha256 -cnotmatch '^[0-9A-F]{64}$') {
+    throw 'Lead user-config location differs from its reviewed baseline'
+  }
+  [void](Assert-LanePathWithoutReparse -Path $path -TrustedRoot ([IO.Path]::GetPathRoot($path)) -ExpectedType Leaf)
+  $snapshot = Read-Utf8LaneSnapshot -Path $path
+  $securityHash = Get-WdCodexSecurityFingerprint -Text ([string]$snapshot.Text)
+  if ($securityHash -cne [string]$baseline.security_sha256) {
+    throw 'Codex user configuration changed; review the permission baseline before managed Lead startup'
+  }
+  # Deliberately accept only the reviewed simple top-level declarations. This is
+  # not a general TOML parser or a fallback for a profile/layered configuration.
+  $top = ([string]$snapshot.Text -split '(?m)^\s*\[')[0]
+  foreach ($pair in @(@('approval_policy','never'), @('sandbox_mode','danger-full-access'))) {
+    $keyMatches = [regex]::Matches($top, ('(?m)^\s*' + $pair[0] + '\s*=\s*["'']' + $pair[1] + '["'']\s*(?:#[^\r\n]*)?\r?$'))
+    if ($keyMatches.Count -ne 1) { throw 'Reviewed Codex configuration no longer states full-access/never at top level' }
+  }
+  $directory = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Worktree))
+  while ($null -ne $directory) {
+    if (Test-Path -LiteralPath (Join-Path $directory.FullName '.codex\config.toml')) {
+      throw 'Unreviewed project Codex configuration blocks full-access compatibility; do not override operator tightening'
+    }
+    $directory = $directory.Parent
+  }
+  return [pscustomobject]@{ path=$path; sha256=[string]$snapshot.Hash
+    security_sha256=$securityHash
+    approval_policy='never'; sandbox_mode='danger-full-access' }
+}
+
 function Read-WdLaneTurnRunnerSnapshot {
   param(
     [Parameter(Mandatory)] [string] $ScriptRoot,
@@ -583,11 +690,22 @@ if ($matches.Count -ne 1) {
 $lane = $matches[0]
 $turnMode = Get-WdLaneTurnMode -Lane $lane
 $conversationSurface = Get-WdLaneConversationSurface -Lane $lane
+$conversationPermissions = Get-WdLaneConversationPermissions -Lane $lane
 
 $worktree = Resolve-NormalizedPath -Path ([string]$lane.worktree)
 $primaryRepo = Resolve-NormalizedPath -Path ([string]$manifest.primary_repo_root)
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $runtimeRoot = Resolve-NormalizedPath -Path ([string]$manifest.runtime_root)
+$conversationConfigBaseline = $null
+$codexUserConfigPath = ''
+if ($conversationSurface -ceq 'local_window' -and
+    $conversationPermissions.CodexPermissionPosture -ceq 'existing_interactive') {
+  $codexUserConfigPath = if ($env:CODEX_HOME) {
+    Join-Path ([IO.Path]::GetFullPath($env:CODEX_HOME)) 'config.toml'
+  } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex\config.toml' }
+  $conversationConfigBaseline = Assert-WdLeadInteractivePostureBaseline `
+    -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath
+}
 
 if (-not $worktree.StartsWith('C:\', [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "lane worktree must be on persistent C: drive: $worktree"
@@ -1103,6 +1221,8 @@ if ($DryRun) {
     turn_mode = $turnMode
     turn_runner_sha256 = $turnRunnerHash
     conversation_surface = $conversationSurface
+    conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
+    conversation_config_baseline = $conversationConfigBaseline
     conversation_code_sha256 = $conversationCodeHashes
     resume_policy = $resumePolicy
     target_state_id = [string]$targetState.id
@@ -1190,6 +1310,8 @@ $targetPayload = [ordered]@{
   turn_mode = $turnMode
   turn_runner_sha256 = $turnRunnerHash
   conversation_surface = $conversationSurface
+  conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
+  conversation_config_baseline = $conversationConfigBaseline
   conversation_code_sha256 = $conversationCodeHashes
   cli_executable = $cliPath
   cli_executable_sha256 = $cliExecutableHash
@@ -1325,6 +1447,8 @@ $handshake = [ordered]@{
   turn_mode = $turnMode
   turn_runner_sha256 = $turnRunnerHash
   conversation_surface = $conversationSurface
+  conversation_permission_posture = $conversationPermissions.CodexPermissionPosture
+  conversation_config_baseline = $conversationConfigBaseline
   conversation_code_sha256 = $conversationCodeHashes
   cli_executable = $cliPath
   cli_executable_sha256 = $cliExecutableHash
@@ -1377,6 +1501,10 @@ if (
 
 if ($turnMode -ceq 'managed') {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  if ($null -ne $conversationConfigBaseline) {
+    [void](Assert-WdLeadInteractivePostureBaseline `
+      -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
+  }
   $turnRunnerSnapshot = Read-WdLaneTurnRunnerSnapshot `
     -ScriptRoot $PSScriptRoot -DeploymentAnchor $deploymentAnchor
   if ([string]$turnRunnerSnapshot.Hash -cne $turnRunnerHash) {
@@ -1403,6 +1531,11 @@ if ($turnMode -ceq 'managed') {
     CompactStatePath = $laneCurrentStatePath; StartupPrompt = $startupPrompt
     ContinuationPrompt = $continuationPrompt; ImagePath = $targetImagePath
     Forever = $true; ShowLifecycle = $true
+  }
+  if ($conversationSurface -ceq 'local_window') {
+    $managedTurnParameters['NetworkAccess'] = $conversationPermissions.NetworkAccess
+    $managedTurnParameters['AdditionalWritableRoots'] = @($conversationPermissions.AdditionalWritableRoots)
+    $managedTurnParameters['CodexPermissionPosture'] = $conversationPermissions.CodexPermissionPosture
   }
   if ($backend -ceq 'claude') {
     # This opt-in mode reuses the already approved interactive Claude posture;

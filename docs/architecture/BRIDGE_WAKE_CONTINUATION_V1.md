@@ -26,6 +26,7 @@ for every other recipient. Existing exact-task and age rules remain in force.
 | Lane/mode | Turn owner | Meaning of a wake |
 | --- | --- | --- |
 | Tools, existing supervised consumer | Its one canonical consumer | Run a bounded tick through the existing backend. |
+| Tools with `local_window` | The same supervisor-owned Tools parent | Run one bounded turn in its independent persistent thread; no additional headless consumer. |
 | Existing interactive Claude RCO1/RCO2/Fable | Native session scheduler | Native wake/backstop reads current bridge state; do not launch a twin. |
 | Existing interactive Codex Lead | Existing interactive session | Notification only; no verified external same-session turn adapter. |
 | Managed startup without a conversation surface | Launcher-owned turn loop | Start one owned, bounded CLI child after validating occupancy. |
@@ -61,7 +62,8 @@ durable-cron claims). It never supersedes role permissions or task authority.
 
 The operator-requested release configures the next Lead startup as
 `turn_mode: managed` with `conversation_surface: local_window`; native Claude
-lanes retain `interactive` and Tools retains its existing consumer. This takes
+lanes retain `interactive`; Tools selects its own `local_window` inside the
+existing supervisor-owned parent, replacing the headless tick loop. This takes
 effect only after validation and deployment of the matching bundle. The new Lead
 has a conversational control window with streamed replies, active-turn steering,
 interrupt and separate automation control. It is not merely a lifecycle display.
@@ -104,7 +106,10 @@ interactive permission posture. The opted-in managed path uses the same CLI
 permission setting as the already-approved interactive path; absent that
 explicit posture the runner refuses before creating turn files or launching a
 child. Role, task, claim and promotion limits still apply. This is not a new
-filesystem sandbox. Codex retains its workspace-write/never posture. Fake-child
+filesystem sandbox. Codex defaults to workspace-write/never. The conversation
+configuration explicitly selects the reviewed Lead-only `existing_interactive`
+full-access compatibility posture; Tools stays workspace-write. Missing or changed
+saved posture never silently upgrades a thread. Fake-child
 tests establish argument and receipt behavior, not real model willingness or
 successful live activation.
 

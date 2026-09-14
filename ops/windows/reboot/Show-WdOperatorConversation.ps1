@@ -1,6 +1,6 @@
 #requires -Version 5.1
 <#
-UI-only managed Lead conversation. Dot-source from the owning backend.
+UI-only agent conversation. Dot-source from the owning backend.
 No CLI/RPC/bridge operations, process starts, persistence, or approvals occur
 here. Actions are proposals awaiting backend acceptance, not sent messages.
 Headless mode exercises the same reducer without WinForms or a desktop.
@@ -45,7 +45,7 @@ function Get-WdOperatorLocalAttachments {
 function Submit-WdOperatorConversationAction {
     param(
         [Parameter(Mandatory)] $View,
-        [Parameter(Mandatory)] [ValidateSet('send','interrupt','automation_toggle','question_answer','close')] [string] $Kind,
+        [Parameter(Mandatory)] [ValidateSet('send','reconcile','interrupt','automation_toggle','question_answer','close')] [string] $Kind,
         [string] $Text = '', [string[]] $Paths = @(), [bool] $Enabled = $false,
         [string] $RequestId = '', [hashtable] $Answers = @{}
     )
@@ -63,8 +63,12 @@ function Submit-WdOperatorConversationAction {
     if ($View.State.CloseRequested) { throw 'The conversation is closing.' }
     if ($View.Actions.Count -ge 32) { throw 'The local action queue is full; wait for the backend.' }
     switch ($Kind) {
-        'send' {
-            if (-not $View.State.CanSend) { throw 'The backend is not accepting messages.' }
+        { $_ -cin @('send','reconcile') } {
+            if ($Kind -ceq 'send' -and -not $View.State.CanSend) { throw 'The backend is not accepting messages.' }
+            if ($Kind -ceq 'reconcile' -and (-not $View.State.CanReconcile -or $View.State.TurnActive -or $View.PendingSends.Count)) {
+                throw 'Read-only reconciliation is not currently available.'
+            }
+            if ($Kind -ceq 'reconcile' -and $Paths.Count) { throw 'Read-only reconciliation accepts instruction text only. Clear attachments; your draft is retained.' }
             if ($Text.Length -gt 16384) { throw 'Message exceeds the 16,384 character limit.' }
             $attachments = @(Get-WdOperatorLocalAttachments -Paths $Paths)
             if ([string]::IsNullOrWhiteSpace($Text)) { throw 'Enter instruction text, including a caption when attaching images.' }
@@ -73,10 +77,12 @@ function Submit-WdOperatorConversationAction {
             if ($View.PendingSends.Count -ge 32) { throw 'Too many sends await backend acceptance.' }
             $action.text = $Text; $action.attachments = $attachments
             $View.PendingSends[$action.id] = [pscustomobject]@{ Text=$Text; Paths=@($Paths) }
+            if ($Kind -ceq 'reconcile') { $View.State.CanReconcile=$false }
         }
         'interrupt' {
             if (-not $View.State.CanInterrupt) { throw 'No interruptible backend turn is available.' }
             $View.State.CanInterrupt = $false
+            $View.State.Interrupting = $true
         }
         'automation_toggle' {
             if (-not $View.State.CanToggleAutomation) { throw 'Automation control is unavailable.' }
@@ -103,17 +109,29 @@ function Submit-WdOperatorConversationAction {
         }
     }
     $View.Actions.Enqueue([pscustomobject]$action)
+    if ($Kind -cin @('send','reconcile')) {
+        Add-WdOperatorConversationMessage -View $View -Role user -Text $Text -ItemId $action.id -DeliveryState pending
+    }
     $View.State.Status = 'Queued for backend acceptance. No execution or delivery is confirmed yet.'
     Sync-WdOperatorConversationView -View $View
 }
 
 function Resolve-WdOperatorConversationAction {
     param([Parameter(Mandatory)] $View, [Parameter(Mandatory)] [string] $ActionId,
-        [Parameter(Mandatory)] [bool] $Accepted, [string] $Reason = '')
+        [bool] $Accepted, [string] $Reason = '',
+        [ValidateSet('accepted','rejected','unknown')] [string] $DeliveryState)
+    if (-not $PSBoundParameters.ContainsKey('DeliveryState')) {
+        if (-not $PSBoundParameters.ContainsKey('Accepted')) { throw 'A native delivery outcome is required.' }
+        $DeliveryState = if ($Accepted) { 'accepted' } else { 'rejected' }
+    } elseif ($PSBoundParameters.ContainsKey('Accepted') -and $Accepted -ne ($DeliveryState -ceq 'accepted')) {
+        throw 'Conflicting native delivery outcomes.'
+    }
     if (-not $View.PendingSends.ContainsKey($ActionId)) { return }
     $pending = $View.PendingSends[$ActionId]
     $View.PendingSends.Remove($ActionId)
-    if ($Accepted) {
+    $row = @($View.State.Messages | Where-Object { $_.ItemId -ceq $ActionId } | Select-Object -First 1)
+    if ($row.Count) { $row[0].DeliveryState=$DeliveryState; $View.State.Revision++ }
+    if ($DeliveryState -ceq 'accepted') {
         # Never clear edits composed after the queued version. The backend calls
         # this only for the matching native RPC result, not merely a pipe write.
         if (-not $View.Headless -and $View.Controls.Input.Text -ceq $pending.Text -and
@@ -121,8 +139,10 @@ function Resolve-WdOperatorConversationAction {
             $View.Controls.Input.Clear(); $View.AttachmentPaths=@()
         }
         $View.State.Status='Backend accepted the message; task completion is not implied.'
-    } else {
+    } elseif ($DeliveryState -ceq 'rejected') {
         $View.State.Status='Not sent. Draft retained. ' + $Reason.Substring(0,[Math]::Min(1024,$Reason.Length))
+    } else {
+        $View.State.Status='Delivery unknown. Draft retained; do not resend until reconciled. ' + $Reason.Substring(0,[Math]::Min(1024,$Reason.Length))
     }
     Sync-WdOperatorConversationView -View $View
 }
@@ -140,10 +160,21 @@ function Set-WdOperatorConversationStatus {
     param([Parameter(Mandatory)] $View, [string] $Text,
         [bool] $CanSend, [bool] $CanInterrupt, [bool] $CanToggleAutomation,
         [bool] $AutomationEnabled, [bool] $TurnActive,
-        [string] $OwnerEpoch, [string] $ObservedTurnId)
-    foreach ($name in @('CanSend','CanInterrupt','CanToggleAutomation','AutomationEnabled','TurnActive','OwnerEpoch','ObservedTurnId')) {
+        [string] $OwnerEpoch, [string] $ObservedTurnId, [bool] $Interrupting,
+        [bool] $CanReconcile, [string] $RecoveryReason)
+    $newIdentity = ($PSBoundParameters.ContainsKey('OwnerEpoch') -and $OwnerEpoch -and $OwnerEpoch -cne $View.State.OwnerEpoch) -or
+        ($PSBoundParameters.ContainsKey('ObservedTurnId') -and $ObservedTurnId -and $ObservedTurnId -cne $View.State.ObservedTurnId)
+    if ($newIdentity -or ($PSBoundParameters.ContainsKey('TurnActive') -and -not $TurnActive)) {
+        $View.State.Interrupting = $false
+    }
+    if ($PSBoundParameters.ContainsKey('Interrupting') -and $Interrupting) { $View.State.Interrupting = $true }
+    foreach ($name in @('CanSend','CanInterrupt','CanToggleAutomation','AutomationEnabled','TurnActive','OwnerEpoch','ObservedTurnId','CanReconcile')) {
         if ($PSBoundParameters.ContainsKey($name)) { $View.State.$name = $PSBoundParameters[$name] }
     }
+    # An RPC acknowledgement/poll is not the terminal turn event.
+    if ($View.State.Interrupting) { $View.State.CanInterrupt = $false }
+    if ($View.State.CanReconcile) { $View.State.CanSend=$false; $View.State.CanToggleAutomation=$false }
+    if ($PSBoundParameters.ContainsKey('RecoveryReason')) { $View.State.RecoveryReason=$RecoveryReason.Substring(0,[Math]::Min(2048,$RecoveryReason.Length)) }
     if ($PSBoundParameters.ContainsKey('Text')) { $View.State.Status = $Text.Substring(0, [Math]::Min(4096, $Text.Length)) }
     Sync-WdOperatorConversationView -View $View
 }
@@ -151,8 +182,10 @@ function Set-WdOperatorConversationStatus {
 function Add-WdOperatorConversationMessage {
     param([Parameter(Mandatory)] $View,
         [ValidateSet('user','operator','assistant','system','status','tool','bridge')] [string] $Role,
-        [AllowEmptyString()] [string] $Text, [string] $ItemId = '', [switch] $Delta)
+        [AllowEmptyString()] [string] $Text, [string] $ItemId = '', [switch] $Delta,
+        [ValidateSet('pending','accepted','rejected','unknown')] [string] $DeliveryState)
     if ($ItemId.Length -gt 256) { throw 'Message item ID is too long.' }
+    if ($PSBoundParameters.ContainsKey('DeliveryState') -and $Role -cnotin @('user','operator')) { throw 'Delivery state applies only to operator messages.' }
     if ($Role -eq 'bridge') {
         $value = if ($Delta) { $View.State.BridgeText + $Text } else { $Text }
         $View.State.BridgeText = $value.Substring([Math]::Max(0, $value.Length - 32768))
@@ -164,9 +197,11 @@ function Add-WdOperatorConversationMessage {
             if ($message.Role -cne $Role) { throw 'Message item role changed.' }
             $message.Text = if ($Delta) { $message.Text + $Text } else { $Text }
         } else {
-            $message = [pscustomobject]@{ Role=$Role; Text=$Text; ItemId=$ItemId }
+            $initialDelivery = if ($Role -cin @('user','operator')) { 'unknown' } else { '' }
+            $message = [pscustomobject]@{ Role=$Role; Text=$Text; ItemId=$ItemId; DeliveryState=$initialDelivery }
             $View.State.Messages.Add($message)
         }
+        if ($PSBoundParameters.ContainsKey('DeliveryState')) { $message.DeliveryState=$DeliveryState }
         if ($message.Text.Length -gt 32768) {
             $message.Text = $message.Text.Substring($message.Text.Length - 32768)
             $View.State.DisplayOmitted = $true
@@ -282,13 +317,19 @@ function Sync-WdOperatorConversationView {
     param($View)
     if ($View.Headless -or $View.State.Closed -or $View.Form.IsDisposed) { return }
     $View.Controls.Status.Text = $View.State.Status
+    if ($View.State.RecoveryReason) { $View.Controls.Status.Text += ' Recovery: ' + $View.State.RecoveryReason }
     $View.Controls.Send.Enabled = $View.State.CanSend -and -not $View.State.CloseRequested -and
         $View.PendingSends.Count -eq 0 -and -not ($View.State.TurnActive -and $View.AttachmentPaths.Count -gt 0)
     $View.Controls.Send.Text = if ($View.State.TurnActive) { 'Steer current turn' } else { 'Send' }
+    $View.Controls.Send.Visible = -not $View.State.CanReconcile
+    $View.Controls.Reconcile.Visible = $View.State.CanReconcile
+    $View.Controls.Reconcile.Enabled = $View.State.CanReconcile -and -not $View.State.TurnActive -and
+        -not $View.State.CloseRequested -and $View.PendingSends.Count -eq 0 -and $View.AttachmentPaths.Count -eq 0
     $View.Controls.Continue.Enabled = $View.Controls.Send.Enabled -and -not $View.State.TurnActive
     $View.Controls.Input.Enabled = -not $View.State.CloseRequested
     $View.Controls.Attach.Enabled = $View.State.CanSend -and -not $View.State.TurnActive -and $View.PendingSends.Count -eq 0
     $View.Controls.Interrupt.Enabled = $View.State.CanInterrupt
+    $View.Controls.Interrupt.Text = if ($View.State.Interrupting) { 'Stopping...' } else { 'Interrupt' }
     $View.Controls.Automation.Enabled = $View.State.CanToggleAutomation
     $View.Controls.Automation.Text = if ($View.State.AutomationEnabled) { 'Pause automation' } else { 'Resume automation' }
     $View.Controls.Attachments.Text = if ($View.State.TurnActive -and $View.AttachmentPaths.Count) {
@@ -304,7 +345,10 @@ function Sync-WdOperatorConversationView {
     if ($View.RenderedRevision -ne $View.State.Revision) {
         $parts = @()
         if ($View.State.DisplayOmitted) { $parts += '[Older display text omitted. This does not erase the backend conversation context.]' }
-        foreach ($message in $View.State.Messages) { $parts += ('[' + $message.Role + '] ' + $message.Text) }
+        foreach ($message in $View.State.Messages) {
+            $delivery = if ($message.DeliveryState) { ' - ' + $message.DeliveryState } else { '' }
+            $parts += ('[' + $message.Role + $delivery + '] ' + $message.Text)
+        }
         $box = $View.Controls.Transcript
         $start = $box.SelectionStart; $length = $box.SelectionLength
         $keepPosition = $box.Focused -or $length -gt 0
@@ -319,15 +363,22 @@ function Sync-WdOperatorConversationView {
 function New-WdOperatorConversationView {
     param([switch] $Headless, [switch] $Hidden,
         [string] $Title = 'WaggleDance - Lead conversation',
-        [string] $ModelLabel = 'Lead: gpt-5.6-sol / ultra (pinned)')
+        [string] $ModelLabel = 'Lead: gpt-5.6-sol / ultra (pinned)',
+        [string] $AgentLabel = 'Lead')
+    foreach ($label in @($Title,$ModelLabel,$AgentLabel)) {
+        if ([string]::IsNullOrWhiteSpace($label) -or $label.Length -gt 256 -or $label -match '[\r\n]') { throw 'Window labels must be nonempty single lines of at most 256 characters.' }
+    }
     $view = [pscustomobject]@{
         Headless=[bool]$Headless; Form=$null; Controls=@{}; QuestionInputs=@{}
         Actions=(New-Object 'Collections.Generic.Queue[object]'); CloseAction=$null; PendingSends=@{}
         AttachmentPaths=@(); RenderedRevision=-1; Disposing=$false
         State=[pscustomobject]@{
             Status='Waiting for the owning backend. Messages are not yet accepted.'
+            Title=$Title; AgentLabel=$AgentLabel; ModelLabel=$ModelLabel
+            ContextNotice=($AgentLabel + ' only: other agents retain their separate sessions and model contexts.')
             CanSend=$false; CanInterrupt=$false; CanToggleAutomation=$false
-            AutomationEnabled=$false; TurnActive=$false; OwnerEpoch=''; ObservedTurnId=''
+            CanReconcile=$false; RecoveryReason=''
+            AutomationEnabled=$false; TurnActive=$false; OwnerEpoch=''; ObservedTurnId=''; Interrupting=$false
             Closed=$false; CloseRequested=$false; Question=$null
             Messages=(New-Object 'Collections.Generic.List[object]'); Revision=0; DisplayOmitted=$false
             BridgeText='Bridge feed not connected. Other agents retain their separate sessions.'
@@ -352,7 +403,7 @@ function New-WdOperatorConversationView {
     $layout.RowStyles[1].SizeType='Percent'; $layout.RowStyles[1].Height=100
     $form.Controls.Add($layout); $view.Controls.Layout=$layout
     $header=New-Object Windows.Forms.Label
-    $header.Dock='Fill'; $header.Text=$ModelLabel + "`r`nLead only: other agents retain their separate sessions and model contexts.`r`nSend steers the active turn. Interrupt stops it; Continue resumes this conversation. Automation controls new bridge turns."
+    $header.Dock='Fill'; $header.Text=$ModelLabel + "`r`n" + $view.State.ContextNotice + "`r`nSend steers the active turn. Interrupt stops it; Continue resumes this conversation. Automation controls new bridge turns."
     $layout.Controls.Add($header,0,0)
     $tabs=New-Object Windows.Forms.TabControl; $tabs.Dock='Fill'
     foreach ($entry in @(@('Conversation','Transcript'),@('Bridge activity','Bridge'))) {
@@ -375,7 +426,7 @@ function New-WdOperatorConversationView {
     $inputBox.BackColor=[Drawing.Color]::FromArgb(39,44,53); $inputBox.ForeColor=[Drawing.Color]::WhiteSmoke
     $layout.Controls.Add($inputBox,0,4); $view.Controls.Input=$inputBox
     $buttons=New-Object Windows.Forms.FlowLayoutPanel; $buttons.Dock='Fill'
-    foreach ($entry in @(@('Send','Send',150),@('Continue','Continue',90),@('Attach','Attach...',90),@('Clear','Clear files',85),@('Interrupt','Interrupt',85),@('Automation','Resume automation',165))) {
+    foreach ($entry in @(@('Reconcile','Read-only reconcile',180),@('Send','Send',150),@('Continue','Continue',90),@('Attach','Attach...',90),@('Clear','Clear files',85),@('Interrupt','Interrupt',85),@('Automation','Resume automation',165))) {
         $button=New-Object Windows.Forms.Button; $button.Text=$entry[1]; $button.Width=$entry[2]; $button.Height=34
         $button.FlatStyle='Flat'; $buttons.Controls.Add($button); $view.Controls[$entry[0]]=$button
     }
@@ -388,6 +439,10 @@ function New-WdOperatorConversationView {
         } catch { Set-WdOperatorConversationStatus -View $view -Text ('Message not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure()
     $view.Controls.Send.Add_Click($send)
+    $view.Controls.Reconcile.Add_Click({
+        try { Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text $view.Controls.Input.Text -Paths $view.AttachmentPaths }
+        catch { Set-WdOperatorConversationStatus -View $view -Text ('Reconciliation not accepted: ' + $_.Exception.Message) }
+    }.GetNewClosure())
     $view.Controls.Continue.Add_Click({
         try { Submit-WdOperatorConversationAction -View $view -Kind send -Text 'Continue.' }
         catch { Set-WdOperatorConversationStatus -View $view -Text ('Continue not accepted: ' + $_.Exception.Message) }

@@ -38,6 +38,44 @@ function Get-RequiredText {
     return [string]$property.Value
 }
 
+function Get-WdSupervisorToolsConversationPermissions {
+    param([Parameter(Mandatory)] [psobject] $Tools)
+
+    $property = $Tools.PSObject.Properties['conversation_permissions']
+    if ($null -eq $property) {
+        return @{
+            NetworkAccess = $false
+            AdditionalWritableRoots = @()
+        }
+    }
+    $policy = $property.Value
+    if (
+        $null -eq $policy -or
+        $policy -isnot [pscustomobject] -or
+        @($policy.PSObject.Properties.Name | Where-Object {
+                $_ -cnotin @('network_access', 'additional_writable_roots')
+            }).Count -gt 0 -or
+        $null -eq $policy.PSObject.Properties['network_access'] -or
+        $policy.network_access -isnot [bool] -or
+        $null -eq $policy.PSObject.Properties['additional_writable_roots'] -or
+        $policy.additional_writable_roots -isnot [array]
+    ) {
+        throw (
+            'Tools conversation permissions must explicitly contain a boolean ' +
+            'network_access and array additional_writable_roots'
+        )
+    }
+    foreach ($root in @($policy.additional_writable_roots)) {
+        if ($root -isnot [string] -or [string]::IsNullOrWhiteSpace($root)) {
+            throw 'Tools conversation writable roots must be nonempty strings'
+        }
+    }
+    return @{
+        NetworkAccess = [bool]$policy.network_access
+        AdditionalWritableRoots = @($policy.additional_writable_roots)
+    }
+}
+
 function Test-WdSupervisorJsonBooleanTrue {
     param(
         [Parameter(Mandatory)] $Object,
@@ -1465,6 +1503,72 @@ function ConvertTo-SupervisorUtc {
     return $parsed.ToUniversalTime()
 }
 
+function Test-ToolsConversationNativeProcess {
+    param(
+        [Parameter(Mandatory)] $OwnerProcess,
+        [Parameter(Mandatory)] $Record
+    )
+
+    try {
+        $nativePidProperty = $Record.PSObject.Properties['native_pid']
+        $nativeParentProperty = $Record.PSObject.Properties['native_parent_pid']
+        if (
+            $null -eq $nativePidProperty -or
+            $nativePidProperty.Value -isnot [int] -or
+            $null -eq $nativeParentProperty -or
+            $nativeParentProperty.Value -isnot [int]
+        ) {
+            return $false
+        }
+        $nativePid = [int]$nativePidProperty.Value
+        $ownerPid = [int]$OwnerProcess.ProcessId
+        if (
+            $nativePid -le 0 -or
+            $nativePid -eq $ownerPid -or
+            [int]$nativeParentProperty.Value -ne $ownerPid
+        ) {
+            return $false
+        }
+        $nativeMatches = @(
+            Get-CimInstance `
+                -ClassName Win32_Process `
+                -Filter "ProcessId=$nativePid" `
+                -ErrorAction Stop
+        )
+        if ($nativeMatches.Count -ne 1) { return $false }
+        $native = $nativeMatches[0]
+        $expectedExecutable = [IO.Path]::GetFullPath(
+            [string]$Record.codex_command
+        )
+        $actualExecutable = [IO.Path]::GetFullPath(
+            [string]$native.ExecutablePath
+        )
+        if (
+            [int]$native.ParentProcessId -ne $ownerPid -or
+            [string]$native.Name -cne 'codex.exe' -or
+            -not $actualExecutable.Equals(
+                $expectedExecutable,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            return $false
+        }
+        $ownerStarted = ConvertTo-SupervisorUtc $OwnerProcess.CreationDate
+        $nativeStarted = ConvertTo-SupervisorUtc $native.CreationDate
+        $recordedNativeStarted = ConvertTo-SupervisorUtc `
+            $Record.native_process_start_utc
+        return (
+            $nativeStarted -ge $ownerStarted.AddSeconds(-1) -and
+            [Math]::Abs((
+                    $recordedNativeStarted - $nativeStarted
+                ).TotalSeconds) -le 1
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
 function Test-ToolsWrapperReadiness {
     param(
         [Parameter(Mandatory)] $Process,
@@ -1481,6 +1585,20 @@ function Test-ToolsWrapperReadiness {
         }
         $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
             ConvertFrom-Json -ErrorAction Stop
+        $surfaceProperty = $Tools.PSObject.Properties['conversation_surface']
+        $conversationSurface = if ($null -eq $surfaceProperty) {
+            'none'
+        } else {
+            [string]$surfaceProperty.Value
+        }
+        if ($conversationSurface -cnotin @('none', 'local_window')) {
+            return $false
+        }
+        $expectedSchema = if ($conversationSurface -ceq 'local_window') {
+            'wd.tools-consumer-ready.v2'
+        } else {
+            'wd.tools-consumer-ready.v1'
+        }
         $expectedCodex = [IO.Path]::GetFullPath(
             [string]$Validation.codex_command
         )
@@ -1511,7 +1629,7 @@ function Test-ToolsWrapperReadiness {
             [string]$record.head -ceq [string]$Tools.expected_head
         }
         if (
-            [string]$record.schema -cne 'wd.tools-consumer-ready.v1' -or
+            [string]$record.schema -cne $expectedSchema -or
             [string]$record.generation -cne $Generation -or
             [int]$record.pid -ne [int]$Process.ProcessId -or
             -not $pinValid -or
@@ -1559,12 +1677,204 @@ function Test-ToolsWrapperReadiness {
         $recordCreated = ConvertTo-SupervisorUtc $record.process_start_utc
         $readyAt = ConvertTo-SupervisorUtc $record.ready_at_utc
         $canaryAt = ConvertTo-SupervisorUtc $record.append_canary_event_utc
-        return (
+        $commonTimestampsValid = (
             [Math]::Abs(($recordCreated - $processCreated).TotalSeconds) -le 1 -and
             $readyAt -ge $recordCreated -and
             $canaryAt -ge $recordCreated.AddSeconds(-5) -and
             $canaryAt -le $readyAt
         )
+        if (-not $commonTimestampsValid) { return $false }
+        if ($conversationSurface -ceq 'none') {
+            return $true
+        }
+
+        $pidProperty = $record.PSObject.Properties['pid']
+        $transportProperty = $record.PSObject.Properties['transport_ready']
+        $checkpointProperty = $record.PSObject.Properties[
+            'native_checkpoint_verified'
+        ]
+        $taskCompletionProperty = $record.PSObject.Properties[
+            'task_completion_verified'
+        ]
+        $networkProperty = $record.PSObject.Properties[
+            'conversation_network_access'
+        ]
+        $validationNetworkProperty = $Validation.PSObject.Properties[
+            'conversation_network_access'
+        ]
+        if (
+            $null -eq $pidProperty -or
+            $pidProperty.Value -isnot [int] -or
+            $null -eq $transportProperty -or
+            $transportProperty.Value -isnot [bool] -or
+            -not [bool]$transportProperty.Value -or
+            $null -eq $checkpointProperty -or
+            $checkpointProperty.Value -isnot [bool] -or
+            $null -eq $taskCompletionProperty -or
+            $taskCompletionProperty.Value -isnot [bool] -or
+            [bool]$taskCompletionProperty.Value -or
+            $null -eq $networkProperty -or
+            $networkProperty.Value -isnot [bool] -or
+            $null -eq $validationNetworkProperty -or
+            $validationNetworkProperty.Value -isnot [bool] -or
+            [bool]$networkProperty.Value -ne
+                [bool]$validationNetworkProperty.Value -or
+            [string]$record.status -cne 'transport_ready' -or
+            [string]$record.readiness_scope -cne 'ui_transport_only' -or
+            [string]$record.conversation_surface -cne 'local_window' -or
+            [string]$record.agent -cne [string]$Tools.agent -or
+            [string]$record.thread_id -cnotmatch '^[A-Za-z0-9._:-]{1,256}$' -or
+            [string]$record.transport_ready_at_utc -cne
+                [string]$record.ready_at_utc
+        ) {
+            return $false
+        }
+        $recordRoots = @($record.conversation_additional_writable_roots)
+        $validationRoots = @(
+            $Validation.conversation_additional_writable_roots
+        )
+        if (
+            $recordRoots.Count -ne $validationRoots.Count -or
+            @(Compare-Object `
+                -ReferenceObject $validationRoots `
+                -DifferenceObject $recordRoots `
+                -CaseSensitive).Count -ne 0
+        ) {
+            return $false
+        }
+        foreach ($conversationCodeName in @(
+                'Invoke-WdLaneTurnLoop.ps1',
+                'Show-WdOperatorConversation.ps1',
+                'Invoke-WdCodexConversationLoop.ps1'
+            )) {
+            $recordHash = $record.conversation_code_sha256.PSObject.Properties[
+                $conversationCodeName
+            ]
+            $validationHash = $Validation.conversation_code_sha256.PSObject.Properties[
+                $conversationCodeName
+            ]
+            if (
+                $null -eq $recordHash -or
+                $null -eq $validationHash -or
+                [string]$recordHash.Value -cnotmatch '^[0-9A-F]{64}$' -or
+                [string]$recordHash.Value -cne [string]$validationHash.Value
+            ) {
+                return $false
+            }
+        }
+        $transportAt = ConvertTo-SupervisorUtc $record.transport_ready_at_utc
+        $nativeStarted = ConvertTo-SupervisorUtc `
+            $record.native_process_start_utc
+        if (
+            $transportAt -lt $recordCreated -or
+            $nativeStarted -lt $recordCreated.AddSeconds(-1) -or
+            $nativeStarted -gt $transportAt -or
+            -not (Test-ToolsConversationNativeProcess `
+                -OwnerProcess $Process `
+                -Record $record)
+        ) {
+            return $false
+        }
+
+        $lastTurnAtText = [string]$record.last_turn_finalized_at_utc
+        $lastCheckpointAtText = [string]$record.last_checkpoint_verified_at_utc
+        if ([string]::IsNullOrWhiteSpace($lastTurnAtText)) {
+            if (
+                [bool]$checkpointProperty.Value -or
+                -not [string]::IsNullOrWhiteSpace([string]$record.last_turn_id) -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_native_turn_id
+                ) -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_native_status
+                ) -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_turn_disposition
+                )
+            ) {
+                return $false
+            }
+        }
+        else {
+            $lastTurnAt = ConvertTo-SupervisorUtc $lastTurnAtText
+            if (
+                $lastTurnAt -lt $transportAt -or
+                $lastTurnAt -gt [DateTimeOffset]::UtcNow.AddSeconds(5) -or
+                [string]$record.last_turn_id -cnotmatch
+                    '^turn-[0-9a-f]{32}$' -or
+                [string]$record.last_native_turn_id -cnotmatch
+                    '^[A-Za-z0-9._:-]{1,256}$' -or
+                [string]$record.last_native_status -cnotmatch
+                    '^[A-Za-z][A-Za-z0-9._:-]{0,63}$' -or
+                [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_turn_disposition
+                ) -or
+                ([string]$record.last_turn_disposition).Length -gt 1024 -or
+                ([string]$record.last_turn_disposition).IndexOfAny(
+                    [char[]]@("`r", "`n", [char]0)
+                ) -ge 0
+            ) {
+                return $false
+            }
+            if (
+                [bool]$checkpointProperty.Value -and
+                (
+                    [string]$record.last_native_status -cne 'completed' -or
+                    [string]$record.last_turn_disposition -cnotin
+                        @('completed', 'blocked', 'idle')
+                )
+            ) {
+                return $false
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($lastCheckpointAtText)) {
+            if (
+                [bool]$checkpointProperty.Value -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_checkpoint_turn_id
+                ) -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_checkpoint_native_turn_id
+                ) -or
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$record.last_checkpoint_disposition
+                )
+            ) {
+                return $false
+            }
+        }
+        else {
+            $lastCheckpointAt = ConvertTo-SupervisorUtc $lastCheckpointAtText
+            if (
+                [string]::IsNullOrWhiteSpace($lastTurnAtText) -or
+                $lastCheckpointAt -lt $transportAt -or
+                $lastCheckpointAt -gt $lastTurnAt -or
+                $lastCheckpointAt -gt [DateTimeOffset]::UtcNow.AddSeconds(5) -or
+                [string]$record.last_checkpoint_turn_id -cnotmatch
+                    '^turn-[0-9a-f]{32}$' -or
+                [string]$record.last_checkpoint_native_turn_id -cnotmatch
+                    '^[A-Za-z0-9._:-]{1,256}$' -or
+                [string]$record.last_checkpoint_disposition -cnotin
+                    @('completed', 'blocked', 'idle')
+            ) {
+                return $false
+            }
+            if (
+                [bool]$checkpointProperty.Value -and
+                (
+                    [string]$record.last_checkpoint_turn_id -cne
+                        [string]$record.last_turn_id -or
+                    [string]$record.last_checkpoint_native_turn_id -cne
+                        [string]$record.last_native_turn_id -or
+                    [string]$record.last_checkpoint_disposition -cne
+                        [string]$record.last_turn_disposition -or
+                    [Math]::Abs(($lastCheckpointAt - $lastTurnAt).TotalSeconds) -gt 1
+                )
+            ) {
+                return $false
+            }
+        }
+        return $true
     }
     catch {
         return $false
@@ -2420,8 +2730,24 @@ $configuredToolsLauncher = ''
 $toolsConfig = ''
 $toolsConflictPath = ''
 $toolsPowerShellHost = ''
+$toolsConversationSurface = 'none'
+$toolsConversationPermissions = @{
+    NetworkAccess = $false
+    AdditionalWritableRoots = @()
+}
 if ($toolsEnabled) {
     $toolsAgent = Get-RequiredText $tools 'agent'
+    $toolsConversationSurfaceProperty = $tools.PSObject.Properties[
+        'conversation_surface'
+    ]
+    if ($null -ne $toolsConversationSurfaceProperty) {
+        $toolsConversationSurface = [string]$toolsConversationSurfaceProperty.Value
+    }
+    if ($toolsConversationSurface -cnotin @('none', 'local_window')) {
+        throw "unsupported Tools conversation_surface '$toolsConversationSurface'"
+    }
+    $toolsConversationPermissions =
+        Get-WdSupervisorToolsConversationPermissions -Tools $tools
     $toolsExpectedHead = (Get-RequiredText $tools 'expected_head').ToLowerInvariant()
     if ($toolsExpectedHead -cnotmatch '^[0-9a-f]{40}$') {
         throw 'tools expected_head must be a full lowercase Git commit'
@@ -2437,6 +2763,17 @@ if ($toolsEnabled) {
         $toolsReasoningEffort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')
     ) {
         throw 'Tools model or reasoning effort is unsupported'
+    }
+    if (
+        $toolsConversationSurface -ceq 'local_window' -and
+        (
+            $toolsAgent -cne 'codex-tools-1' -or
+            $toolsReasoningEffort -cne 'high' -or
+            (Get-RequiredText $tools 'sandbox') -cne 'workspace-write' -or
+            (Get-RequiredText $tools 'approval_policy') -cne 'never'
+        )
+    ) {
+        throw 'Tools local conversation differs from its pinned lane posture'
     }
     $toolsGeneration = Resolve-OwnBundleGeneration -ScriptRoot $PSScriptRoot
     $configuredToolsLauncher = [IO.Path]::GetFullPath(
@@ -2508,6 +2845,49 @@ if ($toolsEnabled) {
         [string]$toolsValidation.branch -ceq [string]$tools.expected_branch -and
         [string]$toolsValidation.head -ceq $toolsExpectedHead
     }
+    $expectedConversationRoots = @(
+        $toolsConversationPermissions.AdditionalWritableRoots |
+            ForEach-Object { [IO.Path]::GetFullPath([string]$_).TrimEnd('\') }
+    )
+    $validatedConversationRoots = @(
+        $toolsValidation.conversation_additional_writable_roots |
+            ForEach-Object { [string]$_ }
+    )
+    $validationNetworkProperty = $toolsValidation.PSObject.Properties[
+        'conversation_network_access'
+    ]
+    $toolsConversationPermissionsValid = (
+        $null -ne $validationNetworkProperty -and
+        $validationNetworkProperty.Value -is [bool] -and
+        [bool]$validationNetworkProperty.Value -eq
+            [bool]$toolsConversationPermissions.NetworkAccess -and
+        $expectedConversationRoots.Count -eq $validatedConversationRoots.Count -and
+        @($expectedConversationRoots | Where-Object {
+                $_ -cnotin $validatedConversationRoots
+            }).Count -eq 0 -and
+        @($validatedConversationRoots | Where-Object {
+                $_ -cnotin $expectedConversationRoots
+            }).Count -eq 0
+    )
+    $toolsConversationHashesValid = $true
+    if ($toolsConversationSurface -ceq 'local_window') {
+        foreach ($conversationCodeName in @(
+                'Invoke-WdLaneTurnLoop.ps1',
+                'Show-WdOperatorConversation.ps1',
+                'Invoke-WdCodexConversationLoop.ps1'
+            )) {
+            $hashProperty =
+                $toolsValidation.conversation_code_sha256.PSObject.Properties[
+                    $conversationCodeName
+                ]
+            if (
+                $null -eq $hashProperty -or
+                [string]$hashProperty.Value -cnotmatch '^[0-9A-F]{64}$'
+            ) {
+                $toolsConversationHashesValid = $false
+            }
+        }
+    }
     if (
         -not (Test-WdSupervisorJsonBooleanTrue `
             -Object $toolsValidation `
@@ -2517,6 +2897,10 @@ if ($toolsEnabled) {
         [string]$toolsValidation.resume_policy -cne $toolsResumePolicy -or
         [string]$toolsValidation.model -cne $toolsModel -or
         [string]$toolsValidation.reasoning_effort -cne $toolsReasoningEffort -or
+        [string]$toolsValidation.conversation_surface -cne
+            $toolsConversationSurface -or
+        -not $toolsConversationPermissionsValid -or
+        -not $toolsConversationHashesValid -or
         [string]$toolsValidation.target_state_id -cne 'wd-swarm-target-state-v1' -or
         -not ([string]$toolsValidation.readiness_path).Equals(
             $readinessPath,
@@ -3117,6 +3501,7 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
     )
     $toolsArguments = @(
         '-NoProfile',
+        '-STA',
         '-ExecutionPolicy', 'Bypass',
         '-File', $toolsLauncher,
         '-ConfigPath', $toolsConfig,

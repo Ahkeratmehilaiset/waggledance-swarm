@@ -125,11 +125,30 @@ It reports compact checkpoint health/age, lane task/status, exact-HEAD match,
 pending bridge wake sentinels, runnable lanes, and exact duplicate write-scope
 claims. It never acknowledges traffic or mutates bridge/Git state.
 
-Each Claude lane maintains exactly one lane-specific durable five-minute cron
-backstop and still calls `ScheduleWakeup` on every dynamic `/loop` turn. The
-durable cron re-enters compact-state/bridge processing after a missed dynamic
-wakeup and is refreshed before Claude's seven-day durable-job expiry. It never
-authorizes a duplicate claim.
+Each native interactive Claude lane maintains exactly one lane-specific
+five-minute cron backstop plus its current dynamic `ScheduleWakeup` one-shot.
+The installed build observed on September 14 exposes **session-only** jobs,
+not durable jobs: recreate them on every new session and verify both configured
+and actually-fired evidence. A cron-triggered turn alone does not prove that a
+dynamic wake fired. Neither mechanism interrupts a running or hung turn.
+
+Keep turns bounded. On a no-op cron or monitor turn, preserve the existing
+absolute dynamic-wake deadline. If the lane requires a `ScheduleWakeup` call,
+use the remaining time to that deadline; resetting a fresh fixed delay on every
+five-minute tick can postpone the dynamic wake indefinitely. A recurring
+backstop and one pending dynamic wake are not duplicate jobs.
+
+An explicitly managed lane uses the launcher-owned `Invoke-WdLaneTurnLoop.ps1`
+instead of an interactive CLI prompt. Its window belongs to the bounded turn
+runner; turn receipts and local diagnostics are under the worktree's
+`.codex-audit/wd-turn-loop/`. It must not also create a competing native cron.
+Interactive windows remain the source fleet default. Managed execution is an
+explicit choice: set the selected source manifest lane's `turn_mode` to
+`managed`, then validate and deploy that manifest with its matching bundle.
+Do not edit an installed hash-pinned manifest in place. An already-open
+interactive Lead is preserved and is not externally resumable through a wake
+sentinel. Installing source files does not transform that live session into a
+managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` in the repo.
 
 Before each lane invokes its model, the launcher verifies
 `WaggleDanceSwarmAi.png` by its pinned hash and delivers that exact image once

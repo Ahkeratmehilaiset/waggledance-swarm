@@ -662,6 +662,242 @@ def test_target_state_is_binary_to_preserve_raw_manifest_hash() -> None:
     assert "ops/windows/reboot/WaggleDanceSwarmAi.png binary" in attributes
 
 
+def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
+    manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    modes = {lane["agent"]: lane.get("turn_mode") for lane in manifest["lanes"]}
+    assert modes == {
+        "codex-lead-1": "interactive",
+        "claude-rco-1": "interactive",
+        "claude-rco-2": "interactive",
+        "fable-5": "interactive",
+    }
+    assert "Invoke-WdLaneTurnLoop.ps1" in manifest["deployment"]["required_bundle_files"]
+    deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdLaneTurnLoop.ps1'," in deployer
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_lane_turn_mode_defaults_legacy_records_and_rejects_unknown() -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+$function = $ast.Find({{
+  param($n)
+  $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq 'Get-WdLaneTurnMode'
+}}, $true)
+if (-not $function) {{ throw 'missing turn mode resolver' }}
+. ([scriptblock]::Create($function.Extent.Text))
+$rejected = $false
+try {{ Get-WdLaneTurnMode -Lane ([pscustomobject]@{{ turn_mode = 'guess' }}) }}
+catch {{ $rejected = $true }}
+[pscustomobject]@{{
+  legacy = Get-WdLaneTurnMode -Lane ([pscustomobject]@{{ agent = 'claude-rco-1' }})
+  interactive = Get-WdLaneTurnMode -Lane ([pscustomobject]@{{ turn_mode = 'interactive' }})
+  managed = Get-WdLaneTurnMode -Lane ([pscustomobject]@{{ turn_mode = 'managed' }})
+  rejected = $rejected
+}} | ConvertTo-Json -Compress
+""")
+    assert json.loads(result.stdout) == {
+        "legacy": "interactive", "interactive": "interactive",
+        "managed": "managed", "rejected": True,
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_lane_turn_runner_requires_matching_pin_and_reads_without_mutation(tmp_path: Path) -> None:
+    runner = tmp_path / "Invoke-WdLaneTurnLoop.ps1"
+    runner.write_text("# fixture only; never invoked\n", encoding="utf-8")
+    expected_hash = hashlib.sha256(runner.read_bytes()).hexdigest().upper()
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    root = str(tmp_path).replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+foreach ($name in @('Assert-LanePathWithoutReparse', 'Read-Utf8LaneSnapshot',
+    'Read-WdLaneTurnRunnerSnapshot')) {{
+  $function = $ast.Find({{
+    param($n)
+    $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+  }}, $true)
+  if (-not $function) {{ throw "missing function $name" }}
+  . ([scriptblock]::Create($function.Extent.Text))
+}}
+$anchor = [pscustomobject]@{{ files = [pscustomobject]@{{
+  'Invoke-WdLaneTurnLoop.ps1' = '{expected_hash}'
+}} }}
+$valid = Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{root}' -DeploymentAnchor $anchor
+$source = Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{root}' -SourceTreeMode
+$missingRejected = $false
+try {{ Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{root}' }}
+catch {{ $missingRejected = $true }}
+$anchor.files.'Invoke-WdLaneTurnLoop.ps1' = '0' * 64
+$mismatchRejected = $false
+try {{ Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{root}' -DeploymentAnchor $anchor }}
+catch {{ $mismatchRejected = $true }}
+[pscustomobject]@{{
+  hash = $valid.Hash
+  source_hash = $source.Hash
+  missing_rejected = $missingRejected
+  mismatch_rejected = $mismatchRejected
+}} | ConvertTo-Json -Compress
+""")
+    assert json.loads(result.stdout) == {
+        "hash": expected_hash, "source_hash": expected_hash,
+        "missing_rejected": True, "mismatch_rejected": True,
+    }
+    assert list(tmp_path.iterdir()) == [runner]
+    assert hashlib.sha256(runner.read_bytes()).hexdigest().upper() == expected_hash
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_managed_lane_guard_rejects_live_owner_and_unknown_process_snapshot() -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(fr"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+$function = $ast.Find({{
+  param($n)
+  $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq 'Assert-WdLaneLaunchAvailable'
+}}, $true)
+if (-not $function) {{ throw 'missing managed lane owner guard' }}
+. ([scriptblock]::Create($function.Extent.Text))
+$lane = [pscustomobject]@{{ agent = 'codex-lead-1'; legacy_process_markers = @('start-wd-codex-lead.ps1') }}
+$global:fixtureProcesses = @()
+$global:fixtureUnknown = $false
+function Get-CimInstance {{
+  param($ClassName, $ErrorAction)
+  if ($global:fixtureUnknown) {{ throw 'CIM unavailable' }}
+  return $global:fixtureProcesses
+}}
+function Test-Guard {{
+  try {{ Assert-WdLaneLaunchAvailable -Lane $lane -CurrentPid 100; return $true }}
+  catch {{ return $false }}
+}}
+$global:fixtureProcesses = @([pscustomobject]@{{ ProcessId = 100; Name = 'powershell.exe'; CommandLine = 'powershell.exe -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1' }})
+$currentOnly = Test-Guard
+$global:fixtureProcesses[0].ProcessId = 101
+$liveOther = Test-Guard
+$global:fixtureProcesses[0].CommandLine = 'powershell.exe -File "C:\Python\start-wd-codex-lead.ps1"'
+$legacyOther = Test-Guard
+$global:fixtureProcesses[0].CommandLine = 'powershell.exe -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-10'
+$nearbyAgent = Test-Guard
+$global:fixtureProcesses[0].CommandLine = 'powershell.exe -Command "Write-Output start-wd-agent.ps1 -Agent codex-lead-1"'
+$commandText = Test-Guard
+$global:fixtureProcesses = @()
+$global:fixtureUnknown = $true
+$unknown = Test-Guard
+[pscustomobject]@{{ current_only = $currentOnly; live_other = $liveOther;
+  legacy_other = $legacyOther; nearby_agent = $nearbyAgent;
+  command_text = $commandText; unknown = $unknown }} | ConvertTo-Json -Compress
+""")
+    assert json.loads(result.stdout) == {
+        "current_only": True, "live_other": False, "legacy_other": False,
+        "nearby_agent": True, "command_text": True, "unknown": False,
+    }
+
+
+def test_managed_lane_launch_is_after_dry_run_and_carries_initial_image() -> None:
+    launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    invocation = launcher.index("$managedTurnParameters = @{")
+    assert invocation > launcher.index("if ($DryRun) {")
+    assert invocation > launcher.index("$handshake = [ordered]@{")
+    assert "turn_mode = $turnMode" in launcher
+    handshake = launcher[launcher.index("$handshake = [ordered]@{"):invocation]
+    assert "turn_mode = $turnMode" in handshake
+    assert "turn_runner_sha256 = $turnRunnerHash" in handshake
+    assert "ImagePath = $targetImagePath" in launcher[invocation:]
+    assert "SessionId = $RunId" in launcher[invocation:]
+    assert "Generation = $bundleGeneration" in launcher[invocation:]
+    assert "CompactStatePath = $laneCurrentStatePath" in launcher[invocation:]
+    assert "Forever = $true" in launcher[invocation:]
+    assert "if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive')" in launcher
+    assert "Do not create CronCreate or ScheduleWakeup jobs" in launcher
+    assert "lane turn runner bundle hash mismatch" in launcher
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+def test_verified_runner_import_preserves_launcher_arguments_and_scope(tmp_path: Path) -> None:
+    fixture_manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    lead = next(lane for lane in fixture_manifest["lanes"] if lane["agent"] == "codex-lead-1")
+    lead["turn_mode"] = "managed"
+    fixture_path = tmp_path / "fleet-managed-opt-in.json"
+    fixture_path.write_text(json.dumps(fixture_manifest), encoding="utf-8")
+    fixture_quoted = str(fixture_path).replace("'", "''")
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+  '{launcher}', [ref]$tokens, [ref]$errors
+)
+$modeResolver = $ast.Find({{
+  param($n)
+  $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq 'Get-WdLaneTurnMode'
+}}, $true)
+if (-not $modeResolver) {{ throw 'missing turn mode resolver' }}
+. ([scriptblock]::Create($modeResolver.Extent.Text))
+$fixture = Get-Content -LiteralPath '{fixture_quoted}' -Raw | ConvertFrom-Json
+$fixtureLane = $fixture.lanes | Where-Object {{ $_.agent -ceq 'codex-lead-1' }}
+$fixtureMode = Get-WdLaneTurnMode -Lane $fixtureLane
+if ($fixtureMode -cne 'managed') {{ throw 'fixture did not select managed opt-in' }}
+$assignment = $ast.Find({{
+  param($n)
+  $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -eq '$turnResult'
+}}, $true)
+if (-not $assignment) {{ throw 'missing managed invocation' }}
+$Agent = [string]$fixtureLane.agent
+$Model = [string]$fixtureLane.model
+$turnRunnerSnapshot = [pscustomobject]@{{ Text = @'
+param([string] $Agent, [string] $Model, [string] $StartupPrompt)
+function Invoke-WdLaneTurnLoop {{
+  param($Agent, $Model, $StartupPrompt, $ContinuationPrompt, $ImagePath, [switch]$Forever)
+  [pscustomobject]@{{ agent=$Agent; model=$Model; startup=$StartupPrompt;
+    continuation=$ContinuationPrompt; image=$ImagePath; forever=[bool]$Forever }}
+}}
+'@ }}
+$managedTurnParameters = @{{ Agent=$Agent; Model=$Model; StartupPrompt='FIRST visual';
+  ContinuationPrompt='Read compact state'; ImagePath='target.png'; Forever=$true }}
+. ([scriptblock]::Create($assignment.Extent.Text))
+[pscustomobject]@{{ turn_mode=$fixtureMode; parent_agent=$Agent; parent_model=$Model; result=$turnResult }} |
+  ConvertTo-Json -Depth 5 -Compress
+""")
+    assert json.loads(result.stdout) == {
+        "turn_mode": "managed",
+        "parent_agent": "codex-lead-1", "parent_model": "gpt-5.6-sol",
+        "result": {
+            "agent": "codex-lead-1", "model": "gpt-5.6-sol",
+            "startup": "FIRST visual", "continuation": "Read compact state",
+            "image": "target.png", "forever": True,
+        },
+    }
+
+
+def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> None:
+    launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    policy = (REBOOT / "WD_SWARM_PARALLEL_POLICY_V1.md").read_text(encoding="utf-8")
+    for text in (launcher, policy):
+        assert "session-only" in text
+        assert "after every restart" in text
+        assert "absolute" in text
+        assert "remaining time" in text
+        assert "fresh fixed delay" in text
+        assert "durable five-minute" not in text
+        assert "seven-day" not in text
+
+
 def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
     agent_launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     bundle_text = "\n".join(

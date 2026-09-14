@@ -70,12 +70,21 @@ a waived review and never grants merge, deploy, or signature authority.
 
 ## Claude wake backstop
 
-Each Claude lane maintains exactly one lane-specific durable five-minute cron
-backstop with `CronList`/`CronCreate` and removes duplicates with `CronDelete`.
-The cron prompt tells that lane to read its compact state and bridge next action
-and execute one eligible bounded slice. Dynamic `/loop` turns still call
-`ScheduleWakeup` every turn. The durable cron is the recovery backstop when one
-dynamic wakeup is missed; it is not permission to duplicate a live claim.
+Each interactive Claude lane maintains exactly one lane-specific session-only
+five-minute cron backstop with `CronList`/`CronCreate` and removes duplicates
+with `CronDelete`. Recreate it after every restart; the installed build does not
+persist these jobs across sessions. The cron prompt tells that lane to read its
+compact state and bridge next action and execute one eligible bounded slice.
 
-Durable Claude cron jobs expire after seven days, so each lane verifies and
-refreshes its one exact job during normal daily work and after reboot.
+Keep one current dynamic wake with its absolute deadline recorded. Dynamic
+`/loop` turns still call `ScheduleWakeup` every turn. A no-op cron or Monitor turn
+must preserve an already pending deadline. If rearming is required, pass the
+remaining time to that deadline, never a fresh fixed delay that pushes it into
+the future again. When the deadline is due, resume the bounded turn now.
+The cron is a missed-wakeup backstop, not permission to duplicate a live claim.
+
+An explicitly managed lane instead uses its launcher-owned turn loop and must
+not create native cron or `ScheduleWakeup` jobs alongside it. Selecting managed
+mode applies only to new launches; it does not resume an existing interactive
+CLI session. Native dynamic firing, cron firing, and managed turn completion
+are separate evidence and must not be reported interchangeably.

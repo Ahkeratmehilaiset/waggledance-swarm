@@ -1,0 +1,121 @@
+# Bridge wake continuation v1
+
+This contract separates a delivered notification from an executed model turn.
+It does not grant merge, deployment, release, signature or broader filesystem
+authority. Installed behavior must be established from the installed bundle and
+live evidence, not inferred from the presence of this document.
+
+## Confirmed recovery gaps
+
+The September 14 recovery exposed two independent issues:
+
+1. The Python next-action selector treated `message/received` as a substantive
+   answer. An agent could acknowledge a task, then have the selector hide the
+   unfinished request. The PowerShell classifier already excluded receipt ACKs.
+2. `Watch-Bridge.ps1` writes `wake_<agent>`; `Test-BridgeWake.ps1` reads/removes
+   that signal. Neither starts a model turn. An open interactive Codex session
+   whose turn has ended is not made autonomous by that sentinel.
+
+The selector repair excludes receipt ACKs and infrastructure traffic from
+completion, distinguishes a requester's terminal closeout from reminders, and
+keeps `done/request` request-like. One recipient's answer does not finish work
+for every other recipient. Existing exact-task and age rules remain in force.
+
+## Scheduling ownership
+
+| Lane/mode | Turn owner | Meaning of a wake |
+| --- | --- | --- |
+| Tools, existing supervised consumer | Its one canonical consumer | Run a bounded tick through the existing backend. |
+| Existing interactive Claude RCO1/RCO2/Fable | Native session scheduler | Native wake/backstop reads current bridge state; do not launch a twin. |
+| Existing interactive Codex Lead | Existing interactive session | Notification only; no verified external same-session turn adapter. |
+| Explicit managed startup | Launcher-owned turn loop | Start one owned, bounded CLI child after validating occupancy. |
+
+The managed runner must own a lane from startup. It must not take over an
+already-open interactive session, use `SendKeys`, inject approval responses, or
+run concurrent `codex exec resume` against a live interactive conversation.
+Preserving that conversation and changing its process ownership are different
+operations. A retained legacy interactive session remains visibly unsupported
+for external turn scheduling until a deliberate new managed startup.
+
+Native Claude scheduling should retain exactly one recurring lane backstop and
+the current dynamic one-shot wake. Those are two different jobs, not duplicate
+backstops. The observed installed build offers session-only jobs, not durable
+persistence. Configuration and observed firing are separate evidence: a cron or
+Monitor turn does not prove a dynamic wake fired. Preserve an already-pending
+absolute wake deadline on no-op ticks; re-arming with a fresh fixed delay on
+every cron tick can indefinitely postpone the dynamic wake. Recreate native
+backstops after a session restart; a session job is not a Windows service.
+An explicitly managed Claude lane must not also create a competing native cron.
+
+Interactive windows remain the source fleet default. Managed execution is
+opt-in through the source manifest lane's `turn_mode: managed`, followed by
+normal validation and deployment of the matching bundle. It changes that new
+lane window into a lifecycle display rather than an interactive model prompt.
+Never modify an installed hash-pinned manifest to switch modes in place.
+
+The managed loop consumes the existing supervisor-owned `Watch-Bridge.ps1`
+sentinel for its lane. It does not start a second watcher. A direct launcher
+invocation without the supervisor's watcher still has the bounded backstop,
+but does not provide real-time event delivery by itself.
+
+## Managed turn contract
+
+The launcher verifies the packaged runner, CLI executable, worktree membership,
+model/effort pins and installed generation before execution. Standalone script
+entry is refused; production execution goes through that guarded launcher.
+Existing live sessions are
+preserved; missing or ambiguous ownership evidence is not permission to launch.
+
+The loop has one OS-backed owner lease per runtime/lane and records the owner's
+PID, process start time, session and generation. PID presence alone is not
+identity. A native child is contained in its own Windows Job Object; timeout or
+runner failure must not leave child workers writing after ownership is released.
+The runtime-root owner pointer also identifies the previous worktree journal.
+A new worktree must not hide an unresolved prior turn after its process exits.
+Recovery checks that pointer under the same lane lease before starting work.
+
+Each turn follows:
+
+`pending wake → owned start → bounded CLI turn → fresh checkpoint + receipt → result`
+
+The wake is retained separately while a turn executes. New arrivals remain
+pending for a later turn. Repeated notifications coalesce; they do not spawn one
+worker per event. A bounded backstop can re-read the queue after missed signals.
+An ambiguous/crashed turn is reported as blocked and must not be blindly replayed.
+
+The model receives a fixed local continuation instruction. It reads bridge data
+as task context, never as executable shell text or new authority. The north-star
+PNG is delivered on the initial turn only; later turns recover from compact lane
+state and current bridge evidence rather than repeatedly loading the image.
+
+Checkpointed model-turn completion requires a fresh lane checkpoint and a
+structured receipt bound to the exact turn, lane, session, generation and task.
+This is not independent verification that a requested workflow is complete;
+that still requires the canonical recipient response and applicable gates.
+The loop's own journal is separate
+from the model-owned `wd-current-state.json`. A successful CLI exit, a process
+PID, an ACK, a heartbeat or deletion of the wake file is not task completion.
+
+Blocked outcomes must name the cause: unsupported live interactive ownership,
+missing backend, held lease, timeout, surviving child, missing or invalid receipt,
+or invalid checkpoint. Keep diagnostics bounded and preserve actionable evidence.
+Retention covers only successful runner-owned turn artifacts. Unresolved
+evidence is retained. The output budget is a polled stop threshold, not a hard
+disk quota; native CLI session histories are outside this retention policy.
+
+## Verification and rollout
+
+First test with deterministic local fake CLI children: successful checkpoint and
+receipt, ACK-only output, stale checkpoint, wrong identity, concurrent owner,
+wake during an active turn, timeout containment and surviving descendants. Test
+all supported lane identities without invoking paid models or touching live data.
+
+Then verify launcher dry-run and package integrity. A new source implementation
+does not update an existing installed bundle. Live verification is a separate,
+controlled step: prove a real wake, one real turn and its checkpoint/result. For
+native Claude sessions, obtain configured and actually-fired backstop evidence
+from each session. For the retained interactive Lead, verify preservation and
+the explicit unsupported state; do not call that successful automatic waking.
+
+Keep the ACK lifecycle fix and the process-runner change independently reviewable.
+Neither may alter merge-driver HOLD or turn a review into deployment authority.

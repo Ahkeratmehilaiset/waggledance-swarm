@@ -18,16 +18,61 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def run_ps(shell, body):
+def run_ps(shell, body, **process_options):
     result = subprocess.run([shell, "-NoProfile", "-NonInteractive", *(["-STA"] if os.name == "nt" else []),
                              "-Command", "$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest; . " + quote(SCRIPT) + "\n" + body],
-                            capture_output=True, text=True, timeout=30, cwd=ROOT)
+                            capture_output=True, text=True, timeout=30, cwd=ROOT, **process_options)
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
 
 
 def test_operator_view_exists():
     assert SCRIPT.is_file(), "managed Lead needs an actual operator conversation UI"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="WinForms needs Windows")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("hidden_startup", [False, True])
+@pytest.mark.parametrize("mode", ["visible", "hidden", "headless"])
+def test_window_visibility_honors_view_mode_under_hidden_process_startup(shell, hidden_startup, mode):
+    startup = subprocess.STARTUPINFO()
+    if hidden_startup:
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = subprocess.SW_HIDE
+    record = run_ps(shell, """
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class WdWindowVisibilityProbe {
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+}
+'@
+$view=New-WdOperatorConversationView """ + {"visible": "", "hidden": "-Hidden", "headless": "-Headless"}[mode] + """
+try {
+    Update-WdOperatorConversationView -View $view
+    $visible=$false; $managedVisible=$false; $handle=0L
+    if ($null -ne $view.Form) {
+        $handle=$view.Form.Handle.ToInt64()
+        $visible=[WdWindowVisibilityProbe]::IsWindowVisible($view.Form.Handle)
+        $managedVisible=$view.Form.Visible
+    }
+    [pscustomobject]@{
+        visible=$visible; managed_visible=$managedVisible; handle=$handle
+        has_form=($null -ne $view.Form); controls=$view.Controls.Count
+        console_handle=[WdWindowVisibilityProbe]::GetConsoleWindow().ToInt64()
+    } | ConvertTo-Json -Compress
+} finally { Close-WdOperatorConversationView -View $view }
+""", startupinfo=startup, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert record["visible"] is (mode == "visible"), record
+    assert record["managed_visible"] is (mode == "visible"), record
+    assert record["has_form"] is (mode != "headless"), record
+    assert bool(record["handle"]) is (mode != "headless"), record
+    assert bool(record["controls"]) is (mode != "headless"), record
+    assert record["console_handle"] == 0, record
 
 
 @pytest.mark.parametrize("shell", SHELLS)

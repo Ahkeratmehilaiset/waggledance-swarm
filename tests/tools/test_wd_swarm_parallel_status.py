@@ -219,8 +219,15 @@ def tools_conversation_ready(fleet):
     ]
 
 
-def test_tools_v2_transport_identity_does_not_imply_checkpoint_or_progress(fleet):
+@pytest.mark.parametrize("arguments", [
+    "app-server --listen stdio://",
+    '"app-server" "--listen" "stdio://"',
+    '"app-server" --listen stdio://',
+    'app-server "--listen" "stdio://"',
+])
+def test_tools_v2_transport_identity_does_not_imply_checkpoint_or_progress(fleet, arguments):
     processes = tools_conversation_ready(fleet)
+    processes[1]["CommandLine"] = f'"{processes[1]["ExecutablePath"]}" {arguments}'
     tools = run_status(fleet, runtime_processes=processes)["lanes"][-1]
     assert tools["runtime"]["identity"] == "matched"
     assert tools["runtime"]["readiness_scope"] == "ui_transport_only"
@@ -231,6 +238,28 @@ def test_tools_v2_transport_identity_does_not_imply_checkpoint_or_progress(fleet
     assert tools["runnable_evidence"] == "unknown"
     assert tools["conversation_control_verified"] is False
     assert tools["progress"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("arguments", [
+    '"app-server --listen stdio://"',
+    '"app-server --listen stdio://',
+    'app-server" --listen stdio://',
+    '"app-server\' --listen stdio://',
+    'app-server "--listen stdio://',
+    'app-server --listen" stdio://',
+    'app-server --listen "stdio://',
+    'app-server --listen stdio://"',
+    'app-server-other --listen stdio://',
+    'app-server --listen-other stdio://',
+    'app-server --listen tcp://127.0.0.1:1234',
+])
+def test_tools_v2_native_arguments_must_be_complete_exact_tokens(fleet, arguments):
+    processes = tools_conversation_ready(fleet)
+    processes[1]["CommandLine"] = f'"{processes[1]["ExecutablePath"]}" {arguments}'
+    tools = run_status(fleet, runtime_processes=processes)["lanes"][-1]
+    assert tools["runtime"]["identity"] != "matched"
+    assert tools["runtime"]["transport_ready_verified"] is False
+    assert tools["runtime"]["observed_native_pid"] is None
 
 
 @pytest.mark.parametrize("case", ["native_absent", "native_pid_reused", "native_parent", "native_path", "wrapper_file", "wrapper_generation_quote", "wrapper_generation_duplicate", "multiple_native", "thread_missing", "session_mismatch", "truthy_transport", "future_transport", "wrong_pin"])

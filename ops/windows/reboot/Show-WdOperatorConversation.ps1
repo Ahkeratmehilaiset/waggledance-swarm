@@ -485,7 +485,26 @@ function New-WdOperatorConversationView {
         }
     }.GetNewClosure())
     Sync-WdOperatorConversationView -View $view
-    if (-not $Hidden) { $form.Show(); $inputBox.Focus() | Out-Null }
+    if (-not $Hidden) {
+        $windowApi = 'WdOperatorConversationWindow' -as [type]
+        if ($null -eq $windowApi) {
+            $windowApi = Add-Type -PassThru @'
+using System;
+using System.Runtime.InteropServices;
+public static class WdOperatorConversationWindow {
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr window, int command);
+}
+'@
+        }
+        $form.Show()
+        # A hidden supervisor startup can suppress the first native ShowWindow
+        # while WinForms still records Visible=true. The next native call uses
+        # our explicit SW_SHOW, preserving the launcher's console suppression.
+        [void]$windowApi::ShowWindow($form.Handle, 5)
+        $inputBox.Focus() | Out-Null
+    }
     return $view
 }
 

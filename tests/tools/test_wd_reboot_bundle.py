@@ -515,6 +515,77 @@ def test_codex_prompt_watcher_launch_is_lead_only_and_post_handshake() -> None:
     assert "prompt approval is disabled" in launcher
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell required")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_lead_prompt_watcher_policy_never_adds_ui_approval_to_managed_mode(ps: str) -> None:
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{REBOOT / 'start-wd-all.ps1'}',[ref]$tokens,[ref]$errors)
+$function=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-WdLeadPromptWatcherPolicy'}},$true)
+if (-not $function) {{ throw 'missing managed watcher policy' }}
+. ([scriptblock]::Create($function.Extent.Text))
+function Test-Policy($Mode,$Action,$Agent='codex-lead-1',$Cli='codex.cmd') {{
+  $lane=[pscustomobject]@{{agent=$Agent;cli=$Cli}}
+  if ($Mode -ne 'legacy') {{ $lane | Add-Member NoteProperty turn_mode $Mode }}
+  try {{ return [string](Get-WdLeadPromptWatcherPolicy -Lane $lane -WatcherState ([pscustomobject]@{{action=$Action;summary='fixture'}})).required }}
+  catch {{ return 'rejected' }}
+}}
+[pscustomobject]@{{
+  legacy=Test-Policy legacy launch; interactive_launch=Test-Policy interactive launch;
+  interactive_current=Test-Policy interactive current; interactive_conflict=Test-Policy interactive conflict;
+  managed_launch=Test-Policy managed launch; managed_current=Test-Policy managed current;
+  managed_conflict=Test-Policy managed conflict; unknown_mode=Test-Policy guess launch;
+  unknown_action=Test-Policy managed guess; wrong_agent=Test-Policy managed launch fable-5;
+  wrong_cli=Test-Policy managed launch codex-lead-1 claude.cmd
+}} | ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {
+        "legacy": "True", "interactive_launch": "True", "interactive_current": "True",
+        "interactive_conflict": "rejected", "managed_launch": "False", "managed_current": "rejected",
+        "managed_conflict": "rejected", "unknown_mode": "rejected", "unknown_action": "rejected",
+        "wrong_agent": "rejected", "wrong_cli": "rejected",
+    }
+    source = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
+    apply_guard = source.index("if ($promptWatcherRequired)", source.index("$promptWatcherPolicy ="))
+    assert apply_guard < source.index("$promptWatcherApplyState =")
+    final_check = source.index("[void](Get-WdLeadPromptWatcherPolicy", source.index("$finalProcesses ="))
+    assert final_check < source.index("$promptWatcherAvailable =", final_check)
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell required")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_managed_admission_probe_requires_dry_run_and_precedes_return(ps: str, tmp_path: Path) -> None:
+    result = _run_powershell(
+        f"& '{REBOOT / 'start-wd-agent.ps1'}' -Agent codex-lead-1 -CheckManagedAdmission -ManifestPath '{tmp_path / 'missing.json'}'",
+        executable=ps, check=False,
+    )
+    assert result.returncode != 0
+    assert "CheckManagedAdmission requires -DryRun" in result.stderr
+    source = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    block = source[source.index("if ($DryRun) {"):source.index("if ($turnMode -ceq 'managed') {", source.index("if ($DryRun) {"))]
+    assert "if ($CheckManagedAdmission -and $turnMode -ceq 'managed')" in block
+    assert block.index("Assert-WdLaneLaunchAvailable") < block.index("return [pscustomobject]")
+    # Execute the real DryRun branch with an inert guard; no bootstrap/model
+    # commands are reachable from this isolated branch.
+    observed = _run_powershell(f"""
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{REBOOT / 'start-wd-agent.ps1'}',[ref]$tokens,[ref]$errors)
+$dry=$ast.Find({{param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$DryRun'}},$true)
+if (-not $dry) {{ throw 'missing DryRun branch' }}
+function Assert-WdLaneLaunchAvailable {{ param($Lane,$KnownLanes) $script:checks++ }}
+function Write-Host {{ param($Object) }}
+function Test-Dry($Mode,$Check) {{
+  $DryRun=$true; $turnMode=$Mode; $CheckManagedAdmission=$Check; $script:checks=0
+  $manifest=[pscustomobject]@{{lanes=@()}}
+  [void](& ([scriptblock]::Create($dry.Extent.Text)))
+  return $script:checks
+}}
+[pscustomobject]@{{plain=Test-Dry managed $false; managed=Test-Dry managed $true; interactive=Test-Dry interactive $true}} | ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(observed.stdout) == {"plain": 0, "managed": 1, "interactive": 0}
+
+
 def test_compact_state_and_parallel_policy_replace_dated_default_bootstrap() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     agent_launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
@@ -669,7 +740,7 @@ def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     modes = {lane["agent"]: lane.get("turn_mode") for lane in manifest["lanes"]}
     assert modes == {
-        "codex-lead-1": "interactive",
+        "codex-lead-1": "managed",
         "claude-rco-1": "interactive",
         "claude-rco-2": "interactive",
         "fable-5": "interactive",
@@ -954,6 +1025,9 @@ def test_pacing_prompt_supersedes_only_legacy_self_pacing(mode: str, ps: str) ->
         assert "preserve an existing pending one-shot" in prompt
         assert "Do not rearm merely because a no-op turn ran" in prompt
         assert "scheduler-confirmed" in prompt
+        assert "After a one-shot has fired" in prompt
+        assert "new future deadline" in prompt
+        assert "not recovery of a missing pending wake" in prompt
 
 
 def test_managed_lane_launch_is_after_dry_run_and_carries_initial_image() -> None:

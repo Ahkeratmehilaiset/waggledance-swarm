@@ -121,7 +121,7 @@
         "work_queue"
       ],
       "cli": "codex.cmd",
-      "turn_mode": "interactive",
+      "turn_mode": "managed",
       "model": "gpt-5.6-sol",
       "effort": "ultra",
       "resume_policy": "current_worktree",

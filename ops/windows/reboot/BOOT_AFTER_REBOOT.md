@@ -42,7 +42,8 @@ supervisor-owned process visible to later Limited supervisor runs and prevents
 an elevated/Limited duplicate-generation race. The task is enabled permanently
 only after the complete fleet and bridge baseline have passed verification.
 
-After the interactive `codex-lead-1` lane has completed its bridge-bootstrap
+Only when Lead is explicitly configured as interactive, after the
+`codex-lead-1` lane has completed its bridge-bootstrap
 handshake, the restore also reconciles exactly one separate Codex prompt-watcher
 window. It targets only the terminal title `codex-lead-1` and runs the bundled,
 hash-verified `Watch-CodexPrompts.ps1` with `-AllowAll -NoAllNighter`. This is
@@ -57,7 +58,10 @@ DryRun verifies the prompt-watcher script and reports whether it would keep or
 launch the single Lead watcher. A non-canonical Lead watcher or more than one
 watcher targeting `codex-lead-1` is an ambiguous conflict and stops recovery
 before CLI updates or process launches. The prompt watcher is separate from the
-five supervisor-managed real-time bridge watchers. Failure to materialize a
+five supervisor-managed real-time bridge watchers. The managed Lead default
+does not launch this UI approval watcher; a pre-existing watcher blocks the
+managed startup until it is deliberately closed through a controlled handoff.
+Failure to materialize a
 new watcher window after all lane handshakes is non-fatal: the launcher warns,
 leaves unattended Lead prompt approval disabled, and still completes the
 verified fleet restore. A later `-Auto` run reconciles the watcher again.
@@ -138,6 +142,10 @@ merely to end a turn: even remaining-time rearming can round the target forward
 one minute per call. Schedule only when no one-shot remains or a real scheduling
 change requires it, and record the scheduler's confirmed target in compact state.
 A recurring backstop and one pending dynamic wake are not duplicate jobs.
+After a one-shot actually fires and its slice finishes, choose one new future
+eligibility deadline and record the confirmed target. A pending wake that goes
+missing before it fires instead recovers its existing confirmed target. If that
+target is already due, read the bridge and execute the eligible slice now.
 The launcher's current scheduling instruction supersedes legacy role-prompt
 self-pacing clauses only; it does not change role permissions or task authority.
 
@@ -149,13 +157,26 @@ A valid fresh task-blocked checkpoint keeps future wakes/backstops available;
 waiting for a peer or CI does not finish that task or disable the lane. Missing
 or invalid receipts and ambiguous/crashed turns still require reconciliation
 before another model turn.
-Interactive windows remain the source fleet default. Managed execution is an
-explicit choice: set the selected source manifest lane's `turn_mode` to
-`managed`, then validate and deploy that manifest with its matching bundle.
+The next Lead startup is configured as `managed` in this operator-requested
+release. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
+canonical supervised consumer. Validate and deploy the matching bundle before
+this configuration takes effect. The Lead window then shows turn lifecycle
+status, not an interactive prompt, and needs no UI approval watcher.
 Do not edit an installed hash-pinned manifest in place. An already-open
 interactive Lead is preserved and is not externally resumable through a wake
 sentinel. Installing source files does not transform that live session into a
 managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` in the repo.
+Deployed whole-fleet preflight checks native occupancy for a missing managed
+lane before Apply changes other processes. The lane rechecks at launch; this
+read-only check does not reserve ownership. Unresolved turn journals are checked
+under the runner lease and can still stop a later turn. Fleet restore completion
+proves bootstrap identity, not that a managed model turn has completed or that
+an owner in termination hold is healthy. Inspect owner state and fresh receipts.
+The status view reports configured and observed modes separately; a retained
+interactive Lead remains externally unsupported. Unknown native processes
+must first be attributed to their owning sessions and deliberately closed after
+saving their work, or relaunched through marked launchers. Do not kill or adopt
+them merely to clear a launch guard, and do not delete unresolved turn journals.
 
 Before each lane invokes its model, the launcher verifies
 `WaggleDanceSwarmAi.png` by its pinned hash and delivers that exact image once

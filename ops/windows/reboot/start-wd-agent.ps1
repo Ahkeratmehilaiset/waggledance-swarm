@@ -23,11 +23,15 @@ param(
   [string] $ManifestPath = '',
   [string] $HandshakeDirectory = '',
   [string] $ExpectedManifestHash = '',
-  [switch] $DryRun
+  [switch] $DryRun,
+  [switch] $CheckManagedAdmission
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($CheckManagedAdmission -and -not $DryRun) {
+  throw 'CheckManagedAdmission requires -DryRun'
+}
 $script:WdGitExecutable = ''
 if (-not $ManifestPath) {
   $ManifestPath = Join-Path $PSScriptRoot 'wd-fleet.json'
@@ -977,7 +981,9 @@ if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
     'Do not rearm merely because a no-op turn ran. The absolute deadline must be the scheduler-confirmed target, not an estimate. ' +
     'Call ScheduleWakeup only when no valid pending one-shot remains. If a missing wake must be rebuilt, use ' +
     "the remaining time to its confirmed deadline, never a fresh fixed delay. A due " +
-    "deadline means resume the bounded turn now. The session-only cron is a " +
+    'deadline means resume the bounded turn now. After a one-shot has fired and its bounded slice has run, ' +
+    'choose a new future deadline from the next eligible action or backstop; this is not recovery of a missing pending wake. ' +
+    'Record the new scheduler-confirmed target, not the expired deadline. The session-only cron is a ' +
     "missed-wakeup backstop, not permission to duplicate or steal a claim."
   )
 }
@@ -1040,6 +1046,9 @@ Write-Host ("  target:   {0}" -f [string]$targetState.id)
 Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
 
 if ($DryRun) {
+  if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
   return [pscustomobject]@{
     agent = $Agent

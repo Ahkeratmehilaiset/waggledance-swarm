@@ -47,15 +47,24 @@ rearming can round its target forward even when remaining time is calculated;
 a fresh fixed delay on every cron tick can indefinitely postpone it. Record
 confirmed scheduler targets, not estimated placeholder wake times. Recreate native
 backstops after a session restart; a session job is not a Windows service.
+After a one-shot has actually fired and its bounded slice has finished, select
+one new future eligibility deadline from the current task and record the
+scheduler-confirmed target. If a pending one-shot disappears before firing,
+recover its previously confirmed target instead; if that target is due, read
+the bridge and perform the eligible bounded slice now. Do not reuse a fired
+deadline as a permanent prohibition on future scheduling.
 An explicitly managed Claude lane must not also create a competing native cron.
 The current launcher's scheduling instruction supersedes only legacy self-pacing
 sections of external role prompts (including mandatory every-turn rearming and
 durable-cron claims). It never supersedes role permissions or task authority.
 
-Interactive windows remain the source fleet default. Managed execution is
-opt-in through the source manifest lane's `turn_mode: managed`, followed by
-normal validation and deployment of the matching bundle. It changes that new
-lane window into a lifecycle display rather than an interactive model prompt.
+The operator-requested release configures the next Lead startup as
+`turn_mode: managed`; native Claude lanes retain `interactive` and Tools retains
+its existing consumer. This takes effect only after validation and deployment
+of the matching bundle. It changes the new Lead window into a lifecycle display
+rather than an interactive model prompt. The fleet launcher does not create a
+UI approval watcher for managed Lead. An existing approval watcher blocks that
+startup until a controlled handoff removes it; it is never automatically killed.
 Never modify an installed hash-pinned manifest to switch modes in place.
 
 The managed loop consumes the existing supervisor-owned `Watch-Bridge.ps1`
@@ -75,6 +84,15 @@ ancestry and process creation times against known lane launchers, including the
 existing Tools consumer. An unattributable native CLI blocks a new managed
 launch; the guard does not adopt or terminate it. This is conservative occupancy
 checking, not proof of an unknown session's identity.
+
+Resolve unknown occupancy by identifying the owning window/session, saving its
+work, and closing it deliberately, or relaunching it through its marked lane
+launcher after shutdown. Do not infer ownership from a process name, remove an
+owner journal to force admission, or kill unrelated native sessions. A reboot
+may remove processes, but unresolved turn evidence still requires reconciliation.
+The status view distinguishes configured mode from observed mode and wake
+support. A retained interactive Lead stays externally unsupported even when
+the next-start configuration says managed; configuration is not a live turn.
 
 Managed Claude requires the guarded launcher to explicitly pass its existing
 interactive permission posture. The opted-in managed path uses the same CLI

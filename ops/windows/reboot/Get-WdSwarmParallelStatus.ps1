@@ -89,6 +89,99 @@ function Read-WdStatusRecord {
     finally { $stream.Dispose() }
 }
 
+function Get-WdStatusTurnExecution {
+    param($Definition, [object[]] $Processes, [bool] $QueryAvailable,
+        [string] $HandshakeRoot, [string] $RuntimeRoot, [DateTimeOffset] $Now)
+    $result = [pscustomobject]@{
+        source_domain = 'live_launcher_and_bounded_handshake_observation'
+        observed_turn_mode = 'unknown'; external_wake_support = 'unknown'
+        reason = 'process_query_unavailable'; observed_pid = $null
+        observed_worktree = $null; recorded_generation = $null
+        handshake_path = $null; turn_execution_verified = $false
+    }
+    if (-not $QueryAvailable) { return $result }
+    if ($Definition.agent -ceq 'codex-tools-1') {
+        $result.reason = 'canonical_consumer_runtime_reported_separately'
+        return $result
+    }
+    try {
+        $result.reason = 'launcher_absent_or_ambiguous'
+        $candidates = @(
+            foreach ($process in $Processes) {
+                if ([string](Get-WdStatusProperty $process 'Name') -notmatch '^(powershell|pwsh)\.exe$') { continue }
+                $command = [string](Get-WdStatusProperty $process 'CommandLine')
+                if (-not $command) { throw 'PowerShell command line unavailable' }
+                $arguments = @{}
+                foreach ($name in @('File','Agent','RunId','HandshakeDirectory')) {
+                    $pattern = '(?i)(?:^|\s)-' + $name + '\s+(?:"(?<v>[^"]+)"|''(?<v>[^'']+)''|(?<v>\S+))(?=\s|$)'
+                    $found = [regex]::Matches($command, $pattern)
+                    if ($found.Count -eq 1) { $arguments[$name] = $found[0].Groups['v'].Value }
+                }
+                if (-not $arguments.ContainsKey('File')) { continue }
+                $leaf = [IO.Path]::GetFileName(($arguments.File -split '\\')[-1])
+                $genericMatch = $leaf -ieq 'start-wd-agent.ps1' -and
+                    $arguments.ContainsKey('Agent') -and $arguments.Agent -ceq $Definition.agent
+                $legacyMatch = @($Definition.legacy_process_markers) -icontains $leaf
+                if ($genericMatch -or $legacyMatch) {
+                    [pscustomobject]@{ process=$process; arguments=$arguments }
+                }
+            }
+        )
+        if ($candidates.Count -ne 1) { return $result }
+        $candidate = $candidates[0]; $arguments = $candidate.arguments
+        $result.reason = 'handshake_missing_or_mismatched'
+        if (-not $HandshakeRoot -or -not $arguments.ContainsKey('RunId') -or
+            -not $arguments.ContainsKey('HandshakeDirectory') -or
+            $arguments.RunId -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or
+            $arguments.RunId -cin @('.','..')) { return $result }
+        $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+            [StringComparison]::OrdinalIgnoreCase
+        } else { [StringComparison]::Ordinal }
+        $expectedDirectory = [IO.Path]::GetFullPath((Join-Path $HandshakeRoot $arguments.RunId))
+        if (-not ([IO.Path]::GetFullPath($arguments.HandshakeDirectory)).Equals($expectedDirectory, $comparison)) { return $result }
+        $handshakePath = Join-Path $expectedDirectory ($Definition.agent + '.json')
+        foreach ($path in @($HandshakeRoot, $expectedDirectory, $handshakePath)) {
+            if (((Get-Item -LiteralPath $path -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $result }
+        }
+        $record = Read-WdStatusRecord $handshakePath
+        $processStartValue = Get-WdStatusProperty $candidate.process 'CreationDate'
+        $createdValue = Get-WdStatusProperty $record 'created_at_utc'
+        $processStart = if ($processStartValue -is [datetime]) { [DateTimeOffset]$processStartValue } else {
+            [DateTimeOffset]::Parse([string]$processStartValue, [Globalization.CultureInfo]::InvariantCulture)
+        }
+        $created = if ($createdValue -is [datetime]) { [DateTimeOffset]$createdValue } else {
+            [DateTimeOffset]::Parse([string]$createdValue, [Globalization.CultureInfo]::InvariantCulture)
+        }
+        if ([int]$record.schema_version -ne 1 -or [string]$record.status -cne 'bridge_bootstrapped' -or
+            [string]$record.agent -cne $Definition.agent -or [int]$record.pid -le 0 -or
+            [int]$record.pid -ne [int]$candidate.process.ProcessId -or
+            [string]$record.run_id -cne $arguments.RunId -or [string]$record.session_id -cne $arguments.RunId -or
+            $created -lt $processStart -or $created -gt $Now.AddSeconds(5) -or
+            -not ([IO.Path]::GetFullPath([string]$record.runtime_root)).Equals($RuntimeRoot, $comparison) -or
+            [string]$record.bundle_generation -cnotmatch '^(?:[0-9a-f]{32}|[0-9a-f]{40})$') { return $result }
+        # Missing mode is the pre-managed handshake compatibility contract, not
+        # an inference from the selected (possibly newer) manifest's turn_mode.
+        $modeProperty = $record.PSObject.Properties['turn_mode']
+        $mode = if ($null -eq $modeProperty) { 'legacy_interactive' } else { [string]$modeProperty.Value }
+        if ($null -ne $modeProperty -and $mode -cnotin @('interactive','managed')) { return $result }
+        $observedWorktree = [string](Get-WdStatusProperty $record 'worktree')
+        if ([string]::IsNullOrWhiteSpace($observedWorktree) -or
+            -not [IO.Path]::IsPathRooted($observedWorktree)) { return $result }
+        $observedWorktree = [IO.Path]::GetFullPath($observedWorktree)
+        # Publish positive fields only after every required field is validated.
+        $result.observed_turn_mode = $mode
+        $result.observed_pid = [int]$candidate.process.ProcessId
+        $result.observed_worktree = $observedWorktree
+        $result.recorded_generation = [string]$record.bundle_generation
+        $result.handshake_path = $handshakePath
+        $result.reason = if ($mode -ceq 'legacy_interactive') { 'live_launcher_and_legacy_handshake' } else { 'live_launcher_and_handshake' }
+        $result.external_wake_support = if ($Definition.agent -ceq 'codex-lead-1' -and
+            $mode -cin @('interactive','legacy_interactive')) { 'unsupported_existing_interactive' } else { 'not_verified' }
+    }
+    catch { <# Preserve the failed observation stage; never infer a live mode. #> }
+    return $result
+}
+
 function Get-WdStatusRuntime {
     param($Definition, $InstalledBundle, [DateTimeOffset] $Now)
     $result = [pscustomobject]@{
@@ -196,10 +289,15 @@ if (-not (Test-Path -LiteralPath $git -PathType Leaf)) {
 
 $definitions = [Collections.Generic.List[object]]::new()
 foreach ($lane in @($manifest.lanes)) {
+    $modeProperty = $lane.PSObject.Properties['turn_mode']
+    $configuredMode = if ($null -eq $modeProperty) { 'interactive' } else { [string]$modeProperty.Value }
+    if ($configuredMode -cnotin @('interactive','managed')) { $configuredMode = 'unknown' }
     $definitions.Add([pscustomobject]@{
         agent = [string]$lane.agent
         worktree = [IO.Path]::GetFullPath([string]$lane.worktree)
         readiness_path = ''
+        configured_turn_mode = $configuredMode
+        legacy_process_markers = @(Get-WdStatusProperty $lane 'legacy_process_markers')
     })
 }
 $definitions.Add([pscustomobject]@{
@@ -208,6 +306,8 @@ $definitions.Add([pscustomobject]@{
         [string]$manifest.tools_supervisor.worktree
     )
     readiness_path = [string](Get-WdStatusProperty $manifest.tools_supervisor 'readiness_path')
+    configured_turn_mode = 'tools_consumer'
+    legacy_process_markers = @()
 })
 if (@($definitions).Count -ne 5) {
     throw 'parallel status requires exactly five unique lane definitions'
@@ -266,6 +366,12 @@ try {
 }
 catch { $supervisor.status = 'unknown' }
 $lanes = [Collections.Generic.List[object]]::new()
+$laneProcessQueryAvailable = $false
+$laneProcesses = @()
+try {
+    $laneProcesses = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+    $laneProcessQueryAvailable = $true
+} catch { <# Runtime observation remains unknown. #> }
 $scopeOwners = @{}
 foreach ($definition in @($definitions)) {
     $agent = [string]$definition.agent
@@ -362,6 +468,11 @@ foreach ($definition in @($definitions)) {
     }
     $lanes.Add([pscustomobject]@{
         agent = $agent
+        configured_turn_mode = $definition.configured_turn_mode
+        turn_execution = Get-WdStatusTurnExecution -Definition $definition `
+            -Processes $laneProcesses -QueryAvailable $laneProcessQueryAvailable `
+            -HandshakeRoot ([string](Get-WdStatusProperty $manifest 'handshake_root')) `
+            -RuntimeRoot $runtimeRoot -Now $now
         worktree = $worktree
         state_health = $stateHealth
         age_seconds = $ageSeconds
@@ -425,6 +536,8 @@ $report = [pscustomobject]@{
         runnable = 'legacy recorded next action; no freshness or runtime guarantee'
         runnable_evidence = 'observed requires current matching checkpoint with recognized active status, no recorded blocker, enabled supervisor and matching ready PID/start/generation; not authority or full runtime attestation'
         installed_bundle = 'installation pointer record, not proof of running code or package integrity'
+        configured_turn_mode = 'selected manifest startup setting (missing legacy field defaults interactive), never live-mode evidence'
+        turn_execution = 'known launcher and bounded PID/time/session-bound handshake observation; legacy missing mode means legacy interactive; neither bootstrap nor process existence proves a model turn started or completed'
         progress = 'not inferred from checkpoint, readiness, wake or heartbeat timestamps'
     }
     lanes = @($lanes)
@@ -459,6 +572,10 @@ if ($Json) {
         agent, state_health, age_seconds, status, task_id, head_matches,
         runnable_evidence, wake_pending -AutoSize
     $report.summary | Format-List
+    $report.lanes | Select-Object agent, configured_turn_mode,
+        @{Name='observed_turn_mode';Expression={$_.turn_execution.observed_turn_mode}},
+        @{Name='external_wake_support';Expression={$_.turn_execution.external_wake_support}},
+        @{Name='observation_reason';Expression={$_.turn_execution.reason}} | Format-Table -AutoSize -Wrap
     if ($collisions.Count -gt 0) {
         $collisions | Format-Table write_scope, agents -AutoSize
     }

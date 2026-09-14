@@ -132,16 +132,23 @@ not durable jobs: recreate them on every new session and verify both configured
 and actually-fired evidence. A cron-triggered turn alone does not prove that a
 dynamic wake fired. Neither mechanism interrupts a running or hung turn.
 
-Keep turns bounded. On a no-op cron or monitor turn, preserve the existing
-absolute dynamic-wake deadline. If the lane requires a `ScheduleWakeup` call,
-use the remaining time to that deadline; resetting a fresh fixed delay on every
-five-minute tick can postpone the dynamic wake indefinitely. A recurring
-backstop and one pending dynamic wake are not duplicate jobs.
+Keep turns bounded. On a no-op cron, monitor or dynamic-loop turn, confirm the
+existing pending one-shot with `CronList` and leave it unchanged. Do not rearm
+merely to end a turn: even remaining-time rearming can round the target forward
+one minute per call. Schedule only when no one-shot remains or a real scheduling
+change requires it, and record the scheduler's confirmed target in compact state.
+A recurring backstop and one pending dynamic wake are not duplicate jobs.
+The launcher's current scheduling instruction supersedes legacy role-prompt
+self-pacing clauses only; it does not change role permissions or task authority.
 
 An explicitly managed lane uses the launcher-owned `Invoke-WdLaneTurnLoop.ps1`
 instead of an interactive CLI prompt. Its window belongs to the bounded turn
 runner; turn receipts and local diagnostics are under the worktree's
 `.codex-audit/wd-turn-loop/`. It must not also create a competing native cron.
+A valid fresh task-blocked checkpoint keeps future wakes/backstops available;
+waiting for a peer or CI does not finish that task or disable the lane. Missing
+or invalid receipts and ambiguous/crashed turns still require reconciliation
+before another model turn.
 Interactive windows remain the source fleet default. Managed execution is an
 explicit choice: set the selected source manifest lane's `turn_mode` to
 `managed`, then validate and deploy that manifest with its matching bundle.

@@ -41,11 +41,16 @@ Native Claude scheduling should retain exactly one recurring lane backstop and
 the current dynamic one-shot wake. Those are two different jobs, not duplicate
 backstops. The observed installed build offers session-only jobs, not durable
 persistence. Configuration and observed firing are separate evidence: a cron or
-Monitor turn does not prove a dynamic wake fired. Preserve an already-pending
-absolute wake deadline on no-op ticks; re-arming with a fresh fixed delay on
-every cron tick can indefinitely postpone the dynamic wake. Recreate native
+Monitor turn does not prove a dynamic wake fired. Confirm an already-pending
+one-shot with `CronList` on no-op ticks and retain it without rearming. Relative
+rearming can round its target forward even when remaining time is calculated;
+a fresh fixed delay on every cron tick can indefinitely postpone it. Record
+confirmed scheduler targets, not estimated placeholder wake times. Recreate native
 backstops after a session restart; a session job is not a Windows service.
 An explicitly managed Claude lane must not also create a competing native cron.
+The current launcher's scheduling instruction supersedes only legacy self-pacing
+sections of external role prompts (including mandatory every-turn rearming and
+durable-cron claims). It never supersedes role permissions or task authority.
 
 Interactive windows remain the source fleet default. Managed execution is
 opt-in through the source manifest lane's `turn_mode: managed`, followed by
@@ -65,11 +70,30 @@ model/effort pins and installed generation before execution. Standalone script
 entry is refused; production execution goes through that guarded launcher.
 Existing live sessions are
 preserved; missing or ambiguous ownership evidence is not permission to launch.
+The managed launch guard checks one process snapshot and validates native CLI
+ancestry and process creation times against known lane launchers, including the
+existing Tools consumer. An unattributable native CLI blocks a new managed
+launch; the guard does not adopt or terminate it. This is conservative occupancy
+checking, not proof of an unknown session's identity.
+
+Managed Claude requires the guarded launcher to explicitly pass its existing
+interactive permission posture. The opted-in managed path uses the same CLI
+permission setting as the already-approved interactive path; absent that
+explicit posture the runner refuses before creating turn files or launching a
+child. Role, task, claim and promotion limits still apply. This is not a new
+filesystem sandbox. Codex retains its workspace-write/never posture. Fake-child
+tests establish argument and receipt behavior, not real model willingness or
+successful live activation.
 
 The loop has one OS-backed owner lease per runtime/lane and records the owner's
 PID, process start time, session and generation. PID presence alone is not
 identity. A native child is contained in its own Windows Job Object; timeout or
 runner failure must not leave child workers writing after ownership is released.
+The execution deadline initiates contained termination; it does not guarantee a
+bounded shutdown. If Windows never confirms job drain, the lease stays held and
+no new turn/backstop runs until verified recovery. Never release ownership early
+to hide that safety hold. The owner status files remain fixed-size, though the
+termination wait can repeatedly publish status.
 The runtime-root owner pointer also identifies the previous worktree journal.
 A new worktree must not hide an unresolved prior turn after its process exits.
 Recovery checks that pointer under the same lane lease before starting work.
@@ -90,6 +114,12 @@ state and current bridge evidence rather than repeatedly loading the image.
 
 Checkpointed model-turn completion requires a fresh lane checkpoint and a
 structured receipt bound to the exact turn, lane, session, generation and task.
+An independently drained turn with a valid fresh `blocked` receipt/checkpoint
+is a known task-blocked outcome, not an ambiguous process failure. Checkpoint
+that turn and keep the lane wake/backstop available to re-read new bridge state.
+Preserve its blocked task status; waiting for a peer or CI is not task completion.
+Protocol errors, missing receipts, invalid checkpoints, timeouts and crashed
+turns still retain unresolved evidence and stop automatic replay.
 This is not independent verification that a requested workflow is complete;
 that still requires the canonical recipient response and applicable gates.
 The loop's own journal is separate

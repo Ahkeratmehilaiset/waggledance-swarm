@@ -76,12 +76,21 @@ with `CronDelete`. Recreate it after every restart; the installed build does not
 persist these jobs across sessions. The cron prompt tells that lane to read its
 compact state and bridge next action and execute one eligible bounded slice.
 
-Keep one current dynamic wake with its absolute deadline recorded. Dynamic
-`/loop` turns still call `ScheduleWakeup` every turn. A no-op cron or Monitor turn
-must preserve an already pending deadline. If rearming is required, pass the
-remaining time to that deadline, never a fresh fixed delay that pushes it into
-the future again. When the deadline is due, resume the bounded turn now.
-The cron is a missed-wakeup backstop, not permission to duplicate a live claim.
+Keep one current dynamic wake with its confirmed absolute deadline recorded.
+On a no-op cron, Monitor or dynamic-loop turn, use `CronList` to retain an
+already-pending one-shot; do not call `ScheduleWakeup` just to end the turn.
+Create a new one-shot only when none is pending or a real scheduling change
+requires it. Relative-delay rearming can round the target to a later minute
+even when remaining-time arithmetic is used. Read the clock immediately before
+an intentional rearm and record the confirmed target returned by the scheduler
+or `CronList`, not a placeholder estimate. When the deadline is due, resume the
+bounded turn now. The cron is a missed-wakeup backstop, not permission to
+duplicate a live claim.
+
+The current launcher's `turn_mode` scheduling instruction supersedes only
+legacy self-pacing sections of external role prompts, including durable-cron
+claims, mandatory rearming every turn, and fixed-delay idle loops. Role identity,
+write scope, task ownership, review and promotion permissions are unchanged.
 
 An explicitly managed lane instead uses its launcher-owned turn loop and must
 not create native cron or `ScheduleWakeup` jobs alongside it. Selecting managed

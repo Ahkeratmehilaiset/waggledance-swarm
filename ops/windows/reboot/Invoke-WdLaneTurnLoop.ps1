@@ -24,7 +24,8 @@ param(
     [int] $TurnTimeoutSeconds = 600, [int] $MaxTurns = 1,
     [switch] $Forever, [switch] $ShowLifecycle,
     [int64] $MaxOutputBytes = 16777216, [int] $RetainedTurns = 32,
-    [int] $WakeSnapshotTimeoutSeconds = 30
+    [int] $WakeSnapshotTimeoutSeconds = 30,
+    [string] $ClaudePermissionPosture = 'unapproved'
 )
 
 function Initialize-WdNativeTurnType {
@@ -293,14 +294,25 @@ function Move-WdWakeSnapshot {
 }
 
 function Get-WdTurnArguments {
-    param([string] $Backend, [string] $Model, [string] $Effort, [string] $ImagePath, [string] $RuntimeRoot)
+    param(
+        [string] $Backend, [string] $Model, [string] $Effort,
+        [string] $ImagePath, [string] $RuntimeRoot,
+        [ValidateSet('unapproved','existing_interactive')]
+        [string] $ClaudePermissionPosture = 'unapproved'
+    )
     if ($Backend -ceq 'codex') {
         $result = @('--ask-for-approval', 'never', 'exec', '--model', $Model,
             '-c', ('model_reasoning_effort="{0}"' -f $Effort), '--sandbox', 'workspace-write', '--add-dir', $RuntimeRoot)
         if ($ImagePath) { $result += @('--image', $ImagePath) }
         return @($result) + @('--', '-')
     }
-    return @('--print', '--model', $Model, '--effort', $Effort, '--permission-prompts', 'none', '--output-format', 'json')
+    if ($ClaudePermissionPosture -cne 'existing_interactive') {
+        throw 'managed Claude requires explicit existing_interactive permission posture from the guarded launcher'
+    }
+    # Reuse only the guarded launcher's already approved interactive posture.
+    # This is a CLI permission setting, not task, claim, or merge authority.
+    return @('--print', '--model', $Model, '--effort', $Effort,
+        '--dangerously-skip-permissions', '--permission-prompts', 'none', '--output-format', 'json')
 }
 
 function Remove-WdCompletedTurnArtifacts {
@@ -341,7 +353,9 @@ function Invoke-WdLaneTurnLoop {
         [switch] $Forever, [switch] $ShowLifecycle,
         [ValidateRange(1024,67108864)] [int64] $MaxOutputBytes = 16777216,
         [ValidateRange(1,256)] [int] $RetainedTurns = 32,
-        [ValidateRange(1,120)] [int] $WakeSnapshotTimeoutSeconds = 30
+        [ValidateRange(1,120)] [int] $WakeSnapshotTimeoutSeconds = 30,
+        [ValidateSet('unapproved','existing_interactive')]
+        [string] $ClaudePermissionPosture = 'unapproved'
     )
     $ErrorActionPreference = 'Stop'
     Set-StrictMode -Version Latest
@@ -353,6 +367,9 @@ function Invoke-WdLaneTurnLoop {
         'claude-rco-1'=@('claude','sonnet','max'); 'claude-rco-2'=@('claude','sonnet','max'); 'fable-5'=@('claude','fable','max')
     }[$Agent]
     if ($Backend -cne $pins[0] -or $Model -cne $pins[1] -or $Effort -cne $pins[2]) { throw 'managed lane runtime pins mismatch' }
+    if ($Backend -ceq 'claude' -and $ClaudePermissionPosture -cne 'existing_interactive') {
+        throw 'managed Claude requires explicit existing_interactive permission posture from the guarded launcher'
+    }
     $worktreeFull = (Assert-WdTurnPath $Worktree).TrimEnd('\')
     $runtimeFull = (Assert-WdTurnPath $RuntimeRoot).TrimEnd('\')
     $cliFull = Assert-WdTurnPath $CliPath
@@ -381,6 +398,7 @@ function Invoke-WdLaneTurnLoop {
             last_disposition=$null; updated_at_utc=[DateTimeOffset]::UtcNow.ToString('o')
             completion_scope='model_turn_checkpointed'; task_completion_verified=$false
             worktree=$worktreeFull; journal_root=$journalRoot; pending_path=$null
+            cli_permission_posture=if ($Backend -ceq 'claude') { $ClaudePermissionPosture } else { 'workspace-write_never' }
         }
         # A prior running/failed slice is evidence requiring reconciliation, even
         # after a process crash released the OS lock. Never infer safe replay.
@@ -471,7 +489,7 @@ function Invoke-WdLaneTurnLoop {
             )
             [IO.File]::WriteAllText("$prefix.prompt.txt", $prompt, (New-Object Text.UTF8Encoding($false)))
             $turnImage = if ($turnCount -eq 1) { $ImagePath } else { '' }
-            $arguments = @(Get-WdTurnArguments $Backend $Model $Effort $turnImage $runtimeFull)
+            $arguments = @(Get-WdTurnArguments $Backend $Model $Effort $turnImage $runtimeFull $ClaudePermissionPosture)
             $owner.status='running'; $owner.turn_id=$turnId
             Write-WdTurnOwner $ownerPointer $ownerPath $owner
             $native = New-Object WdManagedTurnProcess($cliFull, [string[]]$arguments, $worktreeFull, "$prefix.prompt.txt", "$prefix.stdout.log", "$prefix.stderr.log")
@@ -560,12 +578,15 @@ function Invoke-WdLaneTurnLoop {
             if ($disposition -in @('completed','idle','blocked')) { $result['task_id']=[string]$checkpoint.task_id }
             Write-WdTurnJson "$prefix.result.json" $result
             $owner.child_pid=$null; $owner.last_disposition=$disposition; $owner.updated_at_utc=$result.completed_at_utc
-            if ($disposition -notin @('completed','idle')) {
+            # A fresh task-blocked checkpoint is a reconciled model turn, not
+            # an uncertain process outcome. Keep its status and permit a later
+            # wake; every blocked_* protocol/crash outcome remains fail-closed.
+            if ($disposition -notin @('completed','idle','blocked')) {
                 $owner.status='blocked'; Write-WdTurnOwner $ownerPointer $ownerPath $owner
                 if ($ShowLifecycle) { Write-Host "[$Agent] blocked turn $turnId ($disposition); pending evidence retained" }
                 return [pscustomobject]$owner
             }
-            # Only rename the completed snapshot. Never delete the current wake:
+            # Only rename the verified turn snapshot. Never delete the current wake:
             # a wake written while the model ran belongs to the following turn.
             [IO.File]::Move($pendingPath, "$prefix.checkpointed.json")
             $owner.status='waiting'; $owner.pending_path=$null

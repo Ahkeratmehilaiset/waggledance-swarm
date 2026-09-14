@@ -41,6 +41,9 @@ WINDOWS_POWERSHELL = (
 )
 
 
+LANE_TEST_SHELLS = list(dict.fromkeys(filter(None, [POWERSHELL, WINDOWS_POWERSHELL])))
+
+
 def _run_powershell(
     script: str,
     *,
@@ -708,7 +711,52 @@ catch {{ $rejected = $true }}
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
-def test_lane_turn_runner_requires_matching_pin_and_reads_without_mutation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_lane_trusted_path_uses_native_root_and_containment(tmp_path: Path, ps: str) -> None:
+    root = tmp_path / "trusted"
+    root.mkdir()
+    inside = root / "inside.txt"
+    inside.write_text("trusted")
+    sibling = tmp_path / "trusted-sibling"
+    sibling.mkdir()
+    outside = sibling / "outside.txt"
+    outside.write_text("outside")
+    escaped = lambda path: str(path).replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{REBOOT / 'start-wd-agent.ps1'}',[ref]$tokens,[ref]$errors)
+$function=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-LanePathWithoutReparse'}},$true)
+. ([scriptblock]::Create($function.Extent.Text))
+$inside='{escaped(inside)}'; $root='{escaped(root)}'
+[void](Assert-LanePathWithoutReparse -Path $inside -TrustedRoot ([IO.Path]::GetPathRoot($inside)) -ExpectedType Leaf)
+[void](Assert-LanePathWithoutReparse -Path ([IO.Path]::GetPathRoot($inside)) -TrustedRoot ([IO.Path]::GetPathRoot($inside)) -ExpectedType Directory)
+[void](Assert-LanePathWithoutReparse -Path $inside -TrustedRoot $root -ExpectedType Leaf)
+$outsideRejected=$false
+try {{ [void](Assert-LanePathWithoutReparse -Path '{escaped(outside)}' -TrustedRoot $root -ExpectedType Leaf) }}
+catch {{ $outsideRejected=$true }}
+[pscustomobject]@{{outside_rejected=$outsideRejected;separator=[string][IO.Path]::DirectorySeparatorChar}} | ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {"outside_rejected": True, "separator": os.sep}
+    if os.name != "nt":
+        # POSIX backslashes are literal characters, not traversal separators;
+        # case-distinct siblings must never inherit trusted-root authority.
+        case_sibling = tmp_path / "TRUSTED"
+        case_sibling.mkdir()
+        case_file = case_sibling / "outside.txt"
+        case_file.write_text("outside")
+        case_result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+{result.args[-1].split("$inside=")[0]}
+Assert-LanePathWithoutReparse -Path '{escaped(case_file)}' -TrustedRoot '{escaped(root)}' -ExpectedType Leaf
+""", executable=ps, check=False)
+        assert case_result.returncode != 0
+        assert "escaped its root" in case_result.stderr
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_lane_turn_runner_requires_matching_pin_and_reads_without_mutation(tmp_path: Path, ps: str) -> None:
     runner = tmp_path / "Invoke-WdLaneTurnLoop.ps1"
     runner.write_text("# fixture only; never invoked\n", encoding="utf-8")
     expected_hash = hashlib.sha256(runner.read_bytes()).hexdigest().upper()
@@ -747,7 +795,7 @@ catch {{ $mismatchRejected = $true }}
   missing_rejected = $missingRejected
   mismatch_rejected = $mismatchRejected
 }} | ConvertTo-Json -Compress
-""")
+""", executable=ps)
     assert json.loads(result.stdout) == {
         "hash": expected_hash, "source_hash": expected_hash,
         "missing_rejected": True, "mismatch_rejected": True,
@@ -807,6 +855,107 @@ $unknown = Test-Guard
     }
 
 
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_managed_lane_guard_rejects_unattributed_native_and_checks_ancestry(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(fr"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+$function=$ast.Find({{ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-WdLaneLaunchAvailable' }},$true)
+. ([scriptblock]::Create($function.Extent.Text))
+$lane=[pscustomobject]@{{agent='codex-lead-1';legacy_process_markers=@('start-wd-codex-lead.ps1')}}
+$other=[pscustomobject]@{{agent='fable-5';legacy_process_markers=@('start-wd-fable-5.ps1')}}
+$global:fixtureProcesses=@()
+function Get-CimInstance {{ param($ClassName,$ErrorAction) return $global:fixtureProcesses }}
+function Test-Available {{
+  $guardArgs=@{{Lane=$lane;CurrentPid=100}}
+  if ((Get-Command Assert-WdLaneLaunchAvailable).Parameters.ContainsKey('KnownLanes')) {{ $guardArgs.KnownLanes=@($lane,$other) }}
+  try {{ Assert-WdLaneLaunchAvailable @guardArgs; return $true }}
+  catch {{ return $false }}
+}}
+function New-Row($Id,$Parent,$Name,$Command,$Seconds) {{
+  [pscustomobject]@{{ProcessId=$Id;ParentProcessId=$Parent;Name=$Name;CommandLine=$Command;
+    CreationDate=[datetime]'2026-09-14T00:00:00Z'+[timespan]::FromSeconds($Seconds)}}
+}}
+$native=New-Row 201 200 'codex.exe' 'codex.exe' 2
+$global:fixtureProcesses=@($native)
+$unmarkedCodex=Test-Available
+$native.Name='claude.exe'
+$unmarkedClaude=Test-Available
+$native.Name='claude.exe.old.1789358503699'
+$unmarkedRenamedClaude=Test-Available
+$native.Name='codex.exe.old.1789358503699'
+$unmarkedRenamedCodex=Test-Available
+$known=New-Row 200 1 'powershell.exe' 'powershell -File C:\Python\start-wd-agent.ps1 -Agent fable-5' 0
+$global:fixtureProcesses=@($native,$known)
+$knownOther=Test-Available
+$native.Name='claude.exe.old.1789358503699'
+$knownRenamedOther=Test-Available
+$known.CreationDate=[datetime]'2026-09-15T00:00:00Z'
+$reusedParent=Test-Available
+$known.CreationDate=[datetime]'2026-09-14T00:00:00Z'
+$known.CommandLine='powershell -Command "start-wd-agent.ps1 -Agent fable-5"'
+$notAFileLauncher=Test-Available
+$known.CommandLine='powershell -File C:\Python\wd-reboot-bundles\0123456789012345678901234567890123456789\start-wd-tools-consumer.ps1'
+$native.Name='codex.exe'
+$middle=New-Row 202 200 'powershell.exe' 'powershell -EncodedCommand fixed-wrapper' 1
+$native.ParentProcessId=202
+$global:fixtureProcesses=@($native,$middle,$known)
+$knownTools=Test-Available
+$known.CommandLine='powershell -File C:\Python\Start-AgentBridgeConsumerLoop.ps1 -Agent codex-tools-1'
+$knownToolsConsumer=Test-Available
+$known.CommandLine='powershell -File C:\Python\Invoke-WdToolsCodex.ps1'
+$knownToolsShim=Test-Available
+$known.CommandLine='powershell -Command unrelated'
+$known.ParentProcessId=202
+$cycle=Test-Available
+$global:fixtureProcesses=@($native)
+$missingParent=Test-Available
+[pscustomobject]@{{ unmarked_codex=$unmarkedCodex; unmarked_claude=$unmarkedClaude;
+  unmarked_renamed_codex=$unmarkedRenamedCodex; unmarked_renamed_claude=$unmarkedRenamedClaude;
+  known_renamed_other=$knownRenamedOther;
+  known_other=$knownOther; reused_parent=$reusedParent; not_a_file_launcher=$notAFileLauncher;
+  tools=$knownTools; tools_consumer=$knownToolsConsumer; tools_shim=$knownToolsShim;
+  cycle=$cycle; missing_parent=$missingParent }} | ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {
+        "unmarked_codex": False, "unmarked_claude": False, "known_other": True,
+        "unmarked_renamed_codex": False, "unmarked_renamed_claude": False,
+        "known_renamed_other": True,
+        "reused_parent": False, "not_a_file_launcher": False,
+        "tools": True, "tools_consumer": True, "tools_shim": True,
+        "cycle": False, "missing_parent": False,
+    }
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
+@pytest.mark.parametrize("mode", ["interactive", "managed"])
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_pacing_prompt_supersedes_only_legacy_self_pacing(mode: str, ps: str) -> None:
+    launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
+    start = launcher.index("if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive')")
+    end = launcher.index("$startupPrompt += (\n  ' Grok", start)
+    result = _run_powershell(
+        "$startupPrompt=''; $cliName='claude.cmd'; $Agent='fable-5'; "
+        f"$turnMode='{mode}';\n" + launcher[start:end] + "\n$startupPrompt | ConvertTo-Json -Compress",
+        executable=ps,
+    )
+    prompt = json.loads(result.stdout)
+    assert "supersede only legacy self-pacing" in prompt
+    assert "role permissions, task scope, claims, and merge authority remain unchanged" in prompt
+    assert "must still call ScheduleWakeup every turn" not in prompt
+    if mode == "managed":
+        assert "Do not invoke /loop" in prompt
+        assert "Do not create CronCreate or ScheduleWakeup jobs" in prompt
+    else:
+        assert "CronList" in prompt
+        assert "preserve an existing pending one-shot" in prompt
+        assert "Do not rearm merely because a no-op turn ran" in prompt
+        assert "scheduler-confirmed" in prompt
+
+
 def test_managed_lane_launch_is_after_dry_run_and_carries_initial_image() -> None:
     launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     invocation = launcher.index("$managedTurnParameters = @{")
@@ -820,6 +969,8 @@ def test_managed_lane_launch_is_after_dry_run_and_carries_initial_image() -> Non
     assert "SessionId = $RunId" in launcher[invocation:]
     assert "Generation = $bundleGeneration" in launcher[invocation:]
     assert "CompactStatePath = $laneCurrentStatePath" in launcher[invocation:]
+    assert "if ($backend -ceq 'claude')" in launcher[invocation:]
+    assert "$managedTurnParameters['ClaudePermissionPosture'] = 'existing_interactive'" in launcher[invocation:]
     assert "Forever = $true" in launcher[invocation:]
     assert "if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive')" in launcher
     assert "Do not create CronCreate or ScheduleWakeup jobs" in launcher
@@ -892,8 +1043,11 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
         assert "session-only" in text
         assert "after every restart" in text
         assert "absolute" in text
-        assert "remaining time" in text
-        assert "fresh fixed delay" in text
+        assert "CronList" in text
+        assert "pending" in text
+        assert "no-op" in text
+        assert "confirmed" in text
+        assert "must still call ScheduleWakeup every turn" not in text
         assert "durable five-minute" not in text
         assert "seven-day" not in text
 

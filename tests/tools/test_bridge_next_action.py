@@ -2663,6 +2663,77 @@ def test_prior_target_self_liveness_does_not_suppress_wake_delivery_escalation(
     assert wake["safe_next_action"].startswith("restart or verify")
 
 
+@pytest.mark.parametrize("event_agent", ["operator", "claude-rco-1"])
+@pytest.mark.parametrize(
+    "event_type,status",
+    [
+        ("message", "received"),
+        ("message", "seen"),
+        ("message", "acknowledged"),
+        ("message", "ack"),
+        ("message", "wake_ack"),
+        ("done", "received"),
+        ("heartbeat", "closed"),
+        ("liveness", "done"),
+    ],
+)
+def test_wake_delivery_groups_survive_ack_and_infrastructure(
+    event_agent: str, event_type: str, status: str,
+) -> None:
+    wakes = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": task_id,
+            "status": "open",
+        }
+        for task_id in ("rco-needed", "another-review")
+    ]
+    receipt = {
+        "ts_utc": "2026-06-06T10:06:00Z",
+        "agent": event_agent,
+        "type": event_type,
+        "task_id": "rco-needed",
+        "status": status,
+    }
+
+    assert bridge_next_action._unresolved_wake_delivery_groups(
+        [*wakes, receipt]
+    ) == bridge_next_action._unresolved_wake_delivery_groups(wakes)
+
+
+@pytest.mark.parametrize(
+    "event_type,status", [("done", "done"), ("message", "closed"), ("decision", "resolved")],
+)
+def test_wake_delivery_terminal_closeout_still_clears_only_matching_task(
+    event_type: str, status: str,
+) -> None:
+    wakes = [
+        {
+            "ts_utc": "2026-06-06T10:00:00Z",
+            "agent": "operator",
+            "to": "claude-rco-1",
+            "type": "wake_request",
+            "task_id": task_id,
+            "status": "open",
+        }
+        for task_id in ("rco-needed", "another-review")
+    ]
+    terminal = {
+        "ts_utc": "2026-06-06T10:06:00Z",
+        "agent": "operator",
+        "type": event_type,
+        "task_id": "rco-needed",
+        "status": status,
+    }
+
+    groups = bridge_next_action._unresolved_wake_delivery_groups([*wakes, terminal])
+
+    assert set(groups) == {("claude-rco-1", "another-review")}
+
+
 def test_target_activity_clears_wake_delivery_gap() -> None:
     events = [
         {

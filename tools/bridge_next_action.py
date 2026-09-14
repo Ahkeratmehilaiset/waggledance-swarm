@@ -1851,7 +1851,11 @@ def _unresolved_wake_delivery_groups(
     for event in events:
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
-        if event_agent and _is_wake_delivery_activity(event):
+        if (
+            event_agent
+            and not _is_ack_or_infrastructure(event)
+            and _is_wake_delivery_activity(event)
+        ):
             _clear_wake_delivery_groups_for_target_activity(
                 groups,
                 event_agent=event_agent,
@@ -2027,6 +2031,8 @@ def _clear_wake_delivery_groups_for_terminal_task(
     groups: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
 ) -> None:
+    if _is_ack_or_infrastructure(event):
+        return
     if _event_type(event) != "done" and _event_status(event) not in CLOSED_REQUEST_STATUSES:
         return
     task_id = _task_id(event)

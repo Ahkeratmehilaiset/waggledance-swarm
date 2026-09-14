@@ -129,6 +129,19 @@ def lane_handshake(fleet, mode="interactive"):
     return path, process
 
 
+def test_conversation_configuration_is_not_live_window_or_context_proof(fleet):
+    manifest = json.loads(fleet["manifest"].read_text(encoding="utf-8"))
+    manifest["lanes"][0]["conversation_surface"] = "local_window"
+    fleet["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+    _, process = lane_handshake(fleet, mode=None)
+    report = run_status(fleet, lane_processes=[process])
+    lead = next(lane for lane in report["lanes"] if lane["agent"] == "codex-lead-1")
+    assert lead["configured_conversation_surface"] == "local_window"
+    assert lead["conversation_control_verified"] is False
+    assert lead["turn_execution"]["observed_turn_mode"] == "legacy_interactive"
+    assert lead["turn_execution"]["turn_execution_verified"] is False
+
+
 @pytest.mark.parametrize("mode,observed,support", [
     (None, "legacy_interactive", "unsupported_existing_interactive"),
     ("interactive", "interactive", "unsupported_existing_interactive"),

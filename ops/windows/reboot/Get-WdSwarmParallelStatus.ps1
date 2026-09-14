@@ -292,11 +292,19 @@ foreach ($lane in @($manifest.lanes)) {
     $modeProperty = $lane.PSObject.Properties['turn_mode']
     $configuredMode = if ($null -eq $modeProperty) { 'interactive' } else { [string]$modeProperty.Value }
     if ($configuredMode -cnotin @('interactive','managed')) { $configuredMode = 'unknown' }
+    $surfaceProperty = $lane.PSObject.Properties['conversation_surface']
+    $configuredSurface = if ($null -eq $surfaceProperty) { 'none' } else { [string]$surfaceProperty.Value }
+    if ($configuredSurface -cnotin @('none','local_window') -or
+        ($configuredSurface -ceq 'local_window' -and
+         ([string]$lane.agent -cne 'codex-lead-1' -or $configuredMode -cne 'managed'))) {
+        $configuredSurface = 'unknown'
+    }
     $definitions.Add([pscustomobject]@{
         agent = [string]$lane.agent
         worktree = [IO.Path]::GetFullPath([string]$lane.worktree)
         readiness_path = ''
         configured_turn_mode = $configuredMode
+        configured_conversation_surface = $configuredSurface
         legacy_process_markers = @(Get-WdStatusProperty $lane 'legacy_process_markers')
     })
 }
@@ -307,6 +315,7 @@ $definitions.Add([pscustomobject]@{
     )
     readiness_path = [string](Get-WdStatusProperty $manifest.tools_supervisor 'readiness_path')
     configured_turn_mode = 'tools_consumer'
+    configured_conversation_surface = 'none'
     legacy_process_markers = @()
 })
 if (@($definitions).Count -ne 5) {
@@ -469,6 +478,9 @@ foreach ($definition in @($definitions)) {
     $lanes.Add([pscustomobject]@{
         agent = $agent
         configured_turn_mode = $definition.configured_turn_mode
+        configured_conversation_surface = $definition.configured_conversation_surface
+        # A manifest/handshake does not prove the GUI is open or a RPC was accepted.
+        conversation_control_verified = $false
         turn_execution = Get-WdStatusTurnExecution -Definition $definition `
             -Processes $laneProcesses -QueryAvailable $laneProcessQueryAvailable `
             -HandshakeRoot ([string](Get-WdStatusProperty $manifest 'handshake_root')) `
@@ -537,6 +549,7 @@ $report = [pscustomobject]@{
         runnable_evidence = 'observed requires current matching checkpoint with recognized active status, no recorded blocker, enabled supervisor and matching ready PID/start/generation; not authority or full runtime attestation'
         installed_bundle = 'installation pointer record, not proof of running code or package integrity'
         configured_turn_mode = 'selected manifest startup setting (missing legacy field defaults interactive), never live-mode evidence'
+        configured_conversation_surface = 'next-start UI setting only; not live window, native RPC, shared context or task-completion proof'
         turn_execution = 'known launcher and bounded PID/time/session-bound handshake observation; legacy missing mode means legacy interactive; neither bootstrap nor process existence proves a model turn started or completed'
         progress = 'not inferred from checkpoint, readiness, wake or heartbeat timestamps'
     }

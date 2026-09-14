@@ -149,14 +149,33 @@ function Get-WdLaneTurnMode {
   return $mode
 }
 
+function Get-WdLaneConversationSurface {
+  param([Parameter(Mandatory)] [object] $Lane)
+
+  $property = $Lane.PSObject.Properties['conversation_surface']
+  if ($null -eq $property) { return 'none' }
+  $surface = [string]$property.Value
+  if ($surface -cnotin @('none', 'local_window')) {
+    throw "unsupported lane conversation_surface '$surface'"
+  }
+  if ($surface -ceq 'local_window' -and (
+      [string]$Lane.agent -cne 'codex-lead-1' -or
+      (Get-WdLaneTurnMode -Lane $Lane) -cne 'managed')) {
+    throw 'local conversation control requires the managed Codex Lead lane'
+  }
+  return $surface
+}
+
 function Read-WdLaneTurnRunnerSnapshot {
   param(
     [Parameter(Mandatory)] [string] $ScriptRoot,
+    [ValidateSet('Invoke-WdLaneTurnLoop.ps1', 'Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1')]
+    [string] $FileName = 'Invoke-WdLaneTurnLoop.ps1',
     [AllowNull()] [object] $DeploymentAnchor = $null,
     [switch] $SourceTreeMode
   )
 
-  $runnerPath = Join-Path $ScriptRoot 'Invoke-WdLaneTurnLoop.ps1'
+  $runnerPath = Join-Path $ScriptRoot $FileName
   [void](Assert-LanePathWithoutReparse `
     -Path $runnerPath `
     -TrustedRoot ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($ScriptRoot))) `
@@ -167,7 +186,7 @@ function Read-WdLaneTurnRunnerSnapshot {
       throw 'lane turn runner requires an anchored deployment manifest'
     }
   } else {
-    $pin = $DeploymentAnchor.files.PSObject.Properties['Invoke-WdLaneTurnLoop.ps1']
+    $pin = $DeploymentAnchor.files.PSObject.Properties[$FileName]
     if ($null -eq $pin -or [string]$snapshot.Hash -cne [string]$pin.Value) {
       throw 'lane turn runner bundle hash mismatch'
     }
@@ -563,6 +582,7 @@ if ($matches.Count -ne 1) {
 }
 $lane = $matches[0]
 $turnMode = Get-WdLaneTurnMode -Lane $lane
+$conversationSurface = Get-WdLaneConversationSurface -Lane $lane
 
 $worktree = Resolve-NormalizedPath -Path ([string]$lane.worktree)
 $primaryRepo = Resolve-NormalizedPath -Path ([string]$manifest.primary_repo_root)
@@ -909,12 +929,22 @@ $cliExecutableHash = (
   Get-FileHash -LiteralPath $cliPath -Algorithm SHA256
 ).Hash
 $turnRunnerHash = ''
+$conversationCodeHashes = @{}
+$verifiedConversationCode = @{}
 if ($turnMode -ceq 'managed') {
   $turnRunnerSnapshot = Read-WdLaneTurnRunnerSnapshot `
     -ScriptRoot $PSScriptRoot `
     -DeploymentAnchor $deploymentAnchor `
     -SourceTreeMode:$sourceTreeMode
   $turnRunnerHash = [string]$turnRunnerSnapshot.Hash
+  if ($conversationSurface -ceq 'local_window') {
+    foreach ($name in @('Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1')) {
+      $snapshot = Read-WdLaneTurnRunnerSnapshot -ScriptRoot $PSScriptRoot `
+        -FileName $name -DeploymentAnchor $deploymentAnchor -SourceTreeMode:$sourceTreeMode
+      $conversationCodeHashes[$name] = [string]$snapshot.Hash
+      $verifiedConversationCode[$name] = [string]$snapshot.Text
+    }
+  }
 }
 $targetImageDelivery = if ($cliName -ieq 'codex.cmd') {
   'codex_cli_initial_image'
@@ -991,12 +1021,20 @@ if ($turnMode -ceq 'managed') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
     'role permissions, task scope, claims, and merge authority remain unchanged. ' +
-    ' This lane uses one launcher-owned turn loop; its visible window reports bounded turn lifecycle. ' +
+    ' This lane uses one launcher-owned turn loop. ' +
     'Do not invoke /loop or native Cron scheduling, even if a legacy prompt requests it. ' +
     'Do not create CronCreate or ScheduleWakeup jobs or another polling process. ' +
     'At the end of each bounded turn, persist compact state with the pinned writer. ' +
     'The launcher owns bridge wake consumption and the recurring backstop.'
   )
+  if ($conversationSurface -ceq 'local_window') {
+    $startupPrompt += (
+      ' The operator conversation window steers this same Lead thread during active work and may interrupt it. ' +
+      'Treat direct user messages as instructions under the existing authority and task boundaries. ' +
+      'Keep each peer agent in its own session; coordinate through the bridge instead of merging their contexts. ' +
+      'Reply in the conversation as well as publishing any required bridge task evidence. '
+    )
+  }
 }
 $startupPrompt += (
   ' Grok is an on-demand advisory helper for the lead, not a continuously running lane. ' +
@@ -1042,6 +1080,7 @@ Write-Host ("  run_id:   {0}" -f $RunId)
 Write-Host ("  cli:      {0}" -f $cliName)
 Write-Host ("  model:    {0} ({1})" -f $model, $effort)
 Write-Host ("  mode:     {0}" -f $turnMode)
+Write-Host ("  control:  {0}" -f $conversationSurface)
 Write-Host ("  target:   {0}" -f [string]$targetState.id)
 Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
 
@@ -1063,6 +1102,8 @@ if ($DryRun) {
     effort = $effort
     turn_mode = $turnMode
     turn_runner_sha256 = $turnRunnerHash
+    conversation_surface = $conversationSurface
+    conversation_code_sha256 = $conversationCodeHashes
     resume_policy = $resumePolicy
     target_state_id = [string]$targetState.id
     target_state_image_path = $targetImagePath
@@ -1148,6 +1189,8 @@ $targetPayload = [ordered]@{
   effort = $effort
   turn_mode = $turnMode
   turn_runner_sha256 = $turnRunnerHash
+  conversation_surface = $conversationSurface
+  conversation_code_sha256 = $conversationCodeHashes
   cli_executable = $cliPath
   cli_executable_sha256 = $cliExecutableHash
   resume_policy = $resumePolicy
@@ -1281,6 +1324,8 @@ $handshake = [ordered]@{
   effort = $effort
   turn_mode = $turnMode
   turn_runner_sha256 = $turnRunnerHash
+  conversation_surface = $conversationSurface
+  conversation_code_sha256 = $conversationCodeHashes
   cli_executable = $cliPath
   cli_executable_sha256 = $cliExecutableHash
   resume_policy = $resumePolicy
@@ -1337,6 +1382,19 @@ if ($turnMode -ceq 'managed') {
   if ([string]$turnRunnerSnapshot.Hash -cne $turnRunnerHash) {
     throw 'lane turn runner changed after its handshake'
   }
+  if ($conversationSurface -ceq 'local_window') {
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
+      throw 'Lead conversation window requires an STA PowerShell host; restart the launcher with powershell -STA'
+    }
+    foreach ($name in @('Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1')) {
+      $snapshot = Read-WdLaneTurnRunnerSnapshot -ScriptRoot $PSScriptRoot `
+        -FileName $name -DeploymentAnchor $deploymentAnchor
+      if ([string]$snapshot.Hash -cne [string]$conversationCodeHashes[$name]) {
+        throw "lane conversation code changed after its handshake: $name"
+      }
+      $verifiedConversationCode[$name] = [string]$snapshot.Text
+    }
+  }
   $backend = if ($cliName -ieq 'codex.cmd') { 'codex' } else { 'claude' }
   $managedTurnParameters = @{
     Agent = $Agent; Backend = $backend; CliPath = $cliPath
@@ -1354,10 +1412,16 @@ if ($turnMode -ceq 'managed') {
   # Isolate the runner's script parameter defaults from the launcher variables.
   # Execute exactly the bytes verified above; do not reopen the script by path.
   $turnResult = & {
-    param($VerifiedRunnerText, $LaneTurnParameters)
+    param($VerifiedRunnerText, $LaneTurnParameters, $VerifiedConversationCode = $null)
     . ([scriptblock]::Create([string]$VerifiedRunnerText))
-    Invoke-WdLaneTurnLoop @LaneTurnParameters
-  } ([string]$turnRunnerSnapshot.Text) $managedTurnParameters
+    if ($null -ne $VerifiedConversationCode -and $VerifiedConversationCode.Count -eq 2) {
+      . ([scriptblock]::Create([string]$VerifiedConversationCode['Show-WdOperatorConversation.ps1']))
+      . ([scriptblock]::Create([string]$VerifiedConversationCode['Invoke-WdCodexConversationLoop.ps1']))
+      Invoke-WdCodexConversationLoop @LaneTurnParameters
+    } else {
+      Invoke-WdLaneTurnLoop @LaneTurnParameters
+    }
+  } ([string]$turnRunnerSnapshot.Text) $managedTurnParameters $verifiedConversationCode
   $turnResult | Out-Host
   if ([string]$turnResult.status -cne 'stopped') {
     throw "lane '$Agent' managed turn loop stopped with status '$($turnResult.status)'"

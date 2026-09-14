@@ -750,6 +750,74 @@ def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
     assert "'Invoke-WdLaneTurnLoop.ps1'," in deployer
 
 
+def test_managed_lead_has_a_conversation_surface_without_combining_peer_sessions() -> None:
+    manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
+    surfaces = {lane["agent"]: lane.get("conversation_surface", "none")
+                for lane in manifest["lanes"]}
+    assert surfaces == {
+        "codex-lead-1": "local_window", "claude-rco-1": "none",
+        "claude-rco-2": "none", "fable-5": "none",
+    }
+    for filename in ("Invoke-WdCodexConversationLoop.ps1", "Show-WdOperatorConversation.ps1"):
+        assert filename in manifest["deployment"]["required_bundle_files"]
+        assert f"'{filename}'," in (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_conversation_surface_rejects_unknown_or_other_lane_modes(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+foreach ($name in @('Get-WdLaneTurnMode','Get-WdLaneConversationSurface')) {{
+  $fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}},$true)
+  if (-not $fn) {{ throw "missing function $name" }}
+  . ([scriptblock]::Create($fn.Extent.Text))
+}}
+$blocked=0
+foreach ($lane in @(
+  [pscustomobject]@{{agent='codex-lead-1';turn_mode='managed';conversation_surface='guess'}},
+  [pscustomobject]@{{agent='claude-rco-1';turn_mode='managed';conversation_surface='local_window'}},
+  [pscustomobject]@{{agent='codex-lead-1';turn_mode='interactive';conversation_surface='local_window'}}
+)) {{ try {{ [void](Get-WdLaneConversationSurface -Lane $lane) }} catch {{ $blocked++ }} }}
+[pscustomobject]@{{
+ legacy=Get-WdLaneConversationSurface -Lane ([pscustomobject]@{{agent='codex-lead-1'}})
+ selected=Get-WdLaneConversationSurface -Lane ([pscustomobject]@{{agent='codex-lead-1';turn_mode='managed';conversation_surface='local_window'}})
+ blocked=$blocked
+}} | ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {"legacy": "none", "selected": "local_window", "blocked": 3}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_conversation_code_snapshot_is_hash_pinned_and_filename_allowlisted(tmp_path: Path, ps: str) -> None:
+    filename = "Invoke-WdCodexConversationLoop.ps1"
+    content = b"function Invoke-WdCodexConversationLoop { throw 'fixture, do not execute' }"
+    (tmp_path / filename).write_bytes(content)
+    expected = hashlib.sha256(content).hexdigest().upper()
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    fixture = str(tmp_path).replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+foreach ($name in @('Assert-LanePathWithoutReparse','Read-Utf8LaneSnapshot','Read-WdLaneTurnRunnerSnapshot')) {{
+ $fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}},$true)
+ . ([scriptblock]::Create($fn.Extent.Text))
+}}
+$anchor=[pscustomobject]@{{files=[pscustomobject]@{{'{filename}'='{expected}'}}}}
+$snapshot=Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{fixture}' -FileName '{filename}' -DeploymentAnchor $anchor
+$blocked=0
+try {{ Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{fixture}' -FileName '../outside.ps1' -SourceTreeMode }} catch {{ $blocked++ }}
+$anchor.files.'{filename}'='0'*64
+try {{ Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{fixture}' -FileName '{filename}' -DeploymentAnchor $anchor }} catch {{ $blocked++ }}
+try {{ Read-WdLaneTurnRunnerSnapshot -ScriptRoot '{fixture}' -FileName '{filename}' }} catch {{ $blocked++ }}
+[pscustomobject]@{{hash=$snapshot.Hash;blocked=$blocked}}|ConvertTo-Json -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {"hash": expected, "blocked": 3}
+
+
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
 def test_lane_turn_mode_defaults_legacy_records_and_rejects_unknown() -> None:
     launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
@@ -1106,6 +1174,55 @@ $managedTurnParameters = @{{ Agent=$Agent; Model=$Model; StartupPrompt='FIRST vi
             "agent": "codex-lead-1", "model": "gpt-5.6-sol",
             "startup": "FIRST visual", "continuation": "Read compact state",
             "image": "target.png", "forever": True,
+        },
+    }
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS)
+def test_conversation_dispatch_executes_verified_bytes_and_preserves_parent_scope(ps: str) -> None:
+    launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$tokens,[ref]$errors)
+$assignment=$ast.Find({{
+  param($n)
+  $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -eq '$turnResult'
+}},$true)
+$Agent='codex-lead-1'; $Model='gpt-5.6-sol'
+$turnRunnerSnapshot=[pscustomobject]@{{Text=@'
+param([string]$Agent, [string]$Model)
+function Invoke-WdLaneTurnLoop {{ throw 'incorrect non-conversation dispatch' }}
+function Get-SharedRunnerMarker {{ 'verified-shared' }}
+'@}}
+$verifiedConversationCode=@{{
+ 'Show-WdOperatorConversation.ps1'=@'
+function Get-ConversationViewMarker {{ 'verified-view' }}
+'@
+ 'Invoke-WdCodexConversationLoop.ps1'=@'
+function Invoke-WdCodexConversationLoop {{
+  param($Agent,$Model,$Effort,$ImagePath,$StartupPrompt,[switch]$Forever)
+  [pscustomobject]@{{agent=$Agent;model=$Model;effort=$Effort;image=$ImagePath;
+    startup=$StartupPrompt;forever=[bool]$Forever;
+    shared=Get-SharedRunnerMarker;view=Get-ConversationViewMarker}}
+}}
+'@
+}}
+$managedTurnParameters=@{{Agent=$Agent;Model=$Model;Effort='ultra';ImagePath='exact.png';
+  StartupPrompt='First original image';Forever=$true}}
+. ([scriptblock]::Create($assignment.Extent.Text))
+[pscustomobject]@{{agent=$Agent;model=$Model;result=$turnResult;
+  leaked=[bool](Get-Command Get-ConversationViewMarker -ErrorAction SilentlyContinue)}} |
+  ConvertTo-Json -Depth 5 -Compress
+""", executable=ps)
+    assert json.loads(result.stdout) == {
+        "agent": "codex-lead-1", "model": "gpt-5.6-sol", "leaked": False,
+        "result": {
+            "agent": "codex-lead-1", "model": "gpt-5.6-sol", "effort": "ultra",
+            "image": "exact.png", "startup": "First original image", "forever": True,
+            "shared": "verified-shared", "view": "verified-view",
         },
     }
 

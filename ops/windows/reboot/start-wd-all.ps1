@@ -3521,6 +3521,7 @@ try {
       '--suppressApplicationTitle',
       '-d', [string]$state.lane.worktree,
       $expectedSupervisorExecutable,
+      '-STA',
       '-NoProfile',
       '-ExecutionPolicy', 'Bypass',
       '-File', $agentLauncher,

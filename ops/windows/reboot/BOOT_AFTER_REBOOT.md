@@ -149,30 +149,46 @@ target is already due, read the bridge and execute the eligible slice now.
 The launcher's current scheduling instruction supersedes legacy role-prompt
 self-pacing clauses only; it does not change role permissions or task authority.
 
-An explicitly managed lane uses the launcher-owned `Invoke-WdLaneTurnLoop.ps1`
-instead of an interactive CLI prompt. Its window belongs to the bounded turn
-runner; turn receipts and local diagnostics are under the worktree's
+An explicitly managed lane uses a launcher-owned runner instead of an interactive
+CLI prompt. Without a conversation surface this is `Invoke-WdLaneTurnLoop.ps1`;
+the managed Codex Lead's `local_window` selects
+`Invoke-WdCodexConversationLoop.ps1` and `Show-WdOperatorConversation.ps1`.
+All three scripts are hash-pinned and loaded from the verified byte snapshots.
+The conversation window requires an STA PowerShell host, which the fleet
+launcher supplies. Turn receipts and local diagnostics are under the worktree's
 `.codex-audit/wd-turn-loop/`. It must not also create a competing native cron.
 A valid fresh task-blocked checkpoint keeps future wakes/backstops available;
 waiting for a peer or CI does not finish that task or disable the lane. Missing
 or invalid receipts and ambiguous/crashed turns still require reconciliation
 before another model turn.
-The next Lead startup is configured as `managed` in this operator-requested
-release. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
+The next Lead startup is configured as `managed` with `conversation_surface:
+local_window` in this operator-requested change. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
 canonical supervised consumer. Validate and deploy the matching bundle before
-this configuration takes effect. The Lead window then shows turn lifecycle
-status, not an interactive prompt, and needs no UI approval watcher.
+this configuration takes effect. The Lead conversation window accepts messages
+while idle and steering during active work, streams replies, and offers interrupt
+and separate automation controls. It needs no UI approval watcher. The read-only
+colored bridge monitor remains a separate view; it is not the conversational
+control window. Peers keep independent sessions, context and compact checkpoints.
+Those contexts are not pooled into one unlimited Lead memory. On a clean restart,
+the new conversation backend resumes its own recorded thread without loading all
+old transcript text into the GUI. The model retains its context; the window says
+that previous display history was not loaded. It never discovers or adopts the
+already-open interactive Lead's conversation.
 Do not edit an installed hash-pinned manifest in place. An already-open
 interactive Lead is preserved and is not externally resumable through a wake
 sentinel. Installing source files does not transform that live session into a
-managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` in the repo.
+managed one. See `docs/architecture/BRIDGE_WAKE_CONTINUATION_V1.md` and
+`docs/architecture/BRIDGE_OPERATOR_CONVERSATION_V1.md` in the repo.
 Deployed whole-fleet preflight checks native occupancy for a missing managed
 lane before Apply changes other processes. The lane rechecks at launch; this
 read-only check does not reserve ownership. Unresolved turn journals are checked
 under the runner lease and can still stop a later turn. Fleet restore completion
 proves bootstrap identity, not that a managed model turn has completed or that
 an owner in termination hold is healthy. Inspect owner state and fresh receipts.
-The status view reports configured and observed modes separately; a retained
+The status view reports configured and observed modes separately. Its
+`configured_conversation_surface` is only a next-start setting;
+`conversation_control_verified: false` does not assert a working GUI or RPC
+channel from a manifest or bootstrap handshake. A retained
 interactive Lead remains externally unsupported. Unknown native processes
 must first be attributed to their owning sessions and deliberately closed after
 saving their work, or relaunched through marked launchers. Do not kill or adopt

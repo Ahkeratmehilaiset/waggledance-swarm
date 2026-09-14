@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.wd_grok_helper import SCHEMA, consult, exclusive, status, write_state
+from tools import wd_grok_helper
 
 NOW = datetime(2026, 9, 12, tzinfo=timezone.utc)
 
@@ -62,6 +63,60 @@ def test_status_is_read_only(tmp_path):
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     status(tmp_path, NOW)
     assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_consult_records_duration_in_existing_result_only(tmp_path, monkeypatch, returncode):
+    seed(tmp_path)
+    clock = iter([10.0, 10.125])
+    monkeypatch.setattr(wd_grok_helper, "monotonic", lambda: next(clock))
+    result = consult(tmp_path, "duration", "Review", ["fake"], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=returncode, stdout="answer"))
+    assert result["duration_seconds"] == 0.125
+    assert result["exit_code"] == returncode
+    assert result["finished_at_utc"]
+    assert result["timing_scope"] == "consultation_after_budget_reservation"
+    names = {p.name for p in tmp_path.iterdir()}
+    assert len(names) == 4  # state, lock, existing request and response artifacts
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    status(tmp_path, NOW)
+    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+
+
+def test_timeout_records_timing_without_refunding_budget(tmp_path, monkeypatch):
+    seed(tmp_path)
+    clock = iter([20.0, 25.0])
+    monkeypatch.setattr(wd_grok_helper, "monotonic", lambda: next(clock))
+    def runner(*a, **k):
+        raise subprocess.TimeoutExpired("fake", 5)
+    result = consult(tmp_path, "timeout", "Review", ["fake"], now=NOW, runner=runner)
+    assert result["status"] == "failed"
+    assert result["error_type"] == "TimeoutExpired"
+    assert result["duration_seconds"] == 5.0
+    assert not status(tmp_path, NOW + timedelta(minutes=59))["eligible"]
+
+
+def test_interrupted_reservation_survives_new_process_and_partial_temp(tmp_path):
+    seed(tmp_path)
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt()  # emulate abrupt termination after durable reservation
+    with pytest.raises(KeyboardInterrupt):
+        consult(tmp_path, "interrupted", "Review", ["fake"], now=NOW, runner=interrupted)
+    saved = (tmp_path / "hourly-state.json").read_bytes()
+    assert json.loads(saved)["status"] == "reserved"
+    (tmp_path / ".hourly-interrupted.tmp").write_text('{"schema":', encoding="utf-8")
+    import sys
+    result = subprocess.run(
+        [sys.executable, "-B", "-c",
+         "import json,sys; from pathlib import Path; from datetime import datetime; "
+         "from tools.wd_grok_helper import status; "
+         "print(json.dumps(status(Path(sys.argv[1]), datetime.fromisoformat(sys.argv[2]))))",
+         str(tmp_path), (NOW + timedelta(minutes=30)).isoformat()],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["eligible"] is False
+    assert (tmp_path / "hourly-state.json").read_bytes() == saved
 
 
 def test_competing_process_lock_blocks_second_request(tmp_path):

@@ -43,6 +43,7 @@
       "start-wd-all.ps1",
       "start-wd-agent.ps1",
       "Get-WdSwarmParallelStatus.ps1",
+      "Show-WdBridgeConversation.ps1",
       "Write-WdLaneCurrentState.ps1",
       "Watch-CodexPrompts.ps1",
       "Invoke-WdToolsCodex.ps1",

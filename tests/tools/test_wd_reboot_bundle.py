@@ -1463,8 +1463,39 @@ try {{ [void](Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJou
     }
 
 
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        pytest.param(
+            "signed_terminal",
+            None,
+            marks=pytest.mark.skipif(
+                os.name != "nt", reason="Windows Terminal path semantics",
+            ),
+        ),
+        pytest.param(
+            "model",
+            "manual recovery cannot be invoked by a model-owned native process",
+        ),
+        pytest.param(
+            "lane",
+            "manual recovery cannot be invoked by another Lead launcher",
+        ),
+        pytest.param(
+            "noninteractive",
+            "manual recovery refuses a non-interactive PowerShell host",
+        ),
+        pytest.param(
+            "fake_terminal",
+            "interactive boundary is not the installed Microsoft Windows Terminal package",
+        ),
+    ],
+    ids=["signed_terminal", "model", "lane", "noninteractive", "fake_terminal"],
+)
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
-def test_retirement_operator_boundary_rejects_model_ancestry(ps: str) -> None:
+def test_retirement_operator_boundary_rejects_model_ancestry(
+    ps: str, case: str, expected_error: str | None,
+) -> None:
     launcher = str(REBOOT / "start-wd-agent.ps1").replace("'", "''")
     result = _run_powershell(fr"""
 $ErrorActionPreference='Stop'
@@ -1484,21 +1515,25 @@ $terminal=@((Row 100 99 'powershell.exe' 'powershell -File start-wd-agent.ps1 -A
 $terminal[1].ExecutablePath='C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe'
 $model=@($terminal[0],(Row 99 98 'powershell.exe' 'powershell -Command child' 1),(Row 98 0 'codex.exe' 'codex app-server' 0))
 $lane=@($terminal[0],(Row 99 0 'powershell.exe' 'powershell -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1' 1))
-$ok=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $terminal; $ok=$true }} catch {{}}
-$modelRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $model }} catch {{ $modelRejected=$true }}
-$laneRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $lane }} catch {{ $laneRejected=$true }}
-$terminal[0].CommandLine='powershell -NonInteractive -File start-wd-agent.ps1'
-$nonInteractiveRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $terminal }} catch {{ $nonInteractiveRejected=$true }}
-$terminal[0].CommandLine='powershell -File start-wd-agent.ps1'
-$terminal[1].ExecutablePath='C:\Temp\WindowsTerminal.exe'
-$fakeTerminalRejected=$false; try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $terminal }} catch {{ $fakeTerminalRejected=$true }}
-[pscustomobject]@{{ok=$ok;model=$modelRejected;lane=$laneRejected;noninteractive=$nonInteractiveRejected;fake_terminal=$fakeTerminalRejected}} | ConvertTo-Json -Compress
+$selected=@($terminal)
+switch ('{case}') {{
+  'model' {{ $selected=@($model) }}
+  'lane' {{ $selected=@($lane) }}
+  'noninteractive' {{ $terminal[0].CommandLine='powershell -NonInteractive -File start-wd-agent.ps1' }}
+  'fake_terminal' {{ $terminal[1].ExecutablePath='C:\Temp\WindowsTerminal.exe' }}
+}}
+$accepted=$false; $rejectionReason=''
+try {{ Assert-WdOperatorInvocationLineage -CurrentPid 100 -ProcessSnapshot $selected; $accepted=$true }}
+catch {{ $rejectionReason=$_.Exception.Message }}
+[pscustomobject]@{{accepted=$accepted;error=$rejectionReason}} | ConvertTo-Json -Compress
 """, executable=ps, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout) == {
-        "ok": True, "model": True, "lane": True,
-        "noninteractive": True, "fake_terminal": True,
-    }
+    observed = json.loads(result.stdout)
+    if expected_error is None:
+        assert observed == {"accepted": True, "error": ""}
+    else:
+        assert observed["accepted"] is False
+        assert expected_error in observed["error"]
 
 
 def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> None:

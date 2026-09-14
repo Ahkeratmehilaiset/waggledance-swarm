@@ -555,7 +555,7 @@ function Invoke-WdLaneTurnLoop {
             }
             $result = [ordered]@{ turn_id=$turnId; agent=$Agent; disposition=$disposition; exit_code=$exitCode; completed_at_utc=[DateTimeOffset]::UtcNow.ToString('o'); session_id=$SessionId; generation=$Generation; completion_scope='model_turn_checkpointed'; task_completion_verified=$false }
             $result['native_pid']=$nativePid
-            $result['descendants_at_root_exit']=$observedDescendants
+            $result['descendants_before_drain']=$observedDescendants
             $result['surviving_descendants']=$survivingDescendants
             if ($disposition -in @('completed','idle','blocked')) { $result['task_id']=[string]$checkpoint.task_id }
             Write-WdTurnJson "$prefix.result.json" $result

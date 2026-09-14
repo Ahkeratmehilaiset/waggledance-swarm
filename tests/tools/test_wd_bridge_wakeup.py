@@ -132,7 +132,7 @@ Invoke-WdLaneTurnLoop -Agent {agent} -Backend {backend} -CliPath {quote(PYTHON)}
     if scenario == "child_drains":
         result_record = json.loads(next((audit / "wd-turn-loop").glob("*.result.json")).read_text(encoding="utf-8-sig"))
         assert any(item["Pid"] == child_ids[-1] and item["ImagePath"].lower().endswith("python.exe")
-                   for item in result_record["descendants_at_root_exit"])
+                   for item in result_record["descendants_before_drain"])
         assert not result_record["surviving_descendants"]
     dead = run_ps(f"@(Get-Process -Id {','.join(map(str, child_ids))} -ErrorAction SilentlyContinue).Count")
     assert dead.stdout.strip() == "0", "contained children must exit before lease release"

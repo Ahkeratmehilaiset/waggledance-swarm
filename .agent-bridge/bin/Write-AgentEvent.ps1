@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
-    [Parameter(Mandatory)] [ValidateSet('status','intent','claim','release','message','finding','decision','test','blocked','handoff','done','heartbeat','wake_request','liveness')] [string] $Type,
+    [Parameter(Mandatory)] [ValidateSet('status','intent','claim','release','message','finding','decision','test','blocked','handoff','done','heartbeat','wake_request','liveness','triage_disposition','consumer_tick')] [string] $Type,
     [string] $TaskId = '',
     [string] $Status = '',
     [string] $Message = '',
@@ -139,7 +139,9 @@ foreach ($capability in @($Capabilities)) {
 }
 Assert-BridgeAgentTargets -Targets $To
 
-$taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
+$taskIdRequiredTypes = @(
+    'claim', 'release', 'done', 'handoff', 'blocked', 'triage_disposition'
+)
 $ackStatuses = @('acknowledged', 'received', 'seen')
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
@@ -311,6 +313,42 @@ function Test-BridgeObjectHasField {
     return ($null -ne $Object.PSObject.Properties[$Name])
 }
 
+function Assert-TriageDispositionPayload {
+    param([AllowNull()] $Payload)
+    if ($Type -ne 'triage_disposition') {
+        return
+    }
+    if ($Status -cne 'recorded') {
+        throw "triage_disposition status must be recorded"
+    }
+    if (-not (Test-BridgeObject -Value $Payload)) {
+        throw "triage_disposition payload must be an object"
+    }
+    $disposition = Get-BridgeObjectField -Object $Payload -Name 'disposition'
+    if (-not ($disposition -is [string]) -or
+        @('ack_dispatch', 'defer') -cnotcontains [string]$disposition) {
+        throw "triage_disposition payload.disposition must be ack_dispatch or defer"
+    }
+    $targetEventId = Get-BridgeObjectField -Object $Payload -Name 'target_event_id'
+    if (-not ($targetEventId -is [string]) -or
+        [string]::IsNullOrWhiteSpace([string]$targetEventId) -or
+        ([string]$targetEventId).Contains("`r") -or
+        ([string]$targetEventId).Contains("`n")) {
+        throw "triage_disposition payload.target_event_id must be non-empty single-line text"
+    }
+    if ([string]$disposition -ceq 'defer') {
+        foreach ($fieldName in @('reason', 'next_condition')) {
+            $value = Get-BridgeObjectField -Object $Payload -Name $fieldName
+            if (-not ($value -is [string]) -or
+                [string]::IsNullOrWhiteSpace([string]$value) -or
+                ([string]$value).Contains("`r") -or
+                ([string]$value).Contains("`n")) {
+                throw "triage_disposition payload.$fieldName must be non-empty single-line text for defer"
+            }
+        }
+    }
+}
+
 function Assert-GrokFreshnessPayload {
     param([AllowNull()] $Payload)
     if (-not (
@@ -418,6 +456,7 @@ function Assert-RcoPassTaskBinding {
     }
 }
 
+Assert-TriageDispositionPayload -Payload $payload
 Assert-GrokFreshnessPayload -Payload $payload
 Assert-RcoPassTaskBinding -Payload $payload
 

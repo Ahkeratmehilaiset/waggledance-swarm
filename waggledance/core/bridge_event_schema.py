@@ -47,6 +47,8 @@ KNOWN_EVENT_TYPES = frozenset(
         "status",
         "test",
         "wake_request",
+        "triage_disposition",
+        "consumer_tick",
     }
 )
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
@@ -189,8 +191,38 @@ class BridgeEvent(BaseModel):
             and not self.task_id.strip()
         ):
             raise ValueError("ack message requires task_id")
+        self._validate_triage_disposition()
         self._validate_grok_review_freshness()
         return self
+
+    def _validate_triage_disposition(self) -> None:
+        if self.type != "triage_disposition":
+            return
+        if not self.task_id.strip():
+            raise ValueError("triage_disposition requires task_id")
+        if self.status != "recorded":
+            raise ValueError("triage_disposition status must be recorded")
+        if not isinstance(self.payload, Mapping):
+            raise ValueError("triage_disposition payload must be an object")
+        disposition = self.payload.get("disposition")
+        if disposition not in {"ack_dispatch", "defer"}:
+            raise ValueError(
+                "triage_disposition payload.disposition must be "
+                "ack_dispatch or defer"
+            )
+        target_event_id = self.payload.get("target_event_id")
+        if not _is_nonempty_single_line(target_event_id):
+            raise ValueError(
+                "triage_disposition payload.target_event_id must be "
+                "non-empty single-line text"
+            )
+        if disposition == "defer":
+            for field_name in ("reason", "next_condition"):
+                if not _is_nonempty_single_line(self.payload.get(field_name)):
+                    raise ValueError(
+                        f"triage_disposition payload.{field_name} must be "
+                        "non-empty single-line text for defer"
+                    )
 
     def _validate_grok_review_freshness(self) -> None:
         if not (
@@ -300,6 +332,15 @@ def _is_valid_agent_id(value: str) -> bool:
 
 def _is_full_git_sha(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(FULL_GIT_SHA_PATTERN, value))
+
+
+def _is_nonempty_single_line(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and "\r" not in value
+        and "\n" not in value
+    )
 
 
 def _is_at_or_after_utc(value: str, epoch: str) -> bool:

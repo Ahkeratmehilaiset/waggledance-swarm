@@ -260,6 +260,32 @@ function Read-Utf8FileSnapshot {
     }
 }
 
+function Assert-WdToolsColdStart {
+    param([string] $BridgeRoot, [string] $LaneRoot, [string] $TurnLoopCode)
+    # Call only with the already hash-verified library bytes. This scope loads
+    # definitions, performs no model dispatch, and never acknowledges work.
+    . ([scriptblock]::Create($TurnLoopCode))
+    $pointer = Assert-WdTurnPath (Join-Path $BridgeRoot '.wd-turn-codex-tools-1.owner.json')
+    if ([IO.File]::Exists($pointer)) {
+        $owner = ConvertFrom-WdTurnJson ([IO.File]::ReadAllText($pointer))
+        $live = Get-Process -Id ([int]$owner.pid) -ErrorAction SilentlyContinue
+        if ($null -ne $live -and $live.ProcessName -in @('powershell','pwsh') -and
+            $live.StartTime.ToUniversalTime().Ticks -eq ([DateTimeOffset]$owner.process_start_utc).UtcTicks) {
+            return # The supervisor separately attests the existing consumer.
+        }
+    }
+    $blocker = Get-WdPreviousTurnBlocker -Path $pointer -Agent codex-tools-1
+    if ($null -ne $blocker) {
+        throw ("Tools cold start blocked: {0}; owner={1}; {2}" -f
+            $blocker.last_disposition, $pointer, $blocker.reason)
+    }
+    $journal = Assert-WdTurnPath (Join-Path $LaneRoot '.codex-audit\wd-turn-loop')
+    if ([IO.Directory]::Exists($journal)) {
+        $pending = @(Get-ChildItem -LiteralPath $journal -Filter '*.pending' -File)
+        if ($pending.Count) { throw "Tools cold start blocked: unresolved local pending evidence in $journal" }
+    }
+}
+
 function Read-WdToolsConversationCodeSnapshot {
     param(
         [Parameter(Mandatory)] [string] $ScriptRoot,
@@ -1680,6 +1706,11 @@ elseif ($ValidateOnly) {
 }
 else {
     throw 'source Tools consumer cannot run live without a deployed pinned bridge code package'
+}
+
+if ($conversationSurface -ceq 'local_window') {
+    Assert-WdToolsColdStart -BridgeRoot $runtimeRoot -LaneRoot $worktree `
+        -TurnLoopCode ([string]$verifiedConversationCode['Invoke-WdLaneTurnLoop.ps1'])
 }
 
 $validation = [pscustomobject]@{

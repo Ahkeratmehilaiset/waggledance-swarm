@@ -15,6 +15,8 @@
 param(
   [string] $ManifestPath = '',
   [string] $RunId = '',
+  [string] $ExternalSessionsPath = '',
+  [string] $ExternalSessionsHash = '',
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
@@ -2712,7 +2714,8 @@ foreach ($lane in @($manifest.lanes)) {
     # Apply mutation. It rechecks again at actual launch; this is not a lease
     # reservation or proof of a completed model turn.
     $admission = & $agentLauncherTarget -Agent ([string]$lane.agent) `
-      -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor
+      -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor `
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
     if ($null -eq $admission -or -not [bool]$admission.dry_run -or
         [string]$admission.turn_mode -cne 'managed') {
       throw "managed admission preflight did not return a valid result for $($lane.agent)"
@@ -3580,6 +3583,10 @@ try {
       '-ExpectedManifestHash', $bundleManifestAnchor
     )
     Write-Host ("Launching {0}..." -f $state.lane.agent) -ForegroundColor Cyan
+    if ($ExternalSessionsPath) {
+      $wtArguments += @('-ExternalSessionsPath', ('"{0}"' -f $ExternalSessionsPath),
+        '-ExternalSessionsHash', $ExternalSessionsHash)
+    }
     [void](Start-Process -FilePath $wtPath -ArgumentList $wtArguments -PassThru)
     $launched += [string]$state.lane.agent
   }

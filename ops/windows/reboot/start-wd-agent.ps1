@@ -23,6 +23,8 @@ param(
   [string] $ManifestPath = '',
   [string] $HandshakeDirectory = '',
   [string] $ExpectedManifestHash = '',
+  [string] $ExternalSessionsPath = '',
+  [string] $ExternalSessionsHash = '',
   [switch] $DryRun,
   [switch] $CheckManagedAdmission,
   [switch] $RecoverInteractive,
@@ -325,7 +327,8 @@ function Assert-WdLaneLaunchAvailable {
   param(
     [Parameter(Mandatory)] [object] $Lane,
     [object[]] $KnownLanes = @(),
-    [int] $CurrentPid = $PID
+    [int] $CurrentPid = $PID,
+    [object[]] $ExternalSessions = @()
   )
 
   $agentPattern = '(?i)(?:^|\s)-Agent\s+["'']?' +
@@ -407,8 +410,55 @@ function Assert-WdLaneLaunchAvailable {
       $node = $parent
     }
     if (-not $attributed) {
+      # Explicit operator attribution is scoped to this exact process lifetime.
+      # A PID alone, another executable, or a known same-lane ancestor never
+      # qualifies. The snapshot is hash-pinned by the fleet invocation.
+      $external = @($ExternalSessions | Where-Object {
+        [int]$_.pid -eq [int]$native.ProcessId -and
+        [string]$_.name -ceq [string]$native.Name -and
+        [string]$_.command_line -ceq [string]$native.CommandLine -and
+        [string]$_.executable_path -ceq [string]$native.ExecutablePath -and
+        ([DateTimeOffset]$_.process_start_utc).UtcTicks -eq
+          ([DateTimeOffset]$native.CreationDate).UtcTicks
+      })
+      if ($external.Count -eq 1) { continue }
       throw "cannot prove lane availability: unmarked native $($native.Name) PID $($native.ProcessId) has no verified launcher ancestry; leave it running"
     }
+  }
+}
+
+function Read-WdExternalSessions {
+  param([string] $Path, [string] $ExpectedHash)
+  if (-not $Path -and -not $ExpectedHash) { return }
+  if (-not [IO.Path]::IsPathRooted($Path) -or $ExpectedHash -cnotmatch '^[A-Fa-f0-9]{64}$') {
+    throw 'external sessions require an absolute snapshot path and SHA256'
+  }
+  [void](Assert-LanePathWithoutReparse -Path $Path -TrustedRoot ([IO.Path]::GetPathRoot($Path)) -ExpectedType Leaf)
+  if ((Get-Item -LiteralPath $Path).Length -gt 32768) { throw 'external session snapshot too large' }
+  $snapshot = Read-Utf8LaneSnapshot -Path $Path
+  if ($snapshot.Hash -cne $ExpectedHash.ToUpperInvariant()) { throw 'external session snapshot hash mismatch' }
+  $jsonParameters = @{ InputObject = $snapshot.Text; ErrorAction = 'Stop' }
+  if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+    $jsonParameters.DateKind = 'String'
+  }
+  $record = ConvertFrom-Json @jsonParameters
+  if ($record.schema -cne 'wd.external-agent-sessions.v1' -or
+      ([DateTimeOffset]$record.expires_at_utc) -le [DateTimeOffset]::UtcNow -or
+      ([DateTimeOffset]$record.expires_at_utc) -gt [DateTimeOffset]::UtcNow.AddHours(24)) {
+    throw 'external session snapshot invalid or expired'
+  }
+  $seen = @{}
+  foreach ($entry in @($record.processes)) {
+    if ([int]$entry.pid -le 0 -or $seen.ContainsKey([int]$entry.pid) -or
+        [string]$entry.name -cnotin @('codex.exe','claude.exe') -or
+        [string]::IsNullOrWhiteSpace([string]$entry.command_line) -or
+        -not [IO.Path]::IsPathRooted([string]$entry.executable_path) -or
+        [string]$entry.process_start_utc -notmatch '(Z|[+-]\d{2}:\d{2})$') {
+      throw 'invalid or duplicate external process identity'
+    }
+    [void][DateTimeOffset]::Parse([string]$entry.process_start_utc)
+    $seen[[int]$entry.pid] = $true
+    $entry
   }
 }
 
@@ -1216,6 +1266,7 @@ if ($matches.Count -ne 1) {
   throw "manifest must contain exactly one lane for '$Agent'; found $($matches.Count)"
 }
 $lane = $matches[0]
+$externalSessions = @(Read-WdExternalSessions -Path $ExternalSessionsPath -ExpectedHash $ExternalSessionsHash)
 $turnMode = Get-WdLaneTurnMode -Lane $lane
 $conversationSurface = Get-WdLaneConversationSurface -Lane $lane
 $conversationPermissions = Get-WdLaneConversationPermissions -Lane $lane
@@ -1609,7 +1660,7 @@ if ($manualLeadAction) {
   try {
     $manualAttemptLease = Enter-WdManagedAttemptLease `
       -RuntimeRoot $runtimeRoot -Agent $Agent
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
     $manualAttemptEvidence = Get-WdManagedAttemptEvidence `
       -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
     if (-not $DryRun) {
@@ -1629,7 +1680,7 @@ if ($manualLeadAction) {
         if ([string]$confirmation -cne $digestPrefix) {
           throw 'managed attempt retirement confirmation did not match the reviewed digest prefix'
         }
-        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
         Assert-WdOperatorInvocationLineage
         [void](Assert-WdLeadInteractivePostureBaseline `
           -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -1825,7 +1876,7 @@ if ($RecoverInteractive) {
 
 if ($DryRun) {
   if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
   }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
   try {
@@ -1874,7 +1925,7 @@ if ($DryRun) {
 
 try {
 if ($turnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
 }
 if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
@@ -2143,7 +2194,7 @@ if (
 }
 
 if ($launchTurnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
   if ($null -ne $conversationConfigBaseline) {
     [void](Assert-WdLeadInteractivePostureBaseline `
       -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2209,7 +2260,7 @@ if ($launchTurnMode -ceq 'managed') {
 }
 
 if ($RecoverInteractive) {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
   Assert-WdOperatorInvocationLineage
   [void](Assert-WdLeadInteractivePostureBaseline `
     -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)

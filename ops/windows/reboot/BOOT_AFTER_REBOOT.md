@@ -1,5 +1,20 @@
 # WaggleDance: reboot recovery
 
+Tools cold-start validation rejects an unresolved previous owner or local
+`.pending` journal before CLI updates and supervisor startup. Preserve that
+evidence and reconcile the interrupted attempt before restarting; a readiness
+timeout does not establish that the previous work completed.
+
+When the operator explicitly identifies unrelated Codex/Claude sessions, an
+individual restore can pass `-ExternalSessionsPath <absolute-json-path>` and
+`-ExternalSessionsHash <SHA256>` to `start-wd-all.ps1` (including `-Auto`). The
+`wd.external-agent-sessions.v1` snapshot contains `expires_at_utc` (within 24
+hours) and `processes`: exact `pid`, `name`, `process_start_utc`,
+`executable_path`, and `command_line` values from the reviewed process snapshot.
+These sessions remain external and are never adopted or stopped. A changed
+process lifetime, changed snapshot, expired approval, or same-lane launcher
+still blocks startup. Without the explicit parameters, admission is unchanged.
+
 The single-command reboot entry point is:
 
 ```powershell

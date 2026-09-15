@@ -215,6 +215,8 @@ param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status)
 param(
     [string] $ManifestPath = '',
     [string] $RunId = '',
+    [string] $ExternalSessionsPath = '',
+    [string] $ExternalSessionsHash = '',
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
@@ -233,6 +235,8 @@ param(
     [string] $ManifestPath = '',
     [string] $HandshakeDirectory = '',
     [string] $ExpectedManifestHash = '',
+    [string] $ExternalSessionsPath = '',
+    [string] $ExternalSessionsHash = '',
     [switch] $DryRun
 )
 '@
@@ -247,6 +251,8 @@ param(
     [string] $ManifestPath = '',
     [string] $HandshakeDirectory = '',
     [string] $ExpectedManifestHash = '',
+    [string] $ExternalSessionsPath = '',
+    [string] $ExternalSessionsHash = '',
     [switch] $DryRun
 )
 '@
@@ -315,7 +321,7 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
     [void]$commandParts.Add('-Auto')
-    foreach ($name in @('ManifestPath', 'RunId')) {
+    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
             [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))

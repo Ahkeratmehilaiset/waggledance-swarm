@@ -106,7 +106,7 @@ def test_external_snapshot_hash_expiry_and_duplicates(tmp_path, ps):
     script += fr"""
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 $path={q(path)}
-$entry=@{{pid=201;name='codex.exe';command_line='C:\test\codex.exe';executable_path='C:\test\codex.exe';process_start_utc='2026-09-15T00:00:00Z'}}
+$entry=@{{pid=201;name='codex.exe';command_line='codex.exe';executable_path={q(tmp_path / 'codex.exe')};process_start_utc='2026-09-15T00:00:00Z'}}
 $record=@{{schema='wd.external-agent-sessions.v1';expires_at_utc=[DateTimeOffset]::UtcNow.AddHours(1).ToString('o');processes=@($entry)}}
 function Save {{ [IO.File]::WriteAllText($path,($record|ConvertTo-Json -Depth 4)); (Get-FileHash -LiteralPath $path).Hash }}
 function Check($hash) {{ try {{ $r=@(Read-WdExternalSessions -Path $path -ExpectedHash $hash); $r.Count -eq 1 }} catch {{ $false }} }}

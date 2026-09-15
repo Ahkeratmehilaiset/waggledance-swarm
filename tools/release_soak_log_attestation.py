@@ -52,6 +52,15 @@ LINE_TIMESTAMP_PATTERN = re.compile(
 )
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _ABSOLUTE_PATTERN = re.compile(r"^([A-Za-z]:|/|\\\\)")
+FRESH_CONTRACT_VERSION = "waggledance.release_soak_log_audit_fields.v2"
+FRESH_COVERAGE_SOURCE = (
+    "docs/runs/release_soak_evidence/v3.12.0_soak_heartbeat.jsonl"
+)
+FRESH_SOURCE_ROLES = {
+    "docs/runs/error_log.jsonl": "diagnostic",
+    "docs/runs/release_soak_evidence/v3.12.0_history.jsonl": "diagnostic",
+    FRESH_COVERAGE_SOURCE: "coverage",
+}
 
 
 def _append_once(blockers: list[str], blocker: str) -> None:
@@ -223,12 +232,90 @@ def _positive_finite_number(value: object) -> bool:
     return False
 
 
+def _fresh_metadata_valid(report: dict, root: Path) -> bool:
+    """Fixed roles are a contract, not caller-selected parsing exemptions."""
+    if (
+        report.get("contract_version") != FRESH_CONTRACT_VERSION
+        or report.get("target_version") != "v3.12.0"
+        or report.get("source_roles") != FRESH_SOURCE_ROLES
+        or report.get("coverage_sources") != [FRESH_COVERAGE_SOURCE]
+        or not isinstance(report.get("source_files"), list)
+        or any(not isinstance(item, str) for item in report["source_files"])
+        or set(report["source_files"]) != set(FRESH_SOURCE_ROLES)
+        or not isinstance(report.get("source_tree"), str)
+        or not _COMMIT_PATTERN.fullmatch(report["source_tree"])
+        or report.get("lock_path") != "requirements.lock.txt"
+    ):
+        return False
+    lock = root / "requirements.lock.txt"
+    try:
+        if (
+            root.is_symlink() or _is_reparse_point(root)
+            or lock.is_symlink() or _is_reparse_point(lock)
+            or not lock.is_file() or os.stat(lock).st_nlink != 1
+        ):
+            return False
+        digest = _source_digest(lock)
+    except (OSError, RuntimeError):
+        return False
+    return digest is not None and report.get("lock_digest") == digest
+
+
+def _fresh_record_instants(path: Path, commit: str, lock_digest: str):
+    """Typed coverage only; no historical envelope can count as runtime."""
+    try:
+        raw = path.read_bytes()
+        if not raw or not raw.endswith(b"\n") or b"\r" in raw.replace(b"\r\n", b""):
+            return None
+        instants = []
+        previous_seq = -1
+        # JSONL is LF-delimited. Unicode separators inside a valid JSON string
+        # are data, not additional records (str.splitlines would split them).
+        for line in raw.decode("utf-8").replace("\r\n", "\n").split("\n")[:-1]:
+            if not line:
+                return None
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                return None
+            seq = record.get("seq")
+            if (
+                record.get("kind") != "soak_heartbeat"
+                or record.get("state") != "ok"
+                or record.get("source_commit") != commit
+                or record.get("lock_digest") != lock_digest
+                or type(seq) is not int or seq < 0 or seq <= previous_seq
+                or any(isinstance(value, (dict, list)) for value in record.values())
+            ):
+                return None
+            for count_key in (
+                "error", "errors", "error_count", "failure", "failures",
+                "failure_count", "exception", "traceback", "fatal",
+                "silent_failure", "silent_failures", "silent_failure_count",
+                "app_errors", "connection_errors",
+            ):
+                if count_key in record and not _is_strict_zero_int(record[count_key]):
+                    return None
+            found = _dict_record_instants(record)
+            if (
+                found is None or _parse_utc_zero(record.get("ts_utc")) is None
+                or (instants and found[0] <= instants[-1])
+            ):
+                return None
+            previous_seq = seq
+            instants.extend(found)
+        return instants
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None
+
+
 def evaluate_soak_log_source_attestation(
     report_path: Path | str,
     source_root: Path | str,
     expected_commit: str,
     required_window_hours: int = 336,
     max_gap_hours: int = 24,
+    *,
+    require_fresh_contract: bool = False,
 ) -> list[str]:
     """Return stable blockers binding a soak-log audit to source truth.
 
@@ -244,6 +331,12 @@ def evaluate_soak_log_source_attestation(
     aliases; only .log/.json/.jsonl) with LF-normalized sha256 hashes
     that recompute; and the union of timestamped records covers the
     window with endpoints and interior gaps within ``max_gap_hours``.
+    The opt-in fresh contract keeps all three fixed sources hash-bound, but
+    derives coverage only from the typed journal. Diagnostics are independently
+    rescanned, never accepted from the report's declared zero counts. This does
+    not verify Git ancestry, append-only S-to-E deltas or runtime process identity;
+    callers must enforce those separately before release. Legacy behavior remains
+    available unless ``require_fresh_contract=True`` is explicitly requested.
     All blockers are path-free; hostile nested types fold into
     blockers, never exceptions.
     """
@@ -265,6 +358,19 @@ def evaluate_soak_log_source_attestation(
         return ["soak_log_report_unreadable"]
 
     blockers: list[str] = []
+    fresh = "contract_version" in loaded or require_fresh_contract
+    fresh_metadata_valid = True
+    if fresh:
+        fresh_metadata_valid = _fresh_metadata_valid(loaded, Path(source_root))
+        if not (
+            type(max_gap_hours) is int and 0 < max_gap_hours <= 24
+        ):
+            _append_once(blockers, "soak_log_gap_policy_invalid")
+            fresh_metadata_valid = False
+        if require_fresh_contract and "contract_version" not in loaded:
+            _append_once(blockers, "soak_log_fresh_contract_required")
+        if not fresh_metadata_valid:
+            _append_once(blockers, "soak_log_fresh_metadata_invalid")
 
     if not (
         loaded.get("schema_version")
@@ -414,11 +520,46 @@ def evaluate_soak_log_source_attestation(
             _append_once(blockers, "soak_log_source_hash_mismatch")
 
     if sources_bound and hashes_ok and window_valid:
-        coverage_ok = _positive_finite_number(max_gap_hours)
+        coverage_ok = _positive_finite_number(max_gap_hours) and fresh_metadata_valid
         instants: list[dt.datetime] = []
+        if fresh and fresh_metadata_valid:
+            # Reuse the existing scanner interpretation, not the untrusted
+            # manifest counts. Local import keeps standalone import side-effect
+            # free; future immutable-child wiring must include this module too.
+            from tools.run_release_soak_log_audit import _scan_json_value, _scan_source
+
+            try:
+                counts = [0, 0, 0]
+                for entry, candidate in bound_files:
+                    if entry == FRESH_COVERAGE_SOURCE:
+                        # Use the same literal JSONL boundaries as coverage
+                        # validation; legacy diagnostic parsing stays unchanged.
+                        scans = (
+                            _scan_json_value(
+                                json.loads(line), started_at_utc=started,
+                                ended_at_utc=ended,
+                            )
+                            for line in candidate.read_text(encoding="utf-8").split("\n")
+                            if line
+                        )
+                    else:
+                        scans = [_scan_source(
+                            candidate, started_at_utc=started, ended_at_utc=ended,
+                        )]
+                    for scanned in scans:
+                        counts = [a + b for a, b in zip(counts, scanned)]
+                if counts != [0, 0, 0]:
+                    _append_once(blockers, "soak_log_source_counts_mismatch")
+            except (OSError, UnicodeError, ValueError, RecursionError):
+                _append_once(blockers, "soak_log_source_scan_unreadable")
         if coverage_ok:
-            for _, candidate in bound_files:
-                file_instants = _file_record_instants(candidate)
+            for entry, candidate in bound_files:
+                if fresh and entry != FRESH_COVERAGE_SOURCE:
+                    continue
+                file_instants = (
+                    _fresh_record_instants(candidate, expected_commit, loaded["lock_digest"])
+                    if fresh else _file_record_instants(candidate)
+                )
                 if file_instants is None:
                     coverage_ok = False
                     break

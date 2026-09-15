@@ -260,6 +260,8 @@ function Clear-WdOperatorConversationQuestion {
 
 function Initialize-WdOperatorQuestionControls {
     param($View)
+    $submitAction = Get-Command Submit-WdOperatorConversationAction -CommandType Function -ErrorAction Stop
+    $setStatus = Get-Command Set-WdOperatorConversationStatus -CommandType Function -ErrorAction Stop
     $panel = $View.Controls.Questions
     foreach ($control in @($panel.Controls)) { $control.Dispose() }
     $panel.Controls.Clear(); $View.QuestionInputs = @{}
@@ -307,8 +309,8 @@ function Initialize-WdOperatorQuestionControls {
                 if (-not $answer -and $row.Combo.SelectedIndex -ge 0) { $answer = [string]$row.Question.options[$row.Combo.SelectedIndex].label }
                 $answers[$key] = [string[]]@($answer)
             }
-            Submit-WdOperatorConversationAction -View $View -Kind question_answer -RequestId $View.State.Question.RequestId -Answers $answers
-        } catch { Set-WdOperatorConversationStatus -View $View -Text ('Answer not accepted: ' + $_.Exception.Message) }
+            & $submitAction -View $View -Kind question_answer -RequestId $View.State.Question.RequestId -Answers $answers
+        } catch { & $setStatus -View $View -Text ('Answer not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure())
     $panel.Controls.Add($button); $View.Controls.Answer = $button
 }
@@ -433,19 +435,26 @@ function New-WdOperatorConversationView {
     $layout.Controls.Add($buttons,0,5)
     $status=New-Object Windows.Forms.Label; $status.Dock='Fill'; $status.ForeColor=[Drawing.Color]::FromArgb(166,197,221)
     $layout.Controls.Add($status,0,6); $view.Controls.Status=$status
+    # GetNewClosure creates a dynamic module whose command lookup cannot see
+    # the verified loader's child-scope functions. Capture their CommandInfo
+    # objects while that owning scope is active, including the error path.
+    $submitAction = Get-Command Submit-WdOperatorConversationAction -CommandType Function -ErrorAction Stop
+    $setStatus = Get-Command Set-WdOperatorConversationStatus -CommandType Function -ErrorAction Stop
+    $syncView = Get-Command Sync-WdOperatorConversationView -CommandType Function -ErrorAction Stop
+    $getAttachments = Get-Command Get-WdOperatorLocalAttachments -CommandType Function -ErrorAction Stop
     $send = {
         try {
-            Submit-WdOperatorConversationAction -View $view -Kind send -Text $view.Controls.Input.Text -Paths $view.AttachmentPaths
-        } catch { Set-WdOperatorConversationStatus -View $view -Text ('Message not accepted: ' + $_.Exception.Message) }
+            & $submitAction -View $view -Kind send -Text $view.Controls.Input.Text -Paths $view.AttachmentPaths
+        } catch { & $setStatus -View $view -Text ('Message not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure()
     $view.Controls.Send.Add_Click($send)
     $view.Controls.Reconcile.Add_Click({
-        try { Submit-WdOperatorConversationAction -View $view -Kind reconcile -Text $view.Controls.Input.Text -Paths $view.AttachmentPaths }
-        catch { Set-WdOperatorConversationStatus -View $view -Text ('Reconciliation not accepted: ' + $_.Exception.Message) }
+        try { & $submitAction -View $view -Kind reconcile -Text $view.Controls.Input.Text -Paths $view.AttachmentPaths }
+        catch { & $setStatus -View $view -Text ('Reconciliation not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure())
     $view.Controls.Continue.Add_Click({
-        try { Submit-WdOperatorConversationAction -View $view -Kind send -Text 'Continue.' }
-        catch { Set-WdOperatorConversationStatus -View $view -Text ('Continue not accepted: ' + $_.Exception.Message) }
+        try { & $submitAction -View $view -Kind send -Text 'Continue.' }
+        catch { & $setStatus -View $view -Text ('Continue not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure())
     $inputBox.Add_KeyDown({
         param($sender,$event)
@@ -460,32 +469,51 @@ function New-WdOperatorConversationView {
             $dialog.Title='Attach local images as data'; $dialog.Multiselect=$true; $dialog.CheckFileExists=$true
             $dialog.Filter='Images (*.png;*.jpg;*.jpeg;*.webp;*.gif)|*.png;*.jpg;*.jpeg;*.webp;*.gif'
             if ($dialog.ShowDialog($view.Form) -eq [Windows.Forms.DialogResult]::OK) {
-                $selected=@(Get-WdOperatorLocalAttachments -Paths $dialog.FileNames)
+                $selected=@(& $getAttachments -Paths $dialog.FileNames)
                 if (@($selected | Where-Object { $_.kind -ne 'image' }).Count) { throw 'Only local image attachments are supported.' }
-                $view.AttachmentPaths=@($dialog.FileNames); Sync-WdOperatorConversationView -View $view
+                $view.AttachmentPaths=@($dialog.FileNames); & $syncView -View $view
             }
-        } catch { Set-WdOperatorConversationStatus -View $view -Text ('Attachment not accepted: ' + $_.Exception.Message) }
+        } catch { & $setStatus -View $view -Text ('Attachment not accepted: ' + $_.Exception.Message) }
         finally { $dialog.Dispose() }
     }.GetNewClosure())
-    $view.Controls.Clear.Add_Click({ $view.AttachmentPaths=@(); Sync-WdOperatorConversationView -View $view }.GetNewClosure())
+    $view.Controls.Clear.Add_Click({ $view.AttachmentPaths=@(); & $syncView -View $view }.GetNewClosure())
     $view.Controls.Interrupt.Add_Click({
-        try { Submit-WdOperatorConversationAction -View $view -Kind interrupt }
-        catch { Set-WdOperatorConversationStatus -View $view -Text ('Interrupt not accepted: ' + $_.Exception.Message) }
+        try { & $submitAction -View $view -Kind interrupt }
+        catch { & $setStatus -View $view -Text ('Interrupt not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure())
     $view.Controls.Automation.Add_Click({
-        try { Submit-WdOperatorConversationAction -View $view -Kind automation_toggle -Enabled (-not $view.State.AutomationEnabled) }
-        catch { Set-WdOperatorConversationStatus -View $view -Text ('Automation request not accepted: ' + $_.Exception.Message) }
+        try { & $submitAction -View $view -Kind automation_toggle -Enabled (-not $view.State.AutomationEnabled) }
+        catch { & $setStatus -View $view -Text ('Automation request not accepted: ' + $_.Exception.Message) }
     }.GetNewClosure())
     $form.Add_FormClosing({
         param($sender,$event)
         if (-not $view.Disposing) {
             $event.Cancel=$true
-            Submit-WdOperatorConversationAction -View $view -Kind close
+            & $submitAction -View $view -Kind close
             $view.Form.Hide()
         }
     }.GetNewClosure())
     Sync-WdOperatorConversationView -View $view
-    if (-not $Hidden) { $form.Show(); $inputBox.Focus() | Out-Null }
+    if (-not $Hidden) {
+        $windowApi = 'WdOperatorConversationWindow' -as [type]
+        if ($null -eq $windowApi) {
+            $windowApi = Add-Type -PassThru @'
+using System;
+using System.Runtime.InteropServices;
+public static class WdOperatorConversationWindow {
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr window, int command);
+}
+'@
+        }
+        $form.Show()
+        # A hidden supervisor startup can suppress the first native ShowWindow
+        # while WinForms still records Visible=true. The next native call uses
+        # our explicit SW_SHOW, preserving the launcher's console suppression.
+        [void]$windowApi::ShowWindow($form.Handle, 5)
+        $inputBox.Focus() | Out-Null
+    }
     return $view
 }
 

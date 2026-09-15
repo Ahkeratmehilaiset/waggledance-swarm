@@ -18,16 +18,135 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def run_ps(shell, body):
+def run_ps(shell, body, *, load_script=True, **process_options):
     result = subprocess.run([shell, "-NoProfile", "-NonInteractive", *(["-STA"] if os.name == "nt" else []),
-                             "-Command", "$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest; . " + quote(SCRIPT) + "\n" + body],
-                            capture_output=True, text=True, timeout=30, cwd=ROOT)
+                             "-Command", "$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest; " +
+                             ((". " + quote(SCRIPT) + "\n") if load_script else "") + body],
+                            capture_output=True, text=True, timeout=30, cwd=ROOT, **process_options)
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
 
 
 def test_operator_view_exists():
     assert SCRIPT.is_file(), "managed Lead needs an actual operator conversation UI"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Real WinForms event dispatch needs Windows")
+@pytest.mark.parametrize("shell", SHELLS)
+def test_scoped_verified_loader_dispatches_real_window_events(shell):
+    # Match start-wd-tools-consumer's child-scope verified-source loader. Loading
+    # globally here would hide callback command-lookup failures in production.
+    record = run_ps(shell, """
+Add-Type -AssemblyName System.Windows.Forms
+[Windows.Forms.Application]::SetUnhandledExceptionMode([Windows.Forms.UnhandledExceptionMode]::ThrowException)
+$source=[IO.File]::ReadAllText(""" + quote(SCRIPT) + """)
+$result=& {
+    param($VerifiedCode)
+    . ([scriptblock]::Create([string]$VerifiedCode['Show-WdOperatorConversation.ps1']))
+    $view=New-WdOperatorConversationView -AgentLabel Tools -Title 'Isolated scoped Tools callback regression'
+    try {
+        Update-WdOperatorConversationView -View $view
+        Set-WdOperatorConversationStatus -View $view -CanSend $true -CanToggleAutomation $true -CanInterrupt $true -TurnActive $true
+        $view.Controls.Send.PerformClick()
+        $invalid=@(Get-WdOperatorConversationActions -View $view).Count -eq 0 -and $view.State.Status.StartsWith('Message not accepted:')
+        $view.Controls.Input.Text='scoped active-turn instruction'
+        $view.Controls.Send.PerformClick()
+        $send=@(Get-WdOperatorConversationActions -View $view)
+        $view.Controls.Automation.PerformClick()
+        $automation=@(Get-WdOperatorConversationActions -View $view)
+        $view.Controls.Interrupt.PerformClick()
+        $interrupt=@(Get-WdOperatorConversationActions -View $view)
+        Resolve-WdOperatorConversationAction -View $view -ActionId $send[0].id -Accepted $true
+        Set-WdOperatorConversationStatus -View $view -TurnActive $false -CanSend $true
+        $view.Controls.Continue.PerformClick()
+        $continued=@(Get-WdOperatorConversationActions -View $view)
+        Resolve-WdOperatorConversationAction -View $view -ActionId $continued[0].id -Accepted $true
+        $view.AttachmentPaths=@('isolated-draft-image.png')
+        $view.Controls.Clear.PerformClick()
+        $cleared=$view.AttachmentPaths.Count -eq 0
+        Show-WdOperatorConversationQuestion -View $view -RequestId scoped-question -Questions @(
+            [pscustomobject]@{id='choice';question='Keep scope?';options=@([pscustomobject]@{label='Keep';description='Keep this isolated scope'})}
+        )
+        $view.QuestionInputs.choice.Combo.SelectedIndex=0
+        $view.Controls.Answer.PerformClick()
+        $answer=@(Get-WdOperatorConversationActions -View $view)
+        Clear-WdOperatorConversationQuestion -View $view -RequestId scoped-question
+        Set-WdOperatorConversationStatus -View $view -CanReconcile $true -TurnActive $false
+        $view.Controls.Input.Text='explain only'
+        $view.Controls.Reconcile.PerformClick()
+        $reconcile=@(Get-WdOperatorConversationActions -View $view)
+        $view.Form.Close()
+        $close=@(Get-WdOperatorConversationActions -View $view)
+        [pscustomobject]@{
+            send=$send; automation=$automation; interrupt=$interrupt; close=$close
+            invalid=$invalid; continued=$continued; cleared=$cleared; answer=$answer; reconcile=$reconcile
+            close_requested=$view.State.CloseRequested; visible=$view.Form.Visible
+            prematurely_disposed=$view.Form.IsDisposed
+        }
+    } finally { Close-WdOperatorConversationView -View $view }
+} @{'Show-WdOperatorConversation.ps1'=$source}
+$globalHelpers=@(Get-Command '*-WdOperator*' -CommandType Function -ErrorAction SilentlyContinue)
+[pscustomobject]@{result=$result;global_helpers=$globalHelpers.Count} | ConvertTo-Json -Depth 8 -Compress
+""", load_script=False, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert record["global_helpers"] == 0
+    result = record["result"]
+    for key, kind in (("send", "send"), ("automation", "automation_toggle"),
+                      ("interrupt", "interrupt"), ("close", "close"), ("continued", "send"),
+                      ("answer", "question_answer"), ("reconcile", "reconcile")):
+        assert [action["kind"] for action in result[key]] == [kind], result
+    assert result["send"][0]["text"] == "scoped active-turn instruction"
+    assert result["automation"][0]["enabled"] is True
+    assert result["invalid"] is True and result["cleared"] is True
+    assert result["continued"][0]["text"] == "Continue."
+    assert result["answer"][0]["answer"] == {"choice": ["Keep"]}
+    assert result["reconcile"][0]["text"] == "explain only"
+    assert result["close_requested"] is True
+    assert result["visible"] is False and result["prematurely_disposed"] is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="WinForms needs Windows")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("hidden_startup", [False, True])
+@pytest.mark.parametrize("mode", ["visible", "hidden", "headless"])
+def test_window_visibility_honors_view_mode_under_hidden_process_startup(shell, hidden_startup, mode):
+    startup = subprocess.STARTUPINFO()
+    if hidden_startup:
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = subprocess.SW_HIDE
+    record = run_ps(shell, """
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class WdWindowVisibilityProbe {
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+}
+'@
+$view=New-WdOperatorConversationView """ + {"visible": "", "hidden": "-Hidden", "headless": "-Headless"}[mode] + """
+try {
+    Update-WdOperatorConversationView -View $view
+    $visible=$false; $managedVisible=$false; $handle=0L
+    if ($null -ne $view.Form) {
+        $handle=$view.Form.Handle.ToInt64()
+        $visible=[WdWindowVisibilityProbe]::IsWindowVisible($view.Form.Handle)
+        $managedVisible=$view.Form.Visible
+    }
+    [pscustomobject]@{
+        visible=$visible; managed_visible=$managedVisible; handle=$handle
+        has_form=($null -ne $view.Form); controls=$view.Controls.Count
+        console_handle=[WdWindowVisibilityProbe]::GetConsoleWindow().ToInt64()
+    } | ConvertTo-Json -Compress
+} finally { Close-WdOperatorConversationView -View $view }
+""", startupinfo=startup, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert record["visible"] is (mode == "visible"), record
+    assert record["managed_visible"] is (mode == "visible"), record
+    assert record["has_form"] is (mode != "headless"), record
+    assert bool(record["handle"]) is (mode != "headless"), record
+    assert bool(record["controls"]) is (mode != "headless"), record
+    assert record["console_handle"] == 0, record
 
 
 @pytest.mark.parametrize("shell", SHELLS)

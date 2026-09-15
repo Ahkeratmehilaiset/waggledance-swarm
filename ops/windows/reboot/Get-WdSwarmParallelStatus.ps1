@@ -231,7 +231,7 @@ function Get-WdStatusToolsConversationRuntime {
             [Math]::Abs(($wrapperStart-$created).TotalSeconds) -gt 1 -or [Math]::Abs(($nativeStart-$nativeCreated).TotalSeconds) -gt 1 -or
             -not [IO.Path]::IsPathRooted([string]$record.codex_command) -or
             -not ([IO.Path]::GetFullPath([string]$native.ExecutablePath)).Equals([IO.Path]::GetFullPath([string]$record.codex_command),[StringComparison]::OrdinalIgnoreCase) -or
-            [string]$native.CommandLine -cnotmatch '(?:^|\s)app-server\s+--listen\s+(?:"stdio://"|stdio://)(?=\s|$)') { return $Result }
+            [string]$native.CommandLine -cnotmatch '(?:^|\s)(?:"app-server"|app-server)\s+(?:"--listen"|--listen)\s+(?:"stdio://"|stdio://)(?=\s|$)') { return $Result }
         $files=[regex]::Matches([string]$wrapper.CommandLine,'(?i)(?:^|\s)-File\s+(?:"(?<v>[^"]+)"|''(?<v>[^'']+)''|(?<v>\S+))(?=\s|$)')
         $generations=[regex]::Matches([string]$wrapper.CommandLine,'(?i)(?:^|\s)-Generation\s+(?:"(?<v>[0-9a-f]{40})"|''(?<v>[0-9a-f]{40})''|(?<v>[0-9a-f]{40}))(?=\s|$)')
         if ($files.Count -ne 1 -or $generations.Count -ne 1 -or $generations[0].Groups['v'].Value -cne [string]$record.generation) { return $Result }

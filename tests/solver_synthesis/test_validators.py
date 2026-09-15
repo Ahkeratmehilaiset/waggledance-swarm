@@ -33,6 +33,8 @@ Pinned invariants:
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 
 from waggledance.core.solver_synthesis import SOLVER_SYNTHESIS_SCHEMA_VERSION
@@ -169,6 +171,197 @@ def test_run_regression_tests_counts_passed_and_failures():
     assert r.passed == 1
     assert r.total == 2
     assert r.failures == ("r2",)
+
+
+# --- counted gates: literal-True fail-closed rule -------------------
+#
+# 2026-08-23 product-integrity fix (lead assignment): the counted
+# gates used ``bool(t.get("passed", False))`` / ``not t.get(...)``,
+# so any truthy stand-in for a boolean — the string "false" from a
+# JSON-ish harness, "true", 1, "no" — counted as a PASSED case with an
+# empty failure list and validate_candidate promoted the candidate to
+# ``pass_all_gates``. Only the literal ``True`` may count as passed.
+
+class _ExplosiveBool:
+    """Object whose truthiness must never be consulted."""
+
+    def __bool__(self) -> bool:  # pragma: no cover - must not run
+        raise AssertionError("truthiness of a passed value was coerced")
+
+
+_NOT_LITERAL_TRUE = [
+    pytest.param("false", id="str-false"),
+    pytest.param("true", id="str-true"),
+    pytest.param("True", id="str-True"),
+    pytest.param("no", id="str-no"),
+    pytest.param(1, id="int-1"),
+    pytest.param(1.0, id="float-1"),
+    pytest.param(0, id="int-0"),
+    pytest.param(None, id="none"),
+    pytest.param([True], id="list-true"),
+    pytest.param({"passed": True}, id="nested-dict"),
+    pytest.param(object(), id="object"),
+    pytest.param(_ExplosiveBool(), id="explosive-bool"),
+]
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+@pytest.mark.parametrize("value", _NOT_LITERAL_TRUE)
+def test_counted_gate_rejects_every_non_literal_true_passed_value(gate, value):
+    r = gate(_candidate(), [{"name": "p1", "passed": value}])
+    assert r.passed == 0
+    assert r.total == 1
+    assert r.failures == ("p1",)
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+def test_counted_gate_missing_passed_key_is_a_failure(gate):
+    r = gate(_candidate(), [{"name": "p1"}])
+    assert r.passed == 0
+    assert r.total == 1
+    assert r.failures == ("p1",)
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+def test_counted_gate_literal_true_still_counts_beside_truthy_stand_ins(gate):
+    r = gate(_candidate(), [
+        {"name": "p1", "passed": True},
+        {"name": "p2", "passed": "true"},
+        {"name": "p3", "passed": 1},
+    ])
+    assert r.passed == 1
+    assert r.total == 3
+    assert r.failures == ("p2", "p3")
+
+
+class _TogglingCase(Mapping):
+    """Mapping whose ``passed`` answer changes after the first read.
+
+    Lead exact-head CR on PR #1628 (2026-08-23T06:19:02Z): the first
+    fix read ``passed`` twice per case (once for the count, once for the
+    failure list), so a stateful mapping answering True then False
+    produced ``passed=1, total=1, failures=("toggle",)`` and
+    ``pass_all_gates``. Each case must be read exactly once and the
+    count / failure list must be derived from that single verdict.
+    """
+
+    def __init__(self, name: str, answers: list[object]) -> None:
+        self._name = name
+        self._answers = list(answers)
+        self.passed_reads = 0
+
+    def __getitem__(self, key: str) -> object:
+        if key == "name":
+            return self._name
+        if key == "passed":
+            self.passed_reads += 1
+            if self._answers:
+                return self._answers.pop(0)
+            return False
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(("name", "passed"))
+
+    def __len__(self) -> int:
+        return 2
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+@pytest.mark.parametrize(
+    "answers, expected_passed, expected_failures",
+    [
+        ([True, False], 1, ()),
+        ([False, True], 0, ("toggle",)),
+    ],
+    ids=["true-then-false", "false-then-true"],
+)
+def test_counted_gate_reads_passed_exactly_once_per_case(
+        gate, answers, expected_passed, expected_failures):
+    case = _TogglingCase("toggle", answers)
+    r = gate(_candidate(), [case])
+    assert case.passed_reads == 1
+    assert r.total == 1
+    assert r.passed == expected_passed
+    assert r.failures == expected_failures
+    # count and failure list must always describe the same verdicts
+    assert r.passed + len(r.failures) == r.total
+
+
+def test_validate_candidate_toggling_case_cannot_pass_with_a_listed_failure():
+    """End-to-end form of the lead CR probe: a True-then-False case must
+    never yield passed == total beside a non-empty failure list."""
+    case = _TogglingCase("toggle", [True, False])
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[case],
+        regression_input=[],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert case.passed_reads == 1
+    prop = report.property_tests
+    assert prop.passed + len(prop.failures) == prop.total == 1
+    assert (prop.passed, prop.failures) == (1, ())
+    assert report.verdict == "pass_all_gates"
+    inverse = _TogglingCase("toggle", [False, True])
+    report2 = validate_candidate(
+        _candidate(),
+        property_tests_input=[inverse],
+        regression_input=[],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert inverse.passed_reads == 1
+    assert (report2.property_tests.passed, report2.property_tests.failures) == (0, ("toggle",))
+    assert report2.verdict == "property_test_failed"
+
+
+@pytest.mark.parametrize("gate", [run_property_tests, run_regression_tests],
+                         ids=["property", "regression"])
+def test_counted_gate_non_mapping_entries_are_named_failures(gate):
+    r = gate(_candidate(), [None, "passed", 42, {"name": "ok", "passed": True}])
+    assert r.passed == 1
+    assert r.total == 4
+    assert r.failures == ("<malformed:0>", "<malformed:1>", "<malformed:2>")
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1],
+                         ids=["str-false", "str-true", "int-1"])
+def test_validate_candidate_truthy_property_passed_is_property_test_failed(value):
+    """The exact lead reproduction: passed:"false" previously yielded
+    1/1 and pass_all_gates."""
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[{"name": "prop1", "passed": value}],
+        regression_input=[],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert report.verdict == "property_test_failed"
+    assert report.property_tests.passed == 0
+    assert report.property_tests.total == 1
+    assert report.property_tests.failures == ("prop1",)
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1],
+                         ids=["str-false", "str-true", "int-1"])
+def test_validate_candidate_truthy_regression_passed_is_regression_detected(value):
+    report = validate_candidate(
+        _candidate(),
+        property_tests_input=[{"name": "prop1", "passed": True}],
+        regression_input=[{"name": "reg1", "passed": value}],
+        shadow_observations=100,
+        shadow_concordance=0.95,
+    )
+    assert report.verdict == "regression_detected"
+    assert report.regression.passed == 0
+    assert report.regression.total == 1
+    assert report.regression.failures == ("reg1",)
 
 
 # --- evaluate_shadow ------------------------------------------------

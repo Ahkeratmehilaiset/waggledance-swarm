@@ -116,6 +116,17 @@ def build_promotion_evidence_record(
     target_state = str(commit_application.get("target_state") or "unknown")
     if not is_conforming_token(target_state):
         target_state = "unknown"
+    blockers = commit_application.get("blockers")
+    if type(blockers) is not list:
+        raise PromotionEvidenceError("commit_application.blockers must be a plain list")
+    runtime_authority_flags: dict[str, bool] = {}
+    for flag in _RUNTIME_AUTHORITY_FLAGS:
+        value = commit_application.get(flag)
+        if type(value) is not bool:
+            raise PromotionEvidenceError(
+                f"commit_application.{flag} must be a literal bool"
+            )
+        runtime_authority_flags[flag] = value
     record = {
         "schema_version": PROMOTION_EVIDENCE_SCHEMA,
         "transition_id": transition_id,
@@ -125,10 +136,8 @@ def build_promotion_evidence_record(
         "parent_cell_id": parent_cell_id,
         "target_state": target_state,
         "commit_candidate_prepared": commit_application.get("commit_candidate_prepared") is True,
-        "blocker_count": len(list(commit_application.get("blockers") or [])),
-        "runtime_authority_flags": {
-            flag: bool(commit_application.get(flag)) for flag in _RUNTIME_AUTHORITY_FLAGS
-        },
+        "blocker_count": len(blockers),
+        "runtime_authority_flags": runtime_authority_flags,
     }
     record[_HASH_FIELD] = compute_record_hash(record)
     reason = wellformed_reason(record)                      # anti-drift builder self-check
@@ -150,6 +159,10 @@ def wellformed_reason(record: object) -> str | None:
     producer!=verifier discipline: shape-check EVERY field, not a subset."""
     if not isinstance(record, Mapping):
         return "not_a_mapping"
+    # Custom Mapping/dict views can make get() disagree with the storage that
+    # compute_record_hash serializes. Durable records are always plain dicts.
+    if type(record) is not dict:
+        return "record_mapping_type"
     if set(record.keys()) != _ALLOWED_KEYS:                 # exact allowlist, no smuggled field
         return "key_set_mismatch"
     if record.get("schema_version") != PROMOTION_EVIDENCE_SCHEMA:
@@ -176,7 +189,9 @@ def wellformed_reason(record: object) -> str | None:
     if not isinstance(blocker_count, int) or isinstance(blocker_count, bool) or blocker_count < 0:
         return "blocker_count_shape"
     flags = record.get("runtime_authority_flags")
-    if not isinstance(flags, Mapping) or set(flags.keys()) != set(_RUNTIME_AUTHORITY_FLAGS):
+    if type(flags) is not dict:
+        return "runtime_authority_flags_type"
+    if set(flags.keys()) != set(_RUNTIME_AUTHORITY_FLAGS):
         return "runtime_authority_flags_keys"
     if not all(isinstance(flags.get(flag), bool) for flag in _RUNTIME_AUTHORITY_FLAGS):
         return "runtime_authority_flags_values"

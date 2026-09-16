@@ -1742,6 +1742,30 @@ function Get-NamedCommandLineArgumentValue {
   return [string]$match.Groups['plain'].Value
 }
 
+function Resolve-WdLiveLaneManifest {
+  param([string] $CommandLine, [string] $BundleStore)
+  $explicit = Get-NamedCommandLineArgumentValue -CommandLine $CommandLine -Name 'ManifestPath'
+  if ($explicit) { return (Resolve-NormalizedPath -Path $explicit) }
+  # Stable wrappers supply ManifestPath inside PowerShell, not on the process
+  # command line. Resolve their original immutable bundle by the command's
+  # deployment hash, never by the mutable CURRENT deployment pointer.
+  $anchor = Get-NamedCommandLineArgumentValue -CommandLine $CommandLine -Name 'ExpectedManifestHash'
+  if ($anchor -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'Live wrapper has no deployment anchor' }
+  [void](Assert-WdFleetPathWithoutReparse -Path $BundleStore -TrustedRoot $BundleStore -ExpectedType Directory)
+  $bundleCandidates = @()
+  foreach ($directory in @(Get-ChildItem -LiteralPath $BundleStore -Directory)) {
+    if ($directory.Name -cnotmatch '^[0-9a-f]{40}$') { continue }
+    $deployment = Join-Path $directory.FullName 'deployment-manifest.json'
+    if (-not (Test-Path -LiteralPath $deployment -PathType Leaf)) { continue }
+    [void](Assert-WdFleetPathWithoutReparse -Path $deployment -TrustedRoot $BundleStore -ExpectedType Leaf)
+    if ((Get-FileHash -LiteralPath $deployment -Algorithm SHA256).Hash -ceq $anchor.ToUpperInvariant()) {
+      $bundleCandidates += Join-Path $directory.FullName 'wd-fleet.json'
+    }
+  }
+  if ($bundleCandidates.Count -ne 1) { throw 'Live wrapper deployment anchor does not identify exactly one installed bundle' }
+  return $bundleCandidates[0]
+}
+
 function Test-LaneGenerationAttestation {
   param(
     [Parameter(Mandatory)] $Lane,
@@ -1756,12 +1780,8 @@ function Test-LaneGenerationAttestation {
     $launcher = Resolve-NormalizedPath -Path (
       Get-NamedCommandLineArgumentValue -CommandLine $commandLine -Name 'File'
     )
-    $manifestArgument = Resolve-NormalizedPath -Path (
-      Get-NamedCommandLineArgumentValue `
-        -CommandLine $commandLine `
-        -Name 'ManifestPath'
-    )
     $bundleStore = Resolve-NormalizedPath -Path 'C:\Python\wd-reboot-bundles'
+    $manifestArgument = Resolve-WdLiveLaneManifest -CommandLine $commandLine -BundleStore $bundleStore
     $machineLauncher = Resolve-NormalizedPath -Path 'C:\Python\start-wd-agent.ps1'
     $bundleRoot = if ($launcher.Equals(
         $machineLauncher,
@@ -2721,6 +2741,17 @@ foreach ($lane in @($manifest.lanes)) {
     if ($null -eq $admission -or -not [bool]$admission.dry_run -or
         [string]$admission.turn_mode -cne 'managed') {
       throw "managed admission preflight did not return a valid result for $($lane.agent)"
+    }
+  }
+  if ($bundleMode -ceq 'deployed' -and $laneTurnMode -ceq 'interactive' -and $live.Count -eq 0) {
+    # Resolve saved provider conversations before updates, scheduler changes or
+    # opening any terminals. Broken history must not become a partial restore.
+    $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun `
+      -ExpectedManifestHash $bundleManifestAnchor `
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
+    if ($null -eq $resumePlan -or -not [bool]$resumePlan.dry_run -or
+        [string]$resumePlan.agent -cne [string]$lane.agent) {
+      throw "conversation resume preflight did not return a valid result for $($lane.agent)"
     }
   }
   if (-not [bool]$pinState.exact) {

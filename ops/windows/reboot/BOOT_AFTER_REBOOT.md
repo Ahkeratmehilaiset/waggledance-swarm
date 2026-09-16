@@ -28,6 +28,27 @@ wrapper requests one Windows UAC elevation before preflight when Task Scheduler
 changes require Administrator rights; accept that prompt to continue. An
 already elevated PowerShell does not prompt again.
 
+Cold-start preflight resolves each native lane's saved conversation before CLI
+updates or scheduler changes. Lead uses its reconciled recorded Codex thread ID
+in the normal Codex terminal (`gpt-6-astra`, `xhigh`). RCO1, RCO2 and Fable resume
+the newest **named lane conversation** in their own canonical worktree with
+`claude --resume <exact-UUID>`; they never use account-wide `--continue` or fork
+the conversation. Selection uses the first main-thread timestamp, not file
+modification time. Conflicting, incomplete, or ambiguous named history stops
+preflight instead of silently opening an empty conversation. A genuinely empty
+history starts the initial visual bootstrap once.
+
+The continuation turn checks compact state and live bridge claims, then resumes
+the latest unfinished authorized work. Completed effects are reconciled before
+retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native
+Lead still has no managed idle-wake consumer. Its continuation is submitted when
+the terminal starts, and subsequent operator messages use the normal Codex UI.
+
+Already-live lane wrappers are identified using their original deployment hash,
+including wrappers whose process command line omits `-ManifestPath`. CLI binary
+changes after launch or other identity mismatches still require a controlled
+handoff; a launch plan must never guess that a conflicting process is disposable.
+
 Each elevated `-Auto` run keeps a transcript under
 `C:\Python\wd-reboot-runtime\elevated-auto`. If the elevated process fails, the
 parent PowerShell prints the transcript tail and its exact path.
@@ -40,8 +61,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 For a manual two-step recovery, run `-DryRun` and then `-Apply`. With no mode
 switch the launcher defaults to byte-inert DryRun. After a successful restore,
-leave each agent's conversation window open. Lead and Tools have separate local
-conversation windows; RCO1, RCO2 and Fable retain their native interactive windows.
+leave each agent's conversation window open. Lead uses the standard Codex
+terminal, Tools retains its local conversation window, and RCO1, RCO2 and Fable
+retain their native interactive windows.
 Their contexts are independent, not multiple views of Lead. Tools and exactly
 five real-time bridge watchers are reconciled through `WD-Supervisor`; the Tools
 window never creates an additional consumer alongside its existing parent.

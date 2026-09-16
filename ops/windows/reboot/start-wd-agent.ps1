@@ -200,7 +200,7 @@ function Get-WdNativeLeadResumeState {
     [void](Assert-LanePathWithoutReparse -Path $existing -TrustedRoot ([IO.Path]::GetPathRoot($path)) -ExpectedType $kind)
   }
   if (Test-Path -LiteralPath $pointer -PathType Leaf) {
-    if ((Get-Item -LiteralPath $pointer).Length -gt 32768) { throw 'Lead owner record is oversized' }
+    if ((Get-Item -LiteralPath $pointer -Force).Length -gt 32768) { throw 'Lead owner record is oversized' }
     $previous = (Read-Utf8LaneSnapshot -Path $pointer).Text | ConvertFrom-Json
     if ($previous.schema -cne 'wd.lane-turn-owner.v1' -or $previous.agent -cne 'codex-lead-1' -or
         $previous.status -cnotin @('waiting','stopped') -or $previous.pending_path -or
@@ -216,7 +216,7 @@ function Get-WdNativeLeadResumeState {
   if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
     return [pscustomobject]@{ thread_id=''; initial_context_delivered=$false }
   }
-  if ((Get-Item -LiteralPath $identityPath).Length -gt 32768) { throw 'Lead conversation identity is oversized' }
+  if ((Get-Item -LiteralPath $identityPath -Force).Length -gt 32768) { throw 'Lead conversation identity is oversized' }
   $saved = (Read-Utf8LaneSnapshot -Path $identityPath).Text | ConvertFrom-Json
   if ($saved.schema -cne 'wd.codex-conversation.v1' -or $saved.agent -cne 'codex-lead-1' -or
       -not ([string]$saved.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase) -or
@@ -225,6 +225,58 @@ function Get-WdNativeLeadResumeState {
     throw 'Native Lead resume requires an exact, reconciled recorded conversation identity'
   }
   return [pscustomobject]@{thread_id=[string]$saved.thread_id; initial_context_delivered=[bool]$saved.initial_context_delivered}
+}
+
+function Get-WdClaudeResumeState {
+  param([string] $Agent, [string] $Worktree, [string] $ProjectsRoot)
+  # Claude writes --name and the first main-thread user record before doing
+  # model work. Recover by both lane name and canonical cwd, never --continue
+  # or the newest conversation belonging to this Windows account.
+  $project = Join-Path $ProjectsRoot ($Worktree -replace '[^a-zA-Z0-9]', '-')
+  if (-not (Test-Path -LiteralPath $project -PathType Container)) {
+    return [pscustomobject]@{thread_id=''; initial_context_delivered=$false}
+  }
+  [void](Assert-LanePathWithoutReparse -Path $project -TrustedRoot ([IO.Path]::GetPathRoot($project)) -ExpectedType Directory)
+  $candidates = @()
+  foreach ($file in @(Get-ChildItem -LiteralPath $project -Filter '*.jsonl' -File)) {
+    if ($file.BaseName -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { continue }
+    [void](Assert-LanePathWithoutReparse -Path $file.FullName -TrustedRoot $project -ExpectedType Leaf)
+    $named = $false; $firstTurn = $null; $readBytes = 0
+    $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+    try {
+      for ($i = 0; $i -lt 64 -and -not $reader.EndOfStream; $i++) {
+        $line = $reader.ReadLine()
+        $readBytes += $line.Length
+        if ($readBytes -gt 4194304) { throw "Claude session header exceeds recovery bound: $($file.FullName)" }
+        if (-not $line.Trim()) { continue }
+        $record = $line | ConvertFrom-Json -ErrorAction Stop
+        if ($record.PSObject.Properties['sessionId'] -and [string]$record.sessionId -ceq $file.BaseName) {
+          if (([string]$record.type -ceq 'agent-name' -and [string]$record.agentName -ceq $Agent) -or
+              ([string]$record.type -ceq 'custom-title' -and [string]$record.customTitle -ceq $Agent)) { $named = $true }
+          if ([string]$record.type -ceq 'user' -and $null -eq $firstTurn) { $firstTurn = $record }
+        }
+        if ($named -and $null -ne $firstTurn) { break }
+      }
+    } finally { $reader.Dispose() }
+    if (-not $named) { continue }
+    if ($null -eq $firstTurn -or $firstTurn.isSidechain -isnot [bool] -or $firstTurn.isSidechain -or
+        -not ([string]$firstTurn.cwd).Equals($Worktree, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Named Claude lane has an incomplete or conflicting session header: $($file.FullName)"
+    }
+    $candidates += [pscustomobject]@{thread_id=$file.BaseName; started=([DateTimeOffset]$firstTurn.timestamp).ToUniversalTime()}
+  }
+  $ordered = @($candidates | Sort-Object started -Descending)
+  if ($ordered.Count -eq 0) {
+    if (@(Get-ChildItem -LiteralPath $project -Filter '*.jsonl' -File).Count) {
+      throw "Claude history exists but no exact named conversation was found for $Agent; refusing a silent fresh start"
+    }
+    return [pscustomobject]@{thread_id=''; initial_context_delivered=$false}
+  }
+  if ($ordered.Count -gt 1 -and $ordered[0].started -eq $ordered[1].started) {
+    throw "Ambiguous latest named Claude conversation for $Agent"
+  }
+  return [pscustomobject]@{thread_id=[string]$ordered[0].thread_id; initial_context_delivered=$true}
 }
 
 function Get-WdLaneConversationPermissions {
@@ -1889,7 +1941,11 @@ if ($nativeLead) {
     'The startup model is gpt-6-astra/xhigh; the operator may use /model to change it. ' +
     'Bridge helpers and the current environment identify this lane. Keep peer sessions separate. ' +
     'No managed bridge-wake consumer is attached to this terminal. ' +
-    'Confirm the restored conversation and bridge identity with read-only checks, then await the operator instruction. '
+    'Confirm the restored conversation and bridge identity with read-only checks. ' +
+    'Resume the latest unfinished operator-authorized task from this conversation and compact state, ' +
+    'after reconciling live claims and checking whether interrupted actions already completed. ' +
+    'Do not replay completed side effects or revive cancelled tasks. Preserve an explicit operator pause or HOLD; ' +
+    'if no eligible unfinished task remains, report that state and await the operator. '
   )
   $startupPrompt = $visualBootstrapPrompt + $continuationPrompt
 }
@@ -1924,6 +1980,15 @@ Write-Host ("  mode:     {0} (configured: {1})" -f $launchTurnMode, $turnMode)
 Write-Host ("  control:  {0} (configured: {1})" -f $launchConversationSurface, $conversationSurface)
 Write-Host ("  target:   {0}" -f [string]$targetState.id)
 Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
+$claudeResume = $null
+if ($nativeLead) {
+  $nativeResume = Get-WdNativeLeadResumeState -Worktree $worktree -RuntimeRoot $runtimeRoot
+} elseif ($cliName -ieq 'claude.cmd' -and $launchTurnMode -ceq 'interactive') {
+  $claudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+  $claudeResume = Get-WdClaudeResumeState -Agent $Agent -Worktree $worktree -ProjectsRoot (Join-Path $claudeHome 'projects')
+}
+$resumeThread = if ($null -ne $nativeResume) { [string]$nativeResume.thread_id } elseif ($null -ne $claudeResume) { [string]$claudeResume.thread_id } else { '' }
+if ($resumeThread) { Write-Host ("  resume:   {0} (recorded lane conversation)" -f $resumeThread) }
 if ($RecoverInteractive) {
   Write-Host ("  unresolved pointer: {0}" -f $manualAttemptEvidence.pointer_path)
   Write-Host ("  pending record:      {0}" -f $manualAttemptEvidence.pending_path)
@@ -1939,6 +2004,7 @@ if ($DryRun) {
   try {
     return [pscustomobject]@{
       agent = $Agent
+      native_thread_id = $resumeThread
       run_id = $RunId
       worktree = $worktree
       branch = $actualBranch
@@ -2187,7 +2253,7 @@ $temporaryHandshake = "$handshakePath.$PID.tmp"
 $handshake = [ordered]@{
   schema_version = 1
   status = 'bridge_bootstrapped'
-  native_thread_id = if ($null -ne $nativeResume) { [string]$nativeResume.thread_id } else { '' }
+  native_thread_id = $resumeThread
   agent = $Agent
   agent_uuid = [string]$lane.agent_uuid
   role = [string]$lane.role
@@ -2341,6 +2407,10 @@ if ($RecoverInteractive) {
 }
 $launchArguments = @()
 if ($cliName -ieq 'claude.cmd') {
+  if ($null -ne $claudeResume -and $claudeResume.thread_id) {
+    $launchArguments += @('--resume', [string]$claudeResume.thread_id)
+    $startupPrompt = $continuationPrompt
+  }
   $launchArguments += @(
     '--model', $model,
     '--effort', $effort,

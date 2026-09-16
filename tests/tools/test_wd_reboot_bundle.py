@@ -5004,6 +5004,7 @@ foreach ($name in @(
     'Assert-WdFleetPathWithoutReparse',
     'Test-NamedCommandLineArgument',
     'Get-NamedCommandLineArgumentValue',
+    'Resolve-WdLiveLaneManifest',
     'Test-LaneGenerationAttestation'
   )) {{
   $functionAst = $ast.Find(

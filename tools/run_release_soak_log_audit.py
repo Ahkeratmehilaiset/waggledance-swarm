@@ -840,6 +840,11 @@ def build_bound_report(
     ``source_root``; ``source_commit`` must be the clean HEAD of that
     checkout. The only path allowed to differ from the subject is the single
     coverage source, and only by appended complete JSON lines.
+
+    This is offline consistency proof, not proof that the self-declared
+    timestamps correspond to real elapsed runtime. Synthetic records can meet
+    the window/gap contract instantly. Independent trusted acquisition/time
+    evidence and the separate release gate are still required for a release.
     """
     root = Path(source_root)
     blockers: list[str] = []
@@ -1044,6 +1049,9 @@ def build_bound_report(
             merged.append(blocker)
     report.update({
         "contract_version": CONTRACT_VERSION,
+        "proof_scope": "offline_soak_log_consistency",
+        "runtime_elapsed_proven": False,
+        "release_authorized": False,
         "source_commit": commit or None,
         "source_tree": source_tree,
         "generated_at": _format_utc(generated),

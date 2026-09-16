@@ -41,6 +41,7 @@ MAX_GAP_HOURS = 24
 MAX_REPORT_BYTES = 1024 * 1024
 _REBUILT_FIELDS = (
     "schema_version", "contract_version", "target_version", "source_commit",
+    "proof_scope", "runtime_elapsed_proven", "release_authorized",
     "source_tree", "source_files", "source_hashes", "source_file_count",
     "source_roles", "coverage_sources", "lock_path", "lock_blob", "lock_digest",
     "window_hours", "required_window_hours", "max_gap_hours", "raw_log_binding",
@@ -97,6 +98,7 @@ def _result(blockers: list[str], expected_commit: str) -> dict:
         "decision": "hold" if blockers else "pass",
         "blockers": list(dict.fromkeys(blockers)),
         "proof_scope": "offline_fresh_soak_snapshot",
+        "runtime_elapsed_proven": False,
         "release_authorized": False,
         "expected_commit": expected_commit,
         "target_version": "v3.12.0",

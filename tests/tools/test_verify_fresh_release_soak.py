@@ -104,6 +104,7 @@ def test_full_synthetic_window_passes_offline_only(subject):
     result = evaluate(subject, path)
     assert result["decision"] == "pass", result
     assert result["release_authorized"] is False
+    assert result["runtime_elapsed_proven"] is False
     assert result["proof_scope"] == "offline_fresh_soak_snapshot"
     assert result["required_window_hours"] == 336
     assert path.read_bytes() == before
@@ -116,6 +117,9 @@ def test_full_synthetic_window_passes_offline_only(subject):
     ("target_version", "v3.13.0"), ("required_window_hours", 1),
     ("required_window_hours", True), ("max_gap_hours", 48),
     ("max_gap_hours", True),
+    ("proof_scope", "verified_elapsed_runtime"),
+    ("runtime_elapsed_proven", True), ("runtime_elapsed_proven", 0),
+    ("release_authorized", True), ("release_authorized", 0),
 ])
 def test_forged_or_weakened_report_holds(subject, field, value):
     path, report = make_report(subject)

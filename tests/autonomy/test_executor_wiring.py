@@ -119,6 +119,35 @@ class TestMakeAdapterExecutor:
         assert result["value"] == "4"
         assert result["quality_path"] == "gold"
 
+    def test_bridge_injects_services_only_after_adapter_opt_in(self):
+        from waggledance.core.autonomy.runtime import _make_adapter_executor
+        from waggledance.core.reasoning.solver_services import (
+            SolverServices,
+            solver_services_opt_in,
+        )
+
+        sentinel_port = object()
+        services = SolverServices(game_theory=sentinel_port)
+
+        class StrategicAdapter:
+            @solver_services_opt_in
+            def execute(self, query: str, *, solver_services) -> dict:
+                return {
+                    "query": query,
+                    "received_port": (
+                        solver_services.require_game_theory() is sentinel_port
+                    ),
+                }
+
+        executor = _make_adapter_executor(
+            StrategicAdapter(),
+            solver_services=services,
+        )
+
+        result = executor(Action(payload={"query": "bounded game"}))
+
+        assert result == {"query": "bounded game", "received_port": True}
+
 
 # ── Wiring: registry → action bus ─────────────────────────────
 

@@ -23,6 +23,7 @@ from typing import Any, Mapping
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.evaluation_result import build_evaluation_result
 from waggledance.core.magma.receipt import build_magma_receipt
+from waggledance.core.reasoning.solver_services import invoke_solver_callable
 from waggledance.core.v3_13_0.solver_registry import (
     SolverManifest,
     SolverRegistryError,
@@ -242,13 +243,14 @@ def _call_solver(solver: SolverManifest, payload: Mapping[str, Any]) -> Any:
     entrypoint = resolve_solver_entrypoint(solver)
     if solver.name == "ENG-06":
         burn_log = payload.get("burn_log")
-        return entrypoint(
+        return invoke_solver_callable(
+            entrypoint,
             burn_log,
             horizon_start_utc=str(payload.get("horizon_start_utc", "")),
             horizon_end_utc=str(payload.get("horizon_end_utc", "")),
             stale_threshold_hours=payload.get("stale_threshold_hours"),
         )
-    return entrypoint(payload)
+    return invoke_solver_callable(entrypoint, payload)
 
 
 def _to_payload(result: Any) -> dict[str, Any]:

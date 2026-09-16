@@ -18,13 +18,19 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tools.verify_magma_receipt import (
+    _CHAT_DIGEST_SEMANTICS,
     _CHAT_RCO_DECISION_NA_SENTINEL,
+    _CHAT_ROUTE_STAGE_ORDER,
     _CHAT_SOLVER_CONTRACT_NA_SENTINEL,
     verify_manifest,
 )
 from waggledance.core.magma.canonical import sha256_digest
 from waggledance.core.magma.chat_served_receipt import (
+    _DIGEST_SEMANTICS,
+    _ROUTE_STAGE_ORDER,
     RCO_DECISION_NA_SENTINEL,
     SOLVER_CONTRACT_NA_SENTINEL,
     build_chat_served_summary,
@@ -52,7 +58,14 @@ def _chat_summary():
         language="en",
         profile="COTTAGE",
         world_snapshot_ref="snap-1",
-        route_stage_trace=[{"stage": "route_selection", "route_type": "solver"}],
+        route_stage_trace=[
+            {
+                "stage": "route_selection",
+                "route_type": "solver",
+                "solver_intent": "math",
+                "memory_score": 0.0,
+            }
+        ],
     )
 
 
@@ -90,6 +103,11 @@ def test_verifier_sentinels_match_builder_constants() -> None:
     # would silently disable enforcement or reject genuine receipts).
     assert _CHAT_RCO_DECISION_NA_SENTINEL == RCO_DECISION_NA_SENTINEL
     assert _CHAT_SOLVER_CONTRACT_NA_SENTINEL == SOLVER_CONTRACT_NA_SENTINEL
+
+
+def test_verifier_classifier_values_match_builder_contract() -> None:
+    assert _CHAT_DIGEST_SEMANTICS == _DIGEST_SEMANTICS
+    assert _CHAT_ROUTE_STAGE_ORDER == _ROUTE_STAGE_ORDER
 
 
 # ── genuine chat receipt passes the enforcement ──
@@ -146,6 +164,68 @@ def test_chat_receipt_non_informational_risk_class_rejected(tmp_path: Path) -> N
     report = verify_manifest(out / "manifest.json")
     assert report["ok"] is False
     assert any("risk_class=informational" in e for e in report["errors"])
+
+
+def test_chat_evaluation_cannot_claim_pass_or_carry_raw_text(tmp_path: Path) -> None:
+    marker = "SECRET_RAW_EVALUATION_DETAIL"
+    out = tmp_path / "chat"
+    _write_genuine_chat(out)
+    ep = _entry_file(out, "evaluation_result")
+    rp = _entry_file(out, "receipt")
+    evaluation = _load(ep)
+    receipt = _load(rp)
+    evaluation["verdict"] = "pass"
+    evaluation["uncertainty_sources"] = [
+        {"kind": "unknown", "detail": marker}
+    ]
+    receipt["evaluation_result_digest"] = sha256_digest(evaluation)
+    _dump(ep, evaluation)
+    _dump(rp, receipt)
+
+    report = verify_manifest(out / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("invalid chat_served evaluation_result" in e for e in report["errors"])
+    assert marker not in json.dumps(report)
+
+
+def test_chat_receipt_cannot_add_free_form_anchor(tmp_path: Path) -> None:
+    marker = "SECRET_RAW_RECEIPT_ANCHOR"
+    out = tmp_path / "chat"
+    _write_genuine_chat(out)
+    rp = _entry_file(out, "receipt")
+    receipt = _load(rp)
+    receipt["anchored_at"] = marker
+    _dump(rp, receipt)
+
+    report = verify_manifest(out / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("invalid chat_served receipt envelope" in e for e in report["errors"])
+    assert marker not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("ts_utc", "2026-01-01T00:00:01Z"),
+        ("event_id", "magma:chat_served:20260101T000001000000Z-000001"),
+    ],
+)
+def test_chat_receipt_event_and_timestamp_must_match(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    out = tmp_path / "chat"
+    _write_genuine_chat(out)
+    rp = _entry_file(out, "receipt")
+    receipt = _load(rp)
+    receipt[field] = value
+    _dump(rp, receipt)
+
+    report = verify_manifest(out / "manifest.json")
+
+    assert report["ok"] is False
+    assert any("timestamp mismatch" in e for e in report["errors"])
 
 
 # ── tamper the self-describing declaration -> payload-binding fail ──

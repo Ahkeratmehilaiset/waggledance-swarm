@@ -135,8 +135,8 @@
         "path": "C:\\Users\\janik\\.codex\\config.toml",
         "security_sha256": "4DF9B547F7B2E3F2864E7C2D599E1D94CDF7DA56E26E41EDCF7575A854CDC67E"
       },
-      "model": "gpt-5.6-sol",
-      "effort": "ultra",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
       "resume_policy": "current_worktree",
       "worktree": "C:\\Python\\project2",
       "branch": "codex-lead-1/magma-faiss-hex-genome-20260810",

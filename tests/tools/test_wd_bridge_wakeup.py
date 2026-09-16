@@ -68,7 +68,7 @@ def run_ps(script: str, timeout: int = 30, executable: str | None = None) -> sub
 @pytest.mark.skipif(os.name != "nt" or PS is None, reason="Windows native process runner")
 @pytest.mark.parametrize("ps", list(dict.fromkeys(filter(None, [PS, shutil.which("pwsh")]))), ids=lambda value: Path(value).stem)
 @pytest.mark.parametrize("scenario,agent,backend,model,effort", [
-    (scenario, "codex-lead-1", "codex", "gpt-5.6-sol", "ultra")
+    (scenario, "codex-lead-1", "codex", "gpt-6-astra", "xhigh")
     for scenario in ["complete", "ack", "stale", "wake_during", "timeout", "wrong_identity",
                      "child_survives", "child_drains", "wrong_task", "future", "huge_receipt", "output_budget", "two_turns", "idle", "blocked", "blocked_then_wake", "invalid_blocked"]
 ] + [
@@ -189,7 +189,7 @@ def test_existing_interactive_lane_never_launches_child(tmp_path: Path) -> None:
 . {quote(RUNNER)}
 function Get-WdTurnArguments {{ throw 'must not launch' }}
 Invoke-WdLaneTurnLoop -Agent codex-lead-1 -Backend codex -CliPath {quote(PYTHON)} `
-  -Model gpt-5.6-sol -Effort ultra -Worktree {quote(tmp_path)} -RuntimeRoot {quote(tmp_path)} `
+  -Model gpt-6-astra -Effort xhigh -Worktree {quote(tmp_path)} -RuntimeRoot {quote(tmp_path)} `
   -SessionId test -Generation abc -CompactStatePath {quote(tmp_path / '.codex-audit/wd-current-state.json')} `
   -StartupPrompt test -ExistingInteractivePid $PID | ConvertTo-Json -Compress
 """)
@@ -219,7 +219,7 @@ def test_os_lease_blocks_second_owner_in_another_worktree(tmp_path: Path) -> Non
 . {quote(RUNNER)}
 function Get-WdTurnArguments {{ throw 'must not launch' }}
 Invoke-WdLaneTurnLoop -Agent codex-lead-1 -Backend codex -CliPath {quote(PYTHON)} `
-  -Model gpt-5.6-sol -Effort ultra -Worktree {quote(second)} -RuntimeRoot {quote(runtime)} `
+  -Model gpt-6-astra -Effort xhigh -Worktree {quote(second)} -RuntimeRoot {quote(runtime)} `
   -SessionId second-owner -Generation next-generation `
   -CompactStatePath {quote(second / '.codex-audit/wd-current-state.json')} -StartupPrompt test | ConvertTo-Json -Compress
 """)
@@ -244,7 +244,7 @@ def test_crashed_turn_blocks_new_generation_without_replay(tmp_path: Path) -> No
 . {quote(RUNNER)}
 function Get-WdTurnArguments {{ throw 'must not launch' }}
 Invoke-WdLaneTurnLoop -Agent codex-lead-1 -Backend codex -CliPath {quote(PYTHON)} `
-  -Model gpt-5.6-sol -Effort ultra -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} `
+  -Model gpt-6-astra -Effort xhigh -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} `
   -SessionId replacement -Generation newer `
   -CompactStatePath {quote(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt test | ConvertTo-Json -Compress
 """)
@@ -278,7 +278,7 @@ def test_native_cli_arguments_pin_authority_and_initial_image() -> None:
     result = run_ps(f"""
 . {quote(RUNNER)}
 [pscustomobject]@{{
- codex=@(Get-WdTurnArguments codex gpt-5.6-sol ultra 'C:\\image with spaces.png' 'C:\\runtime bridge');
+ codex=@(Get-WdTurnArguments codex gpt-6-astra xhigh 'C:\\image with spaces.png' 'C:\\runtime bridge');
  claude=@(Get-WdTurnArguments claude sonnet max '' 'C:\\runtime bridge' -ClaudePermissionPosture existing_interactive)
 }} | ConvertTo-Json -Compress
 """)
@@ -298,7 +298,7 @@ def test_standalone_entry_refused_before_files_or_native_process(tmp_path: Path,
     runtime.mkdir()
     result = run_ps(f"""
 & {quote(RUNNER)} -Agent codex-lead-1 -Backend codex -CliPath {quote(PYTHON)} `
-  -Model gpt-5.6-sol -Effort ultra -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} `
+  -Model gpt-6-astra -Effort xhigh -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} `
   -SessionId standalone -Generation test `
   -CompactStatePath {quote(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt test
 """, executable=ps)
@@ -330,7 +330,7 @@ def test_previous_worktree_pending_blocks_new_worktree(tmp_path: Path, ps: str, 
 . {quote(RUNNER)}
 function Get-WdTurnArguments {{ throw 'must not launch into a new worktree' }}
 Invoke-WdLaneTurnLoop -Agent codex-lead-1 -Backend codex -CliPath {quote(PYTHON)} `
-  -Model gpt-5.6-sol -Effort ultra -Worktree {quote(second)} -RuntimeRoot {quote(runtime)} `
+  -Model gpt-6-astra -Effort xhigh -Worktree {quote(second)} -RuntimeRoot {quote(runtime)} `
   -SessionId replacement -Generation newer `
   -CompactStatePath {quote(second / '.codex-audit/wd-current-state.json')} -StartupPrompt test | ConvertTo-Json -Compress
 """, executable=ps)
@@ -374,7 +374,7 @@ pathlib.Path(s["receipt_path"]).write_text(json.dumps(r))
 . {quote(RUNNER)}
 function Get-WdTurnArguments {{ return @({quote(fake)}, $script:WdTurnSpecPath, {quote('invalid-disposition' if forever else 'completed')}) }}
 Invoke-WdLaneTurnLoop -Agent codex-lead-1 -Backend codex -CliPath {quote(PYTHON)} `
-  -Model gpt-5.6-sol -Effort ultra -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} `
+  -Model gpt-6-astra -Effort xhigh -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} `
   -SessionId sharing -Generation test -PollSeconds 1 -WakeSnapshotTimeoutSeconds 2 `
   -BackstopSeconds 1 {'-Forever' if forever else ''} `
   -CompactStatePath {quote(state)} -StartupPrompt test | ConvertTo-Json -Compress
@@ -500,7 +500,7 @@ $unapprovedRejected=$false
 try {{ [void](Get-WdTurnArguments claude {model} max '' 'C:\\bridge') }}
 catch {{ $unapprovedRejected=$true }}
 $approved=@(Get-WdTurnArguments claude {model} max '' 'C:\\bridge' -ClaudePermissionPosture existing_interactive)
-$codex=@(Get-WdTurnArguments codex gpt-5.6-sol ultra '' 'C:\\bridge')
+$codex=@(Get-WdTurnArguments codex gpt-6-astra xhigh '' 'C:\\bridge')
 [pscustomobject]@{{ rejected=$unapprovedRejected; approved=$approved; codex=$codex }} | ConvertTo-Json -Compress
 """, executable=ps)
     assert result.returncode == 0, result.stdout + result.stderr

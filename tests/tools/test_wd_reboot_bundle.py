@@ -336,7 +336,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     assert len({lane["agent_uuid"] for lane in lanes.values()}) == 4
     expected_models = {
-        "codex-lead-1": ("gpt-5.6-sol", "ultra"),
+        "codex-lead-1": ("gpt-6-astra", "xhigh"),
         "claude-rco-1": ("sonnet", "max"),
         "claude-rco-2": ("sonnet", "max"),
         "fable-5": ("fable", "max"),
@@ -1296,9 +1296,9 @@ $managedTurnParameters = @{{ Agent=$Agent; Model=$Model; StartupPrompt='FIRST vi
 """)
     assert json.loads(result.stdout) == {
         "turn_mode": "managed",
-        "parent_agent": "codex-lead-1", "parent_model": "gpt-5.6-sol",
+        "parent_agent": "codex-lead-1", "parent_model": "gpt-6-astra",
         "result": {
-            "agent": "codex-lead-1", "model": "gpt-5.6-sol",
+            "agent": "codex-lead-1", "model": "gpt-6-astra",
             "startup": "FIRST visual", "continuation": "Read compact state",
             "image": "target.png", "forever": True,
         },
@@ -1573,7 +1573,7 @@ def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
     assert "-Status target_state_manifested" in agent_launcher
     assert "@('low', 'medium', 'high', 'xhigh', 'max', 'ultra')" in agent_launcher
     assert "@('low', 'medium', 'high', 'xhigh', 'max')" in agent_launcher
-    assert "gpt-5.6-sol'; effort = 'ultra'" in agent_launcher
+    assert "gpt-6-astra'; effort = 'xhigh'" in agent_launcher
     assert "sonnet'; effort = 'max'" in agent_launcher
     assert "fable'; effort = 'max'" in agent_launcher
 

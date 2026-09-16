@@ -153,14 +153,14 @@ try {
 def test_agent_labels_are_backend_supplied_without_pooled_context(shell):
     record = run_ps(shell, """
 $labels=@()
-foreach ($entry in @(@('codex-lead-1','gpt-5.6-sol / ultra'),@('codex-tools-1','gpt-5.6-terra / high'),@('claude-rco-1','sonnet / max'),@('claude-rco-2','sonnet / max'),@('fable-5','fable / max'))) {
+foreach ($entry in @(@('codex-lead-1','gpt-6-astra / xhigh'),@('codex-tools-1','gpt-5.6-terra / high'),@('claude-rco-1','sonnet / max'),@('claude-rco-2','sonnet / max'),@('fable-5','fable / max'))) {
   $view=New-WdOperatorConversationView -Headless -AgentLabel $entry[0] -ModelLabel $entry[1] -Title ($entry[0] + ' conversation')
   $labels += [pscustomobject]@{agent=$view.State.AgentLabel;model=$view.State.ModelLabel;title=$view.State.Title;scope=$view.State.ContextNotice}
 }
 $labels | ConvertTo-Json -Depth 4 -Compress
 """)
     assert [row["agent"] for row in record] == ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"]
-    assert [row["model"] for row in record] == ["gpt-5.6-sol / ultra", "gpt-5.6-terra / high", "sonnet / max", "sonnet / max", "fable / max"]
+    assert [row["model"] for row in record] == ["gpt-6-astra / xhigh", "gpt-5.6-terra / high", "sonnet / max", "sonnet / max", "fable / max"]
     assert all(row["title"] == row["agent"] + " conversation" for row in record)
     assert all("separate sessions" in row["scope"] for row in record)
 
@@ -456,7 +456,7 @@ Close-WdOperatorConversationView -View $view
 @pytest.mark.skipif(os.name != "nt", reason="Windows contained fake transport")
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("agent,model,effort,label", [
-    ("codex-lead-1", "gpt-5.6-sol", "ultra", "Lead"),
+    ("codex-lead-1", "gpt-6-astra", "xhigh", "Lead"),
     ("codex-tools-1", "gpt-5.6-terra", "high", "Tools"),
 ])
 def test_real_headless_view_backend_steer_question_and_checkpoint(shell, tmp_path, agent, model, effort, label):

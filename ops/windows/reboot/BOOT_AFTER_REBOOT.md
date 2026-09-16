@@ -113,7 +113,7 @@ worktree.
 
 The explicit runtime choices are:
 
-- Lead: `gpt-5.6-sol`, Codex mode `ultra`;
+- Lead: `gpt-6-astra`, Codex mode `xhigh`;
 - Tools: `gpt-5.6-terra`, effort `high`;
 - RCO1 and RCO2: Claude `sonnet`, effort `max`;
 - Fable: Claude `fable`, effort `max`.

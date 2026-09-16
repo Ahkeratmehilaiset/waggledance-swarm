@@ -1075,6 +1075,113 @@ def test_unrelated_task_exact_head_pass_is_reported_without_counting() -> None:
     ]
 
 
+def test_later_canonical_pass_clears_same_rco_task_mismatch() -> None:
+    other_task = "codex-tools-1/chat-served-pending-query-identity-20260714"
+    events = [
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=other_task,
+        ),
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"Canonical RCO_PASS at exact head {HEAD}",
+            task_id=TASK,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is False
+    assert result["task_id_mismatch_rco_events"] == []
+    assert result["rco_reemit_guidance"] is None
+
+
+def test_canonical_pass_does_not_clear_another_rco_task_mismatch() -> None:
+    other_task = "codex-tools-1/chat-served-pending-query-identity-20260714"
+    events = [
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=other_task,
+        ),
+        _rco_event(
+            agent="claude-rco-1",
+            status="rco_pass",
+            type_="decision",
+            message=f"Canonical RCO_PASS at exact head {HEAD}",
+            task_id=TASK,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert [
+        event["agent"] for event in result["task_id_mismatch_rco_events"]
+    ] == ["claude-rco-2"]
+    assert result["rco_reemit_guidance"]["required"] is True
+
+
+def test_other_head_canonical_pass_does_not_clear_task_mismatch() -> None:
+    other_task = "codex-tools-1/chat-served-pending-query-identity-20260714"
+    events = [
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            task_id=other_task,
+        ),
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"Canonical RCO_PASS at stale head {OTHER_HEAD}",
+            task_id=TASK,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert result["rco_reemit_guidance"]["required"] is True
+
+
+def test_later_task_mismatch_remains_after_canonical_pass() -> None:
+    other_task = "codex-tools-1/chat-served-pending-query-identity-20260714"
+    events = [
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"Canonical RCO_PASS at exact head {HEAD}",
+            task_id=TASK,
+        ),
+        _rco_event(
+            agent="claude-rco-2",
+            status="rco_pass",
+            type_="decision",
+            message=f"Later RCO_PASS at exact head {HEAD}",
+            task_id=other_task,
+        ),
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["ok"] is True
+    assert result["has_task_id_mismatch_rco_pass_at_head"] is True
+    assert result["rco_reemit_guidance"]["required"] is True
+
+
 def test_other_task_self_rco_pass_is_not_reported_as_mismatch() -> None:
     other_task = "codex-lead-1/promotion-canonical-consensus-regressions-20260607"
     events = [

@@ -124,8 +124,9 @@
         "work_queue"
       ],
       "cli": "codex.cmd",
-      "turn_mode": "managed",
-      "conversation_surface": "local_window",
+      "turn_mode": "interactive",
+      "conversation_surface": "none",
+      "native_resume_policy": "recorded_conversation",
       "conversation_permissions": {
         "posture": "existing_interactive",
         "network_access": true,

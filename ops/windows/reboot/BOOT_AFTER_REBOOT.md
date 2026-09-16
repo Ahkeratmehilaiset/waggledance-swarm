@@ -67,7 +67,7 @@ supervisor-owned process visible to later Limited supervisor runs and prevents
 an elevated/Limited duplicate-generation race. The task is enabled permanently
 only after the complete fleet and bridge baseline have passed verification.
 
-Only when Lead is explicitly configured as interactive, after the
+Only for legacy interactive Lead configurations without `native_resume_policy`, after the
 `codex-lead-1` lane has completed its bridge-bootstrap
 handshake, the restore also reconciles exactly one separate Codex prompt-watcher
 window. It targets only the terminal title `codex-lead-1` and runs the bundled,
@@ -83,9 +83,9 @@ DryRun verifies the prompt-watcher script and reports whether it would keep or
 launch the single Lead watcher. A non-canonical Lead watcher or more than one
 watcher targeting `codex-lead-1` is an ambiguous conflict and stops recovery
 before CLI updates or process launches. The prompt watcher is separate from the
-five supervisor-managed real-time bridge watchers. The managed Lead default
+five supervisor-managed real-time bridge watchers. The native Lead default
 does not launch this UI approval watcher; a pre-existing watcher blocks the
-managed startup until it is deliberately closed through a controlled handoff.
+Lead startup until it is deliberately closed through a controlled handoff.
 Failure to materialize a
 new watcher window after all lane handshakes is non-fatal: the launcher warns,
 leaves unattended Lead prompt approval disabled, and still completes the
@@ -198,22 +198,23 @@ A valid fresh task-blocked checkpoint keeps future wakes/backstops available;
 waiting for a peer or CI does not finish that task or disable the lane. Missing
 or invalid receipts and ambiguous/crashed turns still require reconciliation
 before another model turn.
-The next Lead startup is configured as `managed` with `conversation_surface:
-local_window` in this operator-requested change. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
-canonical supervised consumer. Validate and deploy the matching bundle before
-this configuration takes effect. The Lead conversation window accepts messages
-while idle and steering during active work, streams replies, and offers interrupt
-and separate automation controls. A new full-access Lead thread starts PAUSED;
-Send does not arm automation, and the separate toggle is required. Only an exact
-matching saved identity restores its recorded automation choice. It needs no UI
-approval watcher. The read-only
-colored bridge monitor remains a separate view; it is not the conversational
-control window. Peers keep independent sessions, context and compact checkpoints.
-Those contexts are not pooled into one unlimited Lead memory. On a clean restart,
-the new conversation backend resumes its own recorded thread without loading all
-old transcript text into the GUI. The model retains its context; the window says
-that previous display history was not loaded. It never discovers or adopts the
-already-open interactive Lead's conversation.
+The default Lead is now `interactive` with `conversation_surface: none`.
+It opens the standard Codex terminal at `gpt-6-astra` / `xhigh`; `/model` can
+change the model and reasoning level inside that terminal. No custom Lead
+window or UI approval watcher starts. Native permissions preserve the previously
+approved `danger-full-access` / `never` posture.
+
+When `.codex-audit/wd-turn-loop/conversation.json` records a clean existing Lead
+thread, the launcher uses `codex resume <exact-thread-id>` in the canonical
+worktree. It never guesses with `--last`. Unresolved managed work blocks this
+handoff, and the lane lease is held while the native terminal runs. Previously
+delivered initial image/context is not replayed. Codex restores conversation
+history in its own terminal. Bridge identity and pinned helpers are established
+before native launch; the colored read-only bridge monitor remains separate.
+Native startup does not attach the former managed wake consumer. Bridge watcher
+sentinels alone do not submit prompts to an idle native Codex terminal.
+RCO1, RCO2, Fable and Tools retain their independent sessions.
+
 Do not edit an installed hash-pinned manifest in place. An already-open
 interactive Lead is preserved and is not externally resumable through a wake
 sentinel. Installing source files does not transform that live session into a

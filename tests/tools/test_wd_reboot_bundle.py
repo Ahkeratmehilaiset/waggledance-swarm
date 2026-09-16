@@ -740,7 +740,7 @@ def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     modes = {lane["agent"]: lane.get("turn_mode") for lane in manifest["lanes"]}
     assert modes == {
-        "codex-lead-1": "managed",
+        "codex-lead-1": "interactive",
         "claude-rco-1": "interactive",
         "claude-rco-2": "interactive",
         "fable-5": "interactive",
@@ -750,12 +750,12 @@ def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
     assert "'Invoke-WdLaneTurnLoop.ps1'," in deployer
 
 
-def test_managed_lead_has_a_conversation_surface_without_combining_peer_sessions() -> None:
+def test_native_lead_uses_terminal_while_tools_keeps_conversation_backend() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     surfaces = {lane["agent"]: lane.get("conversation_surface", "none")
                 for lane in manifest["lanes"]}
     assert surfaces == {
-        "codex-lead-1": "local_window", "claude-rco-1": "none",
+        "codex-lead-1": "none", "claude-rco-1": "none",
         "claude-rco-2": "none", "fable-5": "none",
     }
     for filename in ("Invoke-WdCodexConversationLoop.ps1", "Show-WdOperatorConversation.ps1"):

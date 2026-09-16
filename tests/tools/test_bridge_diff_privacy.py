@@ -2,7 +2,7 @@ import pytest
 
 from tools.bridge_diff_privacy import find_diff_private_marker
 from tools.pr_status_snapshot import build_pr_status_snapshot
-from tests.tools.test_pr_status_snapshot import _runner
+from test_pr_status_snapshot import _runner
 
 
 def python_diff(statement, path="tools/example.py"):
@@ -67,7 +67,7 @@ def test_metadata_stays_strict():
 
 def test_downstream_charter_still_requires_review():
     from tools.idle_consensus_auto_merge import evaluate_auto_merge_gate
-    from tests.tools.test_idle_consensus_auto_merge import _status, HEAD, BASE
+    from test_idle_consensus_auto_merge import _status, HEAD, BASE
 
     diff = python_diff('PRIVATE_MARKERS = ("PRIVATE_MARKER", "_DO_NOT_LEAK")')
     report = evaluate_auto_merge_gate(

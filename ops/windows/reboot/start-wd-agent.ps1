@@ -188,6 +188,45 @@ function Get-WdLaneConversationSurface {
   return $surface
 }
 
+function Get-WdNativeLeadResumeState {
+  param([string] $Worktree, [string] $RuntimeRoot)
+  $journal = Join-Path (Join-Path $Worktree '.codex-audit') 'wd-turn-loop'
+  $identityPath = Join-Path $journal 'conversation.json'
+  $pointer = Join-Path $RuntimeRoot '.wd-turn-codex-lead-1.owner.json'
+  foreach ($path in @($journal, $identityPath, $pointer)) {
+    $existing = $path
+    while (-not (Test-Path -LiteralPath $existing)) { $existing = Split-Path -Parent $existing }
+    $kind = if (Test-Path -LiteralPath $existing -PathType Container) { 'Directory' } else { 'Leaf' }
+    [void](Assert-LanePathWithoutReparse -Path $existing -TrustedRoot ([IO.Path]::GetPathRoot($path)) -ExpectedType $kind)
+  }
+  if (Test-Path -LiteralPath $pointer -PathType Leaf) {
+    if ((Get-Item -LiteralPath $pointer).Length -gt 32768) { throw 'Lead owner record is oversized' }
+    $previous = (Read-Utf8LaneSnapshot -Path $pointer).Text | ConvertFrom-Json
+    if ($previous.schema -cne 'wd.lane-turn-owner.v1' -or $previous.agent -cne 'codex-lead-1' -or
+        $previous.status -cnotin @('waiting','stopped') -or $previous.pending_path -or
+        -not ([string]$previous.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string]$previous.journal_root).Equals($journal,[StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Native Lead resume requires a reconciled previous owner in its canonical worktree'
+    }
+  }
+  if ((Test-Path -LiteralPath $journal -PathType Container) -and
+      @(Get-ChildItem -LiteralPath $journal -Filter '*.pending' -File).Count) {
+    throw 'Native Lead resume cannot bypass pending managed work'
+  }
+  if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+    return [pscustomobject]@{ thread_id=''; initial_context_delivered=$false }
+  }
+  if ((Get-Item -LiteralPath $identityPath).Length -gt 32768) { throw 'Lead conversation identity is oversized' }
+  $saved = (Read-Utf8LaneSnapshot -Path $identityPath).Text | ConvertFrom-Json
+  if ($saved.schema -cne 'wd.codex-conversation.v1' -or $saved.agent -cne 'codex-lead-1' -or
+      -not ([string]$saved.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase) -or
+      [string]$saved.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
+      $saved.initial_context_delivered -isnot [bool] -or $saved.interrupting -or $saved.recovery_required) {
+    throw 'Native Lead resume requires an exact, reconciled recorded conversation identity'
+  }
+  return [pscustomobject]@{thread_id=[string]$saved.thread_id; initial_context_delivered=[bool]$saved.initial_context_delivered}
+}
+
 function Get-WdLaneConversationPermissions {
   param([Parameter(Mandatory)] [object] $Lane)
 
@@ -1296,6 +1335,13 @@ if ($manualLeadAction -and (
 }
 $launchTurnMode = if ($RecoverInteractive) { 'interactive' } else { $turnMode }
 $launchConversationSurface = if ($RecoverInteractive) { 'none' } else { $conversationSurface }
+$nativeLead = $Agent -ceq 'codex-lead-1' -and $turnMode -ceq 'interactive' -and $conversationSurface -ceq 'none'
+$nativeResume = $null
+$nativeLeadLease = $null
+if ($nativeLead -and ($null -eq $lane.PSObject.Properties['native_resume_policy'] -or
+    [string]$lane.native_resume_policy -cne 'recorded_conversation')) {
+  throw 'Native Lead requires the recorded_conversation resume policy'
+}
 
 if (-not $worktree.StartsWith('C:\', [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "lane worktree must be on persistent C: drive: $worktree"
@@ -1836,6 +1882,17 @@ if ($RecoverInteractive) {
   )
 }
 $continuationPrompt = $startupPrompt.Substring($visualBootstrapPrompt.Length)
+if ($nativeLead) {
+  $continuationPrompt += (
+    ' This is the standard interactive Codex terminal, not the former custom conversation window. ' +
+    'The former managed-loop prompt, turn-receipt paths and UI automation rules are historical; do not replay them. ' +
+    'The startup model is gpt-6-astra/xhigh; the operator may use /model to change it. ' +
+    'Bridge helpers and the current environment identify this lane. Keep peer sessions separate. ' +
+    'No managed bridge-wake consumer is attached to this terminal. ' +
+    'Confirm the restored conversation and bridge identity with read-only checks, then await the operator instruction. '
+  )
+  $startupPrompt = $visualBootstrapPrompt + $continuationPrompt
+}
 
 if (-not $HandshakeDirectory) {
   $HandshakeDirectory = Join-Path ([string]$manifest.handshake_root) $RunId
@@ -1926,6 +1983,17 @@ if ($DryRun) {
 try {
 if ($turnMode -ceq 'managed') {
   Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+}
+if ($nativeLead) {
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  $nativeLock = Join-Path $runtimeRoot '.wd-turn-codex-lead-1.lock'
+  if (Test-Path -LiteralPath $nativeLock) {
+    [void](Assert-LanePathWithoutReparse -Path $nativeLock -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  } else {
+    [void](Assert-LanePathWithoutReparse -Path $runtimeRoot -TrustedRoot $laneTrustedDrive -ExpectedType Directory)
+  }
+  $nativeLeadLease = [IO.File]::Open($nativeLock, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  $nativeResume = Get-WdNativeLeadResumeState -Worktree $worktree -RuntimeRoot $runtimeRoot
 }
 if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
@@ -2119,6 +2187,7 @@ $temporaryHandshake = "$handshakePath.$PID.tmp"
 $handshake = [ordered]@{
   schema_version = 1
   status = 'bridge_bootstrapped'
+  native_thread_id = if ($null -ne $nativeResume) { [string]$nativeResume.thread_id } else { '' }
   agent = $Agent
   agent_uuid = [string]$lane.agent_uuid
   role = [string]$lane.role
@@ -2279,11 +2348,20 @@ if ($cliName -ieq 'claude.cmd') {
     '--name', $Agent
   )
 } elseif ($cliName -ieq 'codex.cmd') {
+  if ($nativeLead) {
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    if ($nativeResume.thread_id) { $launchArguments += @('resume', [string]$nativeResume.thread_id) }
+  }
   $launchArguments += @(
     '--model', $model,
-    '-c', ('model_reasoning_effort="{0}"' -f $effort),
-    '--image', $targetImagePath
+    '-c', ('model_reasoning_effort="{0}"' -f $effort)
   )
+  if ($nativeLead) {
+    $launchArguments += @('--cd', $worktree, '--ask-for-approval', 'never', '--sandbox', 'danger-full-access')
+  }
+  if ($nativeLead -and $nativeResume.initial_context_delivered) {
+    $startupPrompt = $continuationPrompt
+  } else { $launchArguments += @('--image', $targetImagePath) }
 } else {
   throw "lane '$Agent' uses unsupported CLI '$cliName'"
 }
@@ -2301,6 +2379,7 @@ if ($null -ne $cliExitCode -and $cliExitCode -ne 0) {
   throw "lane '$Agent' CLI exited with code $cliExitCode"
 }
 } finally {
+  if ($null -ne $nativeLeadLease) { $nativeLeadLease.Dispose(); $nativeLeadLease = $null }
   if ($null -ne $manualAttemptLease) {
     $manualAttemptLease.Dispose()
     $manualAttemptLease = $null

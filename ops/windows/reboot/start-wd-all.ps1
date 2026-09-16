@@ -1576,13 +1576,15 @@ function Get-WdLeadPromptWatcherPolicy {
   if ($action -cnotin @('launch', 'current', 'conflict')) {
     throw 'Lead prompt-watcher policy received an unknown watcher state'
   }
-  if ($mode -ceq 'managed') {
+  $nativeConversation = $Lane.PSObject.Properties.Name -contains 'native_resume_policy' -and
+    [string]$Lane.native_resume_policy -ceq 'recorded_conversation'
+  if ($mode -ceq 'managed' -or $nativeConversation) {
     if ($action -cne 'launch') {
       throw 'Managed Lead requires no UI prompt watcher; close the identified legacy watcher through a controlled handoff, never terminate an ambiguous process'
     }
     return [pscustomobject]@{
       required = $false
-      summary = 'disabled for managed Lead; explicit native conversation permission posture applies'
+      summary = 'disabled; Lead uses explicit native permissions without a UI approval watcher'
     }
   }
   if ($action -ceq 'conflict') {
@@ -3905,7 +3907,7 @@ try {
       'Codex Lead prompt watcher: unavailable; fleet restore still succeeded'
     )
   } else {
-    Write-Host '  Codex Lead prompt watcher: disabled for managed Lead'
+    Write-Host '  Codex Lead prompt watcher: disabled; native permission policy applies'
   }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
   if (-not $NoBridgeConversation) {

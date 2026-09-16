@@ -4,8 +4,14 @@
 
 Pure helper: no network, no audit re-run, no writes. It answers one
 question about a stored soak-log audit report - does it attest a clean,
-commit-bound audit over verified sources with continuous runtime
-coverage of the required window?
+commit-bound audit over verified sources with internally consistent timestamp
+coverage of the claimed window?
+
+Self-declared timestamps do not prove elapsed wall-clock runtime. Fresh reports
+must explicitly identify their offline consistency scope and deny runtime and
+release authority. Real release consumption additionally needs independently
+trusted acquisition/time evidence; Git committer dates and same-account local
+logs are mutable and cannot supply that trust merely by being cross-checked.
 
 The canonical artifact this hardens against claims a clean pass from
 only two sources, carries no source commit or generation timestamp, and
@@ -236,6 +242,9 @@ def _fresh_metadata_valid(report: dict, root: Path) -> bool:
     """Fixed roles are a contract, not caller-selected parsing exemptions."""
     if (
         report.get("contract_version") != FRESH_CONTRACT_VERSION
+        or report.get("proof_scope") != "offline_soak_log_consistency"
+        or report.get("runtime_elapsed_proven") is not False
+        or report.get("release_authorized") is not False
         or report.get("target_version") != "v3.12.0"
         or report.get("source_roles") != FRESH_SOURCE_ROLES
         or report.get("coverage_sources") != [FRESH_COVERAGE_SOURCE]
@@ -334,7 +343,8 @@ def evaluate_soak_log_source_attestation(
     The opt-in fresh contract keeps all three fixed sources hash-bound, but
     derives coverage only from the typed journal. Diagnostics are independently
     rescanned, never accepted from the report's declared zero counts. This does
-    not verify Git ancestry, append-only S-to-E deltas or runtime process identity;
+    not verify Git ancestry, append-only S-to-E deltas, actual elapsed
+    wall-clock runtime or runtime process identity;
     callers must enforce those separately before release. Legacy behavior remains
     available unless ``require_fresh_contract=True`` is explicitly requested.
     All blockers are path-free; hostile nested types fold into

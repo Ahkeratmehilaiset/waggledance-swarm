@@ -349,6 +349,11 @@ def test_bound_report_clean_coverage_stream_passes(subject_repo) -> None:
     assert report["error_log_clean"] is True
     assert report["schema_version"] == SCHEMA_VERSION
     assert report["contract_version"] == CONTRACT_VERSION
+    # A synthetically created journal can be internally consistent; this
+    # report must never advertise it as real elapsed runtime evidence.
+    assert report["proof_scope"] == "offline_soak_log_consistency"
+    assert report["runtime_elapsed_proven"] is False
+    assert report["release_authorized"] is False
     assert report["source_commit"] == commit
     assert report["source_tree"] == _git(repo, "rev-parse", "HEAD^{tree}")
     assert report["generated_at"] == "2026-09-29T01:00:00Z"

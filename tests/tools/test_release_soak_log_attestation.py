@@ -127,6 +127,8 @@ def _fresh_report(tmp_path):
     return _clean_report(
         tmp_path, files,
         contract_version="waggledance.release_soak_log_audit_fields.v2",
+        proof_scope="offline_soak_log_consistency",
+        runtime_elapsed_proven=False, release_authorized=False,
         target_version="v3.12.0",
         source_tree="a" * 40,
         source_roles={**dict.fromkeys(FRESH_DIAGNOSTICS, "diagnostic"),
@@ -150,6 +152,12 @@ def test_fresh_contract_preserves_real_historical_diagnostic_records(tmp_path):
     {"lock_path": "different.lock"},
     {"lock_digest": "sha256:" + "0" * 64},
     {"source_tree": "not-a-tree"},
+    {"proof_scope": "verified_elapsed_runtime"},
+    {"proof_scope": None},
+    {"runtime_elapsed_proven": True},
+    {"runtime_elapsed_proven": 0},
+    {"release_authorized": True},
+    {"release_authorized": 0},
 ])
 def test_fresh_contract_rejects_inconsistent_metadata(tmp_path, change):
     report = _fresh_report(tmp_path)

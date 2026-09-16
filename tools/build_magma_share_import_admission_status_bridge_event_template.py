@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
 from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.share_manifest import (  # noqa: E402
+    IMPORT_ADMISSION_CONTRACT_VERSION,
     IMPORT_ADMISSION_STATUS_VERSION,
 )
 
@@ -187,6 +188,13 @@ def _safe_status(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
         return None, "path_or_private_marker_present"
     if status.get("summary_version") != IMPORT_ADMISSION_STATUS_VERSION:
         return None, "summary_version_mismatch"
+    if not _safe_token(status.get("admission_contract_version")):
+        return None, "admission_contract_version_unsafe"
+    if (
+        status.get("admission_contract_version")
+        != IMPORT_ADMISSION_CONTRACT_VERSION
+    ):
+        return None, "admission_contract_version_mismatch"
     if not isinstance(status.get("ok"), bool):
         return None, "ok_not_bool"
     for key in ("status", "blocker_class"):
@@ -203,6 +211,40 @@ def _safe_status(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
             return None, f"{key}_not_false"
     if status.get("payload_files_imported") != 0:
         return None, "payload_files_imported_not_zero"
+    if status["ok"] is True:
+        expected_tokens = {
+            "source": "magma_share_manifest_import_report",
+            "status": "ready_for_peer_review_handoff",
+            "severity": "none",
+            "blocker_class": "none",
+        }
+        for key, expected in expected_tokens.items():
+            if status.get(key) != expected:
+                return None, f"{key}_ready_mismatch"
+        if blockers:
+            return None, "ready_blockers_present"
+        for key in ("share_id", "purpose"):
+            if not _safe_token(status.get(key)):
+                return None, f"{key}_unsafe"
+        for key in (
+            "report_digest",
+            "admission_contract_digest",
+            "share_manifest_digest",
+            "source_manifest_digest",
+        ):
+            if not _is_sha(status.get(key)):
+                return None, f"{key}_unsafe"
+        for key in ("entry_count", "age_seconds", "max_age_hours"):
+            if not _is_uint(status.get(key)):
+                return None, f"{key}_unsafe"
+        if status.get("context_verified") is not True:
+            return None, "context_verified_not_true"
+        if status.get("context_drift_detected") is not False:
+            return None, "context_drift_detected_not_false"
+        if status.get("controls_present") is not False:
+            return None, "controls_present_not_false"
+        if status.get("operator_handoff_required_for_peer_review") is not True:
+            return None, "operator_handoff_required_for_peer_review_not_true"
     return status, ""
 
 
@@ -210,6 +252,9 @@ def _payload(status: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": TEMPLATE_VERSION,
         "summary_version": str(status["summary_version"]),
+        "admission_contract_version": str(
+            status["admission_contract_version"]
+        ),
         "source": _safe_string(status.get("source")),
         "status": str(status["status"]),
         "severity": _safe_string(status.get("severity")),
@@ -309,6 +354,14 @@ def _safe_string(value: Any, *, default: str = "unknown") -> str:
 
 def _digest(value: Any) -> str:
     return value if isinstance(value, str) and SHA_RE.fullmatch(value) else ""
+
+
+def _is_sha(value: Any) -> bool:
+    return isinstance(value, str) and bool(SHA_RE.fullmatch(value))
+
+
+def _is_uint(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _int(value: Any) -> int:

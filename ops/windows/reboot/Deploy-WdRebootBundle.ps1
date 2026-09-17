@@ -215,6 +215,8 @@ param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status)
 param(
     [string] $ManifestPath = '',
     [string] $RunId = '',
+    [string] $ExternalSessionsPath = '',
+    [string] $ExternalSessionsHash = '',
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
@@ -233,6 +235,8 @@ param(
     [string] $ManifestPath = '',
     [string] $HandshakeDirectory = '',
     [string] $ExpectedManifestHash = '',
+    [string] $ExternalSessionsPath = '',
+    [string] $ExternalSessionsHash = '',
     [switch] $DryRun
 )
 '@
@@ -247,6 +251,8 @@ param(
     [string] $ManifestPath = '',
     [string] $HandshakeDirectory = '',
     [string] $ExpectedManifestHash = '',
+    [string] $ExternalSessionsPath = '',
+    [string] $ExternalSessionsHash = '',
     [switch] $DryRun
 )
 '@
@@ -315,7 +321,7 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
     [void]$commandParts.Add('-Auto')
-    foreach ($name in @('ManifestPath', 'RunId')) {
+    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
             [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
@@ -392,6 +398,18 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         # Wait for restore itself, not its long-lived conversation-viewer child.
         # Retain a process handle so exit status remains available after exit.
         $null = $elevated.Handle
+        Write-Host "Administrator restore started; progress log: $elevationLogPath"
+        $restoreWatch = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $elevated.WaitForExit(30000)) {
+            Write-Host ("Restore still running; elapsed={0}s; log={1}" -f
+                [int]$restoreWatch.Elapsed.TotalSeconds, $elevationLogPath)
+            $lastProgress = @(Get-Content -LiteralPath $elevationLogPath -Tail 8 -ErrorAction SilentlyContinue |
+                Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1)
+            if ($lastProgress.Count) {
+                $line = [string]$lastProgress[0]
+                Write-Host ('  ' + $line.Substring(0, [Math]::Min(500, $line.Length)))
+            }
+        }
         $elevated.WaitForExit()
         $elevated.Refresh()
     }

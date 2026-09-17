@@ -317,14 +317,16 @@ function Get-WdStatusRuntime {
     }
     try {
         $result.reason = 'readiness_missing_or_invalid'
+        $nativeTerminal = $Definition.configured_conversation_surface -ceq 'native_terminal'
         $record = Read-WdStatusRecord -Path $result.readiness_path
         $created = [DateTimeOffset]::Parse([string]$record.process_start_utc,
             [Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
         $readyAt = [DateTimeOffset]::Parse([string]$record.ready_at_utc,
             [Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
         if (
-            [string]$record.schema -cne 'wd.tools-consumer-ready.v1' -or
-            [string]$record.status -cnotin @('ready', 'degraded') -or
+            [string]$record.schema -cne $(if ($nativeTerminal) { 'wd.tools-consumer-ready.v3' } else { 'wd.tools-consumer-ready.v1' }) -or
+            ($nativeTerminal -and $record.status -cne 'terminal_ready') -or
+            (-not $nativeTerminal -and [string]$record.status -cnotin @('ready', 'degraded')) -or
             [string]$record.generation -cnotmatch '^[0-9a-f]{40}$' -or
             [string]$record.pid -cnotmatch '^[1-9][0-9]{0,9}$' -or
             [int64]$record.pid -gt [int]::MaxValue -or
@@ -339,8 +341,10 @@ function Get-WdStatusRuntime {
         $result.recorded_process_start_utc = $created.ToString('o')
         $result.recorded_generation = [string]$record.generation
         $result.reason = 'process_query_unavailable'
-        $processes = @(Get-CimInstance -ClassName Win32_Process `
-            -Filter ("ProcessId={0}" -f $result.recorded_pid) -ErrorAction Stop)
+        $processes = @(if ($nativeTerminal) {
+            @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Where-Object { [int]$_.ProcessId -eq $result.recorded_pid })
+        } else { @(Get-CimInstance -ClassName Win32_Process `
+            -Filter ("ProcessId={0}" -f $result.recorded_pid) -ErrorAction Stop) })
         if ($processes.Count -eq 0) {
             $result.identity = 'absent'
             $result.reason = 'recorded_pid_absent'
@@ -379,8 +383,25 @@ function Get-WdStatusRuntime {
             $result.reason = 'installed_generation_mismatch'
             return $result
         }
+        if ($nativeTerminal) {
+            $result.reason='native_terminal_identity_unknown'
+            if ($record.readiness_scope -cne 'native_cli_only' -or $record.conversation_surface -cne 'native_terminal' -or
+                [string]$record.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
+                $record.task_completion_verified -isnot [bool] -or $record.task_completion_verified) { return $result }
+            $native=@(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Where-Object { [int]$_.ProcessId -eq [int]$record.native_pid })
+            if ($native.Count -ne 1 -or $native[0].Name -ine 'codex.exe' -or
+                [int]$native[0].ParentProcessId -ne $result.observed_pid -or
+                [int]$record.native_parent_pid -ne $result.observed_pid -or
+                -not ([string]$native[0].ExecutablePath).Equals([string]$record.codex_command,[StringComparison]::OrdinalIgnoreCase)) { return $result }
+            $nativeAt=ConvertTo-WdStatusUtc $native[0].CreationDate
+            $recordedNativeAt=ConvertTo-WdStatusUtc $record.native_process_start_utc
+            if ($nativeAt -lt $created -or $nativeAt -gt $readyAt -or [Math]::Abs(($nativeAt-$recordedNativeAt).TotalSeconds) -gt 1) { return $result }
+            $result.observed_native_pid=[int]$native[0].ProcessId
+            $result.observed_native_process_start_utc=$nativeAt.ToString('o')
+            $result.thread_id=[string]$record.thread_id; $result.readiness_scope='native_cli_only'
+        }
         $result.identity = 'matched'
-        $result.reason = 'pid_start_and_generation_match'
+        $result.reason = if ($nativeTerminal) { 'native_terminal_identity_match_progress_not_verified' } else { 'pid_start_and_generation_match' }
     }
     catch {
         # Keep the failed evidence stage visible, never infer a live process.
@@ -442,7 +463,7 @@ foreach ($lane in @($manifest.lanes)) {
 }
 $toolsSurfaceProperty = $manifest.tools_supervisor.PSObject.Properties['conversation_surface']
 $toolsSurface = if ($null -eq $toolsSurfaceProperty) { 'none' } else { [string]$toolsSurfaceProperty.Value }
-if ($toolsSurface -cnotin @('none','local_window') -or
+if ($toolsSurface -cnotin @('none','local_window','native_terminal') -or
     ($toolsSurface -ceq 'local_window' -and ([string]$manifest.tools_supervisor.agent -cne 'codex-tools-1' -or
         [string](Get-WdStatusProperty $manifest.tools_supervisor 'model') -cne 'gpt-5.6-terra' -or
         [string](Get-WdStatusProperty $manifest.tools_supervisor 'reasoning_effort') -cne 'high'))) { $toolsSurface='unknown' }
@@ -454,7 +475,7 @@ $definitions.Add([pscustomobject]@{
     readiness_path = [string](Get-WdStatusProperty $manifest.tools_supervisor 'readiness_path')
     configured_turn_mode = 'tools_consumer'
     configured_conversation_surface = $toolsSurface
-    configured_permission_posture = if ($toolsSurface -ceq 'local_window') { 'workspace_write' } elseif ($toolsSurface -ceq 'none') { 'not_applicable' } else { 'unknown' }
+    configured_permission_posture = if ($toolsSurface -cin @('local_window','native_terminal')) { 'workspace_write' } elseif ($toolsSurface -ceq 'none') { 'not_applicable' } else { 'unknown' }
     launcher_script = [string](Get-WdStatusProperty $manifest.tools_supervisor 'launcher_script')
     legacy_process_markers = @()
 })

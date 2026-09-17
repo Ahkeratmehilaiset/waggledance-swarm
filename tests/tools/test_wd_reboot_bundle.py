@@ -336,7 +336,7 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     assert len({lane["agent_uuid"] for lane in lanes.values()}) == 4
     expected_models = {
-        "codex-lead-1": ("gpt-5.6-sol", "ultra"),
+        "codex-lead-1": ("gpt-6-astra", "xhigh"),
         "claude-rco-1": ("sonnet", "max"),
         "claude-rco-2": ("sonnet", "max"),
         "fable-5": ("fable", "max"),
@@ -740,7 +740,7 @@ def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     modes = {lane["agent"]: lane.get("turn_mode") for lane in manifest["lanes"]}
     assert modes == {
-        "codex-lead-1": "managed",
+        "codex-lead-1": "interactive",
         "claude-rco-1": "interactive",
         "claude-rco-2": "interactive",
         "fable-5": "interactive",
@@ -750,12 +750,12 @@ def test_managed_turn_mode_is_explicit_and_runner_is_packaged() -> None:
     assert "'Invoke-WdLaneTurnLoop.ps1'," in deployer
 
 
-def test_managed_lead_has_a_conversation_surface_without_combining_peer_sessions() -> None:
+def test_native_lead_uses_terminal_while_tools_keeps_conversation_backend() -> None:
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     surfaces = {lane["agent"]: lane.get("conversation_surface", "none")
                 for lane in manifest["lanes"]}
     assert surfaces == {
-        "codex-lead-1": "local_window", "claude-rco-1": "none",
+        "codex-lead-1": "none", "claude-rco-1": "none",
         "claude-rco-2": "none", "fable-5": "none",
     }
     for filename in ("Invoke-WdCodexConversationLoop.ps1", "Show-WdOperatorConversation.ps1"):
@@ -766,8 +766,8 @@ def test_managed_lead_has_a_conversation_surface_without_combining_peer_sessions
 def test_tools_window_is_supervisor_owned_and_permissions_are_explicit() -> None:
     fleet = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     tools = json.loads((REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8"))["tools_consumer"]
-    assert fleet["tools_supervisor"]["conversation_surface"] == "local_window"
-    assert tools["conversation_surface"] == "local_window"
+    assert fleet["tools_supervisor"]["conversation_surface"] == "native_terminal"
+    assert tools["conversation_surface"] == "native_terminal"
     assert "codex-tools-1" not in [lane["agent"] for lane in fleet["lanes"]]
     lead = next(lane for lane in fleet["lanes"] if lane["agent"] == "codex-lead-1")
     assert lead["conversation_permissions"] == {
@@ -1296,9 +1296,9 @@ $managedTurnParameters = @{{ Agent=$Agent; Model=$Model; StartupPrompt='FIRST vi
 """)
     assert json.loads(result.stdout) == {
         "turn_mode": "managed",
-        "parent_agent": "codex-lead-1", "parent_model": "gpt-5.6-sol",
+        "parent_agent": "codex-lead-1", "parent_model": "gpt-6-astra",
         "result": {
-            "agent": "codex-lead-1", "model": "gpt-5.6-sol",
+            "agent": "codex-lead-1", "model": "gpt-6-astra",
             "startup": "FIRST visual", "continuation": "Read compact state",
             "image": "target.png", "forever": True,
         },
@@ -1573,7 +1573,7 @@ def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
     assert "-Status target_state_manifested" in agent_launcher
     assert "@('low', 'medium', 'high', 'xhigh', 'max', 'ultra')" in agent_launcher
     assert "@('low', 'medium', 'high', 'xhigh', 'max')" in agent_launcher
-    assert "gpt-5.6-sol'; effort = 'ultra'" in agent_launcher
+    assert "gpt-6-astra'; effort = 'xhigh'" in agent_launcher
     assert "sonnet'; effort = 'max'" in agent_launcher
     assert "fable'; effort = 'max'" in agent_launcher
 
@@ -5004,6 +5004,7 @@ foreach ($name in @(
     'Assert-WdFleetPathWithoutReparse',
     'Test-NamedCommandLineArgument',
     'Get-NamedCommandLineArgumentValue',
+    'Resolve-WdLiveLaneManifest',
     'Test-LaneGenerationAttestation'
   )) {{
   $functionAst = $ast.Find(
@@ -7623,7 +7624,8 @@ def test_conversation_window_is_opt_out_and_only_after_successful_restore():
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
-def test_conversation_does_not_extend_elevated_restore_wait():
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_conversation_does_not_extend_elevated_restore_wait(tmp_path, ps):
     deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     start = deployer.index("        $elevated = Start-Process")
     end = deployer.index("\n    }\n    catch", start)
@@ -7636,12 +7638,19 @@ def test_conversation_does_not_extend_elevated_restore_wait():
 $ErrorActionPreference = 'Stop'
 $elevationHost = 'unused-fixture-host'
 $encodedCommand = 'unused-fixture-command'
+$elevationLogPath = '{tmp_path / 'restore.log'}'
+[IO.File]::WriteAllText($elevationLogPath, 'Waiting for a bounded worker reply')
 $global:steps = New-Object 'System.Collections.Generic.List[string]'
 function Start-Process {{
   param($FilePath, $Verb, $ArgumentList, $WindowStyle, [switch]$PassThru, $ErrorAction)
   [void]$global:steps.Add('start')
-  $process = [pscustomobject]@{{ ExitCode = $null; Handle = 123 }}
+  $process = [pscustomobject]@{{ ExitCode = $null; Handle = 123; polls = 0 }}
   $process | Add-Member ScriptMethod WaitForExit {{
+    param([int]$Milliseconds)
+    if($Milliseconds -gt 0) {{
+      [void]$global:steps.Add('poll-parent'); $this.polls++
+      return ($this.polls -gt 1)
+    }}
     [void]$global:steps.Add('wait-parent'); $this.ExitCode = 7
   }}
   $process | Add-Member ScriptMethod Refresh {{
@@ -7649,9 +7658,14 @@ function Start-Process {{
   }}
   return $process
 }}
-{launch}
+. {{ {launch} }} 6> '{tmp_path / 'progress.txt'}'
 [pscustomobject]@{{ steps = @($global:steps); exit_code = $elevated.ExitCode }} |
   ConvertTo-Json -Compress
-""")
+""", executable=ps)
     data = json.loads(result.stdout)
-    assert data == {"steps": ["start", "wait-parent", "refresh"], "exit_code": 7}
+    assert data == {"steps": ["start", "poll-parent", "poll-parent", "wait-parent", "refresh"], "exit_code": 7}
+    progress_bytes = (tmp_path / 'progress.txt').read_bytes()
+    progress = progress_bytes.decode('utf-16' if progress_bytes.startswith(b'\xff\xfe') else 'utf-8-sig')
+    assert 'Administrator restore started' in progress
+    assert 'Restore still running; elapsed=' in progress
+    assert 'Waiting for a bounded worker reply' in progress

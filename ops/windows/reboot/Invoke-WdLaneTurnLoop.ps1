@@ -253,7 +253,7 @@ function Get-WdPreviousTurnBlocker {
     if (-not [IO.File]::Exists($Path)) { return $null }
     try {
         [void](Assert-WdTurnPath $Path)
-        if ((Get-Item -LiteralPath $Path).Length -gt 32768) { throw 'previous owner pointer too large' }
+        if ((Get-Item -LiteralPath $Path -Force).Length -gt 32768) { throw 'previous owner pointer too large' }
         $previous = ConvertFrom-WdTurnJson ([IO.File]::ReadAllText($Path))
         if ([string]$previous.schema -cne 'wd.lane-turn-owner.v1' -or [string]$previous.agent -cne $Agent -or
             -not [IO.Path]::IsPathRooted([string]$previous.worktree)) { throw 'previous owner identity or worktree is invalid' }
@@ -363,7 +363,7 @@ function Invoke-WdLaneTurnLoop {
         return [pscustomobject]@{ status='unsupported_live_interactive'; agent=$Agent; pid=$ExistingInteractivePid; reason='No supported adapter can inject a turn into this existing interactive session.' }
     }
     $pins = @{
-        'codex-lead-1'=@('codex','gpt-5.6-sol','ultra'); 'codex-tools-1'=@('codex','gpt-5.6-terra','high')
+        'codex-lead-1'=@('codex','gpt-6-astra','xhigh'); 'codex-tools-1'=@('codex','gpt-5.6-terra','high')
         'claude-rco-1'=@('claude','sonnet','max'); 'claude-rco-2'=@('claude','sonnet','max'); 'fable-5'=@('claude','fable','max')
     }[$Agent]
     if ($Backend -cne $pins[0] -or $Model -cne $pins[1] -or $Effort -cne $pins[2]) { throw 'managed lane runtime pins mismatch' }

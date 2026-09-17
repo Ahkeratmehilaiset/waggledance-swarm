@@ -26,7 +26,7 @@
   "parallel_policy": {
     "id": "wd-swarm-parallel-policy-v1",
     "relative_path": "WD_SWARM_PARALLEL_POLICY_V1.md",
-    "sha256": "B6F1DFF018B4FEEB4110ABCD577A78E7675BF92B94DA50EB78014FFE0FB3F87D",
+    "sha256": "D8D69739DB8377B1801787F9B1EF80AB977E751AEF74A61FFC3E4D25AD88F3D6",
     "capability_effect": "none"
   },
   "state_precedence": {
@@ -78,7 +78,7 @@
     ]
   },
   "tools_supervisor": {
-    "conversation_surface": "local_window",
+    "conversation_surface": "native_terminal",
     "task_name": "WD-Supervisor",
     "snapshot_path": "C:\\Python\\wd_supervisor_loop_snapshot.json",
     "snapshot_schema": "wd.supervisor-loop.v2",
@@ -124,8 +124,9 @@
         "work_queue"
       ],
       "cli": "codex.cmd",
-      "turn_mode": "managed",
-      "conversation_surface": "local_window",
+      "turn_mode": "interactive",
+      "conversation_surface": "none",
+      "native_resume_policy": "recorded_conversation",
       "conversation_permissions": {
         "posture": "existing_interactive",
         "network_access": true,
@@ -135,8 +136,8 @@
         "path": "C:\\Users\\janik\\.codex\\config.toml",
         "security_sha256": "4DF9B547F7B2E3F2864E7C2D599E1D94CDF7DA56E26E41EDCF7575A854CDC67E"
       },
-      "model": "gpt-5.6-sol",
-      "effort": "ultra",
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
       "resume_policy": "current_worktree",
       "worktree": "C:\\Python\\project2",
       "branch": "codex-lead-1/magma-faiss-hex-genome-20260810",

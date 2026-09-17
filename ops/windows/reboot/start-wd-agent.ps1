@@ -23,6 +23,8 @@ param(
   [string] $ManifestPath = '',
   [string] $HandshakeDirectory = '',
   [string] $ExpectedManifestHash = '',
+  [string] $ExternalSessionsPath = '',
+  [string] $ExternalSessionsHash = '',
   [switch] $DryRun,
   [switch] $CheckManagedAdmission,
   [switch] $RecoverInteractive,
@@ -186,6 +188,97 @@ function Get-WdLaneConversationSurface {
   return $surface
 }
 
+function Get-WdNativeLeadResumeState {
+  param([string] $Worktree, [string] $RuntimeRoot)
+  $journal = Join-Path (Join-Path $Worktree '.codex-audit') 'wd-turn-loop'
+  $identityPath = Join-Path $journal 'conversation.json'
+  $pointer = Join-Path $RuntimeRoot '.wd-turn-codex-lead-1.owner.json'
+  foreach ($path in @($journal, $identityPath, $pointer)) {
+    $existing = $path
+    while (-not (Test-Path -LiteralPath $existing)) { $existing = Split-Path -Parent $existing }
+    $kind = if (Test-Path -LiteralPath $existing -PathType Container) { 'Directory' } else { 'Leaf' }
+    [void](Assert-LanePathWithoutReparse -Path $existing -TrustedRoot ([IO.Path]::GetPathRoot($path)) -ExpectedType $kind)
+  }
+  if (Test-Path -LiteralPath $pointer -PathType Leaf) {
+    if ((Get-Item -LiteralPath $pointer -Force).Length -gt 32768) { throw 'Lead owner record is oversized' }
+    $previous = (Read-Utf8LaneSnapshot -Path $pointer).Text | ConvertFrom-Json
+    if ($previous.schema -cne 'wd.lane-turn-owner.v1' -or $previous.agent -cne 'codex-lead-1' -or
+        $previous.status -cnotin @('waiting','stopped') -or $previous.pending_path -or
+        -not ([string]$previous.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string]$previous.journal_root).Equals($journal,[StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Native Lead resume requires a reconciled previous owner in its canonical worktree'
+    }
+  }
+  if ((Test-Path -LiteralPath $journal -PathType Container) -and
+      @(Get-ChildItem -LiteralPath $journal -Filter '*.pending' -File).Count) {
+    throw 'Native Lead resume cannot bypass pending managed work'
+  }
+  if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+    return [pscustomobject]@{ thread_id=''; initial_context_delivered=$false }
+  }
+  if ((Get-Item -LiteralPath $identityPath -Force).Length -gt 32768) { throw 'Lead conversation identity is oversized' }
+  $saved = (Read-Utf8LaneSnapshot -Path $identityPath).Text | ConvertFrom-Json
+  if ($saved.schema -cne 'wd.codex-conversation.v1' -or $saved.agent -cne 'codex-lead-1' -or
+      -not ([string]$saved.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase) -or
+      [string]$saved.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
+      $saved.initial_context_delivered -isnot [bool] -or $saved.interrupting -or $saved.recovery_required) {
+    throw 'Native Lead resume requires an exact, reconciled recorded conversation identity'
+  }
+  return [pscustomobject]@{thread_id=[string]$saved.thread_id; initial_context_delivered=[bool]$saved.initial_context_delivered}
+}
+
+function Get-WdClaudeResumeState {
+  param([string] $Agent, [string] $Worktree, [string] $ProjectsRoot)
+  # Claude writes --name and the first main-thread user record before doing
+  # model work. Recover by both lane name and canonical cwd, never --continue
+  # or the newest conversation belonging to this Windows account.
+  $project = Join-Path $ProjectsRoot ($Worktree -replace '[^a-zA-Z0-9]', '-')
+  if (-not (Test-Path -LiteralPath $project -PathType Container)) {
+    return [pscustomobject]@{thread_id=''; initial_context_delivered=$false}
+  }
+  [void](Assert-LanePathWithoutReparse -Path $project -TrustedRoot ([IO.Path]::GetPathRoot($project)) -ExpectedType Directory)
+  $candidates = @()
+  foreach ($file in @(Get-ChildItem -LiteralPath $project -Filter '*.jsonl' -File)) {
+    if ($file.BaseName -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { continue }
+    [void](Assert-LanePathWithoutReparse -Path $file.FullName -TrustedRoot $project -ExpectedType Leaf)
+    $named = $false; $firstTurn = $null; $readBytes = 0
+    $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+    try {
+      for ($i = 0; $i -lt 64 -and -not $reader.EndOfStream; $i++) {
+        $line = $reader.ReadLine()
+        $readBytes += $line.Length
+        if ($readBytes -gt 4194304) { throw "Claude session header exceeds recovery bound: $($file.FullName)" }
+        if (-not $line.Trim()) { continue }
+        $record = $line | ConvertFrom-Json -ErrorAction Stop
+        if ($record.PSObject.Properties['sessionId'] -and [string]$record.sessionId -ceq $file.BaseName) {
+          if (([string]$record.type -ceq 'agent-name' -and [string]$record.agentName -ceq $Agent) -or
+              ([string]$record.type -ceq 'custom-title' -and [string]$record.customTitle -ceq $Agent)) { $named = $true }
+          if ([string]$record.type -ceq 'user' -and $null -eq $firstTurn) { $firstTurn = $record }
+        }
+        if ($named -and $null -ne $firstTurn) { break }
+      }
+    } finally { $reader.Dispose() }
+    if (-not $named) { continue }
+    if ($null -eq $firstTurn -or $firstTurn.isSidechain -isnot [bool] -or $firstTurn.isSidechain -or
+        -not ([string]$firstTurn.cwd).Equals($Worktree, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Named Claude lane has an incomplete or conflicting session header: $($file.FullName)"
+    }
+    $candidates += [pscustomobject]@{thread_id=$file.BaseName; started=([DateTimeOffset]$firstTurn.timestamp).ToUniversalTime()}
+  }
+  $ordered = @($candidates | Sort-Object started -Descending)
+  if ($ordered.Count -eq 0) {
+    if (@(Get-ChildItem -LiteralPath $project -Filter '*.jsonl' -File).Count) {
+      throw "Claude history exists but no exact named conversation was found for $Agent; refusing a silent fresh start"
+    }
+    return [pscustomobject]@{thread_id=''; initial_context_delivered=$false}
+  }
+  if ($ordered.Count -gt 1 -and $ordered[0].started -eq $ordered[1].started) {
+    throw "Ambiguous latest named Claude conversation for $Agent"
+  }
+  return [pscustomobject]@{thread_id=[string]$ordered[0].thread_id; initial_context_delivered=$true}
+}
+
 function Get-WdLaneConversationPermissions {
   param([Parameter(Mandatory)] [object] $Lane)
 
@@ -325,7 +418,8 @@ function Assert-WdLaneLaunchAvailable {
   param(
     [Parameter(Mandatory)] [object] $Lane,
     [object[]] $KnownLanes = @(),
-    [int] $CurrentPid = $PID
+    [int] $CurrentPid = $PID,
+    [object[]] $ExternalSessions = @()
   )
 
   $agentPattern = '(?i)(?:^|\s)-Agent\s+["'']?' +
@@ -407,8 +501,55 @@ function Assert-WdLaneLaunchAvailable {
       $node = $parent
     }
     if (-not $attributed) {
+      # Explicit operator attribution is scoped to this exact process lifetime.
+      # A PID alone, another executable, or a known same-lane ancestor never
+      # qualifies. The snapshot is hash-pinned by the fleet invocation.
+      $external = @($ExternalSessions | Where-Object {
+        [int]$_.pid -eq [int]$native.ProcessId -and
+        [string]$_.name -ceq [string]$native.Name -and
+        [string]$_.command_line -ceq [string]$native.CommandLine -and
+        [string]$_.executable_path -ceq [string]$native.ExecutablePath -and
+        ([DateTimeOffset]$_.process_start_utc).UtcTicks -eq
+          ([DateTimeOffset]$native.CreationDate).UtcTicks
+      })
+      if ($external.Count -eq 1) { continue }
       throw "cannot prove lane availability: unmarked native $($native.Name) PID $($native.ProcessId) has no verified launcher ancestry; leave it running"
     }
+  }
+}
+
+function Read-WdExternalSessions {
+  param([string] $Path, [string] $ExpectedHash)
+  if (-not $Path -and -not $ExpectedHash) { return }
+  if (-not [IO.Path]::IsPathRooted($Path) -or $ExpectedHash -cnotmatch '^[A-Fa-f0-9]{64}$') {
+    throw 'external sessions require an absolute snapshot path and SHA256'
+  }
+  [void](Assert-LanePathWithoutReparse -Path $Path -TrustedRoot ([IO.Path]::GetPathRoot($Path)) -ExpectedType Leaf)
+  if ((Get-Item -LiteralPath $Path).Length -gt 32768) { throw 'external session snapshot too large' }
+  $snapshot = Read-Utf8LaneSnapshot -Path $Path
+  if ($snapshot.Hash -cne $ExpectedHash.ToUpperInvariant()) { throw 'external session snapshot hash mismatch' }
+  $jsonParameters = @{ InputObject = $snapshot.Text; ErrorAction = 'Stop' }
+  if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+    $jsonParameters.DateKind = 'String'
+  }
+  $record = ConvertFrom-Json @jsonParameters
+  if ($record.schema -cne 'wd.external-agent-sessions.v1' -or
+      ([DateTimeOffset]$record.expires_at_utc) -le [DateTimeOffset]::UtcNow -or
+      ([DateTimeOffset]$record.expires_at_utc) -gt [DateTimeOffset]::UtcNow.AddHours(24)) {
+    throw 'external session snapshot invalid or expired'
+  }
+  $seen = @{}
+  foreach ($entry in @($record.processes)) {
+    if ([int]$entry.pid -le 0 -or $seen.ContainsKey([int]$entry.pid) -or
+        [string]$entry.name -cnotin @('codex.exe','claude.exe') -or
+        [string]::IsNullOrWhiteSpace([string]$entry.command_line) -or
+        -not [IO.Path]::IsPathRooted([string]$entry.executable_path) -or
+        [string]$entry.process_start_utc -notmatch '(Z|[+-]\d{2}:\d{2})$') {
+      throw 'invalid or duplicate external process identity'
+    }
+    [void][DateTimeOffset]::Parse([string]$entry.process_start_utc)
+    $seen[[int]$entry.pid] = $true
+    $entry
   }
 }
 
@@ -1216,6 +1357,7 @@ if ($matches.Count -ne 1) {
   throw "manifest must contain exactly one lane for '$Agent'; found $($matches.Count)"
 }
 $lane = $matches[0]
+$externalSessions = @(Read-WdExternalSessions -Path $ExternalSessionsPath -ExpectedHash $ExternalSessionsHash)
 $turnMode = Get-WdLaneTurnMode -Lane $lane
 $conversationSurface = Get-WdLaneConversationSurface -Lane $lane
 $conversationPermissions = Get-WdLaneConversationPermissions -Lane $lane
@@ -1245,6 +1387,13 @@ if ($manualLeadAction -and (
 }
 $launchTurnMode = if ($RecoverInteractive) { 'interactive' } else { $turnMode }
 $launchConversationSurface = if ($RecoverInteractive) { 'none' } else { $conversationSurface }
+$nativeLead = $Agent -ceq 'codex-lead-1' -and $turnMode -ceq 'interactive' -and $conversationSurface -ceq 'none'
+$nativeResume = $null
+$nativeLeadLease = $null
+if ($nativeLead -and ($null -eq $lane.PSObject.Properties['native_resume_policy'] -or
+    [string]$lane.native_resume_policy -cne 'recorded_conversation')) {
+  throw 'Native Lead requires the recorded_conversation resume policy'
+}
 
 if (-not $worktree.StartsWith('C:\', [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "lane worktree must be on persistent C: drive: $worktree"
@@ -1568,7 +1717,7 @@ if ($effort -cnotin $supportedEfforts) {
   throw "lane '$Agent' has unsupported effort '$effort'"
 }
 $expectedRuntime = @{
-  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-5.6-sol'; effort = 'ultra' }
+  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-6-astra'; effort = 'xhigh' }
   'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
   'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
   'fable-5' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'fable'; effort = 'max' }
@@ -1609,7 +1758,7 @@ if ($manualLeadAction) {
   try {
     $manualAttemptLease = Enter-WdManagedAttemptLease `
       -RuntimeRoot $runtimeRoot -Agent $Agent
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
     $manualAttemptEvidence = Get-WdManagedAttemptEvidence `
       -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
     if (-not $DryRun) {
@@ -1629,7 +1778,7 @@ if ($manualLeadAction) {
         if ([string]$confirmation -cne $digestPrefix) {
           throw 'managed attempt retirement confirmation did not match the reviewed digest prefix'
         }
-        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
         Assert-WdOperatorInvocationLineage
         [void](Assert-WdLeadInteractivePostureBaseline `
           -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -1725,7 +1874,15 @@ if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
     " This is Claude lane $Agent. On the first turn use CronList, keep exactly " +
     "one lane-specific session-only recurring five-minute CronCreate backstop, " +
     "delete duplicates with CronDelete, and recreate it after every restart. Its " +
-    "prompt must re-read compact state and bridge next action for $Agent. Use CronList " +
+    "prompt must re-read compact state and bridge next action for $Agent. " +
+    'On EVERY cron, Monitor and dynamic wake, check new addressed bridge requests BEFORE deciding no-op. ' +
+    'A pending future one-shot never covers unread incoming work and must not defer a new request. ' +
+    'Keep exactly one native Monitor tool watching the pinned Monitor-AgentBridge.ps1 with ' +
+    "-Agent $Agent -TargetedOnly -IncludeWakeRequests -Json -PollIntervalMs 1000. " +
+    'Start the Monitor before the initial inbox read to close the startup race. ' +
+    'Monitor output must trigger a bounded inbox turn even while idle; a detached shell process alone is not this transport. ' +
+    'If the Monitor exits or fails, report the error and re-establish it; keep the cron inbox check working. ' +
+    'Use CronList ' +
     'to preserve an existing pending one-shot on no-op cron, Monitor, and dynamic-loop turns. ' +
     'Do not rearm merely because a no-op turn ran. The absolute deadline must be the scheduler-confirmed target, not an estimate. ' +
     'Call ScheduleWakeup only when no valid pending one-shot remains. If a missing wake must be rebuilt, use ' +
@@ -1768,7 +1925,13 @@ $startupPrompt += (
   '$env:WD_BRIDGE_PYTHON_WRAPPER (for example & $env:WD_BRIDGE_PYTHON_WRAPPER ' +
   'tools/bridge_next_action.py --agent ' + $Agent + ' --json). Never use worktree-relative ' +
   '.agent-bridge\bin copies or a bare python for bridge tools. Git, build and test commands ' +
-  'keep this worktree as their cwd; the pinned code root is not a task repository.'
+  'keep this worktree as their cwd; the pinned code root is not a task repository. ' +
+  'Next-action incoming.message and Monitor summaries are routing hints, not complete requests. ' +
+  'Before answering, retrieve the exact sender/task/timestamp and full message AND payload with the pinned ' +
+  'Read-AgentBridge.ps1 -Agent ' + $Agent + ' -Raw -NoAckReceived -NoContinuity -Tail 1200. ' +
+  'Do not substitute direct Get-Content, Select-String or grep of events.jsonl for that reader. ' +
+  'If the required event is outside the tail, increase the bounded tail or use -Tail 0. ' +
+  'If the reader fails, report the concrete blocker; do not invent missing fields or silently bypass validation.'
 )
 if ($RecoverInteractive) {
   $startupPrompt = $visualBootstrapPrompt + (
@@ -1785,6 +1948,21 @@ if ($RecoverInteractive) {
   )
 }
 $continuationPrompt = $startupPrompt.Substring($visualBootstrapPrompt.Length)
+if ($nativeLead) {
+  $continuationPrompt += (
+    ' This is the standard interactive Codex terminal, not the former custom conversation window. ' +
+    'The former managed-loop prompt, turn-receipt paths and UI automation rules are historical; do not replay them. ' +
+    'The startup model is gpt-6-astra/xhigh; the operator may use /model to change it. ' +
+    'Bridge helpers and the current environment identify this lane. Keep peer sessions separate. ' +
+    'No managed bridge-wake consumer is attached to this terminal. ' +
+    'Confirm the restored conversation and bridge identity with read-only checks. ' +
+    'Resume the latest unfinished operator-authorized task from this conversation and compact state, ' +
+    'after reconciling live claims and checking whether interrupted actions already completed. ' +
+    'Do not replay completed side effects or revive cancelled tasks. Preserve an explicit operator pause or HOLD; ' +
+    'if no eligible unfinished task remains, report that state and await the operator. '
+  )
+  $startupPrompt = $visualBootstrapPrompt + $continuationPrompt
+}
 
 if (-not $HandshakeDirectory) {
   $HandshakeDirectory = Join-Path ([string]$manifest.handshake_root) $RunId
@@ -1816,6 +1994,15 @@ Write-Host ("  mode:     {0} (configured: {1})" -f $launchTurnMode, $turnMode)
 Write-Host ("  control:  {0} (configured: {1})" -f $launchConversationSurface, $conversationSurface)
 Write-Host ("  target:   {0}" -f [string]$targetState.id)
 Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
+$claudeResume = $null
+if ($nativeLead) {
+  $nativeResume = Get-WdNativeLeadResumeState -Worktree $worktree -RuntimeRoot $runtimeRoot
+} elseif ($cliName -ieq 'claude.cmd' -and $launchTurnMode -ceq 'interactive') {
+  $claudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+  $claudeResume = Get-WdClaudeResumeState -Agent $Agent -Worktree $worktree -ProjectsRoot (Join-Path $claudeHome 'projects')
+}
+$resumeThread = if ($null -ne $nativeResume) { [string]$nativeResume.thread_id } elseif ($null -ne $claudeResume) { [string]$claudeResume.thread_id } else { '' }
+if ($resumeThread) { Write-Host ("  resume:   {0} (recorded lane conversation)" -f $resumeThread) }
 if ($RecoverInteractive) {
   Write-Host ("  unresolved pointer: {0}" -f $manualAttemptEvidence.pointer_path)
   Write-Host ("  pending record:      {0}" -f $manualAttemptEvidence.pending_path)
@@ -1825,12 +2012,13 @@ if ($RecoverInteractive) {
 
 if ($DryRun) {
   if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
   }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
   try {
     return [pscustomobject]@{
       agent = $Agent
+      native_thread_id = $resumeThread
       run_id = $RunId
       worktree = $worktree
       branch = $actualBranch
@@ -1874,7 +2062,18 @@ if ($DryRun) {
 
 try {
 if ($turnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+}
+if ($nativeLead) {
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  $nativeLock = Join-Path $runtimeRoot '.wd-turn-codex-lead-1.lock'
+  if (Test-Path -LiteralPath $nativeLock) {
+    [void](Assert-LanePathWithoutReparse -Path $nativeLock -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  } else {
+    [void](Assert-LanePathWithoutReparse -Path $runtimeRoot -TrustedRoot $laneTrustedDrive -ExpectedType Directory)
+  }
+  $nativeLeadLease = [IO.File]::Open($nativeLock, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  $nativeResume = Get-WdNativeLeadResumeState -Worktree $worktree -RuntimeRoot $runtimeRoot
 }
 if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
@@ -2068,6 +2267,7 @@ $temporaryHandshake = "$handshakePath.$PID.tmp"
 $handshake = [ordered]@{
   schema_version = 1
   status = 'bridge_bootstrapped'
+  native_thread_id = $resumeThread
   agent = $Agent
   agent_uuid = [string]$lane.agent_uuid
   role = [string]$lane.role
@@ -2143,7 +2343,7 @@ if (
 }
 
 if ($launchTurnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
   if ($null -ne $conversationConfigBaseline) {
     [void](Assert-WdLeadInteractivePostureBaseline `
       -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2209,7 +2409,7 @@ if ($launchTurnMode -ceq 'managed') {
 }
 
 if ($RecoverInteractive) {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes)
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
   Assert-WdOperatorInvocationLineage
   [void](Assert-WdLeadInteractivePostureBaseline `
     -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2221,6 +2421,13 @@ if ($RecoverInteractive) {
 }
 $launchArguments = @()
 if ($cliName -ieq 'claude.cmd') {
+  # The fleet updater owns changes to the attested shared executable. Do not
+  # let a long-lived lane replace it underneath itself or sibling sessions.
+  $env:DISABLE_AUTOUPDATER = '1'
+  if ($null -ne $claudeResume -and $claudeResume.thread_id) {
+    $launchArguments += @('--resume', [string]$claudeResume.thread_id)
+    $startupPrompt = $continuationPrompt
+  }
   $launchArguments += @(
     '--model', $model,
     '--effort', $effort,
@@ -2228,11 +2435,20 @@ if ($cliName -ieq 'claude.cmd') {
     '--name', $Agent
   )
 } elseif ($cliName -ieq 'codex.cmd') {
+  if ($nativeLead) {
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    if ($nativeResume.thread_id) { $launchArguments += @('resume', [string]$nativeResume.thread_id) }
+  }
   $launchArguments += @(
     '--model', $model,
-    '-c', ('model_reasoning_effort="{0}"' -f $effort),
-    '--image', $targetImagePath
+    '-c', ('model_reasoning_effort="{0}"' -f $effort)
   )
+  if ($nativeLead) {
+    $launchArguments += @('--cd', $worktree, '--ask-for-approval', 'never', '--sandbox', 'danger-full-access')
+  }
+  if ($nativeLead -and $nativeResume.initial_context_delivered) {
+    $startupPrompt = $continuationPrompt
+  } else { $launchArguments += @('--image', $targetImagePath) }
 } else {
   throw "lane '$Agent' uses unsupported CLI '$cliName'"
 }
@@ -2250,6 +2466,7 @@ if ($null -ne $cliExitCode -and $cliExitCode -ne 0) {
   throw "lane '$Agent' CLI exited with code $cliExitCode"
 }
 } finally {
+  if ($null -ne $nativeLeadLease) { $nativeLeadLease.Dispose(); $nativeLeadLease = $null }
   if ($null -ne $manualAttemptLease) {
     $manualAttemptLease.Dispose()
     $manualAttemptLease = $null

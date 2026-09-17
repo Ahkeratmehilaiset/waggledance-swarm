@@ -187,25 +187,47 @@ function Read-BridgeEventSnapshot {
     param(
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()]
         [string] $Path,
-        [ValidateRange(1, 67108864)] [int64] $MaxBytes = 67108864,
-        [ValidateRange(1, 100000)] [int] $MaxRows = 100000
+        [ValidateRange(1, 268435456)] [int64] $MaxBytes = 67108864,
+        [ValidateRange(1, 100000)] [int] $MaxRows = 100000,
+        [ValidateRange(1, 67108864)] [int] $PageBytes = 67108864
     )
 
-    $result = Read-BridgeEventDelta -Path $Path -Cursor $null `
-        -MaxBytes $MaxBytes -MaxRows $MaxRows
-    if ($result.status -ceq 'OK' -and
-        $result.candidate_cursor.offset -lt $result.snapshot_length -and
-        (
-            $result.bytes_read -lt $result.snapshot_length -or
-            @($result.rows).Count -ge $MaxRows
-        )) {
-        return [pscustomobject]@{
-            status = 'BLOCKED'
-            reason = 'snapshot_exceeds_bounds'
-            rows = @()
-            candidate_cursor = $null
+    # Freeze the first observed EOF. Later appends belong to a later snapshot;
+    # all pages retain the canonical identity/generation checks and JSON contract.
+    $items = New-Object System.Collections.Generic.List[object]
+    $cursor = $null
+    $snapshotLength = -1L
+    do {
+        $offset = if ($null -eq $cursor) { 0L } else { [int64]$cursor.offset }
+        $remaining = if ($snapshotLength -lt 0) { $MaxBytes } else { $snapshotLength - $offset }
+        $result = Read-BridgeEventDelta -Path $Path -Cursor $cursor `
+            -MaxBytes ([Math]::Min($PageBytes, $remaining)) -MaxRows ($MaxRows - $items.Count)
+        if ($result.status -in @('BLOCKED','RETRY')) { return $result }
+        if ($snapshotLength -lt 0) { $snapshotLength = [int64]$result.snapshot_length }
+        $validationBytes = if ($offset -gt 0) { 1L } else { 0L }
+        $reachedEnd = ($result.bytes_read - $validationBytes -ge ($snapshotLength - $offset))
+        $reason = ''
+        if ($snapshotLength -gt $MaxBytes) { $reason = 'snapshot_exceeds_bounds' }
+        elseif ($null -eq $result.candidate_cursor) {
+            if ($items.Count -eq 0) { return $result }
+            $reason = 'snapshot_incomplete'
         }
-    }
+        elseif ($result.candidate_cursor.offset -lt $snapshotLength -and
+            (($result.candidate_cursor.offset -le $offset -and -not $reachedEnd) -or
+             $items.Count + @($result.rows).Count -ge $MaxRows)) {
+            $reason = 'snapshot_exceeds_bounds'
+        }
+        if ($reason) {
+            return New-BridgeLogReadResult -Status 'BLOCKED' -Reason $reason `
+                -RequestedOffset 0 -SnapshotLength $snapshotLength
+        }
+        foreach ($item in @($result.rows)) { [void]$items.Add($item) }
+        $cursor = $result.candidate_cursor
+        # An unterminated final row is not durable yet. Preserve the canonical
+        # complete-prefix contract and leave its candidate cursor before it.
+    } while ($cursor.offset -lt $snapshotLength -and -not $reachedEnd)
+    $result.rows = $items.ToArray()
+    $result.snapshot_length = $snapshotLength
     return $result
 }
 

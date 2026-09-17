@@ -2,6 +2,61 @@
 
 Set-StrictMode -Version Latest
 
+if (-not ('WaggleDance.BridgeFiniteNumbersV1' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Management.Automation;
+namespace WaggleDance {
+    public static class BridgeFiniteNumbersV1 {
+        public static bool IsFinite(object value) {
+            if (value == null) return true;
+            PSObject wrapped = value as PSObject;
+            if (wrapped != null) {
+                if (wrapped.BaseObject is PSCustomObject) {
+                    foreach (PSPropertyInfo property in wrapped.Properties)
+                        if (!IsFinite(property.Value)) return false;
+                    return true;
+                }
+                return IsFinite(wrapped.BaseObject);
+            }
+            if (value is double) return !double.IsNaN((double)value) && !double.IsInfinity((double)value);
+            if (value is float) return !float.IsNaN((float)value) && !float.IsInfinity((float)value);
+            IDictionary dictionary = value as IDictionary;
+            if (dictionary != null) {
+                foreach (object item in dictionary.Values) if (!IsFinite(item)) return false;
+                return true;
+            }
+            IEnumerable items = value as IEnumerable;
+            if (items != null && !(value is string))
+                foreach (object item in items) if (!IsFinite(item)) return false;
+            return true;
+        }
+    }
+}
+'@
+}
+
+if (-not ('WaggleDance.BridgeLfScannerV1' -as [type])) {
+    Add-Type -TypeDefinition @'
+namespace WaggleDance {
+    public static class BridgeLfScannerV1 {
+        public static int LastCompleteLine(byte[] bytes, int count, int maxRows) {
+            if (bytes == null || count < 0 || count > bytes.Length || maxRows < 1)
+                throw new System.ArgumentOutOfRangeException();
+            int last = -1, rows = 0;
+            for (int i = 0; i < count; i++) {
+                if (bytes[i] != 10) continue;
+                last = i;
+                if (++rows >= maxRows) break;
+            }
+            return last;
+        }
+    }
+}
+'@
+}
+
 if (-not ('WaggleDance.BridgeFileIdentityV1.NativeMethods' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -586,32 +641,9 @@ function Test-BridgeJsonObject {
 
 function Test-BridgeJsonFiniteNumbers {
     param([AllowNull()] $Value)
-
-    if ($null -eq $Value) { return $true }
-    if ($Value -is [double]) {
-        return (-not [double]::IsNaN($Value) -and -not [double]::IsInfinity($Value))
-    }
-    if ($Value -is [single]) {
-        return (-not [single]::IsNaN($Value) -and -not [single]::IsInfinity($Value))
-    }
-    if ($Value -is [System.Collections.IDictionary]) {
-        foreach ($item in $Value.Values) {
-            if (-not (Test-BridgeJsonFiniteNumbers -Value $item)) { return $false }
-        }
-        return $true
-    }
-    if ($Value -is [System.Management.Automation.PSCustomObject]) {
-        foreach ($property in $Value.PSObject.Properties) {
-            if (-not (Test-BridgeJsonFiniteNumbers -Value $property.Value)) { return $false }
-        }
-        return $true
-    }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        foreach ($item in $Value) {
-            if (-not (Test-BridgeJsonFiniteNumbers -Value $item)) { return $false }
-        }
-    }
-    return $true
+    # The retained log contains millions of fields. Preserve the recursive
+    # object/array/number checks without one PowerShell invocation per field.
+    return [WaggleDance.BridgeFiniteNumbersV1]::IsFinite($Value)
 }
 
 function Read-BridgeGenerationToken {
@@ -886,15 +918,9 @@ function Read-BridgeLogSnapshotDelta {
         }
         $totalBytesRead = [int64]($validationBytesRead + $read)
 
-        $lastLf = -1
-        $rowCount = 0
-        for ($index = 0; $index -lt $read; $index++) {
-            if ($bytes[$index] -eq 10) {
-                $lastLf = $index
-                $rowCount++
-                if ($rowCount -ge $MaxRows) { break }
-            }
-        }
+        # Scan in compiled code: interpreting one PowerShell iteration per
+        # byte made a 90 MB retained-history check take minutes on PS 5.1.
+        $lastLf = [WaggleDance.BridgeLfScannerV1]::LastCompleteLine($bytes, $read, $MaxRows)
 
         if ($lastLf -lt 0) {
             if ($read -ge $MaxBytes) {

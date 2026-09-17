@@ -518,7 +518,7 @@ function Invoke-WdCodexConversationLoop {
     [CmdletBinding()]
     param(
         [string] $Agent='codex-lead-1', [string] $Backend='codex', [Parameter(Mandatory)] [string] $CliPath,
-        [string] $Model='gpt-5.6-sol', [string] $Effort='ultra', [Parameter(Mandatory)] [string] $Worktree,
+        [string] $Model='gpt-6-astra', [string] $Effort='xhigh', [Parameter(Mandatory)] [string] $Worktree,
         [Parameter(Mandatory)] [string] $RuntimeRoot, [Parameter(Mandatory)] [string] $SessionId,
         [Parameter(Mandatory)] [string] $Generation, [Parameter(Mandatory)] [string] $CompactStatePath,
         [Parameter(Mandatory)] [string] $StartupPrompt, [string] $ContinuationPrompt='', [string] $ImagePath='',
@@ -532,7 +532,7 @@ function Invoke-WdCodexConversationLoop {
     )
     $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
     if ($ExistingInteractivePid -ne 0) { return @{status='unsupported_live_interactive';pid=$ExistingInteractivePid} }
-    $pins=@{'codex-lead-1'=@('gpt-5.6-sol','ultra');'codex-tools-1'=@('gpt-5.6-terra','high')}[$Agent]
+    $pins=@{'codex-lead-1'=@('gpt-6-astra','xhigh');'codex-tools-1'=@('gpt-5.6-terra','high')}[$Agent]
     if ($null -eq $pins -or $Backend -cne 'codex' -or $Model -cne $pins[0] -or $Effort -cne $pins[1]) { throw 'conversation lane pins mismatch' }
     if ($CodexPermissionPosture -cnotin @('workspace_write','existing_interactive') -or
         ($CodexPermissionPosture -ceq 'existing_interactive' -and

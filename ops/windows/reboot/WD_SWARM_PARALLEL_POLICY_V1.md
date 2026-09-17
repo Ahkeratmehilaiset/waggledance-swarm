@@ -76,6 +76,20 @@ with `CronDelete`. Recreate it after every restart; the installed build does not
 persist these jobs across sessions. The cron prompt tells that lane to read its
 compact state and bridge next action and execute one eligible bounded slice.
 
+Every cron, Monitor, and dynamic wake checks new addressed requests **before**
+deciding no-op. A future one-shot never covers unread incoming work. Keep one
+native `Monitor` tool attached to the pinned `Monitor-AgentBridge.ps1 -Agent
+<lane> -TargetedOnly -IncludeWakeRequests -Json -PollIntervalMs 1000`.
+Start that monitor before the initial inbox read, and recover/report monitor
+exit without disabling the cron inbox check. A detached shell process by itself
+does not deliver a turn to the model. Pending idle timers cannot delay a request.
+
+Retrieve full request message and payload with the pinned `Read-AgentBridge.ps1
+-Agent <lane> -Raw -NoAckReceived -NoContinuity -Tail 1200`, matching exact sender,
+task and timestamp. Routing summaries are incomplete. Do not replace this reader
+with direct log reads. Report validation failures as blockers. Increase the
+bounded tail or use `-Tail 0` when the exact request is older.
+
 Keep one current dynamic wake with its confirmed absolute deadline recorded.
 On a no-op cron, Monitor or dynamic-loop turn, use `CronList` to retain an
 already-pending one-shot; do not call `ScheduleWakeup` just to end the turn.

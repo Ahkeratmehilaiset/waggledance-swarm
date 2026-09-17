@@ -365,7 +365,7 @@ function Sync-WdOperatorConversationView {
 function New-WdOperatorConversationView {
     param([switch] $Headless, [switch] $Hidden,
         [string] $Title = 'WaggleDance - Lead conversation',
-        [string] $ModelLabel = 'Lead: gpt-5.6-sol / ultra (pinned)',
+        [string] $ModelLabel = 'Lead: gpt-6-astra / xhigh (pinned)',
         [string] $AgentLabel = 'Lead')
     foreach ($label in @($Title,$ModelLabel,$AgentLabel)) {
         if ([string]::IsNullOrWhiteSpace($label) -or $label.Length -gt 256 -or $label -match '[\r\n]') { throw 'Window labels must be nonempty single lines of at most 256 characters.' }

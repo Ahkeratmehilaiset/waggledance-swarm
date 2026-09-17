@@ -48,14 +48,14 @@ def test_pinned_start_configuration(shell):
 $ErrorActionPreference='Stop'
 . {q(OLD)}
 . {q(RUNNER)}
-Get-WdConversationThreadParameters -Worktree 'C:\\work' -RuntimeRoot 'C:\\bridge' -Model 'gpt-5.6-sol' -Effort 'ultra' | ConvertTo-Json -Depth 20 -Compress
+Get-WdConversationThreadParameters -Worktree 'C:\\work' -RuntimeRoot 'C:\\bridge' -Model 'gpt-6-astra' -Effort 'xhigh' | ConvertTo-Json -Depth 20 -Compress
 """, shell)
     assert result.returncode == 0, result.stdout + result.stderr
     value = json.loads(result.stdout)
-    assert value["model"] == "gpt-5.6-sol"
+    assert value["model"] == "gpt-6-astra"
     assert value["approvalPolicy"] == "never"
     assert value["sandbox"] == "workspace-write"
-    assert value["config"]["model_reasoning_effort"] == "ultra"
+    assert value["config"]["model_reasoning_effort"] == "xhigh"
     assert value["config"]["sandbox_workspace_write"]["writable_roots"] == ["C:\\work", "C:\\bridge"]
     assert value["config"]["sandbox_workspace_write"]["network_access"] is False
 
@@ -156,7 +156,7 @@ for line in sys.stdin:
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("scenario", ["complete", "steer", "late_start", "late_steer", "steer_rejected", "tool_progress", "interrupt", "interrupt_repeated", "interrupt_lost", "missing", "disconnect", "question", "approval", "timeout", "output", "spontaneous", "wake_during", "resume", "paused_resume", "large_resume", "resume_missing_initial", "human_chat", "human_tool_missing", "reconcile_readonly"])
 def test_owned_fake_conversation(tmp_path, shell, scenario, agent="codex-lead-1", workflow_permissions=False, compatibility=False, return_script=False):
-    model, effort = ("gpt-5.6-sol", "ultra") if agent == "codex-lead-1" else ("gpt-5.6-terra", "high")
+    model, effort = ("gpt-6-astra", "xhigh") if agent == "codex-lead-1" else ("gpt-5.6-terra", "high")
     runtime = tmp_path / "bridge"
     runtime.mkdir()
     if scenario == "fresh_paused":
@@ -402,7 +402,7 @@ $lease=$null
 try {{
     if ({q(scenario)} -ceq 'lease') {{ $lease=[IO.File]::Open({q(runtime / '.wd-turn-codex-lead-1.lock')},[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) }}
     try {{
-        Invoke-WdCodexConversationLoop -CliPath {q(python)} -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} -SessionId test -Generation {'a'*40} -CompactStatePath {q(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt 'test' -Model {q('wrong' if scenario == 'wrong_pins' else 'gpt-5.6-sol')} -ExistingInteractivePid {123 if scenario == 'interactive' else 0} | ConvertTo-Json -Compress
+        Invoke-WdCodexConversationLoop -CliPath {q(python)} -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} -SessionId test -Generation {'a'*40} -CompactStatePath {q(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt 'test' -Model {q('wrong' if scenario == 'wrong_pins' else 'gpt-6-astra')} -ExistingInteractivePid {123 if scenario == 'interactive' else 0} | ConvertTo-Json -Compress
     }} catch {{ @{{error=$_.Exception.Message}} | ConvertTo-Json -Compress }}
 }} finally {{ if ($null -ne $lease) {{ $lease.Dispose() }} }}
 """, shell)
@@ -453,7 +453,7 @@ def test_explicit_workflow_posture(shell):
 $ErrorActionPreference='Stop'
 . {q(OLD)}
 . {q(RUNNER)}
-Get-WdConversationThreadParameters -Worktree 'C:\\work' -RuntimeRoot 'C:\\bridge' -Model 'gpt-5.6-sol' -Effort ultra -AdditionalWritableRoots @('C:\\common-git','C:\\COMMON-GIT') -NetworkAccess $true | ConvertTo-Json -Depth 20 -Compress
+Get-WdConversationThreadParameters -Worktree 'C:\\work' -RuntimeRoot 'C:\\bridge' -Model 'gpt-6-astra' -Effort xhigh -AdditionalWritableRoots @('C:\\common-git','C:\\COMMON-GIT') -NetworkAccess $true | ConvertTo-Json -Depth 20 -Compress
 """, shell)
     assert result.returncode == 0, result.stdout + result.stderr
     value = json.loads(result.stdout)
@@ -543,7 +543,7 @@ $ErrorActionPreference='Stop'
 . {q(RUNNER)}
 function New-WdConversationNativeProcess {{ throw 'native must not start' }}
 try {{
-    Invoke-WdCodexConversationLoop -Agent {'codex-tools-1' if scenario == 'tools' else 'codex-lead-1'} -Model {'gpt-5.6-terra' if scenario in ('tools','wrong_pins') else 'gpt-5.6-sol'} -Effort {'high' if scenario == 'tools' else 'ultra'} -CliPath {q(shell)} -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} -SessionId test -Generation {'a'*40} -CompactStatePath {q(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt test -CodexPermissionPosture existing_interactive -NetworkAccess ${str(scenario != 'network_off').lower()} -AdditionalWritableRoots @({q(runtime) if scenario == 'extra_roots' else ''}) | Out-Null
+    Invoke-WdCodexConversationLoop -Agent {'codex-tools-1' if scenario == 'tools' else 'codex-lead-1'} -Model {'gpt-5.6-terra' if scenario in ('tools','wrong_pins') else 'gpt-6-astra'} -Effort {'high' if scenario == 'tools' else 'xhigh'} -CliPath {q(shell)} -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} -SessionId test -Generation {'a'*40} -CompactStatePath {q(tmp_path / '.codex-audit/wd-current-state.json')} -StartupPrompt test -CodexPermissionPosture existing_interactive -NetworkAccess ${str(scenario != 'network_off').lower()} -AdditionalWritableRoots @({q(runtime) if scenario == 'extra_roots' else ''}) | Out-Null
     @{{error='not rejected'}} | ConvertTo-Json -Compress
 }} catch {{ @{{error=$_.Exception.Message}} | ConvertTo-Json -Compress }}
 """, shell)

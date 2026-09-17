@@ -1174,6 +1174,24 @@ function Test-NamedCommandLineLeafArgument {
     )
 }
 
+function Assert-WdToolsLauncherGeneration {
+    param([object[]] $Processes, [string[]] $AllowedPaths)
+    foreach ($process in $Processes) {
+        if ([string]$process.Name -notmatch '^(?i:powershell|pwsh)\.exe$') { continue }
+        $kind = if ([string]$process.Name -ieq 'powershell.exe') { 'WindowsPowerShell' } else { 'Pwsh' }
+        $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$process.CommandLine) -HostKind $kind
+        if ($null -eq $invocation) { continue }
+        $path = [string]$invocation.script_path
+        if ([IO.Path]::GetFileName($path) -ine 'start-wd-tools-consumer.ps1') { continue }
+        # An installed bundle update changes the exact launcher path. A live
+        # older launcher still owns its conversation; never treat it as absent.
+        # Discovery is deliberately conservative and grants no kill authority.
+        if ($path -notin $AllowedPaths) {
+            throw "CONFLICT existing Tools launcher PID $($process.ProcessId) uses another bundle/path ($path); preserve its conversation and perform a controlled handoff before restore"
+        }
+    }
+}
+
 function Test-WdCanonicalWatcherProcess {
     param(
         [Parameter(Mandatory)] $Process,
@@ -1532,8 +1550,7 @@ function Test-ToolsConversationNativeProcess {
         $nativeMatches = @(
             Get-CimInstance `
                 -ClassName Win32_Process `
-                -Filter "ProcessId=$nativePid" `
-                -ErrorAction Stop
+                -ErrorAction Stop | Where-Object { [int]$_.ProcessId -eq $nativePid }
         )
         if ($nativeMatches.Count -ne 1) { return $false }
         $native = $nativeMatches[0]
@@ -1591,10 +1608,10 @@ function Test-ToolsWrapperReadiness {
         } else {
             [string]$surfaceProperty.Value
         }
-        if ($conversationSurface -cnotin @('none', 'local_window')) {
+        if ($conversationSurface -cnotin @('none', 'local_window', 'native_terminal')) {
             return $false
         }
-        $expectedSchema = if ($conversationSurface -ceq 'local_window') {
+        $expectedSchema = if ($conversationSurface -ceq 'native_terminal') { 'wd.tools-consumer-ready.v3' } elseif ($conversationSurface -ceq 'local_window') {
             'wd.tools-consumer-ready.v2'
         } else {
             'wd.tools-consumer-ready.v1'
@@ -1686,6 +1703,13 @@ function Test-ToolsWrapperReadiness {
         if (-not $commonTimestampsValid) { return $false }
         if ($conversationSurface -ceq 'none') {
             return $true
+        }
+        if ($conversationSurface -ceq 'native_terminal') {
+            if ($record.status -cne 'terminal_ready' -or $record.readiness_scope -cne 'native_cli_only' -or
+                $record.conversation_surface -cne 'native_terminal' -or $record.agent -cne 'codex-tools-1' -or
+                $record.task_completion_verified -isnot [bool] -or $record.task_completion_verified -or
+                [string]$record.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { return $false }
+            return (Test-ToolsConversationNativeProcess -OwnerProcess $Process -Record $record)
         }
 
         $pidProperty = $record.PSObject.Properties['pid']
@@ -2044,13 +2068,27 @@ function Start-OutOfTaskJobPowerShell {
     param(
         [Parameter(Mandatory)] [string] $HostPath,
         [Parameter(Mandatory)] [string[]] $ArgumentList,
-        [Parameter(Mandatory)] [string] $Name
+        [Parameter(Mandatory)] [string] $Name,
+        [switch] $VisibleTerminal
     )
 
     # A direct Start-Process child remains in Task Scheduler's job and can be
     # terminated as soon as this short supervisor action exits. WMI creates the
     # long-lived headless consumer outside that job while retaining the same
     # interactive user token and session.
+    if ($VisibleTerminal) {
+        $terminal = @(Get-Command wt.exe -CommandType Application -ErrorAction Stop)[0].Source
+        $terminalArguments = @('-w','new','new-tab','--title','codex-tools-1', $HostPath) + $ArgumentList
+        $terminalLine = @($terminalArguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join ' '
+        # WMI cannot activate the WindowsApps wt.exe execution alias directly.
+        # A short native PowerShell process outside the scheduler job activates
+        # Terminal. Encode a script made only from single-quoted literals; no
+        # prompt text, path or argument is interpreted as PowerShell code.
+        $bootstrap = "Start-Process -WindowStyle Normal -FilePath '" + $terminal.Replace("'", "''") +
+            "' -ArgumentList '" + $terminalLine.Replace("'", "''") + "'"
+        $ArgumentList = @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',
+            [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap)))
+    }
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     $commandParts.Add((ConvertTo-WindowsCommandLineArgument $HostPath))
     foreach ($argument in $ArgumentList) {
@@ -2078,7 +2116,7 @@ function Start-OutOfTaskJobPowerShell {
                 0x08000000 -bor  # CREATE_NO_WINDOW
                 0x00000400       # CREATE_UNICODE_ENVIRONMENT
             )
-            ShowWindow = [uint16]0  # SW_HIDE
+            ShowWindow = [uint16]0
             EnvironmentVariables = [string[]]$environment.ToArray()
         } `
         -ClientOnly `
@@ -2743,7 +2781,7 @@ if ($toolsEnabled) {
     if ($null -ne $toolsConversationSurfaceProperty) {
         $toolsConversationSurface = [string]$toolsConversationSurfaceProperty.Value
     }
-    if ($toolsConversationSurface -cnotin @('none', 'local_window')) {
+    if ($toolsConversationSurface -cnotin @('none', 'local_window', 'native_terminal')) {
         throw "unsupported Tools conversation_surface '$toolsConversationSurface'"
     }
     $toolsConversationPermissions =
@@ -3385,6 +3423,8 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
                 -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
             }
     )
+    Assert-WdToolsLauncherGeneration -Processes $toolsProcesses `
+        -AllowedPaths @($toolsLauncher, $configuredToolsLauncher)
     $wrapperProcesses = @(
         $toolsProcesses |
             Where-Object {
@@ -3530,6 +3570,9 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         ) -and
         $legacyConsumers.Count -eq 0) {
         $staleProcess = $wrapperProcesses[0]
+        if ($toolsConversationSurface -ceq 'native_terminal') {
+            throw "CONFLICT native Tools requires a controlled handoff of existing PID $($staleProcess.ProcessId); refusing to kill its conversation"
+        }
         $replacementReason = if ($expiredWrapperProcesses.Count -eq 1) {
             'expired-startup'
         } else {
@@ -3582,7 +3625,8 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         Start-OutOfTaskJobPowerShell `
             $toolsPowerShellHost `
             $toolsArguments `
-            'consumer-loop:codex-tools-1'
+            'consumer-loop:codex-tools-1' `
+            -VisibleTerminal:($toolsConversationSurface -ceq 'native_terminal')
     }
         }
     if (-not $toolsReconciled) {

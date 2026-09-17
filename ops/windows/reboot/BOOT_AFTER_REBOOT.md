@@ -1,5 +1,20 @@
 # WaggleDance: reboot recovery
 
+Tools cold-start validation rejects an unresolved previous owner or local
+`.pending` journal before CLI updates and supervisor startup. Preserve that
+evidence and reconcile the interrupted attempt before restarting; a readiness
+timeout does not establish that the previous work completed.
+
+When the operator explicitly identifies unrelated Codex/Claude sessions, an
+individual restore can pass `-ExternalSessionsPath <absolute-json-path>` and
+`-ExternalSessionsHash <SHA256>` to `start-wd-all.ps1` (including `-Auto`). The
+`wd.external-agent-sessions.v1` snapshot contains `expires_at_utc` (within 24
+hours) and `processes`: exact `pid`, `name`, `process_start_utc`,
+`executable_path`, and `command_line` values from the reviewed process snapshot.
+These sessions remain external and are never adopted or stopped. A changed
+process lifetime, changed snapshot, expired approval, or same-lane launcher
+still blocks startup. Without the explicit parameters, admission is unchanged.
+
 The single-command reboot entry point is:
 
 ```powershell
@@ -13,6 +28,52 @@ wrapper requests one Windows UAC elevation before preflight when Task Scheduler
 changes require Administrator rights; accept that prompt to continue. An
 already elevated PowerShell does not prompt again.
 
+Cold-start preflight resolves each native lane's saved conversation before CLI
+updates or scheduler changes. Lead uses its reconciled recorded Codex thread ID
+in the normal Codex terminal (`gpt-6-astra`, `xhigh`). RCO1, RCO2 and Fable resume
+the newest **named lane conversation** in their own canonical worktree with
+`claude --resume <exact-UUID>`; they never use account-wide `--continue` or fork
+the conversation. Selection uses the first main-thread timestamp, not file
+modification time. Conflicting, incomplete, or ambiguous named history stops
+preflight instead of silently opening an empty conversation. A genuinely empty
+history starts the initial visual bootstrap once.
+
+The continuation turn checks compact state and live bridge claims, then resumes
+the latest unfinished authorized work. Completed effects are reconciled before
+retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native
+Lead has no managed idle-wake consumer attached to its terminal. Tools has an
+automatic bridge relay: the wrapper polls its targeted wake sentinel once per
+second and uses `codex queue --thread <saved UUID> --message <notification>`.
+Codex receives the notification while idle and serializes it behind an active
+turn. Window focus and minimization do not affect delivery. Operator messages
+and `/model` continue to use the normal Codex UI.
+
+Wake bursts are coalesced over five seconds. The relay moves the sentinel to an
+owned snapshot and records submission before invoking Codex. A confirmed queue
+receipt consumes that snapshot; newer wake writes remain for the next delivery.
+An uncertain queue result stops automatic delivery with evidence preserved,
+rather than replaying an ambiguous attempt. Queue acceptance is not task
+completion. The exclusive relay lock prevents concurrent delivery helpers.
+
+Tools uses `conversation_surface=native_terminal`: the Limited supervisor opens
+one Windows Terminal window named `codex-tools-1`, running normal Codex with its
+recorded conversation UUID, `gpt-5.6-terra/high` and workspace-write permissions.
+The launcher holds the existing Tools ownership lock for the terminal lifetime.
+The former custom UI and its Automation toggle are inactive on this path. The
+saved conversation and interrupted-work evidence are preserved; unresolved
+attempts still block a replacement. A live Tools process from another generation
+requires a controlled handoff, rather than automatic process termination.
+
+Tools readiness v3 means `terminal_ready` with scope `native_cli_only`: the
+wrapper and native process identities match. It does not claim a completed model
+turn or ongoing task progress. Check those in the visible terminal and bridge
+evidence. Closing Codex ends this Tools session. `/model` remains available.
+
+Already-live lane wrappers are identified using their original deployment hash,
+including wrappers whose process command line omits `-ManifestPath`. CLI binary
+changes after launch or other identity mismatches still require a controlled
+handoff; a launch plan must never guess that a conflicting process is disposable.
+
 Each elevated `-Auto` run keeps a transcript under
 `C:\Python\wd-reboot-runtime\elevated-auto`. If the elevated process fails, the
 parent PowerShell prints the transcript tail and its exact path.
@@ -25,13 +86,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 For a manual two-step recovery, run `-DryRun` and then `-Apply`. With no mode
 switch the launcher defaults to byte-inert DryRun. After a successful restore,
-leave each agent's conversation window open. Lead and Tools have separate local
-conversation windows; RCO1, RCO2 and Fable retain their native interactive windows.
+leave each agent's conversation window open. Lead and Tools use standard Codex
+terminals, and RCO1, RCO2 and Fable
+retain their native interactive windows.
 Their contexts are independent, not multiple views of Lead. Tools and exactly
 five real-time bridge watchers are reconciled through `WD-Supervisor`; the Tools
 window never creates an additional consumer alongside its existing parent.
 
-Tools local-window readiness v2 reports verified transport availability separately
+Legacy Tools local-window readiness v2 reports verified transport availability separately
 from native checkpoint progress. An open window is not evidence of useful work.
 In legacy headless mode, readiness v1 follows the first tick, which can take
 several minutes. During the bounded readiness wait, `-Auto` prints progress every
@@ -52,7 +114,7 @@ supervisor-owned process visible to later Limited supervisor runs and prevents
 an elevated/Limited duplicate-generation race. The task is enabled permanently
 only after the complete fleet and bridge baseline have passed verification.
 
-Only when Lead is explicitly configured as interactive, after the
+Only for legacy interactive Lead configurations without `native_resume_policy`, after the
 `codex-lead-1` lane has completed its bridge-bootstrap
 handshake, the restore also reconciles exactly one separate Codex prompt-watcher
 window. It targets only the terminal title `codex-lead-1` and runs the bundled,
@@ -68,9 +130,9 @@ DryRun verifies the prompt-watcher script and reports whether it would keep or
 launch the single Lead watcher. A non-canonical Lead watcher or more than one
 watcher targeting `codex-lead-1` is an ambiguous conflict and stops recovery
 before CLI updates or process launches. The prompt watcher is separate from the
-five supervisor-managed real-time bridge watchers. The managed Lead default
+five supervisor-managed real-time bridge watchers. The native Lead default
 does not launch this UI approval watcher; a pre-existing watcher blocks the
-managed startup until it is deliberately closed through a controlled handoff.
+Lead startup until it is deliberately closed through a controlled handoff.
 Failure to materialize a
 new watcher window after all lane handshakes is non-fatal: the launcher warns,
 leaves unattended Lead prompt approval disabled, and still completes the
@@ -98,7 +160,7 @@ worktree.
 
 The explicit runtime choices are:
 
-- Lead: `gpt-5.6-sol`, Codex mode `ultra`;
+- Lead: `gpt-6-astra`, Codex mode `xhigh`;
 - Tools: `gpt-5.6-terra`, effort `high`;
 - RCO1 and RCO2: Claude `sonnet`, effort `max`;
 - Fable: Claude `fable`, effort `max`.
@@ -157,6 +219,35 @@ not durable jobs: recreate them on every new session and verify both configured
 and actually-fired evidence. A cron-triggered turn alone does not prove that a
 dynamic wake fired. Neither mechanism interrupts a running or hung turn.
 
+Each interactive Claude lane also attaches one native `Monitor` tool to the
+pinned `Monitor-AgentBridge.ps1 -Agent <lane> -TargetedOnly -IncludeWakeRequests
+-Json -PollIntervalMs 1000`. The flag matters: the dashboard default suppresses
+wake requests. Establish the monitor before the first inbox read. Every cron
+and monitor turn checks new addressed work before considering a no-op, even if
+an idle one-shot is pending. A future idle timer never covers an unread request.
+Use the pinned Raw reader for full payloads; report errors instead of bypassing
+it with direct log reads. Process presence and configured schedules alone are
+not proof that messages reach a model turn.
+
+`start-wd-all.ps1 -Auto` now finishes with `Test-WdBridgeResponsiveness.ps1`.
+It sends a fresh bounded request to Tools, RCO1, RCO2 and Fable through the
+canonical bridge and verifies full-payload correlation, a computed answer,
+UUID and current session/run within five minutes. Missing/invalid replies
+fail the restore instead of reporting a fully working fleet. The result is
+`C:\Python\wd-reboot-runtime\bridge-functionality-current.json`; each run
+first replaces any old success with a non-passing checking record. Lead's
+native terminal identity is verified separately; Grok is not polled or charged.
+The same script is the post-install bridge release acceptance check. A staged
+or installed bundle without a new passing response report is not a verified
+runtime release. Read-only dry runs do not send these requests.
+
+CLI updates run on cold starts. If any Codex or Claude native session is
+already running, the launcher defers updates to the shared executables and
+records `deferred_live_sessions`; repeated `-Auto` calls must not replace a
+binary underneath an attested live session. Fleet Claude child processes also
+set `DISABLE_AUTOUPDATER=1` locally so the fleet updater owns binary changes.
+This does not change the operator's global Claude settings.
+
 Keep turns bounded. On a no-op cron, monitor or dynamic-loop turn, confirm the
 existing pending one-shot with `CronList` and leave it unchanged. Do not rearm
 merely to end a turn: even remaining-time rearming can round the target forward
@@ -183,22 +274,23 @@ A valid fresh task-blocked checkpoint keeps future wakes/backstops available;
 waiting for a peer or CI does not finish that task or disable the lane. Missing
 or invalid receipts and ambiguous/crashed turns still require reconciliation
 before another model turn.
-The next Lead startup is configured as `managed` with `conversation_surface:
-local_window` in this operator-requested change. RCO1, RCO2 and Fable remain native interactive lanes; Tools retains its
-canonical supervised consumer. Validate and deploy the matching bundle before
-this configuration takes effect. The Lead conversation window accepts messages
-while idle and steering during active work, streams replies, and offers interrupt
-and separate automation controls. A new full-access Lead thread starts PAUSED;
-Send does not arm automation, and the separate toggle is required. Only an exact
-matching saved identity restores its recorded automation choice. It needs no UI
-approval watcher. The read-only
-colored bridge monitor remains a separate view; it is not the conversational
-control window. Peers keep independent sessions, context and compact checkpoints.
-Those contexts are not pooled into one unlimited Lead memory. On a clean restart,
-the new conversation backend resumes its own recorded thread without loading all
-old transcript text into the GUI. The model retains its context; the window says
-that previous display history was not loaded. It never discovers or adopts the
-already-open interactive Lead's conversation.
+The default Lead is now `interactive` with `conversation_surface: none`.
+It opens the standard Codex terminal at `gpt-6-astra` / `xhigh`; `/model` can
+change the model and reasoning level inside that terminal. No custom Lead
+window or UI approval watcher starts. Native permissions preserve the previously
+approved `danger-full-access` / `never` posture.
+
+When `.codex-audit/wd-turn-loop/conversation.json` records a clean existing Lead
+thread, the launcher uses `codex resume <exact-thread-id>` in the canonical
+worktree. It never guesses with `--last`. Unresolved managed work blocks this
+handoff, and the lane lease is held while the native terminal runs. Previously
+delivered initial image/context is not replayed. Codex restores conversation
+history in its own terminal. Bridge identity and pinned helpers are established
+before native launch; the colored read-only bridge monitor remains separate.
+Native startup does not attach the former managed wake consumer. Bridge watcher
+sentinels alone do not submit prompts to an idle native Codex terminal.
+RCO1, RCO2, Fable and Tools retain their independent sessions.
+
 Do not edit an installed hash-pinned manifest in place. An already-open
 interactive Lead is preserved and is not externally resumable through a wake
 sentinel. Installing source files does not transform that live session into a

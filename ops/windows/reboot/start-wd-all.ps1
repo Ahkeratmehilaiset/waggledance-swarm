@@ -15,6 +15,8 @@
 param(
   [string] $ManifestPath = '',
   [string] $RunId = '',
+  [string] $ExternalSessionsPath = '',
+  [string] $ExternalSessionsHash = '',
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
@@ -191,16 +193,17 @@ function Assert-WdFleetPathWithoutReparse {
     [switch] $AllowMissing
   )
 
-  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $separator = [IO.Path]::DirectorySeparatorChar
+  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd($separator)
   $rootCandidate = [IO.Path]::GetFullPath($TrustedRoot)
   $root = if ($rootCandidate.Equals(
       [IO.Path]::GetPathRoot($rootCandidate),
       [StringComparison]::OrdinalIgnoreCase
-    )) { $rootCandidate } else { $rootCandidate.TrimEnd('\') }
+    )) { $rootCandidate } else { $rootCandidate.TrimEnd($separator) }
   if (
     -not $candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
     -not $candidate.StartsWith(
-      $root.TrimEnd('\') + '\',
+      $root.TrimEnd($separator) + $separator,
       [StringComparison]::OrdinalIgnoreCase
     )
   ) {
@@ -213,11 +216,11 @@ function Assert-WdFleetPathWithoutReparse {
   if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "fleet safety path root is a reparse point: $root"
   }
-  $relative = $candidate.Substring($root.Length).TrimStart('\')
+  $relative = $candidate.Substring($root.Length).TrimStart($separator)
   $current = $root
   $missing = $false
   $currentItem = $rootItem
-  foreach ($segment in @($relative -split '\\')) {
+  foreach ($segment in @($relative.Split($separator))) {
     if (-not $segment) { continue }
     if (
       ($currentItem.Attributes -band [IO.FileAttributes]::Directory) -eq 0
@@ -1574,13 +1577,15 @@ function Get-WdLeadPromptWatcherPolicy {
   if ($action -cnotin @('launch', 'current', 'conflict')) {
     throw 'Lead prompt-watcher policy received an unknown watcher state'
   }
-  if ($mode -ceq 'managed') {
+  $nativeConversation = $Lane.PSObject.Properties.Name -contains 'native_resume_policy' -and
+    [string]$Lane.native_resume_policy -ceq 'recorded_conversation'
+  if ($mode -ceq 'managed' -or $nativeConversation) {
     if ($action -cne 'launch') {
       throw 'Managed Lead requires no UI prompt watcher; close the identified legacy watcher through a controlled handoff, never terminate an ambiguous process'
     }
     return [pscustomobject]@{
       required = $false
-      summary = 'disabled for managed Lead; explicit native conversation permission posture applies'
+      summary = 'disabled; Lead uses explicit native permissions without a UI approval watcher'
     }
   }
   if ($action -ceq 'conflict') {
@@ -1620,6 +1625,15 @@ function Get-LaneProcesses {
       $newMatch -or $legacyMatch
     }
   )
+}
+
+function Test-WdCliUpdateDeferred {
+  param([AllowEmptyCollection()] [object[]] $Processes)
+  # Shared CLI installation paths must not change beneath either fleet lanes
+  # or unrelated operator sessions. Update once on a genuinely cold start.
+  return @($Processes | Where-Object {
+    [string]$_.Name -imatch '^(codex|claude)\.exe$'
+  }).Count -gt 0
 }
 
 function Test-WdProcessIdentitySetExact {
@@ -1738,6 +1752,30 @@ function Get-NamedCommandLineArgumentValue {
   return [string]$match.Groups['plain'].Value
 }
 
+function Resolve-WdLiveLaneManifest {
+  param([string] $CommandLine, [string] $BundleStore)
+  $explicit = Get-NamedCommandLineArgumentValue -CommandLine $CommandLine -Name 'ManifestPath'
+  if ($explicit) { return (Resolve-NormalizedPath -Path $explicit) }
+  # Stable wrappers supply ManifestPath inside PowerShell, not on the process
+  # command line. Resolve their original immutable bundle by the command's
+  # deployment hash, never by the mutable CURRENT deployment pointer.
+  $anchor = Get-NamedCommandLineArgumentValue -CommandLine $CommandLine -Name 'ExpectedManifestHash'
+  if ($anchor -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'Live wrapper has no deployment anchor' }
+  [void](Assert-WdFleetPathWithoutReparse -Path $BundleStore -TrustedRoot $BundleStore -ExpectedType Directory)
+  $bundleCandidates = @()
+  foreach ($directory in @(Get-ChildItem -LiteralPath $BundleStore -Directory)) {
+    if ($directory.Name -cnotmatch '^[0-9a-f]{40}$') { continue }
+    $deployment = Join-Path $directory.FullName 'deployment-manifest.json'
+    if (-not (Test-Path -LiteralPath $deployment -PathType Leaf)) { continue }
+    [void](Assert-WdFleetPathWithoutReparse -Path $deployment -TrustedRoot $BundleStore -ExpectedType Leaf)
+    if ((Get-FileHash -LiteralPath $deployment -Algorithm SHA256).Hash -ceq $anchor.ToUpperInvariant()) {
+      $bundleCandidates += Join-Path $directory.FullName 'wd-fleet.json'
+    }
+  }
+  if ($bundleCandidates.Count -ne 1) { throw 'Live wrapper deployment anchor does not identify exactly one installed bundle' }
+  return $bundleCandidates[0]
+}
+
 function Test-LaneGenerationAttestation {
   param(
     [Parameter(Mandatory)] $Lane,
@@ -1752,12 +1790,8 @@ function Test-LaneGenerationAttestation {
     $launcher = Resolve-NormalizedPath -Path (
       Get-NamedCommandLineArgumentValue -CommandLine $commandLine -Name 'File'
     )
-    $manifestArgument = Resolve-NormalizedPath -Path (
-      Get-NamedCommandLineArgumentValue `
-        -CommandLine $commandLine `
-        -Name 'ManifestPath'
-    )
     $bundleStore = Resolve-NormalizedPath -Path 'C:\Python\wd-reboot-bundles'
+    $manifestArgument = Resolve-WdLiveLaneManifest -CommandLine $commandLine -BundleStore $bundleStore
     $machineLauncher = Resolve-NormalizedPath -Path 'C:\Python\start-wd-agent.ps1'
     $bundleRoot = if ($launcher.Equals(
         $machineLauncher,
@@ -1884,11 +1918,14 @@ function Test-LaneGenerationAttestation {
     $runId = Get-NamedCommandLineArgumentValue `
       -CommandLine $commandLine `
       -Name 'RunId'
-    $handshakeDirectory = Resolve-NormalizedPath -Path (
-      Get-NamedCommandLineArgumentValue `
-        -CommandLine $commandLine `
-        -Name 'HandshakeDirectory'
-    )
+    $handshakeArgument = Get-NamedCommandLineArgumentValue `
+      -CommandLine $commandLine -Name 'HandshakeDirectory'
+    if (-not $handshakeArgument -and $runId -cmatch '^[a-zA-Z0-9_-]+$') {
+      # start-wd-agent supports this default for a direct single-lane resume.
+      # Verify the same confined path rather than rejecting a valid live lane.
+      $handshakeArgument = Join-Path 'C:\Python\wd-reboot-runtime\handshakes' $runId
+    }
+    $handshakeDirectory = Resolve-NormalizedPath -Path $handshakeArgument
     $handshakeRoot = Resolve-NormalizedPath -Path (
       'C:\Python\wd-reboot-runtime\handshakes'
     )
@@ -2006,8 +2043,8 @@ function Test-ToolsProcessReadiness {
       ConvertFrom-Json -ErrorAction Stop
     $surfaceProperty = $ToolsConfig.PSObject.Properties['conversation_surface']
     $surface = if ($null -eq $surfaceProperty) { 'none' } else { [string]$surfaceProperty.Value }
-    if ($surface -cnotin @('none', 'local_window')) { return $false }
-    $expectedSchema = if ($surface -ceq 'local_window') {
+    if ($surface -cnotin @('none', 'local_window', 'native_terminal')) { return $false }
+    $expectedSchema = if ($surface -ceq 'native_terminal') { 'wd.tools-consumer-ready.v3' } elseif ($surface -ceq 'local_window') {
       'wd.tools-consumer-ready.v2'
     } else { 'wd.tools-consumer-ready.v1' }
     $expectedCodex = Resolve-ApplicationPath -Name 'codex.cmd'
@@ -2096,6 +2133,22 @@ function Test-ToolsProcessReadiness {
     $canaryAt = ConvertTo-UtcDateTimeOffset `
       -Value $record.append_canary_event_utc `
       -Label 'Tools append canary creation'
+    if ($surface -ceq 'native_terminal') {
+      if ($record.status -cne 'terminal_ready' -or $record.readiness_scope -cne 'native_cli_only' -or
+          $record.conversation_surface -cne 'native_terminal' -or $record.agent -cne 'codex-tools-1' -or
+          $record.task_completion_verified -isnot [bool] -or $record.task_completion_verified -or
+          [string]$record.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { return $false }
+      $nativeMatches = @(Get-CimInstance Win32_Process | Where-Object { [int]$_.ProcessId -eq [int]$record.native_pid })
+      if ($nativeMatches.Count -ne 1) { return $false }
+      $native = $nativeMatches[0]
+      $nativeAt = ConvertTo-UtcDateTimeOffset -Value $native.CreationDate -Label 'Tools native creation'
+      $recordedNativeAt = ConvertTo-UtcDateTimeOffset -Value $record.native_process_start_utc -Label 'Tools native recorded creation'
+      if ([int]$native.ParentProcessId -ne [int]$Process.ProcessId -or
+          [int]$record.native_parent_pid -ne [int]$Process.ProcessId -or $native.Name -ine 'codex.exe' -or
+          -not ([string]$native.ExecutablePath).Equals($expectedCodex,[StringComparison]::OrdinalIgnoreCase) -or
+          $nativeAt -lt $recordCreated -or $nativeAt -gt $readyAt -or
+          [Math]::Abs(($nativeAt - $recordedNativeAt).TotalSeconds) -gt 1) { return $false }
+    }
     if ($surface -ceq 'local_window') {
       if ([string]$record.status -cne 'transport_ready' -or
           [string]$record.conversation_surface -cne 'local_window' -or
@@ -2146,6 +2199,10 @@ function Write-ToolsReadinessWarning {
     -Path $readinessPath `
     -Label 'Tools readiness record') |
     ConvertFrom-Json -ErrorAction Stop
+  if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v3') {
+    Write-Host 'codex-tools-1 is open in the standard Codex terminal. Bridge wake notifications are delivered through codex queue to this conversation, including while idle or minimized. Verify task progress in the terminal and bridge evidence.'
+    return
+  }
   if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v2') {
     Write-Host ('codex-tools-1 conversation transport is live; latest native checkpoint verified: ' +
       [string]$record.native_checkpoint_verified + '. Transport is not task completion.')
@@ -2631,9 +2688,14 @@ if ($bundleMode -ceq 'deployed') {
 
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $processes = Get-AllProcessSnapshots
+$cliUpdateDeferred = (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred -Processes $processes))
+if ($cliUpdateDeferred) {
+  $SkipCliUpdate = $true
+  Write-Host 'CLI updates deferred: active Codex/Claude sessions use the shared executables; update on a cold start.'
+}
 $laneStates = @()
 $expectedLaneRuntimes = @{
-  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-5.6-sol'; effort = 'ultra' }
+  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-6-astra'; effort = 'xhigh' }
   'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
   'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
   'fable-5' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'fable'; effort = 'max' }
@@ -2712,10 +2774,22 @@ foreach ($lane in @($manifest.lanes)) {
     # Apply mutation. It rechecks again at actual launch; this is not a lease
     # reservation or proof of a completed model turn.
     $admission = & $agentLauncherTarget -Agent ([string]$lane.agent) `
-      -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor
+      -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor `
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
     if ($null -eq $admission -or -not [bool]$admission.dry_run -or
         [string]$admission.turn_mode -cne 'managed') {
       throw "managed admission preflight did not return a valid result for $($lane.agent)"
+    }
+  }
+  if ($bundleMode -ceq 'deployed' -and $laneTurnMode -ceq 'interactive' -and $live.Count -eq 0) {
+    # Resolve saved provider conversations before updates, scheduler changes or
+    # opening any terminals. Broken history must not become a partial restore.
+    $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun `
+      -ExpectedManifestHash $bundleManifestAnchor `
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
+    if ($null -eq $resumePlan -or -not [bool]$resumePlan.dry_run -or
+        [string]$resumePlan.agent -cne [string]$lane.agent) {
+      throw "conversation resume preflight did not return a valid result for $($lane.agent)"
     }
   }
   if (-not [bool]$pinState.exact) {
@@ -2819,7 +2893,7 @@ $fleetSurfaceProperty = $toolsConfig.PSObject.Properties['conversation_surface']
 $bundleSurfaceProperty = $bundledTools.PSObject.Properties['conversation_surface']
 $fleetToolsSurface = if ($null -eq $fleetSurfaceProperty) { 'none' } else { [string]$fleetSurfaceProperty.Value }
 $bundleToolsSurface = if ($null -eq $bundleSurfaceProperty) { 'none' } else { [string]$bundleSurfaceProperty.Value }
-if ($fleetToolsSurface -cnotin @('none', 'local_window') -or $fleetToolsSurface -cne $bundleToolsSurface) {
+if ($fleetToolsSurface -cnotin @('none', 'local_window', 'native_terminal') -or $fleetToolsSurface -cne $bundleToolsSurface) {
   throw 'Tools conversation surface differs between fleet and supervisor config'
 }
 [void](Read-NonEmptyFile -Path $bundleToolsLauncher -Label 'bundled Tools consumer launcher')
@@ -3477,7 +3551,7 @@ try {
   $cliVersionRecord = [ordered]@{
     schema_version = 1
     verified_at_utc = [DateTime]::UtcNow.ToString('o')
-    update_status = $(if ($SkipCliUpdate) { 'operator_skipped' } else { 'completed' })
+    update_status = $(if ($cliUpdateDeferred) { 'deferred_live_sessions' } elseif ($SkipCliUpdate) { 'operator_skipped' } else { 'completed' })
     codex = [ordered]@{
       before = $codexVersion
       after = $codexAfterVersion
@@ -3580,6 +3654,10 @@ try {
       '-ExpectedManifestHash', $bundleManifestAnchor
     )
     Write-Host ("Launching {0}..." -f $state.lane.agent) -ForegroundColor Cyan
+    if ($ExternalSessionsPath) {
+      $wtArguments += @('-ExternalSessionsPath', ('"{0}"' -f $ExternalSessionsPath),
+        '-ExternalSessionsHash', $ExternalSessionsHash)
+    }
     [void](Start-Process -FilePath $wtPath -ArgumentList $wtArguments -PassThru)
     $launched += [string]$state.lane.agent
   }
@@ -3882,7 +3960,11 @@ try {
   )
 
   Write-Host ''
-  Write-Host ("Fleet restore complete; run_id={0}" -f $RunId) -ForegroundColor Green
+  Write-Host 'Verifying that the four bridge workers actually answer new requests...'
+  & (Join-Path $PSScriptRoot 'Test-WdBridgeResponsiveness.ps1') `
+    -RuntimeRoot ([string]$manifest.runtime_root) `
+    -BridgeBin (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
+  Write-Host ("Fleet restore complete; run_id={0}; four worker replies verified" -f $RunId) -ForegroundColor Green
   if (@($laneStates | Where-Object { $_.lane.PSObject.Properties.Name -contains 'turn_mode' -and [string]$_.lane.turn_mode -ceq 'managed' }).Count) {
     Write-Host '  Managed lanes: bootstrap identity verified; inspect owner state and fresh turn receipt separately for wake health.'
   }
@@ -3898,7 +3980,7 @@ try {
       'Codex Lead prompt watcher: unavailable; fleet restore still succeeded'
     )
   } else {
-    Write-Host '  Codex Lead prompt watcher: disabled for managed Lead'
+    Write-Host '  Codex Lead prompt watcher: disabled; native permission policy applies'
   }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
   if (-not $NoBridgeConversation) {

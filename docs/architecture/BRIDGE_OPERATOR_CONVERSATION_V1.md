@@ -1,7 +1,13 @@
 # Independent Lead and Tools conversations v1
 
+The deployed Lead default is now the standard Codex terminal (`interactive`,
+`conversation_surface: none`). The custom Lead design below is retained as
+optional backend documentation, not the current Lead interface. Tools still
+uses this conversation backend. See `ops/windows/reboot/BOOT_AFTER_REBOOT.md`
+for the native Lead resume path and its wake limitations.
+
 The operator must be able to direct the Lead while it works, not just watch
-bridge messages. The next-start Lead configuration combines `turn_mode: managed`
+bridge messages. The optional custom Lead configuration combines `turn_mode: managed`
 and `conversation_surface: local_window`. This document describes source behavior
 and acceptance requirements, not proof of installation or a successful live turn.
 
@@ -45,7 +51,7 @@ RPC entry box. Actions are a closed set and bind to the current owner epoch and
 observed turn. Stale steering is rejected visibly, never retargeted or silently
 retried as a new turn. User text is input, not a method name or executable shell.
 
-Explicit pins remain Lead `gpt-5.6-sol` / `ultra` and Tools `gpt-5.6-terra` / `high`.
+Explicit pins remain Lead `gpt-6-astra` / `xhigh` and Tools `gpt-5.6-terra` / `high`.
 The default backend policy is `workspace-write` / approval `never`, no network,
 with its verified worktree and bridge runtime writable. Tools explicitly enables
 network access, without extra shared Git or sibling-worktree write roots.

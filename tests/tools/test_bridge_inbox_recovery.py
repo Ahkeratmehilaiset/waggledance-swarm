@@ -2,6 +2,7 @@
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -93,3 +94,21 @@ def test_shared_cli_update_is_deferred_for_external_sessions(ps, name, expected)
     end = source.index('\nfunction ', start + 1)
     result = run(ps, source[start:end] + f"\nTest-WdCliUpdateDeferred -Processes @([pscustomobject]@{{Name='{name}'}}) | ConvertTo-Json")
     assert result is expected
+
+
+@pytest.mark.parametrize('ps', SHELLS)
+@pytest.mark.parametrize('exit_code', [0, 7])
+def test_native_tools_retains_real_exit_status_after_deferred_wait(tmp_path, ps, exit_code):
+    source = (ROOT / 'ops/windows/reboot/start-wd-tools-consumer.ps1').read_text()
+    start = source.index('function Start-WdToolsNativeProcess {')
+    end = source.index('\nfunction ', start + 1)
+    child = tmp_path / 'exit.py'
+    child.write_text(f'import sys,time; time.sleep(0.2); sys.exit({exit_code})')
+    result = run(ps, source[start:end] + f"""
+    $p=Start-WdToolsNativeProcess -CliPath '{sys.executable}' -ArgumentLine '"{child}"' -Worktree '{tmp_path}'
+    while(-not $p.WaitForExit(30)) {{ }}
+    Start-Sleep -Milliseconds 100
+    $p.ExitCode | ConvertTo-Json
+    $p.Dispose()
+    """)
+    assert result == exit_code

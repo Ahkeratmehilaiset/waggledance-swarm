@@ -447,6 +447,20 @@ function Invoke-WdNativeToolsWakeRelay {
     } finally { $lease.Dispose() }
 }
 
+function Start-WdToolsNativeProcess {
+    param([string] $CliPath, [string] $ArgumentLine, [string] $Worktree)
+    # Keep the creation handle, including after an ordinary terminal exit.
+    # Start-Process's returned adapter can lose ExitCode after deferred waits
+    # on Windows PowerShell, falsely reporting a clean exit as a failure.
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $CliPath; $info.Arguments = $ArgumentLine
+    $info.WorkingDirectory = $Worktree; $info.UseShellExecute = $false
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $info
+    if (-not $process.Start()) { $process.Dispose(); throw 'Native Tools process did not start' }
+    return $process
+}
+
 function Invoke-WdNativeToolsTerminal {
     param($Saved, $BaseRecord, [string] $CliPath, [string[]] $Arguments,
         [string] $ReadinessPath, [string] $RuntimeRoot, [string] $Worktree)
@@ -464,7 +478,7 @@ function Invoke-WdNativeToolsTerminal {
     try {
         Write-Host "Tools: normal Codex terminal; resume $($Saved.thread_id); $($BaseRecord.model)/$($BaseRecord.reasoning_effort)"
         $line = @($Arguments | ForEach-Object { ConvertTo-WdToolsNativeArgument $_ }) -join ' '
-        $native = Start-Process -FilePath $CliPath -ArgumentList $line -WorkingDirectory $Worktree -NoNewWindow -PassThru
+        $native = Start-WdToolsNativeProcess -CliPath $CliPath -ArgumentLine $line -Worktree $Worktree
         $record = [ordered]@{}
         foreach ($key in $BaseRecord.Keys) { $record[$key] = $BaseRecord[$key] }
         $record.schema='wd.tools-consumer-ready.v3'; $record.status='terminal_ready'
@@ -494,6 +508,7 @@ function Invoke-WdNativeToolsTerminal {
         # On a launcher failure do not orphan a child that still owns the thread.
         if ($null -ne $native -and -not $native.HasExited) { $native.WaitForExit() }
         $owner.status='stopped'; Write-WdTurnOwner $pointer $ownerPath $owner
+        if ($null -ne $native) { $native.Dispose() }
     }
 }
 

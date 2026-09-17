@@ -1827,7 +1827,7 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "-Property @{" in supervisor
     assert "0x08000000 -bor" in supervisor
     assert "0x00000400" in supervisor
-    assert "ShowWindow = if ($VisibleTerminal) { [uint16]1 } else { [uint16]0 }" in supervisor
+    assert "ShowWindow = [uint16]0" in supervisor
     assert "EnvironmentVariables = [string[]]$environment.ToArray()" in (
         supervisor
     )

@@ -2060,8 +2060,16 @@ function Start-OutOfTaskJobPowerShell {
     # interactive user token and session.
     if ($VisibleTerminal) {
         $terminal = @(Get-Command wt.exe -CommandType Application -ErrorAction Stop)[0].Source
-        $ArgumentList = @('-w','new','new-tab','--title','codex-tools-1', $HostPath) + $ArgumentList
-        $HostPath = $terminal
+        $terminalArguments = @('-w','new','new-tab','--title','codex-tools-1', $HostPath) + $ArgumentList
+        $terminalLine = @($terminalArguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join ' '
+        # WMI cannot activate the WindowsApps wt.exe execution alias directly.
+        # A short native PowerShell process outside the scheduler job activates
+        # Terminal. Encode a script made only from single-quoted literals; no
+        # prompt text, path or argument is interpreted as PowerShell code.
+        $bootstrap = "Start-Process -WindowStyle Normal -FilePath '" + $terminal.Replace("'", "''") +
+            "' -ArgumentList '" + $terminalLine.Replace("'", "''") + "'"
+        $ArgumentList = @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',
+            [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap)))
     }
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     $commandParts.Add((ConvertTo-WindowsCommandLineArgument $HostPath))
@@ -2086,11 +2094,11 @@ function Start-OutOfTaskJobPowerShell {
     $startup = New-CimInstance `
         -ClassName Win32_ProcessStartup `
         -Property @{
-            CreateFlags = if ($VisibleTerminal) { [uint32]0x00000400 } else { [uint32](
+            CreateFlags = [uint32](
                 0x08000000 -bor  # CREATE_NO_WINDOW
                 0x00000400       # CREATE_UNICODE_ENVIRONMENT
-            ) }
-            ShowWindow = if ($VisibleTerminal) { [uint16]1 } else { [uint16]0 }
+            )
+            ShowWindow = [uint16]0
             EnvironmentVariables = [string[]]$environment.ToArray()
         } `
         -ClientOnly `

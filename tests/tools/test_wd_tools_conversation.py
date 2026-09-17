@@ -72,7 +72,7 @@ def test_supervisor_launches_single_hidden_sta_wrapper_and_selects_v2_by_mode() 
 
     assert "'-STA'" in text
     assert "CREATE_NO_WINDOW" in text
-    assert "ShowWindow = if ($VisibleTerminal) { [uint16]1 } else { [uint16]0 }" in text
+    assert "ShowWindow = [uint16]0" in text
     assert "wd.tools-consumer-ready.v1" in text
     assert "wd.tools-consumer-ready.v2" in text
     assert "conversation_surface" in text

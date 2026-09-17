@@ -1,4 +1,5 @@
 """Native Tools keeps its saved thread, exclusive owner and visible terminal."""
+import base64
 import json
 import os
 import sys
@@ -91,10 +92,12 @@ Start-OutOfTaskJobPowerShell -HostPath 'C:\\Windows\\powershell.exe' -ArgumentLi
 @{command=$script:launch.CommandLine;show=$script:launch.ProcessStartupInformation.ShowWindow;flags=$script:launch.ProcessStartupInformation.CreateFlags}|ConvertTo-Json
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
-    assert result["command"].startswith(r"C:\Terminal\wt.exe -w new new-tab --title codex-tools-1")
-    assert "start-wd-tools-consumer.ps1" in result["command"]
-    assert result["show"] == 1
-    assert result["flags"] & 0x08000000 == 0
+    assert result["command"].startswith(r"C:\Windows\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ")
+    bootstrap = base64.b64decode(result["command"].split()[-1]).decode('utf-16le')
+    assert "Start-Process -WindowStyle Normal -FilePath 'C:\\Terminal\\wt.exe'" in bootstrap
+    assert "-w new new-tab --title codex-tools-1" in bootstrap
+    assert "start-wd-tools-consumer.ps1" in bootstrap
+    assert result["show"] == 0  # only the activation helper is hidden
 
 
 def test_native_mode_returns_before_loading_custom_window():

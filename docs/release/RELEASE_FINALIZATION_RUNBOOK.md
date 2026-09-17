@@ -1,14 +1,35 @@
 # v3.12.0 Release Finalization Runbook
 
-This runbook is the exact mechanical sequence to flip
-`docs/runs/release_soak_evidence/v3.12.0.json` from `result=hold` to
-`result=pass` once the soak window completes, and to verify the release
-gate accepts it. It is the only finalization recipe; do not improvise
+This runbook is the exact mechanical sequence to reach a release-gate
+`decision: pass` on `docs/runs/release_soak_evidence/v3.12.0.json` once the
+soak window completes. It is the only finalization recipe; do not improvise
 status fields by hand.
+
+## Verified starting state (main `28a98f34`, checked 2026-09-17)
+
+Earlier revisions of this runbook described the stored evidence as
+`result=hold` and the finalization as a `hold` to `pass` flip. That is no
+longer the state on disk, and the difference matters, so it is recorded here
+rather than left for the operator to discover mid-run:
+
+* `docs/runs/release_soak_evidence/v3.12.0.json` **already stores**
+  `result: "pass"`, all six status fields `pass`, and
+  `docker_stable_policy: "finalized"`.
+* The gate nevertheless returns `decision: "hold"` (exit code 1), because a
+  stored `pass` is no longer sufficient on its own. The evidence must also be
+  **rebuildable** from the local artifacts, and the Axis artifacts must carry
+  source binding. Neither holds today.
+* Re-running Step 1 against the stored evidence-subject commit
+  `8db47f609cd3d838dbb67c94542921b391c1ac74` rebuilds
+  `result: "hold"` and `docker_stable_policy: "draft"`, and adds an
+  `artifact_selection` object the stored file does not have.
+
+So the remaining work is **not** a status flip. It is producing artifacts the
+collector can rebuild from. Do not close that gap by editing the JSON.
 
 ## Pre-conditions to verify
 
-Before running the re-collect, confirm all four:
+Before running the re-collect, confirm all five:
 
 1. **Today is on or after the soak end.** Per
    `docs/release/RELEASE_READINESS.md` the soak window is
@@ -30,14 +51,51 @@ Before running the re-collect, confirm all four:
    - `silent_failures` ⇒ `0`. `error_log_clean` ⇒ `true`.
    - `started_at_utc` ⇒ `"2026-05-10T00:00:00Z"`. `target_version` ⇒
      `"v3.12.0"`. `schema_version` ⇒ `"waggledance.release_soak.v1"`.
-   - Only `result` (currently `"hold"`), `ended_at_utc`, `commit`, and
-     `duration_hours` should change at finalization.
-4. **Operator decision packs are signed.** Verify
+   - `artifact_selection` ⇒ present, an object naming the selected
+     bandit and pip-audit artifacts with their `source_digest`. The
+     collector emits this field and the reproducibility verifier compares
+     it; a file without it can never verify. The stored file does not
+     currently have it.
+   - Passing this inspection does **not** mean the gate will pass. Every
+     field above already reads as expected on main `28a98f34` while the gate
+     still holds. Pre-condition 5 is the one that is currently failing.
+4. **Reproducibility.** The stored evidence must rebuild from the local
+   artifacts. Check it directly, before touching anything:
+   ```bash
+   python -c "import json; from tools.verify_release_soak_evidence import build_report; \
+   print(json.dumps(build_report(soak_evidence='docs/runs/release_soak_evidence/v3.12.0.json', \
+   release_readiness='docs/release/RELEASE_READINESS.md'), indent=1)[:2000])"
+   ```
+   Require `verified: true` and an empty `blockers` array. On main
+   `28a98f34` this returns `verified: false` with nine blockers: three
+   `field_mismatch:` entries (`artifact_selection`, `docker_stable_policy`,
+   `result`) and six Axis source-binding entries (`axis_a_source_commit_missing`,
+   `axis_a_generated_at_invalid`, `axis_a_sources_unbound`, and the three
+   `axis_b_` equivalents). Each names a real artifact gap. Fix the artifact.
+5. **Operator decision packs are signed.** Verify
    `docs/operator_inbox/torch-cuda-vs-cpu.yaml` and
    `docs/operator_inbox/docker-latest-promotion.yaml` both have a
    non-empty `operator_signoff.signed_by` and `chosen_option`. The
    docker pack must specify `chosen_option: ghcr_stable_only`
    (latest tag does NOT move at v3.12.0 stable).
+
+   On main `28a98f34` both packs are signed: the torch pack carries
+   `signed_by: "operator:jani:2026-05-22T18:14:34Z"` with
+   `chosen_option: "A2_cu126"` plus a later scope-update signature
+   (`operator:jani:2026-09-11T05:55:35Z`), and the docker pack carries
+   `signed_by: "operator:jani:2026-05-22T18:14:34Z"` with
+   `chosen_option: "ghcr_stable_only"`.
+
+   A signed pack is **not** the same as a finalized artifact, and this is the
+   trap in pre-condition 5. `docs/runs/release_soak_evidence/v3.12.0_docker_policy.json`
+   still reads `docker_stable_policy: "draft"` with
+   `operator_authorization: null` and a blocker of
+   `operator_authorization_missing`, and it is bound to the stale commit
+   `bbb0cc371c19884317b07b03bcaf8b1e42a46667`. That is why a re-collect
+   derives `draft` even though the pack is signed. Regenerate the docker
+   policy artifact against the real subject commit with the operator
+   authorization recorded; do not pass `--docker-stable-policy finalized`
+   to paper over it.
 
 If any pre-condition fails, STOP. Treat the failure as a real finding;
 do not weaken the gate to ship.
@@ -72,49 +130,88 @@ If `--use-local-artifacts` reports a per-field mismatch versus the
 current `v3.12.0.json`, that is a real signal — investigate the
 underlying artifact, not the status flag.
 
+**On the `2026-05-24` end date.** The window above is the R22.5 calendar
+window recorded in `docs/release/RELEASE_READINESS.md`. Elapsed May calendar
+time does not demonstrate elapsed runtime for a source subject frozen in
+September, and the release notes already require a fresh-subject soak before
+stable. Running this command reproduces the recorded window; it does not by
+itself satisfy that requirement, and old hours must not be relabelled as a
+fresh-subject soak. Treat a `duration_hours: 336` derived from these two
+timestamps as a schema value, not as proof that the candidate ran for 336
+hours.
+
 ## Step 2 — Verify the gate accepts the new evidence
+
+Pass the real current UTC date. The gate's `--today` exists to make checks
+reproducible, not to pick a convenient day, and the anti-claims below forbid
+coercing it.
 
 ```bash
 python tools/check_release_gate.py \
   --release-readiness docs/release/RELEASE_READINESS.md \
   --soak-evidence docs/runs/release_soak_evidence/v3.12.0.json \
-  --today 2026-05-24
+  --today "$(date -u +%F)"
 ```
 
-Expected output exactly:
+The target output is `decision: "pass"` with an empty `blockers` array,
+`latest_stable: "v3.8.0"`, and the `soak_window` block reporting
+`start: "2026-05-10"`, `end: "2026-05-24"`, `required_hours: 336`.
 
-```json
-{
-  "blockers": [],
-  "decision": "pass",
-  "latest_stable": "v3.8.0",
-  "no_earlier_than": "2026-05-24",
-  "soak_window": {
-    "end": "2026-05-24",
-    "required_hours": 336,
-    "start": "2026-05-10"
-  },
-  "target_version": "v3.12.0"
-}
+That is the target, not the current behaviour. **Actual output on main
+`28a98f34`, checked 2026-09-17, is `decision: "hold"` with exit code 1** and
+these ten blockers:
+
 ```
+soak_evidence_not_reproducible
+field_mismatch:artifact_selection
+field_mismatch:docker_stable_policy
+field_mismatch:result
+axis_a_source_commit_missing
+axis_a_generated_at_invalid
+axis_a_sources_unbound
+axis_b_source_commit_missing
+axis_b_generated_at_invalid
+axis_b_sources_unbound
+```
+
+The same ten appear whether `--today` is `2026-05-24` or the real date, so
+the calendar clause is not what is holding this release. The real output also
+carries a `soak_evidence_diagnostics` object (with a nested
+`soak_reproducibility` report) that earlier revisions of this runbook did not
+mention; read it, because it names the mismatched fields directly.
 
 `decision != "pass"` ⇒ STOP. Read the `blockers` array; each entry is
-a fail-closed gate clause from `tools/check_release_gate.py`. Common
-ones and what they mean:
+a fail-closed gate clause from `tools/check_release_gate.py`. What they mean:
 
+- `soak_evidence_not_reproducible` ⇒ the umbrella blocker. The evidence did
+  not rebuild from local artifacts. The `field_mismatch:` and `axis_*`
+  entries below it are the specific reasons; fix those, not this.
+- `field_mismatch:<field>` ⇒ the rebuilt value for `<field>` differs from the
+  stored value. Currently `artifact_selection` (absent in the stored file),
+  `docker_stable_policy` (rebuilds `draft`, stored `finalized`), and `result`
+  (rebuilds `hold`, stored `pass`). Re-collect; do NOT hand-edit the JSON.
+- `axis_a_source_commit_missing` / `axis_b_source_commit_missing` ⇒ the Axis
+  artifact does not record the commit it was generated from.
+- `axis_a_generated_at_invalid` / `axis_b_generated_at_invalid` ⇒ its
+  `generated_at` timestamp is missing or unparseable.
+- `axis_a_sources_unbound` / `axis_b_sources_unbound` ⇒ its source files are
+  not hash-bound. Regenerate the Axis artifacts with source binding; this is
+  artifact work, not a gate or status change.
+- `soak_reproducibility_verifier_unavailable` ⇒ `tools/verify_release_soak_evidence`
+  could not be imported. Fail-closed by design; fix the import, never skip it.
 - `before_no_earlier_than_date` ⇒ system clock is wrong, or it is not
   yet 2026-05-24 UTC.
-- `soak_evidence_duration_lt_336h` ⇒ `ended_at_utc - started_at_utc`
-  is below 336 hours; usually means `--ended-at-utc` was supplied
-  earlier than `2026-05-24T00:00:00Z`.
-- `soak_evidence_ended_before_required_soak_end` ⇒ same root cause
-  expressed as a different invariant.
-- `soak_evidence_<field>_not_pass` ⇒ a status field in the JSON is not
-  the expected pass value; do NOT hand-edit the JSON; re-run
-  `collect_soak_evidence` after fixing the underlying artifact.
+- `soak_evidence_ended_before_required_soak_end` ⇒ `ended_at_utc` is earlier
+  than the required soak end, usually a wrong `--ended-at-utc`.
 - `soak_evidence_result_not_pass` ⇒ the collector did not derive
   `result=pass`; the most common cause is a missing
   `--use-local-artifacts` flag or stale artifact. Re-collect.
+
+Earlier revisions of this list documented `soak_evidence_duration_lt_336h`.
+That string does not exist anywhere in `tools/check_release_gate.py` and the
+gate never emits it; the duration shortfall surfaces as
+`soak_evidence_ended_before_required_soak_end` instead. It has been removed so
+nobody greps for a blocker that cannot appear.
 
 ## Step 3 — Land the evidence update via PR
 
@@ -160,13 +257,42 @@ completeness; an agent must NOT execute them autonomously.
 - An agent MUST NOT supply `--today` later than the actual UTC date
   to coerce the gate. The gate's time clauses exist exactly to
   prevent that bypass.
+- An agent MUST NOT close a `field_mismatch:` blocker by editing the stored
+  evidence to match the rebuild, or by passing `--status` /
+  `--docker-stable-policy` overrides to force agreement. The mismatch means
+  the artifact and the claim disagree; only the artifact may be fixed.
+- An agent MUST NOT treat a signed operator decision pack as equivalent to a
+  finalized evidence artifact. The docker pack is signed today and the docker
+  policy artifact is still `draft`.
 - The runbook does NOT cover hotfix releases or rollbacks; those have
   their own (yet-unwritten) procedures.
+
+## Known gaps (recorded 2026-09-17, not fixed here)
+
+* The Axis A and Axis B artifacts lack source-commit binding, a valid
+  `generated_at`, and hash-bound sources. Six of the ten current blockers are
+  this one gap. Regenerating them is the largest remaining item.
+* `docs/runs/release_soak_evidence/v3.12.0_docker_policy.json` is bound to
+  `bbb0cc37`, not to any current subject commit, and records no operator
+  authorization.
+* `docs/release/RELEASE_READINESS.md` documents the collector's `--history`
+  path as `docs/release/soak_evidence_history.jsonl`, which does not exist in
+  the tree. The real file is
+  `docs/runs/release_soak_evidence/v3.12.0_history.jsonl`, which is what this
+  runbook uses. Correcting `RELEASE_READINESS.md` is out of this document's
+  scope and needs its own change.
+* A dedicated fresh-soak verifier (`tools/verify_fresh_release_soak.py`) was
+  in review but is not present on main `28a98f34`, so nothing in this runbook
+  depends on it.
 
 ## References
 
 - `tools/collect_soak_evidence.py` — evidence collector (writer).
 - `tools/check_release_gate.py` — fail-closed gate (reader).
+- `tools/verify_release_soak_evidence.py` — reproducibility verifier. The
+  gate imports its `build_report` after structural validation and fails
+  closed if it is unavailable, raises, or returns `verified != true`. This is
+  what currently holds the release.
 - `docs/release/RELEASE_READINESS.md` — release-window definition and
   accepted lock exceptions.
 - `docs/operator_inbox/torch-cuda-vs-cpu.yaml`,

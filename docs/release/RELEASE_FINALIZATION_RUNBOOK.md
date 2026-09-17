@@ -203,15 +203,34 @@ a fail-closed gate clause from `tools/check_release_gate.py`. What they mean:
   yet 2026-05-24 UTC.
 - `soak_evidence_ended_before_required_soak_end` ⇒ `ended_at_utc` is earlier
   than the required soak end, usually a wrong `--ended-at-utc`.
+- `soak_evidence_duration_lt_<N>h` ⇒ the recorded `duration_hours` is below
+  the required window. `<N>` is not fixed: the gate computes it from the
+  readiness window and interpolates it, so with today's `2026-05-10` to
+  `2026-05-24` window the emitted blocker reads exactly
+  `soak_evidence_duration_lt_336h`. It is absent from the ten current blockers
+  only because the stored evidence already records `duration_hours: 336`, not
+  because the gate cannot produce it. A genuine short soak run will show it.
+- `soak_evidence_<field>_not_<expected>` ⇒ a status field is not at its
+  expected value. `<expected>` is usually `pass` but not always, so a
+  finalization failure can read `soak_evidence_docker_policy_not_finalized`.
+  Do NOT hand-edit the JSON; re-run `collect_soak_evidence` after fixing the
+  underlying artifact.
 - `soak_evidence_result_not_pass` ⇒ the collector did not derive
   `result=pass`; the most common cause is a missing
   `--use-local-artifacts` flag or stale artifact. Re-collect.
+- `soak_evidence_unreadable:<ExceptionClass>` ⇒ the evidence file could not be
+  read or parsed at all.
 
-Earlier revisions of this list documented `soak_evidence_duration_lt_336h`.
-That string does not exist anywhere in `tools/check_release_gate.py` and the
-gate never emits it; the duration shortfall surfaces as
-`soak_evidence_ended_before_required_soak_end` instead. It has been removed so
-nobody greps for a blocker that cannot appear.
+**Do not try to enumerate this list by grepping the gate for quoted strings.**
+Several blockers are built with f-strings and interpolated values, so a literal
+search will not find them and can make a real blocker look impossible. The
+three built this way are the `duration_lt`, the `<field>_not_<expected>`, and
+the `unreadable` entries above. To check whether the gate can emit a given
+blocker, call `evaluate_release_gate` on a synthetic evidence file that should
+trigger it and read the returned `blockers` array. An earlier revision of this
+runbook asserted, from a literal grep alone, that `soak_evidence_duration_lt_336h`
+could never appear. That was wrong, and it was caught in review by someone who
+ran the function instead of grepping for it.
 
 ## Step 3 — Land the evidence update via PR
 

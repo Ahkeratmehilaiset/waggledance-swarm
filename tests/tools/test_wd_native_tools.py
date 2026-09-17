@@ -14,6 +14,7 @@ THREAD = "01a0a07b-ca98-71e1-90cb-d588435a2d8d"
 TOOLS = REBOOT / "start-wd-tools-consumer.ps1"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process command-line parsing")
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("case", ["current", "old_bundle", "external", "payload"])
 def test_supervisor_does_not_miss_existing_tools_after_bundle_update(ps, case):

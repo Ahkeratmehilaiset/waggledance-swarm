@@ -41,8 +41,23 @@ history starts the initial visual bootstrap once.
 The continuation turn checks compact state and live bridge claims, then resumes
 the latest unfinished authorized work. Completed effects are reconciled before
 retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native
-Lead still has no managed idle-wake consumer. Its continuation is submitted when
-the terminal starts, and subsequent operator messages use the normal Codex UI.
+Lead and Tools have no managed idle-wake consumer attached to their terminals.
+A continuation is requested when each terminal starts, and subsequent operator
+messages use the normal Codex UI.
+
+Tools uses `conversation_surface=native_terminal`: the Limited supervisor opens
+one Windows Terminal window named `codex-tools-1`, running normal Codex with its
+recorded conversation UUID, `gpt-5.6-terra/high` and workspace-write permissions.
+The launcher holds the existing Tools ownership lock for the terminal lifetime.
+The former custom UI and its Automation toggle are inactive on this path. The
+saved conversation and interrupted-work evidence are preserved; unresolved
+attempts still block a replacement. A live Tools process from another generation
+requires a controlled handoff, rather than automatic process termination.
+
+Tools readiness v3 means `terminal_ready` with scope `native_cli_only`: the
+wrapper and native process identities match. It does not claim a completed model
+turn or ongoing task progress. Check those in the visible terminal and bridge
+evidence. Closing Codex ends this Tools session. `/model` remains available.
 
 Already-live lane wrappers are identified using their original deployment hash,
 including wrappers whose process command line omits `-ManifestPath`. CLI binary
@@ -61,14 +76,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Python\start-wd-all.ps1 -
 
 For a manual two-step recovery, run `-DryRun` and then `-Apply`. With no mode
 switch the launcher defaults to byte-inert DryRun. After a successful restore,
-leave each agent's conversation window open. Lead uses the standard Codex
-terminal, Tools retains its local conversation window, and RCO1, RCO2 and Fable
+leave each agent's conversation window open. Lead and Tools use standard Codex
+terminals, and RCO1, RCO2 and Fable
 retain their native interactive windows.
 Their contexts are independent, not multiple views of Lead. Tools and exactly
 five real-time bridge watchers are reconciled through `WD-Supervisor`; the Tools
 window never creates an additional consumer alongside its existing parent.
 
-Tools local-window readiness v2 reports verified transport availability separately
+Legacy Tools local-window readiness v2 reports verified transport availability separately
 from native checkpoint progress. An open window is not evidence of useful work.
 In legacy headless mode, readiness v1 follows the first tick, which can take
 several minutes. During the bounded readiness wait, `-Auto` prints progress every

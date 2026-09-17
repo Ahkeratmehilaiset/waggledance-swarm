@@ -48,7 +48,7 @@ function Get-WdToolsConversationSurface {
     $property = $Tools.PSObject.Properties['conversation_surface']
     if ($null -eq $property) { return 'none' }
     $surface = [string]$property.Value
-    if ($surface -cnotin @('none', 'local_window')) {
+    if ($surface -cnotin @('none', 'local_window', 'native_terminal')) {
         throw "unsupported Tools conversation_surface '$surface'"
     }
     return $surface
@@ -283,6 +283,88 @@ function Assert-WdToolsColdStart {
     if ([IO.Directory]::Exists($journal)) {
         $pending = @(Get-ChildItem -LiteralPath $journal -Filter '*.pending' -File)
         if ($pending.Count) { throw "Tools cold start blocked: unresolved local pending evidence in $journal" }
+    }
+}
+
+function Get-WdNativeToolsResumeState {
+    param([string] $Worktree)
+    $path = Join-Path (Join-Path (Join-Path $Worktree '.codex-audit') 'wd-turn-loop') 'conversation.json'
+    Assert-FilePathWithoutReparse -Candidate $path -Root ([IO.Path]::GetPathRoot($path))
+    if (-not [IO.File]::Exists($path) -or (Get-Item -LiteralPath $path -Force).Length -gt 32768) {
+        throw 'Native Tools requires its recorded conversation identity'
+    }
+    $saved = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+    if ($saved.schema -cne 'wd.codex-conversation.v1' -or $saved.agent -cne 'codex-tools-1' -or
+        -not ([string]$saved.worktree).Equals($Worktree,[StringComparison]::OrdinalIgnoreCase) -or
+        [string]$saved.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
+        $saved.initial_context_delivered -isnot [bool] -or $saved.interrupting -or $saved.recovery_required -or
+        $saved.codex_permission_posture -cne 'workspace_write') {
+        throw 'Native Tools requires an exact reconciled workspace-write conversation'
+    }
+    return $saved
+}
+
+function ConvertTo-WdToolsNativeArgument {
+    param([AllowEmptyString()] [string] $Value)
+    # Quote argv for Start-Process on Windows; never interpolate into a shell.
+    if ($Value -and $Value -notmatch '[\s"]') { return $Value }
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
+}
+
+function Get-WdNativeToolsArguments {
+    param($Saved, [string] $Worktree, [string] $Model, [string] $Effort,
+        [string] $Prompt, [string] $ImagePath, [string[]] $WritableRoots, [bool] $NetworkAccess)
+    $nativeArguments = @('resume', [string]$Saved.thread_id, '--cd', $Worktree,
+        '--model', $Model, '-c', ('model_reasoning_effort="{0}"' -f $Effort),
+        '--ask-for-approval', 'never', '--sandbox', 'workspace-write',
+        '-c', ('sandbox_workspace_write.network_access={0}' -f $NetworkAccess.ToString().ToLowerInvariant()))
+    foreach ($root in $WritableRoots) { $nativeArguments += @('--add-dir', $root) }
+    if (-not $Saved.initial_context_delivered) { $nativeArguments += @('--image', $ImagePath) }
+    $nativeArguments += ($Prompt + ' This is the standard interactive Codex terminal for codex-tools-1. ' +
+        'The former custom window, Automation button and managed turn receipts are historical. ' +
+        'Resume the latest unfinished authorized Tools task after checking live claims and whether interrupted actions already completed. ' +
+        'Keep explicit task HOLDs and cancelled work stopped. Record progress in compact state and bridge evidence. ' +
+        'No managed idle-wake consumer is attached to this terminal. The operator can use /model and normal Codex controls.')
+    return ,$nativeArguments
+}
+
+function Invoke-WdNativeToolsTerminal {
+    param($Saved, $BaseRecord, [string] $CliPath, [string[]] $Arguments,
+        [string] $ReadinessPath, [string] $RuntimeRoot, [string] $Worktree)
+    if ([Console]::IsInputRedirected) { throw 'Native Tools requires an interactive Windows Terminal tab' }
+    $journal = Join-Path (Join-Path $Worktree '.codex-audit') 'wd-turn-loop'
+    $pointer = Join-Path $RuntimeRoot '.wd-turn-codex-tools-1.owner.json'
+    $ownerPath = Join-Path $journal 'owner.json'
+    $owner = [ordered]@{schema='wd.lane-turn-owner.v1'; agent='codex-tools-1';
+        session_id=$BaseRecord.session_id; generation=$BaseRecord.generation; pid=$PID;
+        process_start_utc=$BaseRecord.process_start_utc; status='starting'; continuation='native_terminal';
+        child_pid=$null; thread_id=[string]$Saved.thread_id; pending_path=$null;
+        worktree=$Worktree; journal_root=$journal; updated_at_utc=''; task_completion_verified=$false}
+    Write-WdTurnOwner $pointer $ownerPath $owner
+    $native = $null
+    try {
+        Write-Host "Tools: normal Codex terminal; resume $($Saved.thread_id); $($BaseRecord.model)/$($BaseRecord.reasoning_effort)"
+        $line = @($Arguments | ForEach-Object { ConvertTo-WdToolsNativeArgument $_ }) -join ' '
+        $native = Start-Process -FilePath $CliPath -ArgumentList $line -WorkingDirectory $Worktree -NoNewWindow -PassThru
+        $record = [ordered]@{}
+        foreach ($key in $BaseRecord.Keys) { $record[$key] = $BaseRecord[$key] }
+        $record.schema='wd.tools-consumer-ready.v3'; $record.status='terminal_ready'
+        $record.conversation_surface='native_terminal'; $record.readiness_scope='native_cli_only'
+        $record.thread_id=[string]$Saved.thread_id; $record.native_pid=[int]$native.Id; $record.native_parent_pid=$PID
+        $record.native_process_start_utc=$native.StartTime.ToUniversalTime().ToString('o')
+        $record.ready_at_utc=[DateTimeOffset]::UtcNow.ToString('o'); $record.task_completion_verified=$false
+        $record.automation_mode='native_interactive'; $record.startup_continuation_requested=$true
+        $owner.status='waiting'; $owner.child_pid=$native.Id
+        Write-WdTurnOwner $pointer $ownerPath $owner
+        Write-WdTurnJson $ReadinessPath $record
+        $native.WaitForExit()
+        if ($native.ExitCode -ne 0) { throw "Native Tools Codex exited with code $($native.ExitCode)" }
+    } finally {
+        # On a launcher failure do not orphan a child that still owns the thread.
+        if ($null -ne $native -and -not $native.HasExited) { $native.WaitForExit() }
+        $owner.status='stopped'; Write-WdTurnOwner $pointer $ownerPath $owner
     }
 }
 
@@ -1326,7 +1408,7 @@ if ($reasoningEffort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')) {
     throw "unsupported Tools reasoning_effort: $reasoningEffort"
 }
 if (
-    $conversationSurface -ceq 'local_window' -and
+    $conversationSurface -cin @('local_window','native_terminal') -and
     (
         $agent -cne 'codex-tools-1' -or
         $model -cne 'gpt-5.6-terra' -or
@@ -1338,7 +1420,7 @@ if (
     throw 'Tools local conversation differs from its pinned lane posture'
 }
 $conversationWritableRoots = @()
-if ($conversationSurface -ceq 'local_window') {
+if ($conversationSurface -cin @('local_window','native_terminal')) {
     $seenConversationRoots = New-Object `
         'System.Collections.Generic.HashSet[string]' `
         ([StringComparer]::OrdinalIgnoreCase)
@@ -1561,9 +1643,10 @@ $conversationCodeNames = @(
     'Show-WdOperatorConversation.ps1',
     'Invoke-WdCodexConversationLoop.ps1'
 )
+if ($conversationSurface -ceq 'native_terminal') { $conversationCodeNames = @('Invoke-WdLaneTurnLoop.ps1') }
 $conversationCodeHashes = @{}
 $verifiedConversationCode = @{}
-if ($conversationSurface -ceq 'local_window') {
+if ($conversationSurface -cin @('local_window','native_terminal')) {
     foreach ($conversationCodeName in $conversationCodeNames) {
         $conversationSnapshot = Read-WdToolsConversationCodeSnapshot `
             -ScriptRoot $PSScriptRoot `
@@ -1708,10 +1791,13 @@ else {
     throw 'source Tools consumer cannot run live without a deployed pinned bridge code package'
 }
 
-if ($conversationSurface -ceq 'local_window') {
+if ($conversationSurface -cin @('local_window','native_terminal')) {
     Assert-WdToolsColdStart -BridgeRoot $runtimeRoot -LaneRoot $worktree `
         -TurnLoopCode ([string]$verifiedConversationCode['Invoke-WdLaneTurnLoop.ps1'])
 }
+
+$nativeToolsSaved = $null
+if ($conversationSurface -ceq 'native_terminal') { $nativeToolsSaved = Get-WdNativeToolsResumeState -Worktree $worktree }
 
 $validation = [pscustomobject]@{
     schema = 'wd.tools-consumer-validation.v1'
@@ -1761,6 +1847,7 @@ $validation = [pscustomobject]@{
     parallel_policy_id = [string]$parallelPolicy.id
     compact_state_path = (Join-Path $worktree '.codex-audit\wd-current-state.json')
     compact_state_writer = $laneStateWriter
+    native_thread_id = if ($null -ne $nativeToolsSaved) { [string]$nativeToolsSaved.thread_id } else { '' }
     validated = $true
 }
 if ($ValidateOnly) {
@@ -1768,6 +1855,17 @@ if ($ValidateOnly) {
     return
 }
 
+$nativeToolsLease = $null
+try {
+if ($conversationSurface -ceq 'native_terminal') {
+    if ([Console]::IsInputRedirected) { throw 'Native Tools requires an interactive Windows Terminal tab' }
+    . ([scriptblock]::Create([string]$verifiedConversationCode['Invoke-WdLaneTurnLoop.ps1']))
+    $nativeLock = Assert-WdTurnPath (Join-Path $runtimeRoot '.wd-turn-codex-tools-1.lock')
+    $nativeToolsLease = [IO.File]::Open($nativeLock,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    $blocker = Get-WdPreviousTurnBlocker -Path (Join-Path $runtimeRoot '.wd-turn-codex-tools-1.owner.json') -Agent codex-tools-1
+    if ($null -ne $blocker) { throw ('Native Tools previous work is unresolved: ' + $blocker.reason) }
+    $nativeToolsSaved = Get-WdNativeToolsResumeState -Worktree $worktree
+}
 $processStartUtc = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime()
 if (-not (Test-Path -LiteralPath $readinessRoot -PathType Container)) {
     [void](New-Item `
@@ -1994,7 +2092,7 @@ Assert-ToolsBootstrapIntegrity `
     -ConfigPath $configFull `
     -LoadedConfigHash $loadedConfigHash
 
-if ($conversationSurface -ceq 'local_window') {
+if ($conversationSurface -cin @('local_window','native_terminal')) {
     if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
         throw 'Tools conversation window requires an STA PowerShell host'
     }
@@ -2053,6 +2151,15 @@ if ($conversationSurface -ceq 'local_window') {
         bridge_bin = [string]$bridgeCodeContext.bridge_bin
         bridge_python_wrapper = [string]$bridgeCodeContext.python_wrapper
         bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
+    }
+    if ($conversationSurface -ceq 'native_terminal') {
+        $nativeToolsArguments = Get-WdNativeToolsArguments -Saved $nativeToolsSaved -Worktree $worktree `
+            -Model $model -Effort $reasoningEffort -Prompt $prompt -ImagePath $targetImagePath `
+            -WritableRoots @($codexWritableDirectories + $conversationWritableRoots) -NetworkAccess $conversationPermissions.NetworkAccess
+        Invoke-WdNativeToolsTerminal -Saved $nativeToolsSaved -BaseRecord $conversationReadinessBase `
+            -CliPath $codexCommand -Arguments $nativeToolsArguments -ReadinessPath $readinessPath `
+            -RuntimeRoot $runtimeRoot -Worktree $worktree
+        return
     }
     $conversationReadinessState = @{
         transport_ready = $false
@@ -2319,3 +2426,5 @@ while ($true) {
     }
     Start-Sleep -Seconds $pollSeconds
 }
+
+} finally { if ($null -ne $nativeToolsLease) { $nativeToolsLease.Dispose() } }

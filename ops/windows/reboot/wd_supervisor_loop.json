@@ -40,7 +40,7 @@
   },
   "tools_consumer": {
     "enabled": true,
-    "conversation_surface": "local_window",
+    "conversation_surface": "native_terminal",
     "conversation_permissions": {
       "network_access": true,
       "additional_writable_roots": []

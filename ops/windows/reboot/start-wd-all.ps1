@@ -193,16 +193,17 @@ function Assert-WdFleetPathWithoutReparse {
     [switch] $AllowMissing
   )
 
-  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+  $separator = [IO.Path]::DirectorySeparatorChar
+  $candidate = [IO.Path]::GetFullPath($Path).TrimEnd($separator)
   $rootCandidate = [IO.Path]::GetFullPath($TrustedRoot)
   $root = if ($rootCandidate.Equals(
       [IO.Path]::GetPathRoot($rootCandidate),
       [StringComparison]::OrdinalIgnoreCase
-    )) { $rootCandidate } else { $rootCandidate.TrimEnd('\') }
+    )) { $rootCandidate } else { $rootCandidate.TrimEnd($separator) }
   if (
     -not $candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
     -not $candidate.StartsWith(
-      $root.TrimEnd('\') + '\',
+      $root.TrimEnd($separator) + $separator,
       [StringComparison]::OrdinalIgnoreCase
     )
   ) {
@@ -215,11 +216,11 @@ function Assert-WdFleetPathWithoutReparse {
   if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "fleet safety path root is a reparse point: $root"
   }
-  $relative = $candidate.Substring($root.Length).TrimStart('\')
+  $relative = $candidate.Substring($root.Length).TrimStart($separator)
   $current = $root
   $missing = $false
   $currentItem = $rootItem
-  foreach ($segment in @($relative -split '\\')) {
+  foreach ($segment in @($relative.Split($separator))) {
     if (-not $segment) { continue }
     if (
       ($currentItem.Attributes -band [IO.FileAttributes]::Directory) -eq 0
@@ -2030,8 +2031,8 @@ function Test-ToolsProcessReadiness {
       ConvertFrom-Json -ErrorAction Stop
     $surfaceProperty = $ToolsConfig.PSObject.Properties['conversation_surface']
     $surface = if ($null -eq $surfaceProperty) { 'none' } else { [string]$surfaceProperty.Value }
-    if ($surface -cnotin @('none', 'local_window')) { return $false }
-    $expectedSchema = if ($surface -ceq 'local_window') {
+    if ($surface -cnotin @('none', 'local_window', 'native_terminal')) { return $false }
+    $expectedSchema = if ($surface -ceq 'native_terminal') { 'wd.tools-consumer-ready.v3' } elseif ($surface -ceq 'local_window') {
       'wd.tools-consumer-ready.v2'
     } else { 'wd.tools-consumer-ready.v1' }
     $expectedCodex = Resolve-ApplicationPath -Name 'codex.cmd'
@@ -2120,6 +2121,22 @@ function Test-ToolsProcessReadiness {
     $canaryAt = ConvertTo-UtcDateTimeOffset `
       -Value $record.append_canary_event_utc `
       -Label 'Tools append canary creation'
+    if ($surface -ceq 'native_terminal') {
+      if ($record.status -cne 'terminal_ready' -or $record.readiness_scope -cne 'native_cli_only' -or
+          $record.conversation_surface -cne 'native_terminal' -or $record.agent -cne 'codex-tools-1' -or
+          $record.task_completion_verified -isnot [bool] -or $record.task_completion_verified -or
+          [string]$record.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { return $false }
+      $nativeMatches = @(Get-CimInstance Win32_Process | Where-Object { [int]$_.ProcessId -eq [int]$record.native_pid })
+      if ($nativeMatches.Count -ne 1) { return $false }
+      $native = $nativeMatches[0]
+      $nativeAt = ConvertTo-UtcDateTimeOffset -Value $native.CreationDate -Label 'Tools native creation'
+      $recordedNativeAt = ConvertTo-UtcDateTimeOffset -Value $record.native_process_start_utc -Label 'Tools native recorded creation'
+      if ([int]$native.ParentProcessId -ne [int]$Process.ProcessId -or
+          [int]$record.native_parent_pid -ne [int]$Process.ProcessId -or $native.Name -ine 'codex.exe' -or
+          -not ([string]$native.ExecutablePath).Equals($expectedCodex,[StringComparison]::OrdinalIgnoreCase) -or
+          $nativeAt -lt $recordCreated -or $nativeAt -gt $readyAt -or
+          [Math]::Abs(($nativeAt - $recordedNativeAt).TotalSeconds) -gt 1) { return $false }
+    }
     if ($surface -ceq 'local_window') {
       if ([string]$record.status -cne 'transport_ready' -or
           [string]$record.conversation_surface -cne 'local_window' -or
@@ -2170,6 +2187,10 @@ function Write-ToolsReadinessWarning {
     -Path $readinessPath `
     -Label 'Tools readiness record') |
     ConvertFrom-Json -ErrorAction Stop
+  if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v3') {
+    Write-Host 'codex-tools-1 is open in the standard Codex terminal. Startup continuation was requested; task progress must be checked in the terminal and bridge evidence. No managed idle-wake consumer is attached.'
+    return
+  }
   if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v2') {
     Write-Host ('codex-tools-1 conversation transport is live; latest native checkpoint verified: ' +
       [string]$record.native_checkpoint_verified + '. Transport is not task completion.')
@@ -2855,7 +2876,7 @@ $fleetSurfaceProperty = $toolsConfig.PSObject.Properties['conversation_surface']
 $bundleSurfaceProperty = $bundledTools.PSObject.Properties['conversation_surface']
 $fleetToolsSurface = if ($null -eq $fleetSurfaceProperty) { 'none' } else { [string]$fleetSurfaceProperty.Value }
 $bundleToolsSurface = if ($null -eq $bundleSurfaceProperty) { 'none' } else { [string]$bundleSurfaceProperty.Value }
-if ($fleetToolsSurface -cnotin @('none', 'local_window') -or $fleetToolsSurface -cne $bundleToolsSurface) {
+if ($fleetToolsSurface -cnotin @('none', 'local_window', 'native_terminal') -or $fleetToolsSurface -cne $bundleToolsSurface) {
   throw 'Tools conversation surface differs between fleet and supervisor config'
 }
 [void](Read-NonEmptyFile -Path $bundleToolsLauncher -Label 'bundled Tools consumer launcher')

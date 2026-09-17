@@ -78,7 +78,7 @@
     ]
   },
   "tools_supervisor": {
-    "conversation_surface": "local_window",
+    "conversation_surface": "native_terminal",
     "task_name": "WD-Supervisor",
     "snapshot_path": "C:\\Python\\wd_supervisor_loop_snapshot.json",
     "snapshot_schema": "wd.supervisor-loop.v2",

@@ -80,6 +80,34 @@ def checkpoint(fleet, index=-1):
     return Path(fleet["lanes"][index]["worktree"]) / ".codex-audit/wd-current-state.json"
 
 
+@pytest.mark.parametrize('case', ['live', 'wrong_parent', 'reused_pid', 'missing_native'])
+def test_native_tools_status_requires_both_process_identities(fleet, case):
+    manifest = json.loads(fleet['manifest'].read_text())
+    manifest['tools_supervisor']['conversation_surface'] = 'native_terminal'
+    fleet['manifest'].write_text(json.dumps(manifest))
+    native_at = (datetime.fromisoformat(fleet['started']) + timedelta(seconds=10)).isoformat()
+    update(fleet['ready'], schema='wd.tools-consumer-ready.v3', status='terminal_ready',
+           readiness_scope='native_cli_only', conversation_surface='native_terminal',
+           thread_id='01a0a07b-ca98-71e1-90cb-d588435a2d8d', task_completion_verified=False,
+           native_pid=22345, native_parent_pid=12345, native_process_start_utc=native_at,
+           codex_command=r'C:\Codex\codex.exe')
+    wrapper = dict(ProcessId=12345, ParentProcessId=1, Name='powershell.exe',
+                   CreationDate=fleet['started'], CommandLine='powershell -File start-wd-tools-consumer.ps1 -Generation ' + GENERATION)
+    native = dict(ProcessId=22345, ParentProcessId=12345, Name='codex.exe',
+                  CreationDate=native_at, ExecutablePath=r'C:\Codex\codex.exe',
+                  CommandLine='codex resume 01a0a07b-ca98-71e1-90cb-d588435a2d8d')
+    if case == 'wrong_parent': native['ParentProcessId'] = 99
+    if case == 'reused_pid': native['CreationDate'] = datetime.now(timezone.utc).isoformat()
+    processes = [wrapper] if case == 'missing_native' else [wrapper, native]
+    report = run_status(fleet, lane_processes=processes)
+    tools = next(lane for lane in report['lanes'] if lane['agent'] == 'codex-tools-1')
+    assert tools['configured_conversation_surface'] == 'native_terminal'
+    assert (tools['runtime']['identity'] == 'matched') is (case == 'live'), tools['runtime']
+    if case == 'live':
+        assert tools['runtime']['readiness_scope'] == 'native_cli_only'
+        assert not tools['runtime']['native_checkpoint']['latest_final_recorded_verified']
+
+
 def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
                started=None, lane_processes=None, runtime_processes=None):
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in fleet["root"].rglob("*") if p.is_file()}

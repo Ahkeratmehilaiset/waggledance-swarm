@@ -766,8 +766,8 @@ def test_native_lead_uses_terminal_while_tools_keeps_conversation_backend() -> N
 def test_tools_window_is_supervisor_owned_and_permissions_are_explicit() -> None:
     fleet = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     tools = json.loads((REBOOT / "wd_supervisor_loop.json").read_text(encoding="utf-8"))["tools_consumer"]
-    assert fleet["tools_supervisor"]["conversation_surface"] == "local_window"
-    assert tools["conversation_surface"] == "local_window"
+    assert fleet["tools_supervisor"]["conversation_surface"] == "native_terminal"
+    assert tools["conversation_surface"] == "native_terminal"
     assert "codex-tools-1" not in [lane["agent"] for lane in fleet["lanes"]]
     lead = next(lane for lane in fleet["lanes"] if lane["agent"] == "codex-lead-1")
     assert lead["conversation_permissions"] == {
@@ -1827,7 +1827,7 @@ def test_reboot_path_cannot_create_git_worktrees_or_rearm_merge_driver() -> None
     assert "-Property @{" in supervisor
     assert "0x08000000 -bor" in supervisor
     assert "0x00000400" in supervisor
-    assert "ShowWindow = [uint16]0" in supervisor
+    assert "ShowWindow = if ($VisibleTerminal) { [uint16]1 } else { [uint16]0 }" in supervisor
     assert "EnvironmentVariables = [string[]]$environment.ToArray()" in (
         supervisor
     )

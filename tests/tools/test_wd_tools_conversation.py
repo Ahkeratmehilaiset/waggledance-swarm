@@ -58,7 +58,7 @@ def test_tools_local_window_uses_verified_shared_conversation_without_legacy_tic
     assert "AdditionalWritableRoots = @($conversationWritableRoots)" in text
     assert "NetworkAccess = [bool]$conversationPermissions.NetworkAccess" in text
 
-    local_start = text.rindex("if ($conversationSurface -ceq 'local_window')")
+    local_start = text.rindex("if ($conversationSurface -cin @('local_window','native_terminal'))")
     legacy_start = text.index("$commonConsumerArguments = @{", local_start)
     local = text[local_start:legacy_start]
     legacy = text[legacy_start:]
@@ -72,7 +72,7 @@ def test_supervisor_launches_single_hidden_sta_wrapper_and_selects_v2_by_mode() 
 
     assert "'-STA'" in text
     assert "CREATE_NO_WINDOW" in text
-    assert "ShowWindow = [uint16]0" in text
+    assert "ShowWindow = if ($VisibleTerminal) { [uint16]1 } else { [uint16]0 }" in text
     assert "wd.tools-consumer-ready.v1" in text
     assert "wd.tools-consumer-ready.v2" in text
     assert "conversation_surface" in text
@@ -314,8 +314,9 @@ $chat = Get-Content -LiteralPath {_quote(ready)} -Raw | ConvertFrom-Json
     WINDOWS_POWERSHELL is None or os.name != "nt",
     reason="Windows PowerShell is unavailable",
 )
+@pytest.mark.parametrize('native_terminal', [False, True])
 def test_supervisor_v2_requires_live_native_ancestry_but_not_checkpoint(
-    tmp_path: Path,
+    tmp_path: Path, native_terminal: bool,
 ) -> None:
     codex = tmp_path / "codex.exe"
     python = tmp_path / "python.exe"
@@ -363,7 +364,7 @@ $script:native = [pscustomobject]@{{
 }}
 function Get-CimInstance {{
   param([string]$ClassName,[string]$Filter,[string]$ErrorAction)
-  if ($ClassName -ne 'Win32_Process' -or $Filter -ne 'ProcessId=505') {{
+  if ($ClassName -ne 'Win32_Process') {{
     throw 'unexpected process query'
   }}
   return $script:native
@@ -426,6 +427,14 @@ $record = [ordered]@{{
 function Write-Ready {{
   $record | ConvertTo-Json -Depth 8 |
     Set-Content -LiteralPath {_quote(ready)} -Encoding UTF8
+}}
+if (${str(native_terminal).lower()}) {{
+  $tools.conversation_surface='native_terminal'
+  $record.schema='wd.tools-consumer-ready.v3'
+  $record.status='terminal_ready'
+  $record.readiness_scope='native_cli_only'
+  $record.conversation_surface='native_terminal'
+  $record.thread_id='01a0a07b-ca98-71e1-90cb-d588435a2d8d'
 }}
 Write-Ready
 $exact = Test-ToolsWrapperReadiness -Process $process -Tools $tools `

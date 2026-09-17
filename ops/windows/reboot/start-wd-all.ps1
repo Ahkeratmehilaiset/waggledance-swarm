@@ -3943,7 +3943,11 @@ try {
   )
 
   Write-Host ''
-  Write-Host ("Fleet restore complete; run_id={0}" -f $RunId) -ForegroundColor Green
+  Write-Host 'Verifying that the four bridge workers actually answer new requests...'
+  & (Join-Path $PSScriptRoot 'Test-WdBridgeResponsiveness.ps1') `
+    -RuntimeRoot ([string]$manifest.runtime_root) `
+    -BridgeBin (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin')
+  Write-Host ("Fleet restore complete; run_id={0}; four worker replies verified" -f $RunId) -ForegroundColor Green
   if (@($laneStates | Where-Object { $_.lane.PSObject.Properties.Name -contains 'turn_mode' -and [string]$_.lane.turn_mode -ceq 'managed' }).Count) {
     Write-Host '  Managed lanes: bootstrap identity verified; inspect owner state and fresh turn receipt separately for wake health.'
   }

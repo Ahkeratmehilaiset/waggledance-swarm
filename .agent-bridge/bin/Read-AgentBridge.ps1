@@ -4,7 +4,7 @@ param(
     [ValidateScript({ $_ -eq '' -or $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent = '',
     [int] $Tail = 40,
     # Keep the interactive continuity view responsive on large bridge logs.
-    # Use 0 for one bounded full snapshot (at most 64 MiB / 100k rows).
+    # Use 0 for one paged full snapshot (at most 256 MiB / 100k rows).
     [int] $ContinuityTail = 5000,
     [switch] $OtherOnly,
     [switch] $ShowClaims,
@@ -120,11 +120,11 @@ function Read-BridgeEventObjects {
     # Heartbeat traffic at 60s * 2 agents is about 2880 events/day, so the
     # tail-truncation silently dropped continuity-section events older
     # than ~2 days. 50000 covers about a month; pass -MaxLines 0 for one
-    # full snapshot bounded to 64 MiB / 100k rows.
+    # full snapshot bounded to 256 MiB / 100k rows (64 MiB pages).
     param([Parameter(Mandatory)] [string] $Path, [int] $MaxLines = 50000)
     $items = New-Object System.Collections.Generic.List[object]
     $result = if ($MaxLines -le 0) {
-        Read-BridgeEventSnapshot -Path $Path
+        Read-BridgeEventSnapshot -Path $Path -MaxBytes 268435456
     } else {
         Read-BridgeEventTail -Path $Path -MaxLines $MaxLines
     }

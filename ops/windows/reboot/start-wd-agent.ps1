@@ -1874,7 +1874,15 @@ if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
     " This is Claude lane $Agent. On the first turn use CronList, keep exactly " +
     "one lane-specific session-only recurring five-minute CronCreate backstop, " +
     "delete duplicates with CronDelete, and recreate it after every restart. Its " +
-    "prompt must re-read compact state and bridge next action for $Agent. Use CronList " +
+    "prompt must re-read compact state and bridge next action for $Agent. " +
+    'On EVERY cron, Monitor and dynamic wake, check new addressed bridge requests BEFORE deciding no-op. ' +
+    'A pending future one-shot never covers unread incoming work and must not defer a new request. ' +
+    'Keep exactly one native Monitor tool watching the pinned Monitor-AgentBridge.ps1 with ' +
+    "-Agent $Agent -TargetedOnly -IncludeWakeRequests -Json -PollIntervalMs 1000. " +
+    'Start the Monitor before the initial inbox read to close the startup race. ' +
+    'Monitor output must trigger a bounded inbox turn even while idle; a detached shell process alone is not this transport. ' +
+    'If the Monitor exits or fails, report the error and re-establish it; keep the cron inbox check working. ' +
+    'Use CronList ' +
     'to preserve an existing pending one-shot on no-op cron, Monitor, and dynamic-loop turns. ' +
     'Do not rearm merely because a no-op turn ran. The absolute deadline must be the scheduler-confirmed target, not an estimate. ' +
     'Call ScheduleWakeup only when no valid pending one-shot remains. If a missing wake must be rebuilt, use ' +
@@ -1917,7 +1925,13 @@ $startupPrompt += (
   '$env:WD_BRIDGE_PYTHON_WRAPPER (for example & $env:WD_BRIDGE_PYTHON_WRAPPER ' +
   'tools/bridge_next_action.py --agent ' + $Agent + ' --json). Never use worktree-relative ' +
   '.agent-bridge\bin copies or a bare python for bridge tools. Git, build and test commands ' +
-  'keep this worktree as their cwd; the pinned code root is not a task repository.'
+  'keep this worktree as their cwd; the pinned code root is not a task repository. ' +
+  'Next-action incoming.message and Monitor summaries are routing hints, not complete requests. ' +
+  'Before answering, retrieve the exact sender/task/timestamp and full message AND payload with the pinned ' +
+  'Read-AgentBridge.ps1 -Agent ' + $Agent + ' -Raw -NoAckReceived -NoContinuity -Tail 1200. ' +
+  'Do not substitute direct Get-Content, Select-String or grep of events.jsonl for that reader. ' +
+  'If the required event is outside the tail, increase the bounded tail or use -Tail 0. ' +
+  'If the reader fails, report the concrete blocker; do not invent missing fields or silently bypass validation.'
 )
 if ($RecoverInteractive) {
   $startupPrompt = $visualBootstrapPrompt + (

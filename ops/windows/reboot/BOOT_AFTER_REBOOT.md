@@ -219,6 +219,28 @@ not durable jobs: recreate them on every new session and verify both configured
 and actually-fired evidence. A cron-triggered turn alone does not prove that a
 dynamic wake fired. Neither mechanism interrupts a running or hung turn.
 
+Each interactive Claude lane also attaches one native `Monitor` tool to the
+pinned `Monitor-AgentBridge.ps1 -Agent <lane> -TargetedOnly -IncludeWakeRequests
+-Json -PollIntervalMs 1000`. The flag matters: the dashboard default suppresses
+wake requests. Establish the monitor before the first inbox read. Every cron
+and monitor turn checks new addressed work before considering a no-op, even if
+an idle one-shot is pending. A future idle timer never covers an unread request.
+Use the pinned Raw reader for full payloads; report errors instead of bypassing
+it with direct log reads. Process presence and configured schedules alone are
+not proof that messages reach a model turn.
+
+`start-wd-all.ps1 -Auto` now finishes with `Test-WdBridgeResponsiveness.ps1`.
+It sends a fresh bounded request to Tools, RCO1, RCO2 and Fable through the
+canonical bridge and verifies full-payload correlation, a computed answer,
+UUID and current session/run within five minutes. Missing/invalid replies
+fail the restore instead of reporting a fully working fleet. The result is
+`C:\Python\wd-reboot-runtime\bridge-functionality-current.json`; each run
+first replaces any old success with a non-passing checking record. Lead's
+native terminal identity is verified separately; Grok is not polled or charged.
+The same script is the post-install bridge release acceptance check. A staged
+or installed bundle without a new passing response report is not a verified
+runtime release. Read-only dry runs do not send these requests.
+
 Keep turns bounded. On a no-op cron, monitor or dynamic-loop turn, confirm the
 existing pending one-shot with `CronList` and leave it unchanged. Do not rearm
 merely to end a turn: even remaining-time rearming can round the target forward

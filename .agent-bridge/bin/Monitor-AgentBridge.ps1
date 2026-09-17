@@ -51,6 +51,9 @@ param(
 
     [switch] $ReplayExisting,
     [switch] $TargetedOnly,
+    # Agent inbox monitors must include addressed task wake requests. Keep the
+    # historical dashboard default quiet unless this is explicitly selected.
+    [switch] $IncludeWakeRequests,
     [switch] $Json
 )
 
@@ -124,7 +127,11 @@ function Test-SubstantiveMonitorEvent {
     $type = if ($Event.PSObject.Properties['type']) { [string]$Event.type } else { '' }
     $status = if ($Event.PSObject.Properties['status']) { [string]$Event.status } else { '' }
 
-    if ($type -in @('heartbeat','liveness','wake_request')) { return $false }
+    if ($type -in @('heartbeat','liveness')) { return $false }
+    if ($type -eq 'wake_request') {
+        return ($IncludeWakeRequests -and
+            @(Get-EventTargetsLocal -Event $Event) -contains $LocalAgent)
+    }
     if ($type -eq 'message' -and $status -in @('received','seen','acknowledged')) {
         return $false
     }

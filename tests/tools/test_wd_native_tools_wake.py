@@ -72,3 +72,6 @@ def test_native_relay_uses_queue_and_lifetime_lock_without_focus_or_second_resum
     assert "'resume'" not in relay and "'exec'" not in relay
     assert "status='submitting'" in relay
     assert 'Get-FileHash' in relay and '$ExpectedCliHash' in relay
+    assert 'TRUNCATED ROUTING SUMMARY' in relay
+    assert '-Raw -NoAckReceived -NoContinuity' in relay
+    assert 'never from conversation memory or older probes' in relay

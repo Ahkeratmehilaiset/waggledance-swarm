@@ -2188,7 +2188,7 @@ function Write-ToolsReadinessWarning {
     -Label 'Tools readiness record') |
     ConvertFrom-Json -ErrorAction Stop
   if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v3') {
-    Write-Host 'codex-tools-1 is open in the standard Codex terminal. Startup continuation was requested; task progress must be checked in the terminal and bridge evidence. No managed idle-wake consumer is attached.'
+    Write-Host 'codex-tools-1 is open in the standard Codex terminal. Bridge wake notifications are delivered through codex queue to this conversation, including while idle or minimized. Verify task progress in the terminal and bridge evidence.'
     return
   }
   if ([string]$record.schema -ceq 'wd.tools-consumer-ready.v2') {

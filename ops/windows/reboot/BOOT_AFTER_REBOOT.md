@@ -41,9 +41,19 @@ history starts the initial visual bootstrap once.
 The continuation turn checks compact state and live bridge claims, then resumes
 the latest unfinished authorized work. Completed effects are reconciled before
 retrying; cancelled work and explicit operator pauses/HOLDs stay stopped. Native
-Lead and Tools have no managed idle-wake consumer attached to their terminals.
-A continuation is requested when each terminal starts, and subsequent operator
-messages use the normal Codex UI.
+Lead has no managed idle-wake consumer attached to its terminal. Tools has an
+automatic bridge relay: the wrapper polls its targeted wake sentinel once per
+second and uses `codex queue --thread <saved UUID> --message <notification>`.
+Codex receives the notification while idle and serializes it behind an active
+turn. Window focus and minimization do not affect delivery. Operator messages
+and `/model` continue to use the normal Codex UI.
+
+Wake bursts are coalesced over five seconds. The relay moves the sentinel to an
+owned snapshot and records submission before invoking Codex. A confirmed queue
+receipt consumes that snapshot; newer wake writes remain for the next delivery.
+An uncertain queue result stops automatic delivery with evidence preserved,
+rather than replaying an ambiguous attempt. Queue acceptance is not task
+completion. The exclusive relay lock prevents concurrent delivery helpers.
 
 Tools uses `conversation_surface=native_terminal`: the Limited supervisor opens
 one Windows Terminal window named `codex-tools-1`, running normal Codex with its

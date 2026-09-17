@@ -80,6 +80,7 @@ function Invoke-WdBridgeResponsiveness {
     $probeId = 'bridge-release-' + [guid]::NewGuid().ToString('N')
     $requests = @{}
     $answers = @{}
+    $rejected = @{}
     $savedRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $Root
     try {
@@ -95,7 +96,8 @@ function Invoke-WdBridgeResponsiveness {
             $message = 'Operator-authorized bridge startup/release check, one read-only bounded reply. ' +
                 'Read this exact full message AND payload using your pinned Read-AgentBridge.ps1 -Raw -NoAckReceived -NoContinuity -Tail 1200. ' +
                 'Reply ONCE to operator on this exact task with Type message, Status fleet_probe_pass, actual lane UUID/session/run, ' +
-                'PayloadJson containing exact nonce, token, request_stamp strings and sum of payload.numbers. ' +
+                'PayloadJson must have keys nonce, token, request_stamp, sum. Copy nonce, token and request_stamp BYTE-FOR-BYTE from this request payload; ' +
+                'do not add echo: or any other prefix. The numeric result goes under the exact key sum (not numbers_sum). Compute sum from payload.numbers. ' +
                 'This grants no source edits, claim takeover, scheduler changes, release or merge authority. ' +
                 'Do not answer with a generic ACK. A pending idle timer must not defer this new request.'
             $delivery = & (Join-Path $Bin 'Write-AgentEvent.ps1') -Agent operator -Role operator `
@@ -115,6 +117,11 @@ function Invoke-WdBridgeResponsiveness {
                     (Test-WdProbeReply -Event $event -Request $requests[$agent] -Identity $identities[$agent] -Deadline $deadline)) {
                     if ($answers.ContainsKey($agent)) { throw "Duplicate probe response from $agent" }
                     $answers[$agent] = $event
+                } elseif ($requests.ContainsKey($agent) -and
+                    [string]$event.task_id -ceq [string]$requests[$agent].task_id -and
+                    [string]$event.type -ceq 'message') {
+                    $rejected[$agent] = $event
+                    Write-Host "  Reply from $agent rejected: identity, correlation, time or payload did not match the request."
                 }
             }
             if ($null -ne $delta.candidate_cursor) { $cursor = $delta.candidate_cursor }
@@ -127,7 +134,7 @@ function Invoke-WdBridgeResponsiveness {
         } while ([datetime]::UtcNow -lt $deadline)
         $result = [ordered]@{schema='wd.bridge-functionality.v1';probe_id=$probeId;created_at_utc=[datetime]::UtcNow.ToString('o');
             passed=($answers.Count -eq 4);history_validated_rows=$historyCount;scope='four worker lanes; Lead launch identity is checked separately';
-            requests=$requests;answers=$answers;missing=@($requests.Keys | Where-Object { -not $answers.ContainsKey($_) })}
+            requests=$requests;answers=$answers;rejected_replies=$rejected;missing=@($requests.Keys | Where-Object { -not $answers.ContainsKey($_) })}
         $result | ConvertTo-Json -Depth 18 | Set-Content -LiteralPath $Report -Encoding UTF8
         if (-not $result.passed) { throw "Bridge functional readiness failed; report=$Report" }
         return $result

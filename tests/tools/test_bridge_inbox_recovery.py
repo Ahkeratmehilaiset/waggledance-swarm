@@ -112,3 +112,17 @@ def test_native_tools_retains_real_exit_status_after_deferred_wait(tmp_path, ps,
     $p.Dispose()
     """)
     assert result == exit_code
+
+
+@pytest.mark.parametrize('ps', SHELLS)
+def test_compiled_numeric_scan_preserves_nested_json_checks(ps):
+    reader = ROOT / '.agent-bridge/bin/BridgeLogReader.ps1'
+    result = run(ps, f"""
+    . '{reader}'
+    $values=@($null, 'plain', 1.25, [double]::NaN, [single]::PositiveInfinity,
+      @{{nested=@(1,@{{value=[double]::NegativeInfinity}})}},
+      [pscustomobject]@{{payload=@([pscustomobject]@{{sum=42.5}})}},
+      [pscustomobject]@{{payload=@([pscustomobject]@{{sum=[double]::NaN}})}})
+    @($values | ForEach-Object {{ Test-BridgeJsonFiniteNumbers -Value $_ }}) | ConvertTo-Json
+    """)
+    assert result == [True, True, True, False, False, False, True, False]

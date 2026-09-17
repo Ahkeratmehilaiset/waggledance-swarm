@@ -1174,6 +1174,24 @@ function Test-NamedCommandLineLeafArgument {
     )
 }
 
+function Assert-WdToolsLauncherGeneration {
+    param([object[]] $Processes, [string[]] $AllowedPaths)
+    foreach ($process in $Processes) {
+        if ([string]$process.Name -notmatch '^(?i:powershell|pwsh)\.exe$') { continue }
+        $kind = if ([string]$process.Name -ieq 'powershell.exe') { 'WindowsPowerShell' } else { 'Pwsh' }
+        $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$process.CommandLine) -HostKind $kind
+        if ($null -eq $invocation) { continue }
+        $path = [string]$invocation.script_path
+        if ([IO.Path]::GetFileName($path) -ine 'start-wd-tools-consumer.ps1') { continue }
+        # An installed bundle update changes the exact launcher path. A live
+        # older launcher still owns its conversation; never treat it as absent.
+        # Discovery is deliberately conservative and grants no kill authority.
+        if ($path -notin $AllowedPaths) {
+            throw "CONFLICT existing Tools launcher PID $($process.ProcessId) uses another bundle/path ($path); preserve its conversation and perform a controlled handoff before restore"
+        }
+    }
+}
+
 function Test-WdCanonicalWatcherProcess {
     param(
         [Parameter(Mandatory)] $Process,
@@ -3405,6 +3423,8 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
                 -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
             }
     )
+    Assert-WdToolsLauncherGeneration -Processes $toolsProcesses `
+        -AllowedPaths @($toolsLauncher, $configuredToolsLauncher)
     $wrapperProcesses = @(
         $toolsProcesses |
             Where-Object {

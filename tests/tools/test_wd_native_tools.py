@@ -15,6 +15,38 @@ TOOLS = REBOOT / "start-wd-tools-consumer.ps1"
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["current", "old_bundle", "external", "payload"])
+def test_supervisor_does_not_miss_existing_tools_after_bundle_update(ps, case):
+    supervisor = REBOOT / 'wd_supervisor.ps1'
+    script = f"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({q(supervisor)},[ref]$tokens,[ref]$errors)
+foreach($fn in $ast.FindAll({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]}},$false)) {{
+ . ([scriptblock]::Create($fn.Extent.Text))
+}}
+"""
+    commands = {
+        'current': r'powershell.exe -NoProfile -STA -File C:\bundles\new\start-wd-tools-consumer.ps1 -Generation new',
+        'old_bundle': r'powershell.exe -NoProfile -STA -File C:\bundles\old\start-wd-tools-consumer.ps1 -Generation old',
+        'external': r'powershell.exe -NoProfile -File C:\unrelated\worker.ps1',
+        'payload': r'powershell.exe -Command "Write-Output start-wd-tools-consumer.ps1"',
+    }
+    allowed = r'C:\bundles\new\start-wd-tools-consumer.ps1'
+    script += f"""
+$p=[pscustomobject]@{{Name='powershell.exe';ProcessId=24840;CommandLine={q(commands[case])}}}
+try {{
+ Assert-WdToolsLauncherGeneration -Processes @($p) -AllowedPaths @({q(allowed)})
+ @{{ok=$true}}|ConvertTo-Json
+}} catch {{ @{{ok=$false;error=$_.Exception.Message}}|ConvertTo-Json }}
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['ok'] is (case != 'old_bundle'), result
+    if case == 'old_bundle':
+        assert '24840' in result['error'] and 'controlled handoff' in result['error']
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("case", ["paused", "foreign", "wrong_worktree", "bad_id", "interrupt", "recovery"])
 def test_native_tools_preserves_recorded_context_and_unresolved_holds(tmp_path, ps, case):
     journal = tmp_path / ".codex-audit" / "wd-turn-loop"

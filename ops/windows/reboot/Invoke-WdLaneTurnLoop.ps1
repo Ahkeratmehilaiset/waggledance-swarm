@@ -253,7 +253,7 @@ function Get-WdPreviousTurnBlocker {
     if (-not [IO.File]::Exists($Path)) { return $null }
     try {
         [void](Assert-WdTurnPath $Path)
-        if ((Get-Item -LiteralPath $Path).Length -gt 32768) { throw 'previous owner pointer too large' }
+        if ((Get-Item -LiteralPath $Path -Force).Length -gt 32768) { throw 'previous owner pointer too large' }
         $previous = ConvertFrom-WdTurnJson ([IO.File]::ReadAllText($Path))
         if ([string]$previous.schema -cne 'wd.lane-turn-owner.v1' -or [string]$previous.agent -cne $Agent -or
             -not [IO.Path]::IsPathRooted([string]$previous.worktree)) { throw 'previous owner identity or worktree is invalid' }

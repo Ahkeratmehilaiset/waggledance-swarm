@@ -83,6 +83,9 @@ def test_tools_cold_start_preserves_pending_evidence(tmp_path, ps, case):
     before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     script = load(REBOOT / "start-wd-tools-consumer.ps1", "Assert-WdToolsColdStart")
     script += "$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n"
+    if case == "blocked":
+        # Dotfiles are hidden on Linux; exercise the same file attribute on Windows.
+        script += f"[IO.File]::SetAttributes({q(pointer)}, [IO.FileAttributes]::Hidden)\n"
     if case == "live":
         script += "function Get-Process { [pscustomobject]@{ProcessName='powershell';StartTime=[datetime]'2026-09-15T00:00:00Z'} }\n"
     script += fr"""

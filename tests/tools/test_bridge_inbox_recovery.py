@@ -82,3 +82,13 @@ def test_release_probe_rejects_uncorrelated_and_stale_answers(ps, change):
     Test-WdProbeReply -Event $e -Request $r -Identity $i -Deadline ([datetime]'2026-09-17T09:05:00Z') | ConvertTo-Json
     """)
     assert result is (change == 'none')
+
+
+@pytest.mark.parametrize('ps', SHELLS)
+@pytest.mark.parametrize('name,expected', [('claude.exe', True), ('codex.exe', True), ('powershell.exe', False), ('not-codex.exe', False)])
+def test_shared_cli_update_is_deferred_for_external_sessions(ps, name, expected):
+    source = (ROOT / 'ops/windows/reboot/start-wd-all.ps1').read_text()
+    start = source.index('function Test-WdCliUpdateDeferred {')
+    end = source.index('\nfunction ', start + 1)
+    result = run(ps, source[start:end] + f"\nTest-WdCliUpdateDeferred -Processes @([pscustomobject]@{{Name='{name}'}}) | ConvertTo-Json")
+    assert result is expected

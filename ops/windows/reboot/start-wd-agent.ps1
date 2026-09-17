@@ -2421,6 +2421,9 @@ if ($RecoverInteractive) {
 }
 $launchArguments = @()
 if ($cliName -ieq 'claude.cmd') {
+  # The fleet updater owns changes to the attested shared executable. Do not
+  # let a long-lived lane replace it underneath itself or sibling sessions.
+  $env:DISABLE_AUTOUPDATER = '1'
   if ($null -ne $claudeResume -and $claudeResume.thread_id) {
     $launchArguments += @('--resume', [string]$claudeResume.thread_id)
     $startupPrompt = $continuationPrompt

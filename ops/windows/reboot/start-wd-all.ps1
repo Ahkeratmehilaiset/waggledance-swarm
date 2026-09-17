@@ -1627,6 +1627,15 @@ function Get-LaneProcesses {
   )
 }
 
+function Test-WdCliUpdateDeferred {
+  param([AllowEmptyCollection()] [object[]] $Processes)
+  # Shared CLI installation paths must not change beneath either fleet lanes
+  # or unrelated operator sessions. Update once on a genuinely cold start.
+  return @($Processes | Where-Object {
+    [string]$_.Name -imatch '^(codex|claude)\.exe$'
+  }).Count -gt 0
+}
+
 function Test-WdProcessIdentitySetExact {
   param(
     [AllowEmptyCollection()] [object[]] $Expected,
@@ -2676,6 +2685,11 @@ if ($bundleMode -ceq 'deployed') {
 
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $processes = Get-AllProcessSnapshots
+$cliUpdateDeferred = (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred -Processes $processes))
+if ($cliUpdateDeferred) {
+  $SkipCliUpdate = $true
+  Write-Host 'CLI updates deferred: active Codex/Claude sessions use the shared executables; update on a cold start.'
+}
 $laneStates = @()
 $expectedLaneRuntimes = @{
   'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-6-astra'; effort = 'xhigh' }
@@ -3534,7 +3548,7 @@ try {
   $cliVersionRecord = [ordered]@{
     schema_version = 1
     verified_at_utc = [DateTime]::UtcNow.ToString('o')
-    update_status = $(if ($SkipCliUpdate) { 'operator_skipped' } else { 'completed' })
+    update_status = $(if ($cliUpdateDeferred) { 'deferred_live_sessions' } elseif ($SkipCliUpdate) { 'operator_skipped' } else { 'completed' })
     codex = [ordered]@{
       before = $codexVersion
       after = $codexAfterVersion

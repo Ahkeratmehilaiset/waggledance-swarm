@@ -109,3 +109,23 @@ def test_native_mode_returns_before_loading_custom_window():
     assert "$nativeToolsLease.Dispose()" in source
     assert "startup_continuation_requested" in source
     assert "task_completion_verified=$false" in source
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_native_runtime_import_preserves_launcher_identity(ps):
+    script = load(TOOLS, "Get-WdNativeToolsRuntimeFunctions") + f"""
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$worktree='C:\\Tools'
+$runtimeRoot='C:\\bridge'
+$generation='pinned-generation'
+$agent='codex-tools-1'
+$model='gpt-5.6-terra'
+$code=Get-Content -LiteralPath {q(REBOOT / 'Invoke-WdLaneTurnLoop.ps1')} -Raw
+. (Get-WdNativeToolsRuntimeFunctions -VerifiedCode $code)
+@{{worktree=$worktree;runtime=$runtimeRoot;generation=$generation;agent=$agent;model=$model;
+   writer=[bool](Get-Command Write-WdTurnOwner -ErrorAction Stop)}}|ConvertTo-Json
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result == dict(worktree=r"C:\Tools", runtime=r"C:\bridge", generation="pinned-generation",
+                          agent="codex-tools-1", model="gpt-5.6-terra", writer=True)

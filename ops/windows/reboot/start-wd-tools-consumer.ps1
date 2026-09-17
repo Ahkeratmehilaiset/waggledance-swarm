@@ -286,6 +286,21 @@ function Assert-WdToolsColdStart {
     }
 }
 
+function Get-WdNativeToolsRuntimeFunctions {
+    param([Parameter(Mandatory)] [string] $VerifiedCode)
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($VerifiedCode, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count) { throw 'Verified Tools runtime library has invalid syntax' }
+    # Import definitions only: dot-sourcing its parameter block would erase the
+    # launcher's worktree, generation and bridge root in the calling scope.
+    $definitions = @($ast.EndBlock.Statements | Where-Object {
+        $_ -is [Management.Automation.Language.FunctionDefinitionAst]
+    } | ForEach-Object { $_.Extent.Text })
+    if (-not $definitions.Count) { throw 'Verified Tools runtime library has no functions' }
+    return [scriptblock]::Create(($definitions -join "`n"))
+}
+
 function Get-WdNativeToolsResumeState {
     param([string] $Worktree)
     $path = Join-Path (Join-Path (Join-Path $Worktree '.codex-audit') 'wd-turn-loop') 'conversation.json'
@@ -1859,7 +1874,7 @@ $nativeToolsLease = $null
 try {
 if ($conversationSurface -ceq 'native_terminal') {
     if ([Console]::IsInputRedirected) { throw 'Native Tools requires an interactive Windows Terminal tab' }
-    . ([scriptblock]::Create([string]$verifiedConversationCode['Invoke-WdLaneTurnLoop.ps1']))
+    . (Get-WdNativeToolsRuntimeFunctions -VerifiedCode ([string]$verifiedConversationCode['Invoke-WdLaneTurnLoop.ps1']))
     $nativeLock = Assert-WdTurnPath (Join-Path $runtimeRoot '.wd-turn-codex-tools-1.lock')
     $nativeToolsLease = [IO.File]::Open($nativeLock,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     $blocker = Get-WdPreviousTurnBlocker -Path (Join-Path $runtimeRoot '.wd-turn-codex-tools-1.owner.json') -Agent codex-tools-1

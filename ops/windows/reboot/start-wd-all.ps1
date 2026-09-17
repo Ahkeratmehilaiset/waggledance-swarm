@@ -1918,11 +1918,14 @@ function Test-LaneGenerationAttestation {
     $runId = Get-NamedCommandLineArgumentValue `
       -CommandLine $commandLine `
       -Name 'RunId'
-    $handshakeDirectory = Resolve-NormalizedPath -Path (
-      Get-NamedCommandLineArgumentValue `
-        -CommandLine $commandLine `
-        -Name 'HandshakeDirectory'
-    )
+    $handshakeArgument = Get-NamedCommandLineArgumentValue `
+      -CommandLine $commandLine -Name 'HandshakeDirectory'
+    if (-not $handshakeArgument -and $runId -cmatch '^[a-zA-Z0-9_-]+$') {
+      # start-wd-agent supports this default for a direct single-lane resume.
+      # Verify the same confined path rather than rejecting a valid live lane.
+      $handshakeArgument = Join-Path 'C:\Python\wd-reboot-runtime\handshakes' $runId
+    }
+    $handshakeDirectory = Resolve-NormalizedPath -Path $handshakeArgument
     $handshakeRoot = Resolve-NormalizedPath -Path (
       'C:\Python\wd-reboot-runtime\handshakes'
     )

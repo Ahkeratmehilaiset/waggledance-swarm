@@ -2,6 +2,26 @@
 
 Set-StrictMode -Version Latest
 
+if (-not ('WaggleDance.BridgeLfScannerV1' -as [type])) {
+    Add-Type -TypeDefinition @'
+namespace WaggleDance {
+    public static class BridgeLfScannerV1 {
+        public static int LastCompleteLine(byte[] bytes, int count, int maxRows) {
+            if (bytes == null || count < 0 || count > bytes.Length || maxRows < 1)
+                throw new System.ArgumentOutOfRangeException();
+            int last = -1, rows = 0;
+            for (int i = 0; i < count; i++) {
+                if (bytes[i] != 10) continue;
+                last = i;
+                if (++rows >= maxRows) break;
+            }
+            return last;
+        }
+    }
+}
+'@
+}
+
 if (-not ('WaggleDance.BridgeFileIdentityV1.NativeMethods' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -886,15 +906,9 @@ function Read-BridgeLogSnapshotDelta {
         }
         $totalBytesRead = [int64]($validationBytesRead + $read)
 
-        $lastLf = -1
-        $rowCount = 0
-        for ($index = 0; $index -lt $read; $index++) {
-            if ($bytes[$index] -eq 10) {
-                $lastLf = $index
-                $rowCount++
-                if ($rowCount -ge $MaxRows) { break }
-            }
-        }
+        # Scan in compiled code: interpreting one PowerShell iteration per
+        # byte made a 90 MB retained-history check take minutes on PS 5.1.
+        $lastLf = [WaggleDance.BridgeLfScannerV1]::LastCompleteLine($bytes, $read, $MaxRows)
 
         if ($lastLf -lt 0) {
             if ($read -ge $MaxBytes) {

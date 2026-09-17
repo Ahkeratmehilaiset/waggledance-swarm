@@ -32,10 +32,11 @@ def test_paged_snapshot_is_complete_or_fails_closed(tmp_path, ps, mode):
     . '{BIN / 'BridgeIncrementalReader.ps1'}'
     Read-BridgeEventSnapshot -Path '{path}' -PageBytes 130 -MaxBytes {200 if mode == 'byte_limit' else 2000} -MaxRows {3 if mode == 'row_limit' else 100} | ConvertTo-Json -Depth 8 -Compress
     """)
-    if mode == 'complete':
+    if mode in ('complete', 'partial'):
         assert result['status'] == 'OK'
         assert [v['n'] for v in result['rows']] == list(range(5))
-        assert result['candidate_cursor']['offset'] == len(raw)
+        expected_offset = len(raw) if mode == 'complete' else len(raw) - len(b'{"partial":')
+        assert result['candidate_cursor']['offset'] == expected_offset
     else:
         assert result['status'] == 'BLOCKED'
         assert result['rows'] == []

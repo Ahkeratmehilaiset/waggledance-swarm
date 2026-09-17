@@ -204,6 +204,8 @@ function Read-BridgeEventSnapshot {
             -MaxBytes ([Math]::Min($PageBytes, $remaining)) -MaxRows ($MaxRows - $items.Count)
         if ($result.status -in @('BLOCKED','RETRY')) { return $result }
         if ($snapshotLength -lt 0) { $snapshotLength = [int64]$result.snapshot_length }
+        $validationBytes = if ($offset -gt 0) { 1L } else { 0L }
+        $reachedEnd = ($result.bytes_read - $validationBytes -ge ($snapshotLength - $offset))
         $reason = ''
         if ($snapshotLength -gt $MaxBytes) { $reason = 'snapshot_exceeds_bounds' }
         elseif ($null -eq $result.candidate_cursor) {
@@ -211,7 +213,7 @@ function Read-BridgeEventSnapshot {
             $reason = 'snapshot_incomplete'
         }
         elseif ($result.candidate_cursor.offset -lt $snapshotLength -and
-            ($result.candidate_cursor.offset -le $offset -or
+            (($result.candidate_cursor.offset -le $offset -and -not $reachedEnd) -or
              $items.Count + @($result.rows).Count -ge $MaxRows)) {
             $reason = 'snapshot_exceeds_bounds'
         }
@@ -221,7 +223,9 @@ function Read-BridgeEventSnapshot {
         }
         foreach ($item in @($result.rows)) { [void]$items.Add($item) }
         $cursor = $result.candidate_cursor
-    } while ($cursor.offset -lt $snapshotLength)
+        # An unterminated final row is not durable yet. Preserve the canonical
+        # complete-prefix contract and leave its candidate cursor before it.
+    } while ($cursor.offset -lt $snapshotLength -and -not $reachedEnd)
     $result.rows = $items.ToArray()
     $result.snapshot_length = $snapshotLength
     return $result

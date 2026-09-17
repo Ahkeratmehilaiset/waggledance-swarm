@@ -211,10 +211,16 @@ a fail-closed gate clause from `tools/check_release_gate.py`. What they mean:
   only because the stored evidence already records `duration_hours: 336`, not
   because the gate cannot produce it. A genuine short soak run will show it.
 - `soak_evidence_<field>_not_<expected>` ⇒ a status field is not at its
-  expected value. `<expected>` is usually `pass` but not always, so a
-  finalization failure can read `soak_evidence_docker_policy_not_finalized`.
-  Do NOT hand-edit the JSON; re-run `collect_soak_evidence` after fixing the
-  underlying artifact.
+  expected value, for example `soak_evidence_ci_status_not_pass`. Both halves
+  come from `STATUS_PASS_FIELDS`, and all six of its expected values are
+  currently the literal `pass`, so in practice this emits only
+  `soak_evidence_<field>_not_pass` today. `<expected>` is interpolated rather
+  than hardcoded, so it would follow if that table ever gained a non-`pass`
+  value, but no such case exists now. Do NOT hand-edit the JSON; re-run
+  `collect_soak_evidence` after fixing the underlying artifact.
+- `soak_evidence_docker_policy_not_finalized` ⇒ `docker_stable_policy` is not
+  `finalized`. This one is a plain literal from its own branch, not an
+  instance of the pattern above, so a text search does find it.
 - `soak_evidence_result_not_pass` ⇒ the collector did not derive
   `result=pass`; the most common cause is a missing
   `--use-local-artifacts` flag or stale artifact. Re-collect.

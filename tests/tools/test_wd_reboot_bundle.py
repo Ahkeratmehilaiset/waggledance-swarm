@@ -7624,7 +7624,8 @@ def test_conversation_window_is_opt_out_and_only_after_successful_restore():
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell unavailable")
-def test_conversation_does_not_extend_elevated_restore_wait():
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_conversation_does_not_extend_elevated_restore_wait(tmp_path, ps):
     deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     start = deployer.index("        $elevated = Start-Process")
     end = deployer.index("\n    }\n    catch", start)
@@ -7637,12 +7638,19 @@ def test_conversation_does_not_extend_elevated_restore_wait():
 $ErrorActionPreference = 'Stop'
 $elevationHost = 'unused-fixture-host'
 $encodedCommand = 'unused-fixture-command'
+$elevationLogPath = '{tmp_path / 'restore.log'}'
+[IO.File]::WriteAllText($elevationLogPath, 'Waiting for a bounded worker reply')
 $global:steps = New-Object 'System.Collections.Generic.List[string]'
 function Start-Process {{
   param($FilePath, $Verb, $ArgumentList, $WindowStyle, [switch]$PassThru, $ErrorAction)
   [void]$global:steps.Add('start')
-  $process = [pscustomobject]@{{ ExitCode = $null; Handle = 123 }}
+  $process = [pscustomobject]@{{ ExitCode = $null; Handle = 123; polls = 0 }}
   $process | Add-Member ScriptMethod WaitForExit {{
+    param([int]$Milliseconds)
+    if($Milliseconds -gt 0) {{
+      [void]$global:steps.Add('poll-parent'); $this.polls++
+      return ($this.polls -gt 1)
+    }}
     [void]$global:steps.Add('wait-parent'); $this.ExitCode = 7
   }}
   $process | Add-Member ScriptMethod Refresh {{
@@ -7650,9 +7658,14 @@ function Start-Process {{
   }}
   return $process
 }}
-{launch}
+. {{ {launch} }} 6> '{tmp_path / 'progress.txt'}'
 [pscustomobject]@{{ steps = @($global:steps); exit_code = $elevated.ExitCode }} |
   ConvertTo-Json -Compress
-""")
+""", executable=ps)
     data = json.loads(result.stdout)
-    assert data == {"steps": ["start", "wait-parent", "refresh"], "exit_code": 7}
+    assert data == {"steps": ["start", "poll-parent", "poll-parent", "wait-parent", "refresh"], "exit_code": 7}
+    progress_bytes = (tmp_path / 'progress.txt').read_bytes()
+    progress = progress_bytes.decode('utf-16' if progress_bytes.startswith(b'\xff\xfe') else 'utf-8-sig')
+    assert 'Administrator restore started' in progress
+    assert 'Restore still running; elapsed=' in progress
+    assert 'Waiting for a bounded worker reply' in progress

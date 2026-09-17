@@ -1628,10 +1628,11 @@ function Get-LaneProcesses {
 }
 
 function Test-WdCliUpdateDeferred {
-  param([AllowEmptyCollection()] [object[]] $Processes)
   # Shared CLI installation paths must not change beneath either fleet lanes
   # or unrelated operator sessions. Update once on a genuinely cold start.
-  return @($Processes | Where-Object {
+  # Get-AllProcessSnapshots is deliberately limited to PowerShell wrappers;
+  # query native processes independently, including those with no command line.
+  return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
     [string]$_.Name -imatch '^(codex|claude)\.exe$'
   }).Count -gt 0
 }
@@ -2688,7 +2689,7 @@ if ($bundleMode -ceq 'deployed') {
 
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $processes = Get-AllProcessSnapshots
-$cliUpdateDeferred = (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred -Processes $processes))
+$cliUpdateDeferred = (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred))
 if ($cliUpdateDeferred) {
   $SkipCliUpdate = $true
   Write-Host 'CLI updates deferred: active Codex/Claude sessions use the shared executables; update on a cold start.'
@@ -3478,6 +3479,12 @@ try {
     throw 'WD-Supervisor hidden action registration postcondition failed'
   }
 
+  # Preflight can take minutes. A native session may have started since then.
+  if (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred)) {
+    $cliUpdateDeferred = $true
+    $SkipCliUpdate = $true
+    Write-Host 'CLI updates deferred: a Codex/Claude session is active before the update phase.'
+  }
   if (-not $SkipCliUpdate) {
     Write-Host ''
     $codexUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'codex.cmd'

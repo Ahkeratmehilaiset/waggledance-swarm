@@ -88,12 +88,46 @@ def test_release_probe_rejects_uncorrelated_and_stale_answers(ps, change):
 
 @pytest.mark.parametrize('ps', SHELLS)
 @pytest.mark.parametrize('name,expected', [('claude.exe', True), ('codex.exe', True), ('powershell.exe', False), ('not-codex.exe', False)])
-def test_shared_cli_update_is_deferred_for_external_sessions(ps, name, expected):
+@pytest.mark.parametrize('command_line', ["'external session'", '$null'])
+def test_shared_cli_update_is_deferred_for_external_sessions(ps, name, expected, command_line):
     source = (ROOT / 'ops/windows/reboot/start-wd-all.ps1').read_text()
     start = source.index('function Test-WdCliUpdateDeferred {')
     end = source.index('\nfunction ', start + 1)
-    result = run(ps, source[start:end] + f"\nTest-WdCliUpdateDeferred -Processes @([pscustomobject]@{{Name='{name}'}}) | ConvertTo-Json")
+    # Exercise the production call with its real inventory boundary. Lane
+    # discovery intentionally contains only PowerShell wrappers, not native CLIs.
+    inventory = f"""
+    function Get-CimInstance {{
+        param($ClassName, $ErrorAction)
+        if ($ClassName -ne 'Win32_Process' -or $ErrorAction -ne 'Stop') {{ throw 'wrong inventory' }}
+        [pscustomobject]@{{Name='powershell.exe';CommandLine='lane wrapper'}}
+        [pscustomobject]@{{Name='{name}';CommandLine={command_line}}}
+    }}
+    """
+    result = run(ps, inventory + source[start:end] + "\nTest-WdCliUpdateDeferred | ConvertTo-Json")
     assert result is expected
+
+
+@pytest.mark.parametrize('ps', SHELLS)
+def test_cli_update_inventory_failure_aborts_instead_of_allowing_update(ps):
+    source = (ROOT / 'ops/windows/reboot/start-wd-all.ps1').read_text()
+    start = source.index('function Test-WdCliUpdateDeferred {')
+    end = source.index('\nfunction ', start + 1)
+    result = run(ps, source[start:end] + """
+    function Get-CimInstance { throw 'inventory unavailable' }
+    try { Test-WdCliUpdateDeferred | Out-Null; $false | ConvertTo-Json }
+    catch { ($_.Exception.Message -eq 'inventory unavailable') | ConvertTo-Json }
+    """)
+    assert result is True
+
+
+def test_cli_updates_recheck_native_inventory_after_preflight():
+    source = (ROOT / 'ops/windows/reboot/start-wd-all.ps1').read_text()
+    preflight = source.index('$cliUpdateDeferred =')
+    apply = source.index("Write-Host 'Registering the exact hidden WD-Supervisor action...'")
+    update = source.index("Write-Host 'Updating Codex CLI once...'")
+    assert 'Test-WdCliUpdateDeferred -Processes' not in source
+    assert '(Test-WdCliUpdateDeferred)' in source[preflight:apply]
+    assert '(Test-WdCliUpdateDeferred)' in source[apply:update]
 
 
 @pytest.mark.parametrize('ps', SHELLS)

@@ -566,6 +566,10 @@ if ($ReplyToEventJson) {
             if ($null -ne $evidence.observed_agent -and $evidence.observed_agent -cne $Agent) { throw 'Observed launcher agent does not match reply author' }
             $payload|Add-Member -Force NoteProperty result_validation $validation
             $payload|Add-Member -Force NoteProperty execution_evidence $evidence
+            # The reply timestamp must not predate its own runtime observation.
+            # This is still event creation, not proof of durable append or receipt.
+            $event['ts_utc']=[datetime]::UtcNow.ToString('o')
+            if (-not (Test-BridgeReplyBinding $replyTo ([pscustomobject]$event) $Agent)) { throw 'Reply clock or binding changed during evidence collection' }
         }
     }
 } elseif ($RequestId -or $Type -ceq 'wake_request' -or (Test-BridgeRequestLikeEvent ([pscustomobject]$event))) {

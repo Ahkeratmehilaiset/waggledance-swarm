@@ -89,7 +89,12 @@ def test_writer_rejects_bad_structured_results_before_canonical_write(tmp_path, 
         args = [str(BIN / 'Write-AgentEvent.ps1'), '-Agent', agent, '-Type', 'message', '-Status', 'answered',
                 '-To', 'operator', '-TaskId', 'fixture/result', '-ReplyToEventJson', json.dumps(request), '-PayloadJson', json.dumps(payload)]
     before = datetime.now().astimezone()
-    result = subprocess.run([ps, '-NoProfile', '-NonInteractive', '-File', *args], env=env, text=True, capture_output=True, timeout=40)
+    # This canonical-writer fixture is not the real ancestor lane running pytest.
+    # Ancestry/pin observation itself is tested separately with explicit process fixtures.
+    parameter_names = {'-Agent', '-RequestEventJson', '-ResultJson', '-ReceiptJson', '-Type', '-Status',
+                       '-To', '-TaskId', '-ReplyToEventJson', '-PayloadJson'}
+    command = 'function Get-CimInstance { return $null }; & ' + ' '.join(a if a in parameter_names else q(a) for a in args)
+    result = subprocess.run([ps, '-NoProfile', '-NonInteractive', '-Command', command], env=env, text=True, capture_output=True, timeout=40)
     log = tmp_path / 'shared/events.jsonl'
     if case not in ('builder', 'review_disagreement'):
         assert result.returncode != 0 and not log.exists(), result.stdout + result.stderr
@@ -104,8 +109,9 @@ def test_writer_rejects_bad_structured_results_before_canonical_write(tmp_path, 
     evidence = event['payload']['execution_evidence']
     assert evidence['helper_directory'] == str(BIN)
     assert before <= datetime.fromisoformat(evidence['observed_at_utc'].replace('Z', '+00:00')) <= datetime.now().astimezone()
+    assert datetime.fromisoformat(evidence['observation_completed_utc'].replace('Z', '+00:00')) <= datetime.fromisoformat(event['ts_utc'].replace('Z', '+00:00'))
     assert evidence['task_completion_verified'] is False
-    assert evidence['native_conversation_id'] is None or len(evidence['native_conversation_id']) == 36
+    assert evidence['native_conversation_id'] is None
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

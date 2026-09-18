@@ -21,7 +21,7 @@ foreach ($name in @('nonce','token','task_revision')) {
     $value=Get-BridgeContractField $request $name
     if ($null -ne $value) {$payload[$name]=$value}
 }
-$validation=Get-BridgeTaskResultValidation -Request $request -Payload ([pscustomobject]$payload)
+$validation=Get-BridgeTaskResultValidation -Request $request -Payload ([pscustomobject]$payload) -Responder $Agent
 if ($validation.errors.Count) {throw ('Task result rejected before write: '+($validation.errors -join ', '))}
 $evidence=& (Join-Path $PSScriptRoot Get-BridgeExecutionEvidence.ps1)|ConvertFrom-Json @jsonArgs
 if ($evidence.pin_status -ceq 'mismatch') {throw ('Execution evidence rejected before write: '+$evidence.pin_error)}

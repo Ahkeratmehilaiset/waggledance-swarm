@@ -558,7 +558,7 @@ if ($ReplyToEventJson) {
     # accidentally bypass the builder and publish a malformed substantive answer.
     if (Test-BridgeAnswerEvent ([pscustomobject]$event)) {
         . (Join-Path $PSScriptRoot 'BridgeTaskResult.ps1')
-        $validation=Get-BridgeTaskResultValidation -Request $replyTo -Payload $payload
+        $validation=Get-BridgeTaskResultValidation -Request $replyTo -Payload $payload -Responder $Agent
         if ($validation.errors.Count) { throw ('Task result rejected before write: '+($validation.errors -join ', ')) }
         if ($null -ne $validation.schema_valid) {
             $evidence=& (Join-Path $PSScriptRoot 'Get-BridgeExecutionEvidence.ps1')|ConvertFrom-Json @jsonArguments

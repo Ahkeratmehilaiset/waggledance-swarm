@@ -22,6 +22,8 @@ Existing `wd.role-request.v1` requests enforce their exact `result_fields`. For 
 
 This is a small task contract, not arbitrary JSON Schema. Fields are direct children of `payload.result`. Types are string, boolean, integer, finite number, object, array and null. Equality uses canonical JSON. Both the builder and public `Write-AgentEvent.ps1 -ReplyToEventJson` reject an invalid contracted substantive answer before append, spool or outbox publication. Legacy requests without a contract retain their transport behavior.
 
+Independent review is an exception to requester-supplied content assertions: for either RCO identity or a `reviewer` role request, `equals` is never enforced and `content_valid` stays null. A requester cannot constrain the reviewer's verdict by demanding an expected answer. Structure still must match the agreed report format. The requester must assess the actual review, including disagreement, rather than treating its own expectations as approval criteria.
+
 ## Independent states
 
 `Get-BridgeReplySnapshot.ps1` retains its existing transport `answered` state and adds per-answer validation:

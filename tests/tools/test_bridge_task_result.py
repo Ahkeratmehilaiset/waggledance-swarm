@@ -30,7 +30,7 @@ try {{ Test-BridgeAckEvent $empty|Out-Null }} catch {{$rejected=$true}}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['valid', 'wrong_level', 'wrong_type', 'wrong_content', 'extra', 'unknown', 'role_fields', 'empty_checks', 'empty_result'])
+@pytest.mark.parametrize('case', ['valid', 'wrong_level', 'wrong_type', 'wrong_content', 'extra', 'unknown', 'role_fields', 'empty_checks', 'empty_result', 'independent_review'])
 def test_result_contract_separates_schema_content_and_reporting(ps, case):
     contract = dict(schema='wd.task-result-contract.v1', required=['answer'],
                     types={'answer': 'integer'}, equals={'answer': 42}, additional_properties=False)
@@ -44,6 +44,9 @@ def test_result_contract_separates_schema_content_and_reporting(ps, case):
     if case == 'role_fields': request['payload'] = {'schema': 'wd.role-request.v1', 'result_fields': ['answer']}
     if case == 'empty_checks': contract.update(types={}, equals={})
     if case == 'empty_result': payload['result'] = {}
+    if case == 'independent_review':
+        request['to'] = 'claude-rco-1'
+        payload['result']['answer'] = 41
     script = f"""
 . {q(BIN / 'BridgeTaskResult.ps1')}
 Get-BridgeTaskResultValidation -Request ({q(json.dumps(request))}|ConvertFrom-Json) -Payload ({q(json.dumps(payload))}|ConvertFrom-Json)|ConvertTo-Json -Depth 8
@@ -52,8 +55,9 @@ Get-BridgeTaskResultValidation -Request ({q(json.dumps(request))}|ConvertFrom-Js
     assert value['reported'] is None
     if case == 'unknown':
         assert value['schema_valid'] is None and value['content_valid'] is None
-    elif case in ('role_fields', 'empty_checks'):
+    elif case in ('role_fields', 'empty_checks', 'independent_review'):
         assert value['schema_valid'] and value['content_valid'] is None
+        assert not value['errors']
     elif case in ('wrong_level', 'wrong_type', 'extra', 'empty_result'):
         assert value['schema_valid'] is False and value['content_valid'] is None
     else:
@@ -63,37 +67,40 @@ Get-BridgeTaskResultValidation -Request ({q(json.dumps(request))}|ConvertFrom-Js
 
 @pytest.mark.skipif(os.name != 'nt', reason='canonical append is Windows only')
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['builder', 'wrong_level', 'wrong_content', 'pin_mismatch'])
+@pytest.mark.parametrize('case', ['builder', 'wrong_level', 'wrong_content', 'pin_mismatch', 'review_disagreement'])
 def test_writer_rejects_bad_structured_results_before_canonical_write(tmp_path, ps, case):
-    agent_uuid = json.loads((REBOOT.parents[2] / 'configs/bridge_identity_registry.json').read_text())['identities']['codex-tools-1']
+    agent = 'claude-rco-1' if case == 'review_disagreement' else 'codex-tools-1'
+    agent_uuid = json.loads((REBOOT.parents[2] / 'configs/bridge_identity_registry.json').read_text())['identities'][agent]
     request = dict(ts_utc='2026-01-01T00:00:00Z', request_id='quality-request', request_digest='digest', agent='operator', session_id='op-session',
-                   run_id='op-run', to='codex-tools-1', type='wake_request', status='request', task_id='fixture/result',
-                   expected_responders={'codex-tools-1': dict(agent_uuid=agent_uuid, session_id='tools-session', run_id='tools-run')},
+                   run_id='op-run', to=agent, type='wake_request', status='request', task_id='fixture/result',
+                   expected_responders={agent: dict(agent_uuid=agent_uuid, session_id='tools-session', run_id='tools-run')},
                    payload=dict(nonce='exact-nonce', result_contract=dict(schema='wd.task-result-contract.v1',
                        required=['answer'], types={'answer': 'integer'}, equals={'answer': 42})))
     env = {k: v for k, v in os.environ.items() if not k.startswith(('WD_BRIDGE_', 'WD_REBOOT_', 'AGENT_BRIDGE_'))}
-    env.update(AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path), AGENT_BRIDGE_AGENT='codex-tools-1',
+    env.update(AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path), AGENT_BRIDGE_AGENT=agent,
                AGENT_BRIDGE_AGENT_UUID=agent_uuid, AGENT_BRIDGE_SESSION_ID='tools-session', AGENT_BRIDGE_RUN_ID='tools-run')
     if case == 'pin_mismatch': env['WD_BRIDGE_BIN'] = str(tmp_path / 'foreign')
-    if case in ('builder', 'pin_mismatch'):
-        args = [str(BIN / 'Write-BridgeTaskReply.ps1'), '-Agent', 'codex-tools-1', '-RequestEventJson', json.dumps(request),
-                '-ResultJson', '{"answer":42}', '-ReceiptJson']
+    answer = 41 if case == 'review_disagreement' else 42
+    if case in ('builder', 'pin_mismatch', 'review_disagreement'):
+        args = [str(BIN / 'Write-BridgeTaskReply.ps1'), '-Agent', agent, '-RequestEventJson', json.dumps(request),
+                '-ResultJson', json.dumps({'answer': answer}), '-ReceiptJson']
     else:
         payload = {'nonce': 'exact-nonce', 'answer': 42} if case == 'wrong_level' else {'nonce': 'exact-nonce', 'result': {'answer': 41}}
-        args = [str(BIN / 'Write-AgentEvent.ps1'), '-Agent', 'codex-tools-1', '-Type', 'message', '-Status', 'answered',
+        args = [str(BIN / 'Write-AgentEvent.ps1'), '-Agent', agent, '-Type', 'message', '-Status', 'answered',
                 '-To', 'operator', '-TaskId', 'fixture/result', '-ReplyToEventJson', json.dumps(request), '-PayloadJson', json.dumps(payload)]
     before = datetime.now().astimezone()
     result = subprocess.run([ps, '-NoProfile', '-NonInteractive', '-File', *args], env=env, text=True, capture_output=True, timeout=40)
     log = tmp_path / 'shared/events.jsonl'
-    if case != 'builder':
+    if case not in ('builder', 'review_disagreement'):
         assert result.returncode != 0 and not log.exists(), result.stdout + result.stderr
         assert ('Execution evidence rejected' if case == 'pin_mismatch' else 'Task result rejected') in result.stderr
         return
     assert result.returncode == 0, result.stderr
     event = json.loads(log.read_text().splitlines()[-1])
     assert event['in_reply_to_request_id'] == request['request_id']
-    assert event['payload']['result'] == {'answer': 42}
+    assert event['payload']['result'] == {'answer': answer}
     assert event['payload']['result_validation']['schema_valid'] is True
+    assert event['payload']['result_validation']['content_valid'] is (None if case == 'review_disagreement' else True)
     evidence = event['payload']['execution_evidence']
     assert evidence['helper_directory'] == str(BIN)
     assert before <= datetime.fromisoformat(evidence['observed_at_utc'].replace('Z', '+00:00')) <= datetime.now().astimezone()

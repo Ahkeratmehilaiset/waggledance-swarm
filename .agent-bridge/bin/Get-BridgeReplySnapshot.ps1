@@ -38,7 +38,7 @@ $results=@(foreach ($target in $targets) {
     })
     [pscustomobject]@{target=$target;state=$(if ($answers.Count) {'answered'} else {'pending_at_snapshot'});
         answers=$answers;answer_validation=@(foreach ($answer in $answers) {
-            $validation=Get-BridgeTaskResultValidation -Request $request -Payload $answer.payload
+            $validation=Get-BridgeTaskResultValidation -Request $request -Payload $answer.payload -Responder $answer.agent
             [pscustomobject]@{reply_ts_utc=$answer.ts_utc;correlation_valid=$true;
                 schema_valid=$validation.schema_valid;content_valid=$validation.content_valid;reported=$null;
                 errors=$validation.errors;content_scope=$validation.content_scope}

@@ -17,7 +17,7 @@ function Test-BridgeResultObject {
 }
 
 function Get-BridgeTaskResultValidation {
-    param($Request,$Payload)
+    param($Request,$Payload,[string]$Responder='')
     Set-StrictMode -Version Latest
     $requestPayload=Get-BridgeResultProperty $Request 'payload'
     $contract=Get-BridgeResultProperty $requestPayload 'result_contract'
@@ -26,6 +26,9 @@ function Get-BridgeTaskResultValidation {
     }
     $errors=[Collections.Generic.List[string]]::new()
     $schemaValid=$null; $contentValid=$null
+    $reviewTargets=@(if ($Responder) {$Responder} else {([string](Get-BridgeResultProperty $Request 'to') -split ',')|ForEach-Object {$_.Trim()}})
+    $independentReview=((Get-BridgeResultProperty $requestPayload 'role') -ceq 'reviewer' -or
+        @($reviewTargets|Where-Object {$_ -cin @('claude-rco-1','claude-rco-2')}).Count -gt 0)
     if ($null -ne $contract) {
         $schemaValid=$true
         if ((Get-BridgeResultProperty $contract 'schema') -cne 'wd.task-result-contract.v1') { $errors.Add('unknown_result_contract') }
@@ -65,7 +68,7 @@ function Get-BridgeTaskResultValidation {
             }
         }
         $schemaValid=($errors.Count -eq 0)
-        if ($schemaValid -and (Test-BridgeResultObject $equals)) {
+        if ($schemaValid -and -not $independentReview -and (Test-BridgeResultObject $equals)) {
             $equalNames=@(if ($equals -is [Collections.IDictionary]) {$equals.Keys} else {$equals.PSObject.Properties|ForEach-Object {$_.Name}})
             if ($equalNames.Count -gt 0) {
                 $contentValid=$true
@@ -78,5 +81,6 @@ function Get-BridgeTaskResultValidation {
         }
     }
     [pscustomobject]@{schema='wd.task-result-validation.v1';schema_valid=$schemaValid;content_valid=$contentValid;
-        reported=$null;errors=@($errors);content_scope='Only explicit request result_contract.equals assertions; other semantic claims require independent review.'}
+        reported=$null;errors=@($errors);independent_review=$independentReview;
+        content_scope=$(if ($independentReview) {'Requester equals assertions cannot constrain an independent reviewer; content requires independent assessment.'} else {'Only explicit request result_contract.equals assertions; other semantic claims require independent review.'})}
 }

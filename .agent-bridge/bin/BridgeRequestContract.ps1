@@ -31,6 +31,7 @@ function Test-BridgeBoundRequest {
 
 function Test-BridgeReplyBinding {
     param($Request, $Reply, [string]$Target, [bool]$RequesterClosure=$false, [bool]$AmbiguousLegacy=$false)
+    if (Get-BridgeContractField $Request 'request_binding_conflict') { return $false }
     $requester = [string](Get-BridgeContractField $Request 'agent')
     $author = if ($RequesterClosure) { $requester } else { $Target }
     if ([string](Get-BridgeContractField $Reply 'agent') -cne $author) { return $false }
@@ -45,6 +46,8 @@ function Test-BridgeReplyBinding {
     if ($null -ne $rid) {
         if ($rid -isnot [string] -or -not $rid -or (Get-BridgeContractField $Reply 'in_reply_to_request_id') -cne $rid) { return $false }
         if ($recipients -cnotcontains $recipient) { return $false }
+        $digest = Get-BridgeContractField $Request 'request_digest'
+        if ($null -ne $digest -and (Get-BridgeContractField $Reply 'in_reply_to_request_digest') -cne $digest) { return $false }
         $context = Get-BridgeContractField $Reply 'in_reply_to_requester'
         if ($null -eq $context) { return $false }
         foreach ($key in @('agent','agent_uuid','session_id','run_id')) {

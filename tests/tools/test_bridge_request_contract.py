@@ -9,6 +9,7 @@ import subprocess
 import pytest
 
 from tools.bridge_next_action import recommend_next_action
+from waggledance.core.bridge_request_contract import reply_matches_request
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELLS = list(dict.fromkeys(filter(None, [shutil.which('pwsh'), shutil.which('powershell.exe')])))
@@ -62,3 +63,43 @@ def test_revised_legacy_request_remains_pending_until_matching_reply(tmp_path, e
         result = json.loads(proc.stdout)
     assert result['open_incoming_count'] == (0 if case in ('correct', 'duplicate') else 1)
     assert result['action'] == ('claim_unblocked_work' if case in ('correct', 'duplicate') else 'answer_incoming')
+
+
+@pytest.mark.parametrize('case', ['correct', 'old_id', 'missing_id', 'wrong_requester_session', 'wrong_responder_session', 'wrong_digest', 'conflicting_envelope'])
+def test_explicit_id_also_binds_requester_and_responder_identity(case):
+    _, request, reply = events()
+    request.update(request_id='request-v2', request_digest='digest-v2')
+    reply.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='digest-v2',
+                 in_reply_to_requester={k: request[k] for k in ('agent','agent_uuid','session_id','run_id')})
+    if case == 'old_id': reply['in_reply_to_request_id'] = 'request-v1'
+    if case == 'missing_id': del reply['in_reply_to_request_id']
+    if case == 'wrong_requester_session': reply['in_reply_to_requester']['session_id'] = 'wrong'
+    if case == 'wrong_responder_session': reply['session_id'] = 'wrong'
+    if case == 'wrong_digest': reply['in_reply_to_request_digest'] = 'old'
+    if case == 'conflicting_envelope': reply['payload']['in_reply_to_request_id'] = 'different'
+    assert reply_matches_request(request, reply, 'codex-tools-1') is (case == 'correct')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='canonical append is Windows only')
+@pytest.mark.parametrize('engine', SHELLS)
+def test_real_writer_persists_id_and_full_request_reply_binding(tmp_path, engine):
+    CODEX_TOOLS_UUID = json.loads((ROOT / 'configs/bridge_identity_registry.json').read_text())['identities']['codex-tools-1']
+    env = {k:v for k,v in os.environ.items() if not k.startswith('AGENT_BRIDGE_')}
+    env['AGENT_BRIDGE_RUNTIME_ROOT'] = str(tmp_path)
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    (shared / 'last_codex-tools-1.json').write_text(json.dumps(dict(
+        agent='codex-tools-1', agent_uuid=CODEX_TOOLS_UUID, session_id='tools-session', run_id='tools-run')))
+    writer = ROOT / '.agent-bridge/bin/Write-AgentEvent.ps1'
+    def write(*args):
+        proc = subprocess.run([engine, '-NoProfile', '-File', str(writer), '-TaskId', 'fixture/new-id', *args],
+                              env=env, capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return json.loads((shared / 'events.jsonl').read_text().splitlines()[-1])
+    request = write('-Agent','operator','-Type','wake_request','-Status','request','-To','codex-tools-1',
+                    '-SessionId','operator-session','-RunId','operator-run')
+    assert request['request_id'] and request['request_digest']
+    reply = write('-Agent','codex-tools-1','-AgentUuid',CODEX_TOOLS_UUID,'-SessionId','tools-session','-RunId','tools-run',
+                  '-Type','message','-Status','answered','-To','operator','-ReplyToEventJson',json.dumps(request))
+    assert reply_matches_request(request, reply, 'codex-tools-1')
+    assert reply['in_reply_to_request_id'] == request['request_id']

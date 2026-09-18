@@ -18,6 +18,8 @@
     "waggledance/core/bridge_event_schema.py",
     "waggledance/core/bridge_identity_registry.py",
     "waggledance/core/bridge_log_reader.py",
+    "waggledance/core/bridge_request_contract.py",
+    "waggledance/core/bridge_resource_scope.py",
     "waggledance/core/idle_protocol_deferred_lift.py",
     "waggledance/core/work_queue.py"
   ],

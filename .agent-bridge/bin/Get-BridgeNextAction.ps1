@@ -198,7 +198,11 @@ $freshByKey = [ordered]@{}
 foreach ($req in $freshRequestsForAgent) {
     $rid = Get-BridgeContractField $req 'request_id'
     $key = if ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$($req.status)" } else { "event|$($freshByKey.Count)" }
-    $freshByKey[$key] = $req
+    if ($rid -and $freshByKey.Contains($key)) {
+        if ((Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
+            $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
+        }
+    } else { $freshByKey[$key] = $req }
 }
 $openEventCount = 0
 foreach ($req in $freshByKey.Values) {

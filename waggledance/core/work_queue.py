@@ -46,6 +46,7 @@ from pathlib import Path
 import re
 from typing import Sequence
 from uuid import uuid4
+from waggledance.core.bridge_resource_scope import resolve_resources, resources_overlap
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +83,7 @@ class Claim:
     role: str = ""
     agent_uuid: str = ""
     capabilities: tuple[str, ...] = field(default_factory=tuple)
+    cwd: str = ""
 
 
 @dataclass(frozen=True)
@@ -150,6 +152,10 @@ def claim_task(
     if mode not in ALLOWED_MODES:
         raise WorkQueueError(f"mode must be one of {ALLOWED_MODES}, got {mode!r}")
     normalized_write_scope = _normalize_write_scope_entries(write_scope)
+    try:
+        resolve_resources(normalized_write_scope, cwd=str(Path.cwd()), bridge_root=str(resolve_bridge_root(bridge_root)))
+    except (OSError, ValueError) as exc:
+        raise WorkQueueError(str(exc)) from exc
     if mode == "write" and not normalized_write_scope:
         raise WorkQueueError("write claims require at least one write_scope path")
     if lease_seconds <= 0:
@@ -201,6 +207,7 @@ def claim_task(
         last_heartbeat_utc=timestamp,
         lease_seconds=int(lease_seconds),
         claim_lease_expires_utc=lease_expires,
+        cwd=str(Path.cwd()),
     )
     _write_claim_file(claim_path, claim, create_new=existing is None)
     return claim
@@ -294,6 +301,7 @@ def heartbeat(
         role=existing.role,
         agent_uuid=existing.agent_uuid,
         capabilities=existing.capabilities,
+        cwd=existing.cwd,
     )
     _write_claim_file(claim_path, refreshed)
     return refreshed
@@ -458,20 +466,22 @@ def check_scope_overlap(
     normalized_scope = _normalize_write_scope_entries(write_scope)
     if not normalized_scope:
         return []
-    normalized_request = {_normalize_scope_entry(s) for s in normalized_scope if s}
+    try:
+        normalized_request = resolve_resources(normalized_scope, cwd=str(Path.cwd()), bridge_root=str(resolve_bridge_root(bridge_root)))
+    except (OSError, ValueError) as exc:
+        raise WorkQueueError(str(exc)) from exc
     if not normalized_request:
         return []
     overlapping: list[Claim] = []
     for claim in list_claims(bridge_root=bridge_root):
         if claim.mode != "write":
             continue
-        existing_scope = {
-            _normalize_scope_entry(s)
-            for s in _normalize_write_scope_entries(claim.write_scope)
-            if s
-        }
+        try:
+            existing_scope = resolve_resources(claim.write_scope, cwd=claim.cwd, bridge_root=str(resolve_bridge_root(bridge_root)))
+        except (OSError, ValueError) as exc:
+            raise WorkQueueError(f"unverifiable resource scope in {claim.task_id}: {exc}") from exc
         if any(
-            _scope_entries_overlap(existing, requested)
+            resources_overlap(existing, requested)
             for existing in existing_scope
             for requested in normalized_request
         ):
@@ -565,6 +575,7 @@ def _read_claim_file(path: Path) -> Claim:
         role=str(data.get("role", "")),
         agent_uuid=str(data.get("agent_uuid", "")),
         capabilities=tuple(str(s) for s in data.get("capabilities", []) if s),
+        cwd=str(data.get("cwd", "")),
     )
 
 
@@ -580,6 +591,7 @@ def _write_claim_file(path: Path, claim: Claim, *, create_new: bool = False) -> 
         "last_heartbeat_utc": claim.last_heartbeat_utc,
         "lease_seconds": claim.lease_seconds,
         "claim_lease_expires_utc": claim.claim_lease_expires_utc,
+        "cwd": claim.cwd,
     }
     if claim.role:
         payload["role"] = claim.role

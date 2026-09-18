@@ -16,6 +16,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'BridgeResourceScope.ps1')
 
 # R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
 # per-agent worktrees can share one runtime state directory. Codex
@@ -99,11 +100,12 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
 }
 
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+$resources = @(Resolve-BridgeResourceScopes -Scopes $WriteScope -Worktree (Get-Location).Path -BridgeRoot $bridgeRoot)
 foreach ($file in $activeClaims) {
     try {
         $existing = Get-Content -Raw -Path $file.FullName -Encoding UTF8 | ConvertFrom-Json
     } catch {
-        continue
+        Stop-BridgeClaim -Message "unreadable active claim blocks acquisition: $($file.FullName)" -Code 3
     }
     if ([string]$existing.task_id -eq $TaskId) {
         if (-not $Force) {
@@ -115,7 +117,9 @@ foreach ($file in $activeClaims) {
         continue
     }
     if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
-        if (Test-ScopeOverlap -A $WriteScope -B @($existing.write_scope)) {
+        $existingCwd = if ($existing.PSObject.Properties['cwd']) { [string]$existing.cwd } else { '' }
+        $existingResources = @(Resolve-BridgeResourceScopes -Scopes @($existing.write_scope) -Worktree $existingCwd -BridgeRoot $bridgeRoot)
+        if (Test-BridgeResourceOverlap -A $resources -B $existingResources) {
             Stop-BridgeClaim -Message ("write-scope conflict with active claim {0} by {1}: {2}" -f $existing.task_id, $existing.agent, ((@($existing.write_scope)) -join ', ')) -Code 3
         }
     }
@@ -174,6 +178,7 @@ $claim = [ordered]@{
     summary             = $Summary
     mode                = $Mode
     write_scope         = @($WriteScope)
+    resources           = @($resources)
     run_id              = $RunId
     lease_seconds       = $LeaseSeconds
     claim_lease_expires_utc = $leaseExpiresUtc

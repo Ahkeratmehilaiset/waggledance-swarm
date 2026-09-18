@@ -980,10 +980,11 @@ def _deduplicate_repeated_wake_requests(
     wake_request_indexes: dict[tuple[str, str, str, str], int] = {}
     target = agent.lower()
     for request in requests:
-        if _event_type(request) != "wake_request":
+        rid = correlation_field(request, "request_id")
+        if _event_type(request) != "wake_request" and not rid:
             deduped.append(request)
             continue
-        key = request_key(request, target) if correlation_field(request, "request_id") else (
+        key = request_key(request, target) if rid else (
             _event_agent(request),
             _task_id(request),
             _event_status(request),
@@ -994,7 +995,14 @@ def _deduplicate_repeated_wake_requests(
             wake_request_indexes[key] = len(deduped)
             deduped.append(request)
         else:
-            deduped[index] = request
+            if rid:
+                # Identical-ID retries retain their first durable occurrence.
+                # Reusing an ID for different content is a visible open conflict.
+                previous = deduped[index]
+                if correlation_field(previous, "request_digest") != correlation_field(request, "request_digest"):
+                    deduped[index] = dict(previous, request_binding_conflict=True)
+            else:
+                deduped[index] = request
     return deduped
 
 

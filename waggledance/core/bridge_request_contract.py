@@ -39,6 +39,8 @@ def reply_matches_request(
     *, requester_closure: bool = False, ambiguous_legacy: bool = False,
 ) -> bool:
     """Check correlation only; callers must also require a substantive closure."""
+    if request.get("request_binding_conflict"):
+        return False
     requester = str(request.get("agent", ""))
     if reply.get("agent") != (requester if requester_closure else target):
         return False
@@ -56,6 +58,9 @@ def reply_matches_request(
         if not isinstance(rid, str) or not rid or field(reply, "in_reply_to_request_id") != rid:
             return False
         if recipient not in recipients:
+            return False
+        digest = field(request, "request_digest")
+        if digest is not None and field(reply, "in_reply_to_request_digest") != digest:
             return False
         context = field(reply, "in_reply_to_requester")
         if not isinstance(context, Mapping):

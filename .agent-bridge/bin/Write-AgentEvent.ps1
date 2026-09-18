@@ -16,6 +16,8 @@ param(
     [string] $SessionId = '',
     [string[]] $Capabilities = @(),
     [string] $PayloadJson = '{}',
+    [ValidatePattern('^[A-Za-z0-9._:-]{0,128}$')] [string] $RequestId = '',
+    [string] $ReplyToEventJson = '',
     [switch] $ReceiptJson
 )
 
@@ -523,6 +525,57 @@ if ($Role) { $event['role'] = $Role }
 if ($AgentUuid) { $event['agent_uuid'] = $AgentUuid }
 if ($SessionId) { $event['session_id'] = $SessionId }
 if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
+
+# A request's identity is frozen before canonical append / WAL / outbox copies.
+# Replies consume the full request, never the lossy next-action summary.
+. (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
+. (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+if ($ReplyToEventJson) {
+    if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
+    $replyTo = $ReplyToEventJson | ConvertFrom-Json -ErrorAction Stop
+    $replyId = Get-BridgeContractField $replyTo 'request_id'
+    if ($replyId -isnot [string] -or $replyId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'ReplyToEventJson requires a valid request_id' }
+    if ([string]$replyTo.task_id -cne $TaskId -or -not (Test-BridgeAddressedTo $replyTo $Agent) -or
+        -not (Test-BridgeAddressedTo ([pscustomobject]$event) ([string]$replyTo.agent))) {
+        throw 'Reply task, sender or recipient does not match the full request'
+    }
+    $event['in_reply_to_request_id'] = $replyId
+    $context = [ordered]@{}
+    foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
+        $value = Get-BridgeContractField $replyTo $key
+        if ($value) { $context[$key] = $value }
+    }
+    $event['in_reply_to_requester'] = [pscustomobject]$context
+    $digest = Get-BridgeContractField $replyTo 'request_digest'
+    if ($digest) { $event['in_reply_to_request_digest'] = $digest }
+    if (-not (Test-BridgeReplyBinding $replyTo ([pscustomobject]$event) $Agent)) { throw 'Reply identity or payload contradicts the request binding' }
+} elseif ($RequestId -or $Type -ceq 'wake_request' -or (Test-BridgeRequestLikeEvent ([pscustomobject]$event))) {
+    $event['request_id'] = if ($RequestId) { $RequestId } else { [guid]::NewGuid().ToString('D') }
+    $identities = [ordered]@{}
+    foreach ($target in @(Get-BridgeEventTargets ([pscustomobject]$event))) {
+        if ($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') { continue }
+        $last = Join-Path $sharedDir ("last_{0}.json" -f $target)
+        if (Test-Path -LiteralPath $last -PathType Leaf) {
+            $seen = Get-Content -LiteralPath $last -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            $identity = [ordered]@{}
+            foreach ($key in @('agent_uuid','session_id','run_id')) {
+                $value = Get-BridgeContractField $seen $key
+                if ($value) { $identity[$key] = $value }
+            }
+            if ([string]$seen.agent -ceq $target -and $identity.Count -eq 3) { $identities[$target] = [pscustomobject]$identity }
+        }
+    }
+    if ($identities.Count -eq @(Get-BridgeEventTargets ([pscustomobject]$event)).Count -and $identities.Count -gt 0) {
+        $event['expected_responders'] = [pscustomobject]$identities
+    }
+    $identityBytes = [Text.Encoding]::UTF8.GetBytes(([ordered]@{
+        request_id=$event.request_id; agent=$Agent; task_id=$TaskId; to=$To;
+        session_id=$SessionId; run_id=$RunId; type=$Type; status=$Status; message=$Message; payload=$payload
+    } | ConvertTo-Json -Depth 12 -Compress))
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $event['request_digest'] = [BitConverter]::ToString($hasher.ComputeHash($identityBytes)).Replace('-','').ToLowerInvariant() }
+    finally { $hasher.Dispose() }
+}
 
 function Get-BridgeTargetKey {
     param([AllowNull()] [string] $Targets)

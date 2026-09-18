@@ -13,6 +13,31 @@ from tools import wd_grok_helper
 NOW = datetime(2026, 9, 12, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_consult_emits_lifecycle_without_exposing_prompt_or_refunding_budget(tmp_path, failed):
+    seed(tmp_path)
+    events = []
+    def emit(stage, state):
+        events.append((stage, dict(state)))
+        if failed:
+            raise OSError('bridge unavailable')
+    result = consult(tmp_path, 'lifecycle', 'private prompt', ['fake'], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout='advice'), emitter=emit)
+    assert [e[0] for e in events] == ['started', 'answered']
+    assert events[0][1]['request_id'] == events[1][1]['request_id']
+    assert 'private prompt' not in json.dumps(events)
+    assert events[1][1]['report_sha256']
+    assert result['status'] == 'answered' and not result['eligible']
+    assert bool(result.get('bridge_event_errors')) is failed
+    before = (tmp_path / 'hourly-state.json').read_bytes()
+    deferred = consult(tmp_path, 'second-task', 'ask', ['fake'], now=NOW,
+                       runner=lambda *a, **k: pytest.fail('budget bypass'), emitter=emit)
+    assert deferred['decision'] == 'deferred_hourly_limit'
+    assert events[-1][0] == 'deferred'
+    assert events[-1][1]['task_id'] == 'second-task'
+    assert (tmp_path / 'hourly-state.json').read_bytes() == before
+
+
 def seed(root, age=3600):
     write_state(root, {"schema": SCHEMA, "last_attempt_utc": (NOW-timedelta(seconds=age)).isoformat(), "status": "answered"})
 

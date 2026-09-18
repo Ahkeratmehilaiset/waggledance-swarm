@@ -227,6 +227,66 @@ function Get-WdNativeLeadResumeState {
   return [pscustomobject]@{thread_id=[string]$saved.thread_id; initial_context_delivered=[bool]$saved.initial_context_delivered}
 }
 
+function Invoke-WdNativeLeadTerminal {
+  param([string] $CliPath, [string[]] $Arguments, [string] $ThreadId,
+    [string] $Worktree, [string] $RuntimeRoot, [string] $Generation,
+    [string] $ExpectedCliHash, [string] $SessionId, [hashtable] $VerifiedCode)
+  if ([Console]::IsInputRedirected) { throw 'Native Lead requires an interactive terminal' }
+  if ($ThreadId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+    throw 'Automatic Lead delivery requires the exact recorded conversation; never guess a recent thread'
+  }
+  # Import only named function definitions from the already hash-verified snapshots.
+  # Never execute the Tools launcher's top-level bootstrap in the Lead process.
+  $imports = @{
+    'Invoke-WdLaneTurnLoop.ps1' = @('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot')
+    'start-wd-tools-consumer.ps1' = @('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
+      'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')
+  }
+  foreach ($file in $imports.Keys) {
+    $tokens=$null; $parseErrors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput([string]$VerifiedCode[$file],[ref]$tokens,[ref]$parseErrors)
+    if ($parseErrors.Count) { throw "Native relay code does not parse: $file" }
+    foreach ($name in $imports[$file]) {
+      $definitions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true))
+      if ($definitions.Count -ne 1) { throw "Native relay function is missing or ambiguous: $name" }
+      . ([scriptblock]::Create($definitions[0].Extent.Text))
+    }
+  }
+  $journal=Join-Path $Worktree '.codex-audit\wd-turn-loop'
+  [void](Assert-WdTurnPath $journal)
+  [void][IO.Directory]::CreateDirectory($journal)
+  $readyPath=Join-Path $journal 'native-terminal.json'
+  $record=[ordered]@{schema='wd.native-lead-ready.v1';agent='codex-lead-1';status='starting';
+    thread_id=$ThreadId;session_id=$SessionId;generation=$Generation;relay_pid=$PID;native_pid=0;
+    native_process_start_utc='';relay_process_start_utc=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
+    bridge_wake_transport='codex_queue';worktree=$Worktree;task_completion_verified=$false;error=''}
+  $native=$null
+  try {
+    Write-WdTurnJson $readyPath $record
+    $line=@($Arguments | ForEach-Object { ConvertTo-WdToolsNativeArgument $_ }) -join ' '
+    $native=Start-WdToolsNativeProcess -CliPath $CliPath -ArgumentLine $line -Worktree $Worktree
+    $record.native_pid=$native.Id
+    $record.native_process_start_utc=$native.StartTime.ToUniversalTime().ToString('o')
+    $record.status='terminal_ready'
+    Write-WdTurnJson $readyPath $record
+    Invoke-WdNativeToolsWakeRelay -Agent codex-lead-1 -Native $native -CliPath $CliPath -ThreadId $ThreadId `
+      -Worktree $Worktree -RuntimeRoot $RuntimeRoot -Generation $Generation -ExpectedCliHash $ExpectedCliHash
+    if ($native.ExitCode -ne 0) { throw "Native Lead exited with code $($native.ExitCode)" }
+  } catch {
+    $record.status='bridge_wake_blocked'; $record.error=$_.Exception.Message
+    Write-WdTurnJson $readyPath $record
+    Write-Warning ('Lead automatic bridge delivery stopped: ' + $_.Exception.Message)
+    throw
+  } finally {
+    # Retain ownership if queue delivery fails; do not kill or duplicate the conversation.
+    if ($null -ne $native) {
+      if (-not $native.HasExited) { $native.WaitForExit() }
+      $native.Dispose()
+    }
+    $record.status='stopped'; Write-WdTurnJson $readyPath $record
+  }
+}
+
 function Get-WdClaudeResumeState {
   param([string] $Agent, [string] $Worktree, [string] $ProjectsRoot)
   # Claude writes --name and the first main-thread user record before doing
@@ -389,7 +449,7 @@ function Assert-WdLeadInteractivePostureBaseline {
 function Read-WdLaneTurnRunnerSnapshot {
   param(
     [Parameter(Mandatory)] [string] $ScriptRoot,
-    [ValidateSet('Invoke-WdLaneTurnLoop.ps1', 'Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1')]
+    [ValidateSet('Invoke-WdLaneTurnLoop.ps1', 'Invoke-WdCodexConversationLoop.ps1', 'Show-WdOperatorConversation.ps1', 'start-wd-tools-consumer.ps1')]
     [string] $FileName = 'Invoke-WdLaneTurnLoop.ps1',
     [AllowNull()] [object] $DeploymentAnchor = $null,
     [switch] $SourceTreeMode
@@ -1829,6 +1889,14 @@ $cliExecutableHash = (
 $turnRunnerHash = ''
 $conversationCodeHashes = @{}
 $verifiedConversationCode = @{}
+if ($nativeLead) {
+  foreach ($name in @('Invoke-WdLaneTurnLoop.ps1','start-wd-tools-consumer.ps1')) {
+    $snapshot=Read-WdLaneTurnRunnerSnapshot -ScriptRoot $PSScriptRoot -FileName $name `
+      -DeploymentAnchor $deploymentAnchor -SourceTreeMode:$sourceTreeMode
+    $conversationCodeHashes[$name]=[string]$snapshot.Hash
+    $verifiedConversationCode[$name]=[string]$snapshot.Text
+  }
+}
 if ($turnMode -ceq 'managed') {
   $turnRunnerSnapshot = Read-WdLaneTurnRunnerSnapshot `
     -ScriptRoot $PSScriptRoot `
@@ -2050,7 +2118,9 @@ if ($nativeLead) {
     'The former managed-loop prompt, turn-receipt paths and UI automation rules are historical; do not replay them. ' +
     'The startup model is gpt-6-astra/xhigh; the operator may use /model to change it. ' +
     'Bridge helpers and the current environment identify this lane. Keep peer sessions separate. ' +
-    'No managed bridge-wake consumer is attached to this terminal. ' +
+    'A background codex queue relay delivers peer replies to this exact conversation, also while idle or minimized. ' +
+    'Before reporting requested peer opinions as missing or pending, run pinned Get-BridgeReplySnapshot.ps1 -RequestId <exact-id> and state its observation time. Read the full matching payload. ' +
+    'When a late reply arrives after your summary, reconcile it and send the operator a concise correction or supplement. Do not rely only on next-action to discover replies. ' +
     'Confirm the restored conversation and bridge identity with read-only checks. ' +
     'Resume the latest unfinished operator-authorized task from this conversation and compact state, ' +
     'after reconciling live claims and checking whether interrupted actions already completed. ' +
@@ -2552,9 +2622,16 @@ $launchArguments += $startupPrompt
 
 $previousPreference = $ErrorActionPreference
 try {
-  $ErrorActionPreference = 'Continue'
-  & $cliPath @launchArguments
-  $cliExitCode = $LASTEXITCODE
+  if ($nativeLead) {
+    Invoke-WdNativeLeadTerminal -CliPath $cliPath -Arguments $launchArguments -ThreadId $nativeResume.thread_id `
+      -Worktree $worktree -RuntimeRoot $runtimeRoot -Generation $bundleGeneration -ExpectedCliHash $cliExecutableHash `
+      -SessionId $RunId -VerifiedCode $verifiedConversationCode
+    $cliExitCode = 0
+  } else {
+    $ErrorActionPreference = 'Continue'
+    & $cliPath @launchArguments
+    $cliExitCode = $LASTEXITCODE
+  }
 } finally {
   $ErrorActionPreference = $previousPreference
 }

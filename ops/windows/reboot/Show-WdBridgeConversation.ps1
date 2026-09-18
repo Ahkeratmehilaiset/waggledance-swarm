@@ -72,6 +72,7 @@ function Format-WdConversationEvent {
         '^claude-rco-1$' { 'Yellow'; break }
         '^claude-rco-2$' { 'Magenta'; break }
         '^fable-' { 'Blue'; break }
+        '^grok-' { 'DarkCyan'; break }
         default { 'Gray' }
     }
     $role = switch -Regex ($agent) {
@@ -80,6 +81,7 @@ function Format-WdConversationEvent {
         '^claude-rco-1$' { 'RCO1'; break }
         '^claude-rco-2$' { 'RCO2'; break }
         '^fable-' { 'FABLE'; break }
+        '^grok-' { 'GROK'; break }
         default { 'OTHER' }
     }
     $alert = ''
@@ -171,7 +173,7 @@ function Update-WdConversationControl {
         'Spacebar' { $View.Paused = -not $View.Paused }
         'Q' { $View.Quit = $true }
         'A' {
-            $agents = @('', 'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')
+            $agents = @('', 'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5', 'grok-scout-1')
             $View.Agent = $agents[([array]::IndexOf($agents, $View.Agent) + 1) % $agents.Count]
             $View.Entries.Clear()
             Add-WdConversationLine $View '[viewer] Sender filter changed; applies to subsequent reads. No history rescan.' 'Yellow'

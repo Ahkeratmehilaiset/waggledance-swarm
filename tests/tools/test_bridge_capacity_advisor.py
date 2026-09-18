@@ -347,10 +347,76 @@ def test_cli_example_and_report_need_no_files_or_processes():
     assert json.loads(result.stdout)["execution_allowed"] is False
 
 
-@pytest.mark.parametrize("raw", ['{"policy":NaN}', '{"policy":{},"policy":{}}', '{}', 'not json'])
+@pytest.mark.parametrize("raw", ['{"policy":NaN}', '{"policy":{},"policy":{}}', '{}', 'not json',
+                                 '{"policy":1e999}', '{"policy":' + '9' * 5000 + '}'],
+                         ids=["nan", "duplicate", "missing", "non-json", "overflow-float", "oversized-integer"])
 def test_cli_invalid_input_returns_structured_error_without_echoing_payload(raw):
     result = subprocess.run([sys.executable, str(ROOT / "tools" / "bridge_capacity_advisor.py"), "--stdin"],
                             input=raw, capture_output=True, text=True)
     assert result.returncode == 2
     assert json.loads(result.stdout)["execution_allowed"] is False
     assert result.stderr == ""
+
+
+def test_cli_rejects_oversized_input():
+    from tools.bridge_capacity_advisor import MAX_INPUT_BYTES
+
+    result = subprocess.run([sys.executable, str(ROOT / "tools" / "bridge_capacity_advisor.py"), "--stdin"],
+                            input=' ' * (MAX_INPUT_BYTES + 1), capture_output=True, text=True)
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["error"] == "input exceeds bounded size"
+
+
+def test_missing_catalog_and_agent_are_visible_not_invented(inputs):
+    inputs[1]["agents"] = []
+    report = build_report(*inputs, now=NOW)
+    assert report["agents"]["example-lead"]["identity_state"] == "unknown_or_stale"
+    assert report["tasks"][0]["action"] == "blocked"
+
+
+def test_schema_is_role_and_effort_specific_not_model_name_only(inputs):
+    inputs[0]["profiles"]["qualified-b"]["effort"] = "low"
+    exhaust(inputs[1])
+    row = decision(inputs)
+    assert row["proposed_profile"] is None
+    assert "catalog_unknown_or_stale" in row["candidates"][1]["reasons"]
+
+
+def test_allowed_preference_does_not_cause_unnecessary_switch(inputs):
+    inputs[0]["agents"]["example-lead"]["profiles"].reverse()
+    assert decision(inputs)["action"] == "keep_current"
+
+
+def test_quality_issue_selects_only_prequalified_alternative(inputs):
+    inputs[1]["tasks"][0]["reason"] = "quality"
+    assert decision(inputs)["action"] == "switch_proposed"
+    inputs[0]["profiles"]["qualified-b"]["qualified_for"] = ["routine-only"]
+    assert decision(inputs)["action"] == "blocked"
+
+
+@pytest.mark.parametrize("role", ["lead", "tools", "fable", "rco1", "rco2"])
+def test_each_worker_role_uses_its_own_qualified_profile(inputs, role):
+    inputs[0]["agents"]["example-lead"]["role"] = role
+    for profile in inputs[0]["profiles"].values():
+        profile["roles"] = [role]
+    if role.startswith("rco"):
+        inputs[1]["tasks"][0].update(kind="review", author_agent="independent-author",
+                                      required_reviewers=["example-lead", "other-reviewer"])
+    assert decision(inputs)["action"] == "keep_current"
+
+
+def test_grok_is_not_an_ordinary_fallback_worker(inputs):
+    inputs[0]["agents"]["example-lead"]["role"] = "grok"
+    assert decision(inputs)["action"] == "blocked"
+    assert "grok_requires_existing_budget_helper_not_routing" in decision(inputs)["reasons"]
+
+
+@pytest.mark.parametrize("minutes,in_flight,expected", [(60, False, "recheck_shared_budget"),
+                                                      (61, True, "in_flight"), (-1, False, "unknown")])
+def test_grok_clock_and_inflight_do_not_grant_execution(inputs, minutes, in_flight, expected):
+    inputs[1]["grok"] = {"observed_at": STAMP, "source_ref": "fixture:shared-status",
+                         "last_attempt_at": (NOW - timedelta(minutes=minutes)).isoformat(),
+                         "in_flight": in_flight}
+    result = build_report(*inputs, now=NOW)["grok"]
+    assert result["state"] == expected
+    assert result["execution_allowed"] is False

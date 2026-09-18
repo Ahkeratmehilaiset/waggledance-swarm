@@ -62,6 +62,7 @@
       "tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1",
       "tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1",
       "tools-bootstrap/.agent-bridge/bin/BridgeLogReader.ps1",
+      "tools-bootstrap/.agent-bridge/bin/Get-BridgeReplySnapshot.ps1",
       "tools-bootstrap/.agent-bridge/bin/Drain-AcceptedBridgeQueue.ps1",
       "tools-bootstrap/.agent-bridge/bin/Restore-BridgeSpool.ps1",
       "tools-bootstrap/.agent-bridge/bin/Send-Liveness.ps1",

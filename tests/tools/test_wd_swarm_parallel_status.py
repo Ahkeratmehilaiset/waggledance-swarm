@@ -160,6 +160,29 @@ def lane_handshake(fleet, mode="interactive"):
     return path, process
 
 
+@pytest.mark.parametrize('case', ['live', 'wrong_parent', 'wrong_thread', 'reused_pid', 'blocked'])
+def test_native_lead_queue_readiness_requires_live_exact_conversation(fleet, case):
+    _, wrapper = lane_handshake(fleet)
+    thread = '01a0a654-12af-7d81-85fc-d75d515c5b65'
+    worktree = Path(fleet['lanes'][0]['worktree'])
+    journal = worktree / '.codex-audit/wd-turn-loop'
+    journal.mkdir()
+    ready = dict(schema='wd.native-lead-ready.v1', agent='codex-lead-1', status='terminal_ready',
+                 bridge_wake_transport='codex_queue', generation=GENERATION, session_id='retained-session',
+                 relay_pid=54321, native_pid=54322, thread_id=thread, worktree=str(worktree),
+                 native_process_start_utc=fleet['started'], relay_process_start_utc=fleet['started'])
+    native = dict(Name='codex.exe', ProcessId=54322, ParentProcessId=54321,
+                  CreationDate=fleet['started'], CommandLine='codex resume ' + thread)
+    if case == 'wrong_parent': native['ParentProcessId'] = 1
+    if case == 'wrong_thread': native['CommandLine'] = 'codex resume other'
+    if case == 'reused_pid': native['CreationDate'] = datetime.now(timezone.utc).isoformat()
+    if case == 'blocked': ready['status'] = 'bridge_wake_blocked'
+    (journal / 'native-terminal.json').write_text(json.dumps(ready))
+    lead = run_status(fleet, lane_processes=[wrapper, native])['lanes'][0]['turn_execution']
+    assert lead['external_wake_support'] == ('native_queue_bridge' if case == 'live' else 'native_queue_unverified')
+    assert not lead['turn_execution_verified']
+
+
 def test_conversation_configuration_is_not_live_window_or_context_proof(fleet):
     manifest = json.loads(fleet["manifest"].read_text(encoding="utf-8"))
     manifest["lanes"][0]["conversation_surface"] = "local_window"

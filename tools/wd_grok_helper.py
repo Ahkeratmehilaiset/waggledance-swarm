@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -15,6 +17,38 @@ import uuid
 STATE_ROOT = Path(r"C:\Python\grok-scout-reports")
 INTERVAL = timedelta(hours=1)
 SCHEMA = "wd.grok-hourly.v1"
+
+
+def emit_bridge_event(stage: str, state: dict) -> None:
+    """Use the installed, anchored PowerShell writer; never start another model."""
+    wrapper = Path(__file__).resolve().parents[2] / 'Invoke-WdGrok.ps1'
+    if not wrapper.is_file():
+        raise ValueError('Grok lifecycle requires the installed pinned wrapper')
+    payload = base64.b64encode(json.dumps({'stage': stage, 'state': state}).encode()).decode('ascii')
+    environment = dict(os.environ)
+    system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0'
+    # PS7's inherited module path must not shadow Windows PowerShell's modules.
+    environment = {k: v for k, v in environment.items() if k.upper() != 'PSMODULEPATH'}
+    environment['PSModulePath'] = str(system / 'Modules')
+    result = subprocess.run([str(system / 'powershell.exe'), '-NoLogo', '-NoProfile', '-NonInteractive',
+                             '-ExecutionPolicy', 'Bypass', '-File', str(wrapper), '-LifecycleBase64', payload],
+                            capture_output=True, text=True, encoding='utf-8', errors='replace',
+                            timeout=45, env=environment)
+    if result.returncode:
+        raise OSError('Grok bridge lifecycle writer failed')
+    receipt = json.loads(result.stdout.lstrip('\ufeff')).get('_bridge_delivery', {})
+    if not receipt.get('accepted') or not receipt.get('canonical_durable'):
+        raise OSError('Grok lifecycle was not confirmed canonical')
+
+
+def record_lifecycle(emitter, stage: str, state: dict) -> None:
+    if emitter is None:
+        return
+    try:
+        emitter(stage, dict(state))
+    except Exception as exc:
+        # Delivery failure is observable, but never refunds the hour or retries Grok.
+        state.setdefault('bridge_event_errors', []).append({'stage': stage, 'error_type': type(exc).__name__})
 
 
 def read_state(root: Path) -> dict:
@@ -77,7 +111,7 @@ def exclusive(root: Path):
 
 
 def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
-            runner=subprocess.run, now: datetime | None = None) -> dict:
+            runner=subprocess.run, now: datetime | None = None, emitter=None) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", task_id):
         raise ValueError("A bounded task ID is required")
     if not prompt.strip() or len(prompt.encode("utf-8")) > 48000:
@@ -86,7 +120,13 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         now = now or datetime.now(timezone.utc)
         previous = status(root, now)
         if not previous["eligible"]:
-            return {**previous, "decision": "deferred_hourly_limit"}
+            deferred = {**previous, 'task_id': task_id, 'decision': 'deferred_hourly_limit'}
+            observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': 'deferred_hourly_limit',
+                           'next_eligible_utc': previous['next_eligible_utc']}
+            record_lifecycle(emitter, 'deferred', observation)
+            if observation.get('bridge_event_errors'):
+                deferred['bridge_event_errors'] = observation['bridge_event_errors']
+            return deferred
         request_id = uuid.uuid4().hex
         state = {"schema": SCHEMA, "last_attempt_utc": now.isoformat(),
                  "task_id": task_id, "request_id": request_id, "status": "reserved",
@@ -94,6 +134,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                  "bridge_generation": os.environ.get("WD_BRIDGE_GENERATION", "")}
         # Persist before model launch: failure, timeout and reboot all consume
         # the same hour. No retry path and no alternate state path in the CLI.
+        write_state(root, state)
+        record_lifecycle(emitter, 'started', state)
         write_state(root, state)
         started = monotonic()
         prompt_path = root / (request_id + "-request.md")
@@ -118,7 +160,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                             timeout=300, env=environment, cwd=str(root))
             report_path.write_text(result.stdout, encoding="utf-8")
             state.update(status="answered" if result.returncode == 0 else "failed",
-                         exit_code=result.returncode, report_path=str(report_path))
+                         exit_code=result.returncode, report_path=str(report_path),
+                         report_sha256=hashlib.sha256(report_path.read_bytes()).hexdigest())
         except Exception as exc:
             state.update(status="failed", error_type=type(exc).__name__)
         state.update(
@@ -126,6 +169,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             finished_at_utc=datetime.now(timezone.utc).isoformat(),
             timing_scope="consultation_after_budget_reservation",
         )
+        write_state(root, state)
+        record_lifecycle(emitter, state['status'], state)
         write_state(root, state)
         return status(root, now)
 
@@ -167,7 +212,8 @@ def main() -> int:
                         excerpt = saved_report.read(1500)
                     prompt += "\n\nPREVIOUS GROK RESULT (bounded excerpt; full report at recorded path)\n" + excerpt
             report = consult(STATE_ROOT, args.task_id or "", prompt,
-                             [str(executable), "--model", model["model"], "--effort", "high"])
+                             [str(executable), "--model", model["model"], "--effort", "high"],
+                             emitter=emit_bridge_event)
         print(json.dumps(report, ensure_ascii=False))
         return 0 if report.get("status") != "failed" else 1
     except (ValueError, OSError, KeyError) as exc:

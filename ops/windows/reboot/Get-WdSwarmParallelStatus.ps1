@@ -179,6 +179,29 @@ function Get-WdStatusTurnExecution {
         $result.reason = if ($mode -ceq 'legacy_interactive') { 'live_launcher_and_legacy_handshake' } else { 'live_launcher_and_handshake' }
         $result.external_wake_support = if ($Definition.agent -ceq 'codex-lead-1' -and
             $mode -cin @('interactive','legacy_interactive')) { 'unsupported_existing_interactive' } else { 'not_verified' }
+        if ($Definition.agent -ceq 'codex-lead-1' -and $mode -ceq 'interactive') {
+            $readyPath=Join-Path $observedWorktree '.codex-audit/wd-turn-loop/native-terminal.json'
+            if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
+                $result.external_wake_support='native_queue_unverified'
+                $ready=Read-WdStatusRecord $readyPath
+                $native=@($Processes | Where-Object {
+                    [int]$_.ProcessId -eq [int]$ready.native_pid -and [int]$_.ParentProcessId -eq [int]$record.pid -and
+                    [string]$_.Name -ieq 'codex.exe'
+                })
+                if ($ready.schema -ceq 'wd.native-lead-ready.v1' -and $ready.agent -ceq 'codex-lead-1' -and
+                    $ready.status -ceq 'terminal_ready' -and $ready.bridge_wake_transport -ceq 'codex_queue' -and
+                    $ready.generation -ceq $record.bundle_generation -and $ready.session_id -ceq $record.session_id -and
+                    [int]$ready.relay_pid -eq [int]$record.pid -and $native.Count -eq 1 -and
+                    $ready.thread_id -cmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -and
+                    ([string]$ready.worktree).Equals($observedWorktree,$comparison) -and
+                    [Math]::Abs(((ConvertTo-WdStatusUtc $ready.relay_process_start_utc)-$processStart).TotalSeconds) -lt 1 -and
+                    [Math]::Abs(((ConvertTo-WdStatusUtc $ready.native_process_start_utc)-(ConvertTo-WdStatusUtc $native[0].CreationDate)).TotalSeconds) -lt 1 -and
+                    [string]$native[0].CommandLine -match ('\bresume\s+"?' + [regex]::Escape($ready.thread_id) + '"?(?:\s|$)')) {
+                    $result.external_wake_support='native_queue_bridge'
+                    $result.reason='live_native_lead_and_queue_relay_observed'
+                }
+            }
+        }
     }
     catch { <# Preserve the failed observation stage; never infer a live mode. #> }
     return $result

@@ -141,3 +141,29 @@ Invoke-WdNativeLeadTerminal -CliPath {q(cli)} -Arguments @('resume','01a0a654-12
     journal = tmp_path / '.codex-audit/wd-turn-loop'
     assert json.loads((journal / 'native-terminal.json').read_text(encoding='utf-8-sig'))['status'] == 'stopped'
     assert json.loads((journal / 'native-bridge-wake.json').read_text(encoding='utf-8-sig'))['status'] == 'queued'
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_native_relay_reloads_its_own_receipt_in_non_us_locale(tmp_path, ps):
+    wake = tmp_path / 'wake_codex-lead-1'
+    state = tmp_path / 'native-bridge-wake.json'
+    wake.write_text('first reply')
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(REBOOT / 'start-wd-tools-consumer.ps1', 'Invoke-WdNativeToolsWakeStep')
+    script += f"""
+[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('fi-FI')
+function Send-WdNativeToolsQueueMessage {{ return '01a0adff-4558-7e80-8936-6aad0d6df821' }}
+$arguments=@{{Agent='codex-lead-1';CliPath='unused';ThreadId='exact-thread';Worktree={q(tmp_path)};
+ WakePath={q(wake)};StatePath={q(state)};Generation='fixture';NativePid=123}}
+$first=Invoke-WdNativeToolsWakeStep @arguments
+# The live failure requires a receipt read on a later poll, not just a first submission.
+$record=Get-Content -LiteralPath {q(state)} -Raw | ConvertFrom-Json
+$record.updated_at_utc='2026-09-18T14:17:14.0348391+00:00'
+Write-WdTurnJson {q(state)} $record
+$second=Invoke-WdNativeToolsWakeStep @arguments
+@{{first=$first;second=$second}}|ConvertTo-Json
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['first'] == 'queued' and result['second'] in ('idle', 'debounced')

@@ -389,7 +389,9 @@ function Invoke-WdNativeToolsWakeStep {
     [void](Assert-WdTurnPath $snapshot)
     if ([IO.File]::Exists($StatePath)) {
         if ((Get-Item -LiteralPath $StatePath).Length -gt 32768) { throw 'Native bridge relay state is oversized' }
-        $previous = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+        $jsonArguments=@{ErrorAction='Stop'}
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArguments.DateKind='String' }
+        $previous = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json @jsonArguments
         if ($previous.schema -cne 'wd.native-tools-wake.v1' -or $previous.status -cnotin @('queued','watching')) {
             throw 'Previous native bridge queue attempt is unresolved; reconcile its delivery before retrying'
         }
@@ -400,8 +402,13 @@ function Invoke-WdNativeToolsWakeStep {
             [IO.File]::Delete($snapshot)
         }
         # Coalesce bursts; Codex itself serializes queued messages behind an active turn.
-        if ($previous.status -ceq 'queued' -and
-            ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($previous.updated_at_utc)).TotalSeconds -lt 5) { return 'debounced' }
+        if ($previous.status -ceq 'queued') {
+            $stamp=$previous.updated_at_utc
+            $queuedAt=if ($stamp -is [datetime] -or $stamp -is [datetimeoffset]) { [DateTimeOffset]$stamp } else {
+                [DateTimeOffset]::Parse([string]$stamp,[Globalization.CultureInfo]::InvariantCulture)
+            }
+            if (([DateTimeOffset]::UtcNow - $queuedAt).TotalSeconds -lt 5) { return 'debounced' }
+        }
     } elseif ([IO.File]::Exists($snapshot)) { throw 'Orphan native bridge wake snapshot requires reconciliation' }
     if (-not [IO.File]::Exists($WakePath)) { return 'idle' }
     if (-not (Move-WdWakeSnapshot -Source $WakePath -Destination $snapshot)) { return 'retry_snapshot' }

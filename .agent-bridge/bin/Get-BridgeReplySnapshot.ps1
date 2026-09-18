@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
 . (Join-Path $PSScriptRoot 'BridgeReplyIndex.ps1')
+. (Join-Path $PSScriptRoot 'BridgeTaskResult.ps1')
 $root=if ($env:AGENT_BRIDGE_RUNTIME_ROOT) { $env:AGENT_BRIDGE_RUNTIME_ROOT } else { Split-Path $PSScriptRoot -Parent }
 $started=[DateTimeOffset]::UtcNow.ToString('o')
 $snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
@@ -36,11 +37,16 @@ $results=@(foreach ($target in $targets) {
         (Test-BridgeAnswerEvent $_) -and (Test-BridgeReplyBinding $request $_ $target)
     })
     [pscustomobject]@{target=$target;state=$(if ($answers.Count) {'answered'} else {'pending_at_snapshot'});
-        answers=$answers}
+        answers=$answers;answer_validation=@(foreach ($answer in $answers) {
+            $validation=Get-BridgeTaskResultValidation -Request $request -Payload $answer.payload
+            [pscustomobject]@{reply_ts_utc=$answer.ts_utc;correlation_valid=$true;
+                schema_valid=$validation.schema_valid;content_valid=$validation.content_valid;reported=$null;
+                errors=$validation.errors;content_scope=$validation.content_scope}
+        })}
 })
 [pscustomobject]@{schema='wd.reply-snapshot.v1';request_id=$RequestId;request=$request;
     read_started_utc=$started;observed_at_utc=$started;read_completed_utc=[DateTimeOffset]::UtcNow.ToString('o');
     snapshot_cursor=$snapshot.candidate_cursor;snapshot_bytes=$snapshot.snapshot_length;results=$results;
-    cache_status=$snapshot.cache_status;parsed_rows=$snapshot.parsed_rows;
+    cache_status=$snapshot.cache_status;cache_path=$snapshot.cache_path;parsed_rows=$snapshot.parsed_rows;
     note='A later append requires a new snapshot. Read full answers before making a substantive conclusion.';
     authority_effect='none'} | ConvertTo-Json -Depth 64

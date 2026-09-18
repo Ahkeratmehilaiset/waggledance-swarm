@@ -13,10 +13,17 @@ function Get-BridgeReplyTextHash {
 
 function Get-BridgeReplyPrefixHash {
     param([string]$Path,[int64]$Length)
-    if ($Length -lt 0 -or $Length -gt 268435456) { throw 'Reply index prefix exceeds bounds' }
     $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { return Get-BridgeReplyStreamPrefixHash -Stream $stream -Length $Length }
+    finally { $stream.Dispose() }
+}
+
+function Get-BridgeReplyStreamPrefixHash {
+    param([IO.Stream]$Stream,[int64]$Length)
+    if ($Length -lt 0 -or $Length -gt 268435456) { throw 'Reply index prefix exceeds bounds' }
     $sha=[Security.Cryptography.SHA256]::Create()
     try {
+        [void]$Stream.Seek(0,[IO.SeekOrigin]::Begin)
         $buffer=New-Object byte[] 1048576
         $remaining=$Length
         while ($remaining -gt 0) {
@@ -27,7 +34,42 @@ function Get-BridgeReplyPrefixHash {
         }
         [void]$sha.TransformFinalBlock($buffer,0,0)
         return [BitConverter]::ToString($sha.Hash).Replace('-','')
-    } finally { $sha.Dispose(); $stream.Dispose() }
+    } finally { $sha.Dispose() }
+}
+
+function Assert-BridgeReplySnapshotStable {
+    param([string]$Path,$Cursor,[string]$PrefixHash)
+    $state=Get-BridgeCursorValidation -Cursor $Cursor
+    if ($null -eq $Cursor -or -not $state.valid) { throw 'Invalid reply snapshot cursor' }
+    $generationPath=Get-BridgeEventGenerationPath -Path $Path
+    if ($generationPath) {
+        $generation=Read-BridgeGenerationToken -Path $generationPath
+        if ($generation.status -cne 'OK' -or $generation.generation -cne $state.generation) {
+            throw 'Canonical generation changed after reply snapshot'
+        }
+    } elseif ($null -ne $state.generation) { throw 'Canonical generation sidecar disappeared' }
+    $stream=Open-BridgeLogReadStream -Path $Path
+    try {
+        if ((Get-BridgeLogFileIdentity -Stream $stream) -cne $state.file_identity -or $stream.Length -lt $state.offset) {
+            throw 'Canonical identity changed or prefix truncated after reply snapshot'
+        }
+        # Verify only the frozen prefix on this same handle. Appends, including
+        # an unfinished next row, belong to the next query and are not parsed.
+        if ((Get-BridgeReplyStreamPrefixHash -Stream $stream -Length $state.offset) -cne $PrefixHash) {
+            throw 'Canonical prefix changed after reply snapshot'
+        }
+        $current=Open-BridgeLogReadStream -Path $Path
+        try {
+            if ((Get-BridgeLogFileIdentity -Stream $current) -cne $state.file_identity -or $current.Length -lt $state.offset) {
+                throw 'Canonical identity changed during reply snapshot verification'
+            }
+        } finally { $current.Dispose() }
+        if ((Get-BridgeEventGenerationPath -Path $Path) -cne $generationPath) { throw 'Canonical generation configuration changed' }
+        if ($generationPath) {
+            $after=Read-BridgeGenerationToken -Path $generationPath
+            if ($after.status -cne 'OK' -or $after.generation -cne $state.generation) { throw 'Canonical generation changed during reply snapshot verification' }
+        }
+    } finally { $stream.Dispose() }
 }
 
 function ConvertFrom-BridgeReplyCacheJson {
@@ -43,6 +85,12 @@ function Read-BridgeReplyIndex {
     $cache=$null
     $cacheStatus='disabled'
     $parserStamp='date-strings-v1:'+ $PSVersionTable.PSVersion.ToString()
+    if (-not $NoCache) {
+        # A different JSON parser must neither overwrite nor lock our cache.
+        # Keep the stamp check inside the envelope as a second independent guard.
+        $parserKey=(Get-BridgeReplyTextHash $parserStamp).Substring(0,24).ToLowerInvariant()
+        $CachePath=Join-Path (Split-Path -Parent $CachePath) ([IO.Path]::GetFileNameWithoutExtension($CachePath)+'.'+$parserKey+'.json')
+    }
     try {
         if (-not $NoCache) {
             try {
@@ -107,8 +155,7 @@ function Read-BridgeReplyIndex {
         $unchanged=$null -ne $cache -and $cache.snapshot_length -eq $snapshot.snapshot_length
         $prefixHash=if ($unchanged) { $verifiedOldHash } else { Get-BridgeReplyPrefixHash $Path $snapshot.snapshot_length }
         # Recheck identity/generation after hashing, without reading later appends.
-        $probe=Read-BridgeEventDelta -Path $Path -Cursor $snapshot.candidate_cursor -MaxBytes 1 -MaxRows 1
-        if ($probe.status -cin @('BLOCKED','RETRY')) { throw ('Canonical identity changed: '+$probe.reason) }
+        Assert-BridgeReplySnapshotStable -Path $Path -Cursor $snapshot.candidate_cursor -PrefixHash $prefixHash
         if ($null -ne $lock -and -not $unchanged) {
             $content=[ordered]@{schema='wd.reply-index.v1';parser_stamp=$parserStamp;path=[IO.Path]::GetFullPath($Path);complete=$true;
                 cursor=$snapshot.candidate_cursor;snapshot_length=$snapshot.snapshot_length;prefix_sha256=$prefixHash;
@@ -124,6 +171,6 @@ function Read-BridgeReplyIndex {
             } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary } }
         }
         [pscustomobject]@{rows=@($rows);candidate_cursor=$snapshot.candidate_cursor;snapshot_length=$snapshot.snapshot_length;
-            cache_status=$cacheStatus;parsed_rows=$parsedRows;prefix_sha256=$prefixHash}
+            cache_status=$cacheStatus;cache_path=$(if ($NoCache) {$null} else {$CachePath});parsed_rows=$parsedRows;prefix_sha256=$prefixHash}
     } finally { if ($null -ne $lock) { $lock.Dispose() } }
 }

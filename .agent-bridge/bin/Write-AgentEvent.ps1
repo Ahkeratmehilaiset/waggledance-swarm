@@ -178,8 +178,10 @@ if ([string]::IsNullOrWhiteSpace($payloadText)) {
 }
 
 $payload = $null
+$jsonArguments=@{ErrorAction='Stop'}
+if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArguments.DateKind='String' }
 try {
-    $payload = $payloadText | ConvertFrom-Json -ErrorAction Stop
+    $payload = $payloadText | ConvertFrom-Json @jsonArguments
 } catch {
     throw "Bridge event payload must be valid JSON before writing"
 }
@@ -534,7 +536,7 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 $bindingWarnings = @()
 if ($ReplyToEventJson) {
     if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
-    $replyTo = $ReplyToEventJson | ConvertFrom-Json -ErrorAction Stop
+    $replyTo = $ReplyToEventJson | ConvertFrom-Json @jsonArguments
     $replyId = Get-BridgeContractField $replyTo 'request_id'
     if ($replyId -isnot [string] -or $replyId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'ReplyToEventJson requires a valid request_id' }
     if ([string]$replyTo.task_id -cne $TaskId -or -not (Test-BridgeAddressedTo $replyTo $Agent) -or
@@ -551,6 +553,21 @@ if ($ReplyToEventJson) {
     $digest = Get-BridgeContractField $replyTo 'request_digest'
     if ($digest) { $event['in_reply_to_request_digest'] = $digest }
     if (-not (Test-BridgeReplyBinding $replyTo ([pscustomobject]$event) $Agent)) { throw 'Reply identity or payload contradicts the request binding' }
+    # A delivered/correlated event is not proof that its requested result is valid.
+    # Enforce explicit task contracts at the public writer too, so callers cannot
+    # accidentally bypass the builder and publish a malformed substantive answer.
+    if (Test-BridgeAnswerEvent ([pscustomobject]$event)) {
+        . (Join-Path $PSScriptRoot 'BridgeTaskResult.ps1')
+        $validation=Get-BridgeTaskResultValidation -Request $replyTo -Payload $payload
+        if ($validation.errors.Count) { throw ('Task result rejected before write: '+($validation.errors -join ', ')) }
+        if ($null -ne $validation.schema_valid) {
+            $evidence=& (Join-Path $PSScriptRoot 'Get-BridgeExecutionEvidence.ps1')|ConvertFrom-Json @jsonArguments
+            if ($evidence.pin_status -ceq 'mismatch') { throw ('Execution evidence rejected before write: '+$evidence.pin_error) }
+            if ($null -ne $evidence.observed_agent -and $evidence.observed_agent -cne $Agent) { throw 'Observed launcher agent does not match reply author' }
+            $payload|Add-Member -Force NoteProperty result_validation $validation
+            $payload|Add-Member -Force NoteProperty execution_evidence $evidence
+        }
+    }
 } elseif ($RequestId -or $Type -ceq 'wake_request' -or (Test-BridgeRequestLikeEvent ([pscustomobject]$event))) {
     $event['request_id'] = if ($RequestId) { $RequestId } else { [guid]::NewGuid().ToString('D') }
     $identities = [ordered]@{}

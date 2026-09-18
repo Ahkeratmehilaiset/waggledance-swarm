@@ -11,10 +11,11 @@
     substantive replies are ACKs and infrastructure liveness traffic.
 #>
 
-Set-StrictMode -Version Latest
+
 
 function Get-BridgeEventTargets {
     param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
 
     if (-not $Event.PSObject.Properties['to']) { return @() }
     $to = [string]$Event.to
@@ -33,18 +34,21 @@ function Test-BridgeAddressedTo {
         [Parameter(Mandatory)] [object] $Event,
         [Parameter(Mandatory)] [string] $TargetAgent
     )
+    Set-StrictMode -Version Latest
 
     return @(Get-BridgeEventTargets -Event $Event) -contains $TargetAgent
 }
 
 function Test-BridgeAckEvent {
     param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
 
     return @('received','seen','acknowledged') -contains [string]$Event.status
 }
 
 function Test-BridgeInfrastructureEvent {
     param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
 
     # Pure background noise only. `wake_request` is NOT infrastructure: it is a
     # directed, actionable nudge (operator/peer "read the bridge / review this"),
@@ -56,6 +60,7 @@ function Test-BridgeInfrastructureEvent {
 
 function Test-BridgeMessageAnswerStatus {
     param([AllowEmptyString()] [string] $Status)
+    Set-StrictMode -Version Latest
 
     return @(
         'answered',
@@ -66,6 +71,7 @@ function Test-BridgeMessageAnswerStatus {
 
 function Test-BridgeRequesterClosureStatus {
     param([AllowEmptyString()] [string] $Status)
+    Set-StrictMode -Version Latest
 
     if (@(
         'done','closed','superseded','merged','abandoned',
@@ -88,6 +94,7 @@ function Test-BridgeRequesterClosureStatus {
 
 function Test-BridgeRequesterClosureEvent {
     param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
 
     $status = [string]$Event.status
     $type = [string]$Event.type
@@ -104,6 +111,7 @@ function Test-BridgeRequesterClosureEvent {
 
 function Test-BridgeRequestLikeEvent {
     param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
 
     if (-not [string]$Event.task_id) { return $false }
     if (@(Get-BridgeEventTargets -Event $Event).Count -eq 0) { return $false }
@@ -147,6 +155,7 @@ function Test-BridgeRequestLikeEvent {
 
 function Test-BridgeAnswerEvent {
     param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
 
     if (-not [string]$Event.task_id) { return $false }
     if (Test-BridgeAckEvent -Event $Event) { return $false }
@@ -164,5 +173,28 @@ function Test-BridgeAnswerEvent {
     # `wake_request` is request-like, never a closure/answer: a nudge must not
     # mark another agent's open request as answered.
     if (@('status','intent','wake_request') -contains $type) { return $false }
+    return $true
+}
+
+function Test-BridgeWakeEligible {
+    param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
+    # Never suppress late answers/corrections merely because work was reported
+    # or a request was closed. Unknown addressed traffic remains actionable.
+    $status=$Event.PSObject.Properties['status']
+    $type=$Event.PSObject.Properties['type']
+    if (($null -ne $status -and $status.Value -cin @('received','seen','acknowledged')) -or
+        ($null -ne $type -and $type.Value -cin @('heartbeat','liveness'))) { return $false }
+    foreach ($key in @('in_reply_to_request_id','request_id')) {
+        $p=$Event.PSObject.Properties[$key]
+        if ($null -ne $p -and $p.Value) { return $true }
+    }
+    if ($null -ne $status -and $null -ne $type -and $null -ne $Event.PSObject.Properties['task_id'] -and
+        (Test-BridgeRequestLikeEvent $Event)) { return $true }
+    $payload=$Event.PSObject.Properties['payload']
+    if ($null -ne $payload -and $null -ne $payload.Value) {
+        $notification=$payload.Value.PSObject.Properties['notification']
+        if ($null -ne $notification -and $notification.Value -ceq 'informational') { return $false }
+    }
     return $true
 }

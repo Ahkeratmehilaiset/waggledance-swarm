@@ -2108,6 +2108,9 @@ $startupPrompt += (
   'For a request with request_id, start with pinned Start-BridgeRequestTurn.ps1 -Agent ' + $Agent + ' -RequestEventJson ($request | ConvertTo-Json -Depth 32 -Compress). ' +
   'Keep that full verified request object. Publish the substantive reply with pinned Write-AgentEvent.ps1 -ReplyToEventJson ($request | ConvertTo-Json -Depth 32 -Compress), exact task_id and recipient, and your current lane identity. ' +
   'ACKs and queue receipts are not task completion. New request revisions need new request_id values; retries keep the exact ID and content. ' +
+  'For structured task results use pinned Write-BridgeTaskReply.ps1 -Agent ' + $Agent + ' -RequestEventJson <full-request-json> -ResultJson <result-object-json>. It wraps payload.result and checks the requested result_fields/result_contract before writing. ' +
+  'Use its automatic execution_evidence; never invent native UUIDs, helper versions or test times, and never replace inherited pins with the installed pointer. Null evidence means unknown. Correlation, schema checks, explicit content assertions and reporting are separate states; semantic review is still required. ' +
+  'Mark a pure informational notice with payload.notification=informational, no request or reply binding. Do not start a claim/checkpoint/done cycle solely for an unchanged notice. New requests and exact-bound late answers/corrections must still be processed even after a summary. ' +
   'Lead may prepare role-specific requests and validate handoffs with the pinned tools/bridge_workflow.py prepare/handoff CLI; it only prepares data under existing authorization and never sends or grants authority. ' +
   'If the reader fails, report the concrete blocker; do not invent missing fields or silently bypass validation.'
 )

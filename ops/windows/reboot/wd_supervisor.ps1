@@ -3092,7 +3092,10 @@ else {
     )
     $expectedWatcherDependencies = @(
         $watcherReaderRelative,
-        $watcherLogReaderRelative
+        $watcherLogReaderRelative,
+        'tools-bootstrap\.agent-bridge\bin\BridgeTelemetry.ps1',
+        'tools-bootstrap\.agent-bridge\bin\BridgeEventClassifier.ps1',
+        'tools-bootstrap\.agent-bridge\bin\BridgeRequestContract.ps1'
     )
     if (
         $watcherDependencies.Count -ne $expectedWatcherDependencies.Count -or
@@ -3114,6 +3117,8 @@ else {
             -Path $watcherDependencyPath -ExpectedType Leaf)
     }
     foreach ($watcherDependency in $watcherDependencies) {
+        $dependencyPath=Resolve-SupervisorDependencyPath -RelativePath $watcherDependency -SourceRoot $dependencyRoot -SourceMode $sourceRehearsal
+        [void](Assert-WdSupervisorPathWithoutReparse -Path $dependencyPath -ExpectedType Leaf)
         Assert-SupervisorBundleFileIntegrity -RelativePath $watcherDependency
     }
     $watcherBundleParent = [IO.Path]::GetFullPath(

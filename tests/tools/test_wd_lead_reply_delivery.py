@@ -192,7 +192,7 @@ def test_reply_parse_index_is_incremental_and_rebuildable(tmp_path, ps, case):
     assert first.returncode == 0, first.stderr
     assert json.loads(first.stdout)['parsed_rows'] == 1
     assert json.loads(first.stdout)['request']['payload']['evidence_time'] == request['payload']['evidence_time']
-    cache = shared / 'cache/reply-index.json'
+    cache = Path(json.loads(first.stdout).get('cache_path', shared / 'cache/reply-index.json'))
     assert cache.exists()
     if case == 'corrupt_cache': cache.write_text('{bad cache')
     if case == 'missing_cache': cache.unlink()
@@ -220,6 +220,83 @@ def test_reply_parse_index_is_incremental_and_rebuildable(tmp_path, ps, case):
     assert reference.returncode == 0, reference.stderr
     assert value['results'] == json.loads(reference.stdout)['results']
     assert value['request'] == json.loads(reference.stdout)['request']
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('mutation', ['append', 'partial_append', 'truncate', 'rotate', 'rewrite', 'generation', 'generation_change', 'generation_remove'])
+def test_reply_index_rechecks_frozen_prefix_without_parsing_later_appends(tmp_path, ps, mutation):
+    """Inject precisely after the final prefix hash, before the identity check."""
+    from test_bridge_request_contract import events
+    _, request, reply = events()
+    request['request_id'] = 'frozen-request'
+    log = tmp_path / 'events.jsonl'
+    original = json.dumps(request) + '\n'
+    log.write_bytes(original.encode('utf-8'))
+    if mutation in ('generation_change', 'generation_remove'):
+        (tmp_path / 'events.generation.json').write_bytes(b'{"generation":"original"}')
+    extra = json.dumps(reply) + ('\n' if mutation != 'partial_append' else '')
+    changes = {
+        'append': f'[IO.File]::AppendAllText($Path,{q(extra)})',
+        'partial_append': f'[IO.File]::AppendAllText($Path,{q(extra)})',
+        'truncate': '[IO.File]::WriteAllText($Path, "")',
+        'rotate': f'[IO.File]::Move($Path,$Path+".old");[IO.File]::WriteAllText($Path,{q(original)})',
+        'rewrite': f'[IO.File]::WriteAllText($Path,{q(original.replace("codex-lead-1", "codex-fake-1"))})',
+        'generation': f'[IO.File]::WriteAllText({q(tmp_path / "events.generation.json")},\'{{"generation":"new"}}\')',
+        'generation_change': f'[IO.File]::WriteAllText({q(tmp_path / "events.generation.json")},\'{{"generation":"new"}}\')',
+        'generation_remove': f'[IO.File]::Delete({q(tmp_path / "events.generation.json")})',
+    }
+    script = f"""
+$ErrorActionPreference='Stop'
+. {q(REBOOT.parents[2] / '.agent-bridge/bin/BridgeReplyIndex.ps1')}
+$script:originalHash=(Get-Command Get-BridgeReplyPrefixHash).ScriptBlock
+$script:calls=0
+function Get-BridgeReplyPrefixHash {{
+ param($Path,$Length)
+ $hash=& $script:originalHash -Path $Path -Length $Length
+ $script:calls++
+ if($script:calls -eq 3){{{changes[mutation]}}}
+ return $hash
+}}
+$result=Read-BridgeReplyIndex -Path {q(log)} -NoCache
+@{{count=@($result.rows).Count;bytes=$result.snapshot_length;calls=$script:calls}}|ConvertTo-Json
+"""
+    completed = subprocess.run([ps, '-NoProfile', '-NonInteractive', '-Command', script],
+                               capture_output=True, text=True, timeout=40)
+    if mutation in ('append', 'partial_append'):
+        assert completed.returncode == 0, completed.stderr
+        value = json.loads(completed.stdout)
+        assert value['bytes'] == len(original.encode()) and value['count'] == 1
+    else:
+        assert completed.returncode != 0, 'Changed canonical prefix/identity was accepted'
+
+
+def test_reply_cache_shell_partitions_survive_alternation_and_parallel_readers(tmp_path):
+    if len(LANE_TEST_SHELLS) < 2:
+        pytest.skip('Requires Windows PowerShell and PowerShell 7')
+    from concurrent.futures import ThreadPoolExecutor
+    from test_bridge_request_contract import events
+    _, request, _ = events()
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    (shared / 'events.jsonl').write_text(json.dumps(request) + '\n', encoding='utf-8')
+    def read(ps):
+        result = _run_powershell(f"""
+[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('fi-FI')
+. {q(REBOOT.parents[2] / '.agent-bridge/bin/BridgeReplyIndex.ps1')}
+$r=Read-BridgeReplyIndex -Path {q(shared / 'events.jsonl')} -CachePath {q(shared / 'cache/reply-index.json')}
+@{{status=$r.cache_status;parsed=$r.parsed_rows;rows=$r.rows}}|ConvertTo-Json -Depth 30
+""", executable=ps)
+        return json.loads(result.stdout)
+    for ps in LANE_TEST_SHELLS:
+        assert read(ps)['status'] == 'rebuilt'
+    for _ in range(2):
+        for ps in LANE_TEST_SHELLS:
+            value = read(ps)
+            assert value['status'] == 'incremental' and value['parsed'] == 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(read, LANE_TEST_SHELLS))
+    assert all(value['status'] == 'incremental' for value in results)
+    assert results[0]['rows'] == results[1]['rows']
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

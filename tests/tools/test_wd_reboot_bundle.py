@@ -5735,6 +5735,9 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
     assert snapshot["watchers"]["dependency_relatives"] == [
         r"tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1",
         r"tools-bootstrap\.agent-bridge\bin\BridgeLogReader.ps1",
+        r"tools-bootstrap\.agent-bridge\bin\BridgeTelemetry.ps1",
+        r"tools-bootstrap\.agent-bridge\bin\BridgeEventClassifier.ps1",
+        r"tools-bootstrap\.agent-bridge\bin\BridgeRequestContract.ps1",
     ]
     assert tools["agent"] == "codex-tools-1"
     assert tools["agent_uuid"] == "7a8af68d-20bc-4598-9953-23c5dd98b102"

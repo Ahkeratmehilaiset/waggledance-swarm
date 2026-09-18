@@ -28,7 +28,10 @@
     "replacement_conflict_root": "C:\\Python\\wd-reboot-runtime\\watcher-replacement-conflicts",
     "dependency_relatives": [
       "tools-bootstrap\\.agent-bridge\\bin\\BridgeIncrementalReader.ps1",
-      "tools-bootstrap\\.agent-bridge\\bin\\BridgeLogReader.ps1"
+      "tools-bootstrap\\.agent-bridge\\bin\\BridgeLogReader.ps1",
+      "tools-bootstrap\\.agent-bridge\\bin\\BridgeTelemetry.ps1",
+      "tools-bootstrap\\.agent-bridge\\bin\\BridgeEventClassifier.ps1",
+      "tools-bootstrap\\.agent-bridge\\bin\\BridgeRequestContract.ps1"
     ],
     "agents": [
       "codex-lead-1",

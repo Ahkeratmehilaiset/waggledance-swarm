@@ -87,6 +87,8 @@ $eventsPath = Join-Path $bridgeRoot 'shared\events.jsonl'
 $wakePath = Join-Path $bridgeRoot ("wake_{0}" -f $Agent)
 . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 . (Join-Path $PSScriptRoot 'BridgeTelemetry.ps1')
+. (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
+. (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
 
 function Test-IsTargeted {
     param(
@@ -109,7 +111,7 @@ function Test-IsTargeted {
 
     # 'to' is a string; may be single agent or comma-separated list.
     $targets = ($to -split ',') | ForEach-Object { $_.Trim() }
-    return $targets -contains $WatchedAgent
+    return ($targets -contains $WatchedAgent -and (Test-BridgeWakeEligible $Event))
 }
 
 # Establish a stable identity-bound baseline so replacement cannot masquerade
@@ -133,6 +135,8 @@ if ($ReadyPath) {
 }
 
 $iteration = 0
+$seenWakeEvents=New-Object 'Collections.Generic.HashSet[string]'
+$seenWakeOrder=New-Object 'Collections.Generic.Queue[string]'
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
     Start-Sleep -Milliseconds $PollIntervalMs
@@ -154,6 +158,14 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $shouldWake = $false
     foreach ($ev in @($result.rows)) {
         if (Test-IsTargeted -Event $ev -WatchedAgent $Agent) {
+            # Dedupe only an identical immutable event, not task IDs or payload
+            # similarity. A new revision, late answer or correction still wakes.
+            $hasher=[Security.Cryptography.SHA256]::Create()
+            try { $eventKey=[BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes((ConvertTo-BridgeContractJson $ev)))) }
+            finally { $hasher.Dispose() }
+            if (-not $seenWakeEvents.Add($eventKey)) { continue }
+            $seenWakeOrder.Enqueue($eventKey)
+            if ($seenWakeOrder.Count -gt 4096) { [void]$seenWakeEvents.Remove($seenWakeOrder.Dequeue()) }
             $shouldWake = $true
             try { Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage watcher_seen -Request $ev -Target $Agent }
             catch { Write-Warning ('Watcher latency observation unavailable: ' + $_.Exception.Message) }

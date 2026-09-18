@@ -1597,32 +1597,51 @@ function Get-WdLeadPromptWatcherPolicy {
 function Get-LaneProcesses {
   param(
     [Parameter(Mandatory)] $Lane,
-    [Parameter(Mandatory)] [object[]] $Processes
+    [Parameter(Mandatory)] [object[]] $Processes,
+    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1')
   )
-  $newLauncher = 'start-wd-agent.ps1'
-  $agentArgumentPattern = '(?i)(?:^|\s)-Agent\s+["'']?' +
-    [regex]::Escape([string]$Lane.agent) + '(?:["'']?)(?:\s|$)'
+  # Reuse the supervisor's tested Win32 argv/PowerShell host parser without
+  # executing its top-level runtime actions. The bundle preflight verifies this
+  # sibling source. Import only these pure parser definitions into local scope.
+  $parserTokens = $null
+  $parserErrors = $null
+  $parserAst = [Management.Automation.Language.Parser]::ParseFile(
+    $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
+  )
+  if ($parserErrors.Count) { throw 'fleet process parser source is invalid' }
+  foreach ($name in @(
+      'Initialize-WdSupervisorCommandLineParser',
+      'ConvertFrom-WdWindowsCommandLine',
+      'Test-WdPowerShellSwitchToken',
+      'Test-WdPowerShellHostOptionToken',
+      'Get-WdPowerShellHostKind',
+      'Test-WdPowerShellFileSwitchToken',
+      'Test-WdEncodedCommandValue',
+      'Get-WdPowerShellFileInvocation'
+    )) {
+    $definitions = @($parserAst.FindAll({ param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq $name
+    }, $true))
+    if ($definitions.Count -ne 1) { throw "fleet process parser missing or ambiguous: $name" }
+    . ([scriptblock]::Create($definitions[0].Extent.Text))
+  }
   return @(
     $Processes | Where-Object {
-      $commandLine = [string]$_.CommandLine
-      $newMatch = (
-        $commandLine.IndexOf(
-          $newLauncher,
-          [System.StringComparison]::OrdinalIgnoreCase
-        ) -ge 0 -and
-        $commandLine -match $agentArgumentPattern
-      )
-      $legacyMatch = $false
-      foreach ($marker in @($Lane.legacy_process_markers)) {
-        if ($commandLine.IndexOf(
-            [string]$marker,
-            [System.StringComparison]::OrdinalIgnoreCase
-          ) -ge 0) {
-          $legacyMatch = $true
-          break
+      $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$_.CommandLine)
+      if ($null -eq $invocation) { return $false }
+      $leaf = ([string]$invocation.script_path -split '[\\/]')[-1]
+      if ($leaf -ieq 'start-wd-agent.ps1') {
+        for ($index = [int]$invocation.file_index + 2;
+             $index + 1 -lt $invocation.arguments.Count; $index++) {
+          if ([string]$invocation.arguments[$index] -ieq '-Agent' -and
+              [string]$invocation.arguments[$index + 1] -ieq [string]$Lane.agent) {
+            return $true
+          }
         }
+        return $false
       }
-      $newMatch -or $legacyMatch
+      return $leaf -iin @($Lane.legacy_process_markers)
     }
   )
 }

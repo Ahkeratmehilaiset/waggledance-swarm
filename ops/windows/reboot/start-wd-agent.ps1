@@ -439,7 +439,25 @@ function Assert-WdLaneLaunchAvailable {
     if ([int]$process.ProcessId -eq $CurrentPid) { continue }
     if ([string]$process.Name -notmatch '^(powershell|pwsh)\.exe$') { continue }
     if ([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
-      throw 'cannot prove lane ownership: PowerShell command line is unavailable'
+      # A short-lived test/helper may exit during the CIM enumeration. Recheck
+      # that exact lifetime once; never waive an unreadable live process or a
+      # recycled PID, and never infer a launcher from missing metadata.
+      $observedStart = $process.PSObject.Properties['CreationDate']
+      $observedTicks = if ($null -ne $observedStart -and $null -ne $observedStart.Value) {
+        ([DateTimeOffset]$observedStart.Value).UtcTicks
+      } else { $null }
+      $fresh = @(Get-CimInstance Win32_Process -Filter ("ProcessId=$($process.ProcessId)") -ErrorAction Stop)
+      if ($fresh.Count -eq 0) { continue }
+      if ($fresh.Count -ne 1 -or $null -eq $observedTicks -or
+          [int]$fresh[0].ProcessId -ne [int]$process.ProcessId -or
+          [string]$fresh[0].Name -cne [string]$process.Name -or
+          $null -eq $fresh[0].PSObject.Properties['CreationDate'] -or
+          $null -eq $fresh[0].CreationDate -or
+          ([DateTimeOffset]$fresh[0].CreationDate).UtcTicks -ne $observedTicks -or
+          [string]::IsNullOrWhiteSpace([string]$fresh[0].CommandLine)) {
+        throw 'cannot prove lane ownership: PowerShell command line is unavailable or its identity changed'
+      }
+      $process = $fresh[0]
     }
     $fileMatch = [regex]::Match([string]$process.CommandLine, $filePattern)
     if (-not $fileMatch.Success) { continue }

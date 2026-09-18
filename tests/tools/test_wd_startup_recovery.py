@@ -1,5 +1,6 @@
 """Runtime boundary regressions: exact external sessions and cold Tools holds."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,60 @@ if($errors.Count){{throw 'parse error'}}
 $fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq {q(name)}}},$true)
 . ([scriptblock]::Create($fn.Extent.Text))
 """
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows argv parsing")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_fleet_discovery_uses_actual_script_and_argv_not_command_payload(ps):
+    script = load(REBOOT / "start-wd-all.ps1", "Get-LaneProcesses") + r'''
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$lane=[pscustomobject]@{agent='codex-lead-1';legacy_process_markers=@('legacy-lead.ps1')}
+$rows=@(
+ [pscustomobject]@{ProcessId=1;CommandLine='powershell.exe -NoProfile -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1'},
+ [pscustomobject]@{ProcessId=2;CommandLine='pwsh.exe -Command "Write-Output ''powershell.exe -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1 ''"'},
+ [pscustomobject]@{ProcessId=3;CommandLine='pwsh.exe -Command "Write-Output ''legacy-lead.ps1''"'},
+ [pscustomobject]@{ProcessId=4;CommandLine='"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -WindowStyle Hidden -File "C:\Space Dir\start-wd-agent.ps1" -Agent "codex-lead-1"'},
+ [pscustomobject]@{ProcessId=5;CommandLine='powershell.exe -File C:\Python\other.ps1 -Message "start-wd-agent.ps1 -Agent codex-lead-1 legacy-lead.ps1"'},
+ [pscustomobject]@{ProcessId=6;CommandLine='powershell.exe -File C:\Python\start-wd-agent.ps1 -Agent claude-rco-1 -Message "-Agent codex-lead-1"'},
+ [pscustomobject]@{ProcessId=7;CommandLine='powershell.exe -NoProfile -File C:\Python\legacy-lead.ps1'},
+ [pscustomobject]@{ProcessId=8;CommandLine='pwsh.exe -f C:\Python\start-wd-agent.ps1 -Agent codex-lead-1'},
+ [pscustomobject]@{ProcessId=9;CommandLine='pwsh.exe C:\Python\start-wd-agent.ps1 -Agent codex-lead-1'},
+ [pscustomobject]@{ProcessId=10;CommandLine='pwsh.exe -File C:\Python\start-wd-agent.ps1.bak -Agent codex-lead-1'},
+ [pscustomobject]@{ProcessId=11;CommandLine='other.exe -File C:\Python\start-wd-agent.ps1 -Agent codex-lead-1'}
+)
+'''
+    script += f"""
+@(Get-LaneProcesses -Lane $lane -Processes $rows -ParserSourcePath {q(REBOOT / 'wd_supervisor.ps1')}) |
+ Select-Object -ExpandProperty ProcessId | ConvertTo-Json
+"""
+    assert json.loads(_run_powershell(script, executable=ps).stdout) == [1, 4, 7, 8, 9]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ["exited", "recovered", "unreadable", "reused"])
+def test_lane_guard_rechecks_transient_missing_command_line(ps, case):
+    script = load(REBOOT / "start-wd-agent.ps1", "Assert-WdLaneLaunchAvailable")
+    script += f"$global:case={q(case)}\n" + r'''
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$lane=[pscustomobject]@{agent='codex-lead-1';legacy_process_markers=@()}
+$row=[pscustomobject]@{ProcessId=200;ParentProcessId=1;Name='powershell.exe';
+ CommandLine=$null;CreationDate=[datetime]'2026-09-18T10:00:00Z'}
+function Get-CimInstance {
+ param($ClassName,$Filter,$ErrorAction)
+ if(-not $Filter){return $row}
+ if($Filter -ne 'ProcessId=200'){throw 'wrong recheck filter'}
+ if($global:case -eq 'exited'){return}
+ if($global:case -ne 'unreadable'){$row.CommandLine='powershell.exe -File C:\unrelated\worker.ps1'}
+ if($global:case -eq 'reused'){$row=$row.PSObject.Copy();$row.CreationDate=$row.CreationDate.AddSeconds(1)}
+ return $row
+}
+try{Assert-WdLaneLaunchAvailable -Lane $lane -CurrentPid 100; @{ok=$true}|ConvertTo-Json}
+catch{@{ok=$false;error=$_.Exception.Message}|ConvertTo-Json}
+'''
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result["ok"] is (case in {"exited", "recovered"}), result
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)

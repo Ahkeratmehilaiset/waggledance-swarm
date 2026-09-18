@@ -561,8 +561,10 @@ if (@($definitions.agent | Select-Object -Unique).Count -ne 5) {
 $runtimeRoot = [IO.Path]::GetFullPath([string]$manifest.runtime_root)
 $now = [DateTimeOffset]::UtcNow
 $helperBin=Join-Path $PSScriptRoot 'tools-bootstrap/.agent-bridge/bin'
-if (-not (Test-Path -LiteralPath $helperBin)) { $helperBin=Join-Path $PSScriptRoot '../../../.agent-bridge/bin' }
 if (-not (Test-Path -LiteralPath $helperBin)) { $helperBin=Join-Path (Split-Path -Parent $manifestFull) 'tools-bootstrap/.agent-bridge/bin' }
+# Machine copies can live directly below the drive root. Prefer the selected
+# bundle before the source-tree fallback; normalize '..' before provider access.
+if (-not (Test-Path -LiteralPath $helperBin)) { $helperBin=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../.agent-bridge/bin')) }
 . (Join-Path $helperBin 'BridgeResourceScope.ps1')
 . (Join-Path $helperBin 'BridgeIncrementalReader.ps1')
 . (Join-Path $helperBin 'BridgeEventClassifier.ps1')

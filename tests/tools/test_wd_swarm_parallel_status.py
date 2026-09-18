@@ -80,6 +80,20 @@ def checkpoint(fleet, index=-1):
     return Path(fleet["lanes"][index]["worktree"]) / ".codex-audit/wd-current-state.json"
 
 
+@pytest.mark.parametrize("machine_root", ["C:/", "C:/Python"])
+def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monkeypatch, machine_root):
+    """Exercise actual shallow-path resolution without writing machine files."""
+    helpers = fleet["root"] / "tools-bootstrap/.agent-bridge/bin"
+    shutil.copytree(ROOT / ".agent-bridge/bin", helpers)
+    copied = fleet["root"] / "installed-status.ps1"
+    copied.write_text(SCRIPT.read_text(encoding="utf-8").replace(
+        "$PSScriptRoot", quote(machine_root)), encoding="utf-8")
+    monkeypatch.setattr(__import__(__name__, fromlist=["SCRIPT"]), "SCRIPT", copied)
+    report = run_status(fleet)
+    assert len(report["lanes"]) == 5
+    assert report["claim_observation"]["status"] == "observed"
+
+
 @pytest.mark.parametrize('case', ['local', 'source_overlap', 'expired', 'checkpoint_only', 'invalid', 'read_claim'])
 def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case):
     scopes = ['.codex-audit/wd-current-state.json'] if case != 'source_overlap' else ['src/module.py']

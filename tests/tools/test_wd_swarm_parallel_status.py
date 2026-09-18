@@ -80,6 +80,44 @@ def checkpoint(fleet, index=-1):
     return Path(fleet["lanes"][index]["worktree"]) / ".codex-audit/wd-current-state.json"
 
 
+@pytest.mark.parametrize('case', ['local', 'source_overlap', 'expired', 'checkpoint_only', 'invalid', 'read_claim'])
+def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case):
+    scopes = ['.codex-audit/wd-current-state.json'] if case != 'source_overlap' else ['src/module.py']
+    claims = fleet['root'] / 'work_queue/claims'
+    claims.mkdir(parents=True)
+    for index in (0, 4):
+        update(checkpoint(fleet, index), write_scope=scopes, status='completed')
+        if case == 'checkpoint_only':
+            continue
+        now = datetime.now(timezone.utc)
+        record = dict(agent=fleet['lanes'][index]['agent'], task_id='active-test',
+                      mode='read' if case == 'read_claim' else 'write',
+                      cwd=fleet['lanes'][index]['worktree'], write_scope=scopes,
+                      last_heartbeat_utc=(now - timedelta(seconds=400 if case == 'expired' else 0)).isoformat(),
+                      lease_seconds=300)
+        (claims / f'{index}.json').write_text('{broken' if case == 'invalid' else json.dumps(record))
+    report = run_status(fleet)
+    assert report['summary']['scope_collisions'] == (1 if case == 'source_overlap' else 0)
+    assert report['claim_observation']['status'] == ('unknown' if case == 'invalid' else 'observed')
+
+
+def test_fresh_canonical_answer_is_separate_from_old_checkpoint(fleet):
+    old = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    update(checkpoint(fleet, 2), status='idle', updated_at_utc=old)
+    shared = fleet['root'] / 'shared'
+    shared.mkdir()
+    now = datetime.now(timezone.utc).isoformat()
+    answer = dict(agent='claude-rco-2', type='message', status='answered', ts_utc=now,
+                  in_reply_to_request_id='req1', task_id='task')
+    (shared / 'events.jsonl').write_text(json.dumps(answer) + '\n')
+    report = run_status(fleet)
+    lane = report['lanes'][2]
+    assert lane['checkpoint']['freshness'] == 'stale'
+    assert datetime.fromisoformat(lane['progress']['last_substantive_progress_at_utc']) == datetime.fromisoformat(now)
+    assert lane['progress']['status'] == 'canonical_answer_observed'
+    assert lane['progress']['task_completion_verified'] is False
+
+
 @pytest.mark.parametrize('case', ['live', 'wrong_parent', 'reused_pid', 'missing_native'])
 def test_native_tools_status_requires_both_process_identities(fleet, case):
     manifest = json.loads(fleet['manifest'].read_text())
@@ -176,11 +214,14 @@ def test_native_lead_queue_readiness_requires_live_exact_conversation(fleet, cas
     if case == 'wrong_parent': native['ParentProcessId'] = 1
     if case == 'wrong_thread': native['CommandLine'] = 'codex resume other'
     if case == 'reused_pid': native['CreationDate'] = datetime.now(timezone.utc).isoformat()
-    if case == 'blocked': ready['status'] = 'bridge_wake_blocked'
+    if case == 'blocked': ready.update(status='bridge_wake_blocked', error='DateTime parse failed')
     (journal / 'native-terminal.json').write_text(json.dumps(ready))
     lead = run_status(fleet, lane_processes=[wrapper, native])['lanes'][0]['turn_execution']
     assert lead['external_wake_support'] == ('native_queue_bridge' if case == 'live' else 'native_queue_unverified')
     assert not lead['turn_execution_verified']
+    if case == 'blocked':
+        assert lead['relay_status'] == 'bridge_wake_blocked'
+        assert lead['relay_error'] == 'DateTime parse failed'
 
 
 def test_conversation_configuration_is_not_live_window_or_context_proof(fleet):

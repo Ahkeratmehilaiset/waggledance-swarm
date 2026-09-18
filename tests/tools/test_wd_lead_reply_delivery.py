@@ -1,5 +1,8 @@
 """Late peer replies must wake the same native Lead conversation."""
 import json
+import os
+import subprocess
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -40,3 +43,101 @@ $result=Invoke-WdNativeToolsWakeStep -Agent codex-lead-1 -CliPath unused -Thread
     saved = json.loads(state.read_text(encoding='utf-8-sig'))
     assert saved['status'] == 'queued' and saved['agent'] == 'codex-lead-1'
     assert not saved['task_completion_verified']
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['late', 'wrong_session', 'ack', 'partial', 'invalid', 'conflict'])
+def test_fresh_snapshot_never_calls_incomplete_or_wrong_reply_answered(tmp_path, ps, case):
+    from test_bridge_request_contract import events
+    _, request, reply = events()
+    request.update(request_id='exact-v2', request_digest='digest-v2')
+    reply.update(in_reply_to_request_id='exact-v2', in_reply_to_request_digest='digest-v2',
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    log = shared / 'events.jsonl'
+    log.write_text(json.dumps(request) + '\n', encoding='utf-8')
+    def read():
+        return subprocess.run([ps, '-NoProfile', '-NonInteractive', '-File',
+                               str(REBOOT.parents[2] / '.agent-bridge/bin/Get-BridgeReplySnapshot.ps1'),
+                               '-RequestId', 'exact-v2'],
+                              env=dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path)),
+                              capture_output=True, text=True, timeout=40)
+    first = read()
+    assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout)['results'][0]['state'] == 'pending_at_snapshot'
+    if case == 'wrong_session': reply['session_id'] = 'old-session'
+    if case == 'ack': reply['status'] = 'received'
+    if case == 'conflict': reply = dict(request, message='immutable ID changed')
+    with log.open('a', encoding='utf-8') as stream:
+        stream.write('{invalid}\n' if case == 'invalid' else json.dumps(reply) + ('' if case == 'partial' else '\n'))
+    second = read()
+    if case in ('partial', 'invalid', 'conflict'):
+        assert second.returncode != 0
+    else:
+        assert second.returncode == 0, second.stderr
+        snapshot = json.loads(second.stdout)
+        assert snapshot['results'][0]['state'] == ('answered' if case == 'late' else 'pending_at_snapshot')
+        assert snapshot['snapshot_bytes'] > json.loads(first.stdout)['snapshot_bytes']
+        if case == 'late': assert snapshot['results'][0]['answers'][0] == reply
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_native_lead_adapter_imports_only_verified_functions_and_relays_in_same_thread(tmp_path, ps):
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir()
+    (runtime / 'wake_codex-lead-1').write_text('late answer')
+    cli = tmp_path / 'codex.exe'
+    cli.write_bytes(b'fixture only, never execute')
+    runner = ''
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
+        runner += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    code = ''
+    for name in ['ConvertTo-WdToolsNativeArgument', 'Invoke-WdNativeToolsWakeStep', 'Invoke-WdNativeToolsWakeRelay']:
+        code += load(REBOOT / 'start-wd-tools-consumer.ps1', name)
+    code += """
+function Send-WdNativeToolsQueueMessage {
+ param($CliPath,$ThreadId,$Message,$Worktree)
+ $global:delivery=@{thread=$ThreadId;message=$Message}
+ return '01a0adff-4558-7e80-8936-6aad0d6df821'
+}
+function Start-WdToolsNativeProcess {
+ param($CliPath,$ArgumentLine,$Worktree)
+ $global:starts++; $global:arguments=$ArgumentLine
+ $p=[pscustomobject]@{Id=123;StartTime=[datetime]::Now;HasExited=$false;ExitCode=0;polls=0}
+ $p|Add-Member ScriptMethod WaitForExit {param($milliseconds) $this.polls++;$this.HasExited=($this.polls -gt 1);return $this.HasExited}
+ $p|Add-Member ScriptMethod Dispose {}
+ return $p
+}
+"""
+    runner_path = tmp_path / 'runner.txt'
+    code_path = tmp_path / 'tools.txt'
+    runner_path.write_text(runner)
+    code_path.write_text(code)
+    # The test owns no real terminal. Substitute only the console-presence probe.
+    function = load(REBOOT / 'start-wd-agent.ps1', 'Invoke-WdNativeLeadTerminal').replace(
+        '$fn.Extent.Text)', "$fn.Extent.Text.Replace('[Console]::IsInputRedirected','$false'))")
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n" + function + f"""
+$global:starts=0; $env:WD_BRIDGE_BIN=''
+. ([scriptblock]::Create([IO.File]::ReadAllText({q(runner_path)})))
+. ([scriptblock]::Create([IO.File]::ReadAllText({q(code_path)})))
+$verified=@{{}}
+$groups=@{{'Invoke-WdLaneTurnLoop.ps1'=@('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot');
+ 'start-wd-tools-consumer.ps1'=@('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
+ 'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')}}
+foreach($file in $groups.Keys){{
+ $definitions=@($groups[$file]|ForEach-Object {{'function '+$_+' {{'+(Get-Command $_).ScriptBlock.ToString()+'}}'}})
+ $verified[$file]='throw "top-level must not execute"'+"`n"+($definitions -join "`n")
+}}
+Invoke-WdNativeLeadTerminal -CliPath {q(cli)} -Arguments @('resume','01a0a654-12af-7d81-85fc-d75d515c5b65') `
+ -ThreadId 01a0a654-12af-7d81-85fc-d75d515c5b65 -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} `
+ -Generation fixture -SessionId session -ExpectedCliHash {hashlib.sha256(cli.read_bytes()).hexdigest().upper()} -VerifiedCode $verified
+@{{starts=$global:starts;arguments=$global:arguments;delivery=$global:delivery}}|ConvertTo-Json -Depth 6
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result['starts'] == 1 and result['arguments'] == 'resume 01a0a654-12af-7d81-85fc-d75d515c5b65'
+    assert result['delivery']['thread'] == '01a0a654-12af-7d81-85fc-d75d515c5b65'
+    assert 'Automatic bridge wake for codex-lead-1' in result['delivery']['message']
+    journal = tmp_path / '.codex-audit/wd-turn-loop'
+    assert json.loads((journal / 'native-terminal.json').read_text(encoding='utf-8-sig'))['status'] == 'stopped'
+    assert json.loads((journal / 'native-bridge-wake.json').read_text(encoding='utf-8-sig'))['status'] == 'queued'

@@ -78,6 +78,14 @@ def test_sender_colors_severity_labels_and_byte_inert_read(runtime):
     assert before == {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in runtime[0].rglob("*") if p.is_file()}
 
 
+def test_grok_advisory_lifecycle_is_visible_with_own_label(runtime):
+    write_rows(runtime, [event('Grok consultation answered; report=local.md', agent='grok-scout-1',
+                               type='status', status='consultation_answered')])
+    rows = [r for r in run_view(runtime) if 'Grok consultation answered' in r['text']]
+    assert len(rows) == 1 and rows[0]['color'] == 'DarkCyan'
+    assert '[GROK]' in rows[0]['text'] and '[OTHER]' not in rows[0]['text']
+
+
 def test_infrastructure_suppressed_and_replay_bounded(runtime):
     write_rows(runtime, [event("old context")] + [event("noise", type=kind) for kind in
                ["heartbeat", "liveness", "wake_request"]] +
@@ -341,6 +349,8 @@ Update-WdConversationControl $view 'A'
 $agentFirst = $view.Agent
 $oldDisplayCleared = @($view.Entries | Where-Object { $_.Text -like 'line-*' }).Count -eq 0
 for ($i=0; $i -lt 5; $i++) { Update-WdConversationControl $view 'A' }
+$grokFilter = $view.Agent
+Update-WdConversationControl $view 'A'
 Update-WdConversationControl $view 'T'
 $typeFirst = $view.Kind
 for ($i=0; $i -lt 7; $i++) { Update-WdConversationControl $view 'T' }
@@ -348,13 +358,14 @@ Update-WdConversationControl $view 'P'
 $paused = $view.Paused
 Update-WdConversationControl $view 'Spacebar'
 Update-WdConversationControl $view 'Q'
-@{bounded=$bounded; agent_first=$agentFirst; type_first=$typeFirst; agent_all=$view.Agent; type_all=$view.Kind;
+@{bounded=$bounded; agent_first=$agentFirst; grok_filter=$grokFilter; type_first=$typeFirst; agent_all=$view.Agent; type_all=$view.Kind;
     old_display_cleared=$oldDisplayCleared; rows=$view.Counts.rows; visible=$view.Counts.visible;
     paused=$paused; resumed=(-not $view.Paused); quit=$view.Quit} | ConvertTo-Json -Depth 5 -Compress
 """)
     assert report["bounded"] == dict(count=200, first="line-5", last="line-204")
     assert report["agent_first"] == "codex-lead-1" and report["type_first"] == "message"
     assert report["agent_all"] == report["type_all"] == ""
+    assert report['grok_filter'] == 'grok-scout-1'
     assert report["old_display_cleared"] is True
     assert report["rows"] == 12 and report["visible"] == 9
     assert report["paused"] and report["resumed"] and report["quit"]

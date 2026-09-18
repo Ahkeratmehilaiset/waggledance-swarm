@@ -26,8 +26,9 @@ def emit_bridge_event(stage: str, state: dict) -> None:
         raise ValueError('Grok lifecycle requires the installed pinned wrapper')
     payload = base64.b64encode(json.dumps({'stage': stage, 'state': state}).encode()).decode('ascii')
     environment = dict(os.environ)
-    system = Path(environment['SystemRoot']) / 'System32/WindowsPowerShell/v1.0'
+    system = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0'
     # PS7's inherited module path must not shadow Windows PowerShell's modules.
+    environment = {k: v for k, v in environment.items() if k.upper() != 'PSMODULEPATH'}
     environment['PSModulePath'] = str(system / 'Modules')
     result = subprocess.run([str(system / 'powershell.exe'), '-NoLogo', '-NoProfile', '-NonInteractive',
                              '-ExecutionPolicy', 'Bypass', '-File', str(wrapper), '-LifecycleBase64', payload],
@@ -35,7 +36,7 @@ def emit_bridge_event(stage: str, state: dict) -> None:
                             timeout=45, env=environment)
     if result.returncode:
         raise OSError('Grok bridge lifecycle writer failed')
-    receipt = json.loads(result.stdout.lstrip('\ufeff'))
+    receipt = json.loads(result.stdout.lstrip('\ufeff')).get('_bridge_delivery', {})
     if not receipt.get('accepted') or not receipt.get('canonical_durable'):
         raise OSError('Grok lifecycle was not confirmed canonical')
 
@@ -120,7 +121,11 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         previous = status(root, now)
         if not previous["eligible"]:
             deferred = {**previous, 'task_id': task_id, 'decision': 'deferred_hourly_limit'}
-            record_lifecycle(emitter, 'deferred', deferred)
+            observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': 'deferred_hourly_limit',
+                           'next_eligible_utc': previous['next_eligible_utc']}
+            record_lifecycle(emitter, 'deferred', observation)
+            if observation.get('bridge_event_errors'):
+                deferred['bridge_event_errors'] = observation['bridge_event_errors']
             return deferred
         request_id = uuid.uuid4().hex
         state = {"schema": SCHEMA, "last_attempt_utc": now.isoformat(),

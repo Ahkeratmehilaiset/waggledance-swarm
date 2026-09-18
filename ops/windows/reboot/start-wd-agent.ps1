@@ -2163,6 +2163,9 @@ Write-Host ("  visual:   {0} ({1})" -f $targetImagePath, $targetImageDelivery)
 $claudeResume = $null
 if ($nativeLead) {
   $nativeResume = Get-WdNativeLeadResumeState -Worktree $worktree -RuntimeRoot $runtimeRoot
+  if (-not $DryRun -and -not $nativeResume.thread_id) {
+    throw 'Native Lead bootstrap requires a recorded conversation before automatic bridge delivery can be started'
+  }
 } elseif ($cliName -ieq 'claude.cmd' -and $launchTurnMode -ceq 'interactive') {
   $claudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
   $claudeResume = Get-WdClaudeResumeState -Agent $Agent -Worktree $worktree -ProjectsRoot (Join-Path $claudeHome 'projects')

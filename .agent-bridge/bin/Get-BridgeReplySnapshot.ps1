@@ -40,7 +40,7 @@ $results=@(foreach ($target in $targets) {
         answers=$answers}
 })
 [pscustomobject]@{schema='wd.reply-snapshot.v1';request_id=$RequestId;request=$request;
-    read_started_utc=$started;observed_at_utc=[DateTimeOffset]::UtcNow.ToString('o');
+    read_started_utc=$started;observed_at_utc=$started;read_completed_utc=[DateTimeOffset]::UtcNow.ToString('o');
     snapshot_cursor=$snapshot.candidate_cursor;snapshot_bytes=$snapshot.snapshot_length;results=$results;
     note='A later append requires a new snapshot. Read full answers before making a substantive conclusion.';
     authority_effect='none'} | ConvertTo-Json -Depth 64

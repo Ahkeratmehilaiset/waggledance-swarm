@@ -2054,6 +2054,26 @@ function Test-LaneGenerationAttestation {
       -Label 'live lane append canary creation'
     $ageAtHandshake = $handshakeCreated - $processCreated
     $ageAtCanary = $canaryCreated - $processCreated
+    if ([string]$Lane.agent -ceq 'codex-lead-1' -and [string]$Lane.turn_mode -ceq 'interactive') {
+      $readyPath=Join-Path ([string]$Lane.worktree) '.codex-audit/wd-turn-loop/native-terminal.json'
+      [void](Assert-WdFleetPathWithoutReparse -Path $readyPath -TrustedRoot ([IO.Path]::GetPathRoot($readyPath)) -ExpectedType Leaf)
+      $ready=(Read-NonEmptyFile -Path $readyPath -Label 'native Lead queue readiness') | ConvertFrom-Json
+      if ($ready.schema -cne 'wd.native-lead-ready.v1' -or $ready.agent -cne 'codex-lead-1' -or
+          $ready.status -cne 'terminal_ready' -or $ready.bridge_wake_transport -cne 'codex_queue' -or
+          $ready.generation -cne $bundleCommit -or $ready.session_id -cne $runId -or
+          [int]$ready.relay_pid -ne [int]$Process.ProcessId -or
+          $ready.thread_id -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
+          -not ([string]$ready.worktree).Equals([string]$Lane.worktree,[StringComparison]::OrdinalIgnoreCase)) { return $false }
+      $native=@(Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$ready.native_pid) -ErrorAction Stop)
+      if ($native.Count -ne 1 -or $native[0].Name -ine 'codex.exe' -or
+          [int]$native[0].ParentProcessId -ne [int]$Process.ProcessId -or
+          [string]$native[0].CommandLine -notmatch ('\bresume\s+"?' + [regex]::Escape($ready.thread_id) + '"?(?:\s|$)')) { return $false }
+      $nativeCreated=ConvertTo-UtcDateTimeOffset -Value $native[0].CreationDate -Label 'native Lead process'
+      $readyNativeCreated=ConvertTo-UtcDateTimeOffset -Value $ready.native_process_start_utc -Label 'native Lead readiness'
+      $readyRelayCreated=ConvertTo-UtcDateTimeOffset -Value $ready.relay_process_start_utc -Label 'Lead relay readiness'
+      if ([Math]::Abs(($readyNativeCreated-$nativeCreated).TotalSeconds) -ge 1 -or
+          [Math]::Abs(($readyRelayCreated-$processCreated).TotalSeconds) -ge 1) { return $false }
+    }
     return (
       $ageAtHandshake.TotalSeconds -ge 0 -and
       $ageAtHandshake.TotalMinutes -le 5 -and

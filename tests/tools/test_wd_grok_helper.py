@@ -38,6 +38,28 @@ def test_consult_emits_lifecycle_without_exposing_prompt_or_refunding_budget(tmp
     assert (tmp_path / 'hourly-state.json').read_bytes() == before
 
 
+def test_lifecycle_emitter_requires_canonical_receipt_and_never_runs_model(tmp_path, monkeypatch):
+    bundle = tmp_path / 'bundle'
+    packaged = bundle / 'tools-bootstrap/tools/wd_grok_helper.py'
+    packaged.parent.mkdir(parents=True)
+    (bundle / 'Invoke-WdGrok.ps1').write_text('# pinned wrapper fixture')
+    monkeypatch.setattr(wd_grok_helper, '__file__', str(packaged))
+    monkeypatch.setenv('SystemRoot', str(tmp_path / 'Windows'))
+    records = []
+    def run(command, **kwargs):
+        import base64
+        records.append(json.loads(base64.b64decode(command[-1])))
+        assert command[-2] == '-LifecycleBase64'
+        assert '--prompt-file' not in command
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'_bridge_delivery': {
+            'accepted': True, 'canonical_durable': len(records) == 1}}))
+    monkeypatch.setattr(wd_grok_helper.subprocess, 'run', run)
+    wd_grok_helper.emit_bridge_event('answered', {'task_id': 'test', 'request_id': 'id'})
+    with pytest.raises(OSError, match='canonical'):
+        wd_grok_helper.emit_bridge_event('failed', {'task_id': 'test', 'request_id': 'id'})
+    assert [r['stage'] for r in records] == ['answered', 'failed']
+
+
 def seed(root, age=3600):
     write_state(root, {"schema": SCHEMA, "last_attempt_utc": (NOW-timedelta(seconds=age)).isoformat(), "status": "answered"})
 

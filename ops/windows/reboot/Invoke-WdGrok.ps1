@@ -23,6 +23,10 @@ if ($LifecycleBase64) {
     $definition=Get-WdBridgeCodePackageDefinition -Path (Join-Path $PSScriptRoot 'bridge-code-files.json')
     if ($definition.Hash -cne $manifest.files.'bridge-code-files.json') { throw 'Bridge definition hash mismatch' }
     $context=Assert-WdBridgeCodePackageIntegrity -BundleRoot $PSScriptRoot -Deployment $manifest -Definition $definition.Definition
+    $fleetPath=Join-Path $PSScriptRoot 'wd-fleet.json'
+    if ((Get-FileHash -LiteralPath $fleetPath).Hash -cne $manifest.files.'wd-fleet.json') { throw 'Fleet runtime root hash mismatch' }
+    $fleet=Get-Content -LiteralPath $fleetPath -Raw | ConvertFrom-Json
+    $env:AGENT_BRIDGE_RUNTIME_ROOT=[string]$fleet.runtime_root
     $writer=Join-Path $PSScriptRoot 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
     $payload=[ordered]@{schema='wd.grok-consultation-event.v1';consultation_id=[string]$state.request_id;
         stage=[string]$event.stage;authority_effect='none';advisory_only=$true;

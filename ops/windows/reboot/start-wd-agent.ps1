@@ -419,13 +419,46 @@ function Assert-WdLaneLaunchAvailable {
     [Parameter(Mandatory)] [object] $Lane,
     [object[]] $KnownLanes = @(),
     [int] $CurrentPid = $PID,
-    [object[]] $ExternalSessions = @()
+    [object[]] $ExternalSessions = @(),
+    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1'),
+    [switch] $AllowUnpinnedParser
   )
 
-  $agentPattern = '(?i)(?:^|\s)-Agent\s+["'']?' +
-    [regex]::Escape([string]$Lane.agent) + '["'']?(?=\s|$)'
-  $filePattern = '(?i)(?:^|\s)-File\s+(?:"(?<path>[^"]+)"|''(?<path>[^'']+)''|(?<path>\S+))(?=\s|$)'
-  $agentCapturePattern = '(?i)(?:^|\s)-Agent\s+["'']?(?<agent>[a-z][a-z0-9_-]{1,32})["'']?(?=\s|$)'
+  # Match fleet discovery: only real host/script argv establishes ownership.
+  # Import pure parser definitions from the already hash-verified sibling;
+  # executing the supervisor's top-level reconciliation here is forbidden.
+  $parserTokens = $null
+  $parserErrors = $null
+  $parserManifest = Join-Path (Split-Path -Parent $ParserSourcePath) 'deployment-manifest.json'
+  if (Test-Path -LiteralPath $parserManifest -PathType Leaf) {
+    $manifestBytes = Read-Utf8LaneSnapshot -Path $parserManifest
+    if ([string]$manifestBytes.Hash -cne [string]$script:LaneManifestAnchor) { throw 'lane parser manifest anchor mismatch' }
+    $parserDeployment = $manifestBytes.Text | ConvertFrom-Json -ErrorAction Stop
+    $parserPin = $parserDeployment.files.PSObject.Properties['wd_supervisor.ps1']
+    $parserSource = Read-Utf8LaneSnapshot -Path $ParserSourcePath
+    if ($null -eq $parserPin -or [string]$parserSource.Hash -cne [string]$parserPin.Value) { throw 'lane parser source hash mismatch' }
+    $parserAst = [Management.Automation.Language.Parser]::ParseInput(
+      [string]$parserSource.Text, [ref]$parserTokens, [ref]$parserErrors
+    )
+  } else {
+    if (-not $AllowUnpinnedParser) { throw 'lane parser deployment manifest is missing' }
+    $parserAst = [Management.Automation.Language.Parser]::ParseFile(
+      $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
+    )
+  }
+  if ($parserErrors.Count) { throw 'lane process parser source is invalid' }
+  foreach ($name in @(
+      'Initialize-WdSupervisorCommandLineParser', 'ConvertFrom-WdWindowsCommandLine',
+      'Test-WdPowerShellSwitchToken', 'Test-WdPowerShellHostOptionToken',
+      'Get-WdPowerShellHostKind', 'Test-WdPowerShellFileSwitchToken',
+      'Test-WdEncodedCommandValue', 'Get-WdPowerShellFileInvocation'
+    )) {
+    $definitions = @($parserAst.FindAll({ param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+    }, $true))
+    if ($definitions.Count -ne 1) { throw "lane process parser missing or ambiguous: $name" }
+    . ([scriptblock]::Create($definitions[0].Extent.Text))
+  }
   $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
   $byPid = @{}
   $launcherOwners = @{}
@@ -439,23 +472,48 @@ function Assert-WdLaneLaunchAvailable {
     if ([int]$process.ProcessId -eq $CurrentPid) { continue }
     if ([string]$process.Name -notmatch '^(powershell|pwsh)\.exe$') { continue }
     if ([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
-      throw 'cannot prove lane ownership: PowerShell command line is unavailable'
+      # A short-lived test/helper may exit during the CIM enumeration. Recheck
+      # that exact lifetime once; never waive an unreadable live process or a
+      # recycled PID, and never infer a launcher from missing metadata.
+      $observedStart = $process.PSObject.Properties['CreationDate']
+      $observedTicks = if ($null -ne $observedStart -and $null -ne $observedStart.Value) {
+        ([DateTimeOffset]$observedStart.Value).UtcTicks
+      } else { $null }
+      $fresh = @(Get-CimInstance Win32_Process -Filter ("ProcessId=$($process.ProcessId)") -ErrorAction Stop)
+      if ($fresh.Count -eq 0) { continue }
+      if ($fresh.Count -ne 1 -or $null -eq $observedTicks -or
+          [int]$fresh[0].ProcessId -ne [int]$process.ProcessId -or
+          [string]$fresh[0].Name -cne [string]$process.Name -or
+          $null -eq $fresh[0].PSObject.Properties['CreationDate'] -or
+          $null -eq $fresh[0].CreationDate -or
+          ([DateTimeOffset]$fresh[0].CreationDate).UtcTicks -ne $observedTicks -or
+          [string]::IsNullOrWhiteSpace([string]$fresh[0].CommandLine)) {
+        throw 'cannot prove lane ownership: PowerShell command line is unavailable or its identity changed'
+      }
+      $process = $fresh[0]
     }
-    $fileMatch = [regex]::Match([string]$process.CommandLine, $filePattern)
-    if (-not $fileMatch.Success) { continue }
-    # These are Win32 command lines even when a readonly test runs on POSIX.
-    $leaf = [IO.Path]::GetFileName(($fileMatch.Groups['path'].Value -split '\\')[-1])
+    $hostKind = if ([string]$process.Name -ieq 'powershell.exe') { 'WindowsPowerShell' } else { 'Pwsh' }
+    $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$process.CommandLine) -HostKind $hostKind
+    if ($null -eq $invocation) { continue }
+    $leaf = ([string]$invocation.script_path -split '[\\/]')[-1]
+    $agentArguments = @(
+      for ($index = [int]$invocation.file_index + 2;
+           $index + 1 -lt $invocation.arguments.Count; $index++) {
+        if ([string]$invocation.arguments[$index] -ieq '-Agent') {
+          [string]$invocation.arguments[$index + 1]
+        }
+      }
+    )
     $sameLane = (
       $leaf -ieq 'start-wd-agent.ps1' -and
-      [string]$process.CommandLine -match $agentPattern
+      $agentArguments -icontains [string]$Lane.agent
     ) -or @($Lane.legacy_process_markers) -icontains $leaf
     if ($sameLane) {
       throw "lane '$($Lane.agent)' already has a live launcher (PID $($process.ProcessId)); leave its session running"
     }
     $ownerAgent = ''
-    $agentMatches = @([regex]::Matches([string]$process.CommandLine, $agentCapturePattern))
-    if ($leaf -ieq 'start-wd-agent.ps1' -and $agentMatches.Count -eq 1) {
-      $candidateAgent = $agentMatches[0].Groups['agent'].Value.ToLowerInvariant()
+    if ($leaf -ieq 'start-wd-agent.ps1' -and $agentArguments.Count -eq 1) {
+      $candidateAgent = $agentArguments[0].ToLowerInvariant()
       if ($candidateAgent -cin $knownAgents) { $ownerAgent = $candidateAgent }
     }
     foreach ($knownLane in @($KnownLanes) + @($Lane)) {
@@ -466,8 +524,8 @@ function Assert-WdLaneLaunchAvailable {
     }
     if ($leaf -iin @('start-wd-tools-consumer.ps1','Invoke-WdToolsCodex.ps1')) {
       $ownerAgent = 'codex-tools-1'
-    } elseif ($leaf -ieq 'Start-AgentBridgeConsumerLoop.ps1' -and $agentMatches.Count -eq 1 -and
-      $agentMatches[0].Groups['agent'].Value -ceq 'codex-tools-1') {
+    } elseif ($leaf -ieq 'Start-AgentBridgeConsumerLoop.ps1' -and $agentArguments.Count -eq 1 -and
+      $agentArguments[0] -ceq 'codex-tools-1') {
       $ownerAgent = 'codex-tools-1'
     }
     if ($ownerAgent) { $launcherOwners[[int]$process.ProcessId] = $ownerAgent }
@@ -513,6 +571,30 @@ function Assert-WdLaneLaunchAvailable {
           ([DateTimeOffset]$native.CreationDate).UtcTicks
       })
       if ($external.Count -eq 1) { continue }
+      # An explicitly attributed external worker may create new native children
+      # during preflight. The approval binds its exact parent lifetime AND the
+      # child's executable/command prefix. Managed lane ancestry above always
+      # wins; this exemption can never adopt or authorize killing that child.
+      $parentApprovals = @($ExternalSessions | Where-Object {
+        $null -ne $_.PSObject.Properties['kind'] -and $_.kind -ceq 'native_parent' -and
+        [int]$_.pid -eq [int]$native.ParentProcessId
+      })
+      $parentAttributed = $false
+      if ($parentApprovals.Count -eq 1 -and $byPid.ContainsKey([int]$native.ParentProcessId)) {
+        $approval = $parentApprovals[0]
+        $parent = $byPid[[int]$native.ParentProcessId]
+        $parentAttributed = (
+          [string]$parent.Name -ceq [string]$approval.name -and
+          [string]$parent.CommandLine -ceq [string]$approval.command_line -and
+          [string]$parent.ExecutablePath -ceq [string]$approval.executable_path -and
+          ([DateTimeOffset]$parent.CreationDate).UtcTicks -eq ([DateTimeOffset]$approval.process_start_utc).UtcTicks -and
+          ([DateTimeOffset]$native.CreationDate) -ge ([DateTimeOffset]$parent.CreationDate) -and
+          [string]$native.Name -ceq [string]$approval.native_child_name -and
+          [string]$native.ExecutablePath -ceq [string]$approval.native_child_executable_path -and
+          ([string]$native.CommandLine).StartsWith([string]$approval.native_child_command_prefix, [StringComparison]::Ordinal)
+        )
+      }
+      if ($parentAttributed) { continue }
       throw "cannot prove lane availability: unmarked native $($native.Name) PID $($native.ProcessId) has no verified launcher ancestry; leave it running"
     }
   }
@@ -540,12 +622,22 @@ function Read-WdExternalSessions {
   }
   $seen = @{}
   foreach ($entry in @($record.processes)) {
+    $kind = if ($null -ne $entry.PSObject.Properties['kind']) { [string]$entry.kind } else { 'native' }
+    if ($kind -cnotin @('native', 'native_parent')) { throw 'unknown external process identity kind' }
     if ([int]$entry.pid -le 0 -or $seen.ContainsKey([int]$entry.pid) -or
-        [string]$entry.name -cnotin @('codex.exe','claude.exe') -or
+        ($kind -ceq 'native' -and [string]$entry.name -cnotin @('codex.exe','claude.exe')) -or
+        ($kind -ceq 'native_parent' -and [string]$entry.name -cnotmatch '^[a-zA-Z0-9_.-]+\.exe$') -or
         [string]::IsNullOrWhiteSpace([string]$entry.command_line) -or
         -not [IO.Path]::IsPathRooted([string]$entry.executable_path) -or
         [string]$entry.process_start_utc -notmatch '(Z|[+-]\d{2}:\d{2})$') {
       throw 'invalid or duplicate external process identity'
+    }
+    if ($kind -ceq 'native_parent' -and (
+        [string]$entry.native_child_name -cnotin @('codex.exe','claude.exe') -or
+        -not [IO.Path]::IsPathRooted([string]$entry.native_child_executable_path) -or
+        [string]::IsNullOrWhiteSpace([string]$entry.native_child_command_prefix) -or
+        [string]$entry.native_child_command_prefix -notmatch '\s$')) {
+      throw 'external native parent requires an exact child executable and bounded command prefix'
     }
     [void][DateTimeOffset]::Parse([string]$entry.process_start_utc)
     $seen[[int]$entry.pid] = $true
@@ -1758,7 +1850,7 @@ if ($manualLeadAction) {
   try {
     $manualAttemptLease = Enter-WdManagedAttemptLease `
       -RuntimeRoot $runtimeRoot -Agent $Agent
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
     $manualAttemptEvidence = Get-WdManagedAttemptEvidence `
       -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
     if (-not $DryRun) {
@@ -1778,7 +1870,7 @@ if ($manualLeadAction) {
         if ([string]$confirmation -cne $digestPrefix) {
           throw 'managed attempt retirement confirmation did not match the reviewed digest prefix'
         }
-        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
         Assert-WdOperatorInvocationLineage
         [void](Assert-WdLeadInteractivePostureBaseline `
           -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2016,7 +2108,7 @@ if ($RecoverInteractive) {
 
 if ($DryRun) {
   if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
   try {
@@ -2066,10 +2158,10 @@ if ($DryRun) {
 
 try {
 if ($turnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
 }
 if ($nativeLead) {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   $nativeLock = Join-Path $runtimeRoot '.wd-turn-codex-lead-1.lock'
   if (Test-Path -LiteralPath $nativeLock) {
     [void](Assert-LanePathWithoutReparse -Path $nativeLock -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
@@ -2347,7 +2439,7 @@ if (
 }
 
 if ($launchTurnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   if ($null -ne $conversationConfigBaseline) {
     [void](Assert-WdLeadInteractivePostureBaseline `
       -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2413,7 +2505,7 @@ if ($launchTurnMode -ceq 'managed') {
 }
 
 if ($RecoverInteractive) {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   Assert-WdOperatorInvocationLineage
   [void](Assert-WdLeadInteractivePostureBaseline `
     -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2440,7 +2532,7 @@ if ($cliName -ieq 'claude.cmd') {
   )
 } elseif ($cliName -ieq 'codex.cmd') {
   if ($nativeLead) {
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
     if ($nativeResume.thread_id) { $launchArguments += @('resume', [string]$nativeResume.thread_id) }
   }
   $launchArguments += @(

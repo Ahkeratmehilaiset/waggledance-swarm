@@ -64,7 +64,12 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $nativeLead=$true; $nativeResume=[pscustomobject]@{{thread_id='{THREAD}';initial_context_delivered=${str(delivered).lower()}}}
 $lane=@{{}}; $manifest=@{{lanes=@()}}; $externalSessions=@(); $script:checks=0
-function Assert-WdLaneLaunchAvailable {{ param($Lane,$KnownLanes,$ExternalSessions) $script:checks++ }}
+$sourceTreeMode=$false; $DryRun=$false
+function Assert-WdLaneLaunchAvailable {{
+  param($Lane,$KnownLanes,$ExternalSessions,[switch]$AllowUnpinnedParser)
+  if($AllowUnpinnedParser){{throw 'Live native launch must require the pinned parser'}}
+  $script:checks++
+}}
 $cliName='codex.cmd'; $model='gpt-6-astra'; $effort='xhigh'; $worktree='C:\\Python\\project2'; $Agent='codex-lead-1'
 $startupPrompt='FIRST visual'; $continuationPrompt='Existing context'; $targetImagePath='exact.png'
 {source[start:end]}

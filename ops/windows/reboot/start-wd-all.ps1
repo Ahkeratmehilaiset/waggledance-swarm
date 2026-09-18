@@ -1597,32 +1597,72 @@ function Get-WdLeadPromptWatcherPolicy {
 function Get-LaneProcesses {
   param(
     [Parameter(Mandatory)] $Lane,
-    [Parameter(Mandatory)] [object[]] $Processes
+    [Parameter(Mandatory)] [object[]] $Processes,
+    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1'),
+    [switch] $AllowUnpinnedParser
   )
-  $newLauncher = 'start-wd-agent.ps1'
-  $agentArgumentPattern = '(?i)(?:^|\s)-Agent\s+["'']?' +
-    [regex]::Escape([string]$Lane.agent) + '(?:["'']?)(?:\s|$)'
+  # Reuse the supervisor's tested Win32 argv/PowerShell host parser without
+  # executing its top-level runtime actions. The bundle preflight verifies this
+  # sibling source. Import only these pure parser definitions into local scope.
+  $parserTokens = $null
+  $parserErrors = $null
+  $parserManifest = Join-Path (Split-Path -Parent $ParserSourcePath) 'deployment-manifest.json'
+  if (Test-Path -LiteralPath $parserManifest -PathType Leaf) {
+    $manifestBytes = Read-Utf8FleetSnapshot -Path $parserManifest
+    if ([string]$manifestBytes.Hash -cne [string]$bundleManifestAnchor) { throw 'fleet parser manifest anchor mismatch' }
+    $parserDeployment = $manifestBytes.Text | ConvertFrom-Json -ErrorAction Stop
+    $parserPin = $parserDeployment.files.PSObject.Properties['wd_supervisor.ps1']
+    $parserSource = Read-Utf8FleetSnapshot -Path $ParserSourcePath
+    if ($null -eq $parserPin -or [string]$parserSource.Hash -cne [string]$parserPin.Value) { throw 'fleet parser source hash mismatch' }
+    $parserAst = [Management.Automation.Language.Parser]::ParseInput(
+      [string]$parserSource.Text, [ref]$parserTokens, [ref]$parserErrors
+    )
+  } else {
+    if (-not $AllowUnpinnedParser) { throw 'fleet parser deployment manifest is missing' }
+    $parserAst = [Management.Automation.Language.Parser]::ParseFile(
+      $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
+    )
+  }
+  if ($parserErrors.Count) { throw 'fleet process parser source is invalid' }
+  foreach ($name in @(
+      'Initialize-WdSupervisorCommandLineParser',
+      'ConvertFrom-WdWindowsCommandLine',
+      'Test-WdPowerShellSwitchToken',
+      'Test-WdPowerShellHostOptionToken',
+      'Get-WdPowerShellHostKind',
+      'Test-WdPowerShellFileSwitchToken',
+      'Test-WdEncodedCommandValue',
+      'Get-WdPowerShellFileInvocation'
+    )) {
+    $definitions = @($parserAst.FindAll({ param($node)
+      $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -ceq $name
+    }, $true))
+    if ($definitions.Count -ne 1) { throw "fleet process parser missing or ambiguous: $name" }
+    . ([scriptblock]::Create($definitions[0].Extent.Text))
+  }
   return @(
     $Processes | Where-Object {
-      $commandLine = [string]$_.CommandLine
-      $newMatch = (
-        $commandLine.IndexOf(
-          $newLauncher,
-          [System.StringComparison]::OrdinalIgnoreCase
-        ) -ge 0 -and
-        $commandLine -match $agentArgumentPattern
-      )
-      $legacyMatch = $false
-      foreach ($marker in @($Lane.legacy_process_markers)) {
-        if ($commandLine.IndexOf(
-            [string]$marker,
-            [System.StringComparison]::OrdinalIgnoreCase
-          ) -ge 0) {
-          $legacyMatch = $true
-          break
-        }
+      $hostKind = 'Auto'
+      if ($null -ne $_.PSObject.Properties['Name']) {
+        if ([string]$_.Name -ieq 'powershell.exe') { $hostKind = 'WindowsPowerShell' }
+        elseif ([string]$_.Name -ieq 'pwsh.exe') { $hostKind = 'Pwsh' }
+        else { return $false }
       }
-      $newMatch -or $legacyMatch
+      $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$_.CommandLine) -HostKind $hostKind
+      if ($null -eq $invocation) { return $false }
+      $leaf = ([string]$invocation.script_path -split '[\\/]')[-1]
+      if ($leaf -ieq 'start-wd-agent.ps1') {
+        for ($index = [int]$invocation.file_index + 2;
+             $index + 1 -lt $invocation.arguments.Count; $index++) {
+          if ([string]$invocation.arguments[$index] -ieq '-Agent' -and
+              [string]$invocation.arguments[$index + 1] -ieq [string]$Lane.agent) {
+            return $true
+          }
+        }
+        return $false
+      }
+      return $leaf -iin @($Lane.legacy_process_markers)
     }
   )
 }
@@ -2747,7 +2787,7 @@ foreach ($lane in @($manifest.lanes)) {
   if (-not $actualCommon.Equals($expectedCommonGit, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "lane '$($lane.agent)' is not a canonical project2 worktree"
   }
-  $live = @(Get-LaneProcesses -Lane $lane -Processes $processes)
+  $live = @(Get-LaneProcesses -Lane $lane -Processes $processes -AllowUnpinnedParser:($bundleMode -ceq 'source' -and $DryRun))
   if ($live.Count -gt 1) {
     throw "duplicate live lane '$($lane.agent)' PID(s): $(@($live.ProcessId) -join ',')"
   }

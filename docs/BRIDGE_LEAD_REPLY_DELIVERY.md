@@ -61,3 +61,5 @@ Deployment requires the existing exact-head tests and review gates. Resume Lead 
 its existing native thread to adopt the relay; restart the read-only viewer to adopt
 the Grok label. A live legacy Lead without the relay must not be silently accepted
 as continuously bridge-connected merely because its terminal is open.
+An explicitly anchored direct lane resume also exports that verified manifest hash
+to the native child, so pinned Python/Grok calls use the same bundle as the launcher.

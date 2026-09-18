@@ -248,3 +248,21 @@ def test_reply_observation_requires_bound_answer_and_honest_report_reference(tmp
         assert value['stage'] == stage and value['observation_source'] == 'agent_reported'
         assert value['request_id'] == request['request_id']
         assert value['reply_ts_utc'] == reply['ts_utc']
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_direct_lane_resume_exports_only_verified_anchor_to_child(tmp_path, ps):
+    manifest = tmp_path / 'deployment-manifest.json'
+    manifest.write_text('{"fixture":true}')
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'start-wd-agent.ps1', 'Set-WdLaneChildManifestAnchor')
+    script += f"""
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='old-wrapper-anchor'
+Set-WdLaneChildManifestAnchor -ManifestPath {q(manifest)} -ExpectedHash {q(digest.lower())}
+$good=$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+$rejected=$false
+try {{ Set-WdLaneChildManifestAnchor -ManifestPath {q(manifest)} -ExpectedHash ('F'*64) }} catch {{ $rejected=$true }}
+@{{good=$good;rejected=$rejected;after=$env:WD_REBOOT_EXPECTED_MANIFEST_HASH}}|ConvertTo-Json
+"""
+    value = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert value == dict(good=digest, rejected=True, after=digest)

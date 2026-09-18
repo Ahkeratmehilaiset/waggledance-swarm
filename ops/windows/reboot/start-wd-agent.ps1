@@ -1240,6 +1240,17 @@ function Resolve-WdLaneGitApplication {
   return $candidate
 }
 
+function Set-WdLaneChildManifestAnchor {
+  param([string]$ManifestPath, [string]$ExpectedHash)
+  if ($ExpectedHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash -cne $ExpectedHash.ToUpperInvariant()) {
+    throw 'cannot export an unverified lane manifest anchor'
+  }
+  # An explicit -ExpectedManifestHash must reach native child tool calls too.
+  # Machine wrappers normally set this already; direct guarded resumes may not.
+  $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$ExpectedHash.ToUpperInvariant()
+}
+
 function Invoke-CheckedGit {
   param(
     [Parameter(Mandatory)] [string] $Worktree,
@@ -1713,6 +1724,9 @@ if ($sourceTreeMode) {
     -Generation $bundleGeneration `
     -RuntimeRoot $runtimeRoot `
     -SkipImportSmoke:$DryRun
+  if (-not $DryRun) {
+    Set-WdLaneChildManifestAnchor -ManifestPath $deploymentManifest -ExpectedHash $script:LaneManifestAnchor
+  }
 }
 $targetState = $manifest.target_state
 if (

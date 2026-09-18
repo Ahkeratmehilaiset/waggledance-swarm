@@ -124,3 +124,20 @@ verify scheduler/watchers, and run live requests plus a revised same-task reques
 and a validated handoff. Preserve unknown effects across interrupted relays.
 Run `start-wd-all.ps1 -Auto` acceptance separately from `-DryRun`; neither a
 simulation nor a dry run proves an actual restore or physical reboot.
+
+Fleet discovery parses the actual PowerShell script and argument vector using
+the supervisor's parser. Script names inside a test's `-Command` payload do not
+identify a live lane. Missing process metadata is rechecked once: an exited
+process is harmless, while an unreadable live process or reused PID still blocks.
+
+The existing hashed, expiring external-session snapshot can also explicitly
+attribute a continuously spawning outside worker with `kind: native_parent`.
+That record uses the same exact `pid`, `name`, `process_start_utc`,
+`executable_path` and `command_line` fields for the parent, plus
+`native_child_name`, `native_child_executable_path` and a nonempty,
+whitespace-terminated `native_child_command_prefix`. Only direct children born
+after that exact parent, with that exact executable and command prefix, qualify.
+Managed lane ancestry takes precedence; this never adopts, stops or grants
+authority to an external process. A snapshot does not approve future parent
+lifetimes and still expires within 24 hours. Ordinary native session records
+remain bound to their individual process lifetime.

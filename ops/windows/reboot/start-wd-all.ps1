@@ -1605,9 +1605,22 @@ function Get-LaneProcesses {
   # sibling source. Import only these pure parser definitions into local scope.
   $parserTokens = $null
   $parserErrors = $null
-  $parserAst = [Management.Automation.Language.Parser]::ParseFile(
-    $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
-  )
+  $parserManifest = Join-Path (Split-Path -Parent $ParserSourcePath) 'deployment-manifest.json'
+  if (Test-Path -LiteralPath $parserManifest -PathType Leaf) {
+    $manifestBytes = Read-Utf8FleetSnapshot -Path $parserManifest
+    if ([string]$manifestBytes.Hash -cne [string]$bundleManifestAnchor) { throw 'fleet parser manifest anchor mismatch' }
+    $parserDeployment = $manifestBytes.Text | ConvertFrom-Json -ErrorAction Stop
+    $parserPin = $parserDeployment.files.PSObject.Properties['wd_supervisor.ps1']
+    $parserSource = Read-Utf8FleetSnapshot -Path $ParserSourcePath
+    if ($null -eq $parserPin -or [string]$parserSource.Hash -cne [string]$parserPin.Value) { throw 'fleet parser source hash mismatch' }
+    $parserAst = [Management.Automation.Language.Parser]::ParseInput(
+      [string]$parserSource.Text, [ref]$parserTokens, [ref]$parserErrors
+    )
+  } else {
+    $parserAst = [Management.Automation.Language.Parser]::ParseFile(
+      $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
+    )
+  }
   if ($parserErrors.Count) { throw 'fleet process parser source is invalid' }
   foreach ($name in @(
       'Initialize-WdSupervisorCommandLineParser',
@@ -1628,7 +1641,13 @@ function Get-LaneProcesses {
   }
   return @(
     $Processes | Where-Object {
-      $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$_.CommandLine)
+      $hostKind = 'Auto'
+      if ($null -ne $_.PSObject.Properties['Name']) {
+        if ([string]$_.Name -ieq 'powershell.exe') { $hostKind = 'WindowsPowerShell' }
+        elseif ([string]$_.Name -ieq 'pwsh.exe') { $hostKind = 'Pwsh' }
+        else { return $false }
+      }
+      $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$_.CommandLine) -HostKind $hostKind
       if ($null -eq $invocation) { return $false }
       $leaf = ([string]$invocation.script_path -split '[\\/]')[-1]
       if ($leaf -ieq 'start-wd-agent.ps1') {

@@ -86,6 +86,7 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 $eventsPath = Join-Path $bridgeRoot 'shared\events.jsonl'
 $wakePath = Join-Path $bridgeRoot ("wake_{0}" -f $Agent)
 . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
+. (Join-Path $PSScriptRoot 'BridgeTelemetry.ps1')
 
 function Test-IsTargeted {
     param(
@@ -154,7 +155,8 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     foreach ($ev in @($result.rows)) {
         if (Test-IsTargeted -Event $ev -WatchedAgent $Agent) {
             $shouldWake = $true
-            break
+            try { Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage watcher_seen -Request $ev -Target $Agent }
+            catch { Write-Warning ('Watcher latency observation unavailable: ' + $_.Exception.Message) }
         }
     }
     if ($shouldWake) {

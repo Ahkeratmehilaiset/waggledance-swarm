@@ -92,6 +92,19 @@ class BridgeEvent(BaseModel):
     pid: StrictInt
     cwd: StrictStr
     payload: Any = Field(default_factory=dict)
+    request_id: StrictStr | None = None
+    in_reply_to_request_id: StrictStr | None = None
+    request_digest: StrictStr | None = None
+    in_reply_to_request_digest: StrictStr | None = None
+    in_reply_to_requester: dict[str, StrictStr] | None = None
+    expected_responders: dict[str, dict[str, StrictStr]] | None = None
+
+    @field_validator("request_id", "in_reply_to_request_id")
+    @classmethod
+    def _request_identifier(cls, value: str | None) -> str | None:
+        if value and not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value):
+            raise ValueError("invalid request identifier")
+        return value
 
     @field_validator("ts_utc")
     @classmethod

@@ -25,6 +25,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
+from waggledance.core.bridge_workflow import worker_class  # noqa: E402
+from waggledance.core.bridge_request_contract import (  # noqa: E402
+    field as correlation_field, reply_matches_request, request_is_bound, request_key, request_content,
+)
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
 )
@@ -639,6 +643,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
             request=request,
         )
     if own_claims:
@@ -658,6 +663,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
     if suppression_reason is not None:
         report = _report(
@@ -675,6 +681,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
         report["suppression_reason"] = suppression_reason
         _assert_no_private_markers(report)
@@ -706,6 +713,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
             request=request,
         )
     wake_delivery_escalation = _wake_delivery_escalation_from_liveness(
@@ -735,6 +743,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
     if foreign_write_claims:
         claim = foreign_write_claims[0]
@@ -754,6 +763,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
     return _report(
         agent=agent,
@@ -770,6 +780,7 @@ def recommend_next_action(
         archived_stale_open_requests=archived_stale_open_requests,
         foreign_write_claims=foreign_write_claims,
         production_liveness=production_liveness,
+            now_utc=effective_now,
     )
 
 
@@ -786,8 +797,12 @@ def _open_requests_for_agent(
         if _is_request_like(event) and _addressed_to(event, agent)
     ]
     open_requests: list[Mapping[str, Any]] = []
+    # Repeated legacy wake rows are revisions of the same pending notification.
+    # Select the latest revision BEFORE applying closures (late v1 cannot erase v2).
+    request_events = requests
+    requests = _deduplicate_repeated_wake_requests(requests, agent=agent)
     for request in requests:
-        if _is_direct_rco_pass_block_request(agent=agent, event=request):
+        if _is_direct_rco_pass_block_request(agent=agent, event=request) and not request_is_bound(request):
             answered = _direct_rco_pass_block_request_closed(
                 request=request,
                 agent=agent,
@@ -799,24 +814,33 @@ def _open_requests_for_agent(
                 agent=agent,
                 closure_index=closure_index,
             )
-        if not answered and _idle_protocol_progressed_by_index(
+        if not answered and not request_is_bound(request) and _idle_protocol_progressed_by_index(
             request,
             idle_progress_index,
         ):
             answered = True
         if not answered:
             open_requests.append(request)
-    return open_requests
+    open_ids = {id(request) for request in open_requests}
+    open_wakes = {request_key(request, agent) for request in open_requests
+                  if _event_type(request) == "wake_request" or correlation_field(request, "request_id")}
+    return [request for request in request_events if id(request) in open_ids or (
+        (_event_type(request) == "wake_request" or correlation_field(request, "request_id"))
+        and request_key(request, agent) in open_wakes)]
 
 
 def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, str]]:
     """Return latest answer-like event timestamps by task and closing agent."""
-    closure_index: dict[str, dict[str, str]] = {}
+    closure_index: dict[str, Any] = {"_answers": {}, "_versions": {}}
     for event in events:
+        if _is_request_like(event):
+            version_key = (_event_agent(event), _task_id(event))
+            closure_index["_versions"].setdefault(version_key, set()).add(_event_ts(event))
         if not _is_answer_like(event):
             continue
+        closure_index["_answers"].setdefault(_task_id(event), []).append(event)
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
         task_id = _task_id(event)
@@ -846,6 +870,15 @@ def _request_closed_by_index(
 ) -> bool:
     task_id = _task_id(request)
     request_ts = _event_ts(request)
+    ambiguous = len(closure_index.get("_versions", {}).get(
+        (_event_agent(request), task_id), ())) > 1
+    if request_is_bound(request) or ambiguous:
+        return any(reply_matches_request(
+            request, answer, agent,
+            requester_closure=_event_agent(answer) == _event_agent(request)
+                and _is_explicit_requester_closure(answer),
+            ambiguous_legacy=ambiguous,
+        ) for answer in closure_index.get("_answers", {}).get(task_id, ()))
     closure_keys = []
     if task_id:
         closure_keys.append(_task_closure_key(task_id))
@@ -956,10 +989,11 @@ def _deduplicate_repeated_wake_requests(
     wake_request_indexes: dict[tuple[str, str, str, str], int] = {}
     target = agent.lower()
     for request in requests:
-        if _event_type(request) != "wake_request":
+        rid = correlation_field(request, "request_id")
+        if _event_type(request) != "wake_request" and not rid:
             deduped.append(request)
             continue
-        key = (
+        key = request_key(request, target) if rid else (
             _event_agent(request),
             _task_id(request),
             _event_status(request),
@@ -970,26 +1004,16 @@ def _deduplicate_repeated_wake_requests(
             wake_request_indexes[key] = len(deduped)
             deduped.append(request)
         else:
-            deduped[index] = request
+            if rid:
+                # Identical-ID retries retain their first durable occurrence.
+                # Reusing an ID for different content is a visible open conflict.
+                previous = deduped[index]
+                if (request_content(previous) != request_content(request) or
+                    correlation_field(previous, "request_digest") != correlation_field(request, "request_digest")):
+                    deduped[index] = dict(previous, request_binding_conflict=True)
+            else:
+                deduped[index] = request
     return deduped
-
-
-def _closes_request_for_agent(
-    *,
-    event: Mapping[str, Any],
-    request: Mapping[str, Any],
-    agent: str,
-) -> bool:
-    if _task_id(event) != _task_id(request):
-        return False
-    if _event_ts(event) <= _event_ts(request):
-        return False
-    if not _is_answer_like(event):
-        return False
-    event_agent = _event_agent(event)
-    return event_agent == agent.lower() or (
-        event_agent == _event_agent(request) and _is_explicit_requester_closure(event)
-    )
 
 
 def _split_fresh_and_stale_requests(
@@ -1168,6 +1192,8 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
         return False
     if _is_response_only_status(status):
         return False
+    if correlation_field(event, "request_id"):
+        return bool(_event_recipients(event))
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
     )
@@ -1542,6 +1568,8 @@ def _production_liveness_report(
         event_agent = _event_agent(event)
         if event_agent in PRODUCTION_LIVENESS_IGNORED_AGENTS:
             continue
+        if worker_class(event_agent) != 'active' and event_agent not in suppressed_lookup:
+            continue
         if _event_has_registered_identity_mismatch(event, identity_registry):
             continue
         state = states.setdefault(
@@ -1653,6 +1681,10 @@ def _production_liveness_report(
         report["suppressed_stalled_agents"] = suppressed_stalled
     if wake_delivery:
         report["wake_delivery"] = wake_delivery
+    report["roster"] = {
+        name: worker_class(name) for name in sorted({_event_agent(e) for e in events})
+        if name not in PRODUCTION_LIVENESS_IGNORED_AGENTS
+    }
     return report
 
 
@@ -2283,6 +2315,7 @@ def _report(
     foreign_write_claims: Sequence[Claim],
     stale_claims: Sequence[Claim],
     production_liveness: Mapping[str, Any],
+    now_utc: datetime,
     request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     stale_task_ids = _unique_task_ids(stale_open_requests)
@@ -2297,8 +2330,15 @@ def _report(
         "summary": summary,
         "active_claim_count": len(claims),
         "open_incoming_count": len(open_requests),
+        "open_incoming_event_count": open_request_event_count,
+        "open_incoming_task_count": len({_task_id(r) for r in open_requests}),
         "stale_incoming_count": len(stale_task_ids),
         "foreign_write_claim_count": len(foreign_write_claims),
+        "worker_class": worker_class(agent),
+        "oldest_open_request_age_seconds": max((
+            max(0.0, (now_utc - sent).total_seconds())
+            for r in open_requests if (sent := _parse_utc(_event_ts(r))) is not None
+        ), default=None),
     }
     if open_request_event_count != len(open_requests):
         payload["open_incoming_event_count"] = open_request_event_count
@@ -2358,6 +2398,8 @@ def _report(
             "status": _event_status(request),
             "ts_utc": _event_ts(request),
             "message": _message(request),
+            "request_id": correlation_field(request, "request_id"),
+            "request_binding_conflict": bool(request.get("request_binding_conflict")),
         }
         incoming.update(_event_metadata(request, known_agents=known_agents))
         payload["incoming"] = incoming

@@ -16,6 +16,8 @@ param(
     [string] $SessionId = '',
     [string[]] $Capabilities = @(),
     [string] $PayloadJson = '{}',
+    [ValidatePattern('^[A-Za-z0-9._:-]{0,128}$')] [string] $RequestId = '',
+    [string] $ReplyToEventJson = '',
     [switch] $ReceiptJson
 )
 
@@ -55,6 +57,7 @@ Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
 Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 Assert-NoPrivateMarker -Label 'payload' -Value $PayloadJson
+Assert-NoPrivateMarker -Label 'reply binding' -Value $ReplyToEventJson
 
 function Write-BridgeWarning {
     param([Parameter(Mandatory)] [string] $Message)
@@ -524,6 +527,61 @@ if ($AgentUuid) { $event['agent_uuid'] = $AgentUuid }
 if ($SessionId) { $event['session_id'] = $SessionId }
 if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 
+# A request's identity is frozen before canonical append / WAL / outbox copies.
+# Replies consume the full request, never the lossy next-action summary.
+. (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
+. (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+$bindingWarnings = @()
+if ($ReplyToEventJson) {
+    if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
+    $replyTo = $ReplyToEventJson | ConvertFrom-Json -ErrorAction Stop
+    $replyId = Get-BridgeContractField $replyTo 'request_id'
+    if ($replyId -isnot [string] -or $replyId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'ReplyToEventJson requires a valid request_id' }
+    if ([string]$replyTo.task_id -cne $TaskId -or -not (Test-BridgeAddressedTo $replyTo $Agent) -or
+        -not (Test-BridgeAddressedTo ([pscustomobject]$event) ([string]$replyTo.agent))) {
+        throw 'Reply task, sender or recipient does not match the full request'
+    }
+    $event['in_reply_to_request_id'] = $replyId
+    $context = [ordered]@{}
+    foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
+        $value = Get-BridgeContractField $replyTo $key
+        if ($value) { $context[$key] = $value }
+    }
+    $event['in_reply_to_requester'] = [pscustomobject]$context
+    $digest = Get-BridgeContractField $replyTo 'request_digest'
+    if ($digest) { $event['in_reply_to_request_digest'] = $digest }
+    if (-not (Test-BridgeReplyBinding $replyTo ([pscustomobject]$event) $Agent)) { throw 'Reply identity or payload contradicts the request binding' }
+} elseif ($RequestId -or $Type -ceq 'wake_request' -or (Test-BridgeRequestLikeEvent ([pscustomobject]$event))) {
+    $event['request_id'] = if ($RequestId) { $RequestId } else { [guid]::NewGuid().ToString('D') }
+    $identities = [ordered]@{}
+    foreach ($target in @(Get-BridgeEventTargets ([pscustomobject]$event))) {
+        if ($target -cnotmatch '^[a-z][a-z0-9_-]{1,32}$') { continue }
+        $last = Join-Path $sharedDir ("last_{0}.json" -f $target)
+        if (Test-Path -LiteralPath $last -PathType Leaf) {
+            $seen = Get-Content -LiteralPath $last -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            $identity = [ordered]@{}
+            foreach ($key in @('agent_uuid','session_id','run_id')) {
+                $value = Get-BridgeContractField $seen $key
+                if ($value) { $identity[$key] = $value }
+            }
+            if ([string]$seen.agent -ceq $target -and $identity.Count -eq 3) { $identities[$target] = [pscustomobject]$identity }
+        }
+    }
+    $targets = @(Get-BridgeEventTargets ([pscustomobject]$event))
+    $fleetTargets = @($targets | Where-Object { $_ -cin @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') })
+    if ($identities.Count -gt 0 -or $fleetTargets.Count -gt 0) {
+        $event['expected_responders'] = [pscustomobject]$identities
+        $missing = @($targets | Where-Object { -not $identities.Contains($_) })
+        if ($missing.Count) {
+            $bindingWarnings += 'Responder identity unavailable at request creation: ' + ($missing -join ', ') + '. Missing targets cannot close this request; reissue a new request_id after verifying their live identity.'
+        }
+    }
+    $identityBytes = [Text.Encoding]::UTF8.GetBytes((Get-BridgeRequestContent ([pscustomobject]$event)))
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $event['request_digest'] = [BitConverter]::ToString($hasher.ComputeHash($identityBytes)).Replace('-','').ToLowerInvariant() }
+    finally { $hasher.Dispose() }
+}
+
 function Get-BridgeTargetKey {
     param([AllowNull()] [string] $Targets)
     $targetList = @(Get-BridgeTargetList -Targets $Targets)
@@ -652,7 +710,7 @@ function New-BridgeDeliveryReceipt {
         retained_wal_sha256 = if ($RetainedWalSha256) { $RetainedWalSha256 } else { $null }
         outbox_written = $false
         last_file_written = $false
-        warning_messages = @($WarningMessages)
+        warning_messages = @($WarningMessages) + @($bindingWarnings)
     }
 }
 
@@ -660,6 +718,19 @@ function Write-BridgeEventResult {
     param([Parameter(Mandatory)] $Delivery)
 
     $event['_bridge_delivery'] = $Delivery
+    if ($Delivery.canonical_durable -eq $true) {
+        $Delivery | Add-Member -Force NoteProperty observed_durable_at_utc ([datetime]::UtcNow.ToString('o'))
+        try {
+            . (Join-Path $PSScriptRoot 'BridgeTelemetry.ps1')
+            if ($event.Contains('request_id')) {
+                foreach ($target in @(([string]$event.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})) {
+                    Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage request_durable -Request ([pscustomobject]$event) -Target $target
+                }
+            } elseif ($ReplyToEventJson -and (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
+                Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage answer_durable -Request $replyTo -Target $Agent
+            }
+        } catch { Write-BridgeWarning ('Latency observation unavailable: ' + $_.Exception.Message) }
+    }
     if ($ReceiptJson) {
         $event | ConvertTo-Json -Depth 16 -Compress
     } else {

@@ -1931,6 +1931,10 @@ $startupPrompt += (
   'Read-AgentBridge.ps1 -Agent ' + $Agent + ' -Raw -NoAckReceived -NoContinuity -Tail 1200. ' +
   'Do not substitute direct Get-Content, Select-String or grep of events.jsonl for that reader. ' +
   'If the required event is outside the tail, increase the bounded tail or use -Tail 0. ' +
+  'For a request with request_id, start with pinned Start-BridgeRequestTurn.ps1 -Agent ' + $Agent + ' -RequestEventJson ($request | ConvertTo-Json -Depth 32 -Compress). ' +
+  'Keep that full verified request object. Publish the substantive reply with pinned Write-AgentEvent.ps1 -ReplyToEventJson ($request | ConvertTo-Json -Depth 32 -Compress), exact task_id and recipient, and your current lane identity. ' +
+  'ACKs and queue receipts are not task completion. New request revisions need new request_id values; retries keep the exact ID and content. ' +
+  'Lead may prepare role-specific requests and validate handoffs with the pinned tools/bridge_workflow.py prepare/handoff CLI; it only prepares data under existing authorization and never sends or grants authority. ' +
   'If the reader fails, report the concrete blocker; do not invent missing fields or silently bypass validation.'
 )
 if ($RecoverInteractive) {

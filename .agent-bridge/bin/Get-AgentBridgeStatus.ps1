@@ -31,6 +31,8 @@ if (Test-Path -LiteralPath $staleSweep -PathType Leaf) {
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 $classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
+. (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+. (Join-Path $PSScriptRoot 'BridgeRoster.ps1')
 if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
 }
@@ -84,6 +86,7 @@ foreach ($agent in $agents) {
     $lastEvent = @($agentEvents | Sort-Object ts_utc | Select-Object -Last 1)
     $contributions += [pscustomobject]@{
         agent          = $agent
+        worker_class   = Get-BridgeWorkerClass $agent
         events         = $agentEvents.Count
         active_claims  = $agentClaims.Count
         done_events    = @($agentEvents | Where-Object { [string]$_.type -eq 'done' }).Count
@@ -97,10 +100,17 @@ foreach ($agent in $agents) {
     }
 }
 
-$latestRequests = @{}
+$latestRequests = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($event in @($events | Where-Object { Test-BridgeRequestLikeEvent -Event $_ } | Sort-Object ts_utc)) {
     foreach ($target in @(Get-BridgeEventTargets -Event $event)) {
-        $key = "{0}|{1}" -f $target, [string]$event.task_id
+        $key = Get-BridgeRequestViewKey $event $target
+        if ((Get-BridgeContractField $event 'request_id') -and $latestRequests.ContainsKey($key)) {
+            if ((Get-BridgeRequestContent $latestRequests[$key].event) -cne (Get-BridgeRequestContent $event) -or
+                (Get-BridgeContractField $latestRequests[$key].event 'request_digest') -cne (Get-BridgeContractField $event 'request_digest')) {
+                $latestRequests[$key].event | Add-Member -Force NoteProperty request_binding_conflict $true
+            }
+            continue
+        }
         $latestRequests[$key] = [pscustomobject]@{
             target = $target
             event = $event
@@ -114,13 +124,15 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
     $request = $requestInfo.event
     $target = [string]$requestInfo.target
     $taskId = [string]$request.task_id
+    $ambiguous = @($events | Where-Object { $_.agent -ceq $request.agent -and $_.task_id -ceq $taskId -and (Test-BridgeRequestLikeEvent $_) } | Select-Object -ExpandProperty ts_utc -Unique).Count -gt 1
     $answer = @(
         $events |
             Where-Object {
                 [string]$_.agent -eq $target -and
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.ts_utc -gt [string]$request.ts_utc -and
-                (Test-BridgeAnswerEvent -Event $_)
+                (Test-BridgeAnswerEvent -Event $_) -and
+                (Test-BridgeReplyBinding $request $_ $target -AmbiguousLegacy $ambiguous)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1
@@ -132,7 +144,7 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.type -eq 'message' -and
                 [string]$_.status -eq 'received' -and
-                [string]$_.ts_utc -gt [string]$request.ts_utc
+                (Test-BridgeReplyBinding $request $_ $target -AmbiguousLegacy $ambiguous)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1
@@ -143,7 +155,8 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
                 [string]$_.agent -eq [string]$request.agent -and
                 [string]$_.task_id -eq $taskId -and
                 [string]$_.ts_utc -gt [string]$request.ts_utc -and
-                (Test-BridgeRequesterClosureEvent -Event $_)
+                (Test-BridgeRequesterClosureEvent -Event $_) -and
+                (Test-BridgeReplyBinding $request $_ $target -RequesterClosure $true -AmbiguousLegacy $ambiguous)
             } |
             Sort-Object ts_utc |
             Select-Object -Last 1
@@ -161,6 +174,8 @@ foreach ($key in ($latestRequests.Keys | Sort-Object)) {
         to        = $target
         from      = [string]$request.agent
         task_id   = $taskId
+        request_id = Get-BridgeContractField $request 'request_id'
+        age_seconds = [math]::Max(0, ([datetime]::UtcNow - (ConvertTo-BridgeContractTime $request.ts_utc)).TotalSeconds)
         request   = ("{0}/{1}" -f [string]$request.type, [string]$request.status)
         ts_utc    = [string]$request.ts_utc
         message   = [string]$request.message
@@ -201,8 +216,15 @@ foreach ($agent in $agents) {
         $state = 'idle'
         $next = 'claim scout, review, or unblocked implementation task'
     }
+    $workerClass = Get-BridgeWorkerClass $agent
+    if ($workerClass -eq 'on_demand' -and $pendingForAgent.Count -eq 0) {
+        $state = 'on-demand-idle'; $next = 'Use only the existing hourly-budgeted Grok helper when requested'
+    } elseif ($workerClass -eq 'historical') {
+        $state = 'historical'; $next = 'Not an active fleet worker; inspect explicit outstanding requests separately'
+    }
     $idleSignals += [pscustomobject]@{
         agent = $agent
+        worker_class = $workerClass
         state = $state
         next  = $next
     }

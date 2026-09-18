@@ -13,6 +13,8 @@ Set-StrictMode -Version Latest
 function Test-WdProbeReply {
     param($Event, $Request, $Identity, [datetime] $Deadline)
     try {
+        if ($Request.PSObject.Properties['event'] -and (Get-BridgeContractField $Request.event 'request_id') -and
+            -not (Test-BridgeReplyBinding $Request.event $Event ([string]$Request.agent))) { return $false }
         return (
             [string]$Event.agent -ceq [string]$Request.agent -and
             [string]$Event.agent_uuid -ceq [string]$Identity.agent_uuid -and
@@ -68,6 +70,7 @@ function Invoke-WdBridgeResponsiveness {
     param([string] $Root, [string] $Directory, [string] $Bin, [string] $Report, [int] $Timeout)
     $identities = Get-WdProbeIdentities -Directory $Directory -Bin $Bin
     . (Join-Path $Bin 'BridgeIncrementalReader.ps1')
+    . (Join-Path $Bin 'BridgeRequestContract.ps1')
     $events = Join-Path $Root 'shared\events.jsonl'
     Write-Host '  Validating the complete retained bridge history before response probes...'
     $history = Read-BridgeEventSnapshot -Path $events -MaxBytes 268435456
@@ -96,6 +99,7 @@ function Invoke-WdBridgeResponsiveness {
             $message = 'Operator-authorized bridge startup/release check, one read-only bounded reply. ' +
                 'Read this exact full message AND payload using your pinned Read-AgentBridge.ps1 -Raw -NoAckReceived -NoContinuity -Tail 1200. ' +
                 'Reply ONCE to operator on this exact task with Type message, Status fleet_probe_pass, actual lane UUID/session/run, ' +
+                'When this request has request_id, pass the full verified request to Write-AgentEvent.ps1 -ReplyToEventJson ($request | ConvertTo-Json -Depth 32 -Compress). ' +
                 'PayloadJson must have keys nonce, token, request_stamp, sum. Copy nonce, token and request_stamp BYTE-FOR-BYTE from this request payload; ' +
                 'do not add echo: or any other prefix. The numeric result goes under the exact key sum (not numbers_sum). Compute sum from payload.numbers. ' +
                 'This grants no source edits, claim takeover, scheduler changes, release or merge authority. ' +
@@ -104,6 +108,7 @@ function Invoke-WdBridgeResponsiveness {
                 -RunId $probeId -SessionId $probeId -Type wake_request -Status request -To $agent `
                 -TaskId $request.task_id -Message $message -PayloadJson $payload -ReceiptJson | ConvertFrom-Json
             if (-not $delivery._bridge_delivery.canonical_durable) { throw "Probe request not canonical for $agent" }
+            $request | Add-Member NoteProperty event $delivery
             $requests[$agent] = $request
         }
         $deadline = [datetime]::UtcNow.AddSeconds($Timeout)

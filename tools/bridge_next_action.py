@@ -1016,28 +1016,6 @@ def _deduplicate_repeated_wake_requests(
     return deduped
 
 
-def _closes_request_for_agent(
-    *,
-    event: Mapping[str, Any],
-    request: Mapping[str, Any],
-    agent: str,
-) -> bool:
-    if _task_id(event) != _task_id(request):
-        return False
-    if _event_ts(event) <= _event_ts(request):
-        return False
-    if not _is_answer_like(event):
-        return False
-    if request_is_bound(request):
-        return reply_matches_request(request, event, agent,
-            requester_closure=_event_agent(event) == _event_agent(request)
-                and _is_explicit_requester_closure(event))
-    event_agent = _event_agent(event)
-    return event_agent == agent.lower() or (
-        event_agent == _event_agent(request) and _is_explicit_requester_closure(event)
-    )
-
-
 def _split_fresh_and_stale_requests(
     requests: Sequence[Mapping[str, Any]],
     *,

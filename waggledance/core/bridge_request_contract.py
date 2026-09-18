@@ -98,6 +98,10 @@ def reply_matches_request(
     if not isinstance(expected_identity, Mapping):
         return False
     for key in ("agent_uuid", "session_id", "run_id"):
+        if not requester_closure and field(request, "expected_responders") is not None and (
+            not isinstance(expected_identity.get(key), str) or not expected_identity[key]
+        ):
+            return False
         if expected_identity.get(key) and reply.get(key) != expected_identity[key]:
             return False
     return True

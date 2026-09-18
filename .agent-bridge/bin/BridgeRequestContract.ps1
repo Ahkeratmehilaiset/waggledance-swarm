@@ -146,11 +146,14 @@ function Test-BridgeReplyBinding {
             $property = $expected.PSObject.Properties[$Target]
             if ($null -eq $property) { return $false }
             $identity = $property.Value
+            if ($null -eq $identity) { return $false }
         }
     }
     if ($null -ne $identity) {
+        if ($identity -isnot [System.Collections.IDictionary] -and $identity.GetType() -ne [System.Management.Automation.PSCustomObject]) { return $false }
         foreach ($key in @('agent_uuid','session_id','run_id')) {
             $value = Get-BridgeContractField $identity $key
+            if (-not $RequesterClosure -and ($value -isnot [string] -or -not $value)) { return $false }
             if ($value -and (Get-BridgeContractField $Reply $key) -cne $value) { return $false }
         }
     }

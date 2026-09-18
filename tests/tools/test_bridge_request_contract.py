@@ -83,7 +83,8 @@ def test_explicit_id_also_binds_requester_and_responder_identity(case):
 
 @pytest.mark.skipif(os.name != 'nt', reason='canonical append is Windows only')
 @pytest.mark.parametrize('engine', SHELLS)
-def test_real_writer_persists_id_and_full_request_reply_binding(tmp_path, engine):
+@pytest.mark.parametrize('partial_target', [False, True])
+def test_real_writer_persists_id_and_full_request_reply_binding(tmp_path, engine, partial_target):
     CODEX_TOOLS_UUID = json.loads((ROOT / 'configs/bridge_identity_registry.json').read_text())['identities']['codex-tools-1']
     env = {k:v for k,v in os.environ.items() if not k.startswith('AGENT_BRIDGE_')}
     env['AGENT_BRIDGE_RUNTIME_ROOT'] = str(tmp_path)
@@ -97,15 +98,21 @@ def test_real_writer_persists_id_and_full_request_reply_binding(tmp_path, engine
                               env=env, capture_output=True, text=True, timeout=30)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         return json.loads((shared / 'events.jsonl').read_text().splitlines()[-1])
-    request = write('-Agent','operator','-Type','wake_request','-Status','request','-To','codex-tools-1',
+    request = write('-Agent','operator','-Type','message','-Status','handoff_ready','-To',
+                    'codex-tools-1,fable-5' if partial_target else 'codex-tools-1',
                     '-SessionId','operator-session','-RunId','operator-run')
     assert request['request_id'] and request['request_digest']
+    assert 'codex-tools-1' in request['expected_responders']
+    assert 'fable-5' not in request['expected_responders']
     reply = write('-Agent','codex-tools-1','-AgentUuid',CODEX_TOOLS_UUID,'-SessionId','tools-session','-RunId','tools-run',
                   '-Type','message','-Status','answered','-To','operator','-ReplyToEventJson',json.dumps(request))
     assert reply_matches_request(request, reply, 'codex-tools-1')
     assert reply['in_reply_to_request_id'] == request['request_id']
     observations = [json.loads(p.read_text()) for p in (shared / 'telemetry').glob('*.json')]
     assert {o['stage'] for o in observations} == {'request_durable', 'answer_durable'}
+    if partial_target:
+        foreign = dict(reply, agent='fable-5')
+        assert not reply_matches_request(request, foreign, 'fable-5')
 
 
 @pytest.mark.parametrize('engine', ['python'] + SHELLS)
@@ -145,13 +152,23 @@ def test_modern_request_ids_keep_revisions_separate(tmp_path, engine, case):
 
 
 @pytest.mark.parametrize('engine', SHELLS)
-def test_status_and_continuity_do_not_hide_new_request_after_late_reply(tmp_path, engine):
+@pytest.mark.parametrize('case', ['late_old', 'conflicting_digest'])
+def test_status_and_continuity_do_not_hide_new_request_after_late_reply(tmp_path, engine, case):
     first, newer, reply = events()
     first['request_id'], newer['request_id'] = 'request-v1', 'request-v2'
     reply.update(in_reply_to_request_id='request-v1',
                  in_reply_to_requester={k:first[k] for k in ('agent','agent_uuid','session_id','run_id')})
     reply['payload'] = {'nonce':'v1', 'request_ts_utc':first['ts_utc']}
-    rows = [dict(dict(severity='', paths=[], write_scope=[], cwd='', pid=0, message=''), **r) for r in (first,newer,reply)]
+    events_in_order = [first,newer,reply]
+    if case == 'conflicting_digest':
+        newer['request_digest'] = 'digest-v2'
+        answer2 = deepcopy(reply)
+        answer2.update(in_reply_to_request_id='request-v2', in_reply_to_request_digest='digest-v2',
+                       payload={'nonce':'v2','request_ts_utc':newer['ts_utc']})
+        retry = deepcopy(newer)
+        retry.update(ts_utc='2026-09-18T07:30:03Z', request_digest='changed-digest')
+        events_in_order += [answer2, retry]
+    rows = [dict(dict(severity='', paths=[], write_scope=[], cwd='', pid=0, message=''), **r) for r in events_in_order]
     (tmp_path / 'shared').mkdir()
     (tmp_path / 'shared/events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
     env = dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path))
@@ -165,3 +182,37 @@ def test_status_and_continuity_do_not_hide_new_request_after_late_reply(tmp_path
             report = json.loads(proc.stdout)
             assert 'request-v2' in proc.stdout
             assert 'waiting' in proc.stdout
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+def test_explicit_id_does_not_turn_closed_notification_into_new_work(tmp_path, engine):
+    first, _, _ = events()
+    first.update(request_id='closed-notification', status='closed')
+    if engine == 'python':
+        result = recommend_next_action(agent='codex-tools-1', events=[first], claims=[])
+    else:
+        (tmp_path / 'shared').mkdir()
+        (tmp_path / 'shared/events.jsonl').write_text(json.dumps(first)+'\n')
+        proc = subprocess.run([engine,'-NoProfile','-File',str(ROOT / '.agent-bridge/bin/Get-BridgeNextAction.ps1'),
+                               '-Agent','codex-tools-1','-Now','2026-09-18T07:31:00Z','-Json'],
+                              env=dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path)),
+                              capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stderr
+        result = json.loads(proc.stdout)
+    assert result['open_incoming_count'] == 0
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+@pytest.mark.parametrize('identity', [None, 'not-an-object', 42, [], {}, {'session_id':'tools-session'}])
+def test_malformed_responder_identity_fails_closed(tmp_path, engine, identity):
+    _, request, reply = events()
+    request['payload']['expected_responders']['codex-tools-1'] = identity
+    if engine == 'python':
+        assert not reply_matches_request(request, reply, 'codex-tools-1')
+    else:
+        fixture = tmp_path / 'events.json'
+        fixture.write_text(json.dumps([request, reply]))
+        script = f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; $rows=Get-Content -LiteralPath '{fixture}' -Raw | ConvertFrom-Json; Test-BridgeReplyBinding $rows[0] $rows[1] 'codex-tools-1' | ConvertTo-Json"
+        proc = subprocess.run([engine,'-NoProfile','-Command',script], capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout) is False

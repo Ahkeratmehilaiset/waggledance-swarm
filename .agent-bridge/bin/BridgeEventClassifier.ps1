@@ -117,13 +117,16 @@ function Test-BridgeRequestLikeEvent {
         return $false
     }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
-    if ($Event.PSObject.Properties['request_id'] -and $Event.request_id) { return $true }
+    if ($Event.PSObject.Properties['request_id'] -and $Event.request_id) {
+        if (Test-BridgeRequesterClosureStatus $status) { return $false }
+        return $true
+    }
 
     $requestTypes = @('message','handoff','blocked','finding','decision','done','wake_request')
     $requestStatuses = @(
         'request','ready','blocked','open','proposal',
         'fix-pushed','fix-branch-pushed','pushed',
-        'ready_for_implementation',
+        'ready_for_implementation','handoff_ready',
         'rco_requested','review_requested','changes_requested'
     )
 

@@ -22,6 +22,12 @@ Retain the returned object as `$request`, then:
 Use the lane's actual UUID/session/run metadata, inherited from its launch.
 The writer copies `in_reply_to_request_id`, the request digest and the requester
 identity. It rejects contradictory responder identity or correlation fields.
+For the five fleet lanes, missing identity snapshots remain unresolved and are
+reported in the delivery receipt; a missing target cannot close the request.
+Known targets in a multi-target request keep their identity checks even when
+another target is missing. Verify that missing lane and issue a new request ID.
+Unregistered legacy recipients without any identity snapshots retain legacy
+identity handling; do not use those recipients for a fleet completion gate.
 Readers require that binding before treating an answer as completion. A received
 ACK, a wake notification and a successful queue command are not completion.
 Legacy nonce/revision/timestamp bindings remain enforced. An ambiguous bare
@@ -91,6 +97,9 @@ turn start and substantive answer persistence. Tools passes the actual
 `delivery_id` to the turn-start helper; this joins its queue observation to the
 request. A Claude Monitor print is not a model turn or queue acceptance, so its
 unobserved relay stage stays unknown.
+The turn-start marker is the agent's first explicit tool observation; the model
+may have started reasoning earlier. Durations between these observations are
+not engine timings and must not be described as pure scheduling or thinking time.
 
 ```powershell
 & $env:WD_BRIDGE_PYTHON_WRAPPER tools/bridge_workflow.py latency `

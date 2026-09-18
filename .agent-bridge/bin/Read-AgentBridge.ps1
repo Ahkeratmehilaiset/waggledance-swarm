@@ -471,7 +471,8 @@ if ($Agent -and -not $NoContinuity) {
             foreach ($r in $sentRequests) {
                 $sentKey = Get-BridgeRequestViewKey $r.event $r.target
                 if ((Get-BridgeContractField $r.event 'request_id') -and $sentLatestByTask.ContainsKey($sentKey)) {
-                    if ((Get-BridgeRequestContent $sentLatestByTask[$sentKey].event) -cne (Get-BridgeRequestContent $r.event)) {
+                    if ((Get-BridgeRequestContent $sentLatestByTask[$sentKey].event) -cne (Get-BridgeRequestContent $r.event) -or
+                        (Get-BridgeContractField $sentLatestByTask[$sentKey].event 'request_digest') -cne (Get-BridgeContractField $r.event 'request_digest')) {
                         $sentLatestByTask[$sentKey].event | Add-Member -Force NoteProperty request_binding_conflict $true
                     }
                 } else { $sentLatestByTask[$sentKey] = $r }

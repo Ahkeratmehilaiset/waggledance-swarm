@@ -114,4 +114,5 @@ def latency_report(request: Mapping[str, Any], observations: Sequence[Mapping[st
             'stages': {k: v.isoformat() if v else None for k, v in times.items()},
             'seconds': intervals, 'unknown_stages': [k for k, v in times.items() if v is None],
             'invalid_order': invalid, 'task_completion_verified': False,
+            'timing_basis': 'local observations; model_turn_started is the first agent-reported marker, not engine timing',
             'authority_effect': 'none'}

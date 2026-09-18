@@ -531,6 +531,7 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 # Replies consume the full request, never the lossy next-action summary.
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+$bindingWarnings = @()
 if ($ReplyToEventJson) {
     if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
     $replyTo = $ReplyToEventJson | ConvertFrom-Json -ErrorAction Stop
@@ -566,8 +567,14 @@ if ($ReplyToEventJson) {
             if ([string]$seen.agent -ceq $target -and $identity.Count -eq 3) { $identities[$target] = [pscustomobject]$identity }
         }
     }
-    if ($identities.Count -eq @(Get-BridgeEventTargets ([pscustomobject]$event)).Count -and $identities.Count -gt 0) {
+    $targets = @(Get-BridgeEventTargets ([pscustomobject]$event))
+    $fleetTargets = @($targets | Where-Object { $_ -cin @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') })
+    if ($identities.Count -gt 0 -or $fleetTargets.Count -gt 0) {
         $event['expected_responders'] = [pscustomobject]$identities
+        $missing = @($targets | Where-Object { -not $identities.Contains($_) })
+        if ($missing.Count) {
+            $bindingWarnings += 'Responder identity unavailable at request creation: ' + ($missing -join ', ') + '. Missing targets cannot close this request; reissue a new request_id after verifying their live identity.'
+        }
     }
     $identityBytes = [Text.Encoding]::UTF8.GetBytes((Get-BridgeRequestContent ([pscustomobject]$event)))
     $hasher = [Security.Cryptography.SHA256]::Create()
@@ -703,7 +710,7 @@ function New-BridgeDeliveryReceipt {
         retained_wal_sha256 = if ($RetainedWalSha256) { $RetainedWalSha256 } else { $null }
         outbox_written = $false
         last_file_written = $false
-        warning_messages = @($WarningMessages)
+        warning_messages = @($WarningMessages) + @($bindingWarnings)
     }
 }
 

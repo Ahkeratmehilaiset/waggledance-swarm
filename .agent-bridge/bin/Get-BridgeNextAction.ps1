@@ -228,6 +228,7 @@ $staleOpenRequests = New-Object System.Collections.Generic.List[object]
 $staleByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $staleRequests) {
     $key = Get-BridgeRequestViewKey $req
+    if (-not (Get-BridgeContractField $req 'request_id') -and $req.type -ceq 'wake_request') { $key += '|' + [string]$req.status }
     Set-BridgeRequestViewEntry $staleByKey $key $req
 }
 foreach ($req in @($staleByKey.Values)) {
@@ -285,7 +286,8 @@ $result = [pscustomobject]@{
     oldest_open_request_age_seconds = if ($openRequests.Count) {
         @($openRequests | ForEach-Object { [math]::Max(0, ($nowUtc - (ConvertTo-BridgeContractTime $_.ts_utc)).TotalSeconds) } | Measure-Object -Maximum)[0].Maximum
     } else { $null }
-    stale_incoming_count = $staleOpenRequests.Count
+    stale_incoming_count = @($staleOpenRequests | Select-Object -ExpandProperty task_id -Unique).Count
+    stale_incoming_request_count = $staleOpenRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
 }
 if ($kind -eq 'answer_incoming') {

@@ -100,6 +100,7 @@ function Get-WdStatusTurnExecution {
         reason = 'process_query_unavailable'; observed_pid = $null
         observed_worktree = $null; recorded_generation = $null
         handshake_path = $null; turn_execution_verified = $false
+        relay_status = 'unknown'; relay_error = $null
     }
     if (-not $QueryAvailable) { return $result }
     if ($Definition.agent -ceq 'codex-tools-1') {
@@ -184,6 +185,13 @@ function Get-WdStatusTurnExecution {
             if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
                 $result.external_wake_support='native_queue_unverified'
                 $ready=Read-WdStatusRecord $readyPath
+                # Expose negative transport evidence even when readiness fails.
+                if ($ready.schema -ceq 'wd.native-lead-ready.v1' -and $ready.agent -ceq $Definition.agent -and
+                    $ready.generation -ceq $record.bundle_generation -and $ready.session_id -ceq $record.session_id -and
+                    [int]$ready.relay_pid -eq [int]$record.pid) {
+                    $result.relay_status=[string]$ready.status
+                    $result.relay_error=Get-WdStatusProperty $ready 'error'
+                }
                 $native=@($Processes | Where-Object {
                     [int]$_.ProcessId -eq [int]$ready.native_pid -and [int]$_.ParentProcessId -eq [int]$record.pid -and
                     [string]$_.Name -ieq 'codex.exe'
@@ -212,6 +220,47 @@ function ConvertTo-WdStatusUtc {
     if ($Value -is [datetime]) { return ([DateTimeOffset]$Value).ToUniversalTime() }
     if ([string]$Value -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$') { throw 'timestamp requires explicit timezone' }
     return [DateTimeOffset]::Parse([string]$Value,[Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
+}
+
+function Get-WdStatusClaims {
+    param([string]$Root, [DateTimeOffset]$Now)
+    $active=[Collections.Generic.List[object]]::new()
+    $errors=[Collections.Generic.List[string]]::new()
+    $directory=Join-Path $Root 'work_queue/claims'
+    if (Test-Path -LiteralPath $directory) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File)) {
+            try {
+                $claim=Read-WdStatusRecord $file.FullName
+                if (Get-WdStatusProperty $claim 'released_at_utc') { continue }
+                if ((Get-WdStatusProperty $claim 'mode') -ceq 'read') { continue }
+                if ((Get-WdStatusProperty $claim 'mode') -cne 'write') { throw 'unknown claim mode' }
+                $stamp=Get-WdStatusProperty $claim 'last_heartbeat_utc'
+                if (-not $stamp) { $stamp=Get-WdStatusProperty $claim 'claimed_at_utc' }
+                $heartbeat=ConvertTo-WdStatusUtc $stamp
+                if ($heartbeat -gt $Now.AddSeconds(5)) { throw 'future claim heartbeat' }
+                $lease=300
+                $value=Get-WdStatusProperty $claim 'lease_seconds'
+                if ($null -ne $value -and (-not [int]::TryParse([string]$value,[ref]$lease) -or $lease -le 0)) { throw 'invalid claim lease' }
+                $expires=$heartbeat.AddSeconds($lease)
+                $explicit=Get-WdStatusProperty $claim 'claim_lease_expires_utc'
+                if ($explicit) { $specified=ConvertTo-WdStatusUtc $explicit; if ($specified -gt $expires) { $expires=$specified } }
+                if ($Now -ge $expires) { continue }
+                if (-not $claim.agent -or -not $claim.cwd) { throw 'missing claim owner or cwd' }
+                $resources=@(Resolve-BridgeResourceScopes -Scopes @($claim.write_scope) -Worktree $claim.cwd -BridgeRoot $Root)
+                $active.Add([pscustomobject]@{agent=$claim.agent;task_id=$claim.task_id;resources=$resources;expires_at_utc=$expires.ToString('o')})
+            } catch { $errors.Add($file.Name + ': ' + $_.Exception.Message) }
+        }
+    }
+    $collisions=@(for ($i=0; $i -lt $active.Count; $i++) {
+        for ($j=$i+1; $j -lt $active.Count; $j++) {
+            if ($active[$i].agent -cne $active[$j].agent -and
+                (Test-BridgeResourceOverlap $active[$i].resources $active[$j].resources)) {
+                [pscustomobject]@{agents=@($active[$i].agent,$active[$j].agent);resources=@($active[$i].resources,$active[$j].resources)}
+            }
+        }
+    })
+    [pscustomobject]@{status=$(if ($errors.Count) {'unknown'} else {'observed'});source_domain='active_claim_files';
+        observed_at_utc=$Now.ToString('o');active_claims=@($active);errors=@($errors);collisions=$collisions}
 }
 
 function Get-WdStatusToolsConversationRuntime {
@@ -511,6 +560,22 @@ if (@($definitions.agent | Select-Object -Unique).Count -ne 5) {
 
 $runtimeRoot = [IO.Path]::GetFullPath([string]$manifest.runtime_root)
 $now = [DateTimeOffset]::UtcNow
+$helperBin=Join-Path $PSScriptRoot 'tools-bootstrap/.agent-bridge/bin'
+if (-not (Test-Path -LiteralPath $helperBin)) { $helperBin=Join-Path $PSScriptRoot '../../../.agent-bridge/bin' }
+if (-not (Test-Path -LiteralPath $helperBin)) { $helperBin=Join-Path (Split-Path -Parent $manifestFull) 'tools-bootstrap/.agent-bridge/bin' }
+. (Join-Path $helperBin 'BridgeResourceScope.ps1')
+. (Join-Path $helperBin 'BridgeIncrementalReader.ps1')
+. (Join-Path $helperBin 'BridgeEventClassifier.ps1')
+$claimObservation=Get-WdStatusClaims -Root $runtimeRoot -Now $now
+$recentProgress=@{}
+$progressRead=Read-BridgeEventTail -Path (Join-Path $runtimeRoot 'shared/events.jsonl') -MaxLines 1200
+if ($progressRead.status -cin @('OK','IDLE')) {
+    foreach ($event in @($progressRead.rows)) {
+        if ((Test-BridgeAnswerEvent $event) -and (Get-WdStatusProperty $event 'in_reply_to_request_id')) {
+            $recentProgress[[string]$event.agent]=$event
+        }
+    }
+}
 $installedBundle = [pscustomobject]@{
     source_domain = 'installed_pointer'
     source_path = $CurrentStatePath
@@ -565,7 +630,6 @@ try {
     $laneProcesses = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
     $laneProcessQueryAvailable = $true
 } catch { <# Runtime observation remains unknown. #> }
-$scopeOwners = @{}
 foreach ($definition in @($definitions)) {
     $agent = [string]$definition.agent
     $worktree = [string]$definition.worktree
@@ -620,13 +684,6 @@ foreach ($definition in @($definitions)) {
     $scope = if ($null -eq $state) { @() } else {
         @($state.write_scope | ForEach-Object { ([string]$_).Trim() } |
             Where-Object { $_ })
-    }
-    foreach ($path in $scope) {
-        $key = $path.Replace('/', '\').ToLowerInvariant()
-        if (-not $scopeOwners.ContainsKey($key)) {
-            $scopeOwners[$key] = [Collections.Generic.List[string]]::new()
-        }
-        $scopeOwners[$key].Add($agent)
     }
     $status = if ($null -eq $state) { '' } else { [string]$state.status }
     $nextAction = if ($null -eq $state) { '' } else {
@@ -698,9 +755,13 @@ foreach ($definition in @($definitions)) {
         checkout_source_domain = 'manifest_worktree_git_query'
         runtime = $runtime
         progress = [pscustomobject]@{
-            status = 'unknown'
-            source_domain = 'not_observed'
-            last_substantive_progress_at_utc = $null
+            status = $(if ($recentProgress.ContainsKey($agent)) {'canonical_answer_observed'} else {'unknown'})
+            source_domain = 'bounded_canonical_tail'
+            last_substantive_progress_at_utc = $(if ($recentProgress.ContainsKey($agent)) {$recentProgress[$agent].ts_utc} else {$null})
+            request_id = $(if ($recentProgress.ContainsKey($agent)) {$recentProgress[$agent].in_reply_to_request_id} else {$null})
+            task_completion_verified = $false
+            reader_status = $progressRead.status
+            reader_reason = $progressRead.reason
             wait_age_seconds = $null
         }
         runnable = (
@@ -714,14 +775,7 @@ foreach ($definition in @($definitions)) {
     })
 }
 
-$collisions = @(
-    foreach ($key in @($scopeOwners.Keys | Sort-Object)) {
-        $owners = @($scopeOwners[$key] | Select-Object -Unique)
-        if ($owners.Count -gt 1) {
-            [pscustomobject]@{ write_scope = $key; agents = $owners }
-        }
-    }
-)
+$collisions = @($claimObservation.collisions)
 $report = [pscustomobject]@{
     schema = 'wd.swarm-parallel-status.v1'
     observed_at_utc = $now.ToString('o')
@@ -729,6 +783,7 @@ $report = [pscustomobject]@{
     stale_after_seconds = $StaleAfterSeconds
     installed_bundle = $installedBundle
     supervisor = $supervisor
+    claim_observation = $claimObservation
     semantics = [pscustomobject]@{
         runnable = 'legacy recorded next action; no freshness or runtime guarantee'
         runnable_evidence = 'observed requires current matching checkpoint with recognized active status, no recorded blocker, enabled supervisor and matching ready PID/start/generation; not authority or full runtime attestation'
@@ -739,7 +794,7 @@ $report = [pscustomobject]@{
         tools_conversation_runtime = 'v2 transport_ready binds wrapper/native PID, creation, generation and recorded thread only; not useful progress, accepted interaction or full package attestation; v1 remains valid only in none mode'
         native_checkpoint = 'bounded producer-reported latest terminal and previous verified checkpoint facts, kept separate; this status command does not reverify receipts or infer useful progress'
         turn_execution = 'known launcher and bounded PID/time/session-bound handshake observation; legacy missing mode means legacy interactive; neither bootstrap nor process existence proves a model turn started or completed'
-        progress = 'not inferred from checkpoint, readiness, wake or heartbeat timestamps'
+        progress = 'latest substantive answer in a bounded canonical tail, separately from checkpoint age; binding, result correctness and task completion are not inferred; absent observation is unknown'
     }
     lanes = @($lanes)
     summary = [pscustomobject]@{
@@ -760,6 +815,7 @@ $report = [pscustomobject]@{
         blocked_lanes = @($lanes | Where-Object {
                 $_.status -ceq 'blocked'
             }).Count
+        blocked_wake_transports = @($lanes | Where-Object { $_.turn_execution.relay_status -ceq 'bridge_wake_blocked' }).Count
         pending_wakes = @($lanes | Where-Object { $_.wake_pending }).Count
         scope_collisions = $collisions.Count
     }

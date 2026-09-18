@@ -167,3 +167,102 @@ $second=Invoke-WdNativeToolsWakeStep @arguments
 """
     result = json.loads(_run_powershell(script, executable=ps).stdout)
     assert result['first'] == 'queued' and result['second'] in ('idle', 'debounced')
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['unchanged', 'append', 'corrupt_cache', 'missing_cache', 'rewrite', 'rotate', 'partial', 'invalid'])
+def test_reply_parse_index_is_incremental_and_rebuildable(tmp_path, ps, case):
+    from test_bridge_request_contract import events
+    _, request, reply = events()
+    request.update(request_id='index-v1', request_digest='digest-v1')
+    request.setdefault('payload', {})['evidence_time'] = '2026-09-18T00:00:00+05:30'
+    reply.update(in_reply_to_request_id='index-v1', in_reply_to_request_digest='digest-v1',
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    log = shared / 'events.jsonl'
+    log.write_text(json.dumps(request) + '\n')
+    def read(*args):
+        return subprocess.run([ps, '-NoProfile', '-NonInteractive', '-File',
+                               str(REBOOT.parents[2] / '.agent-bridge/bin/Get-BridgeReplySnapshot.ps1'),
+                               '-RequestId', 'index-v1', *args],
+                              env=dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path)),
+                              capture_output=True, text=True, timeout=40)
+    first = read()
+    assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout)['parsed_rows'] == 1
+    assert json.loads(first.stdout)['request']['payload']['evidence_time'] == request['payload']['evidence_time']
+    cache = shared / 'cache/reply-index.json'
+    assert cache.exists()
+    if case == 'corrupt_cache': cache.write_text('{bad cache')
+    if case == 'missing_cache': cache.unlink()
+    if case == 'rewrite':
+        request['message'] = 'Changed canonical request'
+        log.write_text(json.dumps(request) + '\n')
+    if case == 'rotate':
+        log.rename(shared / 'old.jsonl')
+        log.write_text(json.dumps(request) + '\n')
+    if case in ('append', 'partial', 'invalid'):
+        with log.open('a') as stream:
+            stream.write('{broken}\n' if case == 'invalid' else json.dumps(reply) + ('' if case == 'partial' else '\n'))
+    result = read()
+    if case in ('partial', 'invalid'):
+        assert result.returncode != 0
+        return
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)
+    if case in ('unchanged', 'append'):
+        assert value['cache_status'] == 'incremental'
+        assert value['parsed_rows'] == (1 if case == 'append' else 0)
+    else:
+        assert value['cache_status'] == 'rebuilt'
+    reference = read('-NoCache')
+    assert reference.returncode == 0, reference.stderr
+    assert value['results'] == json.loads(reference.stdout)['results']
+    assert value['request'] == json.loads(reference.stdout)['request']
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['processed', 'reported', 'missing_reference', 'wrong_session', 'ack'])
+def test_reply_observation_requires_bound_answer_and_honest_report_reference(tmp_path, ps, case):
+    from test_bridge_request_contract import events
+    _, request, reply = events()
+    request.update(request_id='observed-v1', request_digest='digest-v1')
+    reply.update(in_reply_to_request_id='observed-v1', in_reply_to_request_digest='digest-v1',
+                 in_reply_to_requester={k: request[k] for k in ('agent', 'agent_uuid', 'session_id', 'run_id')})
+    if case == 'wrong_session': reply['session_id'] = 'wrong'
+    if case == 'ack': reply['status'] = 'received'
+    stage = 'user_reported' if case in ('reported', 'missing_reference') else 'lead_processed'
+    script = REBOOT.parents[2] / '.agent-bridge/bin/Record-BridgeReplyObservation.ps1'
+    command = (f"$env:AGENT_BRIDGE_RUNTIME_ROOT={q(tmp_path)}; & {q(script)} -Agent codex-lead-1 "
+               f"-RequestEventJson {q(json.dumps(request))} -ReplyEventJson {q(json.dumps(reply))} -Stage {stage}")
+    if case == 'reported': command += " -ReportReference 'operator-summary-42'"
+    result = subprocess.run([ps, '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=30)
+    records = list((tmp_path / 'shared/telemetry').glob('*.json'))
+    if case in ('wrong_session', 'ack', 'missing_reference'):
+        assert result.returncode != 0 and not records
+    else:
+        assert result.returncode == 0, result.stderr
+        value = json.loads(records[0].read_text())
+        assert value['stage'] == stage and value['observation_source'] == 'agent_reported'
+        assert value['request_id'] == request['request_id']
+        assert value['reply_ts_utc'] == reply['ts_utc']
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_direct_lane_resume_exports_only_verified_anchor_to_child(tmp_path, ps):
+    manifest = tmp_path / 'deployment-manifest.json'
+    manifest.write_text('{"fixture":true}')
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\n" + load(REBOOT / 'start-wd-agent.ps1', 'Set-WdLaneChildManifestAnchor')
+    script += f"""
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='old-wrapper-anchor'
+Set-WdLaneChildManifestAnchor -ManifestPath {q(manifest)} -ExpectedHash {q(digest.lower())}
+$good=$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
+$rejected=$false
+try {{ Set-WdLaneChildManifestAnchor -ManifestPath {q(manifest)} -ExpectedHash ('F'*64) }} catch {{ $rejected=$true }}
+@{{good=$good;rejected=$rejected;after=$env:WD_REBOOT_EXPECTED_MANIFEST_HASH}}|ConvertTo-Json
+"""
+    value = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert value == dict(good=digest, rejected=True, after=digest)

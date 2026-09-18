@@ -950,6 +950,8 @@ function Read-BridgeLogSnapshotDelta {
             }
 
             $parsedRows = New-Object System.Collections.Generic.List[object]
+            $jsonArguments=@{ErrorAction='Stop'}
+            if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArguments.DateKind='String' }
             if (-not $validationReason) {
                 $lines = $text.Split([char]10)
                 for ($lineIndex = 0; $lineIndex -lt ($lines.Length - 1); $lineIndex++) {
@@ -965,7 +967,7 @@ function Read-BridgeLogSnapshotDelta {
                         if (-not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid($line)) {
                             throw 'row JSON violates bridge lexical contract'
                         }
-                        $row = $line | ConvertFrom-Json -ErrorAction Stop
+                        $row = $line | ConvertFrom-Json @jsonArguments
                     } catch {
                         $validationReason = 'invalid_json'
                         break

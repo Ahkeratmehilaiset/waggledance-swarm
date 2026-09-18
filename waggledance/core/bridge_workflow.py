@@ -10,7 +10,8 @@ from waggledance.core.bridge_request_contract import reply_matches_request, time
 
 ACTIVE_WORKERS = frozenset({'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'})
 ON_DEMAND_WORKERS = frozenset({'grok-scout-1'})
-STAGES = ('request_durable', 'watcher_seen', 'relay_enqueued', 'model_turn_started', 'answer_durable')
+STAGES = ('request_durable', 'watcher_seen', 'relay_enqueued', 'model_turn_started', 'answer_durable',
+          'lead_processed', 'user_reported')
 ROLE_FIELDS = {
     'tools': ('inputs', 'checks', 'handoff'),
     'reviewer': ('evidence', 'acceptance_criteria', 'cases'),
@@ -114,5 +115,9 @@ def latency_report(request: Mapping[str, Any], observations: Sequence[Mapping[st
             'stages': {k: v.isoformat() if v else None for k, v in times.items()},
             'seconds': intervals, 'unknown_stages': [k for k, v in times.items() if v is None],
             'invalid_order': invalid, 'task_completion_verified': False,
+            'engine_turn_started_at_utc': None,
+            'stage_meanings': {'model_turn_started': 'agent registered request processing; not model engine start',
+                               'lead_processed': 'Lead reports inspecting the exact-bound answer',
+                               'user_reported': 'Lead reports publishing a referenced summary; operator receipt is not verified'},
             'timing_basis': 'local observations; model_turn_started is the first agent-reported marker, not engine timing',
             'authority_effect': 'none'}

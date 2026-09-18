@@ -1240,6 +1240,17 @@ function Resolve-WdLaneGitApplication {
   return $candidate
 }
 
+function Set-WdLaneChildManifestAnchor {
+  param([string]$ManifestPath, [string]$ExpectedHash)
+  if ($ExpectedHash -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash -cne $ExpectedHash.ToUpperInvariant()) {
+    throw 'cannot export an unverified lane manifest anchor'
+  }
+  # An explicit -ExpectedManifestHash must reach native child tool calls too.
+  # Machine wrappers normally set this already; direct guarded resumes may not.
+  $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$ExpectedHash.ToUpperInvariant()
+}
+
 function Invoke-CheckedGit {
   param(
     [Parameter(Mandatory)] [string] $Worktree,
@@ -1713,6 +1724,9 @@ if ($sourceTreeMode) {
     -Generation $bundleGeneration `
     -RuntimeRoot $runtimeRoot `
     -SkipImportSmoke:$DryRun
+  if (-not $DryRun) {
+    Set-WdLaneChildManifestAnchor -ManifestPath $deploymentManifest -ExpectedHash $script:LaneManifestAnchor
+  }
 }
 $targetState = $manifest.target_state
 if (
@@ -2120,6 +2134,7 @@ if ($nativeLead) {
     'Bridge helpers and the current environment identify this lane. Keep peer sessions separate. ' +
     'A background codex queue relay delivers peer replies to this exact conversation, also while idle or minimized. ' +
     'Before reporting requested peer opinions as missing or pending, run pinned Get-BridgeReplySnapshot.ps1 -RequestId <exact-id> and state its observation time. Read the full matching payload. ' +
+    'Record actual reply processing using pinned Record-BridgeReplyObservation.ps1 -Agent codex-lead-1 -RequestEventJson ($request | ConvertTo-Json -Depth 32 -Compress) -ReplyEventJson ($reply | ConvertTo-Json -Depth 32 -Compress) -Stage lead_processed. Record user_reported only after publication and with the actual -ReportReference; these are agent-reported observations, not proof of operator receipt. ' +
     'When a late reply arrives after your summary, reconcile it and send the operator a concise correction or supplement. Do not rely only on next-action to discover replies. ' +
     'Confirm the restored conversation and bridge identity with read-only checks. ' +
     'Resume the latest unfinished operator-authorized task from this conversation and compact state, ' +

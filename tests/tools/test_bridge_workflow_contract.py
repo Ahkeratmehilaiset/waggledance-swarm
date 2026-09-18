@@ -65,7 +65,9 @@ def test_latency_reports_missing_stages_unknown_and_joins_exact_delivery():
                          observed_at_utc=f'2026-09-18T00:00:0{i}Z') for i, stage in enumerate(STAGES)]
     observations[2]['request_id'] = None
     report = latency_report(request, observations, target='fable-5')
-    assert list(report['seconds'].values()) == [1, 1, 1, 1]
+    assert list(report['seconds'].values()) == [1] * (len(STAGES) - 1)
+    assert report['engine_turn_started_at_utc'] is None
+    assert 'not model engine start' in report['stage_meanings']['model_turn_started']
     missing = latency_report(request, observations[:2], target='fable-5')
     assert missing['unknown_stages'] == list(STAGES[2:])
     assert missing['task_completion_verified'] is False

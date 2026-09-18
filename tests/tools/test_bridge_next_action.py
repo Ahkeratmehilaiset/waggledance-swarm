@@ -1884,7 +1884,8 @@ def test_duplicate_non_wake_requests_remain_separate_incoming_rows() -> None:
 
     assert report["action"] == "answer_incoming"
     assert report["open_incoming_count"] == 2
-    assert "open_incoming_event_count" not in report
+    assert report["open_incoming_event_count"] == 2
+    assert report["open_incoming_task_count"] == 1
 
 
 def test_reported_handoff_closes_round_two_request() -> None:

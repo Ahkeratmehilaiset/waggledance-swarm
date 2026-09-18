@@ -16,6 +16,9 @@ class ResourceScope:
 
 
 def _unalias(path: Path) -> str:
+    if any(part and part != '.' and (part.endswith(('.', ' ')) or re.search(r'~[0-9]', part))
+           for part in str(path).replace('\\', '/').split('/')):
+        raise ValueError('ambiguous Windows root alias')
     absolute = path.absolute()
     for component in (absolute, *absolute.parents):
         try:
@@ -55,6 +58,8 @@ def resolve_resources(scopes: Sequence[str], *, cwd: str, bridge_root: str) -> t
                 kind, raw = 'shared', full[len(shared)+1:]
             else:
                 raise ValueError('absolute scope is outside the worktree/shared root')
+        elif re.match(r'^[A-Za-z]:/', raw):
+            raise ValueError('foreign-platform absolute scope cannot be resolved safely')
         raw = '/'.join(part for part in raw.split('/') if part and part != '.').casefold()
         if not raw or ('*' in raw and raw != '*') or '?' in raw:
             raise ValueError('scope must name a path or the whole repository (*)')

@@ -57,6 +57,7 @@ Assert-NoPrivateMarker -Label 'agent_uuid' -Value $AgentUuid
 Assert-NoPrivateMarker -Label 'session_id' -Value $SessionId
 Assert-NoPrivateMarker -Label 'capabilities' -Value $Capabilities
 Assert-NoPrivateMarker -Label 'payload' -Value $PayloadJson
+Assert-NoPrivateMarker -Label 'reply binding' -Value $ReplyToEventJson
 
 function Write-BridgeWarning {
     param([Parameter(Mandatory)] [string] $Message)
@@ -568,10 +569,7 @@ if ($ReplyToEventJson) {
     if ($identities.Count -eq @(Get-BridgeEventTargets ([pscustomobject]$event)).Count -and $identities.Count -gt 0) {
         $event['expected_responders'] = [pscustomobject]$identities
     }
-    $identityBytes = [Text.Encoding]::UTF8.GetBytes(([ordered]@{
-        request_id=$event.request_id; agent=$Agent; task_id=$TaskId; to=$To;
-        session_id=$SessionId; run_id=$RunId; type=$Type; status=$Status; message=$Message; payload=$payload
-    } | ConvertTo-Json -Depth 12 -Compress))
+    $identityBytes = [Text.Encoding]::UTF8.GetBytes((Get-BridgeRequestContent ([pscustomobject]$event)))
     $hasher = [Security.Cryptography.SHA256]::Create()
     try { $event['request_digest'] = [BitConverter]::ToString($hasher.ComputeHash($identityBytes)).Replace('-','').ToLowerInvariant() }
     finally { $hasher.Dispose() }
@@ -713,6 +711,19 @@ function Write-BridgeEventResult {
     param([Parameter(Mandatory)] $Delivery)
 
     $event['_bridge_delivery'] = $Delivery
+    if ($Delivery.canonical_durable -eq $true) {
+        $Delivery | Add-Member -Force NoteProperty observed_durable_at_utc ([datetime]::UtcNow.ToString('o'))
+        try {
+            . (Join-Path $PSScriptRoot 'BridgeTelemetry.ps1')
+            if ($event.Contains('request_id')) {
+                foreach ($target in @(([string]$event.to).Split(',') | ForEach-Object {$_.Trim()} | Where-Object {$_})) {
+                    Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage request_durable -Request ([pscustomobject]$event) -Target $target
+                }
+            } elseif ($ReplyToEventJson -and (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
+                Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage answer_durable -Request $replyTo -Target $Agent
+            }
+        } catch { Write-BridgeWarning ('Latency observation unavailable: ' + $_.Exception.Message) }
+    }
     if ($ReceiptJson) {
         $event | ConvertTo-Json -Depth 16 -Compress
     } else {

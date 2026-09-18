@@ -117,6 +117,7 @@ function Test-BridgeRequestLikeEvent {
         return $false
     }
     if (Test-BridgeRequesterClosureEvent -Event $Event) { return $false }
+    if ($Event.PSObject.Properties['request_id'] -and $Event.request_id) { return $true }
 
     $requestTypes = @('message','handoff','blocked','finding','decision','done','wake_request')
     $requestStatuses = @(

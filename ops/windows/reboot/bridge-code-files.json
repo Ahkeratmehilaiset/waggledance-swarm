@@ -10,6 +10,7 @@
     "tools/agent_next_task.py",
     "tools/bridge_compact_view.py",
     "tools/bridge_next_action.py",
+    "tools/bridge_workflow.py",
     "tools/build_bridge_message_template.py",
     "tools/validate_bridge_event.py",
     "tools/wd_grok_helper.py",
@@ -20,11 +21,13 @@
     "waggledance/core/bridge_log_reader.py",
     "waggledance/core/bridge_request_contract.py",
     "waggledance/core/bridge_resource_scope.py",
+    "waggledance/core/bridge_workflow.py",
     "waggledance/core/idle_protocol_deferred_lift.py",
     "waggledance/core/work_queue.py"
   ],
   "python_entrypoints": {
     "next_action": "tools/bridge_next_action.py",
+    "workflow": "tools/bridge_workflow.py",
     "agent_next_task": "tools/agent_next_task.py",
     "compact_view": "tools/bridge_compact_view.py",
     "message_template": "tools/build_bridge_message_template.py",

@@ -6,6 +6,7 @@ Explicit IDs or correlation metadata never fall back to task/time matching.
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any, Mapping
 
 _CONFLICT = object()
@@ -91,7 +92,7 @@ def reply_matches_request(
         expected = field(request, "expected_responders")
         if expected is not None and not isinstance(expected, Mapping):
             return False
-        if expected and target not in expected:
+        if expected is not None and target not in expected:
             return False
         expected_identity = expected.get(target, {}) if expected else {}
     if not isinstance(expected_identity, Mapping):
@@ -108,3 +109,11 @@ def request_key(request: Mapping[str, Any], target: str) -> tuple[str, ...]:
         return ("id", str(request.get("agent", "")), str(rid), target)
     return ("legacy", str(request.get("agent", "")), str(request.get("task_id", "")),
             str(request.get("status", "")), target)
+
+
+def request_content(request: Mapping[str, Any]) -> str:
+    """Stable retry identity; transport timestamps/PIDs do not change intent."""
+    return json.dumps({key: request.get(key) for key in (
+        "request_id", "agent", "agent_uuid", "session_id", "run_id", "task_id",
+        "to", "type", "status", "message", "payload", "expected_responders",
+    )}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

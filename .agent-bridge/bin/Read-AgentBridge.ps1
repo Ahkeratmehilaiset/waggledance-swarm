@@ -62,6 +62,8 @@ if (-not (Test-Path -LiteralPath $bridgeRoot -PathType Container)) {
 $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 $classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
+. (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+. (Join-Path $PSScriptRoot 'BridgeRoster.ps1')
 if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
 }
@@ -238,6 +240,10 @@ function Send-ReceivedAck {
 
     $message = "received {0}/{1} from {2}" -f `
         [string]$RequestEvent.type, [string]$RequestEvent.status, [string]$RequestEvent.agent
+    $bindingArgs = @{}
+    if (Get-BridgeContractField $RequestEvent 'request_id') {
+        $bindingArgs['ReplyToEventJson'] = $RequestEvent | ConvertTo-Json -Depth 32 -Compress
+    }
 
     $ackOutput = @(
         & (Join-Path $PSScriptRoot 'Write-AgentEvent.ps1') `
@@ -247,7 +253,7 @@ function Send-ReceivedAck {
             -Status received `
             -TaskId $taskId `
             -Message $message `
-            -PayloadJson $payloadJson
+            -PayloadJson $payloadJson @bindingArgs
     )
     $ackEvents = @($ackOutput | Where-Object {
         $_ -is [psobject] -and
@@ -341,6 +347,7 @@ if ($Agent -and -not $NoContinuity) {
         Write-Host ''
     } else {
         $allEvents = @(Read-BridgeContinuityEventObjects -Path $eventsPath -AgentName $Agent -MaxLines $ContinuityTail)
+        $requestIndex = New-BridgeRequestIndex $allEvents
         $displayEvents = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
         $displayTaskIds = @{}
         foreach ($displayEvent in $displayEvents) {
@@ -364,29 +371,25 @@ if ($Agent -and -not $NoContinuity) {
             Write-Host '  incoming: (none)'
         } else {
             Write-Host '  incoming:'
-            $latestByTask = @{}
+            $latestByTask = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
             foreach ($r in $requests) {
-                $latestByTask[[string]$r.task_id] = $r
+                Set-BridgeRequestViewEntry $latestByTask (Get-BridgeRequestViewKey $r $Agent) $r
             }
             $receivedByTask = @{}
             $hiddenResolvedCount = 0
             $replyByTask = @{}
             $closureByTask = @{}
-            foreach ($event in $allEvents) {
-                $eventTaskId = [string]$event.task_id
-                if (-not $eventTaskId -or -not $latestByTask.ContainsKey($eventTaskId)) {
-                    continue
-                }
+            foreach ($eventTaskId in $latestByTask.Keys) {
                 $requestForTask = $latestByTask[$eventTaskId]
-                if ([string]$event.ts_utc -le [string]$requestForTask.ts_utc) {
-                    continue
-                }
-                if ([string]$event.agent -eq $Agent -and (Test-BridgeAnswerEvent -Event $event)) {
+                $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $requestForTask
+                foreach ($event in $requestIndex.by_task[[string]$requestForTask.task_id]) {
+                if ((Test-BridgeAnswerEvent -Event $event) -and (Test-BridgeReplyBinding $requestForTask $event $Agent -AmbiguousLegacy $ambiguous)) {
                     $replyByTask[$eventTaskId] = $event
                     continue
                 }
-                if ([string]$event.agent -eq [string]$requestForTask.agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                if ((Test-BridgeRequesterClosureEvent -Event $event) -and (Test-BridgeReplyBinding $requestForTask $event $Agent -RequesterClosure $true -AmbiguousLegacy $ambiguous)) {
                     $closureByTask[$eventTaskId] = $event
+                }
                 }
             }
             if (-not $NoAckReceived -and -not $Raw) {
@@ -405,9 +408,9 @@ if ($Agent -and -not $NoContinuity) {
                 }
                 if ($reply.Count -gt 0) {
                     $last = $reply[-1]
-                    if ($displayTaskIds.ContainsKey($taskId)) {
+                    if ($displayTaskIds.ContainsKey([string]$req.task_id)) {
                         Write-Host ("  answered {0}: request {1}/{2} -> {3}/{4}" -f `
-                            $taskId, $req.type, $req.status, $last.type, $last.status)
+                            $req.task_id, $req.type, $req.status, $last.type, $last.status)
                     } else {
                         $hiddenResolvedCount++
                     }
@@ -418,9 +421,9 @@ if ($Agent -and -not $NoContinuity) {
                     }
                     if ($closure.Count -gt 0) {
                         $last = $closure[-1]
-                        if ($displayTaskIds.ContainsKey($taskId)) {
+                        if ($displayTaskIds.ContainsKey([string]$req.task_id)) {
                             Write-Host ("  closed-by-requester {0}: request {1}/{2} -> {3}/{4}" -f `
-                                $taskId, $req.type, $req.status, $last.type, $last.status)
+                                $req.task_id, $req.type, $req.status, $last.type, $last.status)
                         } else {
                             $hiddenResolvedCount++
                         }
@@ -437,7 +440,7 @@ if ($Agent -and -not $NoContinuity) {
                         }
                     }
                     Write-Host ("  OPEN {0}{1}: {2}/{3} from {4}: {5}" -f `
-                        $taskId, $receivedSuffix, $req.type, $req.status, $req.agent, $req.message) `
+                        $req.task_id, $receivedSuffix, $req.type, $req.status, $req.agent, $req.message) `
                         -ForegroundColor Yellow
                 }
             }
@@ -464,10 +467,14 @@ if ($Agent -and -not $NoContinuity) {
             Write-Host '  outgoing: (none)'
         } else {
             Write-Host '  outgoing:'
-            $sentLatestByTask = @{}
+            $sentLatestByTask = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
             foreach ($r in $sentRequests) {
-                $sentKey = "{0}|{1}" -f [string]$r.target, [string]$r.event.task_id
-                $sentLatestByTask[$sentKey] = $r
+                $sentKey = Get-BridgeRequestViewKey $r.event $r.target
+                if ((Get-BridgeContractField $r.event 'request_id') -and $sentLatestByTask.ContainsKey($sentKey)) {
+                    if ((Get-BridgeRequestContent $sentLatestByTask[$sentKey].event) -cne (Get-BridgeRequestContent $r.event)) {
+                        $sentLatestByTask[$sentKey].event | Add-Member -Force NoteProperty request_binding_conflict $true
+                    }
+                } else { $sentLatestByTask[$sentKey] = $r }
             }
             $sentKeysByTask = @{}
             foreach ($sentKey in $sentLatestByTask.Keys) {
@@ -489,20 +496,19 @@ if ($Agent -and -not $NoContinuity) {
                     $reqInfoForKey = $sentLatestByTask[$sentKey]
                     $requestForKey = $reqInfoForKey.event
                     $targetForKey = [string]$reqInfoForKey.target
-                    if ([string]$event.ts_utc -le [string]$requestForKey.ts_utc) {
-                        continue
-                    }
-                    if ([string]$event.agent -eq $targetForKey -and (Test-BridgeAnswerEvent -Event $event)) {
+                    $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $requestForKey
+                    if ((Test-BridgeAnswerEvent -Event $event) -and (Test-BridgeReplyBinding $requestForKey $event $targetForKey -AmbiguousLegacy $ambiguous)) {
                         $sentReplyByKey[$sentKey] = $event
                         continue
                     }
-                    if ([string]$event.agent -eq $Agent -and (Test-BridgeRequesterClosureEvent -Event $event)) {
+                    if ((Test-BridgeRequesterClosureEvent -Event $event) -and (Test-BridgeReplyBinding $requestForKey $event $targetForKey -RequesterClosure $true -AmbiguousLegacy $ambiguous)) {
                         $sentClosureByKey[$sentKey] = $event
                         continue
                     }
                     if ([string]$event.agent -eq $targetForKey -and
                         [string]$event.type -eq 'message' -and
-                        [string]$event.status -eq 'received') {
+                        [string]$event.status -eq 'received' -and
+                        (Test-BridgeReplyBinding $requestForKey $event $targetForKey -AmbiguousLegacy $ambiguous)) {
                         $sentReceivedByKey[$sentKey] = $event
                     }
                 }
@@ -587,6 +593,17 @@ if ($ShowLiveness -and -not $NoContinuity) {
         foreach ($wake in $wakeRequests) {
             $target = [string]$wake.to
             $wakeTs = [string]$wake.ts_utc
+            if (Test-BridgeBoundRequest $wake) {
+                $pendingTargets = @()
+                foreach ($recipient in @(Get-BridgeEventTargets $wake)) {
+                    $matched = @($allLivenessEvents | Where-Object {
+                        (Test-BridgeAnswerEvent $_) -and (Test-BridgeReplyBinding $wake $_ $recipient)
+                    })
+                    if (-not $matched.Count) { $pendingTargets += $recipient }
+                }
+                if ($pendingTargets.Count) { [void]$opens.Add($wake) }
+                continue
+            }
             $closed = @(
                 $allLivenessEvents |
                     Where-Object {
@@ -630,6 +647,11 @@ if ($ShowLiveness -and -not $NoContinuity) {
             $observedAgents = @('claude','codex')
         }
         foreach ($agent in $observedAgents) {
+            $workerClass = Get-BridgeWorkerClass $agent
+            if ($workerClass -ne 'active') {
+                Write-Host ("  {0}: {1}; not a continuously running fleet worker" -f $agent, $workerClass)
+                continue
+            }
             foreach ($k in @('liveness','heartbeat')) {
                 $key = "{0}/{1}" -f $agent, $k
                 if ($latest.ContainsKey($key)) {

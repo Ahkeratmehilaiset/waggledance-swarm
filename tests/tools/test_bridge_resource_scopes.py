@@ -19,6 +19,8 @@ SHELLS = list(dict.fromkeys(filter(None, [shutil.which('pwsh'), shutil.which('po
     ('different_checkpoint', True), ('same_checkpoint', False), ('case_variant', False),
     ('source_same_logical_path', False), ('checkpoint_parent', False),
     ('shared', False), ('traversal', False), ('unknown_kind', False), ('missing_cwd', False),
+    ('absolute_checkpoint', False), ('absolute_source', False), ('short_alias', False),
+    ('trailing_dot', False), ('local_source_bypass', False),
 ])
 def test_claim_resource_identity(tmp_path, monkeypatch, engine, case, allowed):
     if engine != 'python' and os.name != 'nt':
@@ -34,6 +36,15 @@ def test_claim_resource_identity(tmp_path, monkeypatch, engine, case, allowed):
     if case == 'shared': scopes_a = scopes_b = ['shared:shared/events.jsonl']
     if case == 'traversal': scopes_b = ['worktree:.codex-audit/../src/main.py']
     if case == 'unknown_kind': scopes_b = ['invented:.codex-audit/wd-current-state.json']
+    if case == 'absolute_checkpoint':
+        cwd_b = work_a
+        scopes_b = [str(work_a / '.codex-audit/wd-current-state.json')]
+    if case == 'absolute_source':
+        scopes_a = ['src/main.py']
+        scopes_b = [str(work_b / 'src/main.py')]
+    if case == 'short_alias': scopes_b = ['worktree:.codex~1/wd-current-state.json']
+    if case == 'trailing_dot': scopes_b = ['worktree:.codex-audit./wd-current-state.json']
+    if case == 'local_source_bypass': scopes_b = ['worktree:src/main.py']
     now = datetime.now(timezone.utc)
     claims = bridge / 'work_queue/claims'
     claims.mkdir(parents=True)
@@ -63,3 +74,26 @@ def test_claim_resource_identity(tmp_path, monkeypatch, engine, case, allowed):
         success = proc.returncode == 0
         diagnostic = proc.stdout + proc.stderr
     assert success is allowed, diagnostic
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+def test_linked_checkpoint_directory_is_rejected(tmp_path, engine):
+    from waggledance.core.bridge_resource_scope import resolve_resources
+    real, work, bridge = (tmp_path / p for p in ('real', 'work', 'bridge'))
+    for path in (real, work, bridge): path.mkdir()
+    alias = work / '.codex-audit'
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError:
+        if os.name != 'nt': raise
+        proc = subprocess.run([shutil.which('powershell.exe'), '-NoProfile', '-Command',
+                               f"New-Item -ItemType Junction -Path '{alias}' -Target '{real}' | Out-Null"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+    if engine == 'python':
+        with pytest.raises(ValueError, match='link/reparse'):
+            resolve_resources(['.codex-audit/wd-current-state.json'], cwd=str(work), bridge_root=str(bridge))
+    else:
+        script = f"$ErrorActionPreference='Stop'; . '{ROOT / '.agent-bridge/bin/BridgeResourceScope.ps1'}'; Resolve-BridgeResourceScopes -Scopes '.codex-audit/wd-current-state.json' -Worktree '{work}' -BridgeRoot '{bridge}'"
+        proc = subprocess.run([engine,'-NoProfile','-Command',script], capture_output=True, text=True)
+        assert proc.returncode != 0 and 'reparse point' in proc.stderr

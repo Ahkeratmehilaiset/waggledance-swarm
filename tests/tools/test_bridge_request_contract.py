@@ -9,6 +9,7 @@ import subprocess
 import pytest
 
 from tools.bridge_next_action import recommend_next_action
+from tools.report_unanswered_bridge_requests import report_unanswered_requests
 from waggledance.core.bridge_request_contract import reply_matches_request
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,3 +104,64 @@ def test_real_writer_persists_id_and_full_request_reply_binding(tmp_path, engine
                   '-Type','message','-Status','answered','-To','operator','-ReplyToEventJson',json.dumps(request))
     assert reply_matches_request(request, reply, 'codex-tools-1')
     assert reply['in_reply_to_request_id'] == request['request_id']
+    observations = [json.loads(p.read_text()) for p in (shared / 'telemetry').glob('*.json')]
+    assert {o['stage'] for o in observations} == {'request_durable', 'answer_durable'}
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
+@pytest.mark.parametrize('case', ['late_old', 'correct', 'duplicate_request', 'conflicting_retry', 'ack', 'wrong_session'])
+def test_modern_request_ids_keep_revisions_separate(tmp_path, engine, case):
+    first, newer, reply = events()
+    first['request_id'], newer['request_id'] = 'request-v1', 'request-v2'
+    reply.update(in_reply_to_request_id='request-v1',
+                 in_reply_to_requester={k:first[k] for k in ('agent','agent_uuid','session_id','run_id')})
+    reply['payload'] = {'nonce': 'v1', 'request_ts_utc': first['ts_utc']}
+    rows = [first, newer, reply]
+    if case in ('correct', 'duplicate_request'):
+        answer2 = deepcopy(reply)
+        answer2.update(in_reply_to_request_id='request-v2', payload={'nonce':'v2','request_ts_utc':newer['ts_utc']})
+        rows.append(answer2)
+    if case in ('duplicate_request', 'conflicting_retry'):
+        retry = deepcopy(newer)
+        retry['ts_utc'] = '2026-09-18T07:30:03Z'
+        if case == 'conflicting_retry': retry['message'] = 'different intent with same id'
+        rows.append(retry)
+    if case == 'ack': reply['status'] = 'received'
+    if case == 'wrong_session': reply['session_id'] = 'foreign'
+    expected = 0 if case in ('correct','duplicate_request') else 2 if case in ('ack','wrong_session') else 1
+    if engine == 'python':
+        result = recommend_next_action(agent='codex-tools-1', events=rows, claims=[])
+        assert report_unanswered_requests(events=rows, min_age_minutes=0)['unanswered_count'] == expected
+    else:
+        (tmp_path / 'shared').mkdir()
+        (tmp_path / 'shared/events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+        env = dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path))
+        proc = subprocess.run([engine,'-NoProfile','-File',str(ROOT / '.agent-bridge/bin/Get-BridgeNextAction.ps1'),
+                               '-Agent','codex-tools-1','-Now','2026-09-18T07:31:00Z','-Json'],
+                              env=env, capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stderr
+        result = json.loads(proc.stdout)
+    assert result['open_incoming_count'] == expected
+
+
+@pytest.mark.parametrize('engine', SHELLS)
+def test_status_and_continuity_do_not_hide_new_request_after_late_reply(tmp_path, engine):
+    first, newer, reply = events()
+    first['request_id'], newer['request_id'] = 'request-v1', 'request-v2'
+    reply.update(in_reply_to_request_id='request-v1',
+                 in_reply_to_requester={k:first[k] for k in ('agent','agent_uuid','session_id','run_id')})
+    reply['payload'] = {'nonce':'v1', 'request_ts_utc':first['ts_utc']}
+    rows = [dict(dict(severity='', paths=[], write_scope=[], cwd='', pid=0, message=''), **r) for r in (first,newer,reply)]
+    (tmp_path / 'shared').mkdir()
+    (tmp_path / 'shared/events.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    env = dict(os.environ, AGENT_BRIDGE_RUNTIME_ROOT=str(tmp_path))
+    for script, args in [('Get-AgentBridgeStatus.ps1',['-Json']),
+                         ('Read-AgentBridge.ps1',['-Agent','codex-tools-1','-NoAckReceived'])]:
+        proc = subprocess.run([engine,'-NoProfile','-File',str(ROOT / '.agent-bridge/bin' / script),*args],
+                              env=env, capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 0, proc.stderr
+        if script.startswith('Read'): assert 'OPEN fixture/request' in proc.stdout
+        else:
+            report = json.loads(proc.stdout)
+            assert 'request-v2' in proc.stdout
+            assert 'waiting' in proc.stdout

@@ -40,6 +40,7 @@ $eventsPath = Join-Path (Join-Path $bridgeRoot 'shared') 'events.jsonl'
 $claimsDir = Join-Path (Join-Path $bridgeRoot 'work_queue') 'claims'
 $classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+. (Join-Path $PSScriptRoot 'BridgeRoster.ps1')
 if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
 }
@@ -154,6 +155,7 @@ function Get-BridgeSuppressedAgentReason {
 }
 
 $events = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines $Tail)
+$requestIndex = New-BridgeRequestIndex $events
 $claims = @(Read-ClaimObjects)
 $suppressionReason = Get-BridgeSuppressedAgentReason -AgentName $Agent
 $ownClaims = @($claims | Where-Object { [string]$_.agent -eq $Agent })
@@ -182,11 +184,11 @@ foreach ($req in $requestsForAgent) {
 
 function Test-BridgeRequestStillOpen {
     param([Parameter(Mandatory)] [object] $Request)
-    $versions = @($requestsForAgent | Where-Object { $_.agent -ceq $Request.agent -and $_.task_id -ceq $Request.task_id } | Select-Object -ExpandProperty ts_utc -Unique)
-    foreach ($answer in @($events | Where-Object { $_.task_id -ceq $Request.task_id })) {
+    $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $Request
+    foreach ($answer in $requestIndex.by_task[[string]$Request.task_id]) {
         $closure = $answer.agent -ceq $Request.agent -and (Test-BridgeRequesterClosureEvent $answer)
         if (($closure -or (Test-BridgeAnswerEvent $answer)) -and
-            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy ($versions.Count -gt 1))) {
+            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous)) {
             return $false
         }
     }
@@ -194,18 +196,19 @@ function Test-BridgeRequestStillOpen {
 }
 
 $candidateOpenRequests = New-Object System.Collections.Generic.List[object]
-$freshByKey = [ordered]@{}
+$freshByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $freshRequestsForAgent) {
     $rid = Get-BridgeContractField $req 'request_id'
     $key = if ($rid) { "id|$($req.agent)|$rid" } elseif ($req.type -ceq 'wake_request') { "wake|$($req.agent)|$($req.task_id)|$($req.status)" } else { "event|$($freshByKey.Count)" }
-    if ($rid -and $freshByKey.Contains($key)) {
-        if ((Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
+    if ($rid -and $freshByKey.ContainsKey($key)) {
+        if ((Get-BridgeRequestContent $freshByKey[$key]) -cne (Get-BridgeRequestContent $req) -or
+            (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
             $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
     } else { $freshByKey[$key] = $req }
 }
 $openEventCount = 0
-foreach ($req in $freshByKey.Values) {
+foreach ($req in @($freshByKey.Values | Sort-Object ts_utc)) {
     if (Test-BridgeRequestStillOpen -Request $req) {
         [void]$candidateOpenRequests.Add($req)
         $rid = Get-BridgeContractField $req 'request_id'
@@ -222,10 +225,10 @@ foreach ($req in $freshByKey.Values) {
 # produced false dark-agent alarms. Dedup by requester+task (latest poke per
 # pair) FIRST, then apply the same answered/closure filter as the fresh path.
 $staleOpenRequests = New-Object System.Collections.Generic.List[object]
-$staleByKey = @{}
+$staleByKey = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 foreach ($req in $staleRequests) {
-    $key = "$([string]$req.agent)|$([string]$req.task_id)"
-    $staleByKey[$key] = $req  # requests are ts-sorted; last wins
+    $key = Get-BridgeRequestViewKey $req
+    Set-BridgeRequestViewEntry $staleByKey $key $req
 }
 foreach ($req in @($staleByKey.Values)) {
     if (Test-BridgeRequestStillOpen -Request $req) {
@@ -270,6 +273,7 @@ if ($ownClaims.Count -gt 0) {
 
 $result = [pscustomobject]@{
     agent = $Agent
+    worker_class = Get-BridgeWorkerClass $Agent
     action = $kind
     task_id = $taskId
     safe_mode = $safeMode
@@ -278,6 +282,9 @@ $result = [pscustomobject]@{
     open_incoming_count = $openRequests.Count
     open_incoming_event_count = $openEventCount
     open_incoming_task_count = @($openRequests | Select-Object -ExpandProperty task_id -Unique).Count
+    oldest_open_request_age_seconds = if ($openRequests.Count) {
+        @($openRequests | ForEach-Object { [math]::Max(0, ($nowUtc - (ConvertTo-BridgeContractTime $_.ts_utc)).TotalSeconds) } | Measure-Object -Maximum)[0].Maximum
+    } else { $null }
     stale_incoming_count = $staleOpenRequests.Count
     foreign_write_claim_count = $foreignWriteClaims.Count
 }

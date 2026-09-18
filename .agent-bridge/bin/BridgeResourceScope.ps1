@@ -2,6 +2,9 @@
 # A local audit checkpoint is physical; source claims remain repository-logical.
 function Resolve-BridgeUnaliasedPath {
     param([string]$Path)
+    foreach ($segment in @($Path.Replace('\','/') -split '/')) {
+        if ($segment -and $segment -ne '.' -and ($segment -match '[. ]$' -or $segment -match '~[0-9]')) { throw 'ambiguous Windows root alias' }
+    }
     $full = [IO.Path]::GetFullPath($Path)
     $part = $full
     while ($part) {

@@ -25,8 +25,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
+from waggledance.core.bridge_workflow import worker_class  # noqa: E402
 from waggledance.core.bridge_request_contract import (  # noqa: E402
-    field as correlation_field, reply_matches_request, request_is_bound, request_key,
+    field as correlation_field, reply_matches_request, request_is_bound, request_key, request_content,
 )
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
@@ -642,6 +643,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
             request=request,
         )
     if own_claims:
@@ -661,6 +663,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
     if suppression_reason is not None:
         report = _report(
@@ -678,6 +681,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
         report["suppression_reason"] = suppression_reason
         _assert_no_private_markers(report)
@@ -709,6 +713,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
             request=request,
         )
     wake_delivery_escalation = _wake_delivery_escalation_from_liveness(
@@ -738,6 +743,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
     if foreign_write_claims:
         claim = foreign_write_claims[0]
@@ -757,6 +763,7 @@ def recommend_next_action(
             archived_stale_open_requests=archived_stale_open_requests,
             foreign_write_claims=foreign_write_claims,
             production_liveness=production_liveness,
+            now_utc=effective_now,
         )
     return _report(
         agent=agent,
@@ -773,6 +780,7 @@ def recommend_next_action(
         archived_stale_open_requests=archived_stale_open_requests,
         foreign_write_claims=foreign_write_claims,
         production_liveness=production_liveness,
+            now_utc=effective_now,
     )
 
 
@@ -815,9 +823,10 @@ def _open_requests_for_agent(
             open_requests.append(request)
     open_ids = {id(request) for request in open_requests}
     open_wakes = {request_key(request, agent) for request in open_requests
-                  if _event_type(request) == "wake_request"}
+                  if _event_type(request) == "wake_request" or correlation_field(request, "request_id")}
     return [request for request in request_events if id(request) in open_ids or (
-        _event_type(request) == "wake_request" and request_key(request, agent) in open_wakes)]
+        (_event_type(request) == "wake_request" or correlation_field(request, "request_id"))
+        and request_key(request, agent) in open_wakes)]
 
 
 def _build_request_closure_index(
@@ -999,7 +1008,8 @@ def _deduplicate_repeated_wake_requests(
                 # Identical-ID retries retain their first durable occurrence.
                 # Reusing an ID for different content is a visible open conflict.
                 previous = deduped[index]
-                if correlation_field(previous, "request_digest") != correlation_field(request, "request_digest"):
+                if (request_content(previous) != request_content(request) or
+                    correlation_field(previous, "request_digest") != correlation_field(request, "request_digest")):
                     deduped[index] = dict(previous, request_binding_conflict=True)
             else:
                 deduped[index] = request
@@ -1204,6 +1214,8 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
         return False
     if _is_response_only_status(status):
         return False
+    if correlation_field(event, "request_id"):
+        return bool(_event_recipients(event))
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
     )
@@ -1578,6 +1590,8 @@ def _production_liveness_report(
         event_agent = _event_agent(event)
         if event_agent in PRODUCTION_LIVENESS_IGNORED_AGENTS:
             continue
+        if worker_class(event_agent) != 'active' and event_agent not in suppressed_lookup:
+            continue
         if _event_has_registered_identity_mismatch(event, identity_registry):
             continue
         state = states.setdefault(
@@ -1689,6 +1703,10 @@ def _production_liveness_report(
         report["suppressed_stalled_agents"] = suppressed_stalled
     if wake_delivery:
         report["wake_delivery"] = wake_delivery
+    report["roster"] = {
+        name: worker_class(name) for name in sorted({_event_agent(e) for e in events})
+        if name not in PRODUCTION_LIVENESS_IGNORED_AGENTS
+    }
     return report
 
 
@@ -2319,6 +2337,7 @@ def _report(
     foreign_write_claims: Sequence[Claim],
     stale_claims: Sequence[Claim],
     production_liveness: Mapping[str, Any],
+    now_utc: datetime,
     request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     stale_task_ids = _unique_task_ids(stale_open_requests)
@@ -2333,8 +2352,15 @@ def _report(
         "summary": summary,
         "active_claim_count": len(claims),
         "open_incoming_count": len(open_requests),
+        "open_incoming_event_count": open_request_event_count,
+        "open_incoming_task_count": len({_task_id(r) for r in open_requests}),
         "stale_incoming_count": len(stale_task_ids),
         "foreign_write_claim_count": len(foreign_write_claims),
+        "worker_class": worker_class(agent),
+        "oldest_open_request_age_seconds": max((
+            max(0.0, (now_utc - sent).total_seconds())
+            for r in open_requests if (sent := _parse_utc(_event_ts(r))) is not None
+        ), default=None),
     }
     if open_request_event_count != len(open_requests):
         payload["open_incoming_event_count"] = open_request_event_count
@@ -2394,6 +2420,8 @@ def _report(
             "status": _event_status(request),
             "ts_utc": _event_ts(request),
             "message": _message(request),
+            "request_id": correlation_field(request, "request_id"),
+            "request_binding_conflict": bool(request.get("request_binding_conflict")),
         }
         incoming.update(_event_metadata(request, known_agents=known_agents))
         payload["incoming"] = incoming

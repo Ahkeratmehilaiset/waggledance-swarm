@@ -33,10 +33,13 @@ from tools.bridge_next_action import (  # noqa: E402
     _is_request_like,
     _latest_event_time,
     _parse_utc,
+    _open_requests_for_agent,
+    _deduplicate_repeated_wake_requests,
     _task_id,
     read_events,
 )
 from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
+from waggledance.core.bridge_request_contract import request_is_bound, request_key, reply_matches_request  # noqa: E402
 
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
@@ -262,6 +265,7 @@ def _open_requests_by_target(
     agent_filter: set[str],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     known_agents = _known_bridge_agents(events)
+    versions: dict[tuple[str, str], set[str]] = {}
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     closed_merge_task_keys: set[str] = set()
     closed_prs: set[str] = set()
@@ -283,7 +287,10 @@ def _open_requests_by_target(
                 closed_prs.add(closed_pr)
         if not _is_request_like(event):
             continue
+        if request_is_bound(event):
+            continue  # Bound requests use the router's exact completion contract below.
         requester = _event_agent(event)
+        versions.setdefault((requester, _task_id(event)), set()).add(_event_ts(event))
         for target in _event_recipients(event):
             if not target or target == requester:
                 continue
@@ -323,6 +330,24 @@ def _open_requests_by_target(
                 "event_index": index,
                 "payload_head": _payload_scalar(event, "head"),
                 "payload_pr": payload_pr,
+                "request_event": event,
+                "ambiguous_legacy": len(versions.get((requester, task_id), ())) > 1,
+            }
+    for target in known_agents:
+        if agent_filter and target not in agent_filter:
+            continue
+        pending = _deduplicate_repeated_wake_requests(
+            _open_requests_for_agent(agent=target, events=events), agent=target)
+        for event in pending:
+            if not request_is_bound(event):
+                continue
+            open_by_key[(target, repr(request_key(event, target)))] = {
+                "target_agent": target, "requester": _event_agent(event), "task_id": _task_id(event),
+                "type": _event_type(event), "status": _event_status(event), "ts_utc": _event_ts(event),
+                "first_ts_utc": _event_ts(event), "request_count": 1,
+                "message": _safe_message(event.get("message")), "event_index": 0,
+                "payload_head": _payload_scalar(event, "head"), "payload_pr": _payload_scalar(event, "pr"),
+                "request_id": event.get("request_id"), "request_event": event,
             }
     return open_by_key
 
@@ -350,6 +375,11 @@ def _close_answered_requests(
         if not same_task and not same_pr:
             continue
         if event_ts <= str(state["ts_utc"]):
+            continue
+        if state.get("ambiguous_legacy") and not reply_matches_request(
+            state["request_event"], event, target,
+            requester_closure=event_agent == requester, ambiguous_legacy=True,
+        ):
             continue
         if event_agent in {target, requester} or _is_terminal_closure_event(event):
             del open_by_key[key]

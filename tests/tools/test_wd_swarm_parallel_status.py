@@ -80,9 +80,10 @@ def checkpoint(fleet, index=-1):
     return Path(fleet["lanes"][index]["worktree"]) / ".codex-audit/wd-current-state.json"
 
 
-@pytest.mark.parametrize("machine_root", ["C:/", "C:/Python"])
-def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monkeypatch, machine_root):
+@pytest.mark.parametrize("relative_root", ["", "Python"])
+def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monkeypatch, relative_root):
     """Exercise actual shallow-path resolution without writing machine files."""
+    machine_root = Path(ROOT.anchor) / relative_root
     helpers = fleet["root"] / "tools-bootstrap/.agent-bridge/bin"
     shutil.copytree(ROOT / ".agent-bridge/bin", helpers)
     copied = fleet["root"] / "installed-status.ps1"

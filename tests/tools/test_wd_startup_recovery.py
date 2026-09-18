@@ -14,6 +14,7 @@ def q(value):
 
 def load(path, name):
     prefix = (f"$PSDefaultParameterValues['Assert-WdLaneLaunchAvailable:ParserSourcePath']={q(REBOOT / 'wd_supervisor.ps1')}\n"
+              + "$PSDefaultParameterValues['Assert-WdLaneLaunchAvailable:AllowUnpinnedParser']=$true\n"
               if name == "Assert-WdLaneLaunchAvailable" else "")
     return prefix + f"""
 if($PSVersionTable.PSEdition -eq 'Desktop'){{$env:PSModulePath=Join-Path $PSHOME 'Modules'}}
@@ -47,7 +48,7 @@ $rows=@(
 )
 '''
     script += f"""
-@(Get-LaneProcesses -Lane $lane -Processes $rows -ParserSourcePath {q(REBOOT / 'wd_supervisor.ps1')}) |
+@(Get-LaneProcesses -Lane $lane -Processes $rows -ParserSourcePath {q(REBOOT / 'wd_supervisor.ps1')} -AllowUnpinnedParser) |
  Select-Object -ExpandProperty ProcessId | ConvertTo-Json
 """
     assert json.loads(_run_powershell(script, executable=ps).stdout) == [1, 4, 7, 8, 9]
@@ -95,7 +96,7 @@ $lane=[pscustomobject]@{{agent='codex-lead-1';legacy_process_markers=@()}}
 $rows=@([pscustomobject]@{{ProcessId=200;Name='powershell.exe';CommandLine='powershell.exe -File C:\\other.ps1'}})
 function Get-CimInstance {{$rows}}
 function Start-Process {{throw 'Parser import executed runtime actions'}}
-function Check {{try{{$null={invoke};$true}}catch{{$false}}}}
+function Check {{param([switch]$Allow) try{{$null={invoke} -AllowUnpinnedParser:$Allow;$true}}catch{{$false}}}}
 $pin=(Get-FileHash $source).Hash
 @{{files=@{{'wd_supervisor.ps1'=$pin}}}}|ConvertTo-Json|Set-Content $manifest -Encoding UTF8
 $bundleManifestAnchor=(Get-FileHash $manifest).Hash;$script:LaneManifestAnchor=$bundleManifestAnchor
@@ -106,10 +107,13 @@ Add-Content $source '# tampered';$badSource=Check
 @{{files=@{{}}}}|ConvertTo-Json|Set-Content $manifest -Encoding UTF8
 $bundleManifestAnchor=(Get-FileHash $manifest).Hash;$script:LaneManifestAnchor=$bundleManifestAnchor
 $missingPin=Check
-@{{valid=$valid;bad_anchor=$badAnchor;bad_source=$badSource;missing_pin=$missingPin}}|ConvertTo-Json
+Remove-Item -LiteralPath $manifest
+$missingManifest=Check;$explicitSource=Check -Allow
+@{{missing_manifest=$missingManifest;explicit_source=$explicitSource;valid=$valid;bad_anchor=$badAnchor;bad_source=$badSource;missing_pin=$missingPin}}|ConvertTo-Json
 '''
     assert json.loads(_run_powershell(script, executable=ps).stdout) == {
         "valid": True, "bad_anchor": False, "bad_source": False, "missing_pin": False,
+        "missing_manifest": False, "explicit_source": True,
     }
 
 

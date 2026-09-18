@@ -1598,7 +1598,8 @@ function Get-LaneProcesses {
   param(
     [Parameter(Mandatory)] $Lane,
     [Parameter(Mandatory)] [object[]] $Processes,
-    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1')
+    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1'),
+    [switch] $AllowUnpinnedParser
   )
   # Reuse the supervisor's tested Win32 argv/PowerShell host parser without
   # executing its top-level runtime actions. The bundle preflight verifies this
@@ -1617,6 +1618,7 @@ function Get-LaneProcesses {
       [string]$parserSource.Text, [ref]$parserTokens, [ref]$parserErrors
     )
   } else {
+    if (-not $AllowUnpinnedParser) { throw 'fleet parser deployment manifest is missing' }
     $parserAst = [Management.Automation.Language.Parser]::ParseFile(
       $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
     )
@@ -2785,7 +2787,7 @@ foreach ($lane in @($manifest.lanes)) {
   if (-not $actualCommon.Equals($expectedCommonGit, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "lane '$($lane.agent)' is not a canonical project2 worktree"
   }
-  $live = @(Get-LaneProcesses -Lane $lane -Processes $processes)
+  $live = @(Get-LaneProcesses -Lane $lane -Processes $processes -AllowUnpinnedParser:($bundleMode -ceq 'source' -and $DryRun))
   if ($live.Count -gt 1) {
     throw "duplicate live lane '$($lane.agent)' PID(s): $(@($live.ProcessId) -join ',')"
   }

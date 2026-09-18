@@ -141,3 +141,5 @@ Managed lane ancestry takes precedence; this never adopts, stops or grants
 authority to an external process. A snapshot does not approve future parent
 lifetimes and still expires within 24 hours. Ordinary native session records
 remain bound to their individual process lifetime.
+
+Parser imports fail closed when the deployment manifest is absent. Only explicit source-tree dry runs opt into an unpinned parser; live launches never use that opt-in.

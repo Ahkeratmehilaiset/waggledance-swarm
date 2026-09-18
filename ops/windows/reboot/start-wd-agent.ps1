@@ -420,7 +420,8 @@ function Assert-WdLaneLaunchAvailable {
     [object[]] $KnownLanes = @(),
     [int] $CurrentPid = $PID,
     [object[]] $ExternalSessions = @(),
-    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1')
+    [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1'),
+    [switch] $AllowUnpinnedParser
   )
 
   # Match fleet discovery: only real host/script argv establishes ownership.
@@ -440,6 +441,7 @@ function Assert-WdLaneLaunchAvailable {
       [string]$parserSource.Text, [ref]$parserTokens, [ref]$parserErrors
     )
   } else {
+    if (-not $AllowUnpinnedParser) { throw 'lane parser deployment manifest is missing' }
     $parserAst = [Management.Automation.Language.Parser]::ParseFile(
       $ParserSourcePath, [ref]$parserTokens, [ref]$parserErrors
     )
@@ -1848,7 +1850,7 @@ if ($manualLeadAction) {
   try {
     $manualAttemptLease = Enter-WdManagedAttemptLease `
       -RuntimeRoot $runtimeRoot -Agent $Agent
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
     $manualAttemptEvidence = Get-WdManagedAttemptEvidence `
       -Agent $Agent -Worktree $worktree -RuntimeRoot $runtimeRoot
     if (-not $DryRun) {
@@ -1868,7 +1870,7 @@ if ($manualLeadAction) {
         if ([string]$confirmation -cne $digestPrefix) {
           throw 'managed attempt retirement confirmation did not match the reviewed digest prefix'
         }
-        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+        Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
         Assert-WdOperatorInvocationLineage
         [void](Assert-WdLeadInteractivePostureBaseline `
           -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2106,7 +2108,7 @@ if ($RecoverInteractive) {
 
 if ($DryRun) {
   if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'
   try {
@@ -2156,10 +2158,10 @@ if ($DryRun) {
 
 try {
 if ($turnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
 }
 if ($nativeLead) {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   $nativeLock = Join-Path $runtimeRoot '.wd-turn-codex-lead-1.lock'
   if (Test-Path -LiteralPath $nativeLock) {
     [void](Assert-LanePathWithoutReparse -Path $nativeLock -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
@@ -2437,7 +2439,7 @@ if (
 }
 
 if ($launchTurnMode -ceq 'managed') {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   if ($null -ne $conversationConfigBaseline) {
     [void](Assert-WdLeadInteractivePostureBaseline `
       -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2503,7 +2505,7 @@ if ($launchTurnMode -ceq 'managed') {
 }
 
 if ($RecoverInteractive) {
-  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+  Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   Assert-WdOperatorInvocationLineage
   [void](Assert-WdLeadInteractivePostureBaseline `
     -Lane $lane -Worktree $worktree -UserConfigPath $codexUserConfigPath)
@@ -2530,7 +2532,7 @@ if ($cliName -ieq 'claude.cmd') {
   )
 } elseif ($cliName -ieq 'codex.cmd') {
   if ($nativeLead) {
-    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions
+    Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
     if ($nativeResume.thread_id) { $launchArguments += @('resume', [string]$nativeResume.thread_id) }
   }
   $launchArguments += @(

@@ -573,7 +573,7 @@ $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile('{REBOOT / 'start-wd-agent.ps1'}',[ref]$tokens,[ref]$errors)
 $dry=$ast.Find({{param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$DryRun'}},$true)
 if (-not $dry) {{ throw 'missing DryRun branch' }}
-function Assert-WdLaneLaunchAvailable {{ param($Lane,$KnownLanes) $script:checks++ }}
+function Assert-WdLaneLaunchAvailable {{ param($Lane,$KnownLanes,[switch]$AllowUnpinnedParser) $script:checks++ }}
 function Write-Host {{ param($Object) }}
 function Test-Dry($Mode,$Check) {{
   $DryRun=$true; $turnMode=$Mode; $CheckManagedAdmission=$Check; $script:checks=0
@@ -1088,6 +1088,7 @@ $function = $ast.Find({{
 if (-not $function) {{ throw 'missing managed lane owner guard' }}
 . ([scriptblock]::Create($function.Extent.Text))
 $PSDefaultParameterValues['Assert-WdLaneLaunchAvailable:ParserSourcePath']='{REBOOT / "wd_supervisor.ps1"}'
+$PSDefaultParameterValues['Assert-WdLaneLaunchAvailable:AllowUnpinnedParser']=$true
 $lane = [pscustomobject]@{{ agent = 'codex-lead-1'; legacy_process_markers = @('start-wd-codex-lead.ps1') }}
 $global:fixtureProcesses = @()
 $global:fixtureUnknown = $false
@@ -1135,6 +1136,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile('{launcher}',[ref]$token
 $function=$ast.Find({{ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-WdLaneLaunchAvailable' }},$true)
 . ([scriptblock]::Create($function.Extent.Text))
 $PSDefaultParameterValues['Assert-WdLaneLaunchAvailable:ParserSourcePath']='{REBOOT / "wd_supervisor.ps1"}'
+$PSDefaultParameterValues['Assert-WdLaneLaunchAvailable:AllowUnpinnedParser']=$true
 $lane=[pscustomobject]@{{agent='codex-lead-1';legacy_process_markers=@('start-wd-codex-lead.ps1')}}
 $other=[pscustomobject]@{{agent='fable-5';legacy_process_markers=@('start-wd-fable-5.ps1')}}
 $global:fixtureProcesses=@()

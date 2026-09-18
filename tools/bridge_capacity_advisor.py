@@ -503,14 +503,23 @@ def _invalid_constant(_: str) -> None:
     raise InputError("non-finite JSON number")
 
 
+def _finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise InputError("non-finite JSON number")
+    return parsed
+
+
 def _load(stream: Any) -> dict:
     raw = stream.read(MAX_INPUT_BYTES + 1)
     if len(raw) > MAX_INPUT_BYTES:
         raise InputError("input exceeds bounded size")
     try:
         value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_pairs,
-                           parse_constant=_invalid_constant)
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+                           parse_constant=_invalid_constant, parse_float=_finite_float)
+    except InputError:
+        raise
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise InputError("invalid UTF-8 JSON input") from exc
     return _required_object(value, "input")
 

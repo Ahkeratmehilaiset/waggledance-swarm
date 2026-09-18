@@ -39,7 +39,7 @@ function Get-BridgeTaskResultValidation {
         if ($null -ne $types -and -not (Test-BridgeResultObject $types)) { $errors.Add('types_must_be_object') }
         if ($null -ne $equals -and -not (Test-BridgeResultObject $equals)) { $errors.Add('equals_must_be_object') }
         if (Test-BridgeResultObject $result) {
-            $names=@(if ($result -is [Collections.IDictionary]) {$result.Keys} else {$result.PSObject.Properties.Name})
+            $names=@(if ($result -is [Collections.IDictionary]) {$result.Keys} else {$result.PSObject.Properties|ForEach-Object {$_.Name}})
             foreach ($name in @($required)) {
                 if ($name -isnot [string] -or $name -cnotmatch '^[A-Za-z][A-Za-z0-9_]{0,63}$') { $errors.Add('invalid_required_field'); continue }
                 if ($names -cnotcontains $name) { $errors.Add('missing_result_field:'+ $name) }
@@ -47,7 +47,7 @@ function Get-BridgeTaskResultValidation {
             if ($null -ne $additional -and $additional -isnot [bool]) { $errors.Add('additional_properties_must_be_boolean') }
             if ($additional -ceq $false -and @($names|Where-Object {$required -cnotcontains $_}).Count) { $errors.Add('unexpected_result_fields') }
             if (Test-BridgeResultObject $types) {
-                $typeNames=@(if ($types -is [Collections.IDictionary]) {$types.Keys} else {$types.PSObject.Properties.Name})
+                $typeNames=@(if ($types -is [Collections.IDictionary]) {$types.Keys} else {$types.PSObject.Properties|ForEach-Object {$_.Name}})
                 foreach ($name in $typeNames) {
                     $value=Get-BridgeResultProperty $result $name
                     $valid=switch (Get-BridgeResultProperty $types $name) {
@@ -66,7 +66,7 @@ function Get-BridgeTaskResultValidation {
         }
         $schemaValid=($errors.Count -eq 0)
         if ($schemaValid -and (Test-BridgeResultObject $equals)) {
-            $equalNames=@(if ($equals -is [Collections.IDictionary]) {$equals.Keys} else {$equals.PSObject.Properties.Name})
+            $equalNames=@(if ($equals -is [Collections.IDictionary]) {$equals.Keys} else {$equals.PSObject.Properties|ForEach-Object {$_.Name}})
             if ($equalNames.Count -gt 0) {
                 $contentValid=$true
                 foreach ($name in $equalNames) {

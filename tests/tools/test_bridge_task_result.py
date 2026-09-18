@@ -30,7 +30,7 @@ try {{ Test-BridgeAckEvent $empty|Out-Null }} catch {{$rejected=$true}}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['valid', 'wrong_level', 'wrong_type', 'wrong_content', 'extra', 'unknown', 'role_fields'])
+@pytest.mark.parametrize('case', ['valid', 'wrong_level', 'wrong_type', 'wrong_content', 'extra', 'unknown', 'role_fields', 'empty_checks', 'empty_result'])
 def test_result_contract_separates_schema_content_and_reporting(ps, case):
     contract = dict(schema='wd.task-result-contract.v1', required=['answer'],
                     types={'answer': 'integer'}, equals={'answer': 42}, additional_properties=False)
@@ -42,6 +42,8 @@ def test_result_contract_separates_schema_content_and_reporting(ps, case):
     if case == 'extra': payload['result']['extra'] = True
     if case == 'unknown': request['payload'] = {}
     if case == 'role_fields': request['payload'] = {'schema': 'wd.role-request.v1', 'result_fields': ['answer']}
+    if case == 'empty_checks': contract.update(types={}, equals={})
+    if case == 'empty_result': payload['result'] = {}
     script = f"""
 . {q(BIN / 'BridgeTaskResult.ps1')}
 Get-BridgeTaskResultValidation -Request ({q(json.dumps(request))}|ConvertFrom-Json) -Payload ({q(json.dumps(payload))}|ConvertFrom-Json)|ConvertTo-Json -Depth 8
@@ -50,9 +52,9 @@ Get-BridgeTaskResultValidation -Request ({q(json.dumps(request))}|ConvertFrom-Js
     assert value['reported'] is None
     if case == 'unknown':
         assert value['schema_valid'] is None and value['content_valid'] is None
-    elif case == 'role_fields':
+    elif case in ('role_fields', 'empty_checks'):
         assert value['schema_valid'] and value['content_valid'] is None
-    elif case in ('wrong_level', 'wrong_type', 'extra'):
+    elif case in ('wrong_level', 'wrong_type', 'extra', 'empty_result'):
         assert value['schema_valid'] is False and value['content_valid'] is None
     else:
         assert value['schema_valid'] is True

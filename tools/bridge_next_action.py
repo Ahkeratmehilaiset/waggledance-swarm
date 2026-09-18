@@ -25,6 +25,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E402
+from waggledance.core.bridge_request_contract import (  # noqa: E402
+    field as correlation_field, reply_matches_request, request_is_bound, request_key,
+)
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
 )
@@ -786,8 +789,12 @@ def _open_requests_for_agent(
         if _is_request_like(event) and _addressed_to(event, agent)
     ]
     open_requests: list[Mapping[str, Any]] = []
+    # Repeated legacy wake rows are revisions of the same pending notification.
+    # Select the latest revision BEFORE applying closures (late v1 cannot erase v2).
+    request_events = requests
+    requests = _deduplicate_repeated_wake_requests(requests, agent=agent)
     for request in requests:
-        if _is_direct_rco_pass_block_request(agent=agent, event=request):
+        if _is_direct_rco_pass_block_request(agent=agent, event=request) and not request_is_bound(request):
             answered = _direct_rco_pass_block_request_closed(
                 request=request,
                 agent=agent,
@@ -799,24 +806,32 @@ def _open_requests_for_agent(
                 agent=agent,
                 closure_index=closure_index,
             )
-        if not answered and _idle_protocol_progressed_by_index(
+        if not answered and not request_is_bound(request) and _idle_protocol_progressed_by_index(
             request,
             idle_progress_index,
         ):
             answered = True
         if not answered:
             open_requests.append(request)
-    return open_requests
+    open_ids = {id(request) for request in open_requests}
+    open_wakes = {request_key(request, agent) for request in open_requests
+                  if _event_type(request) == "wake_request"}
+    return [request for request in request_events if id(request) in open_ids or (
+        _event_type(request) == "wake_request" and request_key(request, agent) in open_wakes)]
 
 
 def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, str]]:
     """Return latest answer-like event timestamps by task and closing agent."""
-    closure_index: dict[str, dict[str, str]] = {}
+    closure_index: dict[str, Any] = {"_answers": {}, "_versions": {}}
     for event in events:
+        if _is_request_like(event):
+            version_key = (_event_agent(event), _task_id(event))
+            closure_index["_versions"].setdefault(version_key, set()).add(_event_ts(event))
         if not _is_answer_like(event):
             continue
+        closure_index["_answers"].setdefault(_task_id(event), []).append(event)
         event_agent = _event_agent(event)
         event_ts = _event_ts(event)
         task_id = _task_id(event)
@@ -846,6 +861,15 @@ def _request_closed_by_index(
 ) -> bool:
     task_id = _task_id(request)
     request_ts = _event_ts(request)
+    ambiguous = len(closure_index.get("_versions", {}).get(
+        (_event_agent(request), task_id), ())) > 1
+    if request_is_bound(request) or ambiguous:
+        return any(reply_matches_request(
+            request, answer, agent,
+            requester_closure=_event_agent(answer) == _event_agent(request)
+                and _is_explicit_requester_closure(answer),
+            ambiguous_legacy=ambiguous,
+        ) for answer in closure_index.get("_answers", {}).get(task_id, ()))
     closure_keys = []
     if task_id:
         closure_keys.append(_task_closure_key(task_id))
@@ -959,7 +983,7 @@ def _deduplicate_repeated_wake_requests(
         if _event_type(request) != "wake_request":
             deduped.append(request)
             continue
-        key = (
+        key = request_key(request, target) if correlation_field(request, "request_id") else (
             _event_agent(request),
             _task_id(request),
             _event_status(request),
@@ -986,6 +1010,10 @@ def _closes_request_for_agent(
         return False
     if not _is_answer_like(event):
         return False
+    if request_is_bound(request):
+        return reply_matches_request(request, event, agent,
+            requester_closure=_event_agent(event) == _event_agent(request)
+                and _is_explicit_requester_closure(event))
     event_agent = _event_agent(event)
     return event_agent == agent.lower() or (
         event_agent == _event_agent(request) and _is_explicit_requester_closure(event)

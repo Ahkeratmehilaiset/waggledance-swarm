@@ -131,6 +131,53 @@ def test_fresh_canonical_answer_is_separate_from_old_checkpoint(fleet):
     assert datetime.fromisoformat(lane['progress']['last_substantive_progress_at_utc']) == datetime.fromisoformat(now)
     assert lane['progress']['status'] == 'canonical_answer_observed'
     assert lane['progress']['task_completion_verified'] is False
+    assert lane['health_observation']['last_answer_at_utc'] == lane['progress']['last_substantive_progress_at_utc']
+    assert lane['health_observation']['task_completion_verified'] is False
+
+
+@pytest.mark.parametrize('case', ['missing', 'legacy', 'filtered', 'wrong_agent', 'invalid',
+                                 'drained', 'pending', 'noise', 'partial', 'replaced', 'truncated'])
+def test_wake_sentinel_is_not_pending_work_and_unknown_stays_unknown(fleet, case):
+    root = fleet['root']
+    shared = root / 'shared'
+    shared.mkdir()
+    events = shared / 'events.jsonl'
+    seed = dict(agent='operator', to='claude-rco-2', type='message', status='notice',
+                task_id='seed', payload={'notification': 'informational'})
+    events.write_text(json.dumps(seed) + '\n')
+    sentinel = root / 'wake_claude-rco-2'
+    sentinel.write_text('2026-09-18T18:48:34Z')
+    state = shared / 'monitor_claude-rco-2.cursor.json'
+    if case != 'missing':
+        result = subprocess.run([fleet['shell'], '-NoProfile', '-NonInteractive', '-Command',
+            f"& {quote(ROOT / '.agent-bridge/bin/Monitor-AgentBridge.ps1')} -Agent claude-rco-2 "
+            f"-RuntimeRoot {quote(root)} -TargetedOnly -IncludeWakeRequests -Json -MaxIterations 1"],
+            text=True, capture_output=True, timeout=45)
+        assert result.returncode == 0, result.stdout + result.stderr
+        record = json.loads(state.read_text())
+        if case == 'legacy': record['metadata'].pop('delivery_scope')
+        if case == 'filtered': record['metadata']['from_agent'] = 'operator'
+        if case == 'wrong_agent': record['metadata']['agent'] = 'claude-rco-1'
+        state.write_text('{bad' if case == 'invalid' else json.dumps(record))
+    if case in ('pending', 'noise'):
+        row = dict(seed, task_id='new', status='request' if case == 'pending' else 'notice')
+        with events.open('a') as stream: stream.write(json.dumps(row) + '\n')
+    if case == 'partial':
+        with events.open('a') as stream: stream.write('{"agent":')
+    if case == 'replaced':
+        replacement = shared / 'replacement'
+        replacement.write_text(events.read_text())
+        replacement.replace(events)
+    if case == 'truncated': events.write_text('')
+    report = run_status(fleet)
+    lane = report['lanes'][2]
+    expected = True if case == 'pending' else False if case in ('drained', 'noise') else None
+    assert lane['sentinel_present'] is True
+    assert lane['wake_pending'] is expected, lane['wake_observation']
+    assert report['summary']['pending_wakes'] == (1 if case == 'pending' else 0)
+    assert report['summary']['unknown_wake_observations'] == (5 if expected is None else 4)
+    assert sentinel.read_text() == '2026-09-18T18:48:34Z'
+    assert lane['wake_observation']['task_completion_verified'] is False
 
 
 @pytest.mark.parametrize('case', ['live', 'wrong_parent', 'reused_pid', 'missing_native'])

@@ -16,6 +16,9 @@
 
     Substantive excludes infrastructure traffic and ACK-only messages:
     heartbeat, liveness, wake_request, and message/received|seen|acknowledged.
+    With -TargetedOnly -IncludeWakeRequests (agent inbox mode), apply the
+    shared wake policy and suppress identical events within this process's
+    last 4096 emitted events. Human/dashboard mode retains informational rows.
 
 .PARAMETER Agent
     The local agent running the monitor. Own emissions are ignored.
@@ -87,6 +90,13 @@ $classifier = Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1'
 if (Test-Path -LiteralPath $classifier -PathType Leaf) {
     . $classifier
 }
+$agentInbox = $TargetedOnly -and $IncludeWakeRequests
+if ($agentInbox) {
+    if (-not (Get-Command Test-BridgeWakeEligible -ErrorAction SilentlyContinue)) {
+        throw 'Monitor-AgentBridge: agent inbox requires the shared wake classifier'
+    }
+    . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+}
 
 function Get-EventTargetsLocal {
     param([Parameter(Mandatory)] [object] $Event)
@@ -117,6 +127,7 @@ function Test-SubstantiveMonitorEvent {
     if (-not $eventAgent) { return $false }
     if ($eventAgent -eq $LocalAgent) { return $false }
     if ($SenderFilter -and $eventAgent -ne $SenderFilter) { return $false }
+    if ($agentInbox -and -not (Test-BridgeWakeEligible $Event)) { return $false }
 
     if ($OnlyTargeted) {
         if (@(Get-EventTargetsLocal -Event $Event) -notcontains $LocalAgent) {
@@ -169,6 +180,8 @@ function Save-Cursor {
         from_agent      = $FromAgent
         targeted_only   = [bool]$TargetedOnly
         replay_existing = [bool]$ReplayExisting
+        include_wake_requests = [bool]$IncludeWakeRequests
+        delivery_scope = if ($agentInbox) { 'agent_inbox' } else { 'dashboard' }
     }
 }
 
@@ -193,6 +206,8 @@ if ($state.status -ceq 'OK') {
 }
 
 $iteration = 0
+$seenEvents = New-Object 'Collections.Generic.HashSet[string]'
+$seenOrder = New-Object 'Collections.Generic.Queue[string]'
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
 
@@ -209,6 +224,18 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
                     -SenderFilter $FromAgent `
                     -OnlyTargeted ([bool]$TargetedOnly))) {
                 continue
+            }
+            if ($agentInbox) {
+                # Full immutable event identity, never task ID: revisions and
+                # late corrections remain distinct even for the same request.
+                $hasher = [Security.Cryptography.SHA256]::Create()
+                try {
+                    $key = [BitConverter]::ToString($hasher.ComputeHash(
+                        [Text.Encoding]::UTF8.GetBytes((ConvertTo-BridgeContractJson $event))))
+                } finally { $hasher.Dispose() }
+                if (-not $seenEvents.Add($key)) { continue }
+                $seenOrder.Enqueue($key)
+                if ($seenOrder.Count -gt 4096) { [void]$seenEvents.Remove($seenOrder.Dequeue()) }
             }
             if ($Json) {
                 Write-Output ($event | ConvertTo-Json -Depth 12 -Compress)

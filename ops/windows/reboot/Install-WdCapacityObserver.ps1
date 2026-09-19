@@ -44,15 +44,25 @@ $manifest = [ordered]@{schema='wd.capacity-observer-install.v1';source_commit=$h
     codex=$CodexExecutable;codex_sha256=(Get-ObserverHash $CodexExecutable);
     store=(Join-Path $root 'observations.sqlite');execution_mode='metadata_only'}
 if (-not $Apply) { $manifest | ConvertTo-Json -Depth 8; return }
-if (Test-Path -LiteralPath $release) { throw 'Release directory already exists; verify existing installation instead of overwriting' }
-[void](New-Item -ItemType Directory -Path $release -Force)
-foreach ($file in $files) {
-    $target = Join-Path $release $file
-    [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
-    Copy-Item -LiteralPath (Join-Path $repo $file) -Destination $target
-}
 $manifestPath = Join-Path $release 'manifest.json'
-$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+$manifestJson = $manifest | ConvertTo-Json -Depth 8
+if (Test-Path -LiteralPath $release) {
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+        (Get-Content -LiteralPath $manifestPath -Raw).Trim() -cne $manifestJson.Trim()) {
+        throw 'Existing observer release differs or is incomplete; refusing overwrite'
+    }
+    foreach ($file in $files) {
+        if ((Get-ObserverHash (Join-Path $release $file)) -cne $hashes[$file]) { throw 'Existing observer release changed' }
+    }
+} else {
+    [void](New-Item -ItemType Directory -Path $release -Force)
+    foreach ($file in $files) {
+        $target = Join-Path $release $file
+        [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
+        Copy-Item -LiteralPath (Join-Path $repo $file) -Destination $target
+    }
+    $manifestJson | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+}
 $anchor = (Get-ObserverHash $manifestPath)
 $runner = Join-Path $release 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1'
 $hostPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -67,8 +77,15 @@ $triggers = @(
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $old = Get-ScheduledTask -TaskName 'WD-CapacityObserver' -ErrorAction SilentlyContinue
-if ($old) { throw 'WD-CapacityObserver already exists; replacement requires explicit installation reconciliation' }
-Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal | Out-Null
+if ($old) {
+    if (@($old.Actions).Count -ne 1 -or $old.Actions[0].Execute -ine $hostPath -or
+        $old.Actions[0].Arguments -cne $arguments -or $old.Principal.UserId -ine $identity -or
+        [string]$old.Principal.RunLevel -cne 'Limited') {
+        throw 'Existing task is not this exact Limited observer; refusing replacement'
+    }
+} else {
+    Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal | Out-Null
+}
 [pscustomobject]@{source_commit=$head;manifest=$manifestPath;manifest_sha256=$anchor;task='WD-CapacityObserver';mode='metadata_only'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'current.json') -Encoding UTF8
 Start-ScheduledTask -TaskName 'WD-CapacityObserver'

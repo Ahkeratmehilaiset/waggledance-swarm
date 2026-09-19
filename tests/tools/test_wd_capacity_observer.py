@@ -56,3 +56,51 @@ def test_runner_checks_pins_and_invokes_only_scheduled_metadata(tmp_path, host, 
     else:
         assert proc.returncode == 0, proc.stderr
         assert 'metadata-only-fixture' in proc.stdout
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+def test_install_retry_after_registration_failure_reuses_exact_release(tmp_path, host):
+    if host is None:
+        pytest.skip('Windows PowerShell unavailable')
+    repo = tmp_path / 'repo'
+    source = repo / 'ops/windows/reboot'
+    source.mkdir(parents=True)
+    installer = source / 'Install-WdCapacityObserver.ps1'
+    shutil.copyfile(ROOT / 'ops/windows/reboot/Install-WdCapacityObserver.ps1', installer)
+    for relative in ('tools/bridge_capacity_advisor.py', 'tools/bridge_capacity_collector.py',
+                     'tools/bridge_capacity_recovery.py', 'ops/windows/reboot/Invoke-WdCapacityObserver.ps1'):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('fixture source')
+    harness = tmp_path / 'retry.ps1'
+    harness.write_text(r'''
+param($Installer,$Python,$Root)
+$ErrorActionPreference='Stop'
+$global:wd_test_attempt=0
+$global:wd_test_starts=0
+$global:wd_test_task=$null
+function git { $global:LASTEXITCODE=0; if($args -contains 'rev-parse') { '1111111111111111111111111111111111111111' } }
+function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory) [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
+function New-ScheduledTaskTrigger { param([switch]$AtLogOn,$User,[switch]$Once,$At,$RepetitionInterval) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances,$ExecutionTimeLimit,[switch]$StartWhenAvailable) [pscustomobject]@{} }
+function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
+function Get-ScheduledTask { param($TaskName,$ErrorAction) $global:wd_test_task }
+function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Settings,$Principal)
+  $global:wd_test_attempt++; if($global:wd_test_attempt -eq 1){throw 'simulated registration denial'}
+  $global:wd_test_task=[pscustomobject]@{Actions=@($Action);Principal=$Principal}
+}
+function Start-ScheduledTask {param($TaskName) $global:wd_test_starts++}
+try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'first registration should fail' }
+catch { if($_.Exception.Message -ne 'simulated registration denial'){throw} }
+& $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
+& $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
+if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 2){throw 'registration was duplicated'}
+'retry-preserved-exact-release'
+''', encoding='utf-8')
+    proc = subprocess.run([host, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                           '-File', str(harness), '-Installer', str(installer),
+                           '-Python', PYTHON, '-Root', str(tmp_path / 'installed')],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert 'retry-preserved-exact-release' in proc.stdout
+

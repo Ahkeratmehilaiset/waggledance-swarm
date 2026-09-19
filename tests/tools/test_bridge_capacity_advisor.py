@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.bridge_capacity_advisor import (  # noqa: E402
     InputError,
+    REACHED_TYPES,
     build_report,
     example_input,
     normalize_capacity,
@@ -24,6 +25,39 @@ from tools.bridge_capacity_advisor import (  # noqa: E402
 NOW = datetime(2026, 9, 18, 20, tzinfo=timezone.utc)
 STAMP = NOW.isoformat()
 RESET = (NOW + timedelta(hours=1)).timestamp()
+
+
+@pytest.mark.parametrize('value', [False, 0, '', {}, [], 'usageLimit', 'future_limit'])
+def test_invalid_reached_signal_is_unknown(value):
+    obs = observation()
+    obs['payload']['rateLimitsByLimitId']['codex']['rateLimitReachedType'] = value
+    result = capacity([obs])
+    assert result['state'] == 'unknown'
+    assert result['limit_signals'][0]['reason'] == 'invalid_reached_type'
+    obs['payload']['rateLimitsByLimitId']['codex']['primary']['usedPercent'] = 100
+    assert capacity([obs])['state'] == 'exhausted'
+
+
+@pytest.mark.parametrize('value', sorted(REACHED_TYPES))
+def test_protocol_reached_signals_are_exhausted(value):
+    obs = observation()
+    obs['payload']['rateLimitsByLimitId']['codex']['rateLimitReachedType'] = value
+    assert capacity([obs])['state'] == 'exhausted'
+
+
+def test_extreme_grok_clock_returns_structured_cli_result():
+    doc = example_input(NOW)
+    end = '9999-12-31T23:30:00+00:00'
+    doc['snapshot']['grok'] = dict(observed_at=end, last_attempt_at=end,
+                                  source_ref='fixture', in_flight=False)
+    proc = subprocess.run([sys.executable, str(ROOT / 'tools/bridge_capacity_advisor.py'),
+                           '--stdin', '--now', end], input=json.dumps(doc),
+                          capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(proc.stdout)
+    assert report['execution_allowed'] is False
+    assert report['grok']['state'] == 'unknown'
+    assert report['grok']['reason'] == 'budget_timestamp_overflow'
 
 
 def observation(provider="codex", used=25, account="account-a", limit="codex"):
@@ -140,7 +174,7 @@ def test_all_declared_buckets_apply():
 
 def test_provider_reached_flag_is_not_ignored():
     obs = observation()
-    obs["payload"]["rateLimitsByLimitId"]["codex"]["rateLimitReachedType"] = "usageLimit"
+    obs["payload"]["rateLimitsByLimitId"]["codex"]["rateLimitReachedType"] = "rate_limit_reached"
     assert capacity([obs])["state"] == "exhausted"
 
 

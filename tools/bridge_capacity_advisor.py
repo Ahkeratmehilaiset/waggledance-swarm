@@ -60,6 +60,13 @@ MAX_INPUT_BYTES = 2 * 1024 * 1024
 ROLES = {"lead", "tools", "fable", "rco1", "rco2", "grok"}
 PROVIDERS = {"codex", "claude"}
 SAFE_REASONS = {"routine", "quota", "quality", "unavailable"}
+# codex-cli 0.154.0: app-server generate-json-schema,
+# v2/GetAccountRateLimitsResponse.json, RateLimitReachedType (2026-09-19).
+REACHED_TYPES = frozenset({
+    "rate_limit_reached", "workspace_owner_credits_depleted",
+    "workspace_member_credits_depleted", "workspace_owner_usage_limit_reached",
+    "workspace_member_usage_limit_reached",
+})
 PRESERVED_FIELDS = ("task_id", "head", "claim_id", "request_id", "scope_digest",
                     "authority_ref", "required_reviewers")
 
@@ -146,7 +153,7 @@ def normalize_capacity(observations: list, *, provider: str, account_pool: str,
     _validate_limits(limits, provider)
     result = {"provider": provider, "account_pool": account_pool,
               "state": "unknown", "reason": "missing_observation",
-              "observed_at": None, "source_ref": None, "windows": []}
+              "observed_at": None, "source_ref": None, "windows": [], "limit_signals": []}
     matches = [row for row in observations if isinstance(row, dict)
                and row.get("provider") == provider and row.get("account_pool") == account_pool]
     if not matches:
@@ -180,8 +187,17 @@ def normalize_capacity(observations: list, *, provider: str, account_pool: str,
             if bucket.get("limitId") != limit["id"]:
                 unknown = True
                 continue
-            if bucket.get("rateLimitReachedType") is not None:
-                exhausted = True
+            reached = bucket.get("rateLimitReachedType")
+            if reached is not None:
+                valid_signal = isinstance(reached, str) and reached in REACHED_TYPES
+                result["limit_signals"].append({
+                    "limit_id": limit["id"], "valid": valid_signal,
+                    "value": reached if valid_signal else None,
+                    "raw_type": type(reached).__name__,
+                    "reason": "server_limit_reached" if valid_signal else "invalid_reached_type",
+                })
+                exhausted |= valid_signal
+                unknown |= not valid_signal
             names = set(limit["windows"]) | {x for x in ("primary", "secondary")
                                            if bucket.get(x) is not None}
             percent_key, reset_key = "usedPercent", "resetsAt"
@@ -388,7 +404,11 @@ def _grok_status(status: Any, now: datetime, ttl: int) -> dict:
     last = _time(status.get("last_attempt_at"))
     if status.get("in_flight") is not False or last is None or last > now:
         return result
-    next_at = last + timedelta(hours=1)
+    try:
+        next_at = last + timedelta(hours=1)
+    except OverflowError:
+        result["reason"] = "budget_timestamp_overflow"
+        return result
     remaining = max(0, math.ceil((next_at - now).total_seconds()))
     result.update(state="cooldown" if remaining else "recheck_shared_budget",
                   seconds_until_eligible=remaining, next_eligible_at=next_at.isoformat())

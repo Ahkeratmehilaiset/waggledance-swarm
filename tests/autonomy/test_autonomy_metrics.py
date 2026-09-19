@@ -171,3 +171,49 @@ class TestAutonomyMetrics:
         assert "llm_fallback_rate" in AutonomyMetrics.TARGETS
         assert "specialist_accuracy" in AutonomyMetrics.TARGETS
         assert len(AutonomyMetrics.TARGETS) >= 8
+
+
+# -- Literal-True verifier pass recording (fail-closed) ---------------
+
+class _ExplosiveBool:
+    """A value whose truthiness must never be consulted."""
+
+    def __bool__(self):  # pragma: no cover - reaching this IS the failure
+        raise AssertionError(
+            "truthiness of a verifier pass flag must not be evaluated")
+
+    def __repr__(self):
+        return "_ExplosiveBool()"
+
+
+_NOT_LITERAL_TRUE_PASSED = [
+    "false", "true", "True", "yes", 1, 2, 1.0, [0], ["passed"],
+    {"passed": True}, _ExplosiveBool(),
+]
+
+
+class TestRecordVerificationLiteralTrue:
+    """record_verification must count only the literal True as a pass."""
+
+    @pytest.mark.parametrize("value", _NOT_LITERAL_TRUE_PASSED, ids=repr)
+    def test_non_literal_true_is_recorded_as_fail(self, value):
+        m = AutonomyMetrics()
+        m.record_verification(passed=value, confidence=0.5)
+        assert m.get_metric("verifier_pass") == 0.0
+        assert m.get_kpis()["verifier_pass_rate"]["value"] == 0.0
+
+    def test_literal_true_and_false_are_unchanged(self):
+        m = AutonomyMetrics()
+        m.record_verification(passed=True, confidence=0.9)
+        m.record_verification(passed=False, confidence=0.1)
+        assert m.get_metric("verifier_pass") == 0.5
+        assert m.get_kpis()["verifier_pass_rate"]["value"] == 0.5
+
+    def test_kpi_is_not_inflated_by_truthy_stand_ins(self):
+        m = AutonomyMetrics()
+        m.record_verification(passed=True, confidence=0.9)
+        for stand_in in ("false", 1, [0], "no"):
+            m.record_verification(passed=stand_in, confidence=0.5)
+        # one real pass among five observations
+        assert m.get_metric("verifier_pass") == pytest.approx(0.2)
+        assert m.get_kpis()["verifier_pass_rate"]["value"] == pytest.approx(0.2)

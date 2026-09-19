@@ -267,3 +267,21 @@ def test_status_retains_budget_after_interrupted_first_poll(tmp_path):
     assert result['collection']['codex']['next_eligible_poll']==(now+timedelta(seconds=300)).isoformat()
     assert result['collection']['codex']['last_success'] is None
     assert result['observations']==[] and path.read_bytes()==before
+@pytest.mark.parametrize('code,expected', [(-32601,'unknown'),(-32600,'unknown'),(500,'unknown'),
+                                         (401,'auth_required'),(429,'rate_limited'),({},'unknown'),(True,'unknown')])
+def test_rpc_errors_do_not_invent_transport_failures(code, expected):
+    from types import SimpleNamespace
+    class Writer:
+        def write(self, _): pass
+        async def drain(self): pass
+    async def invoke():
+        client=MetadataClient('unused')
+        reader=asyncio.StreamReader()
+        reader.feed_data((json.dumps(dict(id=1,error=dict(code=code,message='private detail')))+'\n').encode())
+        reader.feed_eof()
+        client.process=SimpleNamespace(stdin=Writer(),stdout=reader)
+        with pytest.raises(collector.MetadataFailure) as failure:
+            await client.request('account/read')
+        assert failure.value.state==expected
+        assert str(failure.value)=='metadata unavailable'
+    asyncio.run(invoke())

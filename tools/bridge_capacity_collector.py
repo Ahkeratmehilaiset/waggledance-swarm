@@ -136,7 +136,9 @@ class MetadataClient:
                 if reply.get('id') == request_id:
                     if 'error' in reply:
                         code = _dict(reply['error']).get('code')
-                        raise MetadataFailure({401: 'auth_required', 429: 'rate_limited'}.get(code, 'transport_error')
+                        # RPC failures include unsupported methods and bad parameters;
+                        # an arbitrary numeric code does not establish a transport fault.
+                        raise MetadataFailure({401: 'auth_required', 429: 'rate_limited'}.get(code, 'unknown')
                                               if type(code) is int else 'unknown')
                     if not isinstance(reply.get('result'), dict):
                         raise InputError('metadata request failed')

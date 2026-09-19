@@ -136,6 +136,7 @@ def test_full_handoff_and_handback_preserves_evidence(store):
     assert state["owner"]["provider"] == "claude"
     assert state["epoch"] == 2
     assert state["checkpoint"]["veto_refs"] == ["veto-1"]
+    assert state["checkpoint_sha256"] == digest(state["checkpoint"])
     assert state["task"] == task()
 
 
@@ -541,7 +542,8 @@ def test_two_independent_slots_remain_separate(store):
     assert a["task"]["required_reviewers"] == b["task"]["required_reviewers"] == ["rco1", "rco2"]
 
 
-@pytest.mark.parametrize("raw", ["{", "null", "{}", '[1,2]', '{"policy_digest":"bad"}'])
+@pytest.mark.parametrize("raw", ["{", "null", "{}", '[1,2]', '{"policy_digest":"bad"}',
+                                  sqlite3.Binary(b"{}")])
 def test_corrupt_state_returns_controlled_refusal(store, raw):
     create(store)
     store.db.execute("UPDATE reviews SET state=?", (raw,))
@@ -562,6 +564,12 @@ def test_valid_json_state_tamper_cannot_override_journal(store):
 @pytest.mark.parametrize("raw", ['1e999', '-1e999', '{"x":1e999}', '[1e999]'])
 def test_overflow_float_is_refused_at_parser_boundary(raw):
     with pytest.raises(HandoffError):
+        load_json(raw)
+
+
+@pytest.mark.parametrize("raw", [b"{}", None, 0, False, [], {}])
+def test_json_parser_requires_text(raw):
+    with pytest.raises(HandoffError, match="json_text_required"):
         load_json(raw)
 
 

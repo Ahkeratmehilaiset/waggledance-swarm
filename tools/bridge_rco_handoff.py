@@ -452,6 +452,7 @@ class HandoffStore:
 
 
 def load_json(raw: str) -> Any:
+    require(isinstance(raw, str), "json_text_required")
     require(len(raw.encode("utf-8")) <= MAX_BYTES, "document_too_large")
 
     def pairs(items):

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Exercise the actual pinned observer runner in both supported PowerShell hosts."""
 import hashlib
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import subprocess
 import sys
 
 import pytest
+
+from tools.bridge_capacity_collector import reserve_poll
 
 ROOT = Path(__file__).resolve().parents[2]
 HOSTS = [x for x in ('powershell', 'pwsh') if sys.platform == 'win32' and shutil.which(x)]
@@ -82,7 +85,10 @@ $global:wd_test_task=$null
 $global:wd_test_head='1111111111111111111111111111111111111111'
 function git { $global:LASTEXITCODE=0; if($args -contains 'rev-parse') { $global:wd_test_head } }
 function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory) [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
-function New-ScheduledTaskTrigger { param([switch]$AtLogOn,$User,[switch]$Once,$At,$RepetitionInterval) [pscustomobject]@{} }
+function New-ScheduledTaskTrigger { param([switch]$AtLogOn,$User,[switch]$Once,$At,$RepetitionInterval)
+  if($Once){$global:wd_test_poll_seconds=$RepetitionInterval.TotalSeconds}
+  [pscustomobject]@{}
+}
 function New-ScheduledTaskSettingsSet { param($MultipleInstances,$ExecutionTimeLimit,[switch]$StartWhenAvailable) [pscustomobject]@{} }
 function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
 function Get-ScheduledTask { param($TaskName,$ErrorAction) $global:wd_test_task }
@@ -97,12 +103,26 @@ catch { if($_.Exception.Message -ne 'simulated registration denial'){throw} }
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
 if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 2){throw 'registration was duplicated'}
+$user=[Security.Principal.WindowsIdentity]::GetCurrent()
+foreach($alias in @(($user.Name -split '\\')[-1],$user.User.Value)) {
+  $global:wd_test_task.Principal.UserId=$alias
+  & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
+}
+if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 4){throw 'same SID alias not reused'}
+foreach($foreign in @('S-1-5-18','S-1-5-invalid')) {
+  $global:wd_test_task.Principal.UserId=$foreign
+  try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'foreign principal accepted' }
+  catch { if($_.Exception.Message -ne 'Existing task is not this exact Limited observer; refusing replacement'){throw} }
+}
+if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 4){throw 'foreign principal caused side effect'}
+$global:wd_test_task.Principal.UserId=$user.User.Value
 $global:wd_test_head='2222222222222222222222222222222222222222'
 try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'update must be explicit' }
 catch { if($_.Exception.Message -ne 'A verified observer update requires -Apply -Update'){throw} }
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply -Update
-if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 3){throw 'update not applied exactly once'}
+if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 5){throw 'update not applied exactly once'}
 'retry-preserved-exact-release'
+"poll-seconds=$global:wd_test_poll_seconds"
 ''', encoding='utf-8')
     proc = subprocess.run([host, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                            '-File', str(harness), '-Installer', str(installer),
@@ -110,4 +130,17 @@ if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 3){throw 'update
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert 'retry-preserved-exact-release' in proc.stdout
+    interval = float(next(line.split('=', 1)[1] for line in proc.stdout.splitlines()
+                          if line.startswith('poll-seconds=')))
+    # Reproduce the observed scheduler jitter using the actual configured trigger
+    # and actual shared poll budget, without querying any provider.
+    start = datetime.now(timezone.utc)
+    admitted = []
+    for tick in range(21):
+        elapsed = tick * interval - (0.25 if tick else 0)
+        if reserve_poll(tmp_path / 'cadence.sqlite', now=start + timedelta(seconds=elapsed)):
+            admitted.append(elapsed)
+    gaps = [b - a for a, b in zip(admitted, admitted[1:])]
+    assert gaps and min(gaps) >= 300, 'provider budget must not increase'
+    assert max(gaps) <= 360, 'small scheduler jitter must not cause a ten-minute gap'
 

@@ -3,7 +3,8 @@
 .SYNOPSIS
 Install a hash-pinned, Limited, metadata-only capacity observer.
 .DESCRIPTION
-Default is a plan. -Apply registers a five-minute task and logon trigger.
+Default is a plan. -Apply registers a minute task and logon trigger;
+the collector admits at most one provider request per five minutes.
 This does not change the bridge supervisor, models, terminals or Grok budget.
 The source tree must be clean; required CI/review gates are the caller's duty.
 #>
@@ -76,14 +77,26 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute $hostPath -Argument $arguments -WorkingDirectory $release
 $triggers = @(
     (New-ScheduledTaskTrigger -AtLogOn -User $identity),
-    (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5))
+    (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1))
 )
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $old = Get-ScheduledTask -TaskName 'WD-CapacityObserver' -ErrorAction SilentlyContinue
 if ($old) {
+    # Task Scheduler can return DOMAIN\user, user, or a SID for the same owner.
+    # Resolve the actual security identity; never authorize by a display name.
+    $ownerSid = $null
+    try {
+        $owner = [string]$old.Principal.UserId
+        if ($owner -match '^S-\d-') {
+            $ownerSid = ([Security.Principal.SecurityIdentifier]::new($owner)).Value
+        } else {
+            $ownerSid = ([Security.Principal.NTAccount]::new($owner)).Translate(
+                [Security.Principal.SecurityIdentifier]).Value
+        }
+    } catch { $ownerSid = $null }
     if (@($old.Actions).Count -ne 1 -or $old.Actions[0].Execute -ine $hostPath -or
-        $old.Principal.UserId -ine $identity -or
+        $ownerSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
         [string]$old.Principal.RunLevel -cne 'Limited') {
         throw 'Existing task is not this exact Limited observer; refusing replacement'
     }

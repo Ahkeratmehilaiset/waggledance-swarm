@@ -41,7 +41,8 @@ $codexHash = Get-ObserverHash $CodexExecutable
 $releaseId = $head + '-' + $pythonHash.Substring(0,12) + '-' + $codexHash.Substring(0,12)
 $release = Join-Path $root $releaseId
 $files = @('tools\bridge_capacity_advisor.py', 'tools\bridge_capacity_collector.py',
-           'tools\bridge_capacity_recovery.py', 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1')
+           'tools\bridge_capacity_recovery.py', 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1',
+           'ops\windows\reboot\Get-WdCapacityStatus.ps1')
 $hashes = [ordered]@{}
 foreach ($file in $files) { $hashes[$file] = (Get-ObserverHash (Join-Path $repo $file)) }
 $manifest = [ordered]@{schema='wd.capacity-observer-install.v1';source_commit=$head;files=$hashes;
@@ -49,6 +50,16 @@ $manifest = [ordered]@{schema='wd.capacity-observer-install.v1';source_commit=$h
     codex=$CodexExecutable;codex_sha256=$codexHash;
     store=(Join-Path $root 'observations.sqlite');execution_mode='metadata_only'}
 if (-not $Apply) { $manifest | ConvertTo-Json -Depth 8; return }
+$statusCommand=Join-Path (Split-Path $root -Parent) 'Get-WdCapacityStatus.ps1'
+if(Test-Path -LiteralPath $statusCommand){
+    $priorPointer=Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw|ConvertFrom-Json
+    $priorPath=[IO.Path]::GetFullPath([string]$priorPointer.manifest)
+    if(-not $priorPath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or
+       (Get-ObserverHash $priorPath) -ine $priorPointer.manifest_sha256){throw 'Cannot verify prior status command owner'}
+    $prior=Get-Content -LiteralPath $priorPath -Raw|ConvertFrom-Json
+    $priorField=$prior.files.PSObject.Properties['ops\windows\reboot\Get-WdCapacityStatus.ps1']
+    if($null -eq $priorField -or (Get-ObserverHash $statusCommand) -ine $priorField.Value){throw 'Existing status command differs; preserve it'}
+}
 $manifestPath = Join-Path $release 'manifest.json'
 $manifestJson = $manifest | ConvertTo-Json -Depth 8
 if (Test-Path -LiteralPath $release) {
@@ -123,6 +134,7 @@ if ($old) {
 }
 [pscustomobject]@{source_commit=$head;release_id=$releaseId;manifest=$manifestPath;manifest_sha256=$anchor;task='WD-CapacityObserver';mode='metadata_only'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'current.json') -Encoding UTF8
+Copy-Item -LiteralPath (Join-Path $release 'ops\windows\reboot\Get-WdCapacityStatus.ps1') -Destination $statusCommand -Force
 Start-ScheduledTask -TaskName 'WD-CapacityObserver'
 Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw
 

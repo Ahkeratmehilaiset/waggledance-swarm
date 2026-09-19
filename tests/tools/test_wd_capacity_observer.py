@@ -71,7 +71,8 @@ def test_install_retry_after_registration_failure_reuses_exact_release(tmp_path,
     installer = source / 'Install-WdCapacityObserver.ps1'
     shutil.copyfile(ROOT / 'ops/windows/reboot/Install-WdCapacityObserver.ps1', installer)
     for relative in ('tools/bridge_capacity_advisor.py', 'tools/bridge_capacity_collector.py',
-                     'tools/bridge_capacity_recovery.py', 'ops/windows/reboot/Invoke-WdCapacityObserver.ps1'):
+                     'tools/bridge_capacity_recovery.py', 'ops/windows/reboot/Invoke-WdCapacityObserver.ps1',
+                     'ops/windows/reboot/Get-WdCapacityStatus.ps1'):
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text('fixture source')
@@ -143,4 +144,47 @@ if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 5){throw 'update
     gaps = [b - a for a, b in zip(admitted, admitted[1:])]
     assert gaps and min(gaps) >= 300, 'provider budget must not increase'
     assert max(gaps) <= 360, 'small scheduler jitter must not cause a ten-minute gap'
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('case', ['valid','pointer','manifest','source','python','escaped_store','missing_store','foreign_store'])
+def test_shared_status_locator_is_verified_readonly_and_does_not_collect(tmp_path, host, case):
+    if host is None:
+        pytest.skip('Windows PowerShell unavailable')
+    root = tmp_path / 'installed'
+    release = root / ('a' * 40)
+    files = {}
+    for relative in ('tools/bridge_capacity_advisor.py','tools/bridge_capacity_collector.py',
+                     'ops/windows/reboot/Get-WdCapacityStatus.ps1'):
+        target = release / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+        files[relative.replace('/', '\\')] = sha(target)
+    store = root / 'observations.sqlite'
+    from tools.bridge_capacity_collector import save_observation
+    import sqlite3
+    if case == 'foreign_store':
+        with sqlite3.connect(store) as db:
+            db.execute('CREATE TABLE foreign_data(value TEXT)')
+    elif case != 'missing_store':
+        save_observation(store, dict(provider='codex',observed_at='2026-09-19T00:00:00Z'))
+    manifest = release / 'manifest.json'
+    value = dict(schema='wd.capacity-observer-install.v1',execution_mode='metadata_only',source_commit='a'*40,
+                 files=files,python=PYTHON,python_sha256='0'*64 if case=='python' else sha(Path(PYTHON)),
+                 store=str(tmp_path/'escaped.sqlite' if case=='escaped_store' else store))
+    manifest.write_text(json.dumps(value),encoding='utf-8')
+    pointer = dict(mode='metadata_only',source_commit='a'*40,manifest=str(manifest),manifest_sha256=sha(manifest))
+    if case=='pointer': pointer['mode']='execute'
+    (root/'current.json').write_text(json.dumps(pointer),encoding='utf-8')
+    if case=='manifest': manifest.write_text('{}')
+    if case=='source': (release/'tools/bridge_capacity_collector.py').write_text("raise RuntimeError('must not execute')")
+    before = {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    result = subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(release/'ops/windows/reboot/Get-WdCapacityStatus.ps1'),
+                             '-InstallRoot',str(root)],capture_output=True,text=True,timeout=30)
+    assert result.returncode == (0 if case=='valid' else 2), result.stderr
+    output = json.loads(result.stdout)
+    assert output['execution_allowed'] is False
+    if case=='valid': assert output['installation']['source_verified'] is True
+    after = {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    assert before == after
 

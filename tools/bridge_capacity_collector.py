@@ -204,11 +204,20 @@ def save_observation(path: Path, observation: dict) -> None:
 def status(path: Path, *, now: datetime | None = None) -> dict:
     """Read-only recent observations; session/auth context is not a quota identity."""
     now = now or datetime.now(timezone.utc)
+    # Our producer uses rollback journals. SQLite's read-only WAL connections
+    # can create/update shared-memory sidecars; never silently do that to a
+    # foreign database, or ignore its WAL by claiming an immutable snapshot.
+    with path.open('rb') as source:
+        header = source.read(20)
+    if header[:16] == b'SQLite format 3\x00' and 2 in header[18:20]:
+        raise InputError('WAL status is unsupported without an existing read-only snapshot')
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
         rows = db.execute('SELECT sequence,data FROM observations ORDER BY sequence DESC LIMIT 2048').fetchall()
     latest, failed, newest_provider = {}, {}, {}
     for sequence, raw in rows:
         row = json.loads(raw)
+        if not isinstance(row, dict) or row.get('provider') not in ('codex', 'claude'):
+            raise InputError('invalid observation row')
         provider = row['provider']
         newest_provider.setdefault(provider, sequence)
         key = (provider, row.get('auth_context_id'), row.get('native_thread_id'))
@@ -265,10 +274,20 @@ def main(argv=None) -> int:
     parser.add_argument('--codex-executable')
     parser.add_argument('--store', type=Path, required=True)
     args = parser.parse_args(argv)
+    # A status failure is not a collection attempt. Keep both exits outside every
+    # path that reserves a poll, starts a provider, or saves an observation.
+    if args.status:
+        try:
+            result = status(args.store)
+            encoded = json.dumps(result, allow_nan=False)
+        except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            print(json.dumps({'schema': 'wd.capacity-status.v1', 'state': 'unknown',
+                              'reason': 'status_unavailable', 'execution_allowed': False,
+                              'observed_at': utcnow(), 'observations': []}))
+            return 2
+        print(encoded)
+        return 0
     try:
-        if args.status:
-            print(json.dumps(status(args.store), allow_nan=False))
-            return 0
         if args.provider is None:
             raise InputError('provider required for collection')
         if args.statusline and args.provider != 'claude':

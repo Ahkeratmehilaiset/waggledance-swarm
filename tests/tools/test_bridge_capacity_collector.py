@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.bridge_capacity_advisor import InputError
+from tools import bridge_capacity_collector as collector
 from tools.bridge_capacity_collector import (MetadataClient, collect_codex, collect_claude,
                                              quota_payload, save_observation, status, reserve_poll)
 
@@ -121,3 +122,51 @@ def test_successful_recollection_clears_historical_error(tmp_path):
     report = status(path, now=now)
     assert report['failed_providers'] == []
     assert report['observations'][0]['freshness'] == 'fresh'
+
+
+@pytest.mark.parametrize('kind', ['missing', 'foreign', 'corrupt', 'bad_json', 'bad_shape', 'valid'])
+@pytest.mark.parametrize('extra', [[], ['--provider', 'codex', '--scheduled', '--statusline']])
+def test_status_cli_never_mutates_even_on_error(tmp_path, monkeypatch, capsys, kind, extra):
+    path = tmp_path / 'status.sqlite'
+    if kind == 'foreign':
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE unrelated(value TEXT)')
+    elif kind == 'corrupt':
+        path.write_bytes(b'not a database')
+    elif kind in ('bad_json', 'bad_shape', 'valid'):
+        save_observation(path, dict(provider='codex', observed_at=datetime.now(timezone.utc).isoformat()))
+        if kind != 'valid':
+            with sqlite3.connect(path) as db:
+                db.execute('UPDATE observations SET data=?', ('not json' if kind == 'bad_json' else '[]',))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    def forbidden(*args, **kwargs):
+        pytest.fail('read-only status reached a collection/write path')
+    monkeypatch.setattr(collector, 'save_observation', forbidden)
+    monkeypatch.setattr(collector, 'reserve_poll', forbidden)
+    monkeypatch.setattr(collector, 'MetadataClient', forbidden)
+    assert collector.main(['--status', '--store', str(path), *extra]) == (0 if kind == 'valid' else 2)
+    result = json.loads(capsys.readouterr().out)
+    assert result['execution_allowed'] is False
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_status_access_denied_does_not_try_to_save(tmp_path, monkeypatch, capsys):
+    def denied(*args, **kwargs):
+        raise PermissionError('fixture')
+    monkeypatch.setattr(collector, 'status', denied)
+    monkeypatch.setattr(collector, 'save_observation', lambda *a: pytest.fail('status wrote'))
+    assert collector.main(['--status', '--store', str(tmp_path / 'denied')]) == 2
+    assert json.loads(capsys.readouterr().out)['reason'] == 'status_unavailable'
+    assert not list(tmp_path.iterdir())
+
+
+def test_status_does_not_create_wal_shared_memory(tmp_path, capsys):
+    path = tmp_path / 'wal.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE observations(sequence INTEGER PRIMARY KEY,provider TEXT,data TEXT)')
+        db.commit()
+        before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+        assert collector.main(['--status', '--store', str(path)]) == 2
+        assert json.loads(capsys.readouterr().out)['reason'] == 'status_unavailable'
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before

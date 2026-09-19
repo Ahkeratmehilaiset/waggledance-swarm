@@ -65,16 +65,23 @@ def write_receipt_bundle(
     _write_json(manifest_path, manifest)
 
     verifier_report = verify_manifest(manifest_path)
-    if not verifier_report.get("ok", False):
-        errors = "; ".join(str(error) for error in verifier_report.get("errors", []))
-        raise ValueError(f"receipt bundle verification failed: {errors}")
+    verifier_ok = verifier_report.get("ok")
+    if verifier_ok is not True:
+        errors = [str(error) for error in verifier_report.get("errors", [])]
+        if type(verifier_ok) is not bool:
+            errors.insert(0, "verifier ok must be a literal bool")
+        elif not errors:
+            errors.append("verifier returned ok=false")
+        raise ValueError(
+            f"receipt bundle verification failed: {'; '.join(errors)}"
+        )
 
     return {
         "out_dir": str(out_dir),
         "manifest": str(manifest_path),
         "receipt_count": len(entries),
         "verifier_report": {
-            "ok": bool(verifier_report["ok"]),
+            "ok": verifier_ok,
             "receipt_count": verifier_report["receipt_count"],
             "errors": verifier_report["errors"],
         },

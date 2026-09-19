@@ -91,6 +91,95 @@ function Read-WdStatusRecord {
     finally { $stream.Dispose() }
 }
 
+function Get-WdStatusWakeObservation {
+    param([string] $Root, [string] $Agent, [string] $Worktree,
+        [object[]] $Processes, [string] $MonitorFile)
+    $path = Join-Path $Root ('shared/monitor_{0}.cursor.json' -f $Agent)
+    $result = [pscustomobject]@{
+        source_domain = 'bounded_agent_inbox_cursor_delta'; source_path = $path
+        status = 'unknown'; pending = $null; reason = 'inbox_cursor_missing'
+        sentinel_present = Test-Path -LiteralPath (Join-Path $Root ('wake_' + $Agent)) -PathType Leaf
+        observed_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        task_completion_verified = $false
+    }
+    try {
+        # Native Monitor permits a lane-local -StatePath. Resolve it from an
+        # exact installed script invocation, never guess a recent file by glob.
+        $candidates = @(
+            foreach ($process in $Processes) {
+                if ([string](Get-WdStatusProperty $process 'Name') -notmatch '^(powershell|pwsh)\.exe$') { continue }
+                $arguments = @{}
+                $command = [string](Get-WdStatusProperty $process 'CommandLine')
+                foreach ($name in @('File','Agent','StatePath')) {
+                    $pattern = '(?i)(?:^|\s)-' + $name + '\s+(?:"(?<v>[^"]+)"|''(?<v>[^'']+)''|(?<v>\S+))(?=\s|$)'
+                    $found = [regex]::Matches($command, $pattern)
+                    if ($found.Count -eq 1) { $arguments[$name] = $found[0].Groups['v'].Value }
+                }
+                if ($arguments.ContainsKey('File') -and $arguments.ContainsKey('Agent') -and
+                    $arguments.Agent -ceq $Agent -and
+                    ([IO.Path]::GetFullPath([string]$arguments.File)).Equals(
+                        [IO.Path]::GetFullPath($MonitorFile), [StringComparison]::OrdinalIgnoreCase)) {
+                    if (([regex]::Matches($command, '(?i)(?:^|\s)-StatePath(?:\s|$)')).Count -gt 0 -and
+                        -not $arguments.ContainsKey('StatePath')) { throw 'ambiguous Monitor StatePath' }
+                    $arguments
+                }
+            }
+        )
+        if ($candidates.Count -gt 1) { $result.reason = 'multiple_live_inbox_monitors'; return $result }
+        if ($candidates.Count -eq 1 -and $candidates[0].ContainsKey('StatePath')) {
+            $custom = [string]$candidates[0].StatePath
+            if (-not [IO.Path]::IsPathRooted($custom)) { throw 'relative Monitor StatePath' }
+            $custom = [IO.Path]::GetFullPath($custom)
+            $allowed = $false
+            foreach ($directory in @($Root, (Join-Path $Worktree '.codex-audit'))) {
+                $prefix = [IO.Path]::GetFullPath($directory).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+                if ($custom.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $allowed = $true }
+            }
+            if (-not $allowed) { throw 'Monitor StatePath outside lane/runtime evidence roots' }
+            $path = $custom; $result.source_path = $path
+        }
+    } catch { $result.reason = 'inbox_source_unknown: ' + $_.Exception.Message; return $result }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $result }
+    try {
+        # One atomic bounded record read: never combine metadata and a cursor
+        # from different replacements. Human/filtered/legacy cursors cannot
+        # attest that all addressed wake requests were delivered.
+        $result.reason = 'inbox_cursor_invalid'
+        $record = Read-WdStatusRecord $path
+        $metadata = Get-WdStatusProperty $record 'metadata'
+        if ((Get-WdStatusProperty $metadata 'agent') -cne $Agent -or
+            (Get-WdStatusProperty $metadata 'delivery_scope') -cne 'agent_inbox' -or
+            (Get-WdStatusProperty $metadata 'targeted_only') -isnot [bool] -or
+            -not $metadata.targeted_only -or
+            (Get-WdStatusProperty $metadata 'include_wake_requests') -isnot [bool] -or
+            -not $metadata.include_wake_requests -or
+            (Get-WdStatusProperty $metadata 'from_agent')) {
+            $result.reason = 'inbox_cursor_scope_unknown'; return $result
+        }
+        $cursor = Get-WdStatusProperty $record 'cursor'
+        if ($null -eq $cursor -or -not (Get-BridgeCursorValidation $cursor).valid) { return $result }
+        $delta = Read-BridgeEventDelta -Path (Join-Path $Root 'shared/events.jsonl') `
+            -Cursor $cursor -MaxRows 1200 -MaxBytes 1048576
+        $result.reason = $delta.reason
+        if ($delta.status -cnotin @('OK','IDLE')) { return $result }
+        foreach ($event in @($delta.rows)) {
+            if ((Get-WdStatusProperty $event 'agent') -cne $Agent -and
+                @(Get-BridgeEventTargets $event) -contains $Agent -and
+                (Test-BridgeWakeEligible $event)) {
+                $result.status = 'pending'; $result.pending = $true
+                $result.reason = 'eligible_event_after_inbox_cursor'; return $result
+            }
+        }
+        # Truncated, partial, missing or bounded reads never prove an empty inbox.
+        if ($null -ne $delta.candidate_cursor -and
+            $delta.candidate_cursor.offset -eq $delta.snapshot_length) {
+            $result.status = 'drained'; $result.pending = $false
+            $result.reason = 'no_eligible_event_through_observed_eof'
+        } else { $result.reason = 'inbox_delta_incomplete' }
+    } catch { $result.reason = 'inbox_observation_failed: ' + $_.Exception.Message }
+    return $result
+}
+
 function Get-WdStatusTurnExecution {
     param($Definition, [object[]] $Processes, [bool] $QueryAvailable,
         [string] $HandshakeRoot, [string] $RuntimeRoot, [DateTimeOffset] $Now)
@@ -718,6 +807,12 @@ foreach ($definition in @($definitions)) {
         $runtime.readiness_status -ceq 'ready' -and $supervisor.status -ceq 'enabled') {
         $runnableEvidence = 'observed'
     }
+    $turnExecution = Get-WdStatusTurnExecution -Definition $definition `
+        -Processes $laneProcesses -QueryAvailable $laneProcessQueryAvailable `
+        -HandshakeRoot ([string](Get-WdStatusProperty $manifest 'handshake_root')) `
+        -RuntimeRoot $runtimeRoot -Now $now
+    $wakeObservation = Get-WdStatusWakeObservation -Root $runtimeRoot -Agent $agent `
+        -Worktree $worktree -Processes $laneProcesses -MonitorFile (Join-Path $helperBin 'Monitor-AgentBridge.ps1')
     $lanes.Add([pscustomobject]@{
         agent = $agent
         configured_turn_mode = $definition.configured_turn_mode
@@ -725,10 +820,17 @@ foreach ($definition in @($definitions)) {
         configured_permission_posture = $definition.configured_permission_posture
         # A manifest/handshake does not prove the GUI is open or a RPC was accepted.
         conversation_control_verified = $false
-        turn_execution = Get-WdStatusTurnExecution -Definition $definition `
-            -Processes $laneProcesses -QueryAvailable $laneProcessQueryAvailable `
-            -HandshakeRoot ([string](Get-WdStatusProperty $manifest 'handshake_root')) `
-            -RuntimeRoot $runtimeRoot -Now $now
+        turn_execution = $turnExecution
+        health_observation = [pscustomobject]@{
+            process_presence = $(if ($runtime.identity -ceq 'matched' -or $turnExecution.observed_pid) { 'observed' } else { 'unknown' })
+            identity_scope = $(if ($runtime.identity -ceq 'matched') { 'readiness_process_identity' } elseif ($turnExecution.external_wake_support -ceq 'native_queue_bridge') { 'native_lead_and_relay_identity' } elseif ($turnExecution.observed_pid) { 'launcher_handshake_only' } else { 'unknown' })
+            wake_transport = $turnExecution.external_wake_support
+            relay_status = $turnExecution.relay_status
+            relay_error = $turnExecution.relay_error
+            inbox_delivery = $wakeObservation.status
+            last_answer_at_utc = $(if ($recentProgress.ContainsKey($agent)) { $recentProgress[$agent].ts_utc } else { $null })
+            task_completion_verified = $false
+        }
         worktree = $worktree
         state_health = $stateHealth
         age_seconds = $ageSeconds
@@ -771,9 +873,9 @@ foreach ($definition in @($definitions)) {
             $status -cne 'blocked' -and
             -not [string]::IsNullOrWhiteSpace($nextAction)
         )
-        wake_pending = Test-Path -LiteralPath (
-            Join-Path $runtimeRoot ("wake_{0}" -f $agent)
-        ) -PathType Leaf
+        sentinel_present = $wakeObservation.sentinel_present
+        wake_pending = $wakeObservation.pending
+        wake_observation = $wakeObservation
     })
 }
 
@@ -797,6 +899,8 @@ $report = [pscustomobject]@{
         native_checkpoint = 'bounded producer-reported latest terminal and previous verified checkpoint facts, kept separate; this status command does not reverify receipts or infer useful progress'
         turn_execution = 'known launcher and bounded PID/time/session-bound handshake observation; legacy missing mode means legacy interactive; neither bootstrap nor process existence proves a model turn started or completed'
         progress = 'latest substantive answer in a bounded canonical tail, separately from checkpoint age; binding, result correctness and task completion are not inferred; absent observation is unknown'
+        wake_pending = 'nullable: eligible unread event after a scoped agent inbox cursor; false only through observed EOF; null for missing/legacy/invalid/incomplete observations. Delivery is not task completion. Sentinel presence is separate.'
+        health_observation = 'projection of independent process, identity, wake and answer observations; launcher identity is not native conversation attestation, inbox delivery is not model processing'
     }
     lanes = @($lanes)
     summary = [pscustomobject]@{
@@ -819,6 +923,8 @@ $report = [pscustomobject]@{
             }).Count
         blocked_wake_transports = @($lanes | Where-Object { $_.turn_execution.relay_status -ceq 'bridge_wake_blocked' }).Count
         pending_wakes = @($lanes | Where-Object { $_.wake_pending }).Count
+        unknown_wake_observations = @($lanes | Where-Object { $null -eq $_.wake_pending }).Count
+        wake_sentinels_present = @($lanes | Where-Object { $_.sentinel_present }).Count
         scope_collisions = $collisions.Count
     }
     scope_collisions = @($collisions)
@@ -829,8 +935,14 @@ if ($Json) {
 } else {
     $report.lanes | Format-Table `
         agent, state_health, age_seconds, status, task_id, head_matches,
-        runnable_evidence, wake_pending -AutoSize
+        runnable_evidence, @{Name='inbox_delivery';Expression={$_.wake_observation.status}},
+        sentinel_present -AutoSize
     $report.summary | Format-List
+    $report.lanes | Select-Object agent,
+        @{Name='process_presence';Expression={$_.health_observation.process_presence}},
+        @{Name='identity_scope';Expression={$_.health_observation.identity_scope}},
+        @{Name='last_answer_utc';Expression={$_.health_observation.last_answer_at_utc}},
+        @{Name='inbox_reason';Expression={$_.wake_observation.reason}} | Format-Table -AutoSize -Wrap
     $report.lanes | Select-Object agent, configured_turn_mode, configured_conversation_surface,
         @{Name='cfg_posture';Expression={$_.configured_permission_posture}},
         @{Name='observed_turn_mode';Expression={$_.turn_execution.observed_turn_mode}},

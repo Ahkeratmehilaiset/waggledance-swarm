@@ -65,6 +65,34 @@ def test_inbox_monitor_surfaces_only_addressed_wake_requests(tmp_path, ps, enabl
 
 
 @pytest.mark.parametrize('ps', SHELLS)
+@pytest.mark.parametrize('inbox', [False, True])
+def test_monitor_noise_policy_preserves_revisions_and_late_corrections(tmp_path, ps, inbox):
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    base = dict(agent='codex-lead-1', to='claude-rco-2', type='message',
+                task_id='same-task', status='notice', ts_utc='2026-09-19T01:00:00Z',
+                payload={'notification': 'informational'})
+    request = dict(base, status='request', request_id='r1')
+    late = dict(base, status='answered', in_reply_to_request_id='r1', message='late')
+    corrected = dict(late, message='corrected')
+    revision = dict(request, request_id='r2')
+    rows = [base, base, request, request, late, late, corrected, revision]
+    (shared / 'events.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    flags = '-TargetedOnly -IncludeWakeRequests' if inbox else ''
+    result = run(ps, f"""
+    $rows=@(& '{BIN / 'Monitor-AgentBridge.ps1'}' -Agent claude-rco-2 -RuntimeRoot '{tmp_path}' {flags} -ReplayExisting -Json -MaxIterations 1)
+    ConvertTo-Json -InputObject @($rows | ForEach-Object {{ $_ | ConvertFrom-Json }}) -Depth 8 -Compress
+    """)
+    assert len(result) == (4 if inbox else 8)
+    if inbox:
+        assert [r.get('message') for r in result] == [None, 'late', 'corrected', None]
+        assert result[-1]['request_id'] == 'r2'
+    metadata = json.loads((shared / 'monitor_claude-rco-2.cursor.json').read_text())['metadata']
+    assert metadata['delivery_scope'] == ('agent_inbox' if inbox else 'dashboard')
+    assert metadata['include_wake_requests'] is inbox
+
+
+@pytest.mark.parametrize('ps', SHELLS)
 @pytest.mark.parametrize('change', ['none', 'nonce', 'session_id', 'agent_uuid', 'task_id', 'status', 'token', 'request_stamp', 'sum', 'old', 'future', 'missing_payload'])
 def test_release_probe_rejects_uncorrelated_and_stale_answers(ps, change):
     mutations = {

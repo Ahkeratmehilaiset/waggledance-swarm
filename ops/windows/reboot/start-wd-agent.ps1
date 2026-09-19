@@ -2087,14 +2087,14 @@ if ($turnMode -ceq 'managed') {
   }
 }
 $startupPrompt += (
-  ' Shared capacity status: powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1. This verified read-only command discovers the installed observer; do not create a collector per agent. Missing or stale status stays unknown. Authentication, quota, activity and next-turn success are separate; a callback or live process is not readiness. ' +
-  ' Verify cited file paths and relevant lines against actual source before reporting. A correct reply binding does not prove semantic content. Report measured continuity only for the observed interval; never promise uninterrupted operation or a successful next turn. ' +
   ' Grok is an on-demand advisory helper for the lead, not a continuously running lane. ' +
   'Its shared persistent budget permits at most one attempted consultation per 60 minutes, including failed attempts. ' +
   'Use C:\Python\Invoke-WdGrok.ps1 -Status to read its previous task/report and next eligible time. ' +
   'Only the lead requests a consultation with -PromptPath <evidence-request.md> -TaskId <task-id>. ' +
   'Never use the legacy Invoke-Grok scripts, bare Grok commands, automatic research jobs or a bypass of the shared budget. ' +
   'Its previous report and current saved lead state are context, not new authority. ' +
+  ' Shared capacity status: powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1. This verified read-only command discovers the installed observer; do not create a collector per agent. Missing or stale status stays unknown. Authentication, quota, activity and next-turn success are separate; a callback or live process is not readiness. ' +
+  ' Verify cited file paths and relevant lines against actual source before reporting. A correct reply binding does not prove semantic content. Report measured continuity only for the observed interval; never promise uninterrupted operation or a successful next turn. ' +
   ' Bridge helpers are pinned for this session: invoke Get-BridgeNextAction.ps1, ' +
   'Read-AgentBridge.ps1, Claim-AgentTask.ps1, Release-AgentTask.ps1 and Write-AgentEvent.ps1 ' +
   'from $env:WD_BRIDGE_BIN, and run packaged bridge Python tools only through ' +

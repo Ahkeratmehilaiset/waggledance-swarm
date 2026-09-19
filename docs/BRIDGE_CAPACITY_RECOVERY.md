@@ -45,6 +45,8 @@ The result separates observation age, quota window length, last collection attem
 last successful observation and next eligible poll. Codex freshness remains 300
 seconds; minute admission checks and provider latency can leave stale intervals.
 The next eligible time is a budget boundary, not a promise of collection completion.
+An interrupted first poll still exposes its persisted reservation and next eligible
+time as `pending_or_interrupted`, even if no observation has been committed yet.
 Claude callback time is not the provider quota sample time. No quota-to-lane
 association is inferred from sharing a machine, process, model or subscription label.
 
@@ -94,6 +96,9 @@ SHA-256 (or `missing`). Default is a plan; `-Apply` backs up existing settings,
 preserves foreign hooks/permissions and records the commands it owns. Updating
 requires a fresh settings hash and refuses an independently modified statusline.
 The installer does not change global settings or existing session permissions.
+Both installers and the runner reject reparse points in path ancestors before
+reading or writing pinned files. Their small bootstrap guards are intentionally
+local so no unverified helper must execute before manifest validation.
 
 Hooks ingest only session ID, lifecycle event and documented error enum. Prompt,
 transcript and error-detail text are discarded. Authentication, access/billing,

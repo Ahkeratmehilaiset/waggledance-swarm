@@ -258,3 +258,62 @@ def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path,
     before=settings.read_bytes()
     proc = subprocess.run(base+['-ExpectedSettingsSha256',sha(settings)],capture_output=True,text=True,timeout=30)
     assert proc.returncode != 0 and settings.read_bytes()==before
+@pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('site', ['runner','hooks'])
+def test_junction_with_matching_hash_is_refused_before_writing(tmp_path, host, site):
+    if host is None: pytest.skip('Windows NTFS junctions')
+    release, manifest, store = native_hook_release(tmp_path)
+    outside=tmp_path/'outside'
+    (release/'tools').rename(outside)
+    junction=release/'tools'
+    proc=subprocess.run([host,'-NoProfile','-NonInteractive','-Command',
+                         f"New-Item -ItemType Junction -Path '{junction}' -Target '{outside}' | Out-Null"],
+                        capture_output=True,text=True,timeout=30)
+    assert proc.returncode==0,proc.stderr
+    try:
+        if site=='runner':
+            command=[str(release/'ops/windows/reboot/Invoke-WdCapacityObserver.ps1'),'-ManifestPath',str(manifest),
+                     '-ManifestSha256',sha(manifest),'-Mode','ClaudeHook']
+        else:
+            worktree=tmp_path/'worktree'
+            worktree.mkdir()
+            (worktree/'.git').write_text('gitdir: fixture')
+            command=[str(ROOT/'ops/windows/reboot/Install-WdClaudeCapacityHooks.ps1'),'-Worktree',str(worktree),
+                     '-ManifestPath',str(manifest),'-ManifestSha256',sha(manifest),'-ExpectedSettingsSha256','missing','-Apply']
+        proc=subprocess.run([host,'-NoProfile','-NonInteractive','-File']+command,
+                             input=json.dumps(dict(session_id='fixture',hook_event_name='StopFailure',error='authentication_failed')),
+                             capture_output=True,text=True,timeout=30)
+        if site=='hooks':
+            assert proc.returncode!=0 and not (worktree/'.claude/settings.local.json').exists()
+        assert not store.exists(), 'matching hashes must not authorize traversing a junction'
+    finally:
+        # Remove just this verified fixture junction, never recurse through its target.
+        assert junction.parent==release and junction.lstat().st_file_attributes & 0x400
+        junction.rmdir()
+@pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('dangling', [False,True])
+def test_observer_installer_refuses_junction_root_before_any_write(tmp_path, host, dangling):
+    if host is None: pytest.skip('Windows NTFS junctions')
+    outside=tmp_path/'outside'
+    outside.mkdir()
+    sentinel=outside/'preserve.txt'
+    sentinel.write_text('foreign bytes')
+    junction=tmp_path/'installed'
+    proc=subprocess.run([host,'-NoProfile','-NonInteractive','-Command',
+                         f"New-Item -ItemType Junction -Path '{junction}' -Target '{outside}' | Out-Null"],
+                        capture_output=True,text=True,timeout=30)
+    assert proc.returncode==0,proc.stderr
+    if dangling:
+        moved=tmp_path/'moved'
+        outside.rename(moved)
+        outside=moved
+        sentinel=outside/'preserve.txt'
+    try:
+        proc=subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(ROOT/'ops/windows/reboot/Install-WdCapacityObserver.ps1'),
+                             '-InstallRoot',str(junction),'-PythonExecutable',PYTHON,'-CodexExecutable',PYTHON,'-Apply'],
+                            capture_output=True,text=True,timeout=30)
+        assert proc.returncode!=0 and 'reparse point' in proc.stderr
+        assert list(outside.iterdir())==[sentinel] and sentinel.read_text()=='foreign bytes'
+    finally:
+        assert junction.parent==tmp_path and junction.lstat().st_file_attributes & 0x400
+        junction.rmdir()

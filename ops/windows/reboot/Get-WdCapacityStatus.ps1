@@ -14,9 +14,10 @@ function Assert-CapacityReadPath([string]$Path,[string]$Root) {
     if(-not $full.StartsWith($Root+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Path escaped observer root'}
     $walk=$full
     while($walk -and $walk.Length -ge $Root.Length){
-        if(Test-Path -LiteralPath $walk){
-            if((Get-Item -LiteralPath $walk -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Observer path contains a reparse point'}
-        }
+        try{$attributes=[IO.File]::GetAttributes($walk)}
+        catch [IO.FileNotFoundException]{$attributes=0}
+        catch [IO.DirectoryNotFoundException]{$attributes=0}
+        if($attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Observer path contains a reparse point'}
         $walk=Split-Path $walk -Parent
     }
     return $full

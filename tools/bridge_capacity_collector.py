@@ -314,6 +314,7 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
     if header[:16] == b'SQLite format 3\x00' and 2 in header[18:20]:
         raise InputError('WAL status is unsupported without an existing read-only snapshot')
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
+        db.execute('BEGIN')  # One read snapshot for tables, budget and observations.
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not tables.intersection({'observations', 'activity', 'poll_budget'}):
             raise InputError('not an observer store')
@@ -355,11 +356,14 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
         next_poll = datetime.fromtimestamp(poll[0] + 300, timezone.utc).isoformat()
     newest = {provider: json.loads(next(raw for seq, raw in rows if seq == sequence))
               for provider, sequence in newest_provider.items()}
+    if poll and 'codex' not in newest:
+        newest['codex'] = {'reason': 'poll_without_observation'}
     collection = {provider: dict(
         last_attempt=last_attempt if provider == 'codex' else None,
         next_eligible_poll=next_poll if provider == 'codex' else None,
         last_success=next((row['observed_at'] for row in latest.values() if row['provider'] == provider and row.get('observed_at')), None),
-        collection_state='failed' if row.get('reason') == 'collection_failed' else 'observed',
+        collection_state=('failed' if row.get('reason') == 'collection_failed' else
+                          'pending_or_interrupted' if row.get('reason') == 'poll_without_observation' else 'observed'),
         availability_state=row.get('availability_state', 'unknown'),
         auth_state='auth_required' if row.get('availability_state') == 'auth_required' else 'unknown',
         provider_budget_seconds=300 if provider == 'codex' else None,

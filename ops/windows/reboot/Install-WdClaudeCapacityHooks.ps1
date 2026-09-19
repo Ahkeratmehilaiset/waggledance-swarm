@@ -12,12 +12,31 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+# Keep this bootstrap guard local: no unverified helper executes before pin checks.
+function Assert-CapacityPath([string]$Path,[string]$Root) {
+    $full=[IO.Path]::GetFullPath($Path)
+    $boundary=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    if(-not $full.Equals($boundary,[StringComparison]::OrdinalIgnoreCase) -and
+       -not $full.StartsWith($boundary+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Path escaped observer root'}
+    $walk=$full
+    while($walk -and $walk.Length -ge $boundary.Length){
+        try{$attributes=[IO.File]::GetAttributes($walk)}
+        catch [IO.FileNotFoundException]{$attributes=0}
+        catch [IO.DirectoryNotFoundException]{$attributes=0}
+        if($attributes -band [IO.FileAttributes]::ReparsePoint){
+            throw 'Observer path contains a reparse point'
+        }
+        $walk=Split-Path $walk -Parent
+    }
+    return $full
+}
 function Get-CapacityFileHash([string]$Path){
     $stream=[IO.File]::OpenRead($Path);$sha=[Security.Cryptography.SHA256]::Create()
     try{[BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','')}
     finally{$sha.Dispose();$stream.Dispose()}
 }
 $root=[IO.Path]::GetFullPath($Worktree)
+[void](Assert-CapacityPath $root ([IO.Path]::GetPathRoot($root)))
 if(-not (Test-Path -LiteralPath (Join-Path $root '.git'))){throw 'Explicit Git worktree required'}
 $directory=Join-Path $root '.claude'
 $settingsPath=Join-Path $directory 'settings.local.json'
@@ -27,15 +46,17 @@ foreach($path in @($root,$directory,$settingsPath,$ownershipPath)){
 }
 $before=if(Test-Path -LiteralPath $settingsPath){Get-CapacityFileHash $settingsPath}else{'missing'}
 if($before -ine $ExpectedSettingsSha256){throw 'Settings changed since inspection'}
+$ManifestPath=Assert-CapacityPath $ManifestPath ([IO.Path]::GetPathRoot($ManifestPath))
 if((Get-CapacityFileHash $ManifestPath) -ine $ManifestSha256){throw 'Observer manifest changed'}
 $manifest=Get-Content -LiteralPath $ManifestPath -Raw|ConvertFrom-Json
 if($manifest.schema -cne 'wd.capacity-observer-install.v1' -or $manifest.execution_mode -cne 'metadata_only'){throw 'Unsupported observer'}
 $release=Split-Path ([IO.Path]::GetFullPath($ManifestPath)) -Parent
 foreach($file in $manifest.files.PSObject.Properties){
-    $path=[IO.Path]::GetFullPath((Join-Path $release $file.Name))
+    $path=Assert-CapacityPath (Join-Path $release $file.Name) $release
     if(-not $path.StartsWith($release+'\',[StringComparison]::OrdinalIgnoreCase) -or (Get-CapacityFileHash $path) -ine $file.Value){throw 'Observer code changed'}
 }
 $runner=Join-Path $release 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1'
+[void](Assert-CapacityPath (Join-Path $root '.codex-audit') $root)
 if($null -eq $manifest.files.PSObject.Properties['ops\windows\reboot\Invoke-WdCapacityObserver.ps1']){throw 'Runner not pinned'}
 $hostPath=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # Claude executes command hooks through its shell: use forward slashes, quote all paths.

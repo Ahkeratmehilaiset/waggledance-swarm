@@ -256,3 +256,14 @@ def test_hook_only_store_is_readable_without_creating_observation_table(tmp_path
     assert result['alerts'][0]['state'] == ('auth_required' if error == 'authentication_failed' else 'unknown')
     assert 'blocked=' in native_alert_summary(path, 'native')
     assert path.read_bytes() == before
+def test_status_retains_budget_after_interrupted_first_poll(tmp_path):
+    path = tmp_path / 'interrupted.sqlite'
+    now = datetime.now(timezone.utc)
+    assert reserve_poll(path, now=now)
+    before=path.read_bytes()
+    result=status(path, now=now)
+    assert result['collection']['codex']['collection_state']=='pending_or_interrupted'
+    assert result['collection']['codex']['last_attempt']==now.isoformat()
+    assert result['collection']['codex']['next_eligible_poll']==(now+timedelta(seconds=300)).isoformat()
+    assert result['collection']['codex']['last_success'] is None
+    assert result['observations']==[] and path.read_bytes()==before

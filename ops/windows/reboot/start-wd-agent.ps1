@@ -2087,6 +2087,8 @@ if ($turnMode -ceq 'managed') {
   }
 }
 $startupPrompt += (
+  ' Shared capacity status: powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1. This verified read-only command discovers the installed observer; do not create a collector per agent. Missing or stale status stays unknown. Authentication, quota, activity and next-turn success are separate; a callback or live process is not readiness. ' +
+  ' Verify cited file paths and relevant lines against actual source before reporting. A correct reply binding does not prove semantic content. Report measured continuity only for the observed interval; never promise uninterrupted operation or a successful next turn. ' +
   ' Grok is an on-demand advisory helper for the lead, not a continuously running lane. ' +
   'Its shared persistent budget permits at most one attempted consultation per 60 minutes, including failed attempts. ' +
   'Use C:\Python\Invoke-WdGrok.ps1 -Status to read its previous task/report and next eligible time. ' +

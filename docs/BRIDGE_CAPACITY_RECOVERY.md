@@ -28,6 +28,27 @@ the private child process can be stopped. A backwards clock suppresses new polls
 No model retry layer is added. Observation history is bounded to 2048 records.
 Status reads the database in read-only mode. A newer collection failure invalidates
 older positive observations. An old successful row is never silently called current.
+Status errors return exit 2 and `status_unavailable` without creating a database,
+table, observation, poll reservation or SQLite sidecar. WAL databases are refused
+because SQLite read-only WAL connections can still create shared-memory files.
+
+All lanes use the same installed discovery command:
+
+```powershell
+powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1
+```
+
+It verifies the current observer pointer, manifest, source files, reader and native
+Python before reading the shared store. It never invokes a provider. Invalid or
+missing installation evidence produces unknown, not fabricated empty capacity.
+The result separates observation age, quota window length, last collection attempt,
+last successful observation and next eligible poll. Codex freshness remains 300
+seconds; minute admission checks and provider latency can leave stale intervals.
+The next eligible time is a budget boundary, not a promise of collection completion.
+An interrupted first poll still exposes its persisted reservation and next eligible
+time as `pending_or_interrupted`, even if no observation has been committed yet.
+Claude callback time is not the provider quota sample time. No quota-to-lane
+association is inferred from sharing a machine, process, model or subscription label.
 
 Windows installation uses `ops/windows/reboot/Install-WdCapacityObserver.ps1`.
 The default prints a plan; `-Apply` copies a clean committed version into a
@@ -67,6 +88,43 @@ provider quota freshness unknown, even if a new UI update supplied the callback.
 plain status row. It can be configured in lane-local Claude settings without
 replacing a pre-existing statusline or changing global/outside sessions. Settings
 integration must preserve and back up the exact previous settings bytes.
+
+`Install-WdClaudeCapacityHooks.ps1` installs lane-local `UserPromptSubmit`, `Stop`
+and `StopFailure` command hooks plus the pinned statusline wrapper. Supply the
+explicit Git worktree, observer manifest/hash and the exact inspected settings
+SHA-256 (or `missing`). Default is a plan; `-Apply` backs up existing settings,
+preserves foreign hooks/permissions and records the commands it owns. Updating
+requires a fresh settings hash and refuses an independently modified statusline.
+The installer does not change global settings or existing session permissions.
+Both installers and the runner reject reparse points in path ancestors before
+reading or writing pinned files. Their small bootstrap guards are intentionally
+local so no unverified helper must execute before manifest validation.
+
+Hooks ingest only session ID, lifecycle event and documented error enum. Prompt,
+transcript and error-detail text are discarded. Authentication, access/billing,
+quota and transport failures remain separate. Repeated same-state failures retain
+one alert ID. Statusline callbacks and requested work cannot clear the auth latch;
+a normal successful Stop records past success and clears it. Neither proves the
+next turn will succeed. Hook errors always exit zero without blocking Stop or
+prompting another model turn. There is no automatic model switch or retry loop.
+Verify an actual native callback after installing; file installation alone is not
+evidence that a running session has loaded its hooks.
+
+Native execution evidence first uses CIM; when denied, Windows can query process
+identity with `PROCESS_QUERY_LIMITED_INFORMATION`. The fallback verifies creation
+time and parent ancestry and retains the CIM error for diagnosis. It requests no
+elevation, VM read or debug privilege. Unsupported command-line queries stay unknown.
+The inherited manifest and observed launcher generation must still match; copying a
+new helper beside an old session does not constitute a production identity check.
+
+Watchers preserve bounded request/reply correlation in wake snapshots. A queued
+native wake records each observed request binding, including late replies. Legacy,
+malformed or truncated hints remain incomplete observations and cannot authorize
+work or replay a queue submission. `model_turn_started` remains agent-reported;
+the native inference start is unknown unless the owning engine supplies evidence.
+Correct routing and valid result structure still require Lead to verify source
+references and substantive claims. Report measured continuity with its time range;
+never turn successful probes into a guarantee of uninterrupted future work.
 
 ## Recovery semantics
 
@@ -119,6 +177,7 @@ being exhausted means durable waiting, not a promise of continuous inference.
 
 Protocol references checked 2026-09-19:
 [OpenAI App Server](https://learn.chatgpt.com/docs/app-server) and
-[Claude statusline](https://code.claude.com/docs/en/statusline).
+[Claude statusline](https://code.claude.com/docs/en/statusline) and
+[Claude lifecycle hooks](https://code.claude.com/docs/en/hooks).
 Allowed Codex limit enums are pinned from codex-cli 0.154.0's generated
 `v2/GetAccountRateLimitsResponse.json`; new unknown enum values remain unknown.

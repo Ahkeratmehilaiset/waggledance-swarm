@@ -449,6 +449,21 @@ function Invoke-WdNativeToolsWakeStep {
         try {
             . (Join-Path $env:WD_BRIDGE_BIN 'BridgeTelemetry.ps1')
             Write-BridgeStageObservation -BridgeRoot (Split-Path $WakePath -Parent) -Stage relay_enqueued -Target $Agent -DeliveryId $deliveryId -QueueId $state.queue_id
+            # Correlation hints describe the queued wake, never authorize work.
+            # Legacy/malformed hints cannot prevent delivery or create a retry.
+            if((Get-Item -LiteralPath $snapshot).Length -le 131072){
+                $hintJson=@{ErrorAction='Stop'}
+                if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$hintJson.DateKind='String'}
+                $hint=$null
+                $hintText=Get-Content -LiteralPath $snapshot -Raw
+                try{$hint=$hintText|ConvertFrom-Json @hintJson}
+                catch{$hint=$null} # Plain legacy wake text is valid, with unknown correlation.
+                if($null -ne $hint -and $hint.PSObject.Properties['schema'] -and $hint.schema -ceq 'wd.bridge-wake-observation.v1'){
+                    foreach($binding in @($hint.requests|Select-Object -First 256)){
+                        Write-BridgeStageObservation -BridgeRoot (Split-Path $WakePath -Parent) -Stage relay_enqueued -Target $Agent -DeliveryId $deliveryId -QueueId $state.queue_id -Request $binding
+                    }
+                }
+            }
         } catch { Write-Warning ('Native relay latency observation unavailable: ' + $_.Exception.Message) }
     }
     [IO.File]::Delete($snapshot)
@@ -1501,6 +1516,7 @@ $readinessPath = [IO.Path]::GetFullPath(
 $sandbox = Get-RequiredText $tools 'sandbox'
 $approvalPolicy = Get-RequiredText $tools 'approval_policy'
 $prompt = Get-RequiredText $tools 'prompt'
+$prompt += ' Shared capacity status: powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1. Use this verified read-only view of the installed observer; do not create another collector. Authentication, quota freshness and work progress are separate. A callback is not next-turn readiness. Verify source references against actual files and lines; exact reply binding alone does not verify content. Report only measured continuity, with its observation interval.'
 $resumePolicy = Get-RequiredText $tools 'resume_policy'
 $model = Get-RequiredText $tools 'model'
 $reasoningEffort = Get-RequiredText $tools 'reasoning_effort'

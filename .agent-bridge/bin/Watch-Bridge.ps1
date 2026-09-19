@@ -156,6 +156,7 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     }
 
     $shouldWake = $false
+    $wakeEvents=[Collections.Generic.List[object]]::new()
     foreach ($ev in @($result.rows)) {
         if (Test-IsTargeted -Event $ev -WatchedAgent $Agent) {
             # Dedupe only an identical immutable event, not task IDs or payload
@@ -167,14 +168,13 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
             $seenWakeOrder.Enqueue($eventKey)
             if ($seenWakeOrder.Count -gt 4096) { [void]$seenWakeEvents.Remove($seenWakeOrder.Dequeue()) }
             $shouldWake = $true
+            $wakeEvents.Add($ev)
             try { Write-BridgeStageObservation -BridgeRoot $bridgeRoot -Stage watcher_seen -Request $ev -Target $Agent }
             catch { Write-Warning ('Watcher latency observation unavailable: ' + $_.Exception.Message) }
         }
     }
     if ($shouldWake) {
-        $stamp = (Get-Date).ToUniversalTime().ToString('o')
-        Set-Content -LiteralPath $wakePath -Value $stamp `
-            -Encoding UTF8 -NoNewline -Force -ErrorAction Stop
+        Write-BridgeWakeObservation -Path $wakePath -Events @($wakeEvents)
         $cursor = $result.candidate_cursor
         Start-Sleep -Milliseconds $DebounceMs
     } else {

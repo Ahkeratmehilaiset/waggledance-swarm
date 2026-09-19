@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 import os
@@ -24,12 +24,18 @@ import uuid
 from typing import Any
 
 try:
-    from tools.bridge_capacity_advisor import InputError, _load, _dict, _text
+    from tools.bridge_capacity_advisor import InputError, _load, _dict, _text, _time, _number, REACHED_TYPES
 except ModuleNotFoundError:
-    from bridge_capacity_advisor import InputError, _load, _dict, _text
+    from bridge_capacity_advisor import InputError, _load, _dict, _text, _time, _number, REACHED_TYPES
 
 MAX_RESPONSE = 2 * 1024 * 1024
 READ_METHODS = frozenset({'account/read', 'account/rateLimits/read', 'model/list'})
+
+
+class MetadataFailure(InputError):
+    def __init__(self, state: str):
+        super().__init__('metadata unavailable')
+        self.state = state
 
 
 def utcnow() -> str:
@@ -47,7 +53,8 @@ def quota_payload(payload: dict, provider: str) -> dict:
         if not isinstance(value, dict):
             return None
         # Preserve malformed types for the fail-closed normalizer; do not coerce.
-        return {key: value.get(key) for key in (percent, reset)}
+        keys = (percent, reset, 'windowDurationMins') if provider == 'codex' else (percent, reset)
+        return {key: value.get(key) for key in keys}
 
     def bucket(value: Any) -> dict:
         value = _dict(value)
@@ -127,7 +134,13 @@ class MetadataClient:
                 if not isinstance(reply, dict):
                     raise InputError('invalid metadata response')
                 if reply.get('id') == request_id:
-                    if 'error' in reply or not isinstance(reply.get('result'), dict):
+                    if 'error' in reply:
+                        code = _dict(reply['error']).get('code')
+                        # RPC failures include unsupported methods and bad parameters;
+                        # an arbitrary numeric code does not establish a transport fault.
+                        raise MetadataFailure({401: 'auth_required', 429: 'rate_limited'}.get(code, 'unknown')
+                                              if type(code) is int else 'unknown')
+                    if not isinstance(reply.get('result'), dict):
                         raise InputError('metadata request failed')
                     return reply['result']
             raise InputError('metadata notification bound exceeded')
@@ -138,6 +151,8 @@ class MetadataClient:
 async def collect_codex(client: MetadataClient, auth_context: str) -> dict:
     started = utcnow()
     before = await client.request('account/read', {'refreshToken': False})
+    if before.get('account') is None:
+        raise MetadataFailure('auth_required')
     if _dict(before.get('account')).get('type') != 'chatgpt':
         raise InputError('subscription account not observed; no API fallback')
     limits = await client.request('account/rateLimits/read')
@@ -201,14 +216,118 @@ def save_observation(path: Path, observation: dict) -> None:
                    '(SELECT COALESCE(MAX(sequence),0)-2048 FROM observations)')
 
 
+def record_claude_hook(path: Path, payload: dict) -> None:
+    """Native hook metadata only. Never save prompts, error text or transcripts.
+
+    A statusline callback cannot clear authentication failures. Only a normal
+    Stop (as opposed to StopFailure) observes a completed provider response.
+    This records past observations, not a promise that the next turn will work.
+    """
+    session, event = payload.get('session_id'), payload.get('hook_event_name')
+    if not _text(session) or len(session) > 128 or event not in ('Stop', 'StopFailure', 'UserPromptSubmit'):
+        raise InputError('unsupported native hook identity/event')
+    error = payload.get('error') if event == 'StopFailure' else None
+    if not isinstance(error, str):
+        error = None
+    error_state = {'authentication_failed': 'auth_required', 'cloud_credential_error': 'auth_required',
+                   'oauth_org_not_allowed': 'access_denied', 'account_on_hold': 'account_on_hold',
+                   'billing_error': 'billing_error', 'rate_limit': 'rate_limited',
+                   'overloaded': 'transport_error', 'server_error': 'transport_error'}.get(error, 'unknown')
+    with sqlite3.connect(path, timeout=5) as db:
+        db.execute('CREATE TABLE IF NOT EXISTS activity (session TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL NOT NULL)')
+        db.execute('BEGIN IMMEDIATE')
+        previous = db.execute('SELECT data FROM activity WHERE session=?', (session,)).fetchone()
+        row = json.loads(previous[0]) if previous else dict(
+            provider='claude', native_thread_id=session, auth_state='unknown', availability_state='unknown',
+            alert_id=None, first_error_at=None, last_successful_turn_at=None)
+        stamp = utcnow()
+        if event == 'StopFailure':
+            if row.get('availability_state') != error_state or not row.get('alert_id'):
+                row.update(alert_id=uuid.uuid4().hex, first_error_at=stamp)
+            row.update(availability_state=error_state, activity_state='blocked', error_type=error if isinstance(error, str) and error in {
+                'authentication_failed', 'cloud_credential_error', 'oauth_org_not_allowed', 'account_on_hold',
+                'billing_error', 'rate_limit', 'overloaded', 'server_error', 'invalid_request', 'model_not_found',
+                'max_output_tokens', 'unknown'} else 'unknown')
+            if error_state == 'auth_required':
+                row['auth_state'] = 'auth_required'
+        elif event == 'Stop':
+            row.update(availability_state='successful_turn_observed', auth_state='authenticated_at_successful_turn',
+                       activity_state='idle_observed', last_successful_turn_at=stamp, alert_id=None,
+                       first_error_at=None, error_type=None)
+        else:
+            row['activity_state'] = 'work_requested'  # Not actual inference start.
+        row.update(observed_at=stamp, source='claude_native_hook', hook_event_name=event,
+                   execution_allowed=False, automatic_retry_allowed=False, next_turn_success_verified=False)
+        db.execute('INSERT OR REPLACE INTO activity VALUES (?,?,?)',
+                   (session, json.dumps(row, allow_nan=False), datetime.now(timezone.utc).timestamp()))
+        db.execute('DELETE FROM activity WHERE session NOT IN (SELECT session FROM activity ORDER BY updated DESC LIMIT 256)')
+
+
+def quota_details(row: dict, now: datetime) -> tuple[str, list]:
+    """Describe the observed provider windows without assigning them to agents."""
+    payload, windows, unknown, exhausted = _dict(row.get('payload')), [], False, False
+    if row['provider'] == 'codex':
+        buckets = (_dict(payload['rateLimitsByLimitId']) if 'rateLimitsByLimitId' in payload else
+                   {_dict(payload.get('rateLimits')).get('limitId'): payload.get('rateLimits')})
+        for limit_id, raw in buckets.items():
+            bucket = _dict(raw)
+            if not _text(limit_id) or bucket.get('limitId') != limit_id:
+                unknown = True
+                continue
+            reached = bucket.get('rateLimitReachedType')
+            if reached is not None:
+                valid = isinstance(reached, str) and reached in REACHED_TYPES
+                exhausted |= valid
+                unknown |= not valid
+            for name in ('primary', 'secondary'):
+                value = bucket.get(name)
+                if value is None:
+                    continue
+                value = _dict(value)
+                duration = value.get('windowDurationMins')
+                duration_valid = type(duration) is int and 0 < duration <= 2147483647
+                windows.append(dict(limit_id=limit_id, name=name, used_percent=value.get('usedPercent'),
+                                    resets_at=value.get('resetsAt'), window_duration_minutes=duration if duration_valid else None,
+                                    window_duration_state='valid' if duration_valid else 'unknown'))
+    else:
+        for name, value in _dict(payload.get('rate_limits')).items():
+            value = _dict(value)
+            windows.append(dict(limit_id='claude', name=name, used_percent=value.get('used_percentage'),
+                                resets_at=value.get('resets_at'), window_duration_minutes=None,
+                                window_duration_state='not_supplied'))
+    for value in windows:
+        used, reset = value['used_percent'], value['resets_at']
+        valid = _number(used) and used >= 0 and _number(reset) and now.timestamp() < reset <= 253402300799
+        unknown |= not valid
+        exhausted |= valid and used >= 100
+    if row['freshness'] != 'fresh':
+        return 'unknown', windows
+    return ('exhausted' if exhausted else 'unknown' if unknown or not windows else 'observed_headroom'), windows
+
+
 def status(path: Path, *, now: datetime | None = None) -> dict:
     """Read-only recent observations; session/auth context is not a quota identity."""
     now = now or datetime.now(timezone.utc)
+    # Our producer uses rollback journals. SQLite's read-only WAL connections
+    # can create/update shared-memory sidecars; never silently do that to a
+    # foreign database, or ignore its WAL by claiming an immutable snapshot.
+    with path.open('rb') as source:
+        header = source.read(20)
+    if header[:16] == b'SQLite format 3\x00' and 2 in header[18:20]:
+        raise InputError('WAL status is unsupported without an existing read-only snapshot')
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
-        rows = db.execute('SELECT sequence,data FROM observations ORDER BY sequence DESC LIMIT 2048').fetchall()
+        db.execute('BEGIN')  # One read snapshot for tables, budget and observations.
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not tables.intersection({'observations', 'activity', 'poll_budget'}):
+            raise InputError('not an observer store')
+        rows = db.execute('SELECT sequence,data FROM observations ORDER BY sequence DESC LIMIT 2048').fetchall() if 'observations' in tables else []
+        poll = db.execute('SELECT started FROM poll_budget WHERE id=1').fetchone() if 'poll_budget' in tables else None
+        activity = [json.loads(r[0]) for r in db.execute('SELECT data FROM activity ORDER BY updated DESC LIMIT 256')] if 'activity' in tables else []
     latest, failed, newest_provider = {}, {}, {}
     for sequence, raw in rows:
         row = json.loads(raw)
+        if not isinstance(row, dict) or row.get('provider') not in ('codex', 'claude'):
+            raise InputError('invalid observation row')
         provider = row['provider']
         newest_provider.setdefault(provider, sequence)
         key = (provider, row.get('auth_context_id'), row.get('native_thread_id'))
@@ -228,9 +347,41 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
         if failed.get(provider, 0) > sequence:
             row['freshness'] = 'superseded_by_collection_failure'
         row['sequence'] = sequence
+        row['observation_age_seconds'] = age if age >= 0 else None
+        row['auth_state'] = ('authenticated_at_metadata_observation' if provider == 'codex' and row['freshness'] == 'fresh' else 'unknown')
+        row['quota_state'], row['quota_windows'] = quota_details(row, now)
+        row['agent_activity_state'] = 'unknown'  # Process/callback existence is not progress.
         latest[key] = row
+    last_attempt, next_poll = None, None
+    if poll and _number(poll[0]) and 0 <= poll[0] <= 253402300499:
+        last_attempt = datetime.fromtimestamp(poll[0], timezone.utc).isoformat()
+        next_poll = datetime.fromtimestamp(poll[0] + 300, timezone.utc).isoformat()
+    newest = {provider: json.loads(next(raw for seq, raw in rows if seq == sequence))
+              for provider, sequence in newest_provider.items()}
+    if poll and 'codex' not in newest:
+        newest['codex'] = {'reason': 'poll_without_observation'}
+    collection = {provider: dict(
+        last_attempt=last_attempt if provider == 'codex' else None,
+        next_eligible_poll=next_poll if provider == 'codex' else None,
+        last_success=next((row['observed_at'] for row in latest.values() if row['provider'] == provider and row.get('observed_at')), None),
+        collection_state=('failed' if row.get('reason') == 'collection_failed' else
+                          'pending_or_interrupted' if row.get('reason') == 'poll_without_observation' else 'observed'),
+        availability_state=row.get('availability_state', 'unknown'),
+        auth_state='auth_required' if row.get('availability_state') == 'auth_required' else 'unknown',
+        provider_budget_seconds=300 if provider == 'codex' else None,
+        freshness_ttl_seconds=300 if provider == 'codex' else None,
+        queue_replay_allowed=False) for provider, row in newest.items()}
+    for row in activity:
+        if not isinstance(row, dict) or row.get('provider') != 'claude':
+            raise InputError('invalid activity row')
+        observed = _time(row.get('observed_at'))
+        row['observation_age_seconds'] = (now - observed).total_seconds() if observed and now >= observed else None
     return {'schema': 'wd.capacity-status.v1', 'observed_at': now.isoformat(),
             'execution_allowed': False, 'observations': list(latest.values()),
+            'collection': collection, 'native_activity': activity,
+            'alerts': [dict(alert_id=row['alert_id'], provider=row['provider'], native_thread_id=row['native_thread_id'],
+                            state=row['availability_state'], first_observed_at=row.get('first_error_at'))
+                       for row in activity if row.get('alert_id')],
             'failed_providers': [provider for provider, sequence in failed.items()
                                  if newest_provider[provider] == sequence],
             'limitations': ['quota_pool_mapping_unverified', 'no_live_model_switch',
@@ -262,13 +413,31 @@ def main(argv=None) -> int:
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--scheduled', action='store_true', help='Budgeted Codex metadata poll, safe to repeat.')
     parser.add_argument('--statusline', action='store_true', help='Compact Claude statusline output after ingestion.')
+    parser.add_argument('--claude-hook', action='store_true', help='Record native lifecycle metadata; no model decision or retry.')
     parser.add_argument('--codex-executable')
     parser.add_argument('--store', type=Path, required=True)
     args = parser.parse_args(argv)
+    # A status failure is not a collection attempt. Keep both exits outside every
+    # path that reserves a poll, starts a provider, or saves an observation.
+    if args.status:
+        try:
+            result = status(args.store)
+            encoded = json.dumps(result, allow_nan=False)
+        except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            print(json.dumps({'schema': 'wd.capacity-status.v1', 'state': 'unknown',
+                              'reason': 'status_unavailable', 'execution_allowed': False,
+                              'observed_at': utcnow(), 'observations': []}))
+            return 2
+        print(encoded)
+        return 0
+    if args.claude_hook:
+        # A telemetry failure must not make a Stop hook block or prompt a model.
+        try:
+            record_claude_hook(args.store, _load(sys.stdin.buffer))
+        except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            print('WD native lifecycle observation unavailable', file=sys.stderr)
+        return 0
     try:
-        if args.status:
-            print(json.dumps(status(args.store), allow_nan=False))
-            return 0
         if args.provider is None:
             raise InputError('provider required for collection')
         if args.statusline and args.provider != 'claude':
@@ -288,10 +457,11 @@ def main(argv=None) -> int:
         else:
             observation = collect_claude(_load(sys.stdin.buffer))
         code = 0
-    except (InputError, OSError, ValueError, sqlite3.Error, asyncio.TimeoutError):
+    except (InputError, OSError, ValueError, sqlite3.Error, asyncio.TimeoutError) as exc:
         observation = {'schema': 'wd.capacity-observation.v1', 'provider': args.provider,
                        'observed_at': utcnow(), 'state': 'unknown',
                        'reason': 'collection_failed', 'account_pool': None,
+                       'availability_state': exc.state if isinstance(exc, MetadataFailure) else 'unknown',
                        'execution_allowed': False}
         code = 2
     try:
@@ -306,10 +476,20 @@ def main(argv=None) -> int:
         # JSON strings avoid terminal-control sequences from arbitrary metadata.
         print('WD capacity | model=' + json.dumps(model, ensure_ascii=True) +
               ' effort=' + json.dumps(effort, ensure_ascii=True) +
-              ' | quota age unknown; observation saved')
+              ' | quota age unknown; observation saved' + native_alert_summary(args.store, observation.get('native_thread_id')))
     else:
         print(json.dumps(observation, allow_nan=False))
     return code
+
+
+def native_alert_summary(path: Path, session: str | None) -> str:
+    """A callback never clears a latched failure or proves readiness."""
+    try:
+        value = status(path)
+        alert = next((r for r in value['alerts'] if r['native_thread_id'] == session), None)
+        return (' | blocked=' + json.dumps(alert['state']) + ' alert=' + json.dumps(alert['alert_id'])) if alert else ''
+    except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        return ' | lifecycle status unknown'
 
 
 if __name__ == '__main__':

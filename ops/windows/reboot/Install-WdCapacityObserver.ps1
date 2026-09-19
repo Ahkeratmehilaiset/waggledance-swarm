@@ -18,6 +18,24 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Keep this bootstrap guard local: no unverified helper executes before pin checks.
+function Assert-CapacityPath([string]$Path,[string]$Root) {
+    $full=[IO.Path]::GetFullPath($Path)
+    $boundary=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')
+    if(-not $full.Equals($boundary,[StringComparison]::OrdinalIgnoreCase) -and
+       -not $full.StartsWith($boundary+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Path escaped observer root'}
+    $walk=$full
+    while($walk -and $walk.Length -ge $boundary.Length){
+        try{$attributes=[IO.File]::GetAttributes($walk)}
+        catch [IO.FileNotFoundException]{$attributes=0}
+        catch [IO.DirectoryNotFoundException]{$attributes=0}
+        if($attributes -band [IO.FileAttributes]::ReparsePoint){
+            throw 'Observer path contains a reparse point'
+        }
+        $walk=Split-Path $walk -Parent
+    }
+    return $full
+}
 function Get-ObserverHash {
     param([Parameter(Mandatory)][string]$Path)
     $stream = [IO.File]::OpenRead($Path)
@@ -26,12 +44,17 @@ function Get-ObserverHash {
     finally { $sha.Dispose(); $stream.Dispose() }
 }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+[void](Assert-CapacityPath $repo ([IO.Path]::GetPathRoot($repo)))
 foreach ($path in @($PythonExecutable, $CodexExecutable)) {
+    [void](Assert-CapacityPath $path ([IO.Path]::GetPathRoot($path)))
     if (-not [IO.Path]::IsPathRooted($path) -or [IO.Path]::GetExtension($path) -ine '.exe' -or
         -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Absolute native executable required' }
 }
 $root = [IO.Path]::GetFullPath($InstallRoot)
 if (-not $root.StartsWith('C:\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Persistent C: install required' }
+[void](Assert-CapacityPath $root ([IO.Path]::GetPathRoot($root)))
+[void](Assert-CapacityPath (Join-Path $root 'observations.sqlite') $root)
+[void](Assert-CapacityPath (Join-Path $root 'current.json') $root)
 $head = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or (& git -C $repo status --porcelain --untracked-files=no)) {
     throw 'Observer requires a clean committed source tree'
@@ -40,16 +63,31 @@ $pythonHash = Get-ObserverHash $PythonExecutable
 $codexHash = Get-ObserverHash $CodexExecutable
 $releaseId = $head + '-' + $pythonHash.Substring(0,12) + '-' + $codexHash.Substring(0,12)
 $release = Join-Path $root $releaseId
+[void](Assert-CapacityPath $release $root)
 $files = @('tools\bridge_capacity_advisor.py', 'tools\bridge_capacity_collector.py',
-           'tools\bridge_capacity_recovery.py', 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1')
+           'tools\bridge_capacity_recovery.py', 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1',
+           'ops\windows\reboot\Get-WdCapacityStatus.ps1')
 $hashes = [ordered]@{}
-foreach ($file in $files) { $hashes[$file] = (Get-ObserverHash (Join-Path $repo $file)) }
+foreach ($file in $files) { $hashes[$file] = (Get-ObserverHash (Assert-CapacityPath (Join-Path $repo $file) $repo)) }
 $manifest = [ordered]@{schema='wd.capacity-observer-install.v1';source_commit=$head;files=$hashes;
     python=$PythonExecutable;python_sha256=$pythonHash;
     codex=$CodexExecutable;codex_sha256=$codexHash;
     store=(Join-Path $root 'observations.sqlite');execution_mode='metadata_only'}
 if (-not $Apply) { $manifest | ConvertTo-Json -Depth 8; return }
+$statusCommand=Join-Path (Split-Path $root -Parent) 'Get-WdCapacityStatus.ps1'
+[void](Assert-CapacityPath $statusCommand ([IO.Path]::GetPathRoot($statusCommand)))
+if((Test-Path -LiteralPath $statusCommand) -and
+   (Get-ObserverHash $statusCommand) -ine $hashes['ops\windows\reboot\Get-WdCapacityStatus.ps1']){
+    $priorPointer=Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw|ConvertFrom-Json
+    $priorPath=Assert-CapacityPath ([string]$priorPointer.manifest) $root
+    if(-not $priorPath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or
+       (Get-ObserverHash $priorPath) -ine $priorPointer.manifest_sha256){throw 'Cannot verify prior status command owner'}
+    $prior=Get-Content -LiteralPath $priorPath -Raw|ConvertFrom-Json
+    $priorField=$prior.files.PSObject.Properties['ops\windows\reboot\Get-WdCapacityStatus.ps1']
+    if($null -eq $priorField -or (Get-ObserverHash $statusCommand) -ine $priorField.Value){throw 'Existing status command differs; preserve it'}
+}
 $manifestPath = Join-Path $release 'manifest.json'
+[void](Assert-CapacityPath $manifestPath $release)
 $manifestJson = $manifest | ConvertTo-Json -Depth 8
 if (Test-Path -LiteralPath $release) {
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
@@ -57,12 +95,12 @@ if (Test-Path -LiteralPath $release) {
         throw 'Existing observer release differs or is incomplete; refusing overwrite'
     }
     foreach ($file in $files) {
-        if ((Get-ObserverHash (Join-Path $release $file)) -cne $hashes[$file]) { throw 'Existing observer release changed' }
+        if ((Get-ObserverHash (Assert-CapacityPath (Join-Path $release $file) $release)) -cne $hashes[$file]) { throw 'Existing observer release changed' }
     }
 } else {
     [void](New-Item -ItemType Directory -Path $release -Force)
     foreach ($file in $files) {
-        $target = Join-Path $release $file
+        $target = Assert-CapacityPath (Join-Path $release $file) $release
         [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
         Copy-Item -LiteralPath (Join-Path $repo $file) -Destination $target
     }
@@ -103,7 +141,7 @@ if ($old) {
     if ($old.Actions[0].Arguments -cne $arguments -or $old.Actions[0].WorkingDirectory -ine $release) {
         if (-not $Update) { throw 'A verified observer update requires -Apply -Update' }
         $current = Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw | ConvertFrom-Json
-        $priorManifest = [IO.Path]::GetFullPath([string]$current.manifest)
+        $priorManifest = Assert-CapacityPath ([string]$current.manifest) $root
         if (-not $priorManifest.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) -or
             (Get-ObserverHash $priorManifest) -cne $current.manifest_sha256) {
             throw 'Previous observer manifest is not verified inside this install root'
@@ -121,6 +159,7 @@ if ($old) {
 } else {
     Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal | Out-Null
 }
+Copy-Item -LiteralPath (Join-Path $release 'ops\windows\reboot\Get-WdCapacityStatus.ps1') -Destination $statusCommand -Force
 [pscustomobject]@{source_commit=$head;release_id=$releaseId;manifest=$manifestPath;manifest_sha256=$anchor;task='WD-CapacityObserver';mode='metadata_only'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'current.json') -Encoding UTF8
 Start-ScheduledTask -TaskName 'WD-CapacityObserver'

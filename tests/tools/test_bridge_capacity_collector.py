@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.bridge_capacity_advisor import InputError
+from tools import bridge_capacity_collector as collector
 from tools.bridge_capacity_collector import (MetadataClient, collect_codex, collect_claude,
                                              quota_payload, save_observation, status, reserve_poll)
 
@@ -121,3 +122,166 @@ def test_successful_recollection_clears_historical_error(tmp_path):
     report = status(path, now=now)
     assert report['failed_providers'] == []
     assert report['observations'][0]['freshness'] == 'fresh'
+
+
+@pytest.mark.parametrize('kind', ['missing', 'foreign', 'corrupt', 'bad_json', 'bad_shape', 'valid'])
+@pytest.mark.parametrize('extra', [[], ['--provider', 'codex', '--scheduled', '--statusline']])
+def test_status_cli_never_mutates_even_on_error(tmp_path, monkeypatch, capsys, kind, extra):
+    path = tmp_path / 'status.sqlite'
+    if kind == 'foreign':
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE unrelated(value TEXT)')
+    elif kind == 'corrupt':
+        path.write_bytes(b'not a database')
+    elif kind in ('bad_json', 'bad_shape', 'valid'):
+        save_observation(path, dict(provider='codex', observed_at=datetime.now(timezone.utc).isoformat()))
+        if kind != 'valid':
+            with sqlite3.connect(path) as db:
+                db.execute('UPDATE observations SET data=?', ('not json' if kind == 'bad_json' else '[]',))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    def forbidden(*args, **kwargs):
+        pytest.fail('read-only status reached a collection/write path')
+    monkeypatch.setattr(collector, 'save_observation', forbidden)
+    monkeypatch.setattr(collector, 'reserve_poll', forbidden)
+    monkeypatch.setattr(collector, 'MetadataClient', forbidden)
+    assert collector.main(['--status', '--store', str(path), *extra]) == (0 if kind == 'valid' else 2)
+    result = json.loads(capsys.readouterr().out)
+    assert result['execution_allowed'] is False
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_status_access_denied_does_not_try_to_save(tmp_path, monkeypatch, capsys):
+    def denied(*args, **kwargs):
+        raise PermissionError('fixture')
+    monkeypatch.setattr(collector, 'status', denied)
+    monkeypatch.setattr(collector, 'save_observation', lambda *a: pytest.fail('status wrote'))
+    assert collector.main(['--status', '--store', str(tmp_path / 'denied')]) == 2
+    assert json.loads(capsys.readouterr().out)['reason'] == 'status_unavailable'
+    assert not list(tmp_path.iterdir())
+
+
+def test_status_does_not_create_wal_shared_memory(tmp_path, capsys):
+    path = tmp_path / 'wal.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE observations(sequence INTEGER PRIMARY KEY,provider TEXT,data TEXT)')
+        db.commit()
+        before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+        assert collector.main(['--status', '--store', str(path)]) == 2
+        assert json.loads(capsys.readouterr().out)['reason'] == 'status_unavailable'
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+@pytest.mark.parametrize('duration,expected', [(300, 300), (10080, 10080), (False, None), (-1, None), ('300', None), (None, None)])
+def test_status_preserves_and_validates_window_duration(tmp_path, duration, expected):
+    path = tmp_path / 'windows.sqlite'
+    now = datetime.now(timezone.utc)
+    payload = quota_payload({'rateLimits': {'limitId': 'codex', 'primary': {
+        'usedPercent': 10, 'resetsAt': now.timestamp() + 1000, 'windowDurationMins': duration}}}, 'codex')
+    save_observation(path, dict(provider='codex', payload=payload, observed_at=now.isoformat()))
+    row = status(path, now=now)['observations'][0]
+    assert row['quota_windows'][0]['window_duration_minutes'] == expected
+    assert row['quota_state'] == 'observed_headroom'
+    assert row['agent_activity_state'] == 'unknown'
+
+
+@pytest.mark.parametrize('age,expected', [(300, 'fresh'), (301, 'unknown_or_stale'), (361, 'unknown_or_stale'), (-1, 'unknown_or_stale')])
+def test_status_reports_age_and_next_poll_without_extending_freshness(tmp_path, age, expected):
+    path = tmp_path / 'age.sqlite'
+    now = datetime.now(timezone.utc)
+    observed = now - timedelta(seconds=age)
+    reserve_poll(path, now=observed)
+    save_observation(path, dict(provider='codex', observed_at=observed.isoformat()))
+    result = status(path, now=now)
+    assert result['observations'][0]['freshness'] == expected
+    assert result['observations'][0]['observation_age_seconds'] == (age if age >= 0 else None)
+    collection = result['collection']['codex']
+    assert datetime.fromisoformat(collection['next_eligible_poll']) == observed + timedelta(seconds=300)
+    assert collection['queue_replay_allowed'] is False
+
+
+def test_claude_auth_alert_is_latched_deduplicated_and_not_cleared_by_callback(tmp_path):
+    path = tmp_path / 'hooks.sqlite'
+    failure = dict(session_id='native-session', hook_event_name='StopFailure', error='authentication_failed',
+                   last_assistant_message='PRIVATE CONTENT', transcript_path='PRIVATE PATH')
+    collector.record_claude_hook(path, failure)
+    save_observation(path, collect_claude(dict(session_id='native-session')))
+    first = status(path)
+    alert_id = first['alerts'][0]['alert_id']
+    collector.record_claude_hook(path, failure)
+    collector.record_claude_hook(path, dict(session_id='native-session', hook_event_name='UserPromptSubmit', prompt='PRIVATE'))
+    save_observation(path, collect_claude(dict(session_id='native-session')))
+    repeated = status(path)
+    assert repeated['alerts'][0]['alert_id'] == alert_id
+    activity = repeated['native_activity'][0]
+    assert activity['auth_state'] == 'auth_required'
+    assert activity['activity_state'] == 'work_requested'
+    assert activity['automatic_retry_allowed'] is False
+    assert 'PRIVATE' not in json.dumps(repeated)
+    collector.record_claude_hook(path, dict(session_id='native-session', hook_event_name='Stop'))
+    recovered = status(path)
+    assert recovered['alerts'] == []
+    assert recovered['native_activity'][0]['last_successful_turn_at']
+    assert recovered['native_activity'][0]['next_turn_success_verified'] is False
+
+
+@pytest.mark.parametrize('error,state', [('rate_limit','rate_limited'),('server_error','transport_error'),
+                                      ('billing_error','billing_error'),('oauth_org_not_allowed','access_denied')])
+def test_native_error_is_not_automatically_quota_or_login(tmp_path, error, state):
+    path = tmp_path / 'error.sqlite'
+    save_observation(path, collect_claude(dict(session_id='native')))
+    collector.record_claude_hook(path, dict(session_id='native', hook_event_name='StopFailure', error=error))
+    result = status(path)
+    assert result['native_activity'][0]['availability_state'] == state
+    assert result['native_activity'][0]['auth_state'] == 'unknown'
+    assert result['execution_allowed'] is False
+
+
+def test_missing_subscription_is_auth_failure_without_login_or_fallback():
+    class LoggedOut(Client):
+        async def request(self, method, params=None):
+            assert method == 'account/read'
+            return {'account': None}
+    with pytest.raises(collector.MetadataFailure) as failure:
+        asyncio.run(collect_codex(LoggedOut(), 'context'))
+    assert failure.value.state == 'auth_required'
+@pytest.mark.parametrize('error', ['authentication_failed', {}, [], None])
+def test_hook_only_store_is_readable_without_creating_observation_table(tmp_path, error):
+    from tools.bridge_capacity_collector import record_claude_hook, status, native_alert_summary
+    path = tmp_path / 'hooks.sqlite'
+    record_claude_hook(path, dict(session_id='native', hook_event_name='StopFailure', error=error))
+    before = path.read_bytes()
+    result = status(path)
+    assert result['observations'] == []
+    assert result['alerts'][0]['state'] == ('auth_required' if error == 'authentication_failed' else 'unknown')
+    assert 'blocked=' in native_alert_summary(path, 'native')
+    assert path.read_bytes() == before
+def test_status_retains_budget_after_interrupted_first_poll(tmp_path):
+    path = tmp_path / 'interrupted.sqlite'
+    now = datetime.now(timezone.utc)
+    assert reserve_poll(path, now=now)
+    before=path.read_bytes()
+    result=status(path, now=now)
+    assert result['collection']['codex']['collection_state']=='pending_or_interrupted'
+    assert result['collection']['codex']['last_attempt']==now.isoformat()
+    assert result['collection']['codex']['next_eligible_poll']==(now+timedelta(seconds=300)).isoformat()
+    assert result['collection']['codex']['last_success'] is None
+    assert result['observations']==[] and path.read_bytes()==before
+@pytest.mark.parametrize('code,expected', [(-32601,'unknown'),(-32600,'unknown'),(500,'unknown'),
+                                         (401,'auth_required'),(429,'rate_limited'),({},'unknown'),(True,'unknown')])
+def test_rpc_errors_do_not_invent_transport_failures(code, expected):
+    from types import SimpleNamespace
+    class Writer:
+        def write(self, _): pass
+        async def drain(self): pass
+    async def invoke():
+        client=MetadataClient('unused')
+        reader=asyncio.StreamReader()
+        reader.feed_data((json.dumps(dict(id=1,error=dict(code=code,message='private detail')))+'\n').encode())
+        reader.feed_eof()
+        client.process=SimpleNamespace(stdin=Writer(),stdout=reader)
+        with pytest.raises(collector.MetadataFailure) as failure:
+            await client.request('account/read')
+        assert failure.value.state==expected
+        assert str(failure.value)=='metadata unavailable'
+    asyncio.run(invoke())

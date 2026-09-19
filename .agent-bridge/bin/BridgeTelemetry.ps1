@@ -80,7 +80,7 @@ function Write-BridgeStageObservation {
             if ($null -ne $property) { $observation[$pair[0]] = $property.Value }
         }
         if (-not $observation.request_id) { return }
-        if($Request.PSObject.Properties['reply_ts_utc']){$observation.reply_ts_utc=[string]$Request.reply_ts_utc}
+        if(-not $ReplyTimestamp -and $Request.PSObject.Properties['reply_ts_utc'] -and $Request.reply_ts_utc){$observation.reply_ts_utc=[string]$Request.reply_ts_utc}
     }
     $directory = Join-Path $BridgeRoot 'shared\telemetry'
     [void][IO.Directory]::CreateDirectory($directory)

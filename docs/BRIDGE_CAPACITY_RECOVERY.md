@@ -32,7 +32,10 @@ older positive observations. An old successful row is never silently called curr
 Windows installation uses `ops/windows/reboot/Install-WdCapacityObserver.ps1`.
 The default prints a plan; `-Apply` copies a clean committed version into a
 commit-addressed directory and registers `WD-CapacityObserver` with a Limited
-interactive user principal, logon trigger and five-minute repetition. Its hidden
+interactive user principal, logon trigger and one-minute admission checks. The
+collector still admits at most one provider attempt per five minutes; intervening
+checks exit without starting an App Server. This avoids a small scheduling jitter
+turning a five-minute budget into a ten-minute collection gap. Its hidden
 runner verifies the manifest, source and executable hashes on every invocation.
 It does not modify WD-Supervisor or restart agent conversations. An executable
 update that changes the pin stops collection visibly in Task Scheduler; revalidate

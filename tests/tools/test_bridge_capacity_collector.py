@@ -245,3 +245,14 @@ def test_missing_subscription_is_auth_failure_without_login_or_fallback():
     with pytest.raises(collector.MetadataFailure) as failure:
         asyncio.run(collect_codex(LoggedOut(), 'context'))
     assert failure.value.state == 'auth_required'
+@pytest.mark.parametrize('error', ['authentication_failed', {}, [], None])
+def test_hook_only_store_is_readable_without_creating_observation_table(tmp_path, error):
+    from tools.bridge_capacity_collector import record_claude_hook, status, native_alert_summary
+    path = tmp_path / 'hooks.sqlite'
+    record_claude_hook(path, dict(session_id='native', hook_event_name='StopFailure', error=error))
+    before = path.read_bytes()
+    result = status(path)
+    assert result['observations'] == []
+    assert result['alerts'][0]['state'] == ('auth_required' if error == 'authentication_failed' else 'unknown')
+    assert 'blocked=' in native_alert_summary(path, 'native')
+    assert path.read_bytes() == before

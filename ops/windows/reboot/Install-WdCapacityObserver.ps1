@@ -51,7 +51,8 @@ $manifest = [ordered]@{schema='wd.capacity-observer-install.v1';source_commit=$h
     store=(Join-Path $root 'observations.sqlite');execution_mode='metadata_only'}
 if (-not $Apply) { $manifest | ConvertTo-Json -Depth 8; return }
 $statusCommand=Join-Path (Split-Path $root -Parent) 'Get-WdCapacityStatus.ps1'
-if(Test-Path -LiteralPath $statusCommand){
+if((Test-Path -LiteralPath $statusCommand) -and
+   (Get-ObserverHash $statusCommand) -ine $hashes['ops\windows\reboot\Get-WdCapacityStatus.ps1']){
     $priorPointer=Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw|ConvertFrom-Json
     $priorPath=[IO.Path]::GetFullPath([string]$priorPointer.manifest)
     if(-not $priorPath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) -or
@@ -132,9 +133,9 @@ if ($old) {
 } else {
     Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal | Out-Null
 }
+Copy-Item -LiteralPath (Join-Path $release 'ops\windows\reboot\Get-WdCapacityStatus.ps1') -Destination $statusCommand -Force
 [pscustomobject]@{source_commit=$head;release_id=$releaseId;manifest=$manifestPath;manifest_sha256=$anchor;task='WD-CapacityObserver';mode='metadata_only'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'current.json') -Encoding UTF8
-Copy-Item -LiteralPath (Join-Path $release 'ops\windows\reboot\Get-WdCapacityStatus.ps1') -Destination $statusCommand -Force
 Start-ScheduledTask -TaskName 'WD-CapacityObserver'
 Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw
 

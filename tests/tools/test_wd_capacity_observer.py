@@ -188,3 +188,73 @@ def test_shared_status_locator_is_verified_readonly_and_does_not_collect(tmp_pat
     after = {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     assert before == after
 
+def native_hook_release(tmp_path):
+    release = tmp_path / 'release'
+    files = {}
+    for relative in ('tools/bridge_capacity_advisor.py','tools/bridge_capacity_collector.py',
+                     'ops/windows/reboot/Invoke-WdCapacityObserver.ps1'):
+        target = release / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+        files[relative.replace('/', '\\')] = sha(target)
+    store = tmp_path / 'observations.sqlite'
+    manifest = release / 'manifest.json'
+    manifest.write_text(json.dumps(dict(schema='wd.capacity-observer-install.v1',execution_mode='metadata_only',
+        files=files,python=PYTHON,python_sha256=sha(Path(PYTHON)),store=str(store))),encoding='utf-8')
+    return release, manifest, store
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('case', ['auth', 'success', 'bad_manifest', 'failed_storage', 'statusline'])
+def test_native_hook_runner_never_starts_provider_or_blocks_stop(tmp_path, host, case):
+    if host is None: pytest.skip('Windows PowerShell unavailable')
+    release, manifest, store = native_hook_release(tmp_path)
+    anchor = '0'*64 if case=='bad_manifest' else sha(manifest)
+    if case=='failed_storage': store.mkdir()
+    payload = dict(session_id='native-fixture', hook_event_name='Stop' if case=='success' else 'StopFailure',
+                   error='authentication_failed', error_details='SECRET', last_assistant_message='SECRET', prompt='SECRET')
+    proc = subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(release/'ops/windows/reboot/Invoke-WdCapacityObserver.ps1'),
+                            '-ManifestPath',str(manifest),'-ManifestSha256',anchor,
+                            '-Mode','ClaudeStatusline' if case=='statusline' else 'ClaudeHook'],
+                           input=json.dumps(payload),text=True,capture_output=True,timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == '' if case!='statusline' else 'quota age unknown' in proc.stdout
+    assert 'SECRET' not in proc.stdout + proc.stderr
+    if store.is_file():
+        assert b'SECRET' not in store.read_bytes()
+        from tools.bridge_capacity_collector import status
+        result = status(store)
+        if case=='auth': assert result['alerts'][0]['state']=='auth_required'
+        if case=='success': assert result['native_activity'][0]['availability_state']=='successful_turn_observed'
+    else:
+        assert case in ('bad_manifest','failed_storage')
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path, host):
+    if host is None: pytest.skip('Windows PowerShell unavailable')
+    release, manifest, _ = native_hook_release(tmp_path)
+    worktree = tmp_path / 'worktree'
+    (worktree/'.claude').mkdir(parents=True)
+    (worktree/'.git').write_text('gitdir: fixture')
+    settings = worktree/'.claude/settings.local.json'
+    original = dict(permissions={'allow':['Bash(git status)']},hooks={'Stop':[{'hooks':[{'type':'command','command':'echo foreign'}]}]},
+                    statusLine={'type':'command','command':'previous inspected observer'})
+    settings.write_text(json.dumps(original))
+    installer = ROOT/'ops/windows/reboot/Install-WdClaudeCapacityHooks.ps1'
+    base = [host,'-NoProfile','-NonInteractive','-File',str(installer),'-Worktree',str(worktree),
+            '-ManifestPath',str(manifest),'-ManifestSha256',sha(manifest),'-Apply']
+    for _ in range(2):
+        proc = subprocess.run(base+['-ExpectedSettingsSha256',sha(settings)],capture_output=True,text=True,timeout=30)
+        assert proc.returncode == 0, proc.stderr
+    value = json.loads(settings.read_text(encoding='utf-8-sig'))
+    assert value['permissions']==original['permissions']
+    assert len(value['hooks']['Stop'])==2
+    assert value['hooks']['Stop'][0]['hooks'][0]['command']=='echo foreign'
+    for event in ('UserPromptSubmit','StopFailure'): assert len(value['hooks'][event])==1
+    assert len(list((worktree/'.codex-audit').glob('*.json')))==2
+    value['statusLine']['command']='foreign change'
+    settings.write_text(json.dumps(value))
+    before=settings.read_bytes()
+    proc = subprocess.run(base+['-ExpectedSettingsSha256',sha(settings)],capture_output=True,text=True,timeout=30)
+    assert proc.returncode != 0 and settings.read_bytes()==before

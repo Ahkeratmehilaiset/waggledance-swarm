@@ -135,7 +135,7 @@ def test_watcher_preserves_new_requests_and_late_corrections(tmp_path, ps, case)
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['verified', 'repinned', 'unknown_thread'])
+@pytest.mark.parametrize('case', ['verified', 'repinned', 'unknown_thread', 'reused_parent', 'wrong_pid'])
 def test_execution_evidence_checks_observed_launcher_not_installed_pointer(tmp_path, ps, case):
     generation = 'a' * 40
     bundle = tmp_path / generation
@@ -159,17 +159,42 @@ function Get-CimInstance {{
  $started=[datetime]'2026-09-18T01:00:00Z'
  if($id -eq $PID){{return [pscustomobject]@{{ProcessId=$PID;ParentProcessId=900001;Name='pwsh.exe';CommandLine='helper';CreationDate=$started}}}}
  if($id -eq 900001){{return [pscustomobject]@{{ProcessId=900001;ParentProcessId=900002;Name='claude.exe';CommandLine={q(native_cmd)};CreationDate=$started}}}}
- if($id -eq 900002){{return [pscustomobject]@{{ProcessId=900002;ParentProcessId=0;Name='pwsh.exe';CommandLine='pwsh -File C:\\bundle\\{launcher_generation}\\start-wd-agent.ps1 -Agent claude-rco-1';CreationDate=$started}}}}
+ if($id -eq 900002){{return [pscustomobject]@{{ProcessId={900003 if case == 'wrong_pid' else 900002};ParentProcessId=0;Name='pwsh.exe';CommandLine='pwsh -File C:\\bundle\\{launcher_generation}\\start-wd-agent.ps1 -Agent claude-rco-1';CreationDate=$started.AddSeconds({1 if case == 'reused_parent' else 0})}}}}
 }}
 & {q(helpers / 'Get-BridgeExecutionEvidence.ps1')}
 """
     completed = _run_powershell(script, executable=ps, check=False)
     assert completed.returncode == 0, completed.stderr
     value = json.loads(completed.stdout)
+    if case in ('reused_parent', 'wrong_pid'):
+        assert value['native_pid'] is None and value['launcher_pid'] is None
+        assert value['native_conversation_id'] is None
+        assert value['ancestry_error'] == 'Parent process lifetime changed'
+        assert value['ancestry_failure_phase'] == 'parent_process:900002'
+        return
     assert value['observed_agent'] == 'claude-rco-1'
     assert value['native_conversation_id'] == (None if case == 'unknown_thread' else thread)
     assert value['pin_status'] == ('mismatch' if case == 'repinned' else 'manifest_and_launcher_verified')
     assert value['generation'] == generation
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows limited-information process query')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_execution_evidence_limited_query_after_cim_denied(ps):
+    # Exercise real handles and command-line decoding; no privileges or process mutations.
+    script = f"""
+function Get-CimInstance {{ throw 'fixture CIM access denied' }}
+. {q(BIN / 'Get-BridgeExecutionEvidence.ps1')} | Out-Null
+$actual=Get-BridgeEvidenceProcess $PID
+$self=[Diagnostics.Process]::GetCurrentProcess()
+@{{pid_matches=($actual.ProcessId -eq $PID);start_matches=($actual.CreationDate -eq $self.StartTime.ToUniversalTime());
+   path_matches=($actual.ExecutablePath -ieq $self.MainModule.FileName);command_present=([bool]$actual.CommandLine);
+   method=$script:bridgeEvidenceProcessMethod;denied=$script:bridgeEvidenceCimError.error}}|ConvertTo-Json
+"""
+    value = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert all(value[k] for k in ('pid_matches','start_matches','path_matches','command_present'))
+    assert value['method'] == 'win32_limited_query'
+    assert value['denied'] == 'fixture CIM access denied'
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

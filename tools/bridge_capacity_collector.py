@@ -225,6 +225,8 @@ def record_claude_hook(path: Path, payload: dict) -> None:
     if not _text(session) or len(session) > 128 or event not in ('Stop', 'StopFailure', 'UserPromptSubmit'):
         raise InputError('unsupported native hook identity/event')
     error = payload.get('error') if event == 'StopFailure' else None
+    if not isinstance(error, str):
+        error = None
     error_state = {'authentication_failed': 'auth_required', 'cloud_credential_error': 'auth_required',
                    'oauth_org_not_allowed': 'access_denied', 'account_on_hold': 'account_on_hold',
                    'billing_error': 'billing_error', 'rate_limit': 'rate_limited',
@@ -312,8 +314,10 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
     if header[:16] == b'SQLite format 3\x00' and 2 in header[18:20]:
         raise InputError('WAL status is unsupported without an existing read-only snapshot')
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
-        rows = db.execute('SELECT sequence,data FROM observations ORDER BY sequence DESC LIMIT 2048').fetchall()
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not tables.intersection({'observations', 'activity', 'poll_budget'}):
+            raise InputError('not an observer store')
+        rows = db.execute('SELECT sequence,data FROM observations ORDER BY sequence DESC LIMIT 2048').fetchall() if 'observations' in tables else []
         poll = db.execute('SELECT started FROM poll_budget WHERE id=1').fetchone() if 'poll_budget' in tables else None
         activity = [json.loads(r[0]) for r in db.execute('SELECT data FROM activity ORDER BY updated DESC LIMIT 256')] if 'activity' in tables else []
     latest, failed, newest_provider = {}, {}, {}
@@ -466,10 +470,20 @@ def main(argv=None) -> int:
         # JSON strings avoid terminal-control sequences from arbitrary metadata.
         print('WD capacity | model=' + json.dumps(model, ensure_ascii=True) +
               ' effort=' + json.dumps(effort, ensure_ascii=True) +
-              ' | quota age unknown; observation saved')
+              ' | quota age unknown; observation saved' + native_alert_summary(args.store, observation.get('native_thread_id')))
     else:
         print(json.dumps(observation, allow_nan=False))
     return code
+
+
+def native_alert_summary(path: Path, session: str | None) -> str:
+    """A callback never clears a latched failure or proves readiness."""
+    try:
+        value = status(path)
+        alert = next((r for r in value['alerts'] if r['native_thread_id'] == session), None)
+        return (' | blocked=' + json.dumps(alert['state']) + ' alert=' + json.dumps(alert['alert_id'])) if alert else ''
+    except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        return ' | lifecycle status unknown'
 
 
 if __name__ == '__main__':

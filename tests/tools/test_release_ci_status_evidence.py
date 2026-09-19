@@ -7,6 +7,7 @@ from tools.run_release_ci_status_evidence import build_report, evaluate_report, 
 
 
 COMMIT = "dc76e81cd8c804608bfaedf951220e46ff1baffa"
+TESTS_JOBS = ["unified", "release-evidence-runtime-windows"]
 
 
 def _run(
@@ -48,7 +49,7 @@ def _complete_runs() -> list[dict]:
             "WaggleDance CI",
             ["test (3.11)", "test (3.12)", "test (3.13)", "security-scan"],
         ),
-        _run("Tests", ["unified"]),
+        _run("Tests", TESTS_JOBS),
     ]
 
 
@@ -68,7 +69,7 @@ def test_build_report_blocks_pending_required_job() -> None:
             status="in_progress",
             conclusion="",
         ),
-        _run("Tests", ["unified"]),
+        _run("Tests", TESTS_JOBS),
     ]
 
     report = build_report(runs, commit=COMMIT)
@@ -81,10 +82,28 @@ def test_build_report_blocks_pending_required_job() -> None:
 
 
 def test_build_report_blocks_missing_required_workflow() -> None:
-    report = build_report([_run("Tests", ["unified"])], commit=COMMIT)
+    report = build_report([_run("Tests", TESTS_JOBS)], commit=COMMIT)
 
     assert report["ci_status"] == "blocked"
     assert "workflow_missing:WaggleDance CI" in report["blockers"]
+
+
+def test_build_report_blocks_missing_windows_release_evidence_job() -> None:
+    runs = [
+        _run(
+            "WaggleDance CI",
+            ["test (3.11)", "test (3.12)", "test (3.13)", "security-scan"],
+        ),
+        _run("Tests", ["unified"]),
+    ]
+
+    report = build_report(runs, commit=COMMIT)
+
+    assert report["ci_status"] == "blocked"
+    assert (
+        "job_missing:Tests:release-evidence-runtime-windows"
+        in report["blockers"]
+    )
 
 
 def test_build_report_blocks_pull_request_runs_for_release_evidence() -> None:
@@ -95,7 +114,7 @@ def test_build_report_blocks_pull_request_runs_for_release_evidence() -> None:
                 ["test (3.11)", "test (3.12)", "test (3.13)", "security-scan"],
                 event="pull_request",
             ),
-            _run("Tests", ["unified"], event="pull_request"),
+            _run("Tests", TESTS_JOBS, event="pull_request"),
         ],
         commit=COMMIT,
     )
@@ -118,7 +137,7 @@ def test_build_report_blocks_head_sha_mismatch() -> None:
 def test_main_writes_blocked_report_from_captured_runs(tmp_path) -> None:
     runs_path = tmp_path / "runs.json"
     output = tmp_path / "ci_status.json"
-    runs_path.write_text(json.dumps([_run("Tests", ["unified"])]), encoding="utf-8")
+    runs_path.write_text(json.dumps([_run("Tests", TESTS_JOBS)]), encoding="utf-8")
 
     rc = main([
         "--commit",

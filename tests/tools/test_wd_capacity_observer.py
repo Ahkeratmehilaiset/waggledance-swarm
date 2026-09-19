@@ -97,11 +97,24 @@ catch { if($_.Exception.Message -ne 'simulated registration denial'){throw} }
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
 if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 2){throw 'registration was duplicated'}
+$user=[Security.Principal.WindowsIdentity]::GetCurrent()
+foreach($alias in @(($user.Name -split '\\')[-1],$user.User.Value)) {
+  $global:wd_test_task.Principal.UserId=$alias
+  & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
+}
+if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 4){throw 'same SID alias not reused'}
+foreach($foreign in @('S-1-5-18','S-1-5-invalid')) {
+  $global:wd_test_task.Principal.UserId=$foreign
+  try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'foreign principal accepted' }
+  catch { if($_.Exception.Message -ne 'Existing task is not this exact Limited observer; refusing replacement'){throw} }
+}
+if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 4){throw 'foreign principal caused side effect'}
+$global:wd_test_task.Principal.UserId=$user.User.Value
 $global:wd_test_head='2222222222222222222222222222222222222222'
 try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'update must be explicit' }
 catch { if($_.Exception.Message -ne 'A verified observer update requires -Apply -Update'){throw} }
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply -Update
-if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 3){throw 'update not applied exactly once'}
+if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 5){throw 'update not applied exactly once'}
 'retry-preserved-exact-release'
 ''', encoding='utf-8')
     proc = subprocess.run([host, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',

@@ -82,8 +82,20 @@ $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Execution
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $old = Get-ScheduledTask -TaskName 'WD-CapacityObserver' -ErrorAction SilentlyContinue
 if ($old) {
+    # Task Scheduler can return DOMAIN\user, user, or a SID for the same owner.
+    # Resolve the actual security identity; never authorize by a display name.
+    $ownerSid = $null
+    try {
+        $owner = [string]$old.Principal.UserId
+        if ($owner -match '^S-\d-') {
+            $ownerSid = ([Security.Principal.SecurityIdentifier]::new($owner)).Value
+        } else {
+            $ownerSid = ([Security.Principal.NTAccount]::new($owner)).Translate(
+                [Security.Principal.SecurityIdentifier]).Value
+        }
+    } catch { $ownerSid = $null }
     if (@($old.Actions).Count -ne 1 -or $old.Actions[0].Execute -ine $hostPath -or
-        $old.Principal.UserId -ine $identity -or
+        $ownerSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
         [string]$old.Principal.RunLevel -cne 'Limited') {
         throw 'Existing task is not this exact Limited observer; refusing replacement'
     }

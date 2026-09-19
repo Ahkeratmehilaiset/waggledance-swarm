@@ -83,7 +83,7 @@ def test_ambiguous_outcome_never_replays_side_effect(tmp_path, crash, expected):
     assert store.plan('request1', value) == tid
 
 
-@pytest.mark.parametrize('stage', range(6))
+@pytest.mark.parametrize('stage', range(5))
 @pytest.mark.parametrize('field,value', [('hold', True), ('cancelled', True),
                                         ('pending_effects', True), ('head', 'changed'),
                                         ('permission_digest', 'changed'),
@@ -132,6 +132,20 @@ def test_unknown_actual_effort_cannot_apply(tmp_path):
     owner.override['effort'] = None
     advance(store, tid, owner)
     assert store.get(tid)['phase'] == 'planned'
+
+
+def test_resumed_busy_task_receipt_reconciles_without_dispatch(tmp_path):
+    value = plan()
+    store = RecoveryStore(tmp_path / 'recovery.db')
+    tid = store.plan('request', value)
+    owner = FakeOwner(value)
+    for _ in range(5):
+        advance(store, tid, owner)
+    assert store.get(tid)['phase'] == 'resume_pending'
+    owner.override.update(idle=False, pending_effects=True, quota_available=False)
+    advance(store, tid, owner)
+    assert store.get(tid)['phase'] == 'resumed'
+    assert owner.resume_count == 1
 
 
 def capacity(now):

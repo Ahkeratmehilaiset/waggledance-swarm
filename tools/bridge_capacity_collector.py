@@ -20,6 +20,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import uuid
 from typing import Any
 
 try:
@@ -230,10 +231,30 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
                             'statusline_does_not_refresh_idle_provider']}
 
 
+def reserve_poll(path: Path, *, now: datetime | None = None) -> str | None:
+    """At most one metadata attempt per five minutes, including failed attempts.
+
+    A backward clock refuses new attempts until the saved time is reached. The
+    45-second whole-call timeout is less than the minimum polling interval.
+    """
+    now = now or datetime.now(timezone.utc)
+    with sqlite3.connect(path, timeout=5) as db:
+        db.execute('CREATE TABLE IF NOT EXISTS poll_budget '
+                   '(id INTEGER PRIMARY KEY CHECK(id=1), started REAL, token TEXT)')
+        db.execute('BEGIN IMMEDIATE')
+        previous = db.execute('SELECT started FROM poll_budget WHERE id=1').fetchone()
+        if previous and now.timestamp() - previous[0] < 300:
+            return None
+        token = uuid.uuid4().hex
+        db.execute('INSERT OR REPLACE INTO poll_budget VALUES (1,?,?)', (now.timestamp(), token))
+        return token
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--provider', choices=['codex', 'claude'])
     parser.add_argument('--status', action='store_true')
+    parser.add_argument('--scheduled', action='store_true', help='Budgeted Codex metadata poll, safe to repeat.')
     parser.add_argument('--codex-executable')
     parser.add_argument('--store', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -243,6 +264,12 @@ def main(argv=None) -> int:
             return 0
         if args.provider is None:
             raise InputError('provider required for collection')
+        if args.scheduled:
+            if args.provider != 'codex':
+                raise InputError('scheduled Claude generation probes are not supported')
+            if reserve_poll(args.store) is None:
+                print(json.dumps({'state': 'not_due', 'execution_allowed': False}))
+                return 0
         if args.provider == 'codex':
             async def run():
                 async with MetadataClient(args.codex_executable or '') as client:
@@ -252,7 +279,7 @@ def main(argv=None) -> int:
         else:
             observation = collect_claude(_load(sys.stdin.buffer))
         code = 0
-    except (InputError, OSError, ValueError, asyncio.TimeoutError):
+    except (InputError, OSError, ValueError, sqlite3.Error, asyncio.TimeoutError):
         observation = {'schema': 'wd.capacity-observation.v1', 'provider': args.provider,
                        'observed_at': utcnow(), 'state': 'unknown',
                        'reason': 'collection_failed', 'account_pool': None,

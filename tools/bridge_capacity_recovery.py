@@ -208,9 +208,13 @@ def advance(store: RecoveryStore, tid: int, adapter: OwningSessionAdapter) -> di
     stamp = _time(observed.get('observed_at'))
     fresh = stamp is not None and 0 <= (datetime.now(timezone.utc) - stamp).total_seconds() <= 15
     same = all(observed.get(k) == v for k, v in plan['binding'].items())
+    # After resume, work may already be busy. Observing its durable receipt does
+    # not dispatch another turn and must not require the resumed task to be idle.
+    boundary = (phase == 'resume_pending' or
+                (observed.get('idle') is True and observed.get('pending_effects') is False
+                 and observed.get('quota_available') is True and observed.get('catalog_verified') is True))
     safe = (fresh and same and observed.get('hold') is False and observed.get('cancelled') is False
-            and observed.get('idle') is True and observed.get('pending_effects') is False
-            and observed.get('quota_available') is True and observed.get('catalog_verified') is True
+            and boundary
             and observed.get('required_reviewers') == plan['required_reviewers']
             and observed.get('qualification_ref') == plan['qualification_ref'])
     if not safe:

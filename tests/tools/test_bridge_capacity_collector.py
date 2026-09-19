@@ -4,13 +4,15 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.bridge_capacity_advisor import InputError
 from tools.bridge_capacity_collector import (MetadataClient, collect_codex, collect_claude,
-                                             quota_payload, save_observation)
+                                             quota_payload, save_observation, status, reserve_poll)
 
 
 class Client:
@@ -78,3 +80,25 @@ def test_failed_collection_supersedes_prior_good_snapshot(tmp_path):
 def test_authoritative_empty_multibucket_map_does_not_fall_back():
     assert quota_payload({'rateLimitsByLimitId': {}, 'rateLimits': {'limitId': 'codex'}},
                          'codex') == {'rateLimitsByLimitId': {}}
+
+
+def test_status_newer_failure_invalidates_headroom(tmp_path):
+    path = tmp_path / 'observations.db'
+    now = datetime.now(timezone.utc)
+    save_observation(path, dict(provider='codex', observed_at=now.isoformat(),
+                                auth_context_id='one', payload={'unused': 25}))
+    save_observation(path, dict(provider='codex', reason='collection_failed'))
+    report = status(path, now=now)
+    assert report['observations'][0]['freshness'] == 'superseded_by_collection_failure'
+    assert report['execution_allowed'] is False
+
+
+def test_poll_budget_atomic_and_clock_rollback_safe(tmp_path):
+    path = tmp_path / 'observations.db'
+    now = datetime.now(timezone.utc)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        results = list(pool.map(lambda _: reserve_poll(path, now=now), range(5)))
+    assert sum(x is not None for x in results) == 1
+    assert reserve_poll(path, now=now - timedelta(hours=1)) is None
+    assert reserve_poll(path, now=now + timedelta(seconds=299)) is None
+    assert reserve_poll(path, now=now + timedelta(seconds=300)) is not None

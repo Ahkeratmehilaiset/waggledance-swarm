@@ -79,15 +79,17 @@ $ErrorActionPreference='Stop'
 $global:wd_test_attempt=0
 $global:wd_test_starts=0
 $global:wd_test_task=$null
-function git { $global:LASTEXITCODE=0; if($args -contains 'rev-parse') { '1111111111111111111111111111111111111111' } }
+$global:wd_test_head='1111111111111111111111111111111111111111'
+function git { $global:LASTEXITCODE=0; if($args -contains 'rev-parse') { $global:wd_test_head } }
 function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory) [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn,$User,[switch]$Once,$At,$RepetitionInterval) [pscustomobject]@{} }
 function New-ScheduledTaskSettingsSet { param($MultipleInstances,$ExecutionTimeLimit,[switch]$StartWhenAvailable) [pscustomobject]@{} }
 function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
 function Get-ScheduledTask { param($TaskName,$ErrorAction) $global:wd_test_task }
-function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Settings,$Principal)
+function Export-ScheduledTask { param($TaskName) '<Task>previous fixture</Task>' }
+function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Settings,$Principal,[switch]$Force)
   $global:wd_test_attempt++; if($global:wd_test_attempt -eq 1){throw 'simulated registration denial'}
-  $global:wd_test_task=[pscustomobject]@{Actions=@($Action);Principal=$Principal}
+  $global:wd_test_task=[pscustomobject]@{Actions=@($Action);Principal=$Principal;State='Ready'}
 }
 function Start-ScheduledTask {param($TaskName) $global:wd_test_starts++}
 try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'first registration should fail' }
@@ -95,6 +97,11 @@ catch { if($_.Exception.Message -ne 'simulated registration denial'){throw} }
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
 & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply
 if($global:wd_test_attempt -ne 2 -or $global:wd_test_starts -ne 2){throw 'registration was duplicated'}
+$global:wd_test_head='2222222222222222222222222222222222222222'
+try { & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply; throw 'update must be explicit' }
+catch { if($_.Exception.Message -ne 'A verified observer update requires -Apply -Update'){throw} }
+& $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply -Update
+if($global:wd_test_attempt -ne 3 -or $global:wd_test_starts -ne 3){throw 'update not applied exactly once'}
 'retry-preserved-exact-release'
 ''', encoding='utf-8')
     proc = subprocess.run([host, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',

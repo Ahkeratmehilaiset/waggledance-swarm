@@ -12,7 +12,8 @@ param(
     [Parameter(Mandatory)][string]$PythonExecutable,
     [Parameter(Mandatory)][string]$CodexExecutable,
     [string]$InstallRoot = 'C:\Python\wd-capacity-observer',
-    [switch]$Apply
+    [switch]$Apply,
+    [switch]$Update
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -34,14 +35,17 @@ $head = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or (& git -C $repo status --porcelain --untracked-files=no)) {
     throw 'Observer requires a clean committed source tree'
 }
-$release = Join-Path $root $head
+$pythonHash = Get-ObserverHash $PythonExecutable
+$codexHash = Get-ObserverHash $CodexExecutable
+$releaseId = $head + '-' + $pythonHash.Substring(0,12) + '-' + $codexHash.Substring(0,12)
+$release = Join-Path $root $releaseId
 $files = @('tools\bridge_capacity_advisor.py', 'tools\bridge_capacity_collector.py',
            'tools\bridge_capacity_recovery.py', 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1')
 $hashes = [ordered]@{}
 foreach ($file in $files) { $hashes[$file] = (Get-ObserverHash (Join-Path $repo $file)) }
 $manifest = [ordered]@{schema='wd.capacity-observer-install.v1';source_commit=$head;files=$hashes;
-    python=$PythonExecutable;python_sha256=(Get-ObserverHash $PythonExecutable);
-    codex=$CodexExecutable;codex_sha256=(Get-ObserverHash $CodexExecutable);
+    python=$PythonExecutable;python_sha256=$pythonHash;
+    codex=$CodexExecutable;codex_sha256=$codexHash;
     store=(Join-Path $root 'observations.sqlite');execution_mode='metadata_only'}
 if (-not $Apply) { $manifest | ConvertTo-Json -Depth 8; return }
 $manifestPath = Join-Path $release 'manifest.json'
@@ -79,14 +83,32 @@ $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive
 $old = Get-ScheduledTask -TaskName 'WD-CapacityObserver' -ErrorAction SilentlyContinue
 if ($old) {
     if (@($old.Actions).Count -ne 1 -or $old.Actions[0].Execute -ine $hostPath -or
-        $old.Actions[0].Arguments -cne $arguments -or $old.Principal.UserId -ine $identity -or
+        $old.Principal.UserId -ine $identity -or
         [string]$old.Principal.RunLevel -cne 'Limited') {
         throw 'Existing task is not this exact Limited observer; refusing replacement'
+    }
+    if ($old.Actions[0].Arguments -cne $arguments -or $old.Actions[0].WorkingDirectory -ine $release) {
+        if (-not $Update) { throw 'A verified observer update requires -Apply -Update' }
+        $current = Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw | ConvertFrom-Json
+        $priorManifest = [IO.Path]::GetFullPath([string]$current.manifest)
+        if (-not $priorManifest.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            (Get-ObserverHash $priorManifest) -cne $current.manifest_sha256) {
+            throw 'Previous observer manifest is not verified inside this install root'
+        }
+        $priorRelease = Split-Path $priorManifest -Parent
+        $priorRunner = Join-Path $priorRelease 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1'
+        $priorArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+            $priorRunner + '" -ManifestPath "' + $priorManifest + '" -ManifestSha256 ' + $current.manifest_sha256
+        if ($old.Actions[0].Arguments -cne $priorArguments -or $old.Actions[0].WorkingDirectory -ine $priorRelease -or
+            [string]$old.State -ceq 'Running') { throw 'Existing observer differs or is still running; retry after its bounded invocation ends' }
+        $backup = Join-Path $root ('task-before-update-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ') + '.xml')
+        Export-ScheduledTask -TaskName 'WD-CapacityObserver' | Set-Content -LiteralPath $backup -Encoding UTF8
+        Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Force | Out-Null
     }
 } else {
     Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal | Out-Null
 }
-[pscustomobject]@{source_commit=$head;manifest=$manifestPath;manifest_sha256=$anchor;task='WD-CapacityObserver';mode='metadata_only'} |
+[pscustomobject]@{source_commit=$head;release_id=$releaseId;manifest=$manifestPath;manifest_sha256=$anchor;task='WD-CapacityObserver';mode='metadata_only'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'current.json') -Encoding UTF8
 Start-ScheduledTask -TaskName 'WD-CapacityObserver'
 Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw

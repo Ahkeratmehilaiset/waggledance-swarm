@@ -36,7 +36,12 @@ interactive user principal, logon trigger and five-minute repetition. Its hidden
 runner verifies the manifest, source and executable hashes on every invocation.
 It does not modify WD-Supervisor or restart agent conversations. An executable
 update that changes the pin stops collection visibly in Task Scheduler; revalidate
-and reconcile the observer installation before resuming it. A stale observation
+and run the installer with `-Apply -Update` before resuming it. That path verifies
+the existing task against its previous manifest, requires the previous invocation
+to finish, backs up its task definition and replaces only the exact owned Limited
+task. Release directories bind the source commit and executable hashes, so a CLI
+upgrade does not overwrite an existing manifest. Interrupted registration is
+retryable against the same exact package. A stale observation
 does not remain usable while the observer is stopped.
 
 The Codex account API currently exposes an account type and plan/email, but not
@@ -75,6 +80,11 @@ keys together. Only one transition may use an overlapping window. This is a
 conservative transition-admission bound, **not** a token reservation or a fleet task
 scheduler. Reservations remain held after ambiguous outcomes, without lease expiry
 that could authorize another uncertain operation.
+The trusted mapping layer must supply byte-identical canonical opaque account,
+limit and window IDs for the same resource. Provider names must be exactly `codex`
+or `claude`, and surrounding whitespace is rejected. Opaque provider IDs are not
+case-folded: their issuer may assign significance to case. Friendly aliases must
+be resolved by the verified mapping layer before admission, not used as pool keys.
 
 The journal proceeds through `planned → quiesced → checkpointed → apply_pending
 → verified → resume_pending → resumed`. A lost acknowledgement leaves durable

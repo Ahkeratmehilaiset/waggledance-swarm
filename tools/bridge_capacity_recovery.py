@@ -149,6 +149,8 @@ class RecoveryStore:
                 any(not isinstance(p, list) or len(p) != 4 or not all(_text(x) for x in p)
                     for p in pools) or len({tuple(p) for p in pools}) != len(pools)):
             raise InputError('verified quota window keys required')
+        if any(p[0] not in {'codex', 'claude'} or any(x != x.strip() for x in p) for p in pools):
+            raise InputError('canonical provider and quota identifiers required')
         fingerprint = digest(plan)
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')

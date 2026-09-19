@@ -124,6 +124,15 @@ def test_request_revision_cannot_mutate_transition(tmp_path):
         store.plan('request', value)
 
 
+@pytest.mark.parametrize('pool', [['CODEX', 'pool', 'codex', 'primary'],
+                                  ['codex', ' pool ', 'codex', 'primary']])
+def test_noncanonical_pool_components_are_rejected(tmp_path, pool):
+    value = plan()
+    value['pools'] = [pool]
+    with pytest.raises(InputError, match='canonical'):
+        RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
 def test_unknown_actual_effort_cannot_apply(tmp_path):
     value = plan()
     store = RecoveryStore(tmp_path / 'recovery.db')

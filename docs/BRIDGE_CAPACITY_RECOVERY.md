@@ -53,6 +53,12 @@ Claude ingestion uses the documented `session_id`, `model.id`, `effort.level`,
 Statusline quota fields may be absent until an API response; ingestion cannot
 refresh an idle subscription without provider support. Never fabricate freshness
 by polling the same cached statusline payload and replacing its observation time.
+The collector explicitly labels the timestamp as a callback observation and marks
+provider quota freshness unknown, even if a new UI update supplied the callback.
+`--provider claude --statusline --store <path>` saves the input and renders a short
+plain status row. It can be configured in lane-local Claude settings without
+replacing a pre-existing statusline or changing global/outside sessions. Settings
+integration must preserve and back up the exact previous settings bytes.
 
 ## Recovery semantics
 

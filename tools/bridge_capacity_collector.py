@@ -170,6 +170,7 @@ async def collect_codex(client: MetadataClient, auth_context: str) -> dict:
             'account_pool': None, 'pool_identity_state': 'unverified_auth_context',
             'account_type': account['type'], 'plan_type': account.get('planType'),
             'payload': quota_payload(limits, 'codex'), 'catalog': catalog,
+            'quota_freshness_basis': 'provider_metadata_request',
             'execution_allowed': False}
 
 
@@ -181,6 +182,7 @@ def collect_claude(payload: dict) -> dict:
             'source_ref': 'claude:statusline', 'observed_at': utcnow(),
             'native_thread_id': session, 'account_pool': None,
             'pool_identity_state': 'unknown', 'execution_allowed': False,
+            'quota_freshness_basis': 'statusline_callback_provider_timestamp_unknown',
             'model': _dict(payload.get('model')).get('id'),
             'effort': _dict(payload.get('effort')).get('level'),
             'payload': quota_payload(payload, 'claude'),
@@ -220,6 +222,8 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
         except (ValueError, TypeError, KeyError):
             age = -1
         row['freshness'] = 'fresh' if 0 <= age <= 300 else 'unknown_or_stale'
+        if provider == 'claude':
+            row['freshness'] = 'provider_timestamp_unknown'
         if failed.get(provider, 0) > sequence:
             row['freshness'] = 'superseded_by_collection_failure'
         row['sequence'] = sequence
@@ -255,6 +259,7 @@ def main(argv=None) -> int:
     parser.add_argument('--provider', choices=['codex', 'claude'])
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--scheduled', action='store_true', help='Budgeted Codex metadata poll, safe to repeat.')
+    parser.add_argument('--statusline', action='store_true', help='Compact Claude statusline output after ingestion.')
     parser.add_argument('--codex-executable')
     parser.add_argument('--store', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -264,6 +269,8 @@ def main(argv=None) -> int:
             return 0
         if args.provider is None:
             raise InputError('provider required for collection')
+        if args.statusline and args.provider != 'claude':
+            raise InputError('statusline ingestion requires Claude')
         if args.scheduled:
             if args.provider != 'codex':
                 raise InputError('scheduled Claude generation probes are not supported')
@@ -291,7 +298,15 @@ def main(argv=None) -> int:
         print(json.dumps({'state': 'unknown', 'reason': 'observation_store_unavailable',
                           'execution_allowed': False}))
         return 2
-    print(json.dumps(observation, allow_nan=False))
+    if args.statusline:
+        model = observation.get('model')
+        effort = observation.get('effort')
+        # JSON strings avoid terminal-control sequences from arbitrary metadata.
+        print('WD capacity | model=' + json.dumps(model, ensure_ascii=True) +
+              ' effort=' + json.dumps(effort, ensure_ascii=True) +
+              ' | quota age unknown; observation saved')
+    else:
+        print(json.dumps(observation, allow_nan=False))
     return code
 
 

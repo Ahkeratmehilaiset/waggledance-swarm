@@ -66,6 +66,7 @@ def test_claude_statusline_preserves_missing_quota_and_actual_model():
     assert row['account_pool'] is None and row['payload'] == {'rate_limits': {}}
     assert row['model'] == 'sonnet' and row['effort'] == 'max'
     assert 'transcript_path' not in row
+    assert row['quota_freshness_basis'] == 'statusline_callback_provider_timestamp_unknown'
 
 
 def test_failed_collection_supersedes_prior_good_snapshot(tmp_path):
@@ -102,3 +103,11 @@ def test_poll_budget_atomic_and_clock_rollback_safe(tmp_path):
     assert reserve_poll(path, now=now - timedelta(hours=1)) is None
     assert reserve_poll(path, now=now + timedelta(seconds=299)) is None
     assert reserve_poll(path, now=now + timedelta(seconds=300)) is not None
+
+
+def test_claude_callback_does_not_fabricate_provider_freshness(tmp_path):
+    path = tmp_path / 'observations.db'
+    row = collect_claude({'session_id': 'session', 'rate_limits': {
+        'five_hour': {'used_percentage': 10, 'resets_at': 1790328816}}})
+    save_observation(path, row)
+    assert status(path)['observations'][0]['freshness'] == 'provider_timestamp_unknown'

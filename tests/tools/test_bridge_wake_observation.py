@@ -72,3 +72,24 @@ Get-Content -LiteralPath {q(path)} -Raw
     value=json.loads(_run_powershell(script,executable=ps).stdout)
     assert [r['request_id'] for r in value['requests']]==['v1','v2']
     assert not list(tmp_path.glob('*.tmp'))
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('legacy', ['ordinary wake text','2026-09-19T21:00:00Z','{broken-json'])
+def test_bare_legacy_wake_with_telemetry_enabled_does_not_warn(tmp_path, ps, legacy):
+    wake=tmp_path/'wake_codex-tools-1'
+    wake.write_text(legacy)
+    state=tmp_path/'relay.json'
+    script=f"$ErrorActionPreference='Stop'\n$env:WD_BRIDGE_BIN={q(BIN)}\n"
+    for name in ('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot'):
+        script+=load(REBOOT/'Invoke-WdLaneTurnLoop.ps1',name)
+    script+=load(REBOOT/'start-wd-tools-consumer.ps1','Invoke-WdNativeToolsWakeStep')
+    script+=f"""
+function Send-WdNativeToolsQueueMessage {{param($CliPath,$ThreadId,$Message,$Worktree) return 'queue-legacy'}}
+$result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId existing-thread -Worktree {q(tmp_path)} `
+    -WakePath {q(wake)} -StatePath {q(state)} -Generation pinned -NativePid 123
+@{{result=$result}}|ConvertTo-Json
+"""
+    output=_run_powershell(script,executable=ps)
+    assert json.loads(output.stdout)=={'result':'queued'}
+    assert 'WARNING' not in output.stdout and 'latency observation unavailable' not in output.stderr
+    stages=[json.loads(p.read_text()) for p in (tmp_path/'shared/telemetry').glob('*.json')]
+    assert len(stages)==1 and stages[0]['request_id'] is None

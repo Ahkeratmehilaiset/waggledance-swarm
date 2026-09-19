@@ -454,8 +454,11 @@ function Invoke-WdNativeToolsWakeStep {
             if((Get-Item -LiteralPath $snapshot).Length -le 131072){
                 $hintJson=@{ErrorAction='Stop'}
                 if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$hintJson.DateKind='String'}
-                $hint=Get-Content -LiteralPath $snapshot -Raw|ConvertFrom-Json @hintJson
-                if($hint.PSObject.Properties['schema'] -and $hint.schema -ceq 'wd.bridge-wake-observation.v1'){
+                $hint=$null
+                $hintText=Get-Content -LiteralPath $snapshot -Raw
+                try{$hint=$hintText|ConvertFrom-Json @hintJson}
+                catch{$hint=$null} # Plain legacy wake text is valid, with unknown correlation.
+                if($null -ne $hint -and $hint.PSObject.Properties['schema'] -and $hint.schema -ceq 'wd.bridge-wake-observation.v1'){
                     foreach($binding in @($hint.requests|Select-Object -First 256)){
                         Write-BridgeStageObservation -BridgeRoot (Split-Path $WakePath -Parent) -Stage relay_enqueued -Target $Agent -DeliveryId $deliveryId -QueueId $state.queue_id -Request $binding
                     }

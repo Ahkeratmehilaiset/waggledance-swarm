@@ -16,7 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from tools.bridge_rco_handoff import HandoffError, HandoffStore, digest  # noqa: E402
+from tools.bridge_rco_handoff import HandoffError, HandoffStore, digest, load_json  # noqa: E402
 
 
 NOW = datetime(2026, 9, 19, 6, tzinfo=timezone.utc)
@@ -539,3 +539,41 @@ def test_two_independent_slots_remain_separate(store):
     b = accept(store, release(store, begin(store, b)))
     assert a["owner"]["agent_uuid"] != b["owner"]["agent_uuid"]
     assert a["task"]["required_reviewers"] == b["task"]["required_reviewers"] == ["rco1", "rco2"]
+
+
+@pytest.mark.parametrize("raw", ["{", "null", "{}", '[1,2]', '{"policy_digest":"bad"}'])
+def test_corrupt_state_returns_controlled_refusal(store, raw):
+    create(store)
+    store.db.execute("UPDATE reviews SET state=?", (raw,))
+    with pytest.raises(HandoffError, match="corrupt_state"):
+        store.get("review-1")
+    with pytest.raises(HandoffError, match="corrupt_state"):
+        create(store, review="review-2", slot="rco2")
+
+
+def test_valid_json_state_tamper_cannot_override_journal(store):
+    s = create(store)
+    s["epoch"] = 88
+    store.db.execute("UPDATE reviews SET state=?", (json.dumps(s),))
+    with pytest.raises(HandoffError, match="corrupt_state"):
+        store.get("review-1")
+
+
+@pytest.mark.parametrize("raw", ['1e999', '-1e999', '{"x":1e999}', '[1e999]'])
+def test_overflow_float_is_refused_at_parser_boundary(raw):
+    with pytest.raises(HandoffError):
+        load_json(raw)
+
+
+@pytest.mark.parametrize("now", [False, 0, "", [], datetime(2026, 1, 1)])
+def test_invalid_clock_never_silently_falls_back(store, now):
+    with pytest.raises(HandoffError, match="aware_clock_required"):
+        create(store, now=now)
+
+
+@pytest.mark.parametrize("next_op", ["hold", "cancel"])
+def test_repeated_control_preserves_original_suspended_owner(store, next_op):
+    s = control(store, create(store), "hold")
+    suspended = deepcopy(s["suspended_owner"])
+    s = control(store, s, next_op)
+    assert s["suspended_owner"] == suspended == actor()

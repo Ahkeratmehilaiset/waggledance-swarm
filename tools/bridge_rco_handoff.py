@@ -24,6 +24,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -164,9 +165,26 @@ class HandoffStore:
         self.db.close()
 
     def get(self, review_id: str) -> dict:
-        row = self.db.execute("SELECT state FROM reviews WHERE review_id=?", (review_id,)).fetchone()
+        # One read snapshot avoids comparing old state with a concurrently
+        # committed journal. This detects corruption, not an authenticated DB.
+        row = self.db.execute("""
+            SELECT r.state, t.state_json, t.command_json, c.command_digest, c.applied_revision
+            FROM reviews r
+            LEFT JOIN commands c ON c.review_id=r.review_id AND c.applied_revision=(
+                SELECT MAX(applied_revision) FROM commands WHERE review_id=r.review_id)
+            LEFT JOIN transitions t ON t.command_id=c.command_id
+            WHERE r.review_id=?
+        """, (review_id,)).fetchone()
         require(row is not None, "review_not_found")
-        state = json.loads(row[0])
+        try:
+            state = load_json(row[0])
+            require(isinstance(state, dict) and row[0] == row[1], "corrupt_state")
+            require(state["schema"] == "wd.rco-handoff-state.v1"
+                    and state["review_id"] == review_id and state["revision"] == row[4]
+                    and digest(load_json(row[2])) == row[3], "corrupt_state")
+            require(text(state["policy_digest"]), "corrupt_state")
+        except (HandoffError, KeyError, TypeError, UnicodeError) as exc:
+            raise HandoffError("corrupt_state") from exc
         require(state["policy_digest"] == self.policy_digest, "policy_changed_reconcile_required")
         return state
 
@@ -181,8 +199,8 @@ class HandoffStore:
                 and actor["native_thread_id"] != task["author_thread_id"], "author_cannot_review")
 
     def _unique_worker(self, state: dict, actor: dict) -> None:
-        for (encoded,) in self.db.execute("SELECT state FROM reviews"):
-            other = json.loads(encoded)
+        for (review_id,) in self.db.execute("SELECT review_id FROM reviews"):
+            other = self.get(review_id)
             if (other["review_id"] == state["review_id"]
                     or other["task"]["task_id"] != state["task"]["task_id"]):
                 continue
@@ -359,7 +377,7 @@ class HandoffStore:
         require(text(cmd["command_id"]) and text(cmd["review_id"]), "command_ids_required")
         require(type(cmd["expected_revision"]) is int, "integer_revision_required")
         command_digest = digest(cmd)
-        now = now or datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc) if now is None else now
         require(isinstance(now, datetime) and now.utcoffset() is not None, "aware_clock_required")
         now = now.astimezone(timezone.utc)
         self.db.execute("BEGIN IMMEDIATE")
@@ -384,7 +402,8 @@ class HandoffStore:
                 op = cmd["op"]
                 if op in {"hold", "cancel"}:
                     require(text(cmd["control_ref"]), "control_reference_required")
-                    state["suspended_owner"] = state["owner"]
+                    if "suspended_owner" not in state:
+                        state["suspended_owner"] = deepcopy(state["owner"])
                     state["owner"] = None
                     state["epoch"] += 1
                     state["phase"] = "held" if op == "hold" else "cancelled"
@@ -445,8 +464,14 @@ def load_json(raw: str) -> Any:
     def constant(_):
         raise HandoffError("nonfinite_json_value")
 
+    def finite_float(raw):
+        value = float(raw)
+        require(math.isfinite(value), "nonfinite_json_value")
+        return value
+
     try:
-        return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+        return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant,
+                          parse_float=finite_float)
     except (ValueError, RecursionError) as exc:
         raise HandoffError("invalid_json:" + str(exc)) from exc
 

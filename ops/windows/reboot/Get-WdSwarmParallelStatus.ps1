@@ -92,7 +92,8 @@ function Read-WdStatusRecord {
 }
 
 function Get-WdStatusWakeObservation {
-    param([string] $Root, [string] $Agent)
+    param([string] $Root, [string] $Agent, [string] $Worktree,
+        [object[]] $Processes, [string] $MonitorFile)
     $path = Join-Path $Root ('shared/monitor_{0}.cursor.json' -f $Agent)
     $result = [pscustomobject]@{
         source_domain = 'bounded_agent_inbox_cursor_delta'; source_path = $path
@@ -101,6 +102,43 @@ function Get-WdStatusWakeObservation {
         observed_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
         task_completion_verified = $false
     }
+    try {
+        # Native Monitor permits a lane-local -StatePath. Resolve it from an
+        # exact installed script invocation, never guess a recent file by glob.
+        $candidates = @(
+            foreach ($process in $Processes) {
+                if ([string](Get-WdStatusProperty $process 'Name') -notmatch '^(powershell|pwsh)\.exe$') { continue }
+                $arguments = @{}
+                $command = [string](Get-WdStatusProperty $process 'CommandLine')
+                foreach ($name in @('File','Agent','StatePath')) {
+                    $pattern = '(?i)(?:^|\s)-' + $name + '\s+(?:"(?<v>[^"]+)"|''(?<v>[^'']+)''|(?<v>\S+))(?=\s|$)'
+                    $found = [regex]::Matches($command, $pattern)
+                    if ($found.Count -eq 1) { $arguments[$name] = $found[0].Groups['v'].Value }
+                }
+                if ($arguments.ContainsKey('File') -and $arguments.ContainsKey('Agent') -and
+                    $arguments.Agent -ceq $Agent -and
+                    ([IO.Path]::GetFullPath([string]$arguments.File)).Equals(
+                        [IO.Path]::GetFullPath($MonitorFile), [StringComparison]::OrdinalIgnoreCase)) {
+                    if (([regex]::Matches($command, '(?i)(?:^|\s)-StatePath(?:\s|$)')).Count -gt 0 -and
+                        -not $arguments.ContainsKey('StatePath')) { throw 'ambiguous Monitor StatePath' }
+                    $arguments
+                }
+            }
+        )
+        if ($candidates.Count -gt 1) { $result.reason = 'multiple_live_inbox_monitors'; return $result }
+        if ($candidates.Count -eq 1 -and $candidates[0].ContainsKey('StatePath')) {
+            $custom = [string]$candidates[0].StatePath
+            if (-not [IO.Path]::IsPathRooted($custom)) { throw 'relative Monitor StatePath' }
+            $custom = [IO.Path]::GetFullPath($custom)
+            $allowed = $false
+            foreach ($directory in @($Root, (Join-Path $Worktree '.codex-audit'))) {
+                $prefix = [IO.Path]::GetFullPath($directory).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+                if ($custom.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { $allowed = $true }
+            }
+            if (-not $allowed) { throw 'Monitor StatePath outside lane/runtime evidence roots' }
+            $path = $custom; $result.source_path = $path
+        }
+    } catch { $result.reason = 'inbox_source_unknown: ' + $_.Exception.Message; return $result }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $result }
     try {
         # One atomic bounded record read: never combine metadata and a cursor
@@ -773,7 +811,8 @@ foreach ($definition in @($definitions)) {
         -Processes $laneProcesses -QueryAvailable $laneProcessQueryAvailable `
         -HandshakeRoot ([string](Get-WdStatusProperty $manifest 'handshake_root')) `
         -RuntimeRoot $runtimeRoot -Now $now
-    $wakeObservation = Get-WdStatusWakeObservation -Root $runtimeRoot -Agent $agent
+    $wakeObservation = Get-WdStatusWakeObservation -Root $runtimeRoot -Agent $agent `
+        -Worktree $worktree -Processes $laneProcesses -MonitorFile (Join-Path $helperBin 'Monitor-AgentBridge.ps1')
     $lanes.Add([pscustomobject]@{
         agent = $agent
         configured_turn_mode = $definition.configured_turn_mode

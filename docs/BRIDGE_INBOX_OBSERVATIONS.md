@@ -34,6 +34,10 @@ as an unconditional boolean must handle null explicitly.
 Inbox evidence requires a cursor recording the correct agent, unfiltered sender,
 targeted mode, included wake requests and `delivery_scope=agent_inbox`. Older
 monitor cursors become eligible after the updated monitor saves its next cursor.
+An explicit lane-local `-StatePath` is resolved from a unique live invocation of
+the selected Monitor script. Ambiguous invocations or paths outside the lane's
+audit directory and bridge runtime remain unknown; no filename glob guesses the
+latest cursor.
 Native Codex queue delivery uses a different transport; lack of this Monitor
 cursor remains unknown and is not inferred from a missing sentinel. The existing
 relay observation still reports known blocked states and their errors separately.

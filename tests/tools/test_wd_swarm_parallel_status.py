@@ -208,6 +208,31 @@ def test_native_tools_status_requires_both_process_identities(fleet, case):
         assert not tools['runtime']['native_checkpoint']['latest_final_recorded_verified']
 
 
+@pytest.mark.parametrize('case', ['custom', 'multiple', 'foreign_path'])
+def test_status_resolves_live_monitor_custom_state_without_guessing(fleet, case):
+    agent = 'claude-rco-2'
+    root = fleet['root']
+    shared = root / 'shared'
+    shared.mkdir()
+    (shared / 'events.jsonl').write_text(json.dumps(dict(agent='operator', to=agent,
+        type='message', status='notice', task_id='seed', payload={'notification': 'informational'})) + '\n')
+    state = Path(fleet['lanes'][2]['worktree']) / '.codex-audit/native-monitor-state.json'
+    monitor = ROOT / '.agent-bridge/bin/Monitor-AgentBridge.ps1'
+    result = subprocess.run([fleet['shell'], '-NoProfile', '-NonInteractive', '-Command',
+        f'& {quote(monitor)} -Agent {agent} -RuntimeRoot {quote(root)} -StatePath {quote(state)} '
+        '-TargetedOnly -IncludeWakeRequests -Json -MaxIterations 1'],
+        text=True, capture_output=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr
+    selected_path = state if case != 'foreign_path' else ROOT / '.codex-audit/foreign-state.json'
+    process = dict(Name='powershell.exe', ProcessId=60001, CommandLine=
+                   f'powershell -File "{monitor}" -Agent {agent} -StatePath "{selected_path}"')
+    processes = [process, dict(process, ProcessId=60002)] if case == 'multiple' else [process]
+    lane = run_status(fleet, lane_processes=processes)['lanes'][2]
+    assert lane['wake_pending'] is (False if case == 'custom' else None), lane['wake_observation']
+    if case == 'custom':
+        assert Path(lane['wake_observation']['source_path']) == state
+
+
 def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
                started=None, lane_processes=None, runtime_processes=None):
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in fleet["root"].rglob("*") if p.is_file()}

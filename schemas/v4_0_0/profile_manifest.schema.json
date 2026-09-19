@@ -1,0 +1,552 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waggledance.local/schemas/v4_0_0/profile_manifest.schema.json",
+  "title": "WaggleDance v4 target profile manifest",
+  "description": "Dormant target-state contract. A conforming manifest does not grant runtime, readiness, release, merge, or claim-safe authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release_target",
+    "contract_status",
+    "runtime_wiring",
+    "profile_id",
+    "excluded_profiles",
+    "digest_policy",
+    "vector_policy",
+    "budgets",
+    "readiness_policy",
+    "receipt_evidence_policy",
+    "claim_safe_policy",
+    "capabilities",
+    "integrations",
+    "probes",
+    "catalog_crosswalk"
+  ],
+  "properties": {
+    "schema_version": {"const": "waggledance.profile.v4"},
+    "release_target": {"const": "4.0.0"},
+    "contract_status": {"const": "target_state_unwired"},
+    "runtime_wiring": {"const": false},
+    "profile_id": {"enum": ["HOME", "COTTAGE", "FACTORY", "GADGET"]},
+    "excluded_profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": {"const": "APIARY"}
+    },
+    "digest_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "manifest_preimage", "config_preimage", "snapshot_preimage", "artifact_preimage", "source_binding"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "manifest_preimage": {"const": "exact_utf8_file_bytes"},
+        "config_preimage": {"const": "canonical_json_rfc8785"},
+        "snapshot_preimage": {"const": "canonical_json_rfc8785"},
+        "artifact_preimage": {"const": "exact_artifact_bytes"},
+        "source_binding": {"const": "exact_git_head"}
+      }
+    },
+    "vector_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "fallback",
+        "authoritative_only_when_ready",
+        "chroma_mode",
+        "chroma_serving_allowed",
+        "migration_source_read_only",
+        "migration_target"
+      ],
+      "properties": {
+        "backend": {"enum": ["faiss", "none"]},
+        "fallback": {"const": "none"},
+        "authoritative_only_when_ready": {"const": true},
+        "chroma_mode": {"enum": ["migration_only", "none"]},
+        "chroma_serving_allowed": {"const": false},
+        "migration_source_read_only": {"type": "boolean"},
+        "migration_target": {"enum": ["faiss", "none"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"backend": {"const": "faiss"}}},
+          "then": {
+            "properties": {
+              "migration_target": {"const": "faiss"},
+              "chroma_mode": {"const": "migration_only"},
+              "migration_source_read_only": {"const": true}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"backend": {"const": "none"}}},
+          "then": {
+            "properties": {
+              "migration_target": {"const": "none"},
+              "chroma_mode": {"const": "none"},
+              "migration_source_read_only": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_memory_mb", "max_replay_concurrency", "l1_prefetch_k", "l3_elevated_budget"],
+      "properties": {
+        "max_memory_mb": {"type": "integer", "minimum": 1},
+        "max_replay_concurrency": {"type": "integer", "minimum": 1},
+        "l1_prefetch_k": {"type": "integer", "minimum": 1},
+        "l3_elevated_budget": {"type": "integer", "minimum": 1}
+      }
+    },
+    "readiness_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "only_servable_state",
+        "unknown_observation_state",
+        "required_failure_scope",
+        "supervisor_survives_capability_failure",
+        "diagnostics_remain_available",
+        "profile_ready_requires_claim_safe",
+        "profile_ready_requires_all_release_items"
+      ],
+      "properties": {
+        "only_servable_state": {"const": "READY"},
+        "unknown_observation_state": {"const": "BLOCKED"},
+        "required_failure_scope": {"const": "capability_and_profile_readiness"},
+        "supervisor_survives_capability_failure": {"const": true},
+        "diagnostics_remain_available": {"const": true},
+        "profile_ready_requires_claim_safe": {"const": true},
+        "profile_ready_requires_all_release_items": {"const": true}
+      }
+    },
+    "receipt_evidence_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_id_required",
+        "exact_head_required",
+        "served_count_equals_runtime_covered_count",
+        "served_count_equals_chat_covered_count",
+        "gap_count",
+        "chain_head_digest_required",
+        "evidence_digest_required"
+      ],
+      "properties": {
+        "window_id_required": {"const": true},
+        "exact_head_required": {"const": true},
+        "served_count_equals_runtime_covered_count": {"const": true},
+        "served_count_equals_chat_covered_count": {"const": true},
+        "gap_count": {"const": 0},
+        "chain_head_digest_required": {"const": true},
+        "evidence_digest_required": {"const": true}
+      }
+    },
+    "claim_safe_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initial_value",
+        "activation_authority",
+        "requires_foundation_ready",
+        "requires_complete_receipts",
+        "requires_exact_config_digest",
+        "requires_exact_artifact_digests",
+        "foundation_capabilities",
+        "receipt_capabilities",
+        "gated_capabilities"
+      ],
+      "properties": {
+        "initial_value": {"const": false},
+        "activation_authority": {"const": "none"},
+        "requires_foundation_ready": {"const": true},
+        "requires_complete_receipts": {"const": true},
+        "requires_exact_config_digest": {"const": true},
+        "requires_exact_artifact_digests": {"const": true},
+        "foundation_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/capability_id"}
+        },
+        "receipt_capabilities": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/capability_id"}
+        },
+        "gated_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/capability_id"}
+        }
+      }
+    },
+    "capabilities": {"$ref": "#/definitions/capability_targets"},
+    "integrations": {"$ref": "#/definitions/integration_targets"},
+    "probes": {"$ref": "#/definitions/probe_targets"},
+    "catalog_crosswalk": {"$ref": "#/definitions/catalog_crosswalk"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"profile_id": {"enum": ["HOME", "COTTAGE", "FACTORY"]}}},
+      "then": {
+        "properties": {
+          "vector_policy": {"properties": {"backend": {"const": "faiss"}}},
+          "claim_safe_policy": {
+            "properties": {
+              "gated_capabilities": {
+                "const": [
+                  "autonomy.autofix", "autonomy.canary", "autonomy.eig2", "autonomy.high_risk_gated_pipeline",
+                  "autonomy.learned_tunnels", "autonomy.low_risk_autogrowth", "autonomy.query_api",
+                  "autonomy.stage2_execution", "autonomy.virtual_dimensions", "governance.write_rco",
+                  "mesh.dynamic_subdivision", "mesh.hex_2d", "mesh.ring_messaging",
+                  "providers.real_http", "retrieval.hybrid_faiss"
+                ]
+              }
+            }
+          },
+          "capabilities": {
+            "properties": {
+              "providers.real_http": {"properties": {"classification": {"const": "required"}}},
+              "retrieval.hybrid_faiss": {"properties": {"classification": {"const": "required"}}}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"profile_id": {"const": "GADGET"}}},
+      "then": {
+        "properties": {
+          "vector_policy": {"properties": {"backend": {"const": "none"}}},
+          "claim_safe_policy": {
+            "properties": {
+              "gated_capabilities": {
+                "const": [
+                  "autonomy.autofix", "autonomy.canary", "autonomy.eig2", "autonomy.high_risk_gated_pipeline",
+                  "autonomy.learned_tunnels", "autonomy.low_risk_autogrowth", "autonomy.query_api",
+                  "autonomy.stage2_execution", "autonomy.virtual_dimensions", "governance.write_rco",
+                  "mesh.dynamic_subdivision", "mesh.hex_2d", "mesh.ring_messaging"
+                ]
+              }
+            }
+          },
+          "capabilities": {
+            "properties": {
+              "providers.real_http": {"properties": {"classification": {"const": "not_applicable"}}},
+              "retrieval.hybrid_faiss": {"properties": {"classification": {"const": "not_applicable"}}}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "capability_id": {
+      "type": "string",
+      "enum": [
+        "audit.chat_served_receipts",
+        "audit.claim_safe_evaluator",
+        "audit.receipt_chain_verifier",
+        "audit.runtime_receipts",
+        "autonomy.autofix",
+        "autonomy.canary",
+        "autonomy.eig2",
+        "autonomy.high_risk_gated_pipeline",
+        "autonomy.learned_tunnels",
+        "autonomy.low_risk_autogrowth",
+        "autonomy.query_api",
+        "autonomy.stage2_execution",
+        "autonomy.virtual_dimensions",
+        "governance.write_rco",
+        "mesh.dynamic_subdivision",
+        "mesh.hex_2d",
+        "mesh.ring_messaging",
+        "packaging.production_container",
+        "providers.real_http",
+        "retrieval.hybrid_faiss",
+        "routing.deterministic_solver_first",
+        "safety.child_privacy",
+        "safety.credential_non_exposure",
+        "safety.deny_by_default",
+        "safety.external_write_gate",
+        "safety.redaction"
+      ]
+    },
+    "integration_id": {
+      "type": "string",
+      "enum": [
+        "alertmanager", "alerts", "device_enrollment", "electricity", "frigate",
+        "home_assistant", "local_model", "mqtt", "offline_queue", "otel",
+        "power_loss_recovery", "prometheus", "sensors", "signed_ota", "voice_audio",
+        "watchdogs", "weather"
+      ]
+    },
+    "probe_id": {
+      "type": "string",
+      "enum": [
+        "backup_restore", "clock_sync", "config_schema", "hardware_readiness",
+        "integration_readiness", "receipt_chain", "required_capabilities",
+        "secret_non_exposure", "unexpected_remote_provider_reachability",
+        "unexpected_vector_backend_reachability"
+      ]
+    },
+    "capability_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification", "enabled_by_default", "release_required", "initial_state",
+        "readiness_phase", "activation_requires_claim_safe", "dependencies"
+      ],
+      "properties": {
+        "classification": {"enum": ["required", "not_applicable"]},
+        "enabled_by_default": {"type": "boolean"},
+        "release_required": {"type": "boolean"},
+        "initial_state": {"enum": ["ABSENT", "UNPROVISIONED"]},
+        "readiness_phase": {"enum": ["foundation", "release", "excluded"]},
+        "activation_requires_claim_safe": {"type": "boolean"},
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/capability_id"}
+        },
+        "rationale": {"type": "string", "minLength": 12, "maxLength": 500}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"classification": {"const": "required"}}},
+          "then": {
+            "properties": {
+              "enabled_by_default": {"const": true},
+              "release_required": {"const": true},
+              "initial_state": {"const": "UNPROVISIONED"},
+              "readiness_phase": {"enum": ["foundation", "release"]}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"classification": {"const": "not_applicable"}}},
+          "then": {
+            "required": ["rationale"],
+            "properties": {
+              "enabled_by_default": {"const": false},
+              "release_required": {"const": false},
+              "initial_state": {"const": "ABSENT"},
+              "readiness_phase": {"const": "excluded"},
+              "activation_requires_claim_safe": {"const": false},
+              "dependencies": {"maxItems": 0}
+            }
+          }
+        }
+      ]
+    },
+    "component_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "enabled_by_default", "release_required", "initial_state"],
+      "properties": {
+        "classification": {"enum": ["required", "not_applicable"]},
+        "enabled_by_default": {"type": "boolean"},
+        "release_required": {"type": "boolean"},
+        "initial_state": {"enum": ["ABSENT", "UNPROVISIONED"]},
+        "rationale": {"type": "string", "minLength": 12, "maxLength": 500}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"classification": {"const": "required"}}},
+          "then": {"properties": {"enabled_by_default": {"const": true}, "release_required": {"const": true}, "initial_state": {"const": "UNPROVISIONED"}}}
+        },
+        {
+          "if": {"properties": {"classification": {"const": "not_applicable"}}},
+          "then": {"required": ["rationale"], "properties": {"enabled_by_default": {"const": false}, "release_required": {"const": false}, "initial_state": {"const": "ABSENT"}}}
+        }
+      ]
+    },
+    "capability_targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audit.chat_served_receipts", "audit.claim_safe_evaluator", "audit.receipt_chain_verifier", "audit.runtime_receipts",
+        "autonomy.autofix", "autonomy.canary", "autonomy.eig2", "autonomy.high_risk_gated_pipeline", "autonomy.learned_tunnels",
+        "autonomy.low_risk_autogrowth", "autonomy.query_api", "autonomy.stage2_execution", "autonomy.virtual_dimensions",
+        "governance.write_rco", "mesh.dynamic_subdivision", "mesh.hex_2d", "mesh.ring_messaging",
+        "packaging.production_container", "providers.real_http", "retrieval.hybrid_faiss", "routing.deterministic_solver_first",
+        "safety.child_privacy", "safety.credential_non_exposure", "safety.deny_by_default", "safety.external_write_gate", "safety.redaction"
+      ],
+      "properties": {
+        "audit.chat_served_receipts": {"$ref": "#/definitions/capability_target"},
+        "audit.claim_safe_evaluator": {"$ref": "#/definitions/capability_target"},
+        "audit.receipt_chain_verifier": {"$ref": "#/definitions/capability_target"},
+        "audit.runtime_receipts": {"$ref": "#/definitions/capability_target"},
+        "autonomy.autofix": {"$ref": "#/definitions/capability_target"},
+        "autonomy.canary": {"$ref": "#/definitions/capability_target"},
+        "autonomy.eig2": {"$ref": "#/definitions/capability_target"},
+        "autonomy.high_risk_gated_pipeline": {"$ref": "#/definitions/capability_target"},
+        "autonomy.learned_tunnels": {"$ref": "#/definitions/capability_target"},
+        "autonomy.low_risk_autogrowth": {"$ref": "#/definitions/capability_target"},
+        "autonomy.query_api": {"$ref": "#/definitions/capability_target"},
+        "autonomy.stage2_execution": {"$ref": "#/definitions/capability_target"},
+        "autonomy.virtual_dimensions": {"$ref": "#/definitions/capability_target"},
+        "governance.write_rco": {"$ref": "#/definitions/capability_target"},
+        "mesh.dynamic_subdivision": {"$ref": "#/definitions/capability_target"},
+        "mesh.hex_2d": {"$ref": "#/definitions/capability_target"},
+        "mesh.ring_messaging": {"$ref": "#/definitions/capability_target"},
+        "packaging.production_container": {"$ref": "#/definitions/capability_target"},
+        "providers.real_http": {"$ref": "#/definitions/capability_target"},
+        "retrieval.hybrid_faiss": {"$ref": "#/definitions/capability_target"},
+        "routing.deterministic_solver_first": {"$ref": "#/definitions/capability_target"},
+        "safety.child_privacy": {"$ref": "#/definitions/capability_target"},
+        "safety.credential_non_exposure": {"$ref": "#/definitions/capability_target"},
+        "safety.deny_by_default": {"$ref": "#/definitions/capability_target"},
+        "safety.external_write_gate": {"$ref": "#/definitions/capability_target"},
+        "safety.redaction": {"$ref": "#/definitions/capability_target"}
+      }
+    },
+    "integration_targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alertmanager", "alerts", "device_enrollment", "electricity", "frigate", "home_assistant", "local_model", "mqtt",
+        "offline_queue", "otel", "power_loss_recovery", "prometheus", "sensors", "signed_ota", "voice_audio", "watchdogs", "weather"
+      ],
+      "properties": {
+        "alertmanager": {"$ref": "#/definitions/component_target"},
+        "alerts": {"$ref": "#/definitions/component_target"},
+        "device_enrollment": {"$ref": "#/definitions/component_target"},
+        "electricity": {"$ref": "#/definitions/component_target"},
+        "frigate": {"$ref": "#/definitions/component_target"},
+        "home_assistant": {"$ref": "#/definitions/component_target"},
+        "local_model": {"$ref": "#/definitions/component_target"},
+        "mqtt": {"$ref": "#/definitions/component_target"},
+        "offline_queue": {"$ref": "#/definitions/component_target"},
+        "otel": {"$ref": "#/definitions/component_target"},
+        "power_loss_recovery": {"$ref": "#/definitions/component_target"},
+        "prometheus": {"$ref": "#/definitions/component_target"},
+        "sensors": {"$ref": "#/definitions/component_target"},
+        "signed_ota": {"$ref": "#/definitions/component_target"},
+        "voice_audio": {"$ref": "#/definitions/component_target"},
+        "watchdogs": {"$ref": "#/definitions/component_target"},
+        "weather": {"$ref": "#/definitions/component_target"}
+      }
+    },
+    "probe_targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backup_restore", "clock_sync", "config_schema", "hardware_readiness", "integration_readiness",
+        "receipt_chain", "required_capabilities", "secret_non_exposure",
+        "unexpected_remote_provider_reachability", "unexpected_vector_backend_reachability"
+      ],
+      "properties": {
+        "backup_restore": {"$ref": "#/definitions/component_target"},
+        "clock_sync": {"$ref": "#/definitions/component_target"},
+        "config_schema": {"$ref": "#/definitions/component_target"},
+        "hardware_readiness": {"$ref": "#/definitions/component_target"},
+        "integration_readiness": {"$ref": "#/definitions/component_target"},
+        "receipt_chain": {"$ref": "#/definitions/component_target"},
+        "required_capabilities": {"$ref": "#/definitions/component_target"},
+        "secret_non_exposure": {"$ref": "#/definitions/component_target"},
+        "unexpected_remote_provider_reachability": {"$ref": "#/definitions/component_target"},
+        "unexpected_vector_backend_reachability": {"$ref": "#/definitions/component_target"}
+      }
+    },
+    "crosswalk_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "target_kind", "target_id"],
+      "properties": {
+        "classification": {"enum": ["required", "not_applicable"]},
+        "target_kind": {"enum": ["catalog_capability", "migration_only", "none"]},
+        "target_id": {
+          "oneOf": [
+            {"$ref": "#/definitions/catalog_id"},
+            {"const": "none"}
+          ]
+        },
+        "rationale": {"type": "string", "minLength": 12, "maxLength": 500}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"classification": {"const": "required"}}},
+          "then": {
+            "properties": {
+              "target_kind": {"const": "catalog_capability"},
+              "target_id": {"$ref": "#/definitions/catalog_id"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"classification": {"const": "not_applicable"}}},
+          "then": {"required": ["rationale"], "properties": {"target_kind": {"enum": ["migration_only", "none"]}}}
+        },
+        {
+          "if": {"properties": {"target_kind": {"const": "migration_only"}}},
+          "then": {"properties": {"target_id": {"$ref": "#/definitions/catalog_id"}}}
+        },
+        {
+          "if": {"properties": {"target_kind": {"const": "none"}}},
+          "then": {"properties": {"target_id": {"const": "none"}}}
+        }
+      ]
+    },
+    "catalog_id": {
+      "type": "string",
+      "enum": [
+        "analyze.routing", "detect.anomaly", "detect.seasonal_rules", "explain.llm_reasoning", "normalize.finnish",
+        "normalize.translate_fi_en", "optimize.schedule", "retrieve.hot_cache", "retrieve.semantic_search", "retrieve.vector_search",
+        "sense.audio", "sense.camera_frigate", "sense.fusion", "sense.home_assistant", "sense.intent_classify", "sense.mqtt_ingest",
+        "solve.causal", "solve.constraints", "solve.math", "solve.neural_classifier", "solve.pattern_match", "solve.stats",
+        "solve.symbolic", "solve.thermal", "verify.consensus", "verify.english_output", "verify.hallucination"
+      ]
+    },
+    "catalog_crosswalk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analyze.routing", "detect.anomaly", "detect.seasonal_rules", "explain.llm_reasoning", "normalize.finnish",
+        "normalize.translate_fi_en", "optimize.schedule", "retrieve.hot_cache", "retrieve.semantic_search", "retrieve.vector_search",
+        "sense.audio", "sense.camera_frigate", "sense.fusion", "sense.home_assistant", "sense.intent_classify", "sense.mqtt_ingest",
+        "solve.causal", "solve.constraints", "solve.math", "solve.neural_classifier", "solve.pattern_match", "solve.stats",
+        "solve.symbolic", "solve.thermal", "verify.consensus", "verify.english_output", "verify.hallucination"
+      ],
+      "properties": {
+        "analyze.routing": {"$ref": "#/definitions/crosswalk_target"},
+        "detect.anomaly": {"$ref": "#/definitions/crosswalk_target"},
+        "detect.seasonal_rules": {"$ref": "#/definitions/crosswalk_target"},
+        "explain.llm_reasoning": {"$ref": "#/definitions/crosswalk_target"},
+        "normalize.finnish": {"$ref": "#/definitions/crosswalk_target"},
+        "normalize.translate_fi_en": {"$ref": "#/definitions/crosswalk_target"},
+        "optimize.schedule": {"$ref": "#/definitions/crosswalk_target"},
+        "retrieve.hot_cache": {"$ref": "#/definitions/crosswalk_target"},
+        "retrieve.semantic_search": {"$ref": "#/definitions/crosswalk_target"},
+        "retrieve.vector_search": {"$ref": "#/definitions/crosswalk_target"},
+        "sense.audio": {"$ref": "#/definitions/crosswalk_target"},
+        "sense.camera_frigate": {"$ref": "#/definitions/crosswalk_target"},
+        "sense.fusion": {"$ref": "#/definitions/crosswalk_target"},
+        "sense.home_assistant": {"$ref": "#/definitions/crosswalk_target"},
+        "sense.intent_classify": {"$ref": "#/definitions/crosswalk_target"},
+        "sense.mqtt_ingest": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.causal": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.constraints": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.math": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.neural_classifier": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.pattern_match": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.stats": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.symbolic": {"$ref": "#/definitions/crosswalk_target"},
+        "solve.thermal": {"$ref": "#/definitions/crosswalk_target"},
+        "verify.consensus": {"$ref": "#/definitions/crosswalk_target"},
+        "verify.english_output": {"$ref": "#/definitions/crosswalk_target"},
+        "verify.hallucination": {"$ref": "#/definitions/crosswalk_target"}
+      }
+    }
+  }
+}

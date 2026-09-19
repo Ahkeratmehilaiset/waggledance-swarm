@@ -111,3 +111,13 @@ def test_claude_callback_does_not_fabricate_provider_freshness(tmp_path):
         'five_hour': {'used_percentage': 10, 'resets_at': 1790328816}}})
     save_observation(path, row)
     assert status(path)['observations'][0]['freshness'] == 'provider_timestamp_unknown'
+
+
+def test_successful_recollection_clears_historical_error(tmp_path):
+    path = tmp_path / 'observations.db'
+    now = datetime.now(timezone.utc)
+    save_observation(path, dict(provider='codex', reason='collection_failed'))
+    save_observation(path, dict(provider='codex', observed_at=now.isoformat(), auth_context_id='one'))
+    report = status(path, now=now)
+    assert report['failed_providers'] == []
+    assert report['observations'][0]['freshness'] == 'fresh'

@@ -206,10 +206,11 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5) as db:
         rows = db.execute('SELECT sequence,data FROM observations ORDER BY sequence DESC LIMIT 2048').fetchall()
-    latest, failed = {}, {}
+    latest, failed, newest_provider = {}, {}, {}
     for sequence, raw in rows:
         row = json.loads(raw)
         provider = row['provider']
+        newest_provider.setdefault(provider, sequence)
         key = (provider, row.get('auth_context_id'), row.get('native_thread_id'))
         if row.get('reason') == 'collection_failed':
             failed.setdefault(provider, sequence)
@@ -230,7 +231,8 @@ def status(path: Path, *, now: datetime | None = None) -> dict:
         latest[key] = row
     return {'schema': 'wd.capacity-status.v1', 'observed_at': now.isoformat(),
             'execution_allowed': False, 'observations': list(latest.values()),
-            'failed_providers': list(failed),
+            'failed_providers': [provider for provider, sequence in failed.items()
+                                 if newest_provider[provider] == sequence],
             'limitations': ['quota_pool_mapping_unverified', 'no_live_model_switch',
                             'statusline_does_not_refresh_idle_provider']}
 

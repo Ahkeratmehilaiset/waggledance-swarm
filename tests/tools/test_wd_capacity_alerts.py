@@ -103,7 +103,7 @@ for($i=0;$i -lt 2;$i++){{
 
 
 @pytest.mark.parametrize("host", HOSTS or [None])
-@pytest.mark.parametrize("case", ["recover", "foreign_setting", "foreign_identity", "changed_setting", "transport"])
+@pytest.mark.parametrize("case", ["recover", "repeat_cycle", "changed_after_resume", "operator_repause", "foreign_setting", "foreign_identity", "changed_setting", "transport"])
 def test_cron_guard_owns_only_its_override_and_resumes_after_success(tmp_path, host, case):
     if host is None:
         pytest.skip("Windows PowerShell unavailable")
@@ -145,6 +145,24 @@ try{{
  }}
  $o.hook_event_name='Stop';$o.availability_state='successful_turn_observed'
  Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ if('{case}' -ceq 'operator_repause'){{
+   $s=Get-Content '{settings}' -Raw|ConvertFrom-Json
+   $s.env.CLAUDE_CODE_DISABLE_CRON='1'
+   [IO.File]::WriteAllText('{settings}',($s|ConvertTo-Json -Depth 64),(New-Object Text.UTF8Encoding($false)))
+   Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ }}
+ if('{case}' -cin @('repeat_cycle','changed_after_resume')){{
+   if('{case}' -ceq 'changed_after_resume'){{
+     $s=Get-Content '{settings}' -Raw|ConvertFrom-Json
+     $s.env.OTHER='operator-edited';$s|ConvertTo-Json|Set-Content '{settings}'
+   }}
+   $o.hook_event_name='StopFailure';$o.availability_state='rate_limited'
+   Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+   Copy-Item '{settings}' '{tmp_path / "second-pause.json"}'
+   $o.hook_event_name='Stop';$o.availability_state='successful_turn_observed'
+   Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+   Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ }}
 }}catch{{[Console]::Error.WriteLine($_.Exception.Message)}}
 """)
     result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-File", str(harness)],
@@ -152,16 +170,34 @@ try{{
     assert result.returncode == 0, result.stderr
     final = json.loads(settings.read_text(encoding="utf-8-sig"))
     state = directory / "wd-capacity-cron-guard.json"
-    if case in ("recover", "transport"):
+    if case == "transport":
         assert final == initial, result.stderr
         assert not state.exists(), result.stderr
-        if case == "recover":
-            paused = json.loads((tmp_path / "paused.json").read_text(encoding="utf-8-sig"))
+    elif case in ("recover", "repeat_cycle"):
+        assert final["env"].pop("CLAUDE_CODE_DISABLE_CRON", None) == "0", result.stderr
+        assert final == initial
+        owned = json.loads(state.read_text(encoding="utf-8-sig"))
+        assert owned["state"] == "resumed"
+        assert owned["resumed_settings_sha256"] == sha(settings)
+        paused = json.loads((tmp_path / "paused.json").read_text(encoding="utf-8-sig"))
+        assert paused["env"]["CLAUDE_CODE_DISABLE_CRON"] == "1"
+        if case == "repeat_cycle":
+            paused = json.loads((tmp_path / "second-pause.json").read_text(encoding="utf-8-sig"))
             assert paused["env"]["CLAUDE_CODE_DISABLE_CRON"] == "1"
+        assert not result.stderr
+    elif case == "changed_after_resume":
+        assert final["env"]["OTHER"] == "operator-edited"
+        assert final["env"]["CLAUDE_CODE_DISABLE_CRON"] == "0"
+        assert not (tmp_path / "second-pause.json").exists()
+        assert result.stderr
     elif case == "changed_setting":
         assert final["env"]["CLAUDE_CODE_DISABLE_CRON"] == "0"
         assert state.exists()
         assert "changed" in result.stderr
+    elif case == "operator_repause":
+        assert final["env"]["CLAUDE_CODE_DISABLE_CRON"] == "1"
+        assert json.loads(state.read_text(encoding="utf-8-sig"))["state"] == "resumed"
+        assert result.stderr
     else:
         assert final == initial
         assert not state.exists()

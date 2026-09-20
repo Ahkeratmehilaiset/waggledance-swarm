@@ -145,7 +145,12 @@ this is not a guarantee that Lead has received or handled the notice.
 native cron guard. It requires verified bridge helper and native-session identity.
 On `rate_limit`, it owns only a newly created lane-local
 `env.CLAUDE_CODE_DISABLE_CRON=1` override. Existing overrides are preserved.
-Only a successful native `Stop` in the same session removes that owned override;
+Only a successful native `Stop` in the same session changes that owned override
+to explicit `0`, retaining its ownership record for subsequent pause cycles.
+Deleting the key alone does not reset the running CLI's imported environment.
+The guard may reuse this `0` only with the same native identity and an exact
+settings hash; it never adopts a pre-existing user override. Successful Stop
+releases the pause;
 statusline callbacks, a model-name change, time passing, and a failed turn do not.
 Other settings and the native conversation remain intact. Conflicting edits or
 interrupted updates require explicit reconciliation. This option remains off by

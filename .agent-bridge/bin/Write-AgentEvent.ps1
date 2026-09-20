@@ -193,6 +193,14 @@ if ($null -eq $payload) {
 }
 Assert-NoPrivateMarker -Label 'payload' -Value ($payload | ConvertTo-Json -Depth 12 -Compress)
 
+if ($Type -ceq 'wake_request' -or
+    ($null -ne $payload.PSObject.Properties['requires_reply'] -and $payload.requires_reply -eq $true) -or
+    ($null -ne $payload.PSObject.Properties['schema'] -and $payload.schema -ceq 'wd.role-request.v1')) {
+    . (Join-Path $PSScriptRoot 'BridgeTaskResult.ps1')
+    $preflight=Get-BridgeTaskRequestValidation -Payload $payload
+    if (-not $preflight.valid) { throw ('Request contract rejected: '+($preflight.errors -join '; ')) }
+}
+
 function Test-BridgeObject {
     param([AllowNull()] $Value)
     return (

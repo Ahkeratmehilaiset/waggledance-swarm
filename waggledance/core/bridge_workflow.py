@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
+import re
 
 from waggledance.core.bridge_request_contract import reply_matches_request, timestamp
 
@@ -50,8 +51,9 @@ def prepare_request(plan: Mapping[str, Any], *, now: datetime | None = None) -> 
     if len(set(consumes)) != len(consumes) or any(k not in ROLE_FIELDS[role] or k not in data for k in consumes):
         raise ValueError('consumes_fields contains missing, duplicate or other-role fields')
     if not isinstance(plan.get('result_fields'), list) or not plan['result_fields'] or any(
-        not isinstance(k, str) or not k for k in plan['result_fields']
-    ):
+        not isinstance(k, str) or re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', k) is None
+        for k in plan['result_fields']
+    ) or len(plan['result_fields']) > 256 or len(set(plan['result_fields'])) != len(plan['result_fields']):
         raise ValueError('explicit result_fields are required')
     return dict(
         ts_utc=(now or datetime.now(timezone.utc)).isoformat(), **dict(requester),
@@ -61,6 +63,9 @@ def prepare_request(plan: Mapping[str, Any], *, now: datetime | None = None) -> 
         payload={'schema': 'wd.role-request.v1', 'role': role, 'task_revision': plan['revision'],
                  'authorization_ref': plan['authorization_ref'], 'authority_effect': 'none',
                  'consumes_fields': list(consumes), 'result_fields': list(plan['result_fields']),
+                 'result_contract': {'schema': 'wd.task-result-contract.v1',
+                                     'required': list(plan['result_fields']),
+                                     'additional_properties': False},
                  'inputs': {k: deepcopy(data[k]) for k in consumes}},
     )
 

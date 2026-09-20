@@ -94,7 +94,7 @@ function Update-WdNativeCronGuard {
             $setting -and $setting.Value -ceq '0' -and $before -ceq $state.resumed_settings_sha256)
         if($pause){
             if($state){
-                if($setting -and $setting.Value -ceq '1' -and
+                if($state.state -cin @('pause_intent','paused') -and $setting -and $setting.Value -ceq '1' -and
                    ($state.state -ceq 'paused' -or $before -ceq $state.paused_settings_sha256)){return}
                 if(-not $ownedResume){throw 'Interrupted or changed cron state needs reconciliation; no automatic overwrite'}
             }
@@ -114,6 +114,7 @@ function Update-WdNativeCronGuard {
                 if($state.state -cne 'resumed'){$state.state='resumed';Save-CronGuardState $state}
                 return
             }
+            if($state.state -cnotin @('paused','pause_intent','resume_intent')){throw 'Resumed cron setting changed; preserve operator override'}
             if($state.state -cne 'paused' -and $before -cne $state.paused_settings_sha256){throw 'Unconfirmed cron ownership; reconcile explicitly'}
             if(-not $setting -or $setting.Value -cne '1'){throw 'Owned cron override changed; preserve settings and reconcile'}
             $settings.env.CLAUDE_CODE_DISABLE_CRON='0'

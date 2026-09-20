@@ -103,7 +103,7 @@ for($i=0;$i -lt 2;$i++){{
 
 
 @pytest.mark.parametrize("host", HOSTS or [None])
-@pytest.mark.parametrize("case", ["recover", "repeat_cycle", "changed_after_resume", "foreign_setting", "foreign_identity", "changed_setting", "transport"])
+@pytest.mark.parametrize("case", ["recover", "repeat_cycle", "changed_after_resume", "operator_repause", "foreign_setting", "foreign_identity", "changed_setting", "transport"])
 def test_cron_guard_owns_only_its_override_and_resumes_after_success(tmp_path, host, case):
     if host is None:
         pytest.skip("Windows PowerShell unavailable")
@@ -145,6 +145,12 @@ try{{
  }}
  $o.hook_event_name='Stop';$o.availability_state='successful_turn_observed'
  Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ if('{case}' -ceq 'operator_repause'){{
+   $s=Get-Content '{settings}' -Raw|ConvertFrom-Json
+   $s.env.CLAUDE_CODE_DISABLE_CRON='1'
+   [IO.File]::WriteAllText('{settings}',($s|ConvertTo-Json -Depth 64),(New-Object Text.UTF8Encoding($false)))
+   Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ }}
  if('{case}' -cin @('repeat_cycle','changed_after_resume')){{
    if('{case}' -ceq 'changed_after_resume'){{
      $s=Get-Content '{settings}' -Raw|ConvertFrom-Json
@@ -188,6 +194,10 @@ try{{
         assert final["env"]["CLAUDE_CODE_DISABLE_CRON"] == "0"
         assert state.exists()
         assert "changed" in result.stderr
+    elif case == "operator_repause":
+        assert final["env"]["CLAUDE_CODE_DISABLE_CRON"] == "1"
+        assert json.loads(state.read_text(encoding="utf-8-sig"))["state"] == "resumed"
+        assert result.stderr
     else:
         assert final == initial
         assert not state.exists()

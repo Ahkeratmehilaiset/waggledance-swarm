@@ -90,6 +90,7 @@ function Get-CapacityLaneSummary($Status) {
             identity_state=$(if($binding){'observed_process_ancestry'}else{'unknown'});
             auth_state=$(if($auth){$auth}else{'unknown'});
             quota_state=$(if($availability -ceq 'rate_limited'){'rate_limit_reported'}else{'unknown'});
+            observed_quota_state=$(if($quota){Get-CapacityField $quota 'quota_state'}else{'unknown'});
             activity_state=$(if($work){$work}else{'unknown'});
             availability_state=$(if($availability){$availability}else{'unknown'});
             observed_at=$stamp;observation_age_seconds=$age;

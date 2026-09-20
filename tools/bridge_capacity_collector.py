@@ -416,6 +416,7 @@ def main(argv=None) -> int:
     parser.add_argument('--statusline', action='store_true', help='Compact Claude statusline output after ingestion.')
     parser.add_argument('--claude-hook', action='store_true', help='Record native lifecycle metadata; no model decision or retry.')
     parser.add_argument('--emit-alert', action='store_true', help='Return sanitized native failure metadata to the explicitly enabled bridge-notice hook.')
+    parser.add_argument('--emit-lifecycle', action='store_true', help='Return sanitized lifecycle metadata to the explicitly enabled native cron guard.')
     parser.add_argument('--codex-executable')
     parser.add_argument('--store', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -436,7 +437,9 @@ def main(argv=None) -> int:
         # A telemetry failure must not make a Stop hook block or prompt a model.
         try:
             observation = record_claude_hook(args.store, _load(sys.stdin.buffer))
-            if args.emit_alert:
+            if args.emit_lifecycle:
+                print(json.dumps(observation, allow_nan=False))
+            elif args.emit_alert:
                 print(json.dumps(observation if observation.get('hook_event_name') == 'StopFailure'
                                  and observation.get('alert_id') else None, allow_nan=False))
         except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):

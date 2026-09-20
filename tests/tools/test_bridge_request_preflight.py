@@ -38,3 +38,18 @@ def test_invalid_new_request_never_creates_bridge_files(tmp_path, host, case):
     assert result.returncode != 0, result.stdout
     assert "Request contract rejected" in result.stderr
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("host", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("fields,valid", [(["second", "first"], True),
+                                       (["first", "first"], False),
+                                       (["First", "second"], False)])
+def test_required_fields_are_an_unordered_case_sensitive_set(tmp_path, host, fields, valid):
+    payload = dict(result_fields=fields, result_contract=dict(
+        schema="wd.task-result-contract.v1", required=["first", "second"]))
+    cmd = (f". {q(BIN / 'BridgeTaskResult.ps1')}; "
+           f"Get-BridgeTaskRequestValidation (ConvertFrom-Json {q(json.dumps(payload))})|ConvertTo-Json")
+    result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-Command", cmd],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["valid"] is valid

@@ -57,7 +57,15 @@ function Get-BridgeTaskRequestValidation {
                 }
             }
             if ($keys -ccontains 'additional_properties' -and (Get-BridgeResultProperty $contract 'additional_properties') -isnot [bool]) { $errors.Add('additional_properties_must_be_boolean') }
-            if ($names -ccontains 'result_fields' -and (ConvertTo-BridgeContractJson $fields) -cne (ConvertTo-BridgeContractJson $required)) { $errors.Add('result_fields_contract_mismatch') }
+            if ($names -ccontains 'result_fields') {
+                # Field order is not part of the result contract; duplicates are.
+                $fieldSet=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                $matching=($fields -is [array] -and $fields.Count -eq @($required).Count)
+                foreach($field in @($fields)) {
+                    if($field -isnot [string] -or -not $fieldSet.Add([string]$field)){$matching=$false}
+                }
+                if(-not $matching -or -not $fieldSet.SetEquals([string[]]@($required))){$errors.Add('result_fields_contract_mismatch')}
+            }
         }
     }
     [pscustomobject]@{schema='wd.request-preflight.v1';valid=($errors.Count -eq 0);contract_present=$hasContract;errors=@($errors);authority_effect='none'}

@@ -253,6 +253,7 @@ def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, ho
         assert row['activity_state'] == 'unknown' and row['quota_state'] == 'unknown'
     elif case == 'auth':
         assert row['auth_state'] == 'auth_required' and row['quota_state'] == 'unknown'
+        assert row['observed_quota_state'] == 'unknown'  # Provider sample age is unknown.
     else:
         assert row['quota_state'] == 'rate_limit_reported'
         assert row['freshness'] == ('stale_or_future' if case == 'stale' else 'fresh')

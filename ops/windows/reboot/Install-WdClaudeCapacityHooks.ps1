@@ -9,7 +9,9 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ManifestSha256,
     [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$|^missing$')][string]$ExpectedSettingsSha256,
     [switch]$Apply,
-    [switch]$EnableBridgeAlerts
+    [switch]$EnableBridgeAlerts,
+    [switch]$PauseNativeCronOnLimit,
+    [ValidateSet('','claude-rco-1','claude-rco-2','fable-5')][string]$Agent=''
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -64,6 +66,11 @@ $hostPath=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 foreach($path in @($runner,$ManifestPath,$hostPath)){if($path -match '["`$\r\n]'){throw 'Unsafe command path'}}
 $command='"'+$hostPath.Replace('\','/')+'" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$runner.Replace('\','/')+'" -ManifestPath "'+$ManifestPath.Replace('\','/')+'" -ManifestSha256 '+$ManifestSha256
 $hookCommand=$command+$(if($EnableBridgeAlerts){' -Mode ClaudeHookAlert'}else{' -Mode ClaudeHook'})
+if($PauseNativeCronOnLimit){
+    if(-not $EnableBridgeAlerts -or -not $Agent){throw 'Cron pause requires explicit bridge alerts and agent'}
+    if($root -match '["`$\r\n]'){throw 'Unsafe cron guard worktree path'}
+    $hookCommand+=' -PauseNativeCronOnLimit -GuardAgent '+$Agent+' -GuardWorktree "'+$root.Replace('\','/')+'"'
+}
 $statusCommand=$command+' -Mode ClaudeStatusline'
 $settings=if($before -eq 'missing'){[pscustomobject]@{}}else{Get-Content -LiteralPath $settingsPath -Raw|ConvertFrom-Json}
 $owned=if(Test-Path -LiteralPath $ownershipPath){Get-Content -LiteralPath $ownershipPath -Raw|ConvertFrom-Json}else{$null}

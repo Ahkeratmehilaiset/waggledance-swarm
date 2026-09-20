@@ -76,7 +76,7 @@ $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile('{source}',[ref]$tokens,[ref]$errors)
 if($errors.Count){{throw 'Parse error'}}
-foreach($name in @('Assert-CapacityPath','Get-ObserverHash','Publish-WdCapacityAlert')){{
+foreach($name in @('Assert-CapacityPath','Get-ObserverHash','Get-WdCapacityHookIdentity','Publish-WdCapacityAlert')){{
  $n=@($ast.FindAll({{param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name}},$true))
  . ([scriptblock]::Create($n[0].Extent.Text))
 }}
@@ -100,3 +100,69 @@ for($i=0;$i -lt 2;$i++){{
         assert count.read_text().splitlines() == ["write"], result.stderr
         record = json.loads((tmp_path / "bridge-alerts" / (alert+".json")).read_text(encoding="utf-8-sig"))
         assert record["state"] == ("send_pending" if case == "uncertain" else "canonical"), result.stderr
+
+
+@pytest.mark.parametrize("host", HOSTS or [None])
+@pytest.mark.parametrize("case", ["recover", "foreign_setting", "foreign_identity", "changed_setting", "transport"])
+def test_cron_guard_owns_only_its_override_and_resumes_after_success(tmp_path, host, case):
+    if host is None:
+        pytest.skip("Windows PowerShell unavailable")
+    directory = tmp_path / ".claude"
+    directory.mkdir()
+    settings = directory / "settings.local.json"
+    initial = dict(model="operator-selected", env={"OTHER": "preserved"})
+    if case == "foreign_setting":
+        initial["env"]["CLAUDE_CODE_DISABLE_CRON"] = "0"
+    settings.write_text(json.dumps(initial))
+    observed = dict(hook_event_name="StopFailure", availability_state="rate_limited",
+                    native_thread_id="11111111-2222-3333-4444-555555555555",
+                    alert_id="a" * 32, observed_at="2026-09-20T00:00:00Z")
+    if case == "transport":
+        observed["availability_state"] = "transport_error"
+    fixture = tmp_path / "observation.json"
+    fixture.write_text(json.dumps(observed))
+    source = ROOT / "ops/windows/reboot/Invoke-WdCapacityObserver.ps1"
+    harness = tmp_path / "guard.ps1"
+    observed_agent = "claude-rco-1" if case == "foreign_identity" else "fable-5"
+    harness.write_text(f"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{source}',[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'Parse error'}}
+foreach($name in @('Assert-CapacityPath','Get-ObserverHash','Update-WdNativeCronGuard')){{
+ $n=@($ast.FindAll({{param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name}},$true))
+ . ([scriptblock]::Create($n[0].Extent.Text))
+}}
+function Get-WdCapacityHookIdentity {{[pscustomobject]@{{agent='{observed_agent}'}}}}
+$o=Get-Content '{fixture}' -Raw|ConvertFrom-Json
+try{{
+ Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+ Copy-Item '{settings}' '{tmp_path / "paused.json"}'
+ if('{case}' -ceq 'changed_setting'){{
+   $s=Get-Content '{settings}' -Raw|ConvertFrom-Json
+   $s.env.CLAUDE_CODE_DISABLE_CRON='0';$s|ConvertTo-Json|Set-Content '{settings}'
+ }}
+ $o.hook_event_name='Stop';$o.availability_state='successful_turn_observed'
+ Update-WdNativeCronGuard $o '{tmp_path}' 'fable-5'
+}}catch{{[Console]::Error.WriteLine($_.Exception.Message)}}
+""")
+    result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-File", str(harness)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    final = json.loads(settings.read_text(encoding="utf-8-sig"))
+    state = directory / "wd-capacity-cron-guard.json"
+    if case in ("recover", "transport"):
+        assert final == initial, result.stderr
+        assert not state.exists(), result.stderr
+        if case == "recover":
+            paused = json.loads((tmp_path / "paused.json").read_text(encoding="utf-8-sig"))
+            assert paused["env"]["CLAUDE_CODE_DISABLE_CRON"] == "1"
+    elif case == "changed_setting":
+        assert final["env"]["CLAUDE_CODE_DISABLE_CRON"] == "0"
+        assert state.exists()
+        assert "changed" in result.stderr
+    else:
+        assert final == initial
+        assert not state.exists()
+        assert result.stderr

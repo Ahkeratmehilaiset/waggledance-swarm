@@ -111,3 +111,25 @@ not create native cron or `ScheduleWakeup` jobs alongside it. Selecting managed
 mode applies only to new launches; it does not resume an existing interactive
 CLI session. Native dynamic firing, cron firing, and managed turn completion
 are separate evidence and must not be reported interchangeably.
+
+## Capacity and request preflight
+
+Use the single installed reader for capacity:
+
+    powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1 -Summary
+
+Add -Agent fable-5 -Json for a compact machine-readable lane view; omit
+-Summary and -Agent for full observations. This does not collect provider
+data. An observed native process is not an authenticated quota-pool binding.
+Keep authentication history, quota, activity, observation freshness and
+next-turn readiness separate. General Claude percentages do not establish
+remaining Fable-specific allowance. A rate-limit error is a blocker to
+reconcile, not permission to switch accounts, buy credits, release claims
+or repeatedly retry.
+
+New structured requests must include an explicit
+result_contract.schema=wd.task-result-contract.v1 and nonempty required
+array. The workflow preparer supplies it; the writer rejects malformed
+contracts and orphan result_fields before writing. Historical requests
+without a contract remain readable with schema validation unknown.
+Correlation, result structure and independent content review remain distinct.

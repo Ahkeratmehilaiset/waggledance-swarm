@@ -188,6 +188,75 @@ def test_shared_status_locator_is_verified_readonly_and_does_not_collect(tmp_pat
     after = {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     assert before == after
 
+@pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('case', ['rate_limit','auth','stale','foreign_thread','denied','duplicate'])
+def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, host, case):
+    if host is None:
+        pytest.skip('Windows PowerShell unavailable')
+    from tools.bridge_capacity_collector import record_claude_hook
+    root = tmp_path / 'installed'
+    release = root / ('a' * 40)
+    files = {}
+    for relative in ('tools/bridge_capacity_advisor.py','tools/bridge_capacity_collector.py',
+                     'ops/windows/reboot/Get-WdCapacityStatus.ps1'):
+        target = release / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+        files[relative.replace('/', '\\')] = sha(target)
+    store = root / 'observations.sqlite'
+    thread = '11111111-2222-3333-4444-555555555555'
+    record_claude_hook(store, dict(session_id=thread, hook_event_name='StopFailure',
+                                  error='authentication_failed' if case == 'auth' else 'rate_limit'))
+    if case == 'stale':
+        import sqlite3
+        with sqlite3.connect(store) as db:
+            value = json.loads(db.execute('SELECT data FROM activity').fetchone()[0])
+            value['observed_at'] = '2020-01-01T00:00:00Z'
+            db.execute('UPDATE activity SET data=?', (json.dumps(value),))
+    manifest = release / 'manifest.json'
+    manifest.write_text(json.dumps(dict(schema='wd.capacity-observer-install.v1',
+        execution_mode='metadata_only', source_commit='a'*40, files=files,
+        python=PYTHON, python_sha256=sha(Path(PYTHON)), store=str(store))))
+    (root/'current.json').write_text(json.dumps(dict(mode='metadata_only',source_commit='a'*40,
+        manifest=str(manifest),manifest_sha256=sha(manifest))))
+    native_thread = 'ffffffff-2222-3333-4444-555555555555' if case == 'foreign_thread' else thread
+    processes = [
+        dict(ProcessId=10, ParentProcessId=1, Name='pwsh.exe', CreationDate='2026-01-01T00:00:00Z',
+             CommandLine='pwsh -File C:\\Python\\wd-reboot-bundles\\'+'a'*40+'\\start-wd-agent.ps1 -Agent fable-5'),
+        dict(ProcessId=11, ParentProcessId=10, Name='claude.exe', CreationDate='2026-01-01T00:00:01Z',
+             CommandLine='claude.exe --resume '+native_thread+' --model fable')]
+    if case == 'duplicate':
+        processes.append(dict(processes[-1], ProcessId=12))
+    fixture = tmp_path/'processes.json'
+    fixture.write_text(json.dumps(processes))
+    reader = release/'ops/windows/reboot/Get-WdCapacityStatus.ps1'
+    query = "throw 'Access denied'" if case == 'denied' else (
+        f"$p=Get-Content -LiteralPath '{fixture}' -Raw|ConvertFrom-Json;"
+        "foreach($row in $p){$row.CreationDate=[datetime]$row.CreationDate};return $p")
+    harness = tmp_path/'summary.ps1'
+    harness.write_text("function Get-CimInstance {"+query+"}\n"+
+        f"& '{reader}' -InstallRoot '{root}' -Summary -Agent fable-5 -Json\nexit $LASTEXITCODE", encoding='utf-8')
+    before = {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    result = subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(harness)],
+                            capture_output=True,text=True,timeout=30)
+    assert result.returncode == 0, result.stderr+result.stdout
+    data = json.loads(result.stdout)
+    assert len(data['agents']) == 1 and data['execution_allowed'] is False
+    row = data['agents'][0]
+    assert row['quota_pool_binding'] == 'unverified'
+    assert not row['automatic_handoff_allowed'] and not row['next_turn_success_verified']
+    if case in ('denied','duplicate'):
+        assert row['identity_state'] == 'unknown' and row['quota_state'] == 'unknown'
+    elif case == 'foreign_thread':
+        assert row['activity_state'] == 'unknown' and row['quota_state'] == 'unknown'
+    elif case == 'auth':
+        assert row['auth_state'] == 'auth_required' and row['quota_state'] == 'unknown'
+    else:
+        assert row['quota_state'] == 'rate_limit_reported'
+        assert row['freshness'] == ('stale_or_future' if case == 'stale' else 'fresh')
+    assert before == {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
 def native_hook_release(tmp_path):
     release = tmp_path / 'release'
     files = {}

@@ -66,6 +66,7 @@ $hostPath=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 foreach($path in @($runner,$ManifestPath,$hostPath)){if($path -match '["`$\r\n]'){throw 'Unsafe command path'}}
 $command='"'+$hostPath.Replace('\','/')+'" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$runner.Replace('\','/')+'" -ManifestPath "'+$ManifestPath.Replace('\','/')+'" -ManifestSha256 '+$ManifestSha256
 $hookCommand=$command+$(if($EnableBridgeAlerts){' -Mode ClaudeHookAlert'}else{' -Mode ClaudeHook'})
+$integrationMode=if($PauseNativeCronOnLimit){'metadata_and_native_cron_guard'}elseif($EnableBridgeAlerts){'metadata_and_bridge_alerts'}else{'metadata_only'}
 if($PauseNativeCronOnLimit){
     if(-not $EnableBridgeAlerts -or -not $Agent){throw 'Cron pause requires explicit bridge alerts and agent'}
     if($root -match '["`$\r\n]'){throw 'Unsafe cron guard worktree path'}
@@ -95,7 +96,7 @@ foreach($event in @('UserPromptSubmit','Stop','StopFailure')){
     $settings.hooks|Add-Member NoteProperty $event $preserved -Force
 }
 $settings|Add-Member NoteProperty statusLine ([pscustomobject]@{type='command';command=$statusCommand}) -Force
-if(-not $Apply){[pscustomobject]@{settings=$settingsPath;previous_sha256=$before;hook_command=$hookCommand;status_command=$statusCommand}|ConvertTo-Json;return}
+if(-not $Apply){[pscustomobject]@{settings=$settingsPath;previous_sha256=$before;hook_command=$hookCommand;status_command=$statusCommand;mode=$integrationMode}|ConvertTo-Json;return}
 [void][IO.Directory]::CreateDirectory($directory)
 $check=if(Test-Path -LiteralPath $settingsPath){Get-CapacityFileHash $settingsPath}else{'missing'}
 if($check -ine $before){throw 'Settings changed during plan'}
@@ -107,6 +108,6 @@ if($before -ne 'missing'){
 $temp=$settingsPath+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
 [IO.File]::WriteAllText($temp,($settings|ConvertTo-Json -Depth 64),(New-Object Text.UTF8Encoding($false)))
 if(Test-Path -LiteralPath $settingsPath){[IO.File]::Replace($temp,$settingsPath,[NullString]::Value)}else{[IO.File]::Move($temp,$settingsPath)}
-[pscustomobject]@{schema='wd.claude-capacity-integration.v1';hook_command=$hookCommand;status_command=$statusCommand;manifest=$ManifestPath;manifest_sha256=$ManifestSha256}|
+[pscustomobject]@{schema='wd.claude-capacity-integration.v1';hook_command=$hookCommand;status_command=$statusCommand;manifest=$ManifestPath;manifest_sha256=$ManifestSha256;mode=$integrationMode}|
     ConvertTo-Json|Set-Content -LiteralPath $ownershipPath -Encoding UTF8
-[pscustomobject]@{settings=$settingsPath;sha256=(Get-CapacityFileHash $settingsPath);mode='metadata_only'}|ConvertTo-Json
+[pscustomobject]@{settings=$settingsPath;sha256=(Get-CapacityFileHash $settingsPath);mode=$integrationMode}|ConvertTo-Json

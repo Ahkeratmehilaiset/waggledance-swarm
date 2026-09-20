@@ -305,7 +305,8 @@ def test_native_hook_runner_never_starts_provider_or_blocks_stop(tmp_path, host,
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
-def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path, host):
+@pytest.mark.parametrize('mode', ['metadata_only','metadata_and_bridge_alerts','metadata_and_native_cron_guard'])
+def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path, host, mode):
     if host is None: pytest.skip('Windows PowerShell unavailable')
     release, manifest, _ = native_hook_release(tmp_path)
     worktree = tmp_path / 'worktree'
@@ -318,9 +319,14 @@ def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path,
     installer = ROOT/'ops/windows/reboot/Install-WdClaudeCapacityHooks.ps1'
     base = [host,'-NoProfile','-NonInteractive','-File',str(installer),'-Worktree',str(worktree),
             '-ManifestPath',str(manifest),'-ManifestSha256',sha(manifest),'-Apply']
+    if mode != 'metadata_only':
+        base += ['-EnableBridgeAlerts']
+    if mode == 'metadata_and_native_cron_guard':
+        base += ['-PauseNativeCronOnLimit','-Agent','fable-5']
     for _ in range(2):
         proc = subprocess.run(base+['-ExpectedSettingsSha256',sha(settings)],capture_output=True,text=True,timeout=30)
         assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)['mode'] == mode
     value = json.loads(settings.read_text(encoding='utf-8-sig'))
     assert value['permissions']==original['permissions']
     assert len(value['hooks']['Stop'])==2

@@ -16,6 +16,61 @@ function Test-BridgeResultObject {
     return ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject])
 }
 
+function Get-BridgeTaskRequestValidation {
+    param($Payload)
+    # New writes only: historical records without contracts remain readable.
+    Set-StrictMode -Version Latest
+    $errors=[Collections.Generic.List[string]]::new()
+    $names=@(if ($Payload -is [Collections.IDictionary]) {$Payload.Keys} elseif ($null -ne $Payload) {$Payload.PSObject.Properties|ForEach-Object {$_.Name}})
+    $hasContract=$names -ccontains 'result_contract'
+    $fields=Get-BridgeResultProperty $Payload 'result_fields'
+    $contract=Get-BridgeResultProperty $Payload 'result_contract'
+    if (-not $hasContract -and $names -ccontains 'result_fields') {
+        if ((Get-BridgeResultProperty $Payload 'schema') -cne 'wd.role-request.v1') {
+            $errors.Add('orphan_result_fields_requires_explicit_contract')
+        } else {
+            $contract=@{schema='wd.task-result-contract.v1';required=$fields;additional_properties=$false}
+            $hasContract=$true
+        }
+    }
+    if ($hasContract) {
+        if (-not (Test-BridgeResultObject $contract)) { $errors.Add('result_contract_must_be_object') }
+        else {
+            $keys=@(if ($contract -is [Collections.IDictionary]) {$contract.Keys} else {$contract.PSObject.Properties|ForEach-Object {$_.Name}})
+            if (@($keys|Where-Object {$_ -cnotin @('schema','required','types','equals','additional_properties')}).Count) { $errors.Add('unknown_contract_field') }
+            if ((Get-BridgeResultProperty $contract 'schema') -cne 'wd.task-result-contract.v1') { $errors.Add('unknown_result_contract') }
+            $required=Get-BridgeResultProperty $contract 'required'
+            if ($required -isnot [array] -or $required.Count -eq 0 -or $required.Count -gt 256) { $errors.Add('required_must_be_bounded_nonempty_array') }
+            $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($name in @($required)) {
+                if ($name -isnot [string] -or $name -cnotmatch '^[A-Za-z][A-Za-z0-9_]{0,63}$') { $errors.Add('invalid_required_field') }
+                elseif (-not $seen.Add($name)) { $errors.Add('duplicate_required_field') }
+            }
+            foreach ($section in @('types','equals')) {
+                if ($keys -cnotcontains $section) { continue }
+                $values=Get-BridgeResultProperty $contract $section
+                if (-not (Test-BridgeResultObject $values)) { $errors.Add($section+'_must_be_object');continue }
+                $valueNames=@(if ($values -is [Collections.IDictionary]) {$values.Keys} else {$values.PSObject.Properties|ForEach-Object {$_.Name}})
+                foreach ($name in $valueNames) {
+                    if ($required -cnotcontains $name) { $errors.Add($section+'_field_not_required:'+ $name) }
+                    if ($section -ceq 'types' -and (Get-BridgeResultProperty $values $name) -cnotin @('string','boolean','integer','number','object','array','null')) { $errors.Add('unknown_result_type:'+ $name) }
+                }
+            }
+            if ($keys -ccontains 'additional_properties' -and (Get-BridgeResultProperty $contract 'additional_properties') -isnot [bool]) { $errors.Add('additional_properties_must_be_boolean') }
+            if ($names -ccontains 'result_fields') {
+                # Field order is not part of the result contract; duplicates are.
+                $fieldSet=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                $matching=($fields -is [array] -and $fields.Count -eq @($required).Count)
+                foreach($field in @($fields)) {
+                    if($field -isnot [string] -or -not $fieldSet.Add([string]$field)){$matching=$false}
+                }
+                if(-not $matching -or -not $fieldSet.SetEquals([string[]]@($required))){$errors.Add('result_fields_contract_mismatch')}
+            }
+        }
+    }
+    [pscustomobject]@{schema='wd.request-preflight.v1';valid=($errors.Count -eq 0);contract_present=$hasContract;errors=@($errors);authority_effect='none'}
+}
+
 function Get-BridgeTaskResultValidation {
     param($Request,$Payload,[string]$Responder='')
     Set-StrictMode -Version Latest

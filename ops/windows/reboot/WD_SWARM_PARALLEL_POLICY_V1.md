@@ -111,3 +111,49 @@ not create native cron or `ScheduleWakeup` jobs alongside it. Selecting managed
 mode applies only to new launches; it does not resume an existing interactive
 CLI session. Native dynamic firing, cron firing, and managed turn completion
 are separate evidence and must not be reported interchangeably.
+
+## Capacity and request preflight
+
+Use the single installed reader for capacity:
+
+    powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1 -Summary
+
+Add -Agent fable-5 -Json for a compact machine-readable lane view; omit
+-Summary and -Agent for full observations. This does not collect provider
+data. An observed native process is not an authenticated quota-pool binding.
+Keep authentication history, quota, activity, observation freshness and
+next-turn readiness separate. General Claude percentages do not establish
+remaining Fable-specific allowance. A rate-limit error is a blocker to
+reconcile, not permission to switch accounts, buy credits, release claims
+or repeatedly retry.
+
+New structured requests must include an explicit
+result_contract.schema=wd.task-result-contract.v1 and nonempty required
+array. The workflow preparer supplies it; the writer rejects malformed
+contracts and orphan result_fields before writing. Historical requests
+without a contract remain readable with schema validation unknown.
+Correlation, result structure and independent content review remain distinct.
+# Native quota failures and scheduled retries
+
+The optional lane-local `Install-WdClaudeCapacityHooks.ps1 -EnableBridgeAlerts`
+integration sends a sanitized native failure notice to Lead without a model turn.
+Delivery uses a durable local intent and canonical receipt reconciliation. It is
+at-most-once, best effort: an uncertain or lost write requires reconciliation;
+this is not a guarantee that Lead has received or handled the notice.
+
+`-PauseNativeCronOnLimit -Agent <exact-Claude-lane>` additionally opts into a
+native cron guard. It requires verified bridge helper and native-session identity.
+On `rate_limit`, it owns only a newly created lane-local
+`env.CLAUDE_CODE_DISABLE_CRON=1` override. Existing overrides are preserved.
+Only a successful native `Stop` in the same session removes that owned override;
+statusline callbacks, a model-name change, time passing, and a failed turn do not.
+Other settings and the native conversation remain intact. Conflicting edits or
+interrupted updates require explicit reconciliation. This option remains off by
+default and requires an installed-CLI pause-and-resume acceptance test before use.
+Changing the setting is not itself proof that native scheduling resumed.
+
+The guard does not change models, buy credits, release claims, or grant reviewer
+authority. It cannot predict a model-specific limit missing from provider
+metadata. A blocked lane keeps its pending work; Lead may coordinate a suitable
+existing worker within the operator's existing scope. If no approved capacity is
+available, report the blocker and wait rather than claim uninterrupted progress.

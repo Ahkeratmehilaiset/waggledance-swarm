@@ -73,6 +73,7 @@ function Get-CapacityLaneSummary($Status) {
             $null -ne $binding -and (Get-CapacityField $_ 'native_thread_id') -ceq $binding.thread -and $_.provider -ceq $provider
         })
         $quota=if($quotaRows.Count -eq 1){$quotaRows[0]}else{$null}
+        $windows=Get-CapacityField $quota 'quota_windows'
         $stamp=Get-CapacityField $activity 'observed_at'
         $age=$null
         if($stamp){try{$age=($now-[datetimeoffset]::Parse([string]$stamp,[Globalization.CultureInfo]::InvariantCulture)).TotalSeconds}catch{}}
@@ -98,7 +99,7 @@ function Get-CapacityLaneSummary($Status) {
             first_error_at=$(Get-CapacityField $activity 'first_error_at');
             last_successful_turn_at=$(Get-CapacityField $activity 'last_successful_turn_at');
             observed_model=$(Get-CapacityField $quota 'model');
-            quota_windows=@(Get-CapacityField $quota 'quota_windows');
+            quota_windows=@($windows|Where-Object {$null -ne $_});
             quota_freshness=$(if($quota){Get-CapacityField $quota 'freshness'}else{'unknown'});
             quota_pool_binding='unverified';next_turn_success_verified=$false;
             next_action=$(if($blocked){'preserve_work_and_reconcile_capacity'}else{'verify_before_dispatch'});

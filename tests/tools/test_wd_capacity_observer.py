@@ -193,7 +193,7 @@ def test_shared_status_locator_is_verified_readonly_and_does_not_collect(tmp_pat
 def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, host, case):
     if host is None:
         pytest.skip('Windows PowerShell unavailable')
-    from tools.bridge_capacity_collector import record_claude_hook
+    from tools.bridge_capacity_collector import record_claude_hook, collect_claude, save_observation
     root = tmp_path / 'installed'
     release = root / ('a' * 40)
     files = {}
@@ -205,6 +205,8 @@ def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, ho
         files[relative.replace('/', '\\')] = sha(target)
     store = root / 'observations.sqlite'
     thread = '11111111-2222-3333-4444-555555555555'
+    save_observation(store, collect_claude(dict(session_id=thread, model={'id':'fable'},
+        rate_limits={'seven_day':{'used_percentage':95,'resets_at':2000000000}})))
     record_claude_hook(store, dict(session_id=thread, hook_event_name='StopFailure',
                                   error='authentication_failed' if case == 'auth' else 'rate_limit'))
     if case == 'stale':
@@ -254,6 +256,8 @@ def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, ho
     else:
         assert row['quota_state'] == 'rate_limit_reported'
         assert row['freshness'] == ('stale_or_future' if case == 'stale' else 'fresh')
+        assert row['quota_windows'][0]['used_percent'] == 95
+        assert row['quota_freshness'] == 'provider_timestamp_unknown'
     assert before == {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
 
 

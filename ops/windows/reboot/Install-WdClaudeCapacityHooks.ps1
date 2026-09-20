@@ -8,7 +8,8 @@ param(
     [Parameter(Mandatory)][string]$ManifestPath,
     [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ManifestSha256,
     [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$|^missing$')][string]$ExpectedSettingsSha256,
-    [switch]$Apply
+    [switch]$Apply,
+    [switch]$EnableBridgeAlerts
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -62,7 +63,7 @@ $hostPath=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # Claude executes command hooks through its shell: use forward slashes, quote all paths.
 foreach($path in @($runner,$ManifestPath,$hostPath)){if($path -match '["`$\r\n]'){throw 'Unsafe command path'}}
 $command='"'+$hostPath.Replace('\','/')+'" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$runner.Replace('\','/')+'" -ManifestPath "'+$ManifestPath.Replace('\','/')+'" -ManifestSha256 '+$ManifestSha256
-$hookCommand=$command+' -Mode ClaudeHook'
+$hookCommand=$command+$(if($EnableBridgeAlerts){' -Mode ClaudeHookAlert'}else{' -Mode ClaudeHook'})
 $statusCommand=$command+' -Mode ClaudeStatusline'
 $settings=if($before -eq 'missing'){[pscustomobject]@{}}else{Get-Content -LiteralPath $settingsPath -Raw|ConvertFrom-Json}
 $owned=if(Test-Path -LiteralPath $ownershipPath){Get-Content -LiteralPath $ownershipPath -Raw|ConvertFrom-Json}else{$null}

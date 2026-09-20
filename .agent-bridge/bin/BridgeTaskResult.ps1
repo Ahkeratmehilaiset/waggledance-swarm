@@ -21,7 +21,7 @@ function Get-BridgeTaskRequestValidation {
     # New writes only: historical records without contracts remain readable.
     Set-StrictMode -Version Latest
     $errors=[Collections.Generic.List[string]]::new()
-    $names=@(if ($Payload -is [Collections.IDictionary]) {$Payload.Keys} elseif ($null -ne $Payload) {$Payload.PSObject.Properties.Name})
+    $names=@(if ($Payload -is [Collections.IDictionary]) {$Payload.Keys} elseif ($null -ne $Payload) {$Payload.PSObject.Properties|ForEach-Object {$_.Name}})
     $hasContract=$names -ccontains 'result_contract'
     $fields=Get-BridgeResultProperty $Payload 'result_fields'
     $contract=Get-BridgeResultProperty $Payload 'result_contract'
@@ -36,7 +36,7 @@ function Get-BridgeTaskRequestValidation {
     if ($hasContract) {
         if (-not (Test-BridgeResultObject $contract)) { $errors.Add('result_contract_must_be_object') }
         else {
-            $keys=@(if ($contract -is [Collections.IDictionary]) {$contract.Keys} else {$contract.PSObject.Properties.Name})
+            $keys=@(if ($contract -is [Collections.IDictionary]) {$contract.Keys} else {$contract.PSObject.Properties|ForEach-Object {$_.Name}})
             if (@($keys|Where-Object {$_ -cnotin @('schema','required','types','equals','additional_properties')}).Count) { $errors.Add('unknown_contract_field') }
             if ((Get-BridgeResultProperty $contract 'schema') -cne 'wd.task-result-contract.v1') { $errors.Add('unknown_result_contract') }
             $required=Get-BridgeResultProperty $contract 'required'
@@ -50,7 +50,7 @@ function Get-BridgeTaskRequestValidation {
                 if ($keys -cnotcontains $section) { continue }
                 $values=Get-BridgeResultProperty $contract $section
                 if (-not (Test-BridgeResultObject $values)) { $errors.Add($section+'_must_be_object');continue }
-                $valueNames=@(if ($values -is [Collections.IDictionary]) {$values.Keys} else {$values.PSObject.Properties.Name})
+                $valueNames=@(if ($values -is [Collections.IDictionary]) {$values.Keys} else {$values.PSObject.Properties|ForEach-Object {$_.Name}})
                 foreach ($name in $valueNames) {
                     if ($required -cnotcontains $name) { $errors.Add($section+'_field_not_required:'+ $name) }
                     if ($section -ceq 'types' -and (Get-BridgeResultProperty $values $name) -cnotin @('string','boolean','integer','number','object','array','null')) { $errors.Add('unknown_result_type:'+ $name) }

@@ -53,3 +53,15 @@ def test_required_fields_are_an_unordered_case_sensitive_set(tmp_path, host, fie
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["valid"] is valid
+
+
+@pytest.mark.parametrize("host", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("payload", [{}, {"requires_reply": True},
+    {"result_contract": dict(schema="wd.task-result-contract.v1", required=["answer"], types={}, equals={})}])
+def test_empty_optional_objects_are_valid_under_strict_mode(tmp_path, host, payload):
+    cmd = (f"$ErrorActionPreference='Stop'; . {q(BIN / 'BridgeTaskResult.ps1')}; "
+           f"Get-BridgeTaskRequestValidation (ConvertFrom-Json {q(json.dumps(payload))})|ConvertTo-Json")
+    result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-Command", cmd],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["valid"] is True

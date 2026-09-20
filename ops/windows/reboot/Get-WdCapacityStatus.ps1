@@ -150,7 +150,7 @@ try {
         if($Json){$view|ConvertTo-Json -Depth 12}
         else {
             Write-Output ('WD CAPACITY | observed='+$result.observed_at+' | source='+$current.source_commit+' | read-only')
-            $lanes|Select-Object agent,identity_state,auth_state,quota_state,activity_state,freshness,observation_age_seconds,quota_pool_binding|Format-Table -AutoSize -Wrap|Out-String -Width 240|Write-Output
+            $lanes|Select-Object agent,identity_state,auth_state,quota_state,observed_quota_state,activity_state,freshness,observation_age_seconds,quota_pool_binding|Format-Table -AutoSize -Wrap|Out-String -Width 240|Write-Output
             Write-Output $view.note
         }
     }else{$result|ConvertTo-Json -Depth 32}

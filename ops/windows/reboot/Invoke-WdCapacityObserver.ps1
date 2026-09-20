@@ -77,30 +77,52 @@ function Update-WdNativeCronGuard {
         if($state -and ($state.agent -cne $Agent -or $state.native_thread_id -cne $Observation.native_thread_id)){throw 'Cron pause belongs to another native session; reconcile explicitly'}
         $envField=$settings.PSObject.Properties['env']
         $setting=if($envField){$settings.env.PSObject.Properties['CLAUDE_CODE_DISABLE_CRON']}else{$null}
+        function Save-CronGuardState($Value) {
+            $temporary=$statePath+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+            try{
+                $bytes=[Text.Encoding]::UTF8.GetBytes(($Value|ConvertTo-Json -Depth 16))
+                $stream=[IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+                try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+                if(Test-Path -LiteralPath $statePath){[IO.File]::Replace($temporary,$statePath,[NullString]::Value)}
+                else{[IO.File]::Move($temporary,$statePath)}
+            }finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary}}
+        }
+        # Claude hot-reloads explicit values into its process environment, but
+        # deleting a settings key does not clear an already imported value.
+        # Retain our explicit false value with exact ownership for later cycles.
+        $ownedResume=($state -and $state.state -cin @('resumed','resume_intent') -and
+            $setting -and $setting.Value -ceq '0' -and $before -ceq $state.resumed_settings_sha256)
         if($pause){
             if($state){
                 if($setting -and $setting.Value -ceq '1' -and
                    ($state.state -ceq 'paused' -or $before -ceq $state.paused_settings_sha256)){return}
-                throw 'Interrupted cron pause needs reconciliation; no automatic overwrite'
+                if(-not $ownedResume){throw 'Interrupted or changed cron state needs reconciliation; no automatic overwrite'}
             }
             # Never take ownership of an existing user setting, even "0".
-            if($setting){throw 'Existing cron override preserved; pause ownership unavailable'}
+            if($setting -and -not $ownedResume){throw 'Existing cron override preserved; pause ownership unavailable'}
             if(-not $envField){$settings|Add-Member NoteProperty env ([pscustomobject]@{})}
-            $settings.env|Add-Member NoteProperty CLAUDE_CODE_DISABLE_CRON '1'
+            $settings.env|Add-Member NoteProperty CLAUDE_CODE_DISABLE_CRON '1' -Force
             $afterBytes=[Text.Encoding]::UTF8.GetBytes(($settings|ConvertTo-Json -Depth 64))
             $sha=[Security.Cryptography.SHA256]::Create()
             try{$afterHash=[BitConverter]::ToString($sha.ComputeHash($afterBytes)).Replace('-','')}finally{$sha.Dispose()}
             $state=[ordered]@{schema='wd.native-cron-guard.v1';agent=$Agent;native_thread_id=$Observation.native_thread_id;
                 alert_id=$Observation.alert_id;paused_at=$Observation.observed_at;state='pause_intent';settings_sha256=$before;paused_settings_sha256=$afterHash}
-            $bytes=[Text.Encoding]::UTF8.GetBytes(($state|ConvertTo-Json -Compress))
-            $stream=[IO.File]::Open($statePath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-            try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+            Save-CronGuardState $state
         }else{
             if(-not $state){return}
+            if($ownedResume){
+                if($state.state -cne 'resumed'){$state.state='resumed';Save-CronGuardState $state}
+                return
+            }
             if($state.state -cne 'paused' -and $before -cne $state.paused_settings_sha256){throw 'Unconfirmed cron ownership; reconcile explicitly'}
             if(-not $setting -or $setting.Value -cne '1'){throw 'Owned cron override changed; preserve settings and reconcile'}
-            $settings.env.PSObject.Properties.Remove('CLAUDE_CODE_DISABLE_CRON')
-            if(@($settings.env.PSObject.Properties).Count -eq 0){$settings.PSObject.Properties.Remove('env')}
+            $settings.env.CLAUDE_CODE_DISABLE_CRON='0'
+            $resumeBytes=[Text.Encoding]::UTF8.GetBytes(($settings|ConvertTo-Json -Depth 64))
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try{$resumeHash=[BitConverter]::ToString($sha.ComputeHash($resumeBytes)).Replace('-','')}finally{$sha.Dispose()}
+            $state.state='resume_intent'
+            $state|Add-Member NoteProperty resumed_settings_sha256 $resumeHash -Force
+            Save-CronGuardState $state
         }
         $temp=$path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
         try{
@@ -108,8 +130,8 @@ function Update-WdNativeCronGuard {
             if((Get-ObserverHash $path) -cne $before){throw 'Cron settings changed concurrently'}
             [IO.File]::Replace($temp,$path,[NullString]::Value)
         }finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp}}
-        if(-not $pause){Remove-Item -LiteralPath $statePath}
-        else{$state.state='paused';$state|ConvertTo-Json|Set-Content -LiteralPath $statePath -Encoding UTF8}
+        $state.state=if($pause){'paused'}else{'resumed'}
+        Save-CronGuardState $state
     }finally{if($held){$mutex.ReleaseMutex()};$mutex.Dispose()}
 }
 function Publish-WdCapacityAlert {

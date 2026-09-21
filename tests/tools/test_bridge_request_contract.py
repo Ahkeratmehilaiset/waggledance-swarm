@@ -34,6 +34,26 @@ def events():
 
 
 @pytest.mark.parametrize('engine', ['python'] + SHELLS)
+def test_request_id_routing_match_does_not_accept_wrong_nonce(tmp_path, engine):
+    _, request, reply = events()
+    request.update(request_id='exact-request', request_digest='digest')
+    reply.update(in_reply_to_request_id='exact-request', in_reply_to_request_digest='digest',
+                 in_reply_to_requester={k: request[k] for k in ('agent','agent_uuid','session_id','run_id')})
+    assert reply_matches_request(request, reply, 'codex-tools-1')
+    reply['payload']['nonce'] = 'wrong'
+    assert reply['in_reply_to_request_id'] == request['request_id']  # routing_match
+    if engine == 'python':
+        assert not reply_matches_request(request, reply, 'codex-tools-1')
+    else:
+        fixture = tmp_path/'binding.json'
+        fixture.write_text(json.dumps(dict(request=request,reply=reply)))
+        command = f". '{ROOT / '.agent-bridge/bin/BridgeRequestContract.ps1'}'; $f=Get-Content '{fixture}' -Raw|ConvertFrom-Json; Test-BridgeReplyBinding $f.request $f.reply 'codex-tools-1'"
+        result = subprocess.run([engine,'-NoProfile','-NonInteractive','-Command',command],capture_output=True,text=True,timeout=30)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == 'False'
+
+
+@pytest.mark.parametrize('engine', ['python'] + SHELLS)
 @pytest.mark.parametrize('case', ['late_old', 'correct', 'ack', 'wrong_session', 'wrong_uuid', 'wrong_to', 'missing_binding', 'duplicate'])
 def test_revised_legacy_request_remains_pending_until_matching_reply(tmp_path, engine, case):
     first, newer, reply = events()

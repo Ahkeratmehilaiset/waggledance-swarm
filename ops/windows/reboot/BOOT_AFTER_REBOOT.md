@@ -212,12 +212,11 @@ It reports compact checkpoint health/age, lane task/status, exact-HEAD match,
 pending bridge wake sentinels, runnable lanes, and exact duplicate write-scope
 claims. It never acknowledges traffic or mutates bridge/Git state.
 
-Each native interactive Claude lane maintains exactly one lane-specific
-five-minute cron backstop plus its current dynamic `ScheduleWakeup` one-shot.
-The installed build observed on September 14 exposes **session-only** jobs,
-not durable jobs: recreate them on every new session and verify both configured
-and actually-fired evidence. A cron-triggered turn alone does not prove that a
-dynamic wake fired. Neither mechanism interrupts a running or hung turn.
+Each native interactive Claude lane reconciles its **session-only** jobs after
+restart. Remove its obsolete five-minute idle inbox loop; empty-queue polling
+must not consume model turns. Keep a `ScheduleWakeup` only for actual pending
+work or a known quota reset, then verify configured and actually-fired evidence.
+Neither a timer nor a native Monitor interrupts a running or hung turn.
 
 Each interactive Claude lane also attaches one native `Monitor` tool to the
 pinned `Monitor-AgentBridge.ps1 -Agent <lane> -TargetedOnly -IncludeWakeRequests

@@ -2045,26 +2045,27 @@ if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
     'role permissions, task scope, claims, and merge authority remain unchanged. ' +
-    " This is Claude lane $Agent. On the first turn use CronList, keep exactly " +
-    "one lane-specific session-only recurring five-minute CronCreate backstop, " +
-    "delete duplicates with CronDelete, and recreate it after every restart. Its " +
-    "prompt must re-read compact state and bridge next action for $Agent. " +
+    " This is Claude lane $Agent. After every restart use CronList to reconcile lane-owned session-only jobs. " +
+    'Delete only this lane''s obsolete recurring idle inbox checks with CronDelete. ' +
+    'Do not create a five-minute idle CronCreate loop: an empty inbox must not consume a model turn. ' +
+    'A timed wake must name actual pending work or a known capacity reset, never idle polling. ' +
     'On EVERY cron, Monitor and dynamic wake, check new addressed bridge requests BEFORE deciding no-op. ' +
     'A pending future one-shot never covers unread incoming work and must not defer a new request. ' +
     'Keep exactly one native Monitor tool watching the pinned Monitor-AgentBridge.ps1 with ' +
     "-Agent $Agent -TargetedOnly -IncludeWakeRequests -Json -PollIntervalMs 1000. " +
     'Start the Monitor before the initial inbox read to close the startup race. ' +
     'Monitor output must trigger a bounded inbox turn even while idle; a detached shell process alone is not this transport. ' +
-    'If the Monitor exits or fails, report the error and re-establish it; keep the cron inbox check working. ' +
+    'If the Monitor exits or fails, report the error and re-establish it; never silently substitute periodic model polling. ' +
     'Use CronList ' +
     'to preserve an existing pending one-shot on no-op cron, Monitor, and dynamic-loop turns. ' +
     'Do not rearm merely because a no-op turn ran. The absolute deadline must be the scheduler-confirmed target, not an estimate. ' +
     'Call ScheduleWakeup only when no valid pending one-shot remains. If a missing wake must be rebuilt, use ' +
     "the remaining time to its confirmed deadline, never a fresh fixed delay. A due " +
     'deadline means resume the bounded turn now. After a one-shot has fired and its bounded slice has run, ' +
-    'choose a new future deadline from the next eligible action or backstop; this is not recovery of a missing pending wake. ' +
-    'Record the new scheduler-confirmed target, not the expired deadline. The session-only cron is a ' +
-    "missed-wakeup backstop, not permission to duplicate or steal a claim."
+    'choose a new future deadline only for actual pending work; this is not recovery of a missing pending wake. ' +
+    'Record the new scheduler-confirmed target, not the expired deadline. If there is no eligible work, ' +
+    'finish the turn with Monitor attached and no idle timer. A known quota reset permits one recheck, ' +
+    'not a promise of readiness or permission to buy credits, duplicate work or steal a claim.'
   )
 }
 if ($turnMode -ceq 'managed') {
@@ -2094,7 +2095,10 @@ $startupPrompt += (
   'Never use the legacy Invoke-Grok scripts, bare Grok commands, automatic research jobs or a bypass of the shared budget. ' +
   'Its previous report and current saved lead state are context, not new authority. ' +
   ' Shared capacity status: powershell -NoProfile -NonInteractive -File C:\Python\Get-WdCapacityStatus.ps1. This verified read-only command discovers the installed observer; do not create a collector per agent. Missing or stale status stays unknown. Authentication, quota, activity and next-turn success are separate; a callback or live process is not readiness. ' +
-  ' Verify cited file paths and relevant lines against actual source before reporting. A correct reply binding does not prove semantic content. Report measured continuity only for the observed interval; never promise uninterrupted operation or a successful next turn. ' +
+  ' Verify cited file paths and relevant lines against actual source before reporting. A correct reply binding does not prove semantic content. ' +
+  'Distinguish routing_match (request_id lookup), binding_valid (the complete pinned Test-BridgeReplyBinding including nonce, digest and expected responder), schema_valid and semantic_valid. ' +
+  'A wrong nonce is binding_valid=false even when request_id matches; correct arithmetic with wrong binding is not an accepted reply. ' +
+  'Report measured continuity only for the observed interval; never promise uninterrupted operation or a successful next turn. ' +
   ' Bridge helpers are pinned for this session: invoke Get-BridgeNextAction.ps1, ' +
   'Read-AgentBridge.ps1, Claim-AgentTask.ps1, Release-AgentTask.ps1 and Write-AgentEvent.ps1 ' +
   'from $env:WD_BRIDGE_BIN, and run packaged bridge Python tools only through ' +

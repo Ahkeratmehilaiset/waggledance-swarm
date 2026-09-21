@@ -70,27 +70,31 @@ a waived review and never grants merge, deploy, or signature authority.
 
 ## Claude wake backstop
 
-Each interactive Claude lane maintains exactly one lane-specific session-only
-five-minute cron backstop with `CronList`/`CronCreate` and removes duplicates
-with `CronDelete`. Recreate it after every restart; the installed build does not
-persist these jobs across sessions. The cron prompt tells that lane to read its
-compact state and bridge next action and execute one eligible bounded slice.
+After every restart, each interactive Claude lane uses `CronList` to reconcile
+its session-only jobs. Remove that lane's obsolete recurring idle inbox checks
+with `CronDelete`; preserve other tasks and other lanes. Do not create a
+five-minute idle `CronCreate` loop. Empty-queue checks belong to the ordinary
+code in the targeted Monitor, not recurring model turns. Timed wakes must name
+actual pending work or a known capacity reset and end when that reason ends.
 
 Every cron, Monitor, and dynamic wake checks new addressed requests **before**
 deciding no-op. A future one-shot never covers unread incoming work. Keep one
 native `Monitor` tool attached to the pinned `Monitor-AgentBridge.ps1 -Agent
 <lane> -TargetedOnly -IncludeWakeRequests -Json -PollIntervalMs 1000`.
 Start that monitor before the initial inbox read, and recover/report monitor
-exit without disabling the cron inbox check. A detached shell process by itself
+exit without substituting periodic model polling. A detached shell process by itself
 does not deliver a turn to the model. Pending idle timers cannot delay a request.
 
 Retrieve full request message and payload with the pinned `Read-AgentBridge.ps1
 -Agent <lane> -Raw -NoAckReceived -NoContinuity -Tail 1200`, matching exact sender,
 task and timestamp. Routing summaries are incomplete. Do not replace this reader
-with direct log reads. Report validation failures as blockers. Increase the
+with direct log reads. Distinguish `routing_match` (request-id lookup) from
+`binding_valid` (the full pinned binding predicate, including nonce, digest and
+expected responder), then `schema_valid` and `semantic_valid`. A wrong nonce
+fails binding even if the request id matches. Report validation failures as blockers. Increase the
 bounded tail or use `-Tail 0` when the exact request is older.
 
-Keep one current dynamic wake with its confirmed absolute deadline recorded.
+Keep a dynamic wake only for actual pending work, with its confirmed absolute deadline recorded.
 On a no-op cron, Monitor or dynamic-loop turn, use `CronList` to retain an
 already-pending one-shot; do not call `ScheduleWakeup` just to end the turn.
 Create a new one-shot only when none is pending or a real scheduling change
@@ -98,8 +102,9 @@ requires it. Relative-delay rearming can round the target to a later minute
 even when remaining-time arithmetic is used. Read the clock immediately before
 an intentional rearm and record the confirmed target returned by the scheduler
 or `CronList`, not a placeholder estimate. When the deadline is due, resume the
-bounded turn now. The cron is a missed-wakeup backstop, not permission to
-duplicate a live claim.
+bounded turn now if the named work is still eligible. With no pending work,
+finish with the Monitor attached and no idle timer. A timer never grants
+permission to duplicate a live claim.
 
 The current launcher's `turn_mode` scheduling instruction supersedes only
 legacy self-pacing sections of external role prompts, including durable-cron
@@ -126,6 +131,31 @@ next-turn readiness separate. General Claude percentages do not establish
 remaining Fable-specific allowance. A rate-limit error is a blocker to
 reconcile, not permission to switch accounts, buy credits, release claims
 or repeatedly retry.
+
+Lead uses capacity to choose among existing eligible workers, preserving the
+original task, request revision, checkpoint, write scope and review requirements.
+Before a handoff, reconcile the old owner's claim and any pending side effects;
+create a new request bound to the actual recipient/session, retaining an explicit
+reference to the original request. An old request's expected responder must not
+be edited or impersonated after a restart. A blocked RCO review stays required.
+
+Treat `shared_or_unknown_<provider>` as a conservative accounting group, not a
+verified pool id. Never add the apparent headroom of Lead and Tools together,
+or of the three Claude lanes. Native Codex quota metadata binds to a specific
+conversation and observation time; it does not authenticate an account/pool.
+Stale evidence and unknown account identity cannot authorize automatic model
+switching. The advisor may propose a profile only after its explicit policy,
+role qualification, catalog, quota binding and safe-boundary checks pass.
+
+A Claude **weekly/session** usage limit is shared across models. Switching
+Sonnet to Opus (or back) does not free that allowance. A model-family limit is
+different, but a replacement still needs verified usable capacity. Preserve
+the conversation and work while waiting; use the native free wait-until-reset
+option when its reset is shown. A reset timestamp permits one capacity recheck,
+not a readiness promise. Never enable usage credits automatically.
+
+References: https://code.claude.com/docs/en/costs and
+https://learn.chatgpt.com/docs/app-server (checked 2026-09-21).
 
 New structured requests must include an explicit
 result_contract.schema=wd.task-result-contract.v1 and nonempty required

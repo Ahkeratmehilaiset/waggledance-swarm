@@ -33,6 +33,77 @@ class Client:
                 'nextCursor': self.cursor}
 
 
+def native_fixture(tmp_path, rows=()):
+    thread = '11111111-2222-3333-4444-555555555555'
+    folder = tmp_path / 'sessions/2026/09/21'
+    folder.mkdir(parents=True)
+    path = folder / ('rollout-fixture-' + thread + '.jsonl')
+    header = dict(type='session_meta', payload=dict(id=thread, cwd='C:/fixture', model_provider='openai',
+                                                   base_instructions='DO NOT RETURN PRIVATE CONTENT'))
+    path.write_text(''.join(json.dumps(r) + '\n' for r in (header, *rows)), encoding='utf-8')
+    return thread, path
+
+
+def test_native_codex_projects_actual_activity_model_and_quota_without_content(tmp_path):
+    now = datetime.now(timezone.utc)
+    rows = [dict(type='turn_context', timestamp=now.isoformat(), payload=dict(model='observed-model', effort='high')),
+            dict(type='event_msg', timestamp=now.isoformat(), payload=dict(type='token_count', rate_limits={
+                'limit_id': 'codex', 'primary': {'used_percent': 31, 'window_minutes': 10080,
+                                              'resets_at': int(now.timestamp()) + 3600},
+                'credits': 'DO NOT RETURN PRIVATE CONTENT'})),
+            dict(type='event_msg', timestamp=now.isoformat(), payload=dict(type='task_complete',
+                                                                         last_agent_message='DO NOT RETURN PRIVATE CONTENT'))]
+    thread, path = native_fixture(tmp_path, rows)
+    before = path.read_bytes()
+    value = collector.read_native_codex(tmp_path, thread, now=now)
+    assert value['activity_state'] == 'turn_completed'
+    assert (value['model'], value['effort']) == ('observed-model', 'high')
+    assert value['quota_state'] == 'observed_headroom'
+    assert value['quota_windows'][0]['used_percent'] == 31
+    assert value['quota_pool_binding'] == 'unverified' and not value['execution_allowed']
+    assert 'PRIVATE' not in json.dumps(value) and path.read_bytes() == before
+
+
+def test_native_codex_old_data_is_not_refreshed_and_partial_append_is_not_failure(tmp_path):
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(hours=1)).isoformat()
+    thread, path = native_fixture(tmp_path, [dict(type='event_msg', timestamp=old, payload=dict(
+        type='token_count', rate_limits={'limit_id': 'codex', 'primary': {
+            'used_percent': 2, 'window_minutes': 300, 'resets_at': int(now.timestamp()) + 3600}}))])
+    with path.open('ab') as f:
+        f.write(b'{"unfinished":')
+    value = collector.read_native_codex(tmp_path, thread, now=now)
+    assert value['partial_record'] and value['quota_state'] == 'unknown'
+    assert value['quota_observed_at'] == old
+
+
+@pytest.mark.parametrize('case', ['wrong_id', 'wrong_provider', 'corrupt', 'oversized_header', 'duplicate'])
+def test_native_codex_ambiguous_and_malformed_evidence_never_grants_capacity(tmp_path, case):
+    thread, path = native_fixture(tmp_path)
+    if case == 'duplicate':
+        (path.parent / ('another-' + thread + '.jsonl')).write_bytes(path.read_bytes())
+        assert collector.read_native_codex(tmp_path, thread)['reason'] == 'native_rollout_missing_or_ambiguous'
+        return
+    if case == 'corrupt':
+        path.write_bytes(b'not-json\n')
+    elif case == 'oversized_header':
+        path.write_bytes(b'x' * (1024 * 1024 + 1))
+    else:
+        row = json.loads(path.read_text())
+        row['payload']['id' if case == 'wrong_id' else 'model_provider'] = 'different'
+        path.write_text(json.dumps(row) + '\n')
+    with pytest.raises((InputError, ValueError)):
+        collector.read_native_codex(tmp_path, thread)
+
+
+def test_native_codex_rejects_traversal_and_does_not_create_store(tmp_path, capsys):
+    store = tmp_path / 'missing.sqlite'
+    code = collector.main(['--store', str(store), '--native-codex-home', str(tmp_path),
+                           '--native-codex-thread', '../outside'])
+    assert code == 2 and not store.exists()
+    assert json.loads(capsys.readouterr().out)['execution_allowed'] is False
+
+
 def test_codex_metadata_does_not_start_turn_or_infer_pool():
     client = Client()
     observation = asyncio.run(collect_codex(client, 'context'))

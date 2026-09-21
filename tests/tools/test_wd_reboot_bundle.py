@@ -1547,7 +1547,7 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
     policy = (REBOOT / "WD_SWARM_PARALLEL_POLICY_V1.md").read_text(encoding="utf-8")
     for text in (launcher, policy):
         assert "session-only" in text
-        assert "after every restart" in text
+        assert "after every restart" in text.lower()
         assert "absolute" in text
         assert "CronList" in text
         assert "pending" in text
@@ -1556,6 +1556,8 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
         assert "must still call ScheduleWakeup every turn" not in text
         assert "durable five-minute" not in text
         assert "seven-day" not in text
+        assert "idle" in text and "Monitor" in text
+        assert "Empty-queue" in text or "empty inbox must not consume a model turn" in text
 
 
 def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:

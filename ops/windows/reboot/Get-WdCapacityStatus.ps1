@@ -34,7 +34,8 @@ function Get-CapacityField($Object,[string]$Name) {
 }
 function Get-CapacityLaneSummary($Status) {
     # An observed process association is NOT an authenticated account/quota binding.
-    # No transcript, credential, canonical bridge log, or provider is read here.
+    # Native Codex telemetry is projected by a bounded reader. No conversation
+    # content is returned, no credentials/provider/canonical bridge log is read.
     $processes=@();$processReason='process_query_unavailable'
     try { $processes=@(Get-CimInstance Win32_Process -ErrorAction Stop);$processReason='no_unique_runtime_process' } catch {}
     $now=[datetimeoffset]::Parse([string]$Status.observed_at,[Globalization.CultureInfo]::InvariantCulture)
@@ -60,7 +61,9 @@ function Get-CapacityLaneSummary($Status) {
             }elseif($scriptPath -notlike '*\start-wd-agent.ps1' -or
                 [string]$parent.CommandLine -notmatch ('(?i)(?:^|\s)-Agent\s+"?'+[regex]::Escape($lane)+'"?(?:\s|$)')){continue}
             if($null -eq $parent.CreationDate -or $null -eq $native.CreationDate -or $parent.CreationDate -gt $native.CreationDate){continue}
-            $candidates+=@{thread=$resume.Groups[1].Value;pid=[int]$native.ProcessId;start=$native.CreationDate.ToUniversalTime().ToString('o')}
+            $cwdMatch=[regex]::Match([string]$native.CommandLine,'(?:^|\s)(?:--cd|-C)\s+(?:"([^"]+)"|(\S+))')
+            $nativeCwd=if($cwdMatch.Groups[1].Success){$cwdMatch.Groups[1].Value}elseif($cwdMatch.Success){$cwdMatch.Groups[2].Value}else{$null}
+            $candidates+=@{thread=$resume.Groups[1].Value;pid=[int]$native.ProcessId;start=$native.CreationDate.ToUniversalTime().ToString('o');cwd=$nativeCwd}
         }
         $binding=if($candidates.Count -eq 1){$candidates[0]}else{$null}
         $activityRows=Get-CapacityField $Status 'native_activity'
@@ -73,6 +76,23 @@ function Get-CapacityLaneSummary($Status) {
             $null -ne $binding -and (Get-CapacityField $_ 'native_thread_id') -ceq $binding.thread -and $_.provider -ceq $provider
         })
         $quota=if($quotaRows.Count -eq 1){$quotaRows[0]}else{$null}
+        $nativeReason=$null
+        if($provider -ceq 'codex' -and $binding -and $binding.cwd){
+            try {
+                $nativeHome=if($env:CODEX_HOME){$env:CODEX_HOME}else{Join-Path $env:USERPROFILE '.codex'}
+                $nativeText=& $m.python -E -s -S -B (Join-Path $release 'tools\bridge_capacity_collector.py') --store $store --native-codex-home $nativeHome --native-codex-thread $binding.thread
+                $nativeCode=$LASTEXITCODE
+                $nativeRow=$nativeText|ConvertFrom-Json @jsonArgs
+                if($nativeCode -ne 0 -or $nativeRow.native_thread_id -cne $binding.thread -or
+                   -not ([IO.Path]::GetFullPath([string]$nativeRow.cwd).Equals([IO.Path]::GetFullPath($binding.cwd),[StringComparison]::OrdinalIgnoreCase))){throw 'Native telemetry identity unavailable'}
+                $nativeReason=Get-CapacityField $nativeRow 'reason'
+                $start=[datetimeoffset]::Parse($binding.start,[Globalization.CultureInfo]::InvariantCulture)
+                if($nativeRow.observed_at -and [datetimeoffset]::Parse($nativeRow.observed_at,[Globalization.CultureInfo]::InvariantCulture) -ge $start){$activity=$nativeRow}
+                if($nativeRow.quota_observed_at -and [datetimeoffset]::Parse($nativeRow.quota_observed_at,[Globalization.CultureInfo]::InvariantCulture) -ge $start){
+                    $quota=[pscustomobject]@{model=$nativeRow.model;effort=$nativeRow.effort;quota_state=$nativeRow.quota_state;quota_windows=$nativeRow.quota_windows;freshness=$nativeRow.quota_freshness;observed_at=$nativeRow.quota_observed_at}
+                }
+            }catch{$nativeReason='native_telemetry_unavailable'}
+        }
         $windows=Get-CapacityField $quota 'quota_windows'
         $stamp=Get-CapacityField $activity 'observed_at'
         $age=$null
@@ -81,8 +101,11 @@ function Get-CapacityLaneSummary($Status) {
         $auth=Get-CapacityField $activity 'auth_state'
         $availability=Get-CapacityField $activity 'availability_state'
         $work=Get-CapacityField $activity 'activity_state'
-        $reason=if(-not $binding){$processReason}elseif(-not $activity){'native_activity_unavailable'}elseif(-not $fresh){'native_activity_stale_or_future'}else{$null}
+        $reason=if(-not $binding){$processReason}elseif(-not $activity){if($nativeReason){$nativeReason}else{'native_activity_unavailable'}}elseif(-not $fresh){'native_activity_stale_or_future'}else{$null}
         $blocked=($availability -cin @('rate_limited','auth_required','access_denied','account_on_hold'))
+        $quotaState=Get-CapacityField $quota 'quota_state'
+        $resets=@($windows|Where-Object {$null -ne $_ -and $_.used_percent -is [valuetype] -and $_.used_percent -isnot [bool] -and $_.used_percent -ge 100 -and $_.resets_at -is [valuetype] -and $_.resets_at -isnot [bool] -and $_.resets_at -gt $now.ToUnixTimeSeconds() -and $_.resets_at -le 253402300799}|ForEach-Object {[long]$_.resets_at})
+        $recheck=if($resets.Count){[datetimeoffset]::FromUnixTimeSeconds(($resets|Measure-Object -Maximum).Maximum).ToString('o')}else{$null}
         [pscustomobject]@{
             agent=$lane;provider=$provider;native_thread_id=$(if($binding){$binding.thread}else{$null});
             native_pid=$(if($binding){$binding.pid}else{$null});
@@ -100,10 +123,14 @@ function Get-CapacityLaneSummary($Status) {
             first_error_at=$(Get-CapacityField $activity 'first_error_at');
             last_successful_turn_at=$(Get-CapacityField $activity 'last_successful_turn_at');
             observed_model=$(Get-CapacityField $quota 'model');
+            observed_effort=$(Get-CapacityField $quota 'effort');
+            quota_observed_at=$(Get-CapacityField $quota 'observed_at');
             quota_windows=@($windows|Where-Object {$null -ne $_});
             quota_freshness=$(if($quota){Get-CapacityField $quota 'freshness'}else{'unknown'});
             quota_pool_binding='unverified';next_turn_success_verified=$false;
-            next_action=$(if($blocked){'preserve_work_and_reconcile_capacity'}else{'verify_before_dispatch'});
+            quota_accounting_group=('shared_or_unknown_'+$provider);
+            independent_capacity=$false;capacity_recheck_at=$recheck;
+            next_action=$(if($blocked -or $quotaState -ceq 'exhausted'){'preserve_work_and_reconcile_capacity'}elseif($fresh -and $quotaState -ceq 'observed_headroom'){'consider_existing_lane_at_safe_boundary'}else{'verify_before_dispatch'});
             automatic_handoff_allowed=$false;execution_allowed=$false
         }
     }
@@ -146,7 +173,7 @@ try {
         $lanes=@(Get-CapacityLaneSummary $result)
         $view=[ordered]@{schema='wd.capacity-summary.v1';observed_at=$result.observed_at;
             installation=$result.installation;agents=$lanes;collection=(Get-CapacityField $result 'collection');
-            execution_allowed=$false;note='Process identity, authentication history, quota and activity are separate. Pool bindings remain unverified; no next-turn success or automatic handoff is established.'}
+            execution_allowed=$false;note='Process identity, authentication history, quota and activity are separate. Pool bindings remain unverified: never sum same-provider lanes as independent capacity. Reset times are recheck times, not readiness promises. No next-turn success or automatic handoff is established.'}
         if($Json){$view|ConvertTo-Json -Depth 12}
         else {
             Write-Output ('WD CAPACITY | observed='+$result.observed_at+' | source='+$current.source_commit+' | read-only')

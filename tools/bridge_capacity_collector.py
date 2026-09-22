@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -30,6 +31,120 @@ except ModuleNotFoundError:
 
 MAX_RESPONSE = 2 * 1024 * 1024
 READ_METHODS = frozenset({'account/read', 'account/rateLimits/read', 'model/list'})
+
+
+def read_native_codex(home: Path, thread: str, *, now: datetime | None = None) -> dict:
+    """Bounded, read-only native telemetry. Never return conversation content.
+
+    Native thread quota observations are attributable to that conversation, not
+    proof of account identity or of an independent quota pool. Missing tail
+    evidence remains unknown; reading an old observation does not refresh it.
+    """
+    now = now or datetime.now(timezone.utc)
+    result = dict(provider='codex', native_thread_id=thread,
+                  source='codex_native_rollout', activity_state='unknown',
+                  auth_state='unknown', availability_state='unknown',
+                  observed_at=None, model=None, effort=None, quota_windows=[],
+                  quota_state='unknown', quota_observed_at=None,
+                  quota_pool_binding='unverified', execution_allowed=False)
+    if not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', thread):
+        raise InputError('invalid native thread identity')
+
+    def plain(path: Path) -> None:
+        for component in (path, *path.parents):
+            info = component.lstat()
+            if component.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise InputError('native telemetry reparse point')
+
+    root = home.absolute() / 'sessions'
+    plain(root)
+    found = []
+    # Only the canonical year/month/day layout, with bounded enumeration.
+    pending, visited = [(root, 0)], 0
+    while pending:
+        directory, depth = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                visited += 1
+                if visited > 100000:
+                    raise InputError('native telemetry inventory bound exceeded')
+                info = entry.stat(follow_symlinks=False)
+                if entry.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
+                    continue
+                if depth < 3 and entry.is_dir(follow_symlinks=False) and entry.name.isdigit():
+                    pending.append((Path(entry.path), depth + 1))
+                elif depth == 3 and entry.is_file(follow_symlinks=False) and entry.name.endswith('-' + thread + '.jsonl'):
+                    found.append(Path(entry.path))
+    if len(found) != 1:
+        result['reason'] = 'native_rollout_missing_or_ambiguous'
+        return result
+    path = found[0]
+    plain(path)
+    with path.open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        header = stream.readline(1024 * 1024 + 1)
+        if len(header) > 1024 * 1024 or not header.endswith(b'\n'):
+            raise InputError('native telemetry header bound exceeded')
+        meta = json.loads(header)
+        if (not isinstance(meta, dict) or meta.get('type') != 'session_meta' or
+                _dict(meta.get('payload')).get('id') != thread or
+                _dict(meta.get('payload')).get('model_provider') != 'openai'):
+            raise InputError('native telemetry identity mismatch')
+        result['cwd'] = _dict(meta.get('payload')).get('cwd')
+        start = max(len(header), before.st_size - 4 * 1024 * 1024)
+        stream.seek(start)
+        if start > len(header):
+            stream.readline(4 * 1024 * 1024)  # discard the first partial row
+        data = stream.read(max(0, before.st_size - stream.tell()))
+        after = os.fstat(stream.fileno())
+        current = path.stat()
+        if ((before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)
+                or after.st_size < before.st_size):
+            raise InputError('native telemetry identity changed')
+        stream.seek(0)
+        if stream.read(len(header)) != header:
+            raise InputError('native telemetry header changed')
+    latest = None
+    for raw in data.splitlines(keepends=True):
+        if not raw.endswith(b'\n'):
+            result['partial_record'] = True
+            continue
+        row = json.loads(raw)
+        if not isinstance(row, dict):
+            raise InputError('invalid native telemetry row')
+        stamp = _time(row.get('timestamp'))
+        if stamp is None or stamp > now:
+            continue
+        payload = _dict(row.get('payload'))
+        if row.get('type') == 'turn_context':
+            result.update(model=payload.get('model'), effort=payload.get('effort'))
+        if row.get('type') != 'event_msg':
+            continue
+        kind = payload.get('type')
+        if kind in {'task_started', 'task_complete', 'turn_aborted'}:
+            if latest is None or stamp >= latest:
+                latest = stamp
+                result.update(observed_at=stamp.isoformat(), activity_state={
+                    'task_started': 'turn_started', 'task_complete': 'turn_completed',
+                    'turn_aborted': 'turn_aborted'}[kind])
+        if kind == 'token_count' and isinstance(payload.get('rate_limits'), dict):
+            old = _time(result['quota_observed_at'])
+            if old is not None and stamp < old:
+                continue
+            limits = payload['rate_limits']
+            mapped = dict(limitId=limits.get('limit_id'), rateLimitReachedType=limits.get('rate_limit_reached_type'))
+            for name in ('primary', 'secondary'):
+                w = limits.get(name)
+                mapped[name] = None if w is None else dict(
+                    usedPercent=_dict(w).get('used_percent'), resetsAt=_dict(w).get('resets_at'),
+                    windowDurationMins=_dict(w).get('window_minutes'))
+            freshness = 'fresh' if 0 <= (now - stamp).total_seconds() <= 300 else 'unknown_or_stale'
+            state, windows = quota_details(dict(provider='codex', freshness=freshness,
+                                                payload={'rateLimits': mapped}), now)
+            result.update(quota_observed_at=stamp.isoformat(), quota_state=state,
+                          quota_windows=windows, quota_freshness=freshness)
+    result['reason'] = None if latest else 'native_activity_outside_bounded_tail'
+    return result
 
 
 class MetadataFailure(InputError):
@@ -419,7 +534,20 @@ def main(argv=None) -> int:
     parser.add_argument('--emit-lifecycle', action='store_true', help='Return sanitized lifecycle metadata to the explicitly enabled native cron guard.')
     parser.add_argument('--codex-executable')
     parser.add_argument('--store', type=Path, required=True)
+    parser.add_argument('--native-codex-thread')
+    parser.add_argument('--native-codex-home', type=Path)
     args = parser.parse_args(argv)
+    if args.native_codex_thread:
+        try:
+            if args.native_codex_home is None:
+                raise InputError('explicit native Codex home required')
+            value = read_native_codex(args.native_codex_home, args.native_codex_thread)
+            print(json.dumps(value, allow_nan=False))
+            return 0
+        except (InputError, OSError, ValueError, TypeError, KeyError):
+            print(json.dumps(dict(provider='codex', native_thread_id=args.native_codex_thread,
+                                  reason='native_telemetry_unavailable', execution_allowed=False)))
+            return 2
     # A status failure is not a collection attempt. Keep both exits outside every
     # path that reserves a poll, starts a provider, or saves an observation.
     if args.status:

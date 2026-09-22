@@ -279,6 +279,67 @@ def native_hook_release(tmp_path):
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('case', ['valid', 'stale', 'wrong_cwd', 'before_restart', 'exhausted'])
+def test_codex_summary_uses_bound_native_metadata_without_pool_inference(tmp_path, host, case):
+    if host is None: pytest.skip('Windows PowerShell unavailable')
+    from tools.bridge_capacity_collector import save_observation
+    root = tmp_path/'observer'
+    release = root/'release'
+    files = {}
+    for relative in ('tools/bridge_capacity_collector.py','tools/bridge_capacity_advisor.py',
+                     'ops/windows/reboot/Get-WdCapacityStatus.ps1'):
+        target = release/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT/relative, target)
+        files[relative.replace('/', '\\')] = sha(target)
+    store = root/'observations.sqlite'
+    save_observation(store, dict(provider='codex', observed_at=datetime.now(timezone.utc).isoformat(), payload={}))
+    manifest = release/'manifest.json'
+    manifest.write_text(json.dumps(dict(schema='wd.capacity-observer-install.v1', execution_mode='metadata_only',
+        source_commit='a'*40, files=files, python=PYTHON, python_sha256=sha(Path(PYTHON)), store=str(store))))
+    (root/'current.json').write_text(json.dumps(dict(mode='metadata_only',source_commit='a'*40,
+        manifest=str(manifest),manifest_sha256=sha(manifest))))
+    now = datetime.now(timezone.utc)
+    stamp = now - timedelta(seconds=600 if case=='stale' else 3)
+    started = now - timedelta(seconds=1 if case=='before_restart' else 900)
+    thread = '11111111-2222-3333-4444-555555555555'
+    home = tmp_path/'native-home'
+    folder = home/'sessions/2026/09/21'
+    folder.mkdir(parents=True)
+    rows = [dict(type='session_meta',payload=dict(id=thread,model_provider='openai',cwd='C:/other' if case=='wrong_cwd' else 'C:/fixture')),
+            dict(type='turn_context',timestamp=stamp.isoformat(),payload=dict(model='observed-model',effort='high')),
+            dict(type='event_msg',timestamp=stamp.isoformat(),payload=dict(type='task_complete')),
+            dict(type='event_msg',timestamp=stamp.isoformat(),payload=dict(type='token_count',rate_limits={
+                'limit_id':'codex','primary':{'used_percent':100 if case=='exhausted' else 31,
+                    'window_minutes':10080,'resets_at':int(now.timestamp())+3600}}))]
+    (folder/('rollout-test-'+thread+'.jsonl')).write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    processes = [dict(ProcessId=10,ParentProcessId=1,Name='pwsh.exe',CreationDate=(started-timedelta(seconds=1)).isoformat(),
+                     CommandLine='pwsh -File C:\\Python\\wd-reboot-bundles\\'+'a'*40+'\\start-wd-agent.ps1 -Agent codex-lead-1'),
+                 dict(ProcessId=11,ParentProcessId=10,Name='codex.exe',CreationDate=started.isoformat(),
+                     CommandLine='codex.exe resume '+thread+' --model startup-model --cd C:\\fixture')]
+    fixture=tmp_path/'processes.json'
+    fixture.write_text(json.dumps(processes))
+    reader=release/'ops/windows/reboot/Get-WdCapacityStatus.ps1'
+    harness=tmp_path/'summary.ps1'
+    harness.write_text(f"$env:CODEX_HOME='{home}'\nfunction Get-CimInstance {{ $p=Get-Content '{fixture}' -Raw|ConvertFrom-Json; foreach($r in $p){{$r.CreationDate=[datetime]$r.CreationDate}};return $p }}\n& '{reader}' -InstallRoot '{root}' -Summary -Agent codex-lead-1 -Json\nexit $LASTEXITCODE")
+    before={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    proc=subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(harness)],capture_output=True,text=True,timeout=30)
+    assert proc.returncode==0, proc.stdout+proc.stderr
+    row=json.loads(proc.stdout)['agents'][0]
+    assert row['quota_pool_binding']=='unverified' and not row['independent_capacity']
+    assert row['quota_accounting_group']=='shared_or_unknown_codex'
+    if case in ('wrong_cwd','before_restart'):
+        assert row['activity_state']=='unknown' and row['observed_quota_state']=='unknown'
+    else:
+        assert row['activity_state']=='turn_completed'
+        assert row['observed_model']=='observed-model' and row['observed_effort']=='high'
+        assert row['observed_quota_state']==('unknown' if case=='stale' else 'exhausted' if case=='exhausted' else 'observed_headroom')
+        if case=='exhausted':
+            assert row['capacity_recheck_at'] and row['next_action']=='preserve_work_and_reconcile_capacity'
+    assert before=={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
 @pytest.mark.parametrize('case', ['auth', 'success', 'bad_manifest', 'failed_storage', 'statusline'])
 def test_native_hook_runner_never_starts_provider_or_blocks_stop(tmp_path, host, case):
     if host is None: pytest.skip('Windows PowerShell unavailable')
@@ -305,7 +366,7 @@ def test_native_hook_runner_never_starts_provider_or_blocks_stop(tmp_path, host,
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
-@pytest.mark.parametrize('mode', ['metadata_only','metadata_and_bridge_alerts','metadata_and_native_cron_guard'])
+@pytest.mark.parametrize('mode', ['metadata_only','metadata_and_bridge_alerts','metadata_and_native_cron_guard','metadata_and_event_driven_wake'])
 def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path, host, mode):
     if host is None: pytest.skip('Windows PowerShell unavailable')
     release, manifest, _ = native_hook_release(tmp_path)
@@ -323,11 +384,16 @@ def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path,
         base += ['-EnableBridgeAlerts']
     if mode == 'metadata_and_native_cron_guard':
         base += ['-PauseNativeCronOnLimit','-Agent','fable-5']
+    if mode == 'metadata_and_event_driven_wake':
+        base += ['-DisableNativeCron','-Agent','fable-5']
     for _ in range(2):
         proc = subprocess.run(base+['-ExpectedSettingsSha256',sha(settings)],capture_output=True,text=True,timeout=30)
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout)['mode'] == mode
     value = json.loads(settings.read_text(encoding='utf-8-sig'))
+    if mode == 'metadata_and_event_driven_wake':
+        assert value['env']['CLAUDE_CODE_DISABLE_CRON'] == '1'
+        assert '-PauseNativeCronOnLimit' not in value['hooks']['Stop'][-1]['hooks'][0]['command']
     assert value['permissions']==original['permissions']
     assert len(value['hooks']['Stop'])==2
     assert value['hooks']['Stop'][0]['hooks'][0]['command']=='echo foreign'
@@ -370,6 +436,41 @@ def test_junction_with_matching_hash_is_refused_before_writing(tmp_path, host, s
         # Remove just this verified fixture junction, never recurse through its target.
         assert junction.parent==release and junction.lstat().st_file_attributes & 0x400
         junction.rmdir()
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+def test_event_driven_install_replaces_auto_resume_without_losing_guard_history(tmp_path, host):
+    if host is None: pytest.skip('Windows PowerShell unavailable')
+    _, manifest, _ = native_hook_release(tmp_path)
+    worktree = tmp_path / 'lane'
+    (worktree/'.claude').mkdir(parents=True)
+    (worktree/'.git').write_text('gitdir: fixture')
+    settings = worktree/'.claude/settings.local.json'
+    settings.write_text(json.dumps({'env': {'KEEP_THIS': 'value'}}))
+    base = [host, '-NoProfile', '-NonInteractive', '-File',
+            str(ROOT/'ops/windows/reboot/Install-WdClaudeCapacityHooks.ps1'),
+            '-Worktree', str(worktree), '-ManifestPath', str(manifest),
+            '-ManifestSha256', sha(manifest), '-EnableBridgeAlerts', '-Agent', 'fable-5']
+    def install(*flags):
+        return subprocess.run(base+['-ExpectedSettingsSha256', sha(settings), *flags],
+                              capture_output=True, text=True, timeout=30)
+    assert install('-PauseNativeCronOnLimit', '-Apply').returncode == 0
+    guard = worktree/'.claude/wd-capacity-cron-guard.json'
+    guard.write_text('{"state":"paused","native_thread_id":"preserved"}')
+    guard_before = guard.read_bytes()
+    settings_before = settings.read_bytes()
+    assert install('-DisableNativeCron').returncode == 0
+    assert settings.read_bytes() == settings_before  # planning is read-only
+    assert install('-DisableNativeCron', '-PauseNativeCronOnLimit', '-Apply').returncode != 0
+    assert settings.read_bytes() == settings_before
+    result = install('-DisableNativeCron', '-Apply')
+    assert result.returncode == 0, result.stderr
+    value = json.loads(settings.read_text(encoding='utf-8-sig'))
+    assert value['env'] == {'KEEP_THIS': 'value', 'CLAUDE_CODE_DISABLE_CRON': '1'}
+    for groups in value['hooks'].values():
+        assert len(groups) == 1
+        assert '-PauseNativeCronOnLimit' not in groups[0]['hooks'][0]['command']
+    assert guard.read_bytes() == guard_before
 @pytest.mark.parametrize('host', HOSTS or [None])
 @pytest.mark.parametrize('dangling', [False,True])
 def test_observer_installer_refuses_junction_root_before_any_write(tmp_path, host, dangling):

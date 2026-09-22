@@ -1223,7 +1223,9 @@ def test_pacing_prompt_supersedes_only_legacy_self_pacing(mode: str, ps: str) ->
         assert "Do not create CronCreate or ScheduleWakeup jobs" in prompt
     else:
         assert "CronList" in prompt
-        assert "preserve an existing pending one-shot" in prompt
+        assert "preserve an existing pending dynamic one-shot" in prompt
+        assert "CLAUDE_CODE_DISABLE_CRON=1" in prompt
+        assert "Do not call unavailable CronList or CronCreate" in prompt
         assert "Do not rearm merely because a no-op turn ran" in prompt
         assert "scheduler-confirmed" in prompt
         assert "After a one-shot has fired" in prompt
@@ -1547,7 +1549,7 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
     policy = (REBOOT / "WD_SWARM_PARALLEL_POLICY_V1.md").read_text(encoding="utf-8")
     for text in (launcher, policy):
         assert "session-only" in text
-        assert "after every restart" in text
+        assert "after every restart" in text.lower()
         assert "absolute" in text
         assert "CronList" in text
         assert "pending" in text
@@ -1556,6 +1558,8 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
         assert "must still call ScheduleWakeup every turn" not in text
         assert "durable five-minute" not in text
         assert "seven-day" not in text
+        assert "idle" in text and "Monitor" in text
+        assert "Empty-queue" in text or "empty inbox must not consume a model turn" in text
 
 
 def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:

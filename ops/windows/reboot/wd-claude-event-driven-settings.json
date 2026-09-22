@@ -1,0 +1,5 @@
+{
+  "env": {
+    "CLAUDE_CODE_DISABLE_CRON": "1"
+  }
+}

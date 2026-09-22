@@ -60,13 +60,20 @@ catch {{ @{{ok=$false;error=$_.Exception.Message}}|ConvertTo-Json }}
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_claude_resume_uses_exact_id_and_continuation(ps):
+def test_claude_resume_uses_exact_id_and_continuation(tmp_path, ps):
     source = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     start = source.rindex("$launchArguments = @()")
     end = source.index("$previousPreference = $ErrorActionPreference", start)
+    settings = tmp_path / "wd-claude-event-driven-settings.json"
+    settings.write_bytes((REBOOT / settings.name).read_bytes())
+    pin = hashlib.sha256(settings.read_bytes()).hexdigest().upper()
     script = f"""
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+{load(REBOOT / 'start-wd-agent.ps1', 'Assert-LanePathWithoutReparse')}
+$PSScriptRoot={q(tmp_path)}
+$laneTrustedDrive={q(tmp_path)}
+$deploymentAnchor=[pscustomobject]@{{files=[pscustomobject]@{{'wd-claude-event-driven-settings.json'='{pin}'}}}}
 $claudeResume=[pscustomobject]@{{thread_id='{CURRENT}';initial_context_delivered=$true}}
 $cliName='claude.cmd'; $Agent='claude-rco-1'; $model='sonnet'; $effort='max'
 $startupPrompt='Read image first'; $continuationPrompt='Resume authorized work'
@@ -75,6 +82,7 @@ ConvertTo-Json -InputObject $launchArguments
 """
     args = json.loads(_run_powershell(script, executable=ps).stdout)
     assert args[:2] == ["--resume", CURRENT]
+    assert args[2:4] == ["--settings", str(settings)]
     assert args[-1] == "Resume authorized work"
     assert "--continue" not in args and "--fork-session" not in args
 

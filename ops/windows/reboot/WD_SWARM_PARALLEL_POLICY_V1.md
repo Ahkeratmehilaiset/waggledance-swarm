@@ -70,12 +70,15 @@ a waived review and never grants merge, deploy, or signature authority.
 
 ## Claude wake backstop
 
-After every restart, each interactive Claude lane uses `CronList` to reconcile
-its session-only jobs. Remove that lane's obsolete recurring idle inbox checks
-with `CronDelete`; preserve other tasks and other lanes. Do not create a
-five-minute idle `CronCreate` loop. Empty-queue checks belong to the ordinary
-code in the targeted Monitor, not recurring model turns. Timed wakes must name
-actual pending work or a known capacity reset and end when that reason ends.
+After every restart, native session-only cron is mechanically disabled by the
+manifest-pinned `wd-claude-event-driven-settings.json` passed with `--settings`.
+`CLAUDE_CODE_DISABLE_CRON=1` stops existing schedules and disables `CronList`
+and `CronCreate`; do not call unavailable tools. Existing job/history records
+are preserved. Empty-queue checks belong to ordinary code in the targeted
+Monitor. Do not replace disabled cron with another idle timer. A dynamic timed
+wake must name actual pending work or a known capacity reset and end when that
+reason ends. Real future work can use a bounded dynamic one-shot; native cron
+is not the transport for bridge requests, responses or corrections.
 
 Every cron, Monitor, and dynamic wake checks new addressed requests **before**
 deciding no-op. A future one-shot never covers unread incoming work. Keep one
@@ -95,13 +98,13 @@ fails binding even if the request id matches. Report validation failures as bloc
 bounded tail or use `-Tail 0` when the exact request is older.
 
 Keep a dynamic wake only for actual pending work, with its confirmed absolute deadline recorded.
-On a no-op cron, Monitor or dynamic-loop turn, use `CronList` to retain an
+On a no-op Monitor or dynamic-loop turn, use the recorded scheduler receipt to retain an
 already-pending one-shot; do not call `ScheduleWakeup` just to end the turn.
 Create a new one-shot only when none is pending or a real scheduling change
 requires it. Relative-delay rearming can round the target to a later minute
 even when remaining-time arithmetic is used. Read the clock immediately before
 an intentional rearm and record the confirmed target returned by the scheduler
-or `CronList`, not a placeholder estimate. When the deadline is due, resume the
+not a placeholder estimate. When the deadline is due, resume the
 bounded turn now if the named work is still eligible. With no pending work,
 finish with the Monitor attached and no idle timer. A timer never grants
 permission to duplicate a live claim.
@@ -164,6 +167,14 @@ contracts and orphan result_fields before writing. Historical requests
 without a contract remain readable with schema validation unknown.
 Correlation, result structure and independent content review remain distinct.
 # Native quota failures and scheduled retries
+
+The installed event-driven policy uses `Install-WdClaudeCapacityHooks.ps1
+-EnableBridgeAlerts -DisableNativeCron -Agent <exact-Claude-lane>`. It writes a
+lane-local cron disable value and replaces only its previously owned hooks.
+It does not install automatic cron resume. A successful turn must not restore
+idle polling. The command-line settings layer preserves this choice even if
+an older local quota guard had left a `0`. Other agents/settings are unaffected.
+This does not remove a provider quota or prove next-turn availability.
 
 The optional lane-local `Install-WdClaudeCapacityHooks.ps1 -EnableBridgeAlerts`
 integration sends a sanitized native failure notice to Lead without a model turn.

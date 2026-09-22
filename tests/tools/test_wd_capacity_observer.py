@@ -366,7 +366,7 @@ def test_native_hook_runner_never_starts_provider_or_blocks_stop(tmp_path, host,
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
-@pytest.mark.parametrize('mode', ['metadata_only','metadata_and_bridge_alerts','metadata_and_native_cron_guard'])
+@pytest.mark.parametrize('mode', ['metadata_only','metadata_and_bridge_alerts','metadata_and_native_cron_guard','metadata_and_event_driven_wake'])
 def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path, host, mode):
     if host is None: pytest.skip('Windows PowerShell unavailable')
     release, manifest, _ = native_hook_release(tmp_path)
@@ -384,11 +384,16 @@ def test_native_hook_install_preserves_foreign_hooks_and_is_idempotent(tmp_path,
         base += ['-EnableBridgeAlerts']
     if mode == 'metadata_and_native_cron_guard':
         base += ['-PauseNativeCronOnLimit','-Agent','fable-5']
+    if mode == 'metadata_and_event_driven_wake':
+        base += ['-DisableNativeCron','-Agent','fable-5']
     for _ in range(2):
         proc = subprocess.run(base+['-ExpectedSettingsSha256',sha(settings)],capture_output=True,text=True,timeout=30)
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout)['mode'] == mode
     value = json.loads(settings.read_text(encoding='utf-8-sig'))
+    if mode == 'metadata_and_event_driven_wake':
+        assert value['env']['CLAUDE_CODE_DISABLE_CRON'] == '1'
+        assert '-PauseNativeCronOnLimit' not in value['hooks']['Stop'][-1]['hooks'][0]['command']
     assert value['permissions']==original['permissions']
     assert len(value['hooks']['Stop'])==2
     assert value['hooks']['Stop'][0]['hooks'][0]['command']=='echo foreign'
@@ -431,6 +436,41 @@ def test_junction_with_matching_hash_is_refused_before_writing(tmp_path, host, s
         # Remove just this verified fixture junction, never recurse through its target.
         assert junction.parent==release and junction.lstat().st_file_attributes & 0x400
         junction.rmdir()
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+def test_event_driven_install_replaces_auto_resume_without_losing_guard_history(tmp_path, host):
+    if host is None: pytest.skip('Windows PowerShell unavailable')
+    _, manifest, _ = native_hook_release(tmp_path)
+    worktree = tmp_path / 'lane'
+    (worktree/'.claude').mkdir(parents=True)
+    (worktree/'.git').write_text('gitdir: fixture')
+    settings = worktree/'.claude/settings.local.json'
+    settings.write_text(json.dumps({'env': {'KEEP_THIS': 'value'}}))
+    base = [host, '-NoProfile', '-NonInteractive', '-File',
+            str(ROOT/'ops/windows/reboot/Install-WdClaudeCapacityHooks.ps1'),
+            '-Worktree', str(worktree), '-ManifestPath', str(manifest),
+            '-ManifestSha256', sha(manifest), '-EnableBridgeAlerts', '-Agent', 'fable-5']
+    def install(*flags):
+        return subprocess.run(base+['-ExpectedSettingsSha256', sha(settings), *flags],
+                              capture_output=True, text=True, timeout=30)
+    assert install('-PauseNativeCronOnLimit', '-Apply').returncode == 0
+    guard = worktree/'.claude/wd-capacity-cron-guard.json'
+    guard.write_text('{"state":"paused","native_thread_id":"preserved"}')
+    guard_before = guard.read_bytes()
+    settings_before = settings.read_bytes()
+    assert install('-DisableNativeCron').returncode == 0
+    assert settings.read_bytes() == settings_before  # planning is read-only
+    assert install('-DisableNativeCron', '-PauseNativeCronOnLimit', '-Apply').returncode != 0
+    assert settings.read_bytes() == settings_before
+    result = install('-DisableNativeCron', '-Apply')
+    assert result.returncode == 0, result.stderr
+    value = json.loads(settings.read_text(encoding='utf-8-sig'))
+    assert value['env'] == {'KEEP_THIS': 'value', 'CLAUDE_CODE_DISABLE_CRON': '1'}
+    for groups in value['hooks'].values():
+        assert len(groups) == 1
+        assert '-PauseNativeCronOnLimit' not in groups[0]['hooks'][0]['command']
+    assert guard.read_bytes() == guard_before
 @pytest.mark.parametrize('host', HOSTS or [None])
 @pytest.mark.parametrize('dangling', [False,True])
 def test_observer_installer_refuses_junction_root_before_any_write(tmp_path, host, dangling):

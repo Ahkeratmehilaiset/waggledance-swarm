@@ -2045,9 +2045,9 @@ if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
     'role permissions, task scope, claims, and merge authority remain unchanged. ' +
-    " This is Claude lane $Agent. After every restart use CronList to reconcile lane-owned session-only jobs. " +
-    'Delete only this lane''s obsolete recurring idle inbox checks with CronDelete. ' +
-    'Do not create a five-minute idle CronCreate loop: an empty inbox must not consume a model turn. ' +
+    " This is Claude lane $Agent. Native session-only cron is disabled after every restart by pinned command-line settings. " +
+    'CLAUDE_CODE_DISABLE_CRON=1 stops existing schedules as well as new ones. Do not call unavailable CronList or CronCreate tools. ' +
+    'An empty inbox must not consume a model turn; do not replace disabled cron with another idle timer. ' +
     'A timed wake must name actual pending work or a known capacity reset, never idle polling. ' +
     'On EVERY cron, Monitor and dynamic wake, check new addressed bridge requests BEFORE deciding no-op. ' +
     'A pending future one-shot never covers unread incoming work and must not defer a new request. ' +
@@ -2056,8 +2056,7 @@ if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
     'Start the Monitor before the initial inbox read to close the startup race. ' +
     'Monitor output must trigger a bounded inbox turn even while idle; a detached shell process alone is not this transport. ' +
     'If the Monitor exits or fails, report the error and re-establish it; never silently substitute periodic model polling. ' +
-    'Use CronList ' +
-    'to preserve an existing pending one-shot on no-op cron, Monitor, and dynamic-loop turns. ' +
+    'Use the recorded scheduler receipt to preserve an existing pending dynamic one-shot on no-op Monitor and dynamic-loop turns. ' +
     'Do not rearm merely because a no-op turn ran. The absolute deadline must be the scheduler-confirmed target, not an estimate. ' +
     'Call ScheduleWakeup only when no valid pending one-shot remains. If a missing wake must be rebuilt, use ' +
     "the remaining time to its confirmed deadline, never a fresh fixed delay. A due " +
@@ -2617,11 +2616,22 @@ if ($cliName -ieq 'claude.cmd') {
   # The fleet updater owns changes to the attested shared executable. Do not
   # let a long-lived lane replace it underneath itself or sibling sessions.
   $env:DISABLE_AUTOUPDATER = '1'
+  # Disable the independent scheduler before any native model turn. The
+  # command-line settings layer also wins over an old lane-local guard's 0.
+  $scheduleSettings = Join-Path $PSScriptRoot 'wd-claude-event-driven-settings.json'
+  [void](Assert-LanePathWithoutReparse -Path $scheduleSettings -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  $schedulePin = $deploymentAnchor.files.PSObject.Properties['wd-claude-event-driven-settings.json']
+  if($null -eq $schedulePin -or (Get-FileHash -LiteralPath $scheduleSettings -Algorithm SHA256).Hash -cne
+      ([string]$schedulePin.Value).ToUpperInvariant()){
+    throw 'Claude event-driven settings are not pinned by the deployment manifest'
+  }
+  $env:CLAUDE_CODE_DISABLE_CRON = '1'
   if ($null -ne $claudeResume -and $claudeResume.thread_id) {
     $launchArguments += @('--resume', [string]$claudeResume.thread_id)
     $startupPrompt = $continuationPrompt
   }
   $launchArguments += @(
+    '--settings', $scheduleSettings,
     '--model', $model,
     '--effort', $effort,
     '--dangerously-skip-permissions',

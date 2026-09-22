@@ -212,9 +212,10 @@ It reports compact checkpoint health/age, lane task/status, exact-HEAD match,
 pending bridge wake sentinels, runnable lanes, and exact duplicate write-scope
 claims. It never acknowledges traffic or mutates bridge/Git state.
 
-Each native interactive Claude lane reconciles its **session-only** jobs after
-restart. Remove its obsolete five-minute idle inbox loop; empty-queue polling
-must not consume model turns. Keep a `ScheduleWakeup` only for actual pending
+Each native interactive Claude lane disables **session-only** cron after
+restart with manifest-pinned command-line settings (`CLAUDE_CODE_DISABLE_CRON=1`).
+Existing cron jobs stop firing without deleting their history. Empty-queue polling
+must not consume model turns. Keep a dynamic `ScheduleWakeup` only for actual pending
 work or a known quota reset, then verify configured and actually-fired evidence.
 Neither a timer nor a native Monitor interrupts a running or hung turn.
 
@@ -247,12 +248,12 @@ binary underneath an attested live session. Fleet Claude child processes also
 set `DISABLE_AUTOUPDATER=1` locally so the fleet updater owns binary changes.
 This does not change the operator's global Claude settings.
 
-Keep turns bounded. On a no-op cron, monitor or dynamic-loop turn, confirm the
-existing pending one-shot with `CronList` and leave it unchanged. Do not rearm
+Keep turns bounded. On a no-op monitor or dynamic-loop turn, confirm the
+existing dynamic one-shot from its recorded scheduler receipt and leave it unchanged. Do not rearm
 merely to end a turn: even remaining-time rearming can round the target forward
 one minute per call. Schedule only when no one-shot remains or a real scheduling
 change requires it, and record the scheduler's confirmed target in compact state.
-A recurring backstop and one pending dynamic wake are not duplicate jobs.
+Native cron tools are unavailable; never create a replacement idle backstop.
 After a one-shot actually fires and its slice finishes, choose one new future
 eligibility deadline and record the confirmed target. A pending wake that goes
 missing before it fires instead recovers its existing confirmed target. If that

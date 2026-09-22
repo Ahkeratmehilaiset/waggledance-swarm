@@ -1223,7 +1223,9 @@ def test_pacing_prompt_supersedes_only_legacy_self_pacing(mode: str, ps: str) ->
         assert "Do not create CronCreate or ScheduleWakeup jobs" in prompt
     else:
         assert "CronList" in prompt
-        assert "preserve an existing pending one-shot" in prompt
+        assert "preserve an existing pending dynamic one-shot" in prompt
+        assert "CLAUDE_CODE_DISABLE_CRON=1" in prompt
+        assert "Do not call unavailable CronList or CronCreate" in prompt
         assert "Do not rearm merely because a no-op turn ran" in prompt
         assert "scheduler-confirmed" in prompt
         assert "After a one-shot has fired" in prompt

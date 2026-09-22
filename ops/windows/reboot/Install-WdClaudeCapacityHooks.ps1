@@ -11,10 +11,14 @@ param(
     [switch]$Apply,
     [switch]$EnableBridgeAlerts,
     [switch]$PauseNativeCronOnLimit,
+    [switch]$DisableNativeCron,
     [ValidateSet('','claude-rco-1','claude-rco-2','fable-5')][string]$Agent=''
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+if($DisableNativeCron -and ($PauseNativeCronOnLimit -or -not $EnableBridgeAlerts -or -not $Agent)){
+    throw 'Event-driven wake requires an explicit agent and bridge alerts, without automatic cron resume'
+}
 # Keep this bootstrap guard local: no unverified helper executes before pin checks.
 function Assert-CapacityPath([string]$Path,[string]$Root) {
     $full=[IO.Path]::GetFullPath($Path)
@@ -66,7 +70,7 @@ $hostPath=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 foreach($path in @($runner,$ManifestPath,$hostPath)){if($path -match '["`$\r\n]'){throw 'Unsafe command path'}}
 $command='"'+$hostPath.Replace('\','/')+'" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$runner.Replace('\','/')+'" -ManifestPath "'+$ManifestPath.Replace('\','/')+'" -ManifestSha256 '+$ManifestSha256
 $hookCommand=$command+$(if($EnableBridgeAlerts){' -Mode ClaudeHookAlert'}else{' -Mode ClaudeHook'})
-$integrationMode=if($PauseNativeCronOnLimit){'metadata_and_native_cron_guard'}elseif($EnableBridgeAlerts){'metadata_and_bridge_alerts'}else{'metadata_only'}
+$integrationMode=if($DisableNativeCron){'metadata_and_event_driven_wake'}elseif($PauseNativeCronOnLimit){'metadata_and_native_cron_guard'}elseif($EnableBridgeAlerts){'metadata_and_bridge_alerts'}else{'metadata_only'}
 if($PauseNativeCronOnLimit){
     if(-not $EnableBridgeAlerts -or -not $Agent){throw 'Cron pause requires explicit bridge alerts and agent'}
     if($root -match '["`$\r\n]'){throw 'Unsafe cron guard worktree path'}
@@ -75,6 +79,12 @@ if($PauseNativeCronOnLimit){
 $statusCommand=$command+' -Mode ClaudeStatusline'
 $settings=if($before -eq 'missing'){[pscustomobject]@{}}else{Get-Content -LiteralPath $settingsPath -Raw|ConvertFrom-Json}
 $owned=if(Test-Path -LiteralPath $ownershipPath){Get-Content -LiteralPath $ownershipPath -Raw|ConvertFrom-Json}else{$null}
+if($DisableNativeCron){
+    # This explicit operator choice supersedes the temporary quota guard.
+    # Preserve its evidence, but do not install the Stop hook that would resume it.
+    if(-not $settings.PSObject.Properties['env']){$settings|Add-Member NoteProperty env ([pscustomobject]@{})}
+    $settings.env|Add-Member NoteProperty CLAUDE_CODE_DISABLE_CRON '1' -Force
+}
 if($settings.PSObject.Properties['statusLine']){
     $oldCommand=[string]$settings.statusLine.command
     # First adoption requires the exact settings hash already inspected by caller.

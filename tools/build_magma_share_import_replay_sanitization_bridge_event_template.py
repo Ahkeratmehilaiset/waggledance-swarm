@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 from waggledance.core.bridge_event_schema import validate_event  # noqa: E402
 from waggledance.core.magma.canonical import sha256_digest  # noqa: E402
 from waggledance.core.magma.share_manifest import (  # noqa: E402
+    IMPORT_ADMISSION_CONTRACT_VERSION,
     IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION,
 )
 
@@ -203,6 +204,13 @@ def _safe_summary(value: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]
         return None, "path_or_private_marker_present"
     if summary.get("summary_version") != IMPORT_REPLAY_SANITIZATION_SUMMARY_VERSION:
         return None, "summary_version_mismatch"
+    if not _safe_token(summary.get("admission_contract_version")):
+        return None, "admission_contract_version_unsafe"
+    if (
+        summary.get("admission_contract_version")
+        != IMPORT_ADMISSION_CONTRACT_VERSION
+    ):
+        return None, "admission_contract_version_mismatch"
     if not isinstance(summary.get("ok"), bool):
         return None, "ok_not_bool"
     for key in ("status", "blocker_class", "sanitization_contract", "scope"):

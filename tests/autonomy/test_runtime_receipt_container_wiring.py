@@ -101,8 +101,10 @@ def test_chat_served_emitter_opt_in_writes_eligible_chain(tmp_path: Path) -> Non
     assert emitter is not None
 
     sid = new_served_id()
-    assert emitter.record_pending(sid, source="solver", route_type="solver",
-                                  language="fi", profile="HOME", agent_id=None) is True
+    assert emitter.record_pending(
+        sid, query="private q DO_NOT_LEAK", source="solver", route_type="solver",
+        language="fi", profile="HOME", agent_id=None,
+    ) is True
 
     async def run() -> None:
         emitter.schedule_receipt(sid, query="private q DO_NOT_LEAK",
@@ -158,6 +160,7 @@ def test_chat_served_claim_window_evidence_opt_in_records_runtime_signals(
 
     assert emitter.record_pending(
         new_served_id(),
+        query="private q DO_NOT_LEAK",
         source="solver",
         route_type="solver",
         language="fi",

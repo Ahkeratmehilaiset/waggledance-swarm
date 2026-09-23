@@ -199,12 +199,13 @@ function New-ForwardingWrapper {
         [Parameter(Mandatory)] [string] $ExpectedHash,
         [Parameter(Mandatory)] [string] $ExpectedManifestHash,
         [Parameter(Mandatory)]
-        [ValidateSet('fleet', 'agent', 'tools', 'supervisor', 'grok')]
+        [ValidateSet('fleet', 'agent', 'tools', 'supervisor', 'grok', 'library')]
         [string] $WrapperKind,
         [string] $FixedAgent = ''
     )
 
     $parameterBlock = switch ($WrapperKind) {
+        'library' { 'param()' }
         'grok' {
 @'
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status)
@@ -447,6 +448,8 @@ else {
     & $target @targetParameters
 }
 '@
+    } elseif ($WrapperKind -ceq 'library') {
+        '. $target'
     } elseif ($FixedAgent) {
         $escapedAgent = $FixedAgent.Replace("'", "''")
 @"
@@ -499,7 +502,7 @@ if (
 if (`$actualHash -cne '$ExpectedHash') {
     throw "WD reboot bundle integrity mismatch for `$target"
 }
-`$env:WD_REBOOT_EXPECTED_MANIFEST_HASH = '$ExpectedManifestHash'
+if ('$WrapperKind' -cne 'library') { `$env:WD_REBOOT_EXPECTED_MANIFEST_HASH = '$ExpectedManifestHash' }
 $targetInvocation
 "@
 }
@@ -574,6 +577,7 @@ $statusProbe = Invoke-GitCapture `
         '--',
         'ops/windows/reboot',
         '.agent-bridge/bin',
+        'tools/CheckedPowerShellResult.ps1',
         'configs/bridge_identity_registry.json'
     ) + $bridgeCodeSourceFiles)
 if ($statusProbe.ExitCode -ne 0) {
@@ -630,6 +634,7 @@ $archiveProbe = Invoke-GitCapture `
         '--',
         'ops/windows/reboot',
         '.agent-bridge/bin',
+        'tools/CheckedPowerShellResult.ps1',
         'configs/bridge_identity_registry.json'
     ) + $bridgeCodeSourceFiles)
 if (
@@ -676,6 +681,12 @@ foreach ($file in @(
     ).Hash.ToUpperInvariant()
     $sourcePaths[$relativeName] = $file.FullName
 }
+$checkedResultSource = Join-Path $archiveRoot 'tools/CheckedPowerShellResult.ps1'
+$checkedResultRelative = 'tools-bootstrap/.agent-bridge/bin/CheckedPowerShellResult.ps1'
+$sourceHashes[$checkedResultRelative] = (Get-FileHash -LiteralPath $checkedResultSource -Algorithm SHA256).Hash.ToUpperInvariant()
+$sourcePaths[$checkedResultRelative] = $checkedResultSource
+$sourceHashes['CheckedPowerShellResult.ps1'] = $sourceHashes[$checkedResultRelative]
+$sourcePaths['CheckedPowerShellResult.ps1'] = $checkedResultSource
 $identityRegistryRelative = 'tools-bootstrap/configs/bridge_identity_registry.json'
 $sourceHashes[$identityRegistryRelative] = (
     Get-FileHash -LiteralPath $identityRegistrySource -Algorithm SHA256
@@ -963,6 +974,7 @@ if ($StageOnly) {
 # Migration is explicit and must finish before changing the fleet's pointers.
 & (Join-Path $targetRoot 'Initialize-WdGrokRecovery.ps1') | Out-Host
 $wrapperSpecs = @(
+    [pscustomobject]@{ Name = 'CheckedPowerShellResult.ps1'; Target = 'CheckedPowerShellResult.ps1'; Kind = 'library'; Agent = '' },
     [pscustomobject]@{ Name = 'Invoke-WdGrok.ps1'; Target = 'Invoke-WdGrok.ps1'; Kind = 'grok'; Agent = '' },
     [pscustomobject]@{ Name = 'start-wd-all.ps1'; Target = 'start-wd-all.ps1'; Kind = 'fleet'; Agent = '' },
     [pscustomobject]@{ Name = 'start-wd-agent.ps1'; Target = 'start-wd-agent.ps1'; Kind = 'agent'; Agent = '' },

@@ -2797,8 +2797,10 @@ if ($toolsEnabled) {
     $toolsModel = Get-RequiredText $tools 'model'
     $toolsReasoningEffort = Get-RequiredText $tools 'reasoning_effort'
     if (
-        $toolsModel -cne 'gpt-5.6-terra' -or
-        $toolsReasoningEffort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')
+        $toolsModel -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$' -or
+        $toolsReasoningEffort -cnotin @('native', 'low', 'medium', 'high', 'xhigh', 'max') -or
+        (($toolsModel -ceq 'native') -ne ($toolsReasoningEffort -ceq 'native')) -or
+        ($toolsModel -ceq 'native' -and $toolsConversationSurface -cne 'native_terminal')
     ) {
         throw 'Tools model or reasoning effort is unsupported'
     }

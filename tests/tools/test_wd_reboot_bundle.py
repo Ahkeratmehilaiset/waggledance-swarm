@@ -299,8 +299,8 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     assert tools_supervisor["require_dedicated_worktree"] is True
     assert tools_supervisor["wait_seconds"] == 660
     assert tools_supervisor["resume_policy"] == "current_worktree"
-    assert tools_supervisor["model"] == "gpt-5.6-terra"
-    assert tools_supervisor["reasoning_effort"] == "high"
+    assert tools_supervisor["model"] == "native"
+    assert tools_supervisor["reasoning_effort"] == "native"
     assert tools_supervisor["python_executable"] == (
         r"C:\Users\janik\AppData\Local\Programs\Python\Python313\python.exe"
     )
@@ -336,10 +336,10 @@ def test_fleet_manifest_pins_exact_persistent_generations() -> None:
     )
     assert len({lane["agent_uuid"] for lane in lanes.values()}) == 4
     expected_models = {
-        "codex-lead-1": ("gpt-6-astra", "xhigh"),
-        "claude-rco-1": ("sonnet", "max"),
-        "claude-rco-2": ("sonnet", "max"),
-        "fable-5": ("fable", "max"),
+        "codex-lead-1": ("native", "native"),
+        "claude-rco-1": ("native", "native"),
+        "claude-rco-2": ("native", "native"),
+        "fable-5": ("native", "native"),
     }
     for agent, lane in lanes.items():
         assert lane["worktree"].startswith("C:\\")
@@ -1259,6 +1259,8 @@ def test_verified_runner_import_preserves_launcher_arguments_and_scope(tmp_path:
     fixture_manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     lead = next(lane for lane in fixture_manifest["lanes"] if lane["agent"] == "codex-lead-1")
     lead["turn_mode"] = "managed"
+    lead["model"] = "gpt-6-astra"
+    lead["effort"] = "xhigh"
     fixture_path = tmp_path / "fleet-managed-opt-in.json"
     fixture_path.write_text(json.dumps(fixture_manifest), encoding="utf-8")
     fixture_quoted = str(fixture_path).replace("'", "''")
@@ -1562,7 +1564,7 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
         assert "Empty-queue" in text or "empty inbox must not consume a model turn" in text
 
 
-def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
+def test_interactive_launchers_support_explicit_and_native_model_policy() -> None:
     agent_launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     bundle_text = "\n".join(
         path.read_text(encoding="utf-8")
@@ -1577,15 +1579,15 @@ def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
     assert "'--image', $targetImagePath" in agent_launcher
     assert "FIRST use the Read tool once on the exact PNG" in agent_launcher
     assert "before any bridge read or work" in agent_launcher
-    assert "model_selection = 'explicit'" in agent_launcher
+    assert "model_selection = $(if ($model -ceq 'native')" in agent_launcher
     assert "legacy model labels" in agent_launcher
     assert "target_state_manifested" in agent_launcher
     assert "-Status target_state_manifested" in agent_launcher
-    assert "@('low', 'medium', 'high', 'xhigh', 'max', 'ultra')" in agent_launcher
-    assert "@('low', 'medium', 'high', 'xhigh', 'max')" in agent_launcher
-    assert "gpt-6-astra'; effort = 'xhigh'" in agent_launcher
-    assert "sonnet'; effort = 'max'" in agent_launcher
-    assert "fable'; effort = 'max'" in agent_launcher
+    assert "@('native', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')" in agent_launcher
+    assert "@('native', 'low', 'medium', 'high', 'xhigh', 'max')" in agent_launcher
+    assert "gpt-6-astra'; effort = 'xhigh'" not in agent_launcher
+    assert "sonnet'; effort = 'max'" not in agent_launcher
+    assert "fable'; effort = 'max'" not in agent_launcher
 
 
 def test_each_lane_manifests_hash_bound_target_before_model_launch() -> None:
@@ -1618,9 +1620,9 @@ def test_each_lane_manifests_hash_bound_target_before_model_launch() -> None:
     assert "canonical_durable -ne $true" in agent_launcher
     assert "canonical_durable -ne $true" in tools_launcher
     assert agent_launcher.index("-Status target_state_manifested `") < (
-        agent_launcher.index("model_selection = 'explicit'")
+        agent_launcher.index("model_selection = $(if ($model -ceq 'native')")
     )
-    assert agent_launcher.index("model_selection = 'explicit'") < (
+    assert agent_launcher.index("model_selection = $(if ($model -ceq 'native')") < (
         agent_launcher.index("& $cliPath @launchArguments")
     )
     assert "cli_executable_sha256 = $cliExecutableHash" in agent_launcher
@@ -1628,7 +1630,7 @@ def test_each_lane_manifests_hash_bound_target_before_model_launch() -> None:
         tools_launcher.index("$initialOutput = @(& $consumerScript")
     )
     assert agent_launcher.index("-Status append_canary `") < (
-        agent_launcher.index("model_selection = 'explicit'")
+        agent_launcher.index("model_selection = $(if ($model -ceq 'native')")
     )
     assert tools_launcher.index("-Status append_canary `") < (
         tools_launcher.index("$initialOutput = @(& $consumerScript")
@@ -5765,8 +5767,8 @@ def test_supervisor_snapshot_is_structured_and_version_independent() -> None:
     assert tools["approval_policy"] == "never"
     assert "executable" not in tools
     assert tools["resume_policy"] == "current_worktree"
-    assert tools["model"] == "gpt-5.6-terra"
-    assert tools["reasoning_effort"] == "high"
+    assert tools["model"] == "native"
+    assert tools["reasoning_effort"] == "native"
     assert snapshot["target_state"]["id"] == "wd-swarm-target-state-v1"
     serialized = json.dumps(snapshot)
     assert "WindowsApps" not in serialized

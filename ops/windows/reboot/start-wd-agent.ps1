@@ -1875,26 +1875,29 @@ if ([string]::IsNullOrWhiteSpace($model)) {
   throw "lane '$Agent' has no explicit model"
 }
 $supportedEfforts = if ($cliName -ieq 'codex.cmd') {
-  @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+  @('native', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 } else {
-  @('low', 'medium', 'high', 'xhigh', 'max')
+  @('native', 'low', 'medium', 'high', 'xhigh', 'max')
 }
 if ($effort -cnotin $supportedEfforts) {
   throw "lane '$Agent' has unsupported effort '$effort'"
 }
 $expectedRuntime = @{
-  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-6-astra'; effort = 'xhigh' }
-  'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
-  'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
-  'fable-5' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'fable'; effort = 'max' }
+  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
+  'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd' }
+  'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd' }
+  'fable-5' = [pscustomobject]@{ cli = 'claude.cmd' }
 }[$Agent]
 if (
   $null -eq $expectedRuntime -or
   $cliName -cne [string]$expectedRuntime.cli -or
-  $model -cne [string]$expectedRuntime.model -or
-  $effort -cne [string]$expectedRuntime.effort
+  $model -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$' -or
+  (($model -ceq 'native') -ne ($effort -ceq 'native'))
 ) {
   throw "lane '$Agent' runtime selection differs from the supported fleet contract"
+}
+if ($model -ceq 'native' -and $launchTurnMode -cne 'interactive') {
+  throw 'Native model selection requires an interactive native session'
 }
 $cliPath = Resolve-WdLaneCliApplication -Name $cliName
 $cliExecutableHash = (
@@ -2016,8 +2019,8 @@ $startupPrompt = (
   "policy {5}. Read the live bridge next action and current claims before acting. " +
   "Use the fleet handoff {6} and lane Markdown handoff {7} only if compact state is " +
   "absent, inconsistent, or a named historical fact is needed; do not load the dated " +
-  "snapshot by default. Optional guides are {8} and {9}. Runtime model selection is " +
-  "explicitly pinned to {10} at effort {11}. Any legacy model labels " +
+  "snapshot by default. Optional guides are {8} and {9}. Startup model policy is " +
+  "{10} at effort {11}; native means the resumed CLI session or current CLI default, not an observed model. Any legacy model labels " +
   "in durable role, prompt, or historical files are " +
   "historical metadata only, not a pin or current runtime identity. " +
   "State precedence: {12} Read the bridge with Read-AgentBridge.ps1 " +
@@ -2138,7 +2141,7 @@ if ($nativeLead) {
   $continuationPrompt += (
     ' This is the standard interactive Codex terminal, not the former custom conversation window. ' +
     'The former managed-loop prompt, turn-receipt paths and UI automation rules are historical; do not replay them. ' +
-    'The startup model is gpt-6-astra/xhigh; the operator may use /model to change it. ' +
+    'Native model policy preserves the resumed session or current CLI default; /model remains available. Never infer actual model or quota headroom from the launcher policy label. ' +
     'Bridge helpers and the current environment identify this lane. Keep peer sessions separate. ' +
     'A background codex queue relay delivers peer replies to this exact conversation, also while idle or minimized. ' +
     'Before reporting requested peer opinions as missing or pending, run pinned Get-BridgeReplySnapshot.ps1 -RequestId <exact-id> and state its observation time. Read the full matching payload. ' +
@@ -2471,7 +2474,7 @@ $handshake = [ordered]@{
   head = $actualHead
   runtime_root = $runtimeRoot
   cli = $cliName
-  model_selection = 'explicit'
+  model_selection = $(if ($model -ceq 'native') { 'native_resume_or_default' } else { 'explicit' })
   model = $model
   effort = $effort
   turn_mode = $launchTurnMode
@@ -2630,10 +2633,9 @@ if ($cliName -ieq 'claude.cmd') {
     $launchArguments += @('--resume', [string]$claudeResume.thread_id)
     $startupPrompt = $continuationPrompt
   }
+  $launchArguments += @('--settings', $scheduleSettings)
+  if ($model -cne 'native') { $launchArguments += @('--model', $model, '--effort', $effort) }
   $launchArguments += @(
-    '--settings', $scheduleSettings,
-    '--model', $model,
-    '--effort', $effort,
     '--dangerously-skip-permissions',
     '--name', $Agent
   )
@@ -2642,10 +2644,9 @@ if ($cliName -ieq 'claude.cmd') {
     Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
     if ($nativeResume.thread_id) { $launchArguments += @('resume', [string]$nativeResume.thread_id) }
   }
-  $launchArguments += @(
-    '--model', $model,
-    '-c', ('model_reasoning_effort="{0}"' -f $effort)
-  )
+  if ($model -cne 'native') {
+    $launchArguments += @('--model', $model, '-c', ('model_reasoning_effort="{0}"' -f $effort))
+  }
   if ($nativeLead) {
     $launchArguments += @('--cd', $worktree, '--ask-for-approval', 'never', '--sandbox', 'danger-full-access')
   }

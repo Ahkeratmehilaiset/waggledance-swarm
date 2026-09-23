@@ -13,7 +13,26 @@ hours) and `processes`: exact `pid`, `name`, `process_start_utc`,
 `executable_path`, and `command_line` values from the reviewed process snapshot.
 These sessions remain external and are never adopted or stopped. A changed
 process lifetime, changed snapshot, expired approval, or same-lane launcher
-still blocks startup. Without the explicit parameters, admission is unchanged.
+still blocks startup. Without the explicit parameters, only an external runner
+listed in the verified fleet manifest's `external_native_runners` may be
+discovered automatically. Its exact executable and full command must match;
+each launch captures and rechecks its current PID and creation time, plus the
+child's exact executable and bounded command prefix. No PID is persisted as an
+approval. Unknown, ambiguous or changed identities still block startup. An
+external runner upgrade that changes its approved path needs a reviewed manifest
+update, not a broader process exemption.
+
+Apply checks `codex update` and `claude update` independently, before starting
+fleet workers. A live native process defers only its own provider's update;
+`-SkipCliUpdate` explicitly skips both. Status is recorded per provider as
+`updated`, `deferred_live_sessions`, or `operator_skipped`; an updater error logs
+`failed` and aborts restore. No active process is stopped to enable an update.
+This does not reorder unrelated Windows autostarts: an external job that already
+started can legitimately defer its provider's update.
+
+The opt-out read-only conversation monitor is requested before worker startup,
+so it can show partial or failed restore. Opening the monitor does not mean that
+the fleet is ready. `-NoBridgeConversation` suppresses it; DryRun opens no window.
 
 The single-command reboot entry point is:
 

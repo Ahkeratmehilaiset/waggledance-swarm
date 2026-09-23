@@ -7624,7 +7624,7 @@ Start-WdBridgeConversationWindow -HostExecutable '{paths[0]}' -ViewerPath '{path
     assert data["pass"] is True
 
 
-def test_conversation_window_is_opt_out_and_only_after_successful_restore():
+def test_conversation_window_is_opt_out_and_visible_during_restore():
     launcher = (REBOOT / "start-wd-all.ps1").read_text(encoding="utf-8")
     deployer = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
@@ -7634,7 +7634,7 @@ def test_conversation_window_is_opt_out_and_only_after_successful_restore():
     assert "Show-WdBridgeConversation.ps1" in manifest["deployment"]["required_bundle_files"]
     call = launcher.rindex("Start-WdBridgeConversationWindow")
     assert call > launcher.index("if ($DryRun) {")
-    assert call > launcher.index("Fleet restore complete;")
+    assert call < launcher.index("Write-Host 'Applying scheduled-task console containment")
     assert "if (-not $NoBridgeConversation)" in launcher[call - 250:call]
 
 

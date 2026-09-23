@@ -1259,6 +1259,8 @@ def test_verified_runner_import_preserves_launcher_arguments_and_scope(tmp_path:
     fixture_manifest = json.loads((REBOOT / "wd-fleet.json").read_text(encoding="utf-8"))
     lead = next(lane for lane in fixture_manifest["lanes"] if lane["agent"] == "codex-lead-1")
     lead["turn_mode"] = "managed"
+    lead["model"] = "gpt-6-astra"
+    lead["effort"] = "xhigh"
     fixture_path = tmp_path / "fleet-managed-opt-in.json"
     fixture_path.write_text(json.dumps(fixture_manifest), encoding="utf-8")
     fixture_quoted = str(fixture_path).replace("'", "''")
@@ -1562,7 +1564,7 @@ def test_native_claude_bootstrap_preserves_pending_absolute_wake_deadline() -> N
         assert "Empty-queue" in text or "empty inbox must not consume a model turn" in text
 
 
-def test_interactive_launchers_pin_agent_specific_models_and_effort() -> None:
+def test_interactive_launchers_support_explicit_and_native_model_policy() -> None:
     agent_launcher = (REBOOT / "start-wd-agent.ps1").read_text(encoding="utf-8")
     bundle_text = "\n".join(
         path.read_text(encoding="utf-8")

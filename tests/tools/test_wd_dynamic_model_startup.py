@@ -76,6 +76,31 @@ def test_shipped_fleet_delegates_native_model_selection():
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
+def test_live_handshake_uses_its_own_pinned_model_policy(tmp_path, host):
+    if host is None:
+        pytest.skip('PowerShell unavailable')
+    path = REBOOT / 'start-wd-all.ps1'
+    source = path.read_text(encoding='utf-8')
+    live = source.split('function Test-LaneGenerationAttestation {', 1)[1].split('\nfunction ', 1)[0]
+    assert 'Test-WdLaneStartupModelSelection -Handshake $handshake -Lane $liveLane' in live
+    script = tmp_path / 'handshake.ps1'
+    script.write_text(f"""
+$ErrorActionPreference='Stop'
+$ast=[Management.Automation.Language.Parser]::ParseFile('{path}',[ref]$null,[ref]$null)
+$fn=$ast.Find({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Test-WdLaneStartupModelSelection'}},$true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$old=[pscustomobject]@{{model='future-supported-model';effort='high';model_selection='explicit'}}
+$new=[pscustomobject]@{{model='native';effort='native';model_selection='native_resume_or_default'}}
+$bad=[pscustomobject]@{{model='native';effort='native';model_selection='explicit'}}
+@{{old=(Test-WdLaneStartupModelSelection $old $old);new=(Test-WdLaneStartupModelSelection $new $new);wrong=(Test-WdLaneStartupModelSelection $old $new);bad=(Test-WdLaneStartupModelSelection $bad $new)}}|ConvertTo-Json -Compress
+""", encoding='utf-8')
+    result = subprocess.run([host, '-NoProfile', '-NonInteractive', '-File', str(script)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == dict(old=True, new=True, wrong=False, bad=False)
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
 @pytest.mark.parametrize('tamper', [False, True])
 def test_installed_result_library_is_pinned_and_preserves_callers_bridge_pin(tmp_path, host, tamper):
     if host is None:

@@ -1817,6 +1817,14 @@ function Resolve-WdLiveLaneManifest {
   return $bundleCandidates[0]
 }
 
+function Test-WdLaneStartupModelSelection {
+  param($Handshake, $Lane)
+  $selection = if ([string]$Lane.model -ceq 'native') { 'native_resume_or_default' } else { 'explicit' }
+  return ([string]$Handshake.model -ceq [string]$Lane.model -and
+    [string]$Handshake.effort -ceq [string]$Lane.effort -and
+    [string]$Handshake.model_selection -ceq $selection)
+}
+
 function Test-LaneGenerationAttestation {
   param(
     [Parameter(Mandatory)] $Lane,
@@ -2001,9 +2009,9 @@ function Test-LaneGenerationAttestation {
       [string]$handshake.baseline_branch -cne [string]$Lane.branch -or
       [string]$handshake.baseline_head -cne [string]$Lane.head -or
       [string]$handshake.resume_policy -cne [string]$Lane.resume_policy -or
-      [string]$handshake.model -cne [string]$Lane.model -or
-      [string]$handshake.effort -cne [string]$Lane.effort -or
-      [string]$handshake.model_selection -cne $(if ([string]$Lane.model -ceq 'native') { 'native_resume_or_default' } else { 'explicit' }) -or
+      # A live process is attested against its own hash-verified generation.
+      # New startup preferences do not invalidate an unchanged running session.
+      -not (Test-WdLaneStartupModelSelection -Handshake $handshake -Lane $liveLane) -or
       -not ([string]$handshake.cli_executable).Equals(
         $expectedCliExecutable,
         [System.StringComparison]::OrdinalIgnoreCase

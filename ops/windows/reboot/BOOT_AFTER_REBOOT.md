@@ -30,7 +30,7 @@ already elevated PowerShell does not prompt again.
 
 Cold-start preflight resolves each native lane's saved conversation before CLI
 updates or scheduler changes. Lead uses its reconciled recorded Codex thread ID
-in the normal Codex terminal (`gpt-6-astra`, `xhigh`). RCO1, RCO2 and Fable resume
+in the normal Codex terminal. RCO1, RCO2 and Fable resume
 the newest **named lane conversation** in their own canonical worktree with
 `claude --resume <exact-UUID>`; they never use account-wide `--continue` or fork
 the conversation. Selection uses the first main-thread timestamp, not file
@@ -57,7 +57,7 @@ completion. The exclusive relay lock prevents concurrent delivery helpers.
 
 Tools uses `conversation_surface=native_terminal`: the Limited supervisor opens
 one Windows Terminal window named `codex-tools-1`, running normal Codex with its
-recorded conversation UUID, `gpt-5.6-terra/high` and workspace-write permissions.
+recorded conversation UUID and workspace-write permissions.
 The launcher holds the existing Tools ownership lock for the terminal lifetime.
 The former custom UI and its Automation toggle are inactive on this path. The
 saved conversation and interrupted-work evidence are preserved; unresolved
@@ -68,6 +68,31 @@ Tools readiness v3 means `terminal_ready` with scope `native_cli_only`: the
 wrapper and native process identities match. It does not claim a completed model
 turn or ongoing task progress. Check those in the visible terminal and bridge
 evidence. Closing Codex ends this Tools session. `/model` remains available.
+
+## Model selection and capacity
+
+The installed native lanes use `model=native` and `effort=native`. These are
+launcher policy labels, not model IDs: neither label is passed to the provider.
+The launcher omits model/effort overrides and resumes the exact conversation;
+the CLI applies its saved conversation/settings and current provider defaults.
+Changing models in the native UI no longer competes with a hard-coded reboot
+model. New provider-supported models do not require editing the launcher.
+Actual model and effort must be observed from native telemetry, not inferred
+from a handshake's requested policy. Explicit model/effort pairs remain
+supported in a committed fleet configuration, with the same identity and
+permission checks. Dynamic selection is not enabled on legacy managed paths.
+
+This does not create quota capacity. Native authentication and rate-limit
+errors remain errors; selecting another model does not prove a different quota
+pool. Existing quota monitoring and disabled idle cron remain in force. This
+release does not claim automatic cross-provider task handoff or quality-verified
+quota-based model switching. A failed or blocked turn is never a completed task.
+
+The reusable PowerShell result validator is shipped as the manifest-pinned
+`tools-bootstrap/.agent-bridge/bin/CheckedPowerShellResult.ps1`. Dot-source the
+file under the verified `WD_BRIDGE_BIN` and use `Invoke-CheckedResult` for a
+PowerShell result contract; check a native child's exit code immediately inside
+the callback. An old `$LASTEXITCODE` is not the result of a PowerShell function.
 
 Already-live lane wrappers are identified using their original deployment hash,
 including wrappers whose process command line omits `-ManifestPath`. CLI binary

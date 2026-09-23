@@ -2003,7 +2003,7 @@ function Test-LaneGenerationAttestation {
       [string]$handshake.resume_policy -cne [string]$Lane.resume_policy -or
       [string]$handshake.model -cne [string]$Lane.model -or
       [string]$handshake.effort -cne [string]$Lane.effort -or
-      [string]$handshake.model_selection -cne 'explicit' -or
+      [string]$handshake.model_selection -cne $(if ([string]$Lane.model -ceq 'native') { 'native_resume_or_default' } else { 'explicit' }) -or
       -not ([string]$handshake.cli_executable).Equals(
         $expectedCliExecutable,
         [System.StringComparison]::OrdinalIgnoreCase
@@ -2756,10 +2756,10 @@ if ($cliUpdateDeferred) {
 }
 $laneStates = @()
 $expectedLaneRuntimes = @{
-  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd'; model = 'gpt-6-astra'; effort = 'xhigh' }
-  'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
-  'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'sonnet'; effort = 'max' }
-  'fable-5' = [pscustomobject]@{ cli = 'claude.cmd'; model = 'fable'; effort = 'max' }
+  'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
+  'claude-rco-1' = [pscustomobject]@{ cli = 'claude.cmd' }
+  'claude-rco-2' = [pscustomobject]@{ cli = 'claude.cmd' }
+  'fable-5' = [pscustomobject]@{ cli = 'claude.cmd' }
 }
 foreach ($lane in @($manifest.lanes)) {
   $laneTurnMode = 'interactive'
@@ -2773,8 +2773,10 @@ foreach ($lane in @($manifest.lanes)) {
   if (
     $null -eq $expectedRuntime -or
     [string]$lane.cli -cne [string]$expectedRuntime.cli -or
-    [string]$lane.model -cne [string]$expectedRuntime.model -or
-    [string]$lane.effort -cne [string]$expectedRuntime.effort
+    [string]$lane.model -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$' -or
+    [string]$lane.effort -cnotin @('native','low','medium','high','xhigh','max','ultra') -or
+    (([string]$lane.model -ceq 'native') -ne ([string]$lane.effort -ceq 'native')) -or
+    ([string]$lane.model -ceq 'native' -and $laneTurnMode -cne 'interactive')
   ) {
     throw "lane '$($lane.agent)' runtime selection differs from the supported fleet contract"
   }
@@ -3771,7 +3773,7 @@ try {
         [string]$handshake.baseline_branch -cne [string]$lane.branch -or
         [string]$handshake.baseline_head -cne [string]$lane.head -or
         [string]$handshake.resume_policy -cne [string]$lane.resume_policy -or
-        [string]$handshake.model_selection -cne 'explicit' -or
+        [string]$handshake.model_selection -cne $(if ([string]$Lane.model -ceq 'native') { 'native_resume_or_default' } else { 'explicit' }) -or
         [string]$handshake.model -cne [string]$lane.model -or
         [string]$handshake.effort -cne [string]$lane.effort -or
         -not ([string]$handshake.cli_executable).Equals(

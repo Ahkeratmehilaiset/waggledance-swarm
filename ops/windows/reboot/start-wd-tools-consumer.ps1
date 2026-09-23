@@ -332,9 +332,11 @@ function Get-WdNativeToolsArguments {
     param($Saved, [string] $Worktree, [string] $Model, [string] $Effort,
         [string] $Prompt, [string] $ImagePath, [string[]] $WritableRoots, [bool] $NetworkAccess)
     $nativeArguments = @('resume', [string]$Saved.thread_id, '--cd', $Worktree,
-        '--model', $Model, '-c', ('model_reasoning_effort="{0}"' -f $Effort),
         '--ask-for-approval', 'never', '--sandbox', 'workspace-write',
         '-c', ('sandbox_workspace_write.network_access={0}' -f $NetworkAccess.ToString().ToLowerInvariant()))
+    if ($Model -cne 'native') {
+        $nativeArguments += @('--model', $Model, '-c', ('model_reasoning_effort="{0}"' -f $Effort))
+    }
     foreach ($root in $WritableRoots) { $nativeArguments += @('--add-dir', $root) }
     if (-not $Saved.initial_context_delivered) { $nativeArguments += @('--image', $ImagePath) }
     $nativeArguments += ($Prompt + ' This is the standard interactive Codex terminal for codex-tools-1. ' +
@@ -1590,18 +1592,20 @@ if ($approvalPolicy -cnotin @('untrusted', 'on-failure', 'on-request', 'never'))
 if ($resumePolicy -cnotin @('pinned', 'current_worktree')) {
     throw "unsupported tools resume_policy: $resumePolicy"
 }
-if ($model -cne 'gpt-5.6-terra') {
+if ($model -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$') {
     throw "unsupported Tools model: $model"
 }
-if ($reasoningEffort -cnotin @('low', 'medium', 'high', 'xhigh', 'max')) {
+if ($reasoningEffort -cnotin @('native', 'low', 'medium', 'high', 'xhigh', 'max')) {
     throw "unsupported Tools reasoning_effort: $reasoningEffort"
+}
+if (($model -ceq 'native') -ne ($reasoningEffort -ceq 'native') -or
+    ($model -ceq 'native' -and $conversationSurface -cne 'native_terminal')) {
+    throw 'Native model selection requires the native terminal and native effort'
 }
 if (
     $conversationSurface -cin @('local_window','native_terminal') -and
     (
         $agent -cne 'codex-tools-1' -or
-        $model -cne 'gpt-5.6-terra' -or
-        $reasoningEffort -cne 'high' -or
         $sandbox -cne 'workspace-write' -or
         $approvalPolicy -cne 'never'
     )

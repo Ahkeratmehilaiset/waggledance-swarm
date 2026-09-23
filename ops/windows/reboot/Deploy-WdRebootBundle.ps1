@@ -634,6 +634,7 @@ $archiveProbe = Invoke-GitCapture `
         '--',
         'ops/windows/reboot',
         '.agent-bridge/bin',
+        'tools/CheckedPowerShellResult.ps1',
         'configs/bridge_identity_registry.json'
     ) + $bridgeCodeSourceFiles)
 if (

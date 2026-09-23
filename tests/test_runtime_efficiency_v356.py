@@ -238,6 +238,58 @@ class TestSkipNeighborSequential:
     """Tests for sequential neighbor skip logic."""
 
     @pytest.mark.asyncio
+    async def test_trace_lists_only_the_dispatched_sequential_neighbor(self):
+        llm = MagicMock()
+        llm.generate = AsyncMock(return_value="neighbor answer")
+        ha = _make_assist(
+            llm_service=llm,
+            parallel_neighbor=False,
+            skip_low_value_neighbor_when_sequential=False,
+            max_neighbors_per_hop=2,
+        )
+        trace = HexResolutionTrace(
+            trace_id="sequential-trace",
+            origin_cell_id="hub",
+            query="query",
+        )
+
+        responses = await ha._try_neighbors("hub", "query", trace)
+
+        assert trace.neighbor_cells_consulted == ["electricity"]
+        assert [response.cell_id for response in responses] == ["electricity"]
+        assert llm.generate.await_count == 1
+        assert ha.get_metrics()["neighbors_consulted_total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_expired_budget_records_no_sequential_neighbor_attempt(self):
+        llm = MagicMock()
+        llm.generate = AsyncMock(return_value="neighbor answer")
+        ha = _make_assist(
+            llm_service=llm,
+            parallel_neighbor=False,
+            skip_low_value_neighbor_when_sequential=False,
+            max_neighbors_per_hop=2,
+            neighbor_budget_ms=1,
+        )
+        trace = HexResolutionTrace(
+            trace_id="expired-sequential-budget",
+            origin_cell_id="hub",
+            query="query",
+        )
+
+        with patch(
+            "waggledance.application.services.hex_neighbor_assist.time.time",
+            side_effect=[100.0, 100.002, 100.002],
+        ):
+            responses = await ha._try_neighbors("hub", "query", trace)
+
+        assert responses == []
+        assert trace.neighbor_cells_consulted == []
+        assert trace.budget_exhausted is True
+        assert llm.generate.await_count == 0
+        assert ha.get_metrics()["neighbors_consulted_total"] == 0
+
+    @pytest.mark.asyncio
     async def test_sequential_low_preflight_skips_neighbor(self):
         """When parallel=False and preflight<0.5, neighbor should be skipped."""
         ha = _make_assist(

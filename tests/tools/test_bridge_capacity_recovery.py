@@ -13,11 +13,17 @@ from tools.bridge_capacity_recovery import BINDING_FIELDS, RecoveryStore, advanc
 
 
 def plan():
-    return {'binding': {k: 'fixture-' + k for k in BINDING_FIELDS},
+    binding = {k: 'fixture-' + k for k in BINDING_FIELDS}
+    binding.update(native_pid=4242, native_process_started_at='2026-09-24T10:00:00+00:00')
+    return {'binding': binding,
             'from_profile': 'primary', 'to_profile': 'fallback',
             'profiles': {'primary': {'model': 'model-a', 'effort': 'high'},
                          'fallback': {'model': 'model-b', 'effort': 'high'}},
             'qualified': True, 'qualification_ref': 'fixture-only',
+            'trusted_adapter_identity': {
+                'principal': 'fixture-trusted-adapter',
+                'verification_ref': 'fixture-boundary-attestation',
+            },
             'owning_adapter_verified': True, 'hold': False, 'cancelled': False,
             'billing': 'subscription', 'required_reviewers': ['rco1', 'rco2'],
             'pools': [['codex', 'verified-account', 'codex', 'primary']]}
@@ -39,6 +45,7 @@ class FakeOwner:
                 'required_reviewers': self.value['required_reviewers'],
                 'qualification_ref': self.value['qualification_ref'],
                 'quota_available': True, 'catalog_verified': True,
+                'trusted_adapter_identity': deepcopy(self.value['trusted_adapter_identity']),
                 'observed_at': datetime.now(timezone.utc).isoformat(),
                 'applied_transition': self.applied, 'resumed_transition': self.resumed,
                 **self.override}
@@ -131,6 +138,87 @@ def test_noncanonical_pool_components_are_rejected(tmp_path, pool):
     value['pools'] = [pool]
     with pytest.raises(InputError, match='canonical'):
         RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
+@pytest.mark.parametrize('field', ['native_pid', 'native_process_started_at'])
+def test_plan_rejects_missing_process_epoch(tmp_path, field):
+    value = plan()
+    del value['binding'][field]
+    with pytest.raises(InputError, match='binding incomplete'):
+        RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
+@pytest.mark.parametrize('reviewers', [[], ['rco1', 'rco1'], ['fixture-agent_id']])
+def test_plan_requires_nonempty_independent_reviewers(tmp_path, reviewers):
+    value = plan()
+    value['required_reviewers'] = reviewers
+    with pytest.raises(InputError, match='binding incomplete'):
+        RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
+def test_caller_boolean_cannot_replace_trusted_adapter_identity(tmp_path):
+    value = plan()
+    value.pop('trusted_adapter_identity')
+    value['owning_adapter_verified'] = True
+    with pytest.raises(InputError, match='binding incomplete'):
+        RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
+@pytest.mark.parametrize('verified', [False, None])
+def test_plan_requires_explicit_true_adapter_verification(tmp_path, verified):
+    value = plan()
+    value['owning_adapter_verified'] = verified
+    with pytest.raises(InputError, match='binding incomplete'):
+        RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
+def test_plan_rejects_missing_adapter_verification(tmp_path):
+    value = plan()
+    value.pop('owning_adapter_verified')
+    with pytest.raises(InputError, match='binding incomplete'):
+        RecoveryStore(tmp_path / 'db').plan('request', value)
+
+
+@pytest.mark.parametrize('stage', range(6))
+@pytest.mark.parametrize('field,value', [
+    ('native_pid', 7777),
+    # Same PID with a new start epoch models PID reuse after a restart.
+    ('native_process_started_at', '2026-09-24T10:00:01+00:00'),
+])
+def test_changed_process_epoch_is_fenced_at_every_phase(tmp_path, stage, field, value):
+    value_plan = plan()
+    store = RecoveryStore(tmp_path / 'recovery.db')
+    tid = store.plan('request', value_plan)
+    owner = FakeOwner(value_plan)
+    for _ in range(stage):
+        advance(store, tid, owner)
+    counts = owner.apply_count, owner.resume_count
+    owner.override[field] = value
+    advance(store, tid, owner)
+    row = store.get(tid)
+    assert (owner.apply_count, owner.resume_count) == counts
+    if stage < 3:
+        assert row['phase'] == 'cancelled_before_apply'
+        assert RecoveryStore(tmp_path / 'recovery.db').plan('new-request', plan()) != tid
+    else:
+        # After apply intent, a changed epoch is ambiguous: retain its pool reservation.
+        assert row['phase'] in {'apply_pending', 'verified', 'resume_pending'}
+        with pytest.raises(InputError, match='reserved'):
+            RecoveryStore(tmp_path / 'recovery.db').plan('new-request', plan())
+
+
+def test_observed_trusted_identity_change_is_fenced_before_apply(tmp_path):
+    value = plan()
+    store = RecoveryStore(tmp_path / 'recovery.db')
+    tid = store.plan('request', value)
+    owner = FakeOwner(value)
+    owner.override['trusted_adapter_identity'] = {
+        'principal': 'different-principal',
+        'verification_ref': 'fixture-boundary-attestation',
+    }
+    advance(store, tid, owner)
+    assert store.get(tid)['phase'] == 'cancelled_before_apply'
+    assert owner.apply_count == 0
 
 
 def test_unknown_actual_effort_cannot_apply(tmp_path):

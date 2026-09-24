@@ -1,5 +1,6 @@
 """Exact operator-approved external runners must not block a different lane."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,10 @@ def test_exact_runner_discovery(ps, case):
     script = load(REBOOT / 'start-wd-agent.ps1', 'Get-WdApprovedExternalRunners') + r'''
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 $policy=[pscustomobject]@{name='pythonw.exe';executable_path='C:\Python\pythonw.exe';command_line='pythonw.exe C:\external\worker.py --project exact';native_child_name='codex.exe';native_child_executable_path='C:\cli\codex.exe';native_child_command_prefix='C:\cli\codex.exe -C C:\external --sandbox read-only exec '}
-$parent=[pscustomobject]@{Name=$policy.name;ExecutablePath=$policy.executable_path;CommandLine=$policy.command_line;ProcessId=31;CreationDate=[DateTime]'2026-09-23T20:00:00Z'}
+# Rooted metadata must use the host filesystem syntax, including Linux pwsh CI.
+$policy.executable_path=Join-Path ([IO.Path]::GetTempPath()) 'wd-test-pythonw.exe'
+$policy.native_child_executable_path=Join-Path ([IO.Path]::GetTempPath()) 'wd-test-codex.exe'
+$parent=[pscustomobject]@{Name=$policy.name;ExecutablePath=$policy.executable_path;CommandLine=$policy.command_line;ProcessId=31;CreationDate=[DateTime]'2020-01-01T20:00:00Z'}
 $rows=@($parent)
 '''
     script += {
@@ -32,12 +36,12 @@ catch { @{denied=$true;error=$_.Exception.Message}|ConvertTo-Json -Compress }
     if case in ('missing_start', 'duplicate'):
         assert result['denied']
     else:
-        assert not result['denied']
+        assert not result['denied'], result
         assert result['count'] == (1 if case == 'valid' else 0)
         if case == 'valid':
             assert result['records'][0]['kind'] == 'native_parent'
             assert result['records'][0]['pid'] == 31
-            assert result['records'][0]['process_start_utc'].startswith('2026-09-23T20:00:00')
+            assert result['records'][0]['process_start_utc'].startswith('2020-01-01T20:00:00')
 
 
 def test_manifest_policies_are_wired_into_normal_lane_path():
@@ -50,6 +54,7 @@ def test_manifest_policies_are_wired_into_normal_lane_path():
     assert policies[0]['native_child_command_prefix'].endswith(' --search exec --json ')
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='actual Windows native argv and parent parsing')
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_discovered_runner_unblocks_only_exact_child_and_lifetime(ps):
     script = load(REBOOT / 'start-wd-agent.ps1', 'Get-WdApprovedExternalRunners')

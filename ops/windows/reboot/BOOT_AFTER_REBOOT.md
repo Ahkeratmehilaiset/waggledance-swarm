@@ -285,10 +285,12 @@ The same script is the post-install bridge release acceptance check. A staged
 or installed bundle without a new passing response report is not a verified
 runtime release. Read-only dry runs do not send these requests.
 
-CLI updates run on cold starts. If any Codex or Claude native session is
-already running, the launcher defers updates to the shared executables and
-records `deferred_live_sessions`; repeated `-Auto` calls must not replace a
-binary underneath an attested live session. Fleet Claude child processes also
+CLI updates are checked independently per provider. An existing Codex native
+session defers only `codex update`; an existing Claude native session defers
+only `claude update`. The corresponding `codex.update_status` or
+`claude_code.update_status` records `deferred_live_sessions`; an idle provider
+may still be updated. Repeated `-Auto` calls must not replace a binary
+underneath an attested live session. Fleet Claude child processes also
 set `DISABLE_AUTOUPDATER=1` locally so the fleet updater owns binary changes.
 This does not change the operator's global Claude settings.
 

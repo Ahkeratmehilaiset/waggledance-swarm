@@ -37,7 +37,15 @@ function Get-CapacityLaneSummary($Status) {
     # Native Codex telemetry is projected by a bounded reader. No conversation
     # content is returned, no credentials/provider/canonical bridge log is read.
     $processes=@();$processReason='process_query_unavailable'
-    try { $processes=@(Get-CimInstance Win32_Process -ErrorAction Stop);$processReason='no_unique_runtime_process' } catch {}
+    try { $processes=@(Get-CimInstance Win32_Process -ErrorAction Stop);$processReason='no_unique_runtime_process' }
+    catch {
+        # Fixed diagnostic labels only: never disclose raw exception text or
+        # interpret a failed query as exhausted quota or absent processes.
+        if($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::PermissionDenied -or
+           $_.Exception -is [System.UnauthorizedAccessException]){
+            $processReason='process_query_access_denied'
+        }
+    }
     $now=[datetimeoffset]::Parse([string]$Status.observed_at,[Globalization.CultureInfo]::InvariantCulture)
     foreach($lane in @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')) {
         if($Agent -and $Agent -cne $lane){continue}
@@ -55,7 +63,13 @@ function Get-CapacityLaneSummary($Status) {
             $file=[regex]::Match([string]$parent.CommandLine,'(?i)(?:^|\s)-File\s+(?:"([^"]+)"|(\S+))')
             if(-not $file.Success){continue}
             $scriptPath=if($file.Groups[1].Success){$file.Groups[1].Value}else{$file.Groups[2].Value}
-            if($scriptPath -notmatch '(?i)\\wd-reboot-bundles\\[a-f0-9]{40}\\start-wd-(agent|tools-consumer)\.ps1$'){continue}
+            # The installed forwarding entry point dot-sources its pinned bundle;
+            # its process command line retains the machine path, not the target.
+            # This associates observed process ancestry only, NOT authenticated
+            # account identity, bundle attestation, quota ownership or authority.
+            $machineWrapper=$scriptPath -ieq 'C:\Python\start-wd-agent.ps1'
+            $bundleLauncher=$scriptPath -match '(?i)\\wd-reboot-bundles\\[a-f0-9]{40}\\start-wd-(agent|tools-consumer)\.ps1$'
+            if(-not $machineWrapper -and -not $bundleLauncher){continue}
             if($lane -ceq 'codex-tools-1'){
                 if($scriptPath -notlike '*\start-wd-tools-consumer.ps1'){continue}
             }elseif($scriptPath -notlike '*\start-wd-agent.ps1' -or

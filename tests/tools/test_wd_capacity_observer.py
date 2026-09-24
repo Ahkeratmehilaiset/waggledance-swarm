@@ -189,7 +189,7 @@ def test_shared_status_locator_is_verified_readonly_and_does_not_collect(tmp_pat
     assert before == after
 
 @pytest.mark.parametrize('host', HOSTS or [None])
-@pytest.mark.parametrize('case', ['rate_limit','auth','stale','foreign_thread','denied','duplicate'])
+@pytest.mark.parametrize('case', ['rate_limit','auth','stale','foreign_thread','denied','unavailable','duplicate','machine_wrapper'])
 def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, host, case):
     if host is None:
         pytest.skip('Windows PowerShell unavailable')
@@ -229,10 +229,12 @@ def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, ho
              CommandLine='claude.exe --resume '+native_thread+' --model fable')]
     if case == 'duplicate':
         processes.append(dict(processes[-1], ProcessId=12))
+    if case == 'machine_wrapper':
+        processes[0]['CommandLine'] = 'pwsh -File C:\\Python\\start-wd-agent.ps1 -Agent fable-5'
     fixture = tmp_path/'processes.json'
     fixture.write_text(json.dumps(processes))
     reader = release/'ops/windows/reboot/Get-WdCapacityStatus.ps1'
-    query = "throw 'Access denied'" if case == 'denied' else (
+    query = "throw [System.UnauthorizedAccessException]::new('sensitive error detail')" if case == 'denied' else "throw 'sensitive transport detail'" if case == 'unavailable' else (
         f"$p=Get-Content -LiteralPath '{fixture}' -Raw|ConvertFrom-Json;"
         "foreach($row in $p){$row.CreationDate=[datetime]$row.CreationDate};return $p")
     harness = tmp_path/'summary.ps1'
@@ -247,8 +249,11 @@ def test_summary_keeps_identity_errors_freshness_and_quota_separate(tmp_path, ho
     row = data['agents'][0]
     assert row['quota_pool_binding'] == 'unverified'
     assert not row['automatic_handoff_allowed'] and not row['next_turn_success_verified']
-    if case in ('denied','duplicate'):
+    if case in ('denied','unavailable','duplicate'):
         assert row['identity_state'] == 'unknown' and row['quota_state'] == 'unknown'
+        if case in ('denied','unavailable'):
+            assert row['reason'] == ('process_query_access_denied' if case == 'denied' else 'process_query_unavailable')
+            assert 'sensitive' not in result.stdout
     elif case == 'foreign_thread':
         assert row['activity_state'] == 'unknown' and row['quota_state'] == 'unknown'
     elif case == 'auth':
@@ -279,7 +284,7 @@ def native_hook_release(tmp_path):
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
-@pytest.mark.parametrize('case', ['valid', 'stale', 'wrong_cwd', 'before_restart', 'exhausted'])
+@pytest.mark.parametrize('case', ['valid', 'stale', 'wrong_cwd', 'before_restart', 'exhausted', 'machine_wrapper'])
 def test_codex_summary_uses_bound_native_metadata_without_pool_inference(tmp_path, host, case):
     if host is None: pytest.skip('Windows PowerShell unavailable')
     from tools.bridge_capacity_collector import save_observation
@@ -317,6 +322,8 @@ def test_codex_summary_uses_bound_native_metadata_without_pool_inference(tmp_pat
                      CommandLine='pwsh -File C:\\Python\\wd-reboot-bundles\\'+'a'*40+'\\start-wd-agent.ps1 -Agent codex-lead-1'),
                  dict(ProcessId=11,ParentProcessId=10,Name='codex.exe',CreationDate=started.isoformat(),
                      CommandLine='codex.exe resume '+thread+' --model startup-model --cd C:\\fixture')]
+    if case == 'machine_wrapper':
+        processes[0]['CommandLine'] = 'pwsh -File C:\\Python\\start-wd-agent.ps1 -Agent codex-lead-1'
     fixture=tmp_path/'processes.json'
     fixture.write_text(json.dumps(processes))
     reader=release/'ops/windows/reboot/Get-WdCapacityStatus.ps1'

@@ -13,6 +13,96 @@ from tools import wd_grok_helper
 NOW = datetime(2026, 9, 12, tzinfo=timezone.utc)
 
 
+def exception_file(root, **updates):
+    import hashlib
+    grant = dict(schema="wd.grok-task-exception.v1", exception_id="operator-brainstorm",
+                 authorization_ref="operator: explicit three-round permission; round1 already used",
+                 task_ids=["brainstorm/r2", "brainstorm/r3"], max_attempts=2,
+                 issued_at_utc=NOW.isoformat(), expires_at_utc=(NOW+timedelta(hours=2)).isoformat())
+    grant.update(updates)
+    path = root / "grant.json"
+    path.write_text(json.dumps(grant), encoding="utf-8")
+    return dict(exception_path=path, exception_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def test_task_exception_reserves_two_attempts_and_preserves_global_hour(tmp_path):
+    seed(tmp_path, age=1)
+    grant = exception_file(tmp_path)
+    calls = []
+    def run(*a, **k):
+        calls.append(1)
+        assert len(status(tmp_path, NOW)["task_exceptions"]["operator-brainstorm"]["attempts"]) == len(calls)
+        return SimpleNamespace(returncode=0, stdout="advice")
+    for i in (2, 3):
+        result = consult(tmp_path, f"brainstorm/r{i}", "ask", ["fake"], now=NOW,
+                         runner=run, **grant)
+        assert result["status"] == "answered"
+        assert result["budget_exception"]["sha256"] == grant["exception_sha256"]
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with pytest.raises(ValueError, match="exhausted|already"):
+        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, runner=run, **grant)
+    assert len(calls) == 2
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert consult(tmp_path, "unrelated", "ask", ["fake"], now=NOW, runner=run)["decision"] == "deferred_hourly_limit"
+    # Ordinary calls after cooldown must retain the spent exception, including after reload.
+    consult(tmp_path, "unrelated", "ask", ["fake"], now=NOW+timedelta(hours=1),
+            runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok"))
+    assert len(status(tmp_path, NOW)["task_exceptions"]["operator-brainstorm"]["attempts"]) == 2
+
+
+@pytest.mark.parametrize("failure", ["timeout", "interrupt", "exit"])
+def test_exception_failures_consume_attempt_before_launch(tmp_path, failure):
+    seed(tmp_path, age=1)
+    grant = exception_file(tmp_path)
+    def run(*a, **k):
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("fake", 1)
+        return SimpleNamespace(returncode=1, stdout="failed")
+    if failure == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
+    else:
+        assert consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)["status"] == "failed"
+    with pytest.raises(ValueError, match="already"):
+        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
+    assert len(status(tmp_path, NOW)["task_exceptions"]["operator-brainstorm"]["attempts"]) == 1
+
+
+@pytest.mark.parametrize("update", [
+    {"task_ids": ["brainstorm/r20"]}, {"max_attempts": True}, {"max_attempts": 4},
+    {"authorization_ref": ""}, {"expires_at_utc": NOW.isoformat()},
+    {"issued_at_utc": (NOW+timedelta(seconds=1)).isoformat()},
+    {"expires_at_utc": (NOW+timedelta(days=2)).isoformat()},
+    {"issued_at_utc": "2026-09-12T00:00:00"}, {"task_ids": ["brainstorm/r2", "brainstorm/r2"]},
+])
+def test_invalid_exception_never_launches_or_changes_state(tmp_path, update):
+    seed(tmp_path, age=1)
+    grant = exception_file(tmp_path, **update)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with pytest.raises(ValueError):
+        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW,
+                runner=lambda *a, **k: pytest.fail("invalid exception launched"), **grant)
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+
+
+def test_exception_hash_replay_mutation_and_clock_rollback_fail_closed(tmp_path):
+    seed(tmp_path, age=1)
+    grant = exception_file(tmp_path)
+    run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok")
+    with pytest.raises(ValueError, match="hash"):
+        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run,
+                **{**grant, "exception_sha256": "0"*64})
+    consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
+    changed = exception_file(tmp_path, authorization_ref="changed")
+    with pytest.raises(ValueError, match="changed"):
+        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, runner=run, **changed)
+    seed(tmp_path, age=-1)
+    with pytest.raises(ValueError, match="clock"):
+        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, runner=run, **grant)
+
+
 @pytest.mark.parametrize('failed', [False, True])
 def test_consult_emits_lifecycle_without_exposing_prompt_or_refunding_budget(tmp_path, failed):
     seed(tmp_path)
@@ -177,6 +267,56 @@ def test_competing_process_lock_blocks_second_request(tmp_path):
 ROOT = Path(__file__).resolve().parents[2]
 REBOOT = ROOT / "ops/windows/reboot"
 PS = shutil.which("powershell.exe") or shutil.which("pwsh")
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", sorted({p for p in (PS, shutil.which("pwsh")) if p}))
+def test_exception_parameters_reach_verified_python_wrapper(tmp_path, shell):
+    import hashlib
+    import os
+    script = tmp_path / "Invoke-WdGrok.ps1"
+    shutil.copyfile(REBOOT / script.name, script)
+    stub = tmp_path / "Invoke-WdBridgePython.ps1"
+    stub.write_text('param([string]$Tool,[switch]$VerifyPackage)\n'
+                    '[pscustomobject]@{tool=$Tool;verified=[bool]$VerifyPackage;argv=@($args)} | ConvertTo-Json -Compress')
+    manifest = tmp_path / "deployment-manifest.json"
+    manifest.write_text(json.dumps({"source_commit": "fixture", "files": {
+        stub.name: hashlib.sha256(stub.read_bytes()).hexdigest().upper()}}))
+    expected = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    grant_hash = "A"*64
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+        f"$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{expected}'; & '{script}' "
+        f"-PromptPath '{tmp_path / 'prompt.md'}' -TaskId task/r2 "
+        f"-ExceptionPath '{tmp_path / 'grant.json'}' -ExceptionSha256 '{grant_hash}'"],
+        capture_output=True, text=True, timeout=30,
+        env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    forwarded = json.loads(result.stdout)
+    assert forwarded["verified"] and forwarded["tool"] == "tools/wd_grok_helper.py"
+    assert forwarded["argv"][-4:] == ["--exception-path", str(tmp_path / "grant.json"),
+                                        "--exception-sha256", grant_hash]
+    generated = (REBOOT / "Deploy-WdRebootBundle.ps1").read_text()
+    grok_parameters = generated.split("'grok' {", 1)[1].split("'@", 1)[0]
+    assert "$ExceptionPath" in grok_parameters and "$ExceptionSha256" in grok_parameters
+
+
+def test_exception_lock_and_status_preserve_budget(tmp_path):
+    seed(tmp_path, age=1)
+    grant = exception_file(tmp_path)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    with exclusive(tmp_path), pytest.raises(OSError):
+        consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, **grant)
+    status(tmp_path, NOW)
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+
+
+def test_exception_attempt_ceiling_with_unused_named_task(tmp_path):
+    seed(tmp_path, age=1)
+    grant = exception_file(tmp_path, max_attempts=1)
+    consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, **grant,
+            runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="ok"))
+    with pytest.raises(ValueError, match="exhausted"):
+        consult(tmp_path, "brainstorm/r3", "ask", ["fake"], now=NOW, **grant)
 
 
 def test_reboot_uses_pinned_passive_grok_entrypoint():

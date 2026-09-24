@@ -2,7 +2,7 @@
 <# Lead-only on-demand advisory helper. Default is read-only status, not a model call. #>
 [CmdletBinding()]
 param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
-    [string] $LifecycleBase64 = '')
+    [string] $LifecycleBase64 = '', [string] $ExceptionPath = '', [string] $ExceptionSha256 = '')
 $ErrorActionPreference = 'Stop'
 $manifestPath = Join-Path $PSScriptRoot 'deployment-manifest.json'
 if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
@@ -11,7 +11,7 @@ if (-not $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -or
 }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($LifecycleBase64) {
-    if ($LifecycleBase64.Length -gt 32768 -or $PromptPath -or $TaskId -or $Status) { throw 'Invalid lifecycle invocation' }
+    if ($LifecycleBase64.Length -gt 32768 -or $PromptPath -or $TaskId -or $Status -or $ExceptionPath -or $ExceptionSha256) { throw 'Invalid lifecycle invocation' }
     $event=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($LifecycleBase64)) | ConvertFrom-Json
     if ($event.stage -cnotin @('started','answered','failed','deferred')) { throw 'Invalid Grok lifecycle stage' }
     $state=$event.state
@@ -31,7 +31,7 @@ if ($LifecycleBase64) {
     $payload=[ordered]@{schema='wd.grok-consultation-event.v1';consultation_id=[string]$state.request_id;
         stage=[string]$event.stage;authority_effect='none';advisory_only=$true;
         budget_ref='C:\Python\grok-scout-reports\hourly-state.json'}
-    foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','error_type')) {
+    foreach ($key in @('status','exit_code','report_path','report_sha256','duration_seconds','finished_at_utc','next_eligible_utc','error_type','budget_exception')) {
         if ($state.PSObject.Properties[$key]) { $payload[$key]=$state.$key }
     }
     $recipient=if ($event.stage -cin @('answered','failed')) { 'codex-lead-1' } else { 'operator' }
@@ -52,6 +52,12 @@ $arguments = @('--status')
 if ($PromptPath -and -not $Status) {
     if (-not $TaskId) { throw 'Lead must supply -TaskId for a consultation' }
     $arguments = @('--prompt-file', ([IO.Path]::GetFullPath($PromptPath)), '--task-id', $TaskId)
+}
+if ($ExceptionPath -or $ExceptionSha256) {
+    if (-not $PromptPath -or $Status -or -not $ExceptionPath -or $ExceptionSha256 -cnotmatch '^[a-fA-F0-9]{64}$') {
+        throw 'Task exception requires a consultation, path and SHA256'
+    }
+    $arguments += @('--exception-path', ([IO.Path]::GetFullPath($ExceptionPath)), '--exception-sha256', $ExceptionSha256)
 }
 $previousGeneration = $env:WD_BRIDGE_GENERATION
 try {

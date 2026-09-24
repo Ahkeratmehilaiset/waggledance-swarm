@@ -91,7 +91,8 @@ def test_reader_uses_pinned_no_ack_and_rejects_invalid_json(monkeypatch):
 
 @pytest.mark.parametrize('output,count', [('', 0), ('[]', 0),
     ('{"agent":"wd-agent-value","type":"message","ts_utc":"2026-09-24T00:00:00Z"}', 1),
-    ('[{"agent":"a"},{"agent":"b"}]', 2)])
+    ('[{"agent":"a","type":"message","ts_utc":"2026-09-24T00:00:00Z"},'
+     '{"agent":"b","type":"message","ts_utc":"2026-09-24T00:00:01Z"}]', 2)])
 def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, count):
     module = load_metric()
     monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
@@ -99,7 +100,9 @@ def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, cou
     assert len(module.load_events('runtime', 'bundle', 'a'*64)) == count
 
 
-@pytest.mark.parametrize('output', ['null', '42', '{"error":"failed"}', '[42]'])
+@pytest.mark.parametrize('output', ['null', '42', '{"error":"failed"}', '[42]',
+    '[{}]', '[{"error":"failed"}]', '[{"agent":"a"}]',
+    '[{"agent":"a","type":"message","ts_utc":"2026-09-24T00:00:00Z"},{}]'])
 def test_reader_rejects_non_event_payload(monkeypatch, output):
     module = load_metric()
     monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))

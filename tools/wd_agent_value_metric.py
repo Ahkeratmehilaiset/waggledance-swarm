@@ -158,9 +158,12 @@ def load_events(bridge_root, bundle, manifest_sha256):
                             encoding='utf-8', env=reporting_env(bridge_root))
     # PowerShell's pipeline JSON unwraps one item; zero items produce no stdout.
     rows = json.loads(result.stdout) if result.stdout.strip() else []
-    if isinstance(rows, dict) and all(key in rows for key in ('agent', 'type', 'ts_utc')):
+    if isinstance(rows, dict):
         rows = [rows]
-    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict) or not all(key in row for key in ('agent', 'type', 'ts_utc'))
+        for row in rows
+    ):
         raise ValueError('Bridge reader did not return events')
     return rows
 

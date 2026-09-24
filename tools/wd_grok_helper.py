@@ -111,7 +111,8 @@ def exclusive(root: Path):
 
 
 def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
-            runner=subprocess.run, now: datetime | None = None, emitter=None) -> dict:
+            runner=subprocess.run, now: datetime | None = None, emitter=None,
+            exception_path: Path | None = None, exception_sha256: str | None = None) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", task_id):
         raise ValueError("A bounded task ID is required")
     if not prompt.strip() or len(prompt.encode("utf-8")) > 48000:
@@ -119,7 +120,29 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
     with exclusive(root):
         now = now or datetime.now(timezone.utc)
         previous = status(root, now)
-        if not previous["eligible"]:
+        ledger = previous.get("task_exceptions", {})
+        if not isinstance(ledger, dict):
+            raise ValueError("Invalid task exception ledger")
+        grant = None
+        if exception_path is not None or exception_sha256 is not None:
+            if now < datetime.fromisoformat(previous["last_attempt_utc"]):
+                raise ValueError("Grok clock rollback blocks exceptions")
+            grant = read_exception(exception_path, exception_sha256, task_id, now)
+            used = ledger.get(grant["exception_id"])
+            if used is not None:
+                if not isinstance(used, dict) or used.get("sha256") != grant["sha256"]:
+                    raise ValueError("Task exception changed after first reservation")
+                attempts = used.get("attempts")
+                if not isinstance(attempts, list) or any(
+                    not isinstance(a, dict) or not all(a.get(k) for k in ("task_id", "request_id", "reserved_at_utc"))
+                    for a in attempts
+                ):
+                    raise ValueError("Invalid task exception attempts")
+                if any(a["task_id"] == task_id for a in attempts):
+                    raise ValueError("Task exception request already attempted")
+                if len(attempts) >= grant["max_attempts"]:
+                    raise ValueError("Task exception exhausted")
+        if not previous["eligible"] and grant is None:
             deferred = {**previous, 'task_id': task_id, 'decision': 'deferred_hourly_limit'}
             observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': 'deferred_hourly_limit',
                            'next_eligible_utc': previous['next_eligible_utc']}
@@ -132,6 +155,14 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
                  "task_id": task_id, "request_id": request_id, "status": "reserved",
                  "previous_report": previous.get("report_path", previous.get("previous_report")),
                  "bridge_generation": os.environ.get("WD_BRIDGE_GENERATION", "")}
+        if ledger:
+            state["task_exceptions"] = ledger
+        if grant is not None:
+            used = ledger.setdefault(grant["exception_id"], {**grant, "attempts": []})
+            used["attempts"].append({"task_id": task_id, "request_id": request_id,
+                                     "reserved_at_utc": now.isoformat()})
+            state["task_exceptions"] = ledger
+            state["budget_exception"] = {**grant, "attempt_number": len(used["attempts"])}
         # Persist before model launch: failure, timeout and reboot all consume
         # the same hour. No retry path and no alternate state path in the CLI.
         write_state(root, state)
@@ -175,14 +206,59 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         return status(root, now)
 
 
+def read_exception(path: Path | None, digest: str | None, task_id: str, now: datetime) -> dict:
+    """Explicit operator grant, not model-provided permission or provider quota.
+
+    Pin the reviewed bytes at invocation; no alternate budget directory, clock
+    override, wildcard tasks or persistent disable switch is exposed by the CLI.
+    Hash integrity is not authentication: the caller must have operator authority.
+    """
+    if path is None or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+        raise ValueError("Task exception requires a path and SHA256 hash")
+    with path.open("rb") as stream:
+        raw = stream.read(8193)
+    if len(raw) > 8192 or hashlib.sha256(raw).hexdigest() != digest.lower():
+        raise ValueError("Task exception hash/size mismatch")
+    grant = json.loads(raw.decode("utf-8-sig"))
+    if not isinstance(grant, dict) or grant.get("schema") != "wd.grok-task-exception.v1":
+        raise ValueError("Invalid task exception schema")
+    identifier = grant.get("exception_id")
+    reference = grant.get("authorization_ref")
+    tasks = grant.get("task_ids")
+    limit = grant.get("max_attempts")
+    if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", identifier):
+        raise ValueError("Invalid task exception ID")
+    if not isinstance(reference, str) or not reference.strip() or len(reference) > 500:
+        raise ValueError("Task exception requires an operator authorization reference")
+    if (not isinstance(tasks, list) or not 1 <= len(tasks) <= 3
+            or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,159}", t) for t in tasks)
+            or len(set(tasks)) != len(tasks) or task_id not in tasks
+            or type(limit) is not int or not 1 <= limit <= len(tasks)):
+        raise ValueError("Task exception must name exact tasks and at most three attempts")
+    try:
+        issued = datetime.fromisoformat(grant["issued_at_utc"])
+        expires = datetime.fromisoformat(grant["expires_at_utc"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid task exception timestamps") from exc
+    if (issued.tzinfo is None or expires.tzinfo is None or not issued <= now < expires
+            or not timedelta(0) < expires-issued <= timedelta(hours=24)):
+        raise ValueError("Task exception expired, future, or exceeds 24 hours")
+    return {k: grant[k] for k in ("schema", "exception_id", "authorization_ref", "task_ids",
+                                  "max_attempts", "issued_at_utc", "expires_at_utc")} | {"sha256": digest.lower()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--task-id")
+    parser.add_argument("--exception-path", type=Path)
+    parser.add_argument("--exception-sha256")
     args = parser.parse_args()
     try:
         if args.status or args.prompt_file is None:
+            if args.exception_path is not None or args.exception_sha256 is not None:
+                raise ValueError("Task exceptions require a consultation, not status")
             report = status(STATE_ROOT)
         else:
             model = json.loads(Path(r"C:\Python\WD_GROK_MODEL_CURRENT.json").read_text(encoding="utf-8-sig"))
@@ -213,7 +289,8 @@ def main() -> int:
                     prompt += "\n\nPREVIOUS GROK RESULT (bounded excerpt; full report at recorded path)\n" + excerpt
             report = consult(STATE_ROOT, args.task_id or "", prompt,
                              [str(executable), "--model", model["model"], "--effort", "high"],
-                             emitter=emit_bridge_event)
+                             emitter=emit_bridge_event, exception_path=args.exception_path,
+                             exception_sha256=args.exception_sha256)
         print(json.dumps(report, ensure_ascii=False))
         return 0 if report.get("status") != "failed" else 1
     except (ValueError, OSError, KeyError) as exc:

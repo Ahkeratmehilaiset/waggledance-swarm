@@ -150,12 +150,16 @@ def test_cli_update_inventory_failure_aborts_instead_of_allowing_update(ps):
 
 def test_cli_updates_recheck_native_inventory_after_preflight():
     source = (ROOT / 'ops/windows/reboot/start-wd-all.ps1').read_text()
-    preflight = source.index('$cliUpdateDeferred =')
+    preflight = source.index('$codexUpdateStatus =')
     apply = source.index("Write-Host 'Registering the exact hidden WD-Supervisor action...'")
     update = source.index("Write-Host 'Updating Codex CLI once...'")
     assert 'Test-WdCliUpdateDeferred -Processes' not in source
-    assert '(Test-WdCliUpdateDeferred)' in source[preflight:apply]
-    assert '(Test-WdCliUpdateDeferred)' in source[apply:update]
+    assert 'Get-WdCliUpdateStatus -Provider codex' in source[preflight:apply]
+    assert 'Get-WdCliUpdateStatus -Provider claude' in source[preflight:apply]
+    assert 'Get-WdCliUpdateStatus -Provider codex' in source[apply:update]
+    for provider in ('codex', 'claude'):
+        invocation = source.index(f'Invoke-CheckedNative -Path ${provider}UpdateCurrentPath')
+        assert f'Get-WdCliUpdateStatus -Provider {provider}' in source[invocation - 300:invocation]
 
 
 @pytest.mark.parametrize('ps', SHELLS)

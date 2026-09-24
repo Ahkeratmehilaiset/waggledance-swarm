@@ -96,6 +96,38 @@ def decision(inputs):
     return build_report(*inputs, now=NOW)["tasks"][0]
 
 
+def test_unknown_quota_keeps_verified_working_turn(inputs):
+    _, snapshot = inputs
+    snapshot['observations'] = []
+    snapshot['agents'][0]['idle'] = False
+    result = decision(inputs)
+    assert result['action'] == 'keep_current'
+    assert 'active_turn_quota_unknown' in result['reasons']
+    assert result['execution_allowed'] is False
+
+
+@pytest.mark.parametrize('risk', [None, '', 'unknown', 'critical'])
+def test_unknown_or_critical_risk_cannot_propose_profile_switch(inputs, risk):
+    _, snapshot = inputs
+    exhaust(snapshot)
+    snapshot['tasks'][0]['risk_class'] = risk
+    result = decision(inputs)
+    assert result['action'] == 'blocked'
+    assert result['proposed_profile'] is None
+    assert 'risk_class_not_eligible_for_switch' in result['reasons']
+
+
+def test_unknown_quota_does_not_clear_hold_or_identity_failure(inputs):
+    _, snapshot = inputs
+    snapshot['observations'] = []
+    snapshot['agents'][0]['idle'] = False
+    snapshot['tasks'][0]['hold'] = True
+    assert decision(inputs)['action'] == 'blocked'
+    snapshot['tasks'][0]['hold'] = False
+    snapshot['agents'][0]['model_observed'] = 'different-model'
+    assert decision(inputs)['action'] == 'blocked'
+
+
 def exhaust(snapshot):
     snapshot["observations"][0]["payload"]["rateLimitsByLimitId"]["codex"]["primary"]["usedPercent"] = 100
 

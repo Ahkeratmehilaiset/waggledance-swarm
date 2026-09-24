@@ -362,6 +362,16 @@ def _task_advice(task: dict, policy: dict, agents: dict, capacities: dict, now: 
         issues.append("effective_model_effort_or_provider_unverified")
     if issues:
         return result
+    # Missing quota telemetry is not a native failure. Preserve an observed
+    # working turn only after identity, HOLD and quality checks have passed.
+    current_checks = _profile_checks(current, binding, agent, task,
+                                     capacities[current_id], policy, now)
+    if (task['reason'] == 'quota' and agent.get('idle') is False
+            and agent.get('pending_effects') is False
+            and current_checks == ['capacity_unknown']):
+        result.update(action='keep_current', proposed_profile=current_id)
+        issues.append('active_turn_quota_unknown')
+        return result
     eligible = []
     for profile_id in binding["profiles"]:
         profile = policy["profiles"][profile_id]
@@ -378,6 +388,11 @@ def _task_advice(task: dict, policy: dict, agents: dict, capacities: dict, now: 
     if not eligible:
         result.update(action="wait_capacity" if task["reason"] == "quota" else "blocked")
         issues.append("no_qualified_available_profile")
+        return result
+    # Classification is trusted-controller input, not inferred from a role or
+    # provider name. Missing classification and critical work fail closed.
+    if task.get('risk_class') not in ('bounded_reversible', 'advisory'):
+        issues.append('risk_class_not_eligible_for_switch')
         return result
     issues.extend(_switch_checks(agent, task, policy, now))
     if issues:
@@ -475,7 +490,7 @@ def example_input(now: datetime | None = None) -> dict:
             "provider": "codex", "account_pool": "account-a",
             "model": model, "effort": "high", "billing": "subscription",
             "approved": True, "qualification_ref": "SYNTHETIC-NOT-A-LIVE-APPROVAL",
-            "qualified_for": ["wd-critical-coding"], "roles": ["lead"],
+            "qualified_for": ["wd-routine-coding"], "roles": ["lead"],
             "limits": [{"id": limit_id, "windows": ["primary"]}],
         }
         buckets[limit_id] = {"limitId": limit_id, "primary": {"usedPercent": 25,
@@ -486,7 +501,8 @@ def example_input(now: datetime | None = None) -> dict:
                          "observed_at": stamp, "source_ref": "SYNTHETIC-FIXTURE",
                          "payload": {"rateLimitsByLimitId": buckets}})
     task = {"task_id": "example-task", "agent_id": "example-lead", "kind": "implementation",
-            "authority_ref": "SYNTHETIC-NOT-A-LIVE-TASK", "qualification_class": "wd-critical-coding",
+            "authority_ref": "SYNTHETIC-NOT-A-LIVE-TASK", "qualification_class": "wd-routine-coding",
+            "risk_class": "bounded_reversible",
             "hold": False, "cancelled": False, "reason": "quota", "head": "example-head",
             "claim_id": "fixture-claim", "request_id": "example-request", "scope_digest": "example-scope",
             "required_reviewers": ["rco1", "rco2"], "author_agent": "example-lead"}

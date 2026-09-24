@@ -13,7 +13,26 @@ hours) and `processes`: exact `pid`, `name`, `process_start_utc`,
 `executable_path`, and `command_line` values from the reviewed process snapshot.
 These sessions remain external and are never adopted or stopped. A changed
 process lifetime, changed snapshot, expired approval, or same-lane launcher
-still blocks startup. Without the explicit parameters, admission is unchanged.
+still blocks startup. Without the explicit parameters, only an external runner
+listed in the verified fleet manifest's `external_native_runners` may be
+discovered automatically. Its exact executable and full command must match;
+each launch captures and rechecks its current PID and creation time, plus the
+child's exact executable and bounded command prefix. No PID is persisted as an
+approval. Unknown, ambiguous or changed identities still block startup. An
+external runner upgrade that changes its approved path needs a reviewed manifest
+update, not a broader process exemption.
+
+Apply checks `codex update` and `claude update` independently, before starting
+fleet workers. A live native process defers only its own provider's update;
+`-SkipCliUpdate` explicitly skips both. Status is recorded per provider as
+`updated`, `deferred_live_sessions`, or `operator_skipped`; an updater error logs
+`failed` and aborts restore. No active process is stopped to enable an update.
+This does not reorder unrelated Windows autostarts: an external job that already
+started can legitimately defer its provider's update.
+
+The opt-out read-only conversation monitor is requested before worker startup,
+so it can show partial or failed restore. Opening the monitor does not mean that
+the fleet is ready. `-NoBridgeConversation` suppresses it; DryRun opens no window.
 
 The single-command reboot entry point is:
 
@@ -266,10 +285,12 @@ The same script is the post-install bridge release acceptance check. A staged
 or installed bundle without a new passing response report is not a verified
 runtime release. Read-only dry runs do not send these requests.
 
-CLI updates run on cold starts. If any Codex or Claude native session is
-already running, the launcher defers updates to the shared executables and
-records `deferred_live_sessions`; repeated `-Auto` calls must not replace a
-binary underneath an attested live session. Fleet Claude child processes also
+CLI updates are checked independently per provider. An existing Codex native
+session defers only `codex update`; an existing Claude native session defers
+only `claude update`. The corresponding `codex.update_status` or
+`claude_code.update_status` records `deferred_live_sessions`; an idle provider
+may still be updated. Repeated `-Auto` calls must not replace a binary
+underneath an attested live session. Fleet Claude child processes also
 set `DISABLE_AUTOUPDATER=1` locally so the fleet updater owns binary changes.
 This does not change the operator's global Claude settings.
 

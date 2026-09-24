@@ -660,6 +660,53 @@ function Assert-WdLaneLaunchAvailable {
   }
 }
 
+function Get-WdApprovedExternalRunners {
+  param(
+    [AllowEmptyCollection()] [object[]] $Policies = @(),
+    [AllowEmptyCollection()] [object[]] $Processes = @()
+  )
+  # Policies come ONLY from the verified fleet manifest. Never learn an
+  # approval from an unrecognized live process or persist/reuse a PID.
+  $seen = @{}
+  foreach ($policy in $Policies) {
+    if ([string]$policy.name -cnotmatch '^[a-zA-Z0-9_.-]+\.exe$' -or
+        -not [IO.Path]::IsPathRooted([string]$policy.executable_path) -or
+        [string]::IsNullOrWhiteSpace([string]$policy.command_line) -or
+        [string]$policy.native_child_name -cnotin @('codex.exe', 'claude.exe') -or
+        -not [IO.Path]::IsPathRooted([string]$policy.native_child_executable_path) -or
+        [string]::IsNullOrWhiteSpace([string]$policy.native_child_command_prefix) -or
+        [string]$policy.native_child_command_prefix -notmatch '\s$') {
+      throw 'invalid operator-approved external runner policy'
+    }
+    $parents = @($Processes | Where-Object {
+      [string]$_.Name -ceq [string]$policy.name -and
+      [string]$_.ExecutablePath -ceq [string]$policy.executable_path -and
+      [string]$_.CommandLine -ceq [string]$policy.command_line
+    })
+    if ($parents.Count -gt 1) { throw 'ambiguous approved external runner lifetime' }
+    if ($parents.Count -eq 0) { continue }
+    $parent = $parents[0]
+    if ([int]$parent.ProcessId -le 0 -or $null -eq $parent.CreationDate -or
+        $seen.ContainsKey([int]$parent.ProcessId)) {
+      throw 'missing or duplicate approved external runner lifetime'
+    }
+    $start = [DateTimeOffset]$parent.CreationDate
+    if ($start -gt [DateTimeOffset]::UtcNow) { throw 'external runner lifetime is in the future' }
+    $seen[[int]$parent.ProcessId] = $true
+    # Existing Assert-WdLaneLaunchAvailable rechecks this exact parent lifetime,
+    # child executable/prefix and parent-before-child chronology on EACH launch.
+    [pscustomobject]@{
+      kind = 'native_parent'; pid = [int]$parent.ProcessId
+      name = [string]$policy.name; executable_path = [string]$policy.executable_path
+      command_line = [string]$policy.command_line
+      process_start_utc = $start.UtcDateTime.ToString('o')
+      native_child_name = [string]$policy.native_child_name
+      native_child_executable_path = [string]$policy.native_child_executable_path
+      native_child_command_prefix = [string]$policy.native_child_command_prefix
+    }
+  }
+}
+
 function Read-WdExternalSessions {
   param([string] $Path, [string] $ExpectedHash)
   if (-not $Path -and -not $ExpectedHash) { return }
@@ -1521,6 +1568,14 @@ if ($matches.Count -ne 1) {
 }
 $lane = $matches[0]
 $externalSessions = @(Read-WdExternalSessions -Path $ExternalSessionsPath -ExpectedHash $ExternalSessionsHash)
+if (-not $ExternalSessionsPath -and $null -ne $manifest.PSObject.Properties['external_native_runners']) {
+  # A supplied one-shot snapshot remains authoritative. Normal restores instead
+  # discover fresh lifetimes from the manifest-pinned operator allowlist. No
+  # snapshot writes, expiry refresh, process termination or unknown-process bypass.
+  $externalSessions += @(Get-WdApprovedExternalRunners `
+    -Policies @($manifest.external_native_runners) `
+    -Processes @(Get-CimInstance Win32_Process -ErrorAction Stop))
+}
 $turnMode = Get-WdLaneTurnMode -Lane $lane
 $conversationSurface = Get-WdLaneConversationSurface -Lane $lane
 $conversationPermissions = Get-WdLaneConversationPermissions -Lane $lane

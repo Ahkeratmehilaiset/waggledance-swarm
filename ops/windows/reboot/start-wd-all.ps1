@@ -1668,13 +1668,22 @@ function Get-LaneProcesses {
 }
 
 function Test-WdCliUpdateDeferred {
+  param([ValidateSet('all', 'codex', 'claude')] [string] $Provider = 'all')
   # Shared CLI installation paths must not change beneath either fleet lanes
   # or unrelated operator sessions. Update once on a genuinely cold start.
   # Get-AllProcessSnapshots is deliberately limited to PowerShell wrappers;
   # query native processes independently, including those with no command line.
   return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-    [string]$_.Name -imatch '^(codex|claude)\.exe$'
+    [string]$_.Name -imatch '^(codex|claude)\.exe$' -and
+      ($Provider -ceq 'all' -or [string]$_.Name -ieq ($Provider + '.exe'))
   }).Count -gt 0
+}
+
+function Get-WdCliUpdateStatus {
+  param([ValidateSet('codex', 'claude')] [string] $Provider, [switch] $Skip)
+  if ($Skip) { return 'operator_skipped' }
+  if (Test-WdCliUpdateDeferred -Provider $Provider) { return 'deferred_live_sessions' }
+  return 'pending'
 }
 
 function Test-WdProcessIdentitySetExact {
@@ -2757,11 +2766,8 @@ if ($bundleMode -ceq 'deployed') {
 
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $processes = Get-AllProcessSnapshots
-$cliUpdateDeferred = (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred))
-if ($cliUpdateDeferred) {
-  $SkipCliUpdate = $true
-  Write-Host 'CLI updates deferred: active Codex/Claude sessions use the shared executables; update on a cold start.'
-}
+$codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
+$claudeUpdateStatus = Get-WdCliUpdateStatus -Provider claude -Skip:$SkipCliUpdate
 $laneStates = @()
 $expectedLaneRuntimes = @{
   'codex-lead-1' = [pscustomobject]@{ cli = 'codex.cmd' }
@@ -3384,8 +3390,8 @@ Write-Host '=== whole-fleet preflight passed ===' -ForegroundColor Green
 
 Write-Host ''
 Write-Host 'Update and launch plan:' -ForegroundColor Cyan
-Write-Host ("  Codex: {0}" -f $(if ($SkipCliUpdate) { 'explicitly skipped' } else { 'codex update (once)' }))
-Write-Host ("  Claude Code: {0}" -f $(if ($SkipCliUpdate) { 'explicitly skipped' } else { 'claude update (once)' }))
+Write-Host ("  Codex: codex update (once); {0}" -f $codexUpdateStatus)
+Write-Host ("  Claude Code: claude update (once); {0}" -f $claudeUpdateStatus)
 Write-Host '  Grok: resolve authenticated CLI provider default and write exact high-effort usage'
 foreach ($state in $laneStates) {
   Write-Host (
@@ -3422,7 +3428,7 @@ Write-Host (
 if ($DryRun) {
   Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
   if (-not $NoBridgeConversation) {
-    Write-Host '  Bridge conversation: would open one colored read-only window after successful restore.'
+    Write-Host '  Bridge conversation: would open a deduplicated colored read-only window before restore; not a success indicator.'
   }
   Write-Host ''
   Write-Host 'DRY RUN: no updates, file writes, task starts, WT tabs, or agent processes were started.' -ForegroundColor Yellow
@@ -3519,6 +3525,18 @@ try {
     }
   }
 
+  if (-not $NoBridgeConversation) {
+    try {
+      $conversationProcess = Start-WdBridgeConversationWindow `
+        -HostExecutable (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') `
+        -ViewerPath (Join-Path $PSScriptRoot 'Show-WdBridgeConversation.ps1') `
+        -ReaderPath (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1') `
+        -RuntimeRoot ([string]$manifest.runtime_root)
+      Write-Host ("  Bridge conversation window: viewer requested PID {0}; read-only, restore still in progress" -f $conversationProcess.Id)
+    } catch {
+      Write-Warning ("Conversation window could not open; restore is not yet verified: {0}" -f $_.Exception.Message)
+    }
+  }
   Write-Host 'Applying scheduled-task console containment and merge-driver HOLD...' -ForegroundColor Cyan
   $taskConsoleApply = @(& $taskConsoleContainment -Apply)
   if ($taskConsoleApply.Count -ne 1 -or
@@ -3550,12 +3568,8 @@ try {
   }
 
   # Preflight can take minutes. A native session may have started since then.
-  if (-not $SkipCliUpdate -and (Test-WdCliUpdateDeferred)) {
-    $cliUpdateDeferred = $true
-    $SkipCliUpdate = $true
-    Write-Host 'CLI updates deferred: a Codex/Claude session is active before the update phase.'
-  }
-  if (-not $SkipCliUpdate) {
+  $codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
+  if ($codexUpdateStatus -ceq 'pending') {
     Write-Host ''
     $codexUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'codex.cmd'
     if (
@@ -3572,7 +3586,21 @@ try {
     # Do not ask the native codex.exe to replace its own locked image on
     # Windows. The trusted npm shim runs the same updater through Node without
     # holding codex.exe open, avoiding deterministic EBUSY/exit-code 1.
-    [void](Invoke-CheckedNative -Path $codexUpdateCurrentPath -Arguments @('update') -Label 'codex update')
+    $codexUpdateStatus = Get-WdCliUpdateStatus -Provider codex -Skip:$SkipCliUpdate
+    if ($codexUpdateStatus -ceq 'pending') {
+      try {
+        [void](Invoke-CheckedNative -Path $codexUpdateCurrentPath -Arguments @('update') -Label 'codex update')
+        $codexUpdateStatus = 'updated'
+      } catch {
+        $codexUpdateStatus = 'failed'
+        Write-Warning 'codex update: failed; fleet launch aborted'
+        throw
+      }
+    }
+  }
+  Write-Host ("  codex update: {0}" -f $codexUpdateStatus)
+  $claudeUpdateStatus = Get-WdCliUpdateStatus -Provider claude -Skip:$SkipCliUpdate
+  if ($claudeUpdateStatus -ceq 'pending') {
     $claudeUpdateCurrentPath = Resolve-WdNpmUpdateShim -Name 'claude.cmd'
     if (
       -not $claudeUpdateCurrentPath.Equals(
@@ -3585,8 +3613,19 @@ try {
       throw 'Claude Code npm update shim changed after preflight'
     }
     Write-Host 'Updating Claude Code once...' -ForegroundColor Cyan
-    [void](Invoke-CheckedNative -Path $claudeUpdateCurrentPath -Arguments @('update') -Label 'claude update')
+    $claudeUpdateStatus = Get-WdCliUpdateStatus -Provider claude -Skip:$SkipCliUpdate
+    if ($claudeUpdateStatus -ceq 'pending') {
+      try {
+        [void](Invoke-CheckedNative -Path $claudeUpdateCurrentPath -Arguments @('update') -Label 'claude update')
+        $claudeUpdateStatus = 'updated'
+      } catch {
+        $claudeUpdateStatus = 'failed'
+        Write-Warning 'claude update: failed; fleet launch aborted'
+        throw
+      }
+    }
   }
+  Write-Host ("  claude update: {0}" -f $claudeUpdateStatus)
   $codexAfterPath = Resolve-ApplicationPath -Name 'codex.cmd'
   $claudeAfterPath = Resolve-ApplicationPath -Name 'claude.cmd'
   $wtPath = Resolve-ApplicationPath -Name 'wt.exe'
@@ -3609,8 +3648,8 @@ try {
     Get-FileHash -LiteralPath $claudeAfterPath -Algorithm SHA256
   ).Hash
   if (
-    $SkipCliUpdate -and
-    ($codexAfterHash -cne $codexHash -or $claudeAfterHash -cne $claudeHash)
+    ($codexUpdateStatus -cne 'updated' -and $codexAfterHash -cne $codexHash) -or
+    ($claudeUpdateStatus -cne 'updated' -and $claudeAfterHash -cne $claudeHash)
   ) {
     throw 'CLI executable bytes changed during a skipped update phase'
   }
@@ -3628,8 +3667,9 @@ try {
   $cliVersionRecord = [ordered]@{
     schema_version = 1
     verified_at_utc = [DateTime]::UtcNow.ToString('o')
-    update_status = $(if ($cliUpdateDeferred) { 'deferred_live_sessions' } elseif ($SkipCliUpdate) { 'operator_skipped' } else { 'completed' })
+    update_status = $(if ($codexUpdateStatus -ceq $claudeUpdateStatus) { $codexUpdateStatus } else { 'mixed' })
     codex = [ordered]@{
+      update_status = $codexUpdateStatus
       before = $codexVersion
       after = $codexAfterVersion
       executable = $codexAfterPath
@@ -3639,6 +3679,7 @@ try {
       update_command = 'codex update'
     }
     claude_code = [ordered]@{
+      update_status = $claudeUpdateStatus
       before = $claudeVersion
       after = $claudeAfterVersion
       executable = $claudeAfterPath
@@ -4060,18 +4101,6 @@ try {
     Write-Host '  Codex Lead prompt watcher: disabled; native permission policy applies'
   }
   Write-Host '  Merge driver: deliberate Disabled/HOLD containment preserved'
-  if (-not $NoBridgeConversation) {
-    try {
-      $conversationProcess = Start-WdBridgeConversationWindow `
-        -HostExecutable (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') `
-        -ViewerPath (Join-Path $PSScriptRoot 'Show-WdBridgeConversation.ps1') `
-        -ReaderPath (Join-Path $PSScriptRoot 'tools-bootstrap\.agent-bridge\bin\BridgeIncrementalReader.ps1') `
-        -RuntimeRoot ([string]$manifest.runtime_root)
-      Write-Host ("  Bridge conversation window: started viewer PID {0}; read-only" -f $conversationProcess.Id)
-    } catch {
-      Write-Warning ("Fleet restored, but conversation window could not open: {0}" -f $_.Exception.Message)
-    }
-  }
   Write-Host ("  CLI versions: Codex {0} -> {1}; Claude {2} -> {3}" -f $codexVersion, $codexAfterVersion, $claudeVersion, $claudeAfterVersion)
 } finally {
   if ($mutexAcquired) {

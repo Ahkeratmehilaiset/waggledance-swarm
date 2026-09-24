@@ -208,7 +208,8 @@ function New-ForwardingWrapper {
         'library' { 'param()' }
         'grok' {
 @'
-param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status)
+param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
+    [string] $ExceptionPath = '', [string] $ExceptionSha256 = '')
 '@
         }
         'fleet' {

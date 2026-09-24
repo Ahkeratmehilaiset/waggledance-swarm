@@ -87,3 +87,22 @@ def test_reader_uses_pinned_no_ack_and_rejects_invalid_json(monkeypatch):
     monkeypatch.setattr(module.subprocess, 'run', run)
     with pytest.raises(ValueError):
         module.load_events('runtime', 'bundle', 'a'*64)
+
+
+@pytest.mark.parametrize('output,count', [('', 0), ('[]', 0),
+    ('{"agent":"wd-agent-value","type":"message","ts_utc":"2026-09-24T00:00:00Z"}', 1),
+    ('[{"agent":"a"},{"agent":"b"}]', 2)])
+def test_reader_accepts_powershell_pipeline_cardinality(monkeypatch, output, count):
+    module = load_metric()
+    monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
+    monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
+    assert len(module.load_events('runtime', 'bundle', 'a'*64)) == count
+
+
+@pytest.mark.parametrize('output', ['null', '42', '{"error":"failed"}', '[42]'])
+def test_reader_rejects_non_event_payload(monkeypatch, output):
+    module = load_metric()
+    monkeypatch.setattr(module, 'verified_writer', lambda *_: Path('pinned/Read-AgentBridge.ps1'))
+    monkeypatch.setattr(module.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=output))
+    with pytest.raises(ValueError):
+        module.load_events('runtime', 'bundle', 'a'*64)

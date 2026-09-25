@@ -12,6 +12,7 @@ import hashlib
 import json
 import queue
 import threading
+import time
 
 import pytest
 
@@ -133,10 +134,25 @@ class FakeAppServer:
                 "platformOs": "Windows 11",
             }})
         elif method == "model/list":
-            self._emit({"id": request_id, "result": {"models": [
-                {"id": f"model-{index}", "displayName": f"Model {index}"}
-                for index in range(self.models)
-            ]}})
+            # The DOCUMENTED envelope: result.data plus nextCursor, with the
+            # documented entry fields. The earlier fixture used a "models" key
+            # the protocol does not define, so the suite agreed with the code
+            # and both disagreed with the server.
+            self._emit({"id": request_id, "result": {
+                "data": [{
+                    "id": f"model-{index}",
+                    "model": f"model-{index}",
+                    "displayName": f"Model {index}",
+                    "hidden": False,
+                    "defaultReasoningEffort": "medium",
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "medium", "description": "balanced"}],
+                    "inputModalities": ["text", "image"],
+                    "supportsPersonality": True,
+                    "isDefault": index == 0,
+                } for index in range(self.models)],
+                "nextCursor": None,
+            }})
 
     # -- Popen-compatible surface ---------------------------------------
     def poll(self) -> int | None:
@@ -180,7 +196,8 @@ def test_a_method_outside_the_allow_list_is_refused_before_the_wire():
     child = FakeAppServer()
     with OwnedAppServer(spawner(child), client_info=CLIENT) as server:
         with pytest.raises(TransportRefused, match="allow-list"):
-            server._send("turn/start", {}, request_id=1)
+            server._send("turn/start", {}, request_id=1,
+                         deadline=time.monotonic() + 5)
     assert child.frames == [], "a refused method still reached the child"
 
 
@@ -255,11 +272,14 @@ def test_an_oversized_response_field_is_truncated():
 def test_only_bounded_fields_are_retained_so_nothing_can_leak():
     child = FakeAppServer()
     result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
-    assert set(result) == {"schema", "observed", "control_allowed", "methods_used",
-                           "server", "models", "model_count_recorded"}
+    assert set(result) == {"schema", "observed", "control_allowed", "methods_sent",
+                           "server", "models", "model_count_recorded", "next_cursor",
+                           "cleanup_clean", "cleanup_errors", "executable_verified",
+                           "executable_digest", "verification_note"}
     assert set(result["server"]) == {"user_agent", "platform_family", "platform_os"}
     for entry in result["models"]:
-        assert set(entry) == {"id", "display_name"}
+        assert set(entry) == {"id", "display_name", "is_default", "hidden",
+                              "default_reasoning_effort"}
 
 
 # --- input validation ------------------------------------------------------
@@ -469,3 +489,219 @@ def test_the_module_adds_no_third_party_dependency():
                 "__future__", "collections", "dataclasses", "hashlib", "json",
                 "pathlib", "queue", "threading", "time", "typing", "subprocess",
             }, f"unexpected dependency: {root}"
+
+
+# --- defects the Lead reproduced at bab7cb0b, each fixed and pinned ------------
+
+
+def test_the_documented_model_list_envelope_is_what_is_parsed():
+    """result.data plus nextCursor.
+
+    An earlier version read a key the protocol does not define, so the code and
+    its own fixture agreed with each other and both disagreed with the server.
+    """
+    child = FakeAppServer(models=2)
+    result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+    assert [entry["id"] for entry in result["models"]] == ["model-0", "model-1"]
+    assert result["models"][0]["is_default"] is True
+    assert result["models"][0]["default_reasoning_effort"] == "medium"
+    assert result["next_cursor"] is None
+
+
+def test_a_models_key_is_no_longer_accepted():
+    """Non-vacuity for the fix: the undocumented shape must now be refused."""
+    child = FakeAppServer()
+    original = child.react
+
+    def react(frame):
+        if frame.get("method") == "model/list":
+            child._emit({"id": frame["id"], "result": {"models": [{"id": "x"}]}})
+        else:
+            original(frame)
+
+    child.react = react
+    with pytest.raises(TransportProtocolError, match="no data list"):
+        transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+
+
+@pytest.mark.parametrize("broken", ["stdout", "stdin"])
+def test_a_malformed_child_is_still_cleaned_up_not_leaked(broken):
+    """The raise used to happen before ownership, so the child was abandoned."""
+    child = FakeAppServer()
+    setattr(child, broken, None)
+    with pytest.raises(TransportChildError, match="stdio"):
+        with OwnedAppServer(spawner(child), client_info=CLIENT):
+            pass
+    assert child.terminated or child.killed, "a malformed child was leaked"
+    assert child.waited
+
+
+def test_a_slow_write_does_not_outlive_its_deadline():
+    """The deadline covered only the read half, so a stuck writer ignored it."""
+    child = FakeAppServer()
+    original = child.stdin.write
+
+    def slow_write(data):
+        time.sleep(0.25)
+        original(data)
+
+    child.stdin.write = slow_write
+    started = time.monotonic()
+    with pytest.raises(TransportTimeout, match="writing"):
+        transport.observe_owned_app_server(spawner(child), client_info=CLIENT,
+                                           deadline_seconds=0.01)
+    assert time.monotonic() - started < 0.15, "the call waited out the blocked write"
+
+
+def test_a_transport_poisoned_by_a_write_timeout_refuses_further_sends():
+    """A half-written frame must never be followed by another."""
+    child = FakeAppServer()
+    original = child.stdin.write
+
+    def slow_write(data):
+        time.sleep(0.25)
+        original(data)
+
+    child.stdin.write = slow_write
+    with OwnedAppServer(spawner(child), client_info=CLIENT,
+                        deadline_seconds=0.01) as server:
+        with pytest.raises(TransportTimeout):
+            server.initialize()
+        with pytest.raises(TransportRefused, match="unusable"):
+            server.initialize()
+
+
+class _Unkillable(FakeAppServer):
+    def terminate(self):
+        raise OSError("access denied")
+
+    def kill(self):
+        raise OSError("access denied")
+
+
+def test_a_failed_kill_is_reported_rather_than_passing_as_a_clean_exit():
+    """close() swallowed cleanup failure and still read as success."""
+    child = _Unkillable()
+    with pytest.raises(TransportChildError, match="cleanup failed"):
+        with OwnedAppServer(spawner(child), client_info=CLIENT) as server:
+            server.initialize()
+
+
+def test_a_cleanup_failure_does_not_mask_the_body_exception():
+    """Non-vacuity pair: the body's error is more informative, so it wins."""
+    child = _Unkillable()
+    captured = {}
+    with pytest.raises(ValueError, match="boom"):
+        with OwnedAppServer(spawner(child), client_info=CLIENT) as server:
+            captured["server"] = server
+            server.initialize()
+            raise ValueError("boom")
+    assert captured["server"].cleanup_errors, "the cleanup failure went unrecorded"
+
+
+def test_methods_sent_is_measured_from_the_wire_not_the_allow_list():
+    """Reporting the allow-list stated an intention; this states an observation."""
+    child = FakeAppServer()
+    result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+    assert result["methods_sent"] == ["initialize", "initialized", "model/list"]
+    assert result["methods_sent"] == methods_sent(child), "report disagrees with the wire"
+    # NOT asserted here: that the report differs from sorted(ALLOWED_METHODS).
+    # On the happy path the send order coincidentally equals the sorted
+    # allow-list, so such an assertion would prove nothing. The discriminating
+    # case is the partial-failure test below, where the wire is a strict subset.
+
+
+def test_methods_sent_records_only_what_actually_went_when_a_call_fails():
+    child = FakeAppServer(behaviour="error")
+    with OwnedAppServer(spawner(child), client_info=CLIENT) as server:
+        with pytest.raises(TransportProtocolError):
+            server.initialize()
+        assert server.methods_sent == ["initialize"], server.methods_sent
+
+
+# --- the executable pin is now wired to the entry point ------------------------
+
+
+def test_the_entry_point_verifies_the_executable_when_a_pin_is_supplied(tmp_path):
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"pretend cli")
+    digest = hashlib.sha256(b"pretend cli").hexdigest()
+    child = FakeAppServer()
+    result = transport.observe_owned_app_server(
+        spawner(child), client_info=CLIENT,
+        executable=binary, expected_sha256=digest)
+    assert result["executable_verified"] is True
+    assert result["executable_digest"] == digest
+
+
+def test_the_entry_point_refuses_a_bad_pin_before_spawning(tmp_path):
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"pretend cli")
+    child = FakeAppServer()
+    with pytest.raises(TransportRefused, match="does not match the pin"):
+        transport.observe_owned_app_server(
+            spawner(child), client_info=CLIENT,
+            executable=binary, expected_sha256="0" * 64)
+    assert child.frames == [], "a refused pin still spawned and spoke to a child"
+
+
+def test_an_unpinned_observation_says_so_instead_of_staying_silent():
+    child = FakeAppServer()
+    result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+    assert result["executable_verified"] is False
+    assert result["executable_digest"] is None
+    assert "no executable pin" in result["verification_note"]
+
+
+def test_half_a_pin_is_refused(tmp_path):
+    child = FakeAppServer()
+    with pytest.raises(TransportRefused, match="supplied together"):
+        transport.observe_owned_app_server(spawner(child), client_info=CLIENT,
+                                           executable=tmp_path / "codex.exe")
+    with pytest.raises(TransportRefused, match="supplied together"):
+        transport.observe_owned_app_server(spawner(child), client_info=CLIENT,
+                                           expected_sha256="0" * 64)
+
+
+# --- two assertions that were vacuous until a mutation run said so -------------
+
+
+def test_a_non_null_next_cursor_is_carried_through():
+    """Asserting `is None` proved nothing: None is also the unset default.
+
+    Removing the assignment entirely left the field None and the old test still
+    passed. A non-null cursor is the only value that distinguishes recorded from
+    never-set.
+    """
+    child = FakeAppServer()
+    original = child.react
+
+    def react(frame):
+        if frame.get("method") == "model/list":
+            child._emit({"id": frame["id"], "result": {
+                "data": [{"id": "example", "displayName": "Example"}],
+                "nextCursor": "page-2",
+            }})
+        else:
+            original(frame)
+
+    child.react = react
+    result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+    assert result["next_cursor"] == "page-2"
+
+
+def test_the_reported_methods_follow_the_wire_even_if_the_allow_list_changes(
+        monkeypatch):
+    """The happy-path wire coincidentally equals sorted(ALLOWED_METHODS).
+
+    So comparing the two values cannot tell a measurement from a copy. Widening
+    the allow-list changes the copy and leaves the measurement alone, which is
+    the difference the report is supposed to express.
+    """
+    widened = set(transport.ALLOWED_METHODS) | {"aaa/first", "zzz/last"}
+    monkeypatch.setattr(transport, "ALLOWED_METHODS", frozenset(widened))
+    child = FakeAppServer()
+    result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+    assert result["methods_sent"] == ["initialize", "initialized", "model/list"]
+    assert "aaa/first" not in result["methods_sent"]
+    assert result["methods_sent"] != sorted(transport.ALLOWED_METHODS)

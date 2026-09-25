@@ -216,23 +216,44 @@ class OwnedAppServer:
         self._reader: _LineReader | None = None
         self._next_id = 0
         self._initialised = False
+        self._poisoned: str | None = None
+        #: Methods ACTUALLY written to the child, in order. Reported instead of
+        #: the allow-list, because the allow-list states an intention and this
+        #: states an observation, and only one of those is evidence.
+        self.methods_sent: list[str] = []
+        #: Cleanup problems, so a failed kill cannot pass as a clean exit.
+        self.cleanup_errors: list[str] = []
         self.server_info: dict[str, Any] | None = None
+        self.next_cursor: str | None = None
 
     # --- lifecycle -------------------------------------------------------
 
     def __enter__(self) -> OwnedAppServer:
         child = self._spawn()
-        if child is None or getattr(child, "stdin", None) is None \
-                or getattr(child, "stdout", None) is None:
-            raise TransportChildError("spawn did not return a child with stdio")
+        # OWN IT FIRST, then validate. Validating before ownership meant a child
+        # that came back without usable stdio was never cleaned up: the raise
+        # happened while nothing yet referred to the process, so it leaked.
         self._child = child
+        if child is None:
+            self._child = None
+            raise TransportChildError("spawn did not return a child with stdio")
+        if getattr(child, "stdin", None) is None or getattr(child, "stdout", None) is None:
+            self.close()
+            raise TransportChildError("spawn did not return a child with stdio")
         self._reader = _LineReader(child.stdout)
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(self, exc_type: object, *_rest: object) -> None:
         self.close()
+        # A cleanup failure stays quiet only when raising would mask a more
+        # informative exception from the body. Otherwise a close() that could
+        # not kill or reap the child must not read as success.
+        if self.cleanup_errors and exc_type is None:
+            raise TransportChildError(
+                "child cleanup failed: " + "; ".join(self.cleanup_errors))
 
     def close(self) -> None:
+        """Terminate and reap the child, RECORDING anything that went wrong."""
         child, self._child = self._child, None
         self._reader = None
         if child is None:
@@ -240,7 +261,7 @@ class OwnedAppServer:
         for step in ("stdin", "terminate", "kill"):
             try:
                 if step == "stdin":
-                    if child.stdin is not None:
+                    if getattr(child, "stdin", None) is not None:
                         child.stdin.close()
                 elif step == "terminate":
                     if child.poll() is None:
@@ -248,12 +269,16 @@ class OwnedAppServer:
                 else:
                     if child.poll() is None:
                         child.kill()
-            except Exception:                        # noqa: BLE001,S110 - cleanup only
-                continue
+            except Exception as exc:                 # noqa: BLE001 - recorded, not raised
+                # stdin failing to close is not interesting. Failing to STOP the
+                # child is, because that is the difference between cleanup and a
+                # leak, and it used to be swallowed into a success.
+                if step != "stdin":
+                    self.cleanup_errors.append(f"{step}: {type(exc).__name__}")
         try:
             child.wait(timeout=5)
-        except Exception:                            # noqa: BLE001,S110 - cleanup only
-            pass
+        except Exception as exc:                     # noqa: BLE001 - recorded, not raised
+            self.cleanup_errors.append(f"wait: {type(exc).__name__}")
 
     def _assert_alive(self) -> None:
         if self._child is None or self._reader is None:
@@ -265,8 +290,10 @@ class OwnedAppServer:
     # --- framing ---------------------------------------------------------
 
     def _send(self, method: str, params: Mapping[str, Any] | None,
-              *, request_id: int | None) -> None:
+              *, request_id: int | None, deadline: float) -> None:
         """The single send site, and therefore the only injection boundary."""
+        if self._poisoned:
+            raise TransportRefused(f"transport is unusable: {self._poisoned}")
         if method not in ALLOWED_METHODS:
             raise TransportRefused(f"method is not in the read-only allow-list: {method!r}")
         frame: dict[str, Any] = {"method": method}
@@ -278,11 +305,40 @@ class OwnedAppServer:
         if len(encoded) > MAX_LINE_BYTES:
             raise TransportRefused("outgoing frame exceeds the frame bound")
         self._assert_alive()
-        try:
-            self._child.stdin.write(encoded)
-            self._child.stdin.flush()
-        except Exception as exc:                     # noqa: BLE001
-            raise TransportChildError(f"child stdin failed: {type(exc).__name__}") from exc
+        self._write_before(encoded, deadline)
+        self.methods_sent.append(method)
+
+    def _write_before(self, encoded: bytes, deadline: float) -> None:
+        """Write, but stop WAITING at the deadline.
+
+        A pipe write to a child that is not draining blocks, and the deadline
+        used to cover only the read half, so a slow or stuck writer ignored it
+        entirely. A blocking write cannot be cancelled portably, so instead of
+        pretending otherwise: the write runs on ONE short-lived daemon thread,
+        joined for the remaining time only. If it has not finished, we stop
+        waiting, mark the transport unusable so a half-written frame can never
+        be followed by another, and let close() terminate the child -- which is
+        what actually releases the blocked write. The thread is bounded by the
+        child's death, not left to run forever pretending to be a deadline.
+        """
+        failure: list[BaseException] = []
+
+        def write() -> None:
+            try:
+                self._child.stdin.write(encoded)
+                self._child.stdin.flush()
+            except BaseException as exc:             # noqa: BLE001 - reported below
+                failure.append(exc)
+
+        worker = threading.Thread(target=write, daemon=True)
+        worker.start()
+        worker.join(max(0.0, deadline - time.monotonic()))
+        if worker.is_alive():
+            self._poisoned = "a write did not complete before its deadline"
+            raise TransportTimeout("deadline expired while writing to the child")
+        if failure:
+            raise TransportChildError(
+                f"child stdin failed: {type(failure[0]).__name__}") from failure[0]
 
     def _await_response(self, request_id: int, deadline: float) -> dict[str, Any]:
         """Read until the matching id, skipping notifications, bounded throughout."""
@@ -313,7 +369,7 @@ class OwnedAppServer:
         request_id = self._next_id
         self._next_id += 1
         deadline = time.monotonic() + self._deadline_seconds
-        self._send(method, params, request_id=request_id)
+        self._send(method, params, request_id=request_id, deadline=deadline)
         return self._await_response(request_id, deadline)
 
     # --- the bounded read-only surface ------------------------------------
@@ -323,7 +379,8 @@ class OwnedAppServer:
         if self._initialised:
             raise TransportRefused("initialize was already completed")
         result = self._request("initialize", {"clientInfo": self._client_info.as_params()})
-        self._send("initialized", {}, request_id=None)
+        self._send("initialized", {}, request_id=None,
+                   deadline=time.monotonic() + self._deadline_seconds)
         self._initialised = True
         self.server_info = {
             "user_agent": _bounded_text(result.get("userAgent")),
@@ -343,9 +400,13 @@ class OwnedAppServer:
             raise TransportRefused("include_hidden must be a boolean")
         result = self._request("model/list",
                                {"limit": limit, "includeHidden": include_hidden})
-        entries = result.get("models")
+        # The documented envelope is result.data plus nextCursor. An earlier
+        # version read result.models, a key the protocol does not define, so it
+        # would have refused every real response while passing its own fixture.
+        entries = result.get("data")
         if not isinstance(entries, list):
-            raise TransportProtocolError("model/list result has no models list")
+            raise TransportProtocolError("model/list result has no data list")
+        self.next_cursor = _bounded_text(result.get("nextCursor"))
         summary: list[dict[str, Any]] = []
         for entry in entries[:MAX_MODELS_RECORDED]:
             if not isinstance(entry, Mapping):
@@ -353,6 +414,12 @@ class OwnedAppServer:
             summary.append({
                 "id": _bounded_text(entry.get("id")),
                 "display_name": _bounded_text(entry.get("displayName")),
+                "is_default": entry.get("isDefault") if isinstance(
+                    entry.get("isDefault"), bool) else None,
+                "hidden": entry.get("hidden") if isinstance(
+                    entry.get("hidden"), bool) else None,
+                "default_reasoning_effort": _bounded_text(
+                    entry.get("defaultReasoningEffort")),
             })
         return summary
 
@@ -368,6 +435,8 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
                              client_info: ClientInfo,
                              limit: int = 20,
                              deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+                             executable: Path | str | None = None,
+                             expected_sha256: str | None = None,
                              ) -> dict[str, Any]:
     """One bounded observation of a child we spawn, own, and then terminate.
 
@@ -375,17 +444,46 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
     started app-server reports about itself, and nothing about any other
     process. ``control_allowed`` is structurally false on every path, mirroring
     the owning-session descriptor validator.
+
+    EXECUTABLE PINNING IS REPORTED, NOT ASSUMED. ``verify_executable`` used to
+    exist beside this function without being wired to it, so a caller could
+    produce an observation that looked pinned while nothing had been checked.
+    Pass ``executable`` and ``expected_sha256`` and the file is hashed BEFORE
+    the spawn, with the digest recorded. Omit them -- which a fake-child test
+    must -- and the result says ``executable_verified: False`` and why, so the
+    absence is visible in the artefact rather than inferred from its silence.
     """
+    verification: dict[str, Any] = {"executable_verified": False,
+                                    "executable_digest": None,
+                                    "verification_note": "no executable pin supplied"}
+    if executable is not None or expected_sha256 is not None:
+        if executable is None or expected_sha256 is None:
+            raise TransportRefused(
+                "executable and expected_sha256 must be supplied together")
+        verification = {
+            "executable_verified": True,
+            "executable_digest": verify_executable(Path(executable), expected_sha256),
+            "verification_note": "hashed before spawn",
+        }
     with OwnedAppServer(spawn, client_info=client_info,
                         deadline_seconds=deadline_seconds) as server:
         handshake = server.initialize()
         models = server.list_models(limit=limit)
+        # MEASURED, not declared: the frames actually written, in order. The
+        # allow-list is what we intended to be able to send; this is what went.
+        methods_sent = list(server.methods_sent)
+        next_cursor = server.next_cursor
+        cleanup_errors = server.cleanup_errors
     return {
         "schema": OBSERVATION_SCHEMA,
         "observed": "spawned_child_only",
         "control_allowed": False,
-        "methods_used": sorted(ALLOWED_METHODS),
+        "methods_sent": methods_sent,
         "server": handshake,
         "models": models,
         "model_count_recorded": len(models),
+        "next_cursor": next_cursor,
+        "cleanup_clean": not cleanup_errors,
+        "cleanup_errors": list(cleanup_errors),
+        **verification,
     }

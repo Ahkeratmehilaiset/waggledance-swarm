@@ -24,7 +24,7 @@ path that accepts an epoch value as input.
 
 | Epoch | Evidence |
 | --- | --- |
-| `policy_epoch` | `evidence.policy.documents[]`, each `{ref, sha256}`, deduplicated by `ref` |
+| `policy_epoch` | `evidence.policy.domain` plus `documents[]`, each `{ref, sha256}`, deduplicated by `ref`; missing domain is unknown |
 | `catalog_epoch` | `evidence.catalog` = `{ref, sha256}` |
 | `qualification_epoch` | `evidence.qualification` = `{ref, sha256, evidence_ids[], verdicts{}}` |
 | `profile_epoch` | `evidence.profile` = `{ref, sha256, profile_id, authorization_ref}` |

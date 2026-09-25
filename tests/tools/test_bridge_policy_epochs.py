@@ -54,7 +54,7 @@ BINDING = {
 
 def evidence():
     return {
-        "policy": {"documents": [{"ref": "docs/POLICY.md", "sha256": H1},
+        "policy": {"domain": "bridge-governance", "documents": [{"ref": "docs/POLICY.md", "sha256": H1},
                                  {"ref": "configs/policy.json", "sha256": H2}]},
         "catalog": {"ref": "configs/profile_catalog.json", "sha256": H3},
         "qualification": {
@@ -70,6 +70,23 @@ def evidence():
 
 def complete_snapshot():
     return snapshot(evidence(), binding=BINDING)
+
+
+def test_policy_domain_changes_epoch_even_with_identical_documents():
+    payload = evidence()
+    payload["policy"]["domain"] = "deployment-runtime"
+    first = snapshot(payload, binding=BINDING)
+    payload["policy"]["domain"] = "bridge-governance"
+    second = snapshot(payload, binding=BINDING)
+    assert first["epochs"]["policy_epoch"] != second["epochs"]["policy_epoch"]
+
+
+def test_missing_policy_domain_is_unknown():
+    payload = evidence()
+    payload["policy"].pop("domain", None)
+    result = snapshot(payload, binding=BINDING)
+    assert "policy_epoch" not in result["epochs"]
+    assert "policy_domain_missing" in result["unknown"]["policy_epoch"]
 
 
 # --- nothing invented, nothing defaulted --------------------------------------

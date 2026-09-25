@@ -105,6 +105,9 @@ def _hashed_ref(entry: Any) -> dict | None:
 
 
 def _policy_material(evidence: Mapping[str, Any]) -> tuple[Any, list[str]]:
+    domain = evidence.get("domain")
+    if not _text(domain):
+        return None, ["policy_domain_missing"]
     documents = evidence.get("documents")
     if not isinstance(documents, list) or not documents:
         return None, ["policy_documents_missing"]
@@ -115,7 +118,7 @@ def _policy_material(evidence: Mapping[str, Any]) -> tuple[Any, list[str]]:
     refs = [item["ref"] for item in ordered]
     if len(set(refs)) != len(refs):
         return None, ["policy_documents_contain_duplicate_refs"]
-    return ordered, []
+    return {"domain": domain.strip(), "documents": ordered}, []
 
 
 def _single_material(evidence: Mapping[str, Any], reason: str) -> tuple[Any, list[str]]:
@@ -180,7 +183,7 @@ def _native_material(binding: Mapping[str, Any]) -> tuple[Any, list[str]]:
 def epoch_inputs() -> dict:
     """Describe what each epoch needs. Documentation the caller can read."""
     return {
-        "policy_epoch": "evidence.policy.documents[]: {ref, sha256} each, deduplicated",
+        "policy_epoch": "evidence.policy.domain plus documents[]: {ref, sha256} each, deduplicated",
         "catalog_epoch": "evidence.catalog: {ref, sha256}",
         "qualification_epoch":
             "evidence.qualification: {ref, sha256, evidence_ids[], verdicts{}} - "

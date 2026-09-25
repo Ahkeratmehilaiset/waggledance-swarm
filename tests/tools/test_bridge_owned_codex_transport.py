@@ -226,7 +226,7 @@ def test_the_happy_path_returns_a_bounded_observation():
     child = FakeAppServer(models=3)
     result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
     assert result["schema"] == transport.OBSERVATION_SCHEMA
-    assert result["observed"] == "spawned_child_only"
+    assert result["observed"] == "child_returned_by_supplied_spawn"
     assert result["control_allowed"] is False
     assert result["server"]["platform_os"] == "Windows 11"
     assert [m["id"] for m in result["models"]] == ["model-0", "model-1", "model-2"]
@@ -274,8 +274,9 @@ def test_only_bounded_fields_are_retained_so_nothing_can_leak():
     result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
     assert set(result) == {"schema", "observed", "control_allowed", "methods_sent",
                            "server", "models", "model_count_recorded", "next_cursor",
-                           "cleanup_clean", "cleanup_errors", "executable_verified",
-                           "executable_digest", "verification_note"}
+                           "cleanup_clean", "cleanup_errors", "file_digest_verified",
+                           "executable_digest", "child_identity_verified",
+                           "verification_note"}
     assert set(result["server"]) == {"user_agent", "platform_family", "platform_os"}
     for entry in result["models"]:
         assert set(entry) == {"id", "display_name", "is_default", "hidden",
@@ -630,7 +631,8 @@ def test_the_entry_point_verifies_the_executable_when_a_pin_is_supplied(tmp_path
     result = transport.observe_owned_app_server(
         spawner(child), client_info=CLIENT,
         executable=binary, expected_sha256=digest)
-    assert result["executable_verified"] is True
+    assert result["file_digest_verified"] is True
+    assert result["child_identity_verified"] is False
     assert result["executable_digest"] == digest
 
 
@@ -648,7 +650,7 @@ def test_the_entry_point_refuses_a_bad_pin_before_spawning(tmp_path):
 def test_an_unpinned_observation_says_so_instead_of_staying_silent():
     child = FakeAppServer()
     result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
-    assert result["executable_verified"] is False
+    assert result["file_digest_verified"] is False
     assert result["executable_digest"] is None
     assert "no executable pin" in result["verification_note"]
 
@@ -705,3 +707,165 @@ def test_the_reported_methods_follow_the_wire_even_if_the_allow_list_changes(
     assert result["methods_sent"] == ["initialize", "initialized", "model/list"]
     assert "aaa/first" not in result["methods_sent"]
     assert result["methods_sent"] != sorted(transport.ALLOWED_METHODS)
+
+
+# --- cleanup ORDER, and the identity claim narrowed ----------------------------
+
+
+def test_cleanup_stops_the_child_before_closing_a_blocked_pipe():
+    """Closing stdin first deadlocked the unwind.
+
+    A blocked write holds the BufferedWriter lock; close() waits for that lock;
+    and the thing that releases the writer -- killing the child -- was queued
+    behind the close. The deadline expired and then the rescue hung.
+    """
+    child = FakeAppServer()
+    released = threading.Event()
+    original_terminate = child.terminate
+
+    def blocked_write(data):
+        released.wait(0.5)
+
+    def locked_close():
+        released.wait(0.25)          # models BufferedWriter waiting on the lock
+
+    def terminate():
+        released.set()
+        original_terminate()
+
+    child.stdin.write = blocked_write
+    child.stdin.close = locked_close
+    child.terminate = terminate
+    started = time.monotonic()
+    with pytest.raises(TransportTimeout):
+        transport.observe_owned_app_server(spawner(child), client_info=CLIENT,
+                                           deadline_seconds=0.01)
+    assert time.monotonic() - started < 0.15, "cleanup hung on the blocked pipe"
+
+
+def test_the_order_is_asserted_not_merely_the_elapsed_time():
+    """Timing can pass for the wrong reason; the sequence is the contract."""
+    child = FakeAppServer()
+    order: list[str] = []
+    original_terminate = child.terminate
+    original_close = child.stdin.close
+
+    def terminate():
+        order.append("terminate")
+        original_terminate()
+
+    def close():
+        order.append("stdin_close")
+        original_close()
+
+    child.terminate = terminate
+    child.stdin.close = close
+    with OwnedAppServer(spawner(child), client_info=CLIENT) as server:
+        server.initialize()
+    assert order.index("terminate") < order.index("stdin_close"), order
+
+
+def test_a_pipe_that_never_closes_is_bounded_and_recorded():
+    """Cleanup must be bounded too, or the unwind becomes the hang."""
+    child = FakeAppServer()
+
+    def never_returns():
+        threading.Event().wait(30)
+
+    child.stdin.close = never_returns
+    monitor = OwnedAppServer(spawner(child), client_info=CLIENT)
+    started = time.monotonic()
+    with monitor as server:
+        server.initialize()
+    elapsed = time.monotonic() - started
+    assert elapsed < transport.CLEANUP_JOIN_SECONDS + 2, elapsed
+    assert any("stdin_close" in entry for entry in monitor.cleanup_errors), \
+        monitor.cleanup_errors
+    # Recorded, but deliberately NOT raised: terminate, kill and wait already
+    # ran, so a stuck pipe is a stray handle rather than a leaked process, and
+    # raising would blunt the signal reserved for a child that may still live.
+
+
+def test_a_failed_stop_still_raises_even_though_a_stuck_pipe_does_not():
+    """Non-vacuity pair for that distinction: the serious case must still raise."""
+    class Unstoppable(FakeAppServer):
+        def terminate(self):
+            raise OSError("access denied")
+
+        def kill(self):
+            raise OSError("access denied")
+
+    child = Unstoppable()
+    with pytest.raises(TransportChildError, match="cleanup failed"):
+        with OwnedAppServer(spawner(child), client_info=CLIENT) as server:
+            server.initialize()
+
+
+# --- the identity claim is now two separate claims ------------------------------
+
+
+def test_an_arbitrary_callback_never_claims_a_verified_child(tmp_path):
+    """Hashing a path the callback may never open links the two by nothing."""
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"pretend cli")
+    digest = hashlib.sha256(b"pretend cli").hexdigest()
+    child = FakeAppServer()
+    result = transport.observe_owned_app_server(
+        spawner(child), client_info=CLIENT,
+        executable=binary, expected_sha256=digest)
+    assert result["file_digest_verified"] is True
+    assert result["child_identity_verified"] is False, \
+        "a hashed file was mistaken for a verified child"
+    assert result["observed"] == "child_returned_by_supplied_spawn"
+    assert "arbitrary callback" in result["verification_note"]
+
+
+def test_an_unpinned_observation_claims_nothing_about_provenance():
+    child = FakeAppServer()
+    result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
+    assert result["file_digest_verified"] is False
+    assert result["child_identity_verified"] is False
+    assert result["observed"] == "child_returned_by_supplied_spawn"
+
+
+def test_only_a_pinned_spawn_reports_a_verified_child(tmp_path, monkeypatch):
+    """pinned_spawn binds the digest and the start into one decision.
+
+    Popen is intercepted so nothing is executed: the point is the provenance
+    bookkeeping, not a live start.
+    """
+    import subprocess
+
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"pretend cli")
+    digest = hashlib.sha256(b"pretend cli").hexdigest()
+    child = FakeAppServer()
+    captured: dict = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            self.__dict__.update(child.__dict__)
+
+        def __getattr__(self, name):
+            return getattr(child, name)
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    spawn = transport.pinned_spawn(binary, digest, ["app-server"])
+    result = transport.observe_owned_app_server(spawn, client_info=CLIENT)
+    assert captured["argv"] == [str(binary), "app-server"]
+    assert result["child_identity_verified"] is True
+    assert result["file_digest_verified"] is True
+    assert result["executable_digest"] == digest
+    assert result["observed"] == "child_spawned_from_pinned_executable"
+
+
+def test_a_pinned_spawn_verifies_at_start_time_not_only_at_build_time(tmp_path):
+    """The digest is checked when the callable runs, immediately before start."""
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"pretend cli")
+    digest = hashlib.sha256(b"pretend cli").hexdigest()
+    spawn = transport.pinned_spawn(binary, digest)
+    binary.write_bytes(b"swapped after the pin was built")
+    with pytest.raises(TransportRefused, match="does not match the pin"):
+        spawn()

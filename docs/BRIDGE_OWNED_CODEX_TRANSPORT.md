@@ -117,11 +117,18 @@ agreed with each other while both disagreed with the server.
 * `methods_sent` is **measured from the wire**, in order, not copied from the
   allow-list. The allow-list states an intention; only the record of what was
   written is evidence, and on a partial failure the two differ.
-* `executable_verified` and `executable_digest` say whether the CLI was pinned.
-  `verify_executable` used to sit beside the entry point without being wired to
-  it, so an observation could look pinned while nothing had been checked. Pass
-  `executable` and `expected_sha256` and the file is hashed before the spawn;
-  omit them and the result says so, rather than staying silent.
+* `file_digest_verified` says a **file on disk** hashed to the expected digest.
+  That is all it ever meant, and it is now named for what it checks.
+* `child_identity_verified` is a *different* claim and is true only when the
+  spawn came from `pinned_spawn`, which verifies the digest and starts **that
+  file**, so the pin and the child are one decision instead of two. Hashing a
+  path and then calling an unrelated callable links them by nothing: `spawn` is
+  arbitrary and may start anything. Every other spawn — including every fake in
+  the test suite — reports `False`.
+* `observed` follows the same discipline. It is
+  `child_spawned_from_pinned_executable` only for a pinned spawn, and otherwise
+  `child_returned_by_supplied_spawn`, because provenance this function cannot
+  establish must not be asserted.
 * `cleanup_clean` and `cleanup_errors` report the teardown. `close()` used to
   swallow a failed `terminate`, `kill` or `wait` and still read as success; now
   a cleanup failure is recorded, and raised on context exit unless the body
@@ -141,6 +148,25 @@ Every failure is one of four named errors, all deriving from `TransportError`:
 
 The child is terminated and reaped on context exit **including when the body
 raised**, because the error path is the one that leaks a child.
+
+### Cleanup order is the contract, not an implementation detail
+
+Stop the child **first**, then close the pipe. Closing stdin first deadlocks the
+unwind: a blocked write holds the `BufferedWriter` lock, `close()` waits for
+that lock, and the only thing that releases the writer — killing the child — was
+queued behind the close. So the deadline expired and then the rescue hung on
+itself. Terminating first breaks the cycle, and the pipe close is bounded by
+`CLEANUP_JOIN_SECONDS` so a pipe that still refuses to close cannot hold the
+caller either.
+
+Two cleanup outcomes are deliberately different in weight:
+
+* **Failing to stop or reap the child** is recorded *and raised* on exit, unless
+  the body already raised something more informative. That is a possible leaked
+  process.
+* **A pipe that would not close** is recorded and **not** raised. Terminate,
+  kill and wait have already run, so it is a stray handle rather than a live
+  process, and raising would blunt the signal reserved for the serious case.
 
 ## What the tests prove, and what they do not
 

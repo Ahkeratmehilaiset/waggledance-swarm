@@ -58,6 +58,9 @@ MAX_LINE_BYTES = 1 << 20          #: one frame; a larger line is a protocol faul
 MAX_TOTAL_BYTES = 8 << 20         #: whole session; bounds a chatty or hostile child
 MAX_MODELS_RECORDED = 64          #: bounded observation, never the whole payload
 DEFAULT_DEADLINE_SECONDS = 20.0
+#: How long cleanup may wait on a single pipe close before giving up and
+#: recording it. Cleanup must be bounded too, or the unwind becomes the hang.
+CLEANUP_JOIN_SECONDS = 1.0
 MAX_DEADLINE_SECONDS = 120.0
 
 OBSERVATION_SCHEMA = "wd.owned-codex-observation.v1"
@@ -138,6 +141,37 @@ def default_spawn(executable: Path, arguments: Sequence[str]) -> Any:
         shell=False,
         close_fds=True,
     )
+
+
+#: Marks a spawn callable whose child provenance this module actually knows.
+_PINNED_SPAWN_ATTRIBUTE = "wd_pinned_executable_digest"
+
+
+def pinned_spawn(executable: Path | str, expected_sha256: str,
+                 arguments: Sequence[str] = ("app-server",)) -> Callable[[], Any]:
+    """A spawn that verifies the pin AND starts that exact file.
+
+    Hashing a path and then calling an unrelated callable proves nothing about
+    what was started: the pin and the spawn were two separate decisions, and
+    only the first was checked. This binds them. The digest is verified when
+    the callable runs, immediately before the process is created, so the file
+    cannot be swapped between the check and the start any more than the
+    filesystem already allows.
+
+    A spawn built here is the only kind whose child provenance this module is
+    entitled to report. Anything else -- including every fake used in tests --
+    is an arbitrary callback that may start anything at all, and the
+    observation says so.
+    """
+    path = Path(executable)
+    argv = tuple(str(argument) for argument in arguments)
+
+    def spawn() -> Any:
+        verify_executable(path, expected_sha256)
+        return default_spawn(path, argv)
+
+    setattr(spawn, _PINNED_SPAWN_ATTRIBUTE, expected_sha256.lower())
+    return spawn
 
 
 class _LineReader:
@@ -245,40 +279,70 @@ class OwnedAppServer:
 
     def __exit__(self, exc_type: object, *_rest: object) -> None:
         self.close()
-        # A cleanup failure stays quiet only when raising would mask a more
-        # informative exception from the body. Otherwise a close() that could
-        # not kill or reap the child must not read as success.
-        if self.cleanup_errors and exc_type is None:
-            raise TransportChildError(
-                "child cleanup failed: " + "; ".join(self.cleanup_errors))
+        # Raise only for failures that mean the CHILD may still be alive. A
+        # pipe that would not close is recorded but does not raise: by then
+        # terminate, kill and wait have already run, so it is a stray handle
+        # rather than a leaked process, and turning it into an exception would
+        # blunt the signal that actually matters. A cleanup failure also stays
+        # quiet when raising would mask a more informative body exception.
+        blocking = [entry for entry in self.cleanup_errors
+                    if not entry.startswith("stdin_close:")]
+        if blocking and exc_type is None:
+            raise TransportChildError("child cleanup failed: " + "; ".join(blocking))
 
     def close(self) -> None:
-        """Terminate and reap the child, RECORDING anything that went wrong."""
+        """STOP THE CHILD FIRST, then close the pipe. Order is the whole point.
+
+        Closing stdin first deadlocks the unwind. A write that is blocked holds
+        the BufferedWriter lock, ``close()`` waits for that lock, and the thing
+        that would release the writer -- killing the child -- was queued behind
+        the close. So the deadline expired, the unwind began, and then hung on
+        exactly the cleanup meant to rescue it.
+
+        Terminating first breaks the cycle: the dead child releases the blocked
+        write, and only then is there any point closing the pipe. Every step
+        records rather than swallows, and the final close is itself bounded, so
+        a pipe that still refuses to close cannot hold the caller either.
+        """
         child, self._child = self._child, None
         self._reader = None
         if child is None:
             return
-        for step in ("stdin", "terminate", "kill"):
+        for step in ("terminate", "kill"):
             try:
-                if step == "stdin":
-                    if getattr(child, "stdin", None) is not None:
-                        child.stdin.close()
-                elif step == "terminate":
-                    if child.poll() is None:
-                        child.terminate()
-                else:
-                    if child.poll() is None:
-                        child.kill()
+                if child.poll() is None:
+                    (child.terminate if step == "terminate" else child.kill)()
             except Exception as exc:                 # noqa: BLE001 - recorded, not raised
-                # stdin failing to close is not interesting. Failing to STOP the
-                # child is, because that is the difference between cleanup and a
-                # leak, and it used to be swallowed into a success.
-                if step != "stdin":
-                    self.cleanup_errors.append(f"{step}: {type(exc).__name__}")
+                # Failing to STOP the child is the difference between cleanup
+                # and a leak, so it is recorded rather than swallowed.
+                self.cleanup_errors.append(f"{step}: {type(exc).__name__}")
         try:
             child.wait(timeout=5)
         except Exception as exc:                     # noqa: BLE001 - recorded, not raised
             self.cleanup_errors.append(f"wait: {type(exc).__name__}")
+        self._close_stdin_bounded(child)
+
+    def _close_stdin_bounded(self, child: Any) -> None:
+        """Close the pipe last, and never wait on it indefinitely."""
+        stdin = getattr(child, "stdin", None)
+        if stdin is None:
+            return
+        failure: list[BaseException] = []
+
+        def shut() -> None:
+            try:
+                stdin.close()
+            except BaseException as exc:             # noqa: BLE001 - recorded below
+                failure.append(exc)
+
+        worker = threading.Thread(target=shut, daemon=True)
+        worker.start()
+        worker.join(CLEANUP_JOIN_SECONDS)
+        if worker.is_alive():
+            self.cleanup_errors.append("stdin_close: did not return")
+        elif failure:
+            self.cleanup_errors.append(
+                f"stdin_close: {type(failure[0]).__name__}")
 
     def _assert_alive(self) -> None:
         if self._child is None or self._reader is None:
@@ -445,25 +509,46 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
     process. ``control_allowed`` is structurally false on every path, mirroring
     the owning-session descriptor validator.
 
-    EXECUTABLE PINNING IS REPORTED, NOT ASSUMED. ``verify_executable`` used to
-    exist beside this function without being wired to it, so a caller could
-    produce an observation that looked pinned while nothing had been checked.
-    Pass ``executable`` and ``expected_sha256`` and the file is hashed BEFORE
-    the spawn, with the digest recorded. Omit them -- which a fake-child test
-    must -- and the result says ``executable_verified: False`` and why, so the
-    absence is visible in the artefact rather than inferred from its silence.
+    TWO DIFFERENT CLAIMS, KEPT APART, because conflating them was an overclaim.
+
+    ``file_digest_verified`` says a FILE on disk hashed to the expected digest.
+    That is all it ever meant. It says nothing about what was started, because
+    ``spawn`` is an arbitrary callable and hashing a path it may never open
+    links the two by nothing at all.
+
+    ``child_identity_verified`` is true only when ``spawn`` came from
+    :func:`pinned_spawn`, which verifies the digest and starts THAT file, so
+    the pin and the child are one decision rather than two. Every other spawn,
+    including every fake in the test suite, reports false -- and ``observed``
+    then says the child merely came from a supplied callback, rather than
+    asserting a provenance this function cannot establish.
     """
-    verification: dict[str, Any] = {"executable_verified": False,
-                                    "executable_digest": None,
-                                    "verification_note": "no executable pin supplied"}
+    pinned_digest = getattr(spawn, _PINNED_SPAWN_ATTRIBUTE, None)
+    verification: dict[str, Any] = {
+        "file_digest_verified": False,
+        "executable_digest": None,
+        "child_identity_verified": False,
+        "verification_note": "no executable pin supplied; the child came from an "
+                             "arbitrary callback and its identity is unverified",
+    }
     if executable is not None or expected_sha256 is not None:
         if executable is None or expected_sha256 is None:
             raise TransportRefused(
                 "executable and expected_sha256 must be supplied together")
         verification = {
-            "executable_verified": True,
+            "file_digest_verified": True,
             "executable_digest": verify_executable(Path(executable), expected_sha256),
-            "verification_note": "hashed before spawn",
+            "child_identity_verified": False,
+            "verification_note": "a file was hashed, but this spawn is an arbitrary "
+                                 "callback, so the child identity is unverified; use "
+                                 "pinned_spawn to bind the two",
+        }
+    if pinned_digest is not None:
+        verification = {
+            "file_digest_verified": True,
+            "executable_digest": pinned_digest,
+            "child_identity_verified": True,
+            "verification_note": "pinned_spawn verified the digest and started that file",
         }
     with OwnedAppServer(spawn, client_info=client_info,
                         deadline_seconds=deadline_seconds) as server:
@@ -476,7 +561,8 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
         cleanup_errors = server.cleanup_errors
     return {
         "schema": OBSERVATION_SCHEMA,
-        "observed": "spawned_child_only",
+        "observed": ("child_spawned_from_pinned_executable" if pinned_digest
+                     else "child_returned_by_supplied_spawn"),
         "control_allowed": False,
         "methods_sent": methods_sent,
         "server": handshake,

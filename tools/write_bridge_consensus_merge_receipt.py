@@ -37,6 +37,7 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
     bridge_events_path_matches_root,
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
+from tools.operator_path_exception import apply_operator_path_exception  # noqa: E402
 
 
 class BridgeConsensusMergeReceiptError(ValueError):
@@ -143,6 +144,7 @@ def write_bridge_consensus_merge_receipt(
     from_agent: str = "",
     bridge_task_id: str = "",
     now_utc: datetime | None = None,
+    operator_path_exception: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = _validated_now_utc(now_utc)
     manifest_path = out_dir / "manifest.json"
@@ -157,6 +159,10 @@ def write_bridge_consensus_merge_receipt(
         from_agent=from_agent,
         bridge_task_id=bridge_task_id,
         now_utc=now,
+    )
+    gate_report = apply_operator_path_exception(
+        gate_report, grant=operator_path_exception, pr_status=pr_status,
+        repo=repo, head=expected_head, base=expected_base_sha, now=now,
     )
     if not gate_report.get("ok", False):
         raise BridgeConsensusMergeReceiptError(
@@ -290,6 +296,8 @@ def _receipt_payload(
         "gate_decision": gate_report.get("decision"),
         "gate_reasons": list(gate_report.get("reasons", [])),
         "path_gate": dict(gate_report.get("path_gate", {})),
+        "operator_path_exception": gate_report.get("operator_path_exception"),
+        "original_gate": gate_report.get("original_gate"),
         "diff_gate": dict(gate_report.get("diff_gate", {})),
         "base_gate": dict(gate_report.get("base_gate", {})),
         "receipt_gate": dict(gate_report.get("receipt_gate", {})),
@@ -335,7 +343,8 @@ def _write_receipt_bundle(
         reason_codes=[
             "bridge_consensus:three_identity_head_bound",
             "ci:green",
-            "path_gate:allowlist_clean",
+            ("path_gate:explicit_operator_exception" if payload.get("operator_path_exception")
+             else "path_gate:allowlist_clean"),
             "rco:pass_present",
             "merge:match_head_commit",
         ],

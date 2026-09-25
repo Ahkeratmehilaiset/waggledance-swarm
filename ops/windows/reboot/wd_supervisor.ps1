@@ -3423,12 +3423,23 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
     $toolsReconciled = Invoke-WdToolsReconcileLocked `
         -RuntimeRoot $runtimeRoot `
         -Action {
-    $toolsProcesses = @(
+    $toolsProcessSnapshot = @(
         Get-CimInstance Win32_Process -ErrorAction Stop |
-            Where-Object {
-                $_.ProcessId -ne $selfPid -and
-                -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
-            }
+            Where-Object { $_.ProcessId -ne $selfPid }
+    )
+    # An unreadable host is not evidence that the Tools wrapper is absent.
+    # Keep these candidates before filtering readable command lines; never
+    # launch or replace a wrapper while ownership cannot be established.
+    $opaqueToolsHosts = @(
+        $toolsProcessSnapshot | Where-Object {
+            [string]$_.Name -match '^(?i:powershell|pwsh)\.exe$' -and
+            [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
+        }
+    )
+    $toolsProcesses = @(
+        $toolsProcessSnapshot | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine)
+        }
     )
     Assert-WdToolsLauncherGeneration -Processes $toolsProcesses `
         -AllowedPaths @($toolsLauncher, $configuredToolsLauncher)
@@ -3555,7 +3566,22 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         '-Generation', $toolsGeneration
     )
 
-    if ($readyWrapperProcesses.Count -eq 1 -and
+    if ($opaqueToolsHosts.Count -gt 0) {
+        $opaqueReadinessTargets = @(
+            $opaqueToolsHosts | Where-Object {
+                Test-ToolsReadinessTargetsProcess -Process $_ `
+                    -Generation $toolsGeneration -ReadinessPath $readinessPath
+            }
+        )
+        if ($opaqueToolsHosts.Count -eq 1 -and
+            $opaqueReadinessTargets.Count -eq 1 -and
+            $wrapperProcesses.Count -eq 0 -and $legacyConsumers.Count -eq 0) {
+            $actions.Add("UNVERIFIABLE consumer-loop:$toolsAgent unreadable host command line; no process changes")
+        } else {
+            $actions.Add("CONFLICT consumer-loop:$toolsAgent unreadable host ownership; no process changes")
+        }
+    }
+    elseif ($readyWrapperProcesses.Count -eq 1 -and
         $exactWrapperProcesses.Count -eq 1 -and
         $wrapperProcesses.Count -eq 1 -and
         $legacyConsumers.Count -eq 0) {

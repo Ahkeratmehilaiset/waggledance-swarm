@@ -892,7 +892,7 @@ def _request_closed_by_index(
             )
         )
     pr_closure_key = _pr_closure_key_for_event(request)
-    if pr_closure_key:
+    if pr_closure_key and not task_id:
         task_closures = closure_index.get(pr_closure_key, {})
         if task_closures:
             target_agent = agent.lower()
@@ -1288,7 +1288,9 @@ def _direct_rco_pass_block_request_closed(
         same_task = bool(request_task_id and _task_id(event) == request_task_id)
         event_pr_key = _pr_closure_key_for_event(event)
         same_pr = bool(request_pr_key and event_pr_key == request_pr_key)
-        if not same_task and not same_pr:
+        # A PR may contain several independent review requests. Its number is
+        # a fallback for unnamed legacy requests, never a named-task wildcard.
+        if not same_task and not (not request_task_id and same_pr):
             continue
         event_agent = _event_agent(event)
         if event_agent == target and _is_substantive_rco_pass_block_response(event):

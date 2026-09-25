@@ -75,6 +75,21 @@ def test_ordinary_single_legacy_request_keeps_compatibility():
     assert routing._open_requests_for_agent(agent='codex-lead-1', events=[request, done()]) == []
 
 
+@pytest.mark.parametrize('target', ['codex-tools-1', 'claude-rco-1'])
+@pytest.mark.parametrize('closer', ['target', 'requester'])
+def test_shared_pr_number_cannot_close_a_different_named_task(target, closer):
+    request = dict(agent='codex-lead-1', to=target, type='wake_request',
+        task_id='audit/review-a', status='rco_review_requested' if 'rco' in target else 'review_requested',
+        message='Review PR #1721 RCO_PASS or BLOCK', payload={'pr': 1721},
+        ts_utc='2026-09-25T01:40:00Z')
+    reply = dict(agent=target if closer == 'target' else 'codex-lead-1',
+        to='codex-lead-1' if closer == 'target' else target,
+        type='decision', task_id='audit/review-b',
+        status='rco_pass' if closer == 'target' else 'superseded',
+        message='PR #1721', payload={'pr': 1721}, ts_utc='2026-09-25T01:41:00Z')
+    assert routing._open_requests_for_agent(agent=target, events=[request, reply]) == [request]
+
+
 @pytest.mark.parametrize('reference', [None, 'wrong', 'exact'])
 @pytest.mark.parametrize('actor', ['codex-lead-1', 'fable-5'])
 def test_powershell_control_binding_cannot_silently_close_unlinked_request(reference, actor):

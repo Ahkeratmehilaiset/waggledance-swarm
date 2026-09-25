@@ -872,12 +872,14 @@ def _request_closed_by_index(
     request_ts = _event_ts(request)
     ambiguous = len(closure_index.get("_versions", {}).get(
         (_event_agent(request), task_id), ())) > 1
-    if request_is_bound(request) or ambiguous:
+    control = _is_control_signal(request)
+    if request_is_bound(request) or ambiguous or control:
         return any(reply_matches_request(
             request, answer, agent,
             requester_closure=_event_agent(answer) == _event_agent(request)
                 and _is_explicit_requester_closure(answer),
             ambiguous_legacy=ambiguous,
+            require_explicit_correlation=control,
         ) for answer in closure_index.get("_answers", {}).get(task_id, ()))
     closure_keys = []
     if task_id:
@@ -1180,6 +1182,15 @@ def _idle_protocol_progressed_by_index(
     return progress_index.get(proposal_id, "") > request_ts
 
 
+def _is_control_signal(event: Mapping[str, Any]) -> bool:
+    """Routing notifications only; this predicate never retracts a gate veto."""
+    status = _event_status(event)
+    return _event_type(event) in {"decision", "finding"} and any(
+        status == value or status.startswith(value + "_")
+        for value in ("changes_requested", "rco_fail", "review_failed", "blocked")
+    )
+
+
 def _is_request_like(event: Mapping[str, Any]) -> bool:
     if (
         _is_bridge_follow_nudge(event)
@@ -1194,6 +1205,10 @@ def _is_request_like(event: Mapping[str, Any]) -> bool:
         return False
     if correlation_field(event, "request_id"):
         return bool(_event_recipients(event))
+    # A response may carry a gate signal without granting a new assignment.
+    # Reply validation and gate enforcement still inspect the original event.
+    if correlation_field(event, "in_reply_to_request_id") is not None:
+        return False
     return _event_type(event) in REQUEST_TYPES and _status_has_any(
         status, OPEN_STATUS_FRAGMENTS
     )

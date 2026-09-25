@@ -1475,6 +1475,7 @@ def test_requester_retraction_closes_incoming_finding_for_target() -> None:
             "task_id": "fable-5/failover-refuse-path-tests-20260612",
             "status": "rco_finding_withdrawn",
             "message": "withdrawing the prior finding",
+            "payload": {"request_ts_utc": "2026-06-12T05:11:00Z"},
         },
     ]
 

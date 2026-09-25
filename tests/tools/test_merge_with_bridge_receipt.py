@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +27,56 @@ AGENT_UUIDS = {
     "codex-lead-1": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
     "codex-tools-1": "7a8af68d-20bc-4598-9953-23c5dd98b102",
 }
+
+
+@pytest.mark.parametrize("failure", [None, "expired_at_apply", "ci", "veto", "missing_tools"])
+def test_operator_exception_preserves_real_gates_and_apply_recheck(tmp_path, monkeypatch, failure):
+    from waggledance.core.magma.canonical import sha256_digest
+    path = "ops/windows/reboot/wd_supervisor.ps1"
+    diff = f"diff --git a/{path} b/{path}\n"
+    calls, original_runner = _runner()
+    events = _full_consensus()
+    events[0]["write_scope"] = [path]
+    if failure == "veto":
+        events.append(_event("claude-rco-1", "changes_requested", "2026-06-14T06:13:00Z"))
+    if failure == "missing_tools":
+        events = [e for e in events if e["agent"] != "codex-tools-1"]
+    grant = dict(schema="wd.operator-path-exception.v1", repo="example/repo",
+                 pr_number=1174, head=HEAD, base=BASE, diff_digest=sha256_digest(diff),
+                 paths=[path], approval_reference="operator-test-instruction",
+                 issued_at=NOW.isoformat(), expires_at=(NOW + timedelta(minutes=1)).isoformat())
+
+    def runner(command):
+        result = original_runner(command)
+        if command[:3] == ["gh", "pr", "diff"]:
+            result.stdout = diff
+        elif command[:2] == ["gh", "api"] and "/git/ref/heads/" not in command[4]:
+            result.stdout = json.dumps([dict(filename=path, status="modified")])
+        elif command[:3] == ["gh", "pr", "view"] and failure == "ci":
+            payload = json.loads(result.stdout)
+            if "statusCheckRollup" in payload:
+                payload["statusCheckRollup"][0]["conclusion"] = "FAILURE"
+                result.stdout = json.dumps(payload)
+        return result
+
+    ticks = iter([NOW, NOW + timedelta(minutes=1)])
+    if failure == "expired_at_apply":
+        monkeypatch.setattr(merge_tool, "_utc_now", lambda: next(ticks))
+    kwargs = dict(pr_number=1174, repo="example/repo",
+                  events_path=_events_path(tmp_path, events), out_dir=tmp_path / "out",
+                  expected_head=HEAD, expected_base_sha=BASE, consensus_proposal_id=TASK,
+                  from_agent="codex-lead-1", bridge_task_id=TASK, apply=True,
+                  now_utc=NOW, runner=runner, operator_path_exception=grant)
+    if failure:
+        with pytest.raises(ValueError):
+            merge_with_bridge_receipt(**kwargs)
+        assert not _merge_calls(calls)
+    else:
+        report = merge_with_bridge_receipt(**kwargs)
+        assert report["ok"] is True
+        assert report["merge_executed"] is True
+        assert len(_merge_calls(calls)) == 1
+        assert report["fresh_gate"]["path_gate"]["allowed"] is False
 
 
 @pytest.fixture(autouse=True)

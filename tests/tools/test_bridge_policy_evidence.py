@@ -16,6 +16,11 @@ import sys
 
 import pytest
 
+# The production root contract is explicitly a persistent Windows C: drive.
+# A POSIX tmp_path cannot exercise that contract. Do not silently replace the
+# validator in these real-filesystem tests; run them on Windows instead.
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows C-drive source contract")
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

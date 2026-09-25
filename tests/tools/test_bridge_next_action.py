@@ -571,7 +571,7 @@ def test_same_pr_requester_build_pass_does_not_close_rco_review_request() -> Non
     assert report["open_incoming_count"] == 1
 
 
-def test_same_pr_requester_terminal_close_closes_rco_review_request() -> None:
+def test_same_pr_cross_task_terminal_close_does_not_close_rco_review_request() -> None:
     events = [
         {
             "ts_utc": "2026-06-13T09:00:00Z",
@@ -602,8 +602,8 @@ def test_same_pr_requester_terminal_close_closes_rco_review_request() -> None:
         now_utc=datetime.fromisoformat("2026-06-13T09:02:00+00:00"),
     )
 
-    assert report["action"] == "claim_unblocked_work"
-    assert report["open_incoming_count"] == 0
+    assert report["action"] == "answer_incoming"
+    assert report["open_incoming_count"] == 1
 
 
 @pytest.mark.parametrize(

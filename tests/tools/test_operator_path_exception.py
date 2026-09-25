@@ -20,7 +20,9 @@ def inputs():
                 bridge_consensus=dict(ok=True), rco_pass_gate=dict(ok=True),
                 bridge_peer_gate=dict(clear_to_merge=True),
                 accepted_queue_preflight=dict(complete=True), diff_gate=dict(allowed=True),
-                base_gate=dict(allowed=True), rate_gate=dict(allowed=True))
+                base_gate=dict(allowed=True), rate_gate=dict(allowed=True),
+                receipt_gate=dict(verified=True, artifact_hook_configured=False),
+                author_resolution=dict(ok=True))
     return gate, grant
 
 
@@ -72,7 +74,8 @@ def test_any_additional_gate_failure_blocks_exception(reason):
 
 @pytest.mark.parametrize("name,flag", [("bridge_consensus", "ok"), ("rco_pass_gate", "ok"),
     ("bridge_peer_gate", "clear_to_merge"), ("accepted_queue_preflight", "complete"),
-    ("diff_gate", "allowed"), ("base_gate", "allowed"), ("rate_gate", "allowed")])
+    ("diff_gate", "allowed"), ("base_gate", "allowed"), ("rate_gate", "allowed"),
+    ("receipt_gate", "verified"), ("author_resolution", "ok")])
 def test_missing_verified_subgate_blocks_even_if_reason_list_lies(name, flag):
     gate, grant = inputs()
     gate[name][flag] = False

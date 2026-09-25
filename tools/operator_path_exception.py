@@ -69,7 +69,8 @@ def apply_operator_path_exception(
                        ("bridge_peer_gate", "clear_to_merge"),
                        ("accepted_queue_preflight", "complete"),
                        ("diff_gate", "allowed"), ("base_gate", "allowed"),
-                       ("rate_gate", "allowed")):
+                       ("rate_gate", "allowed"), ("receipt_gate", "verified"),
+                       ("author_resolution", "ok")):
         if gate.get(name, {}).get(flag) is not True:
             raise ValueError(f"operator exception requires verified {name}")
     result = deepcopy(dict(gate))

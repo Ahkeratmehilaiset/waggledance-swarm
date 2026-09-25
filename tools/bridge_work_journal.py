@@ -239,7 +239,35 @@ def _classify_database(path: Path) -> str:
     return mode
 
 
-def _refuse_unmerged_sidecars(database: Path) -> None:
+SIDECAR_SUFFIXES = ("-wal", "-journal")
+
+
+def _sidecar_signature(database: Path) -> tuple:
+    """Observe both sidecars, or refuse because their state is unknown.
+
+    Only FileNotFoundError means "absent". Every other OSError -- a permission
+    denial, an IO error, a path that stopped being a directory -- leaves the
+    sidecar state UNKNOWN, and unknown must not be read as "no WAL". The
+    previous version caught OSError broadly and continued, so a stat that was
+    merely denied looked exactly like a database with no unmerged frames.
+    """
+    observed = []
+    for suffix in SIDECAR_SUFFIXES:
+        sidecar = database.with_name(database.name + suffix)
+        try:
+            info = sidecar.stat()
+        except FileNotFoundError:
+            observed.append((suffix, None))
+        except OSError as exc:
+            raise JournalError(
+                "journal sidecar state cannot be determined") from exc
+        else:
+            observed.append(
+                (suffix, (info.st_size, info.st_mtime_ns, info.st_ino, info.st_dev)))
+    return tuple(observed)
+
+
+def _refuse_unmerged_sidecars(signature: tuple) -> None:
     """Fail closed when the main file is not the whole committed database.
 
     A non-empty -wal may hold committed frames that are absent from the main
@@ -249,17 +277,13 @@ def _refuse_unmerged_sidecars(database: Path) -> None:
     what immutable=1 alone would do -- would be worse than refusing, because
     the caller could not tell that committed receipts were dropped.
     """
-    for suffix, reason in (
-        ("-wal", "journal write-ahead log is unmerged; status cannot read it without writing"),
-        ("-journal", "journal rollback file is hot; status cannot read it without writing"),
-    ):
-        sidecar = database.with_name(database.name + suffix)
-        try:
-            size = sidecar.stat().st_size
-        except OSError:
-            continue
-        if size > 0:
-            raise JournalError(reason)
+    reasons = {
+        "-wal": "journal write-ahead log is unmerged; status cannot read it without writing",
+        "-journal": "journal rollback file is hot; status cannot read it without writing",
+    }
+    for suffix, info in signature:
+        if info is not None and info[0] > 0:
+            raise JournalError(reasons[suffix])
 
 
 def _identity(info: Any) -> tuple:
@@ -322,8 +346,17 @@ def _read_receipts(database: Path) -> list[dict[str, str]]:
     if not database.is_file():
         raise JournalError("database path is not a regular file")
     _classify_database(database)
-    _refuse_unmerged_sidecars(database)
+    before_sidecars = _sidecar_signature(database)
+    _refuse_unmerged_sidecars(before_sidecars)
     image = _as_rollback_image(_snapshot_bytes(database))
+    # A writer can create or grow a -wal between the check above and the read.
+    # Re-observing turns that race from a silently short history into a refusal.
+    # This DETECTS the window; it does not close it. See the limitations note in
+    # docs/BRIDGE_WORK_JOURNAL.md.
+    after_sidecars = _sidecar_signature(database)
+    _refuse_unmerged_sidecars(after_sidecars)
+    if after_sidecars != before_sidecars:
+        raise JournalError("journal sidecar state changed while it was being read")
     connection = sqlite3.connect(":memory:", isolation_level=None)
     try:
         connection.deserialize(image)

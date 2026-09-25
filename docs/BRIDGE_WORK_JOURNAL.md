@@ -90,5 +90,42 @@ else, on every path including every error path. The regression tests assert the
 directory is byte-identical before and after, for success, WAL, hot journal,
 corruption and truncation alike.
 
+### Unknown is not absent
+
+Only `FileNotFoundError` means a sidecar is absent. A permission denial, an IO
+error or any other `OSError` while observing `-wal`/`-journal` leaves their
+state **unknown**, and unknown is refused.
+
+An earlier version caught `OSError` broadly and continued, so a stat that was
+merely *denied* looked exactly like a database with no unmerged frames.
+Reproduced: with the `-wal` stat denied, a database holding 8 272 bytes of
+genuinely unmerged WAL was read anyway and reported one row, silently dropping
+the committed frame.
+
+### Concurrency limits — what is detected, and what is not
+
+The sidecars are observed **twice**, once before the snapshot and once after,
+and the read is refused if either observation shows unmerged content or if the
+two observations differ at all — including a size-preserving touch.
+
+That is **detection, not exclusion**, and the difference matters:
+
+* **Detected:** a writer that creates or grows a `-wal`, or leaves a hot
+  `-journal`, at any point that either observation can see. Reproduced before
+  the fix: a writer committing into a fresh `-wal` during the snapshot produced
+  a successful read whose result silently lacked the committed frame.
+* **NOT detected:** a writer that creates, commits, checkpoints and *removes*
+  a `-wal` entirely between the two observations. Both observations would show
+  the same absent state and the snapshot could still be torn.
+* **NOT attempted:** reading a database that has unmerged state. That is
+  refused outright, so `status` is unavailable while a writer holds
+  uncheckpointed frames.
+
+So `status` does **not** claim a coherent snapshot against a live writer. It
+claims that no sidecar change was observed across the read, and refuses
+otherwise. A guarantee against a concurrent writer would need a different
+storage design — coordinated locking or a writer that publishes immutable
+snapshots — and is deliberately not claimed here.
+
 The `journal.coverage_note` and nested ledger notes are intentional: an empty
 or partial local journal cannot prove that all accepted work is represented.

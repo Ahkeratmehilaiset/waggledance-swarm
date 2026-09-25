@@ -398,3 +398,96 @@ def test_a_non_database_is_rejected_without_being_loaded_into_memory(tmp_path, m
     with pytest.raises(journal.JournalError, match="cannot be read"):
         journal.journal_report(target)
     assert sizes and max(sizes) <= journal.SQLITE_HEADER_BYTES, sizes
+
+
+# --- sidecar observation must fail closed, not fail open ----------------------
+
+
+def _deny_stat_for(monkeypatch, suffix, error):
+    real_stat = Path.stat
+
+    def denied(self, *args, **kwargs):
+        if self.name.endswith(suffix):
+            raise error
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+
+
+@pytest.mark.parametrize("error", [
+    PermissionError(13, "Access is denied"),
+    OSError(5, "I/O error"),
+    NotADirectoryError(20, "Not a directory"),
+])
+def test_an_unreadable_sidecar_is_unknown_not_absent(tmp_path, monkeypatch, error):
+    """The fail-open: a denied stat used to look exactly like "there is no WAL".
+
+    Reproduced before fixing: with the -wal stat denied, a database holding
+    8272 bytes of genuinely unmerged WAL was read anyway and reported one row,
+    silently dropping the committed frame.
+    """
+    database = tmp_path / "denied.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    before = _tree(tmp_path)
+    _deny_stat_for(monkeypatch, "-wal", error)
+    with pytest.raises(journal.JournalError, match="sidecar state cannot be determined"):
+        journal.journal_report(database)
+    monkeypatch.undo()
+    assert _tree(tmp_path) == before
+
+
+def test_only_file_not_found_means_a_sidecar_is_absent(tmp_path, monkeypatch):
+    """The other half: genuine absence must still read normally."""
+    database = tmp_path / "absent.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    _deny_stat_for(monkeypatch, "-journal", FileNotFoundError(2, "No such file"))
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+
+
+def test_a_wal_appearing_during_the_snapshot_is_refused(tmp_path, monkeypatch):
+    """The window between the sidecar check and the read.
+
+    Reproduced before fixing: a writer that committed into a fresh -wal while
+    the snapshot was being taken produced a successful read whose result did
+    not contain the committed frame, with no refusal and no way for the caller
+    to tell.
+    """
+    database = tmp_path / "racing.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    sqlite3.connect(database).execute("PRAGMA journal_mode=WAL").fetchone()
+    real_snapshot = journal._snapshot_bytes
+    holders = []
+
+    def racing(target):
+        writer = sqlite3.connect(target)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            """INSERT INTO accepted_receipts VALUES
+               ('z','{}','c8','1','a8','e8','accepted','2026-09-25T00:00:00+00:00')""")
+        writer.commit()
+        holders.append(writer)
+        return real_snapshot(target)
+
+    monkeypatch.setattr(journal, "_snapshot_bytes", racing)
+    try:
+        with pytest.raises(journal.JournalError, match="unmerged|sidecar state changed"):
+            journal.journal_report(database)
+    finally:
+        for writer in holders:
+            writer.close()
+
+
+def test_a_sidecar_that_merely_changes_during_the_read_is_refused(tmp_path, monkeypatch):
+    """Even an empty-to-empty sidecar change is treated as an unstable read."""
+    database = tmp_path / "touched.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    real_snapshot = journal._snapshot_bytes
+
+    def touching(target):
+        (target.parent / (target.name + "-journal")).write_bytes(b"")
+        return real_snapshot(target)
+
+    monkeypatch.setattr(journal, "_snapshot_bytes", touching)
+    with pytest.raises(journal.JournalError, match="sidecar state changed"):
+        journal.journal_report(database)

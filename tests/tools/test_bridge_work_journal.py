@@ -488,9 +488,10 @@ def test_the_published_image_excludes_rows_committed_by_another_writer(
 
     assert result["publication"] == journal.PUBLISHED
     rows = journal.journal_report(database)["journal"]["receipt_rows"]
-    contracts = {row["contract_id"] for row in journal._load_snapshot(
-        *[(p, p.name.split("-")[2].removesuffix(".journal"))
-          for p in [_snapshots(database)[-1]]][0])}
+    newest = _snapshots(database)[-1]
+    parts = newest.name.removesuffix(".journal").split("-")
+    contracts = {row["contract_id"] for row in
+                 journal._load_snapshot(newest, parts[2], int(parts[1]))}
     assert "zzz" not in contracts, "the snapshot contains another writer's committed row"
     assert "mine" in contracts
     assert rows == 2
@@ -509,3 +510,173 @@ def test_nothing_is_published_when_the_commit_fails(tmp_path, monkeypatch):
 
     assert _snapshots(database) == before, "a snapshot was published for an uncommitted append"
     assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+
+
+# --- the six review findings, each reproduced before being fixed --------------
+
+
+def test_a_neighbour_database_cannot_borrow_another_journals_snapshots(tmp_path):
+    """Finding 1: snapshots were keyed by DIRECTORY, not by database.
+
+    Appending to a.sqlite3 and then asking about a missing b.sqlite3 in the same
+    directory returned a.sqlite3's receipts as available/1.
+    """
+    first = tmp_path / "a.sqlite3"
+    second = tmp_path / "b.sqlite3"
+    journal.append_receipts(first, [_receipt()])
+    report = journal.journal_report(second)["journal"]
+    assert report["database_state"] == "unavailable"
+    assert report["receipt_rows"] is None
+    # and the two journals do not share a snapshot directory at all
+    assert journal.snapshot_directory(first) != journal.snapshot_directory(second)
+
+
+def test_each_journal_keeps_its_own_snapshots_side_by_side(tmp_path):
+    first = tmp_path / "a.sqlite3"
+    second = tmp_path / "b.sqlite3"
+    journal.append_receipts(first, [_receipt(contract_id="in-a")])
+    journal.append_receipts(second, [_receipt(contract_id="in-b")])
+    journal.append_receipts(second, [_receipt(contract_id="in-b-2")])
+    assert journal.journal_report(first)["journal"]["receipt_rows"] == 1
+    assert journal.journal_report(second)["journal"]["receipt_rows"] == 2
+
+
+def test_an_unknown_schema_version_is_refused_without_being_rewritten(tmp_path):
+    """Finding 2: _initialise wrote the current version unconditionally.
+
+    A database claiming version 999 was silently downgraded to 2 instead of
+    being refused, so the mutation is asserted absent as well as the refusal.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE journal_metadata SET schema_version = 999")
+    with pytest.raises(journal.JournalError, match="unsupported journal database schema"):
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+    with sqlite3.connect(database) as connection:
+        still = connection.execute(
+            "SELECT schema_version FROM journal_metadata").fetchone()[0]
+    assert still == 999, "the unknown version was rewritten instead of refused"
+
+
+def test_a_version_one_database_is_migrated_exactly_once(tmp_path):
+    """The only migration we understand must still work."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE journal_metadata SET schema_version = 1")
+    assert journal.append_receipts(
+        database, [_receipt(contract_id="c2")])["appended"] == 1
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT schema_version FROM journal_metadata").fetchone()[0] == 2
+
+
+def test_a_renamed_snapshot_is_refused_by_its_embedded_sequence(tmp_path):
+    """Finding 3: the filename is an untrusted label.
+
+    Renaming a valid snapshot from sequence 1 to 99 preserves the digest, so
+    the digest alone cannot say which state the image is.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    original = _snapshots(database)[0]
+    digest = original.name.removesuffix(".journal").split("-")[2]
+    original.rename(original.parent / f"snap-000000000099-{digest}.journal")
+    with pytest.raises(journal.JournalError, match="embedded sequence"):
+        journal.journal_report(database)
+
+
+def test_the_snapshot_read_is_bounded_even_if_the_file_grows_after_the_stat(
+        tmp_path, monkeypatch):
+    """Finding 4: a stat-then-read_bytes pair is unbounded in between.
+
+    The stat must UNDER-report, otherwise the size check trips first and the
+    read bound is never exercised. An earlier version of this test just lowered
+    the limit, so the stat check caught everything and the test proved nothing
+    about the read.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    target = _snapshots(database)[0]
+    real_stat = Path.stat
+
+    def understating(self, *args, **kwargs):
+        info = real_stat(self, *args, **kwargs)
+        if self.name == target.name:
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev,
+                                   info.st_nlink, info.st_uid, info.st_gid, 1,
+                                   info.st_atime, info.st_mtime, info.st_ctime))
+        return info
+
+    monkeypatch.setattr(Path, "stat", understating)
+    monkeypatch.setattr(journal, "MAX_DATABASE_BYTES", 64)
+    with pytest.raises(journal.JournalError, match="exceeds the readable size bound"):
+        journal.journal_report(database)
+
+
+def test_an_unpublishable_image_is_refused_before_the_commit(tmp_path, monkeypatch):
+    """Finding 5: an image too large to publish must not be committed first."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    rows_before = journal.journal_report(database)["journal"]["receipt_rows"]
+    monkeypatch.setattr(journal, "MAX_DATABASE_BYTES", 64)
+    with pytest.raises(journal.JournalError, match="publishable size bound"):
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+    monkeypatch.undo()
+    with sqlite3.connect(database) as connection:
+        committed = connection.execute(
+            "SELECT COUNT(*) FROM accepted_receipts").fetchone()[0]
+    assert committed == rows_before, "an unpublishable append was committed anyway"
+
+
+def test_a_publication_problem_after_commit_is_an_outcome_not_an_exception(tmp_path):
+    """Finding 6: a post-commit JournalError hid a durable commit.
+
+    The caller saw what looked like a failed append while the receipts were in
+    fact committed, which is the worst combination available.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    bogus = b"different image"
+    (journal.snapshot_directory(database) /
+     ("snap-000000000002-" + hashlib.sha256(bogus).hexdigest()
+      + ".journal")).write_bytes(bogus)
+    result = journal.append_receipts(database, [_receipt(contract_id="c2")])
+    assert result["publication"] == journal.PUBLICATION_PENDING
+    assert result["publication_reason"].startswith("publish_refused:")
+    assert result["appended"] == 1
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM accepted_receipts").fetchone()[0] == 2
+
+
+def test_the_live_database_reading_path_is_gone_not_merely_unused(tmp_path):
+    """The retirement is asserted, not just claimed in a commit message.
+
+    My previous report implied these were gone while they were still defined.
+    """
+    for name in ("_read_receipts", "_sidecar_signature", "_refuse_unmerged_sidecars",
+                 "_classify_database", "_snapshot_bytes", "_as_rollback_image"):
+        assert not hasattr(journal, name), f"{name} still exists"
+
+
+def test_status_opens_only_memory_for_every_outcome(tmp_path, monkeypatch):
+    """The explicit replacement for the retired live-database tests."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    seen = []
+    real_connect = sqlite3.connect
+
+    def watched(target, *args, **kwargs):
+        seen.append(str(target))
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(journal.sqlite3, "connect", watched)
+    journal.journal_report(database)                      # success
+    journal.journal_report(tmp_path / "absent.sqlite3")   # unavailable
+    original = _snapshots(database)[0]
+    original.write_bytes(b"corrupted")
+    with pytest.raises(journal.JournalError):
+        journal.journal_report(database)                  # error path
+    assert set(seen) == {":memory:"}, f"status opened a database: {seen}"

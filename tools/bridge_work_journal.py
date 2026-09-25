@@ -149,20 +149,27 @@ def _initialise(connection: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO journal_metadata(singleton, schema_version) VALUES (1, ?)",
         (DATABASE_SCHEMA_VERSION,),
     )
-    columns = {row[1] for row in connection.execute(
-        "PRAGMA table_info(journal_metadata)").fetchall()}
-    if "snapshot_seq" not in columns:
-        # Writer-side migration, inside the append transaction, so a v1 database
-        # is upgraded exactly once and only by a process entitled to write.
+    # Inspect BEFORE mutating. The previous version wrote the current version
+    # unconditionally, so a database claiming version 999 was silently
+    # downgraded to 2 instead of being refused.
+    observed = connection.execute(
+        "SELECT schema_version FROM journal_metadata WHERE singleton = 1").fetchone()
+    if observed is None:
+        raise JournalError("journal metadata row is missing")
+    version = int(observed[0])
+    if version == DATABASE_SCHEMA_VERSION:
+        pass
+    elif version == 1:
+        # The ONLY migration, and only from the one version we understand.
+        columns = {row[1] for row in connection.execute(
+            "PRAGMA table_info(journal_metadata)").fetchall()}
+        if "snapshot_seq" not in columns:
+            connection.execute(
+                "ALTER TABLE journal_metadata ADD COLUMN snapshot_seq INTEGER NOT NULL DEFAULT 0")
         connection.execute(
-            "ALTER TABLE journal_metadata ADD COLUMN snapshot_seq INTEGER NOT NULL DEFAULT 0")
-    connection.execute(
-        "UPDATE journal_metadata SET schema_version = ? WHERE singleton = 1",
-        (DATABASE_SCHEMA_VERSION,))
-    version = connection.execute(
-        "SELECT schema_version FROM journal_metadata WHERE singleton = 1"
-    ).fetchone()
-    if version != (DATABASE_SCHEMA_VERSION,):
+            "UPDATE journal_metadata SET schema_version = ? WHERE singleton = 1",
+            (DATABASE_SCHEMA_VERSION,))
+    else:
         raise JournalError("unsupported journal database schema")
 
 
@@ -221,6 +228,10 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
         # in-transaction serialize() includes the pending rows.
         sequence = _allocate_sequence(connection)
         image = connection.serialize()
+        if len(image) > MAX_DATABASE_BYTES:
+            # Before the commit, so an unpublishable journal is refused rather
+            # than committed into a state the reader can never see.
+            raise JournalError("journal image exceeds the publishable size bound")
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -229,7 +240,15 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
         connection.close()
     # Only now. A captured image from a rolled-back transaction contains rows
     # that were never committed, which is why publication cannot precede commit.
-    publication, reason = _publish_snapshot(_snapshot_dir_for(database), sequence, image)
+    # The append is committed. Nothing beyond this point may raise, because an
+    # exception here would hide a durable commit behind what looks like a
+    # failed append. Every publication problem becomes an observable outcome.
+    try:
+        publication, reason = _publish_snapshot(_snapshot_dir_for(database), sequence, image)
+    except JournalError as exc:
+        publication, reason = PUBLICATION_PENDING, f"publish_refused:{exc}"
+    except OSError as exc:
+        publication, reason = PUBLICATION_PENDING, f"publish_failed:{type(exc).__name__}"
     result = {"appended": appended, "duplicates": duplicates,
               "database_state": "available", "snapshot_seq": sequence,
               "publication": publication}
@@ -265,122 +284,6 @@ PUBLICATION_PENDING = "publication_pending"
 ALREADY_PUBLISHED = "already_published"
 
 
-def _classify_database(path: Path) -> str:
-    """Name the journal mode from the file header alone.
-
-    Deliberately not ``PRAGMA journal_mode``: by the time a pragma can answer,
-    SQLite has already opened the database and, for WAL, already created the
-    -shm and -wal sidecars this function exists to avoid.
-    """
-    try:
-        with path.open("rb") as source:
-            header = source.read(SQLITE_HEADER_BYTES)
-    except OSError as exc:
-        raise JournalError("journal database cannot be read") from exc
-    if len(header) < SQLITE_HEADER_BYTES or not header.startswith(SQLITE_MAGIC):
-        raise JournalError("journal database cannot be read")
-    mode = _JOURNAL_MODES.get(header[_WRITE_VERSION_OFFSET])
-    if mode is None:
-        raise JournalError("journal database cannot be read")
-    return mode
-
-
-SIDECAR_SUFFIXES = ("-wal", "-journal")
-
-
-def _sidecar_signature(database: Path) -> tuple:
-    """Observe both sidecars, or refuse because their state is unknown.
-
-    Only FileNotFoundError means "absent". Every other OSError -- a permission
-    denial, an IO error, a path that stopped being a directory -- leaves the
-    sidecar state UNKNOWN, and unknown must not be read as "no WAL". The
-    previous version caught OSError broadly and continued, so a stat that was
-    merely denied looked exactly like a database with no unmerged frames.
-    """
-    observed = []
-    for suffix in SIDECAR_SUFFIXES:
-        sidecar = database.with_name(database.name + suffix)
-        try:
-            info = sidecar.stat()
-        except FileNotFoundError:
-            observed.append((suffix, None))
-        except OSError as exc:
-            raise JournalError(
-                "journal sidecar state cannot be determined") from exc
-        else:
-            observed.append(
-                (suffix, (info.st_size, info.st_mtime_ns, info.st_ino, info.st_dev)))
-    return tuple(observed)
-
-
-def _refuse_unmerged_sidecars(signature: tuple) -> None:
-    """Fail closed when the main file is not the whole committed database.
-
-    A non-empty -wal may hold committed frames that are absent from the main
-    file, and a hot -journal means the main file may be mid-transaction.
-    Reading either coherently requires a writable open, so this refuses rather
-    than silently returning an incomplete history. Ignoring them -- which is
-    what immutable=1 alone would do -- would be worse than refusing, because
-    the caller could not tell that committed receipts were dropped.
-    """
-    reasons = {
-        "-wal": "journal write-ahead log is unmerged; status cannot read it without writing",
-        "-journal": "journal rollback file is hot; status cannot read it without writing",
-    }
-    for suffix, info in signature:
-        if info is not None and info[0] > 0:
-            raise JournalError(reasons[suffix])
-
-
-def _identity(info: Any) -> tuple:
-    return (info.st_size, info.st_mtime_ns, info.st_ino, info.st_dev)
-
-
-def _snapshot_bytes(database: Path) -> bytes:
-    """Copy the database image into memory, refusing if it moved mid-read."""
-    try:
-        before = database.stat()
-    except OSError as exc:
-        raise JournalError("journal database cannot be read") from exc
-    if before.st_size > MAX_DATABASE_BYTES:
-        raise JournalError("journal database exceeds the readable size bound")
-    try:
-        with database.open("rb") as source:
-            image = source.read(MAX_DATABASE_BYTES + 1)
-            after = os.fstat(source.fileno())
-    except OSError as exc:
-        raise JournalError("journal database cannot be read") from exc
-    if len(image) > MAX_DATABASE_BYTES:
-        raise JournalError("journal database exceeds the readable size bound")
-    if _identity(after) != _identity(before) or len(image) != before.st_size:
-        raise JournalError("journal database changed while it was being read")
-    return image
-
-
-def _as_rollback_image(image: bytes) -> bytes:
-    """Label OUR IN-MEMORY COPY as rollback mode. The file is never touched.
-
-    SQLite refuses to deserialize a WAL-mode image, because an in-memory
-    database cannot run WAL. Rewriting header bytes 18 and 19 in the copy makes
-    it loadable.
-
-    This is only sound because no unmerged -wal and no hot -journal were
-    OBSERVED across the read, so the main image is not known to be missing
-    committed frames. That is an observation, not a guarantee: a writer that
-    created, committed, checkpointed and removed a -wal between the two
-    observations would defeat it. See the concurrency limits in
-    docs/BRIDGE_WORK_JOURNAL.md. If the observation were dropped entirely this
-    would silently discard committed frames, which is the failure being
-    avoided.
-    """
-    if len(image) < SQLITE_HEADER_BYTES:
-        raise JournalError("journal database cannot be read")
-    copy = bytearray(image)
-    copy[_WRITE_VERSION_OFFSET] = 1
-    copy[_WRITE_VERSION_OFFSET + 1] = 1
-    return bytes(copy)
-
-
 def _allocate_sequence(connection: sqlite3.Connection) -> int:
     """Next sequence, allocated transactionally so writers cannot collide."""
     current = connection.execute(
@@ -391,12 +294,25 @@ def _allocate_sequence(connection: sqlite3.Connection) -> int:
     return nxt
 
 
+def _journal_key(database: Path) -> str:
+    """Stable identity for ONE journal file, derived from its absolute path.
+
+    Snapshots used to live in a directory shared by every database beside them,
+    so status for a missing b.sqlite3 happily returned a.sqlite3's receipts.
+    Keying the directory binds a snapshot set to the database it describes
+    without the reader having to open that database.
+    """
+    normalised = str(Path(database).absolute()).replace("\\", "/").casefold()
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:32]
+
+
 def _snapshot_dir_for(database: Path) -> Path:
-    return Path(database).parent / SNAPSHOT_DIRNAME
+    return Path(database).parent / SNAPSHOT_DIRNAME / _journal_key(database)
 
 
 def snapshot_directory(database: Path) -> Path:
-    return Path(database).parent / SNAPSHOT_DIRNAME
+    """Where THIS database's snapshots live. Bound to the database, not shared."""
+    return _snapshot_dir_for(database)
 
 
 def _snapshot_entries(directory: Path) -> list[tuple[int, str, Path]]:
@@ -464,76 +380,27 @@ def _publish_snapshot(directory: Path, sequence: int, image: bytes) -> tuple[str
     return PUBLISHED, None
 
 
-def _read_receipts(database: Path) -> tuple[str, list[dict[str, str]]]:
-    """Observe availability ONCE and read receipts, with zero filesystem writes.
+def _load_snapshot(path: Path, expected_digest: str, expected_sequence: int) -> list[dict[str, str]]:
+    """Load one snapshot, verifying its content AND its claimed identity.
 
-    Returns ``(state, rows)``. The caller must not take its own view of whether
-    the database exists: two separate observations could disagree, and they did.
-    A cached ``exists=True`` in the caller combined with a later absence here
-    produced the report "available, 0 receipts" for a database that had been
-    deleted -- a confidently wrong answer, which is worse than an error.
-
-    SQLite never opens the file. The image is copied into memory and attached
-    to an in-memory database, so no journal, no -shm and no -wal can be created
-    even for a WAL-mode database or an error path. A database whose committed
-    state is not wholly inside the main file is refused instead.
+    The filename is an untrusted label. Renaming a valid snapshot from sequence
+    1 to 99 preserves the digest, so the digest alone cannot establish which
+    state this image is. The sequence embedded in the image is what settles it.
     """
-    if not database.exists():
-        return "missing", []
-    if not database.is_file():
-        raise JournalError("database path is not a regular file")
-    # From here the database was observed to exist. If it disappears while we
-    # are reading, every step below raises rather than degrading to an empty
-    # list, so a vanished database can never be reported as an empty one.
-    _classify_database(database)
-    before_sidecars = _sidecar_signature(database)
-    _refuse_unmerged_sidecars(before_sidecars)
-    image = _as_rollback_image(_snapshot_bytes(database))
-    # A writer can create or grow a -wal between the check above and the read.
-    # Re-observing turns that race from a silently short history into a refusal.
-    # This DETECTS the window; it does not close it. See the limitations note in
-    # docs/BRIDGE_WORK_JOURNAL.md.
-    after_sidecars = _sidecar_signature(database)
-    _refuse_unmerged_sidecars(after_sidecars)
-    if after_sidecars != before_sidecars:
-        raise JournalError("journal sidecar state changed while it was being read")
-    connection = sqlite3.connect(":memory:", isolation_level=None)
-    try:
-        connection.deserialize(image)
-        connection.execute("PRAGMA query_only = ON")
-        # Coherence check on the snapshot itself: a torn or damaged image must
-        # not be reported as a short but valid history.
-        check = connection.execute("PRAGMA quick_check(16)").fetchone()
-        if not check or check[0] != "ok":
-            raise JournalError("journal database failed its integrity check")
-        version = connection.execute(
-            "SELECT schema_version FROM journal_metadata WHERE singleton = 1"
-        ).fetchone()
-        if version != (DATABASE_SCHEMA_VERSION,):
-            raise JournalError("unsupported journal database schema")
-        rows = connection.execute(
-            """SELECT contract_id, revision, artifact_id, evaluation_id, state, observed_at
-            FROM accepted_receipts ORDER BY receipt_identity"""
-        ).fetchall()
-    except sqlite3.Error as exc:
-        raise JournalError("journal database cannot be read") from exc
-    finally:
-        connection.close()
-    fields = ("contract_id", "revision", "artifact_id", "evaluation_id", "state", "observed_at")
-    return "available", [dict(zip(fields, row, strict=True)) for row in rows]
-
-
-def _load_snapshot(path: Path, expected_digest: str) -> list[dict[str, str]]:
-    """Load one immutable snapshot, verifying content against its own name."""
     try:
         info = path.stat()
         if info.st_size > MAX_DATABASE_BYTES:
             raise JournalError("snapshot exceeds the readable size bound")
-        image = path.read_bytes()
+        with path.open("rb") as handle:
+            # Bounded: a stat followed by an unbounded read_bytes() would let a
+            # file that grew after the stat be slurped in full.
+            image = handle.read(MAX_DATABASE_BYTES + 1)
     except JournalError:
         raise
     except OSError as exc:
         raise JournalError("snapshot cannot be read") from exc
+    if len(image) > MAX_DATABASE_BYTES:
+        raise JournalError("snapshot exceeds the readable size bound")
     if hashlib.sha256(image).hexdigest() != expected_digest:
         raise JournalError("snapshot content does not match its digest")
     connection = sqlite3.connect(":memory:", isolation_level=None)
@@ -543,10 +410,17 @@ def _load_snapshot(path: Path, expected_digest: str) -> list[dict[str, str]]:
         check = connection.execute("PRAGMA quick_check(16)").fetchone()
         if not check or check[0] != "ok":
             raise JournalError("snapshot failed its integrity check")
+        # Version first, on its own, so a snapshot from an older schema that
+        # lacks snapshot_seq reports "unsupported" rather than an opaque
+        # "cannot be read" from a missing column.
         version = connection.execute(
             "SELECT schema_version FROM journal_metadata WHERE singleton = 1").fetchone()
-        if version != (DATABASE_SCHEMA_VERSION,):
+        if not version or int(version[0]) != DATABASE_SCHEMA_VERSION:
             raise JournalError("unsupported snapshot schema")
+        embedded = connection.execute(
+            "SELECT snapshot_seq FROM journal_metadata WHERE singleton = 1").fetchone()
+        if not embedded or int(embedded[0]) != expected_sequence:
+            raise JournalError("snapshot sequence does not match its embedded sequence")
         rows = connection.execute(
             """SELECT contract_id, revision, artifact_id, evaluation_id, state, observed_at
             FROM accepted_receipts ORDER BY receipt_identity""").fetchall()
@@ -593,7 +467,7 @@ def journal_report(database: Path) -> dict[str, Any]:
             "ledger": None,
         }
     sequence, digest, path = entries[-1]
-    receipts = _load_snapshot(path, digest)
+    receipts = _load_snapshot(path, digest, sequence)
     ledger = build_report(
         {"schema": INPUT_SCHEMA, "usage_attempts": [], "accepted_work": receipts})
     return {

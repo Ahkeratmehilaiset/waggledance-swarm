@@ -62,10 +62,22 @@ authority, or coverage outside explicitly stored receipt rows is invented.
 `append` publishes an **immutable snapshot** of the state it commits. `status`
 reads the newest published snapshot and **never opens the database at all**.
 
-Snapshots live in `snapshots/` beside the database and are named
+Snapshots live in `snapshots/<journal key>/` beside the database, where the key
+is a digest of that database's absolute path, and are named
 `snap-<12-digit sequence>-<full sha256 of the image>.journal`. A file is never
 modified or replaced once named, so a reader holding one has a coherent image
 no matter what a writer does next.
+
+**Snapshots are bound to one database.** They were originally keyed by
+directory, so asking about a missing `b.sqlite3` returned `a.sqlite3`'s
+receipts from the shared folder. The key binds a snapshot set to the database it
+describes, and the reader derives it from the path it was given — no database
+read is needed to establish the binding.
+
+**The filename is an untrusted label.** The reader verifies the full sha256
+*and* the sequence embedded inside the image. Renaming a valid snapshot from
+sequence 1 to 99 preserves the digest, so the digest alone cannot say which
+state an image represents.
 
 **Publication is coupled to the commit, not to a later read.** Inside the same
 write transaction that appends the receipts, the sequence is allocated from
@@ -86,8 +98,11 @@ open (measured).
 * It performs `scandir`, `stat` and read-only `open`, and nothing else, on every
   path including every error path.
 * It verifies the **full sha256** of the content against the digest in the name.
-* A duplicate sequence, an unparseable image, a failed `quick_check`, an
-  unsupported schema or an oversize file are all **refusals**.
+* A duplicate sequence, a filename sequence that disagrees with the embedded
+  one, an unparseable image, a failed `quick_check`, an unsupported schema or an
+  oversize file are all **refusals**.
+* Reads are bounded by size at both the `stat` and the read, so a file that
+  grows between the two cannot be slurped in full.
 * With **no published snapshot** the state is `unavailable` and `receipt_rows`
   is `None`. There is no live-database fallback, and this is deliberately not
   reported as an empty journal: a journal whose state is unknown and a journal
@@ -127,8 +142,30 @@ committed-but-unpublished is distinguishable from committed-and-published:
 | `published` | committed, and the snapshot for `snapshot_seq` exists |
 | `publication_pending` | **committed**, but not published; `publication_reason` says why |
 
+Nothing after the commit raises. A publication problem — a refused sequence, a
+directory error — becomes `publication_pending` with a reason, because an
+exception there would hide a durable commit behind what looks like a failed
+append. An image too large to publish is refused *before* the commit instead, so
+a journal is never committed into a state the reader could never see.
+
+### Schema versions
+
+`_initialise` inspects the stored version **before** mutating anything. Only an
+explicit version 1 is migrated to 2; any other unrecognised version is refused
+and left untouched. An earlier version wrote the current number
+unconditionally, silently downgrading a database that claimed version 999.
+
 A `publication_pending` result is not a failed append. The receipts are durable;
 only the reader's view is behind, and `publish_pending()` closes the gap.
+
+### The live-database reading path is gone
+
+`status` used to read the database directly, with machinery for WAL sidecars,
+hot journals and mid-read disappearance. That code has been **removed**, not
+merely bypassed: `_read_receipts`, `_classify_database`, the sidecar helpers,
+`_snapshot_bytes` and `_as_rollback_image` no longer exist. The tests that
+asserted their behaviour are retired, and a regression asserts the functions are
+absent so the claim cannot quietly become false again.
 
 ### Remaining limitations
 

@@ -44,6 +44,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 from typing import Any, Mapping, Sequence
 
 try:  # package import first, mirroring the sibling capacity modules
@@ -59,12 +60,23 @@ EVIDENCE_SOURCE_SCHEMA = "wd.policy-evidence-source.v1"
 #: purpose: it is live identity, not a document.
 FILE_BACKED_CLASSES = ("policy", "catalog", "qualification", "profile")
 
+#: The root must live on one of these drives. The module documented a
+#: persistent-C root but the original drive check accepted any letter, so the
+#: promise and the code disagreed; the allowlist is now the code.
+ALLOWED_ROOT_DRIVES = frozenset({"C"})
+
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_DOCUMENTS = 64
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 _UNSAFE_COMPONENT = re.compile(r"~[0-9]")
 _READ_CHUNK = 256 * 1024
+
+#: Diagnostics are fixed strings. Earlier versions interpolated the offending
+#: manifest key or path component, which echoed caller-controlled data into
+#: every log and reply that carried a reason.
+REASON_ALIAS = "ambiguous_windows_alias"
+REASON_REPARSE = "reparse_point_in_path"
 
 
 class SourceRejected(Exception):
@@ -74,14 +86,15 @@ class SourceRejected(Exception):
 def _reject_alias(component: str) -> None:
     if component in ("", "."):
         return
-    if component.endswith((".", " ")) or _UNSAFE_COMPONENT.search(component):
-        raise SourceRejected(f"ambiguous_windows_alias:{component}")
+    if component.endswith((".", " ")) or component.startswith(" ") \
+            or _UNSAFE_COMPONENT.search(component):
+        raise SourceRejected(REASON_ALIAS)
 
 
-def allowlisted_root(root: Any) -> Path:
+def allowlisted_root(root: Any, *, allowed_drives: frozenset = ALLOWED_ROOT_DRIVES) -> Path:
     """Validate the one root everything must live under.
 
-    Must be an existing absolute directory on a local fixed drive, with no
+    Must be an existing absolute directory on an **allowlisted** drive, with no
     reparse point anywhere in its chain.
     """
     # A caller naturally holds a Path; requiring str would be friction with no
@@ -94,13 +107,17 @@ def allowlisted_root(root: Any) -> Path:
     if not candidate.is_absolute():
         raise InputError("root must be absolute")
     text = str(candidate).replace("\\", "/")
-    if not re.match(r"^[A-Za-z]:/", text):
+    drive = re.match(r"^([A-Za-z]):/", text)
+    if not drive:
         raise InputError("root must be a drive-qualified local path")
+    if drive.group(1).upper() not in {d.upper() for d in allowed_drives}:
+        # No drive letter in the message: it is caller-supplied.
+        raise InputError("root drive is not allowlisted")
     for part in text.split("/"):
         try:
             _reject_alias(part)
-        except SourceRejected as exc:
-            raise InputError(f"root is not a plain path: {exc}")
+        except SourceRejected:
+            raise InputError("root is not a plain path")
     absolute = candidate.absolute()
     for component in (absolute, *absolute.parents):
         try:
@@ -116,9 +133,14 @@ def allowlisted_root(root: Any) -> Path:
 
 def _resolve_under(root: Path, relative: Any) -> Path:
     """A relative POSIX path, confined to ``root``, with no aliasing."""
-    if not _text(relative):
+    if not isinstance(relative, str) or not relative or len(relative) > 2048:
         raise SourceRejected("source_path_missing")
-    raw = str(relative).replace("\\", "/").strip()
+    # Deliberately NOT stripped. The previous version called .strip() first,
+    # which silently normalised a trailing-space alias into an acceptable name
+    # before the alias check could ever see it.
+    if relative != relative.strip():
+        raise SourceRejected("source_path_has_surrounding_whitespace")
+    raw = relative.replace("\\", "/")
     if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
         raise SourceRejected("absolute_source_path_forbidden")
     if ":" in raw:
@@ -139,7 +161,7 @@ def _resolve_under(root: Path, relative: Any) -> Path:
                 raise SourceRejected("source_missing")
             continue
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise SourceRejected(f"reparse_point_in_path:{component.name}")
+            raise SourceRejected(REASON_REPARSE)
     absolute = target.absolute()
     try:
         absolute.relative_to(root)
@@ -148,57 +170,116 @@ def _resolve_under(root: Path, relative: Any) -> Path:
     return absolute
 
 
-def _hash_file(path: Path) -> tuple[str, int]:
-    """Hash the bytes actually read, and refuse a file that moved under us.
+def handle_final_path(fileno: int) -> str | None:
+    """The real path of an OPEN descriptor, or ``None`` if unsupported here.
 
-    The stat-read-stat sandwich DETECTS a concurrent writer; it does not
-    prevent one. A writer that restores size and mtime would defeat it, which
-    is one reason content authenticity is not claimed anywhere in this module.
+    This closes the open-time race that no pre-open path check can: it reports
+    what we actually hold open, after whatever link or rename the filesystem
+    applied. ``None`` means the platform cannot answer, and the caller fails
+    closed rather than assuming success.
     """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import msvcrt
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            buffer = ctypes.create_unicode_buffer(32768)
+            written = kernel32.GetFinalPathNameByHandleW(
+                ctypes.c_void_p(msvcrt.get_osfhandle(fileno)), buffer, 32768, 0)
+            if not written or written >= 32768:
+                return None
+            return buffer.value
+        except (OSError, ImportError, AttributeError, ValueError):
+            return None
+    try:
+        return os.readlink(f"/proc/self/fd/{fileno}")
+    except OSError:
+        return None
+
+
+def _normalise_final(path: str) -> str:
+    text = str(path).replace("\\", "/")
+    for prefix in ("//?/UNC/", "//?/"):
+        if text.upper().startswith(prefix.upper()):
+            text = text[len(prefix):]
+            break
+    return text.rstrip("/").casefold()
+
+
+def _hash_file(path: Path, root: Path, *, max_bytes: int) -> tuple[str, int]:
+    """Hash bytes read from a descriptor whose identity we validated.
+
+    Three checks, because each catches what the others miss:
+
+    * ``st_ino``/``st_dev`` before and after prove the descriptor still refers
+      to the same filesystem object. Size and mtime alone did not: a
+      substitution matching both would have passed.
+    * The final path of the OPEN HANDLE proves what we opened is still inside
+      the root, which a pre-open path check cannot guarantee.
+    * Size, mtime and bytes-read detect in-place mutation.
+
+    This DETECTS interference; it does not prevent it. A privileged writer that
+    restored every observable would defeat all three, which is one reason
+    content authenticity is never claimed anywhere in this module.
+    """
+    limit = min(MAX_FILE_BYTES, max_bytes)
     try:
         before = path.stat()
-    except OSError as exc:
-        raise SourceRejected(f"source_unreadable:{type(exc).__name__}")
+    except OSError:
+        raise SourceRejected("source_unreadable")
     if not stat.S_ISREG(before.st_mode):
         raise SourceRejected("source_is_not_a_regular_file")
-    if before.st_size > MAX_FILE_BYTES:
+    if before.st_size > limit:
         raise SourceRejected("source_exceeds_size_bound")
     digest = hashlib.sha256()
     read = 0
     try:
         with open(path, "rb") as handle:
+            final = handle_final_path(handle.fileno())
+            if final is None:
+                raise SourceRejected("open_handle_path_validation_unsupported")
+            opened = _normalise_final(final)
+            base = _normalise_final(str(root))
+            if not (opened == base or opened.startswith(base + "/")):
+                raise SourceRejected("open_handle_escapes_root")
             while True:
                 chunk = handle.read(_READ_CHUNK)
                 if not chunk:
                     break
                 read += len(chunk)
-                if read > MAX_FILE_BYTES:
+                if read > limit:
                     raise SourceRejected("source_grew_past_size_bound_during_read")
                 digest.update(chunk)
-            # Stat the OPEN DESCRIPTOR, not the path. A path re-stat would
-            # happily describe a different file if the name was swapped while
-            # we were reading; the descriptor still refers to what we hashed.
             after = os.fstat(handle.fileno())
     except SourceRejected:
         raise
-    except OSError as exc:
-        raise SourceRejected(f"source_unreadable:{type(exc).__name__}")
-    if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns) \
-            or read != before.st_size:
+    except OSError:
+        raise SourceRejected("source_unreadable")
+    if (after.st_ino, after.st_dev) != (before.st_ino, before.st_dev):
+        raise SourceRejected("source_identity_changed_during_read")
+    if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns)             or read != before.st_size:
         raise SourceRejected("source_changed_during_read")
     return digest.hexdigest(), read
 
 
 def _hashed_document(root: Path, relative: Any, budget: dict) -> dict:
-    resolved = _resolve_under(root, relative)
-    digest, size = _hash_file(resolved)
-    budget["total"] += size
-    budget["count"] += 1
-    if budget["count"] > MAX_DOCUMENTS:
+    """Charge the budget BEFORE reading, and cap the read to what remains.
+
+    The earlier version hashed first and checked afterwards, so the advertised
+    limits could be exceeded by a whole document before anything complained.
+    Budgets are shared across all classes, so the remaining allowance is what
+    bounds each read.
+    """
+    if budget["count"] + 1 > MAX_DOCUMENTS:
         raise SourceRejected("document_count_bound_exceeded")
-    if budget["total"] > MAX_TOTAL_BYTES:
+    remaining = MAX_TOTAL_BYTES - budget["total"]
+    if remaining <= 0:
         raise SourceRejected("total_size_bound_exceeded")
-    return {"ref": str(relative).replace("\\", "/").strip(), "sha256": digest}
+    budget["count"] += 1
+    resolved = _resolve_under(root, relative)
+    digest, size = _hash_file(resolved, root, max_bytes=remaining)
+    budget["total"] += size
+    return {"ref": relative.replace("\\", "/"), "sha256": digest}
 
 
 def _mapping(value: Any) -> dict:
@@ -206,11 +287,22 @@ def _mapping(value: Any) -> dict:
 
 
 def _policy_entry(root: Path, spec: Mapping[str, Any], budget: dict) -> dict:
+    """Policy evidence must name the DOMAIN it came from.
+
+    ``configs/policy/**`` is deployment/runtime policy. Bridge governance
+    policy is a different corpus. They are both "policy", and conflating them
+    would let a deployment document look like authorization for a bridge
+    decision, so the domain is mandatory and travels with the evidence.
+    """
+    domain = spec.get("domain")
+    if not _text(domain):
+        raise SourceRejected("policy_domain_missing")
     documents = spec.get("documents")
     if not isinstance(documents, Sequence) or isinstance(documents, (str, bytes)) \
             or not documents:
         raise SourceRejected("policy_documents_missing")
-    return {"documents": [_hashed_document(root, item, budget) for item in documents]}
+    return {"domain": domain.strip(),
+            "documents": [_hashed_document(root, item, budget) for item in documents]}
 
 
 def _catalog_entry(root: Path, spec: Mapping[str, Any], budget: dict) -> dict:
@@ -262,7 +354,9 @@ def emit_evidence(*, root: Any, manifest: Any) -> dict:
         raise InputError("manifest must be an object")
     unknown_classes = [k for k in manifest if k not in FILE_BACKED_CLASSES]
     if unknown_classes:
-        raise InputError(f"manifest declares unsupported classes: {sorted(unknown_classes)}")
+        # The count is ours; the key names are the caller's and are not echoed.
+        raise InputError(
+            f"manifest declares {len(unknown_classes)} unsupported class key(s)")
 
     evidence: dict[str, Any] = {}
     unavailable: dict[str, list[str]] = {}

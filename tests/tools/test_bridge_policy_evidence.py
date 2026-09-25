@@ -28,6 +28,8 @@ from tools.bridge_policy_evidence import (  # noqa: E402
     MAX_FILE_BYTES,
     allowlisted_root,
     build_snapshot,
+    handle_final_path,
+    _normalise_final,
     emit_evidence,
     inspect_sources,
 )
@@ -67,7 +69,8 @@ def tree(tmp_path):
 
 def manifest():
     return {
-        "policy": {"documents": ["configs/policy/constitution.yaml",
+        "policy": {"domain": "deployment-runtime-policy",
+                   "documents": ["configs/policy/constitution.yaml",
                                  "configs/policy/profiles.yaml"]},
         "catalog": {"document": "configs/catalog.json"},
         "qualification": {"document": "reports/qualification.json",
@@ -130,8 +133,10 @@ def test_hash_integrity_is_false_when_any_class_failed(tree):
     ("/etc/passwd", "absolute_source_path_forbidden"),
     ("C:/Windows/system.ini", "absolute_source_path_forbidden"),
     ("configs/catalog.json:stream", "alternate_data_stream_forbidden"),
-    ("configs/PROGRA~1/x.json", "ambiguous_windows_alias:PROGRA~1"),
-    ("configs/trailing./x.json", "ambiguous_windows_alias:trailing."),
+    ("configs/PROGRA~1/x.json", "ambiguous_windows_alias"),
+    ("configs/trailing./x.json", "ambiguous_windows_alias"),
+    ("configs/x.json ", "source_path_has_surrounding_whitespace"),
+    (" configs/x.json", "source_path_has_surrounding_whitespace"),
     ("configs/missing.json", "source_missing"),
 ])
 def test_unsafe_or_missing_source_paths_are_refused(tree, bad, reason):
@@ -170,7 +175,7 @@ def test_a_symlinked_source_is_refused(tree):
     spec["catalog"]["document"] = "configs/linked.json"
     emitted = emit_evidence(root=tree, manifest=spec)
     assert "catalog" not in emitted["evidence"]
-    assert emitted["unavailable"]["catalog"][0].startswith("reparse_point_in_path:")
+    assert emitted["unavailable"]["catalog"] == ["reparse_point_in_path"]
 
 
 def test_changed_during_read_is_detected(tree, monkeypatch):
@@ -338,3 +343,155 @@ def test_inspect_sources_reports_availability_honestly(tree):
     assert report["available"] == ["policy", "profile"]
     assert report["unavailable"]["qualification"] == ["not_declared_in_manifest"]
     assert report["unavailable"]["catalog"] == ["source_missing"]
+
+
+# --- the five defects found in review, each with a test that fails without ----
+
+
+def test_root_drive_must_be_allowlisted():
+    """Defect 1: the code accepted any drive while the docs promised C only."""
+    with pytest.raises(InputError, match="allowlisted"):
+        allowlisted_root("D:/anything")
+    # The rejection must not echo the caller's drive letter back.
+    try:
+        allowlisted_root("Z:/secret-share")
+    except InputError as exc:
+        assert "Z" not in str(exc)
+
+
+def test_an_explicit_drive_allowlist_is_honoured(tree):
+    drive = str(tree)[0]
+    assert allowlisted_root(tree, allowed_drives=frozenset({drive})) is not None
+    with pytest.raises(InputError):
+        allowlisted_root(tree, allowed_drives=frozenset({"Q"}))
+
+
+@pytest.mark.parametrize("path", ["configs/catalog.json ", " configs/catalog.json",
+                                  "configs/catalog.json\t"])
+def test_surrounding_whitespace_is_rejected_not_stripped(tree, path):
+    """Defect 2: .strip() normalised a trailing-space alias before checking."""
+    spec = manifest()
+    spec["catalog"]["document"] = path
+    emitted = emit_evidence(root=tree, manifest=spec)
+    assert emitted["unavailable"]["catalog"] == ["source_path_has_surrounding_whitespace"]
+
+
+def test_a_trailing_space_component_is_an_alias(tree):
+    spec = manifest()
+    spec["catalog"]["document"] = "configs /catalog.json"
+    emitted = emit_evidence(root=tree, manifest=spec)
+    assert emitted["unavailable"]["catalog"] == ["ambiguous_windows_alias"]
+
+
+def test_diagnostics_never_echo_caller_supplied_data(tree):
+    """Defect 4: manifest keys and path fragments leaked into reasons."""
+    marker = "CANARY-e3f1"
+    try:
+        emit_evidence(root=tree, manifest={marker: {}})
+    except InputError as exc:
+        assert marker not in str(exc)
+        assert "1 unsupported class" in str(exc)
+    spec = manifest()
+    spec["catalog"]["document"] = f"configs/{marker}~1/x.json"
+    emitted = emit_evidence(root=tree, manifest=spec)
+    assert marker not in repr(emitted["unavailable"])
+
+
+def test_budget_is_charged_before_the_read_not_after(tree, monkeypatch):
+    """Defect 5: limits were checked after hashing, so they could be exceeded."""
+    import tools.bridge_policy_evidence as mod
+    monkeypatch.setattr(mod, "MAX_DOCUMENTS", 1)
+    spec = manifest()
+    emitted = emit_evidence(root=tree, manifest=spec)
+    # policy declares two documents; the second must be refused before reading.
+    assert emitted["unavailable"]["policy"] == ["document_count_bound_exceeded"]
+    assert emitted["documents_hashed"] <= 2
+
+
+def test_total_budget_caps_a_single_oversized_read(tree, monkeypatch):
+    import tools.bridge_policy_evidence as mod
+    monkeypatch.setattr(mod, "MAX_TOTAL_BYTES", 4)
+    spec = {"catalog": manifest()["catalog"]}
+    emitted = emit_evidence(root=tree, manifest=spec)
+    assert emitted["unavailable"]["catalog"] == ["source_exceeds_size_bound"]
+
+
+# --- defect 3: real handle identity, not a mocked size --------------------------
+
+
+def test_handle_final_path_reports_the_real_open_path(tree):
+    """Real call, no mock: the OS must tell us what we actually opened."""
+    target = tree / "configs" / "catalog.json"
+    with open(target, "rb") as handle:
+        final = handle_final_path(handle.fileno())
+    if final is None:
+        pytest.skip("platform cannot report an open handle's final path")
+    assert _normalise_final(final).endswith("configs/catalog.json")
+    assert _normalise_final(str(tree)) in _normalise_final(final)
+
+
+def test_inode_and_device_are_real_and_stable(tree):
+    """The identity fields the fix relies on must actually be populated."""
+    target = tree / "configs" / "catalog.json"
+    before = target.stat()
+    with open(target, "rb") as handle:
+        after = os.fstat(handle.fileno())
+    if not before.st_ino or not before.st_dev:
+        pytest.skip("this filesystem does not report inode/device")
+    assert (before.st_ino, before.st_dev) == (after.st_ino, after.st_dev)
+
+
+def test_a_handle_outside_the_root_is_refused(tree):
+    """Real, unmocked: hashing a file that is not under the root must refuse.
+
+    The file must live outside ``tree`` itself -- an earlier version of this
+    test put it in ``tmp_path``, which pytest makes the *same* directory, so it
+    was inside the root and the test proved nothing.
+    """
+    import tools.bridge_policy_evidence as mod
+    outside = tree.parent / "outside-of-root.json"
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(mod.SourceRejected) as caught:
+        mod._hash_file(outside, tree, max_bytes=mod.MAX_TOTAL_BYTES)
+    assert str(caught.value) == "open_handle_escapes_root"
+
+
+def test_unsupported_final_path_validation_fails_closed(tree, monkeypatch):
+    """Deterministic fault injection for the platform-cannot-answer branch."""
+    import tools.bridge_policy_evidence as mod
+    monkeypatch.setattr(mod, "handle_final_path", lambda fileno: None)
+    emitted = emit_evidence(root=tree, manifest=manifest())
+    assert emitted["unavailable"]["catalog"] == ["open_handle_path_validation_unsupported"]
+    assert emitted["hash_integrity"] is False
+
+
+def test_identity_substitution_is_detected(tree, monkeypatch):
+    """Fault injection on ino/dev: equal size and mtime must not be enough."""
+    import tools.bridge_policy_evidence as mod
+    real_fstat = mod.os.fstat
+
+    def swapped(fd):
+        info = real_fstat(fd)
+        return os.stat_result((info.st_mode, info.st_ino + 1, info.st_dev,
+                               info.st_nlink, info.st_uid, info.st_gid, info.st_size,
+                               info.st_atime, info.st_mtime, info.st_ctime))
+
+    monkeypatch.setattr(mod.os, "fstat", swapped)
+    emitted = emit_evidence(root=tree, manifest=manifest())
+    assert emitted["unavailable"]["catalog"] == ["source_identity_changed_during_read"]
+
+
+# --- policy domain labelling ---------------------------------------------------
+
+
+def test_policy_evidence_must_declare_its_domain(tree):
+    """Deployment policy is not bridge governance policy; the label is required."""
+    spec = manifest()
+    del spec["policy"]["domain"]
+    emitted = emit_evidence(root=tree, manifest=spec)
+    assert emitted["unavailable"]["policy"] == ["policy_domain_missing"]
+
+
+def test_the_domain_travels_with_the_evidence(tree):
+    emitted = emit_evidence(root=tree, manifest=manifest())
+    assert emitted["evidence"]["policy"]["domain"] == "deployment-runtime-policy"

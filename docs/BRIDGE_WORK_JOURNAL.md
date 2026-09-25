@@ -143,6 +143,12 @@ and the repair is reported rather than passing as an ordinary publish.
   configured separately so the two can never be set into an inverted order.
   Only at the hard stop does an append prune pre-emptively, and only if that
   still frees nothing is the append refused **before** its commit.
+* Retention deletes **only this journal's own cache snapshots**: files inside
+  this journal's snapshot directory whose names match the snapshot pattern and
+  parse cleanly. The database and its receipts are never candidates, nor is any
+  other file in that directory, nor an identically-named file outside it. The
+  prune iterates the parsed scan rather than a glob, and a test plants decoys —
+  including a perfectly valid snapshot name beside the database — to keep it so.
 
 #### The tradeoff, stated plainly
 
@@ -184,11 +190,33 @@ committed-but-unpublished is distinguishable from committed-and-published:
 | `published` | committed, and the snapshot for `snapshot_seq` exists |
 | `publication_pending` | **committed**, but not published; `publication_reason` says why |
 
-Nothing after the commit raises. A publication problem — a refused sequence, a
-directory error — becomes `publication_pending` with a reason, because an
-exception there would hide a durable commit behind what looks like a failed
-append. An image too large to publish is refused *before* the commit instead, so
-a journal is never committed into a state the reader could never see.
+`retention_warning` appears beside either outcome when the post-publish prune
+could not run — `prune_refused:<reason>` for a refused directory scan,
+`prune_failed:<OSError type>` for an I/O failure. It qualifies the housekeeping,
+never the publication: the snapshot named by `snapshot_seq` is on disk and
+loadable, and only the reclaiming of older ones did not happen.
+
+Nothing after the commit raises, **and that includes the cleanup**. A publication
+problem — a refused sequence, a directory error — becomes `publication_pending`
+with a reason, because an exception there would hide a durable commit behind what
+looks like a failed append. The prune that follows a successful publish reads the
+snapshot directory and so can fail the same way; it reports `retention_warning`
+rather than throwing over a publication that already succeeded. The snapshot
+directory is resolved once, *before* the transaction, so the post-commit stretch
+derives nothing and a test asserts that against the source. An image too large to
+publish is refused *before* the commit instead, so a journal is never committed
+into a state the reader could never see.
+
+### Replaying a publication
+
+Publishing the same sequence twice is idempotent, but idempotence is decided on
+the stored **bytes**, not on the stored **name**. A file's name carries the
+digest it claims to have; corruption does not rename it. So a replay loads the
+existing snapshot and verifies its digest and embedded sequence before reporting
+success. A same-sequence file whose content differs, and one whose content no
+longer verifies, are both refused — and because that refusal happens inside the
+post-commit guard, the caller sees `publication_pending` with a reason rather
+than an exception.
 
 ### Schema versions
 

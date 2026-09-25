@@ -207,6 +207,9 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
         raise JournalError("database path is not a regular file")
     if not normalised:
         return {"appended": 0, "duplicates": 0, "database_state": "unchanged_empty_append"}
+    # Resolved ONCE, before the transaction. Deriving it again after the commit
+    # would put a computation on the one stretch of code that must not fail.
+    directory = _snapshot_dir_for(database)
     try:
         database.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(database), isolation_level=None)
@@ -234,7 +237,7 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
             # Before the commit, so an unpublishable journal is refused rather
             # than committed into a state the reader can never see.
             raise JournalError("journal image exceeds the publishable size bound")
-        _assert_retention_capacity(_snapshot_dir_for(database))
+        _assert_retention_capacity(directory)
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -247,18 +250,19 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
     # exception here would hide a durable commit behind what looks like a
     # failed append. Every publication problem becomes an observable outcome.
     try:
-        publication, reason = _publish_snapshot(_snapshot_dir_for(database), sequence, image)
+        publication, reason = _publish_snapshot(directory, sequence, image)
     except JournalError as exc:
         publication, reason = PUBLICATION_PENDING, f"publish_refused:{exc}"
     except OSError as exc:
         publication, reason = PUBLICATION_PENDING, f"publish_failed:{type(exc).__name__}"
-    if publication == PUBLISHED:
-        _prune_superseded(_snapshot_dir_for(database), sequence)
+    retention_warning = _prune_after_publish(directory, sequence, publication)
     result = {"appended": appended, "duplicates": duplicates,
               "database_state": "available", "snapshot_seq": sequence,
               "publication": publication}
     if reason:
         result["publication_reason"] = reason
+    if retention_warning:
+        result["retention_warning"] = retention_warning
     return result
 
 
@@ -409,6 +413,32 @@ def _prune_superseded(directory: Path, newest_sequence: int,
     return len(_snapshot_entries(directory))
 
 
+def _prune_after_publish(directory: Path, sequence: int, publication: str) -> str | None:
+    """Prune after a successful publish, and NEVER raise while doing it.
+
+    This runs after the commit. Pruning reads the snapshot directory, and a
+    directory scan can fail -- unreadable, flooded past MAX_SNAPSHOT_ENTRIES,
+    two files claiming one sequence -- so the call that tidies up was able to
+    throw over a publication that had already succeeded. The caller then saw an
+    exception describing a state that was, in fact, correctly published and
+    durable: the same "failure that hides a durable commit" this module refuses
+    everywhere else, reintroduced by the cleanup step.
+
+    Retention is housekeeping. Failing to reclaim space never invalidates what
+    was published, so it is reported as a warning beside a truthful result and
+    never as an exception or a rollback.
+    """
+    if publication != PUBLISHED:
+        return None
+    try:
+        _prune_superseded(directory, sequence)
+    except JournalError as exc:
+        return f"prune_refused:{exc}"
+    except OSError as exc:
+        return f"prune_failed:{type(exc).__name__}"
+    return None
+
+
 def _assert_retention_capacity(directory: Path) -> None:
     """Refuse BEFORE committing only when growth is genuinely out of control.
 
@@ -485,12 +515,18 @@ def _publish_snapshot(directory: Path, sequence: int, image: bytes) -> tuple[str
         # Check the SEQUENCE, not just this exact name. Comparing only the
         # target name let a second file claim the same sequence with different
         # content, manufacturing precisely the ambiguity the reader refuses.
-        for existing_sequence, existing_digest, _ in _snapshot_entries(directory):
+        for existing_sequence, existing_digest, existing_path in _snapshot_entries(directory):
             if existing_sequence != sequence:
                 continue
-            if existing_digest == digest:
-                return PUBLISHED, None      # idempotent replay
-            raise JournalError("snapshot sequence already published with other content")
+            if existing_digest != digest:
+                raise JournalError("snapshot sequence already published with other content")
+            # The NAME agrees with the image we were asked to publish. That is a
+            # CLAIM about the file's bytes, and a corrupted file keeps its name:
+            # replaying on the strength of the name alone reported published for
+            # a sequence whose stored bytes no longer matched anything. Verify
+            # the bytes on disk before calling this an idempotent success.
+            _load_snapshot(existing_path, existing_digest, sequence)
+            return PUBLISHED, None      # idempotent replay, bytes verified
         if len(_snapshot_entries(directory)) >= _retention_ceiling():
             # Only the HARD ceiling blocks publication. Refusing at the soft
             # prune target would defeat the whole redesign: it is the condition
@@ -677,9 +713,10 @@ def publish_pending(database: Path) -> dict[str, Any]:
         publication, reason = PUBLICATION_PENDING, f"publish_refused:{exc}"
     except OSError as exc:
         publication, reason = PUBLICATION_PENDING, f"publish_failed:{type(exc).__name__}"
-    if publication == PUBLISHED:
-        _prune_superseded(directory, sequence)
+    retention_warning = _prune_after_publish(directory, sequence, publication)
     result = {"publication": publication, "snapshot_seq": sequence}
+    if retention_warning:
+        result["retention_warning"] = retention_warning
     if state == CORRUPT:
         # Recovery repairs this, but never silently: an immutable artefact that
         # stopped verifying is evidence of a failing disk or a tamper, and a

@@ -842,6 +842,229 @@ def test_publish_snapshot_refuses_an_existing_target_whose_content_differs(tmp_p
         journal._publish_snapshot(directory, 1, b"a different image entirely")
 
 
+# --- the replay target's BYTES, not its name ----------------------------------
+
+
+def test_replay_verifies_the_existing_bytes_not_the_filename(tmp_path):
+    """A corrupted file keeps its name, so the name cannot prove the content.
+
+    _publish_snapshot compared the digest parsed out of the FILENAME against
+    the image it was handed. Both agreed, so a target whose stored bytes had
+    been destroyed was reported as an idempotent success -- publication
+    claiming a sequence was safely on disk when nothing readable was.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    target = _snapshots(database)[0]
+    original = target.read_bytes()
+    target.write_bytes(b"corrupt")
+    with pytest.raises(journal.JournalError):
+        journal._publish_snapshot(directory, 1, original)
+
+
+def test_replay_of_an_intact_snapshot_is_still_an_idempotent_success(tmp_path):
+    """Non-vacuity pair: the byte check must not break real replay.
+
+    Without this, _publish_snapshot could refuse every replay outright and the
+    test above would still pass.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    target = _snapshots(database)[0]
+    original = target.read_bytes()
+    assert journal._publish_snapshot(directory, 1, original) == (journal.PUBLISHED, None)
+    assert len(_snapshots(database)) == 1, "replay wrote a second file"
+    assert target.read_bytes() == original, "replay rewrote a verified snapshot"
+
+
+# --- nothing after the commit may raise, INCLUDING the cleanup ----------------
+
+
+def _boom_journal(*args, **kwargs):
+    raise journal.JournalError("injected unreadable snapshot directory")
+
+
+def _boom_os(*args, **kwargs):
+    raise OSError(5, "injected I/O error")
+
+
+@pytest.mark.parametrize("failure,expected", [(_boom_journal, "prune_refused:"),
+                                              (_boom_os, "prune_failed:")])
+@pytest.mark.parametrize("recovery", [False, True])
+def test_a_prune_failure_after_publish_is_a_warning_not_an_exception(
+        tmp_path, monkeypatch, failure, expected, recovery):
+    """Retention is housekeeping; failing to reclaim space publishes nothing less.
+
+    _prune_superseded ran after the commit and OUTSIDE the guard, so a scan
+    failure -- unreadable directory, flooded past the entry bound, two files
+    claiming one sequence -- threw over a publication that had already
+    succeeded. That is exactly the failure-hiding-a-durable-commit shape this
+    module refuses everywhere else, reintroduced by the cleanup step.
+    """
+    database = tmp_path / "journal.sqlite3"
+    if recovery:
+        monkeypatch.setattr(journal, "_publish_snapshot",
+                            lambda *a: (journal.PUBLICATION_PENDING, "injected"))
+        journal.append_receipts(database, [_receipt()])   # commits, never publishes
+        monkeypatch.undo()
+    monkeypatch.setattr(journal, "_prune_superseded", failure)
+    result = (journal.publish_pending(database) if recovery
+              else journal.append_receipts(database, [_receipt()]))
+    monkeypatch.undo()
+    assert result["publication"] == journal.PUBLISHED
+    assert result["snapshot_seq"] > 0
+    assert result["retention_warning"].startswith(expected), result
+    # The published state must be TRUE, not merely reported: the snapshot the
+    # warning was raised beside is on disk and the reader can load it.
+    report = journal.journal_report(database)["journal"]
+    assert report["snapshot_seq"] == result["snapshot_seq"]
+    assert report["receipt_rows"] == 1
+
+
+def test_a_failed_publication_prunes_nothing_at_all(tmp_path, monkeypatch):
+    """Mutation-driven: pruning must not run on behalf of a publish that failed.
+
+    The prune treats everything older than the sequence it is given as
+    superseded. Handing it a sequence that was never published makes the
+    CURRENT newest snapshot -- the newest thing any reader can load -- a
+    deletion candidate, on behalf of a state that does not exist on disk.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt(contract_id="c1")])
+    journal.append_receipts(database, [_receipt(contract_id="c2")])
+    before = sorted(path.name for path in _snapshots(database))
+    assert len(before) == 2, "setup did not accumulate two snapshots"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 1)
+    monkeypatch.setattr(journal, "_publish_snapshot",
+                        lambda *a: (journal.PUBLICATION_PENDING, "injected"))
+    result = journal.append_receipts(database, [_receipt(contract_id="c3")])
+    monkeypatch.undo()
+    assert result["publication"] == journal.PUBLICATION_PENDING
+    assert sorted(path.name for path in _snapshots(database)) == before
+    # and the reader still has the view it had before the failed publication
+    assert journal.journal_report(database)["journal"]["snapshot_seq"] == 2
+
+
+def test_pruning_only_ever_deletes_journal_owned_cache_snapshots(tmp_path,
+                                                                  monkeypatch):
+    """The Lead's explicit retention condition, asserted rather than argued.
+
+    Retention may reclaim its own cache and nothing else: not the database, not
+    a file that merely happens to sit in the snapshot directory, and nothing
+    outside that directory however convincingly it is named. The decoys are
+    named to look like snapshots, because a glob would have deleted them.
+
+    SQLite's own -wal/-shm siblings are deliberately NOT asserted here: SQLite
+    creates and removes those itself, so a claim about them would be testing
+    SQLite rather than this module.
+    """
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 1)
+    journal.append_receipts(database, [_receipt(contract_id="c0")])
+    directory = journal.snapshot_directory(database)
+    valid_name = "snap-000000000001-" + "a" * 64 + ".journal"
+    bystanders = [
+        directory / "notes.txt",
+        directory / "snap-000000000009-short.journal",               # bad digest
+        directory / ("snap-0000000000010-" + "f" * 64 + ".journal"),  # bad width
+        directory / "README",
+        # A PERFECTLY valid snapshot name, one directory up beside the database.
+        # Only a scan pointed at the wrong directory could ever reach it.
+        database.parent / valid_name,
+    ]
+    for path in bystanders:
+        path.write_bytes(b"not a snapshot")
+    database_size = database.stat().st_size
+
+    for index in range(4):
+        journal.append_receipts(database, [_receipt(contract_id=f"c{index + 1}")])
+    monkeypatch.undo()
+
+    # Counted through the parsed scan, not a filename glob.
+    owned = journal._snapshot_entries(directory)
+    assert len(owned) <= 1, f"retention did not actually prune: {len(owned)}"
+    for path in bystanders:
+        assert path.exists(), f"pruning deleted a bystander: {path.name}"
+        assert path.read_bytes() == b"not a snapshot"
+    assert database.exists(), "pruning deleted the authoritative database"
+    assert database.stat().st_size >= database_size
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 5
+
+
+def test_no_snapshot_path_is_derived_after_the_commit(tmp_path):
+    """Structural invariant: the post-commit stretch computes nothing.
+
+    Behaviour cannot see this one -- _snapshot_dir_for is pure path arithmetic
+    and returns the same value either way -- so it is asserted against the
+    source. The rule it protects is that everything after the commit is either
+    guarded or incapable of failing, and a derivation sitting there is an
+    unguarded call waiting to become one.
+    """
+    import ast
+    import inspect
+
+    source = inspect.getsource(journal)
+    tree = ast.parse(source)
+    checked = []
+    for name in ("append_receipts", "publish_pending"):
+        function = next((node for node in ast.walk(tree)
+                         if isinstance(node, ast.FunctionDef) and node.name == name), None)
+        assert function is not None, f"{name} not found; this test has gone stale"
+        commit_index = None
+        for index, statement in enumerate(function.body):
+            if "connection.commit()" in ast.unparse(statement):
+                commit_index = index
+                break
+        assert commit_index is not None,             f"no commit found in {name}; this test has gone stale"
+        after = function.body[commit_index + 1:]
+        assert after, f"nothing follows the commit in {name}; this test has gone stale"
+        derivations = [node for statement in after for node in ast.walk(statement)
+                       if isinstance(node, ast.Call)
+                       and isinstance(node.func, ast.Name)
+                       and node.func.id == "_snapshot_dir_for"]
+        assert not derivations, f"{name} derives a snapshot path after the commit"
+        checked.append(name)
+    assert checked == ["append_receipts", "publish_pending"]
+
+
+def test_a_successful_prune_reports_no_retention_warning(tmp_path):
+    """Non-vacuity pair: the warning must mark a failure, not every publish."""
+    database = tmp_path / "journal.sqlite3"
+    result = journal.append_receipts(database, [_receipt()])
+    assert result["publication"] == journal.PUBLISHED
+    assert "retention_warning" not in result, result
+
+
+@pytest.mark.parametrize("failure", [_boom_journal, _boom_os])
+@pytest.mark.parametrize("collaborator", ["_publish_snapshot", "_prune_superseded"])
+@pytest.mark.parametrize("recovery", [False, True])
+def test_no_post_commit_collaborator_can_turn_a_commit_into_an_exception(
+        tmp_path, monkeypatch, failure, collaborator, recovery):
+    """The CLASS, not the two instances of it the review happened to find.
+
+    Every collaborator called after the commit is injected with each failure
+    type, on both entry points. A durable commit must always come back as a
+    result that reports its sequence, never as an exception.
+    """
+    database = tmp_path / "journal.sqlite3"
+    if recovery:
+        monkeypatch.setattr(journal, "_publish_snapshot",
+                            lambda *a: (journal.PUBLICATION_PENDING, "injected"))
+        journal.append_receipts(database, [_receipt()])
+        monkeypatch.undo()
+    monkeypatch.setattr(journal, collaborator, failure)
+    result = (journal.publish_pending(database) if recovery
+              else journal.append_receipts(database, [_receipt()]))
+    monkeypatch.undo()
+    assert result["snapshot_seq"] > 0
+    assert result.get("publication_reason") or result.get("reason")         or result.get("retention_warning"), result
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM accepted_receipts").fetchone()[0] == 1
+
+
 def test_verify_published_rejects_a_corrupted_snapshot(tmp_path):
     database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])

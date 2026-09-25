@@ -5,6 +5,12 @@
 Not attached to live terminals. No CLI executes transitions. Unknown identity,
 policy, outcomes or observations never grant dispatch. Durable intent precedes
 each side effect; ambiguous outcomes require observation, never blind replay.
+
+This proposal fences only one continuing native process.  A restart-based
+adapter needs a separate source/target epoch protocol; it must not reuse this
+same-process binding.  The trusted adapter boundary must validate the caller
+identity before supplying it here.  Matching caller-supplied booleans or this
+library's input fields is not authentication.
 """
 from __future__ import annotations
 
@@ -23,7 +29,22 @@ except ModuleNotFoundError:
 
 BINDING_FIELDS = ('agent_id', 'session_id', 'native_thread_id', 'task_id', 'request_id',
                   'head', 'claim_id', 'scope_digest', 'authority_ref', 'policy_digest',
-                  'permission_digest')
+                  'permission_digest', 'native_pid', 'native_process_started_at')
+TRUSTED_CALLER_FIELDS = ('principal', 'verification_ref')
+
+
+def _valid_process_epoch(binding: dict) -> bool:
+    """Validate a process instance, not only a reusable PID."""
+    pid = binding.get('native_pid')
+    epoch = binding.get('native_process_started_at')
+    return (type(pid) is int and 0 < pid <= 2 ** 31 - 1
+            and type(epoch) is str and _time(epoch) is not None)
+
+
+def _valid_trusted_caller(identity: Any) -> bool:
+    """Shape check only; a trusted adapter owns authentication out of band."""
+    return (isinstance(identity, dict)
+            and all(_text(identity.get(name)) for name in TRUSTED_CALLER_FIELDS))
 
 
 def recovery_advice(capacity: dict, *, failure: dict | None, now: datetime,
@@ -89,8 +110,13 @@ class OwningSessionAdapter(Protocol):
     """An actual adapter must prove ownership and idempotent checkpoint/resume.
 
     inspect returns exact binding + profile, hold/cancelled/idle/pending_effects,
-    and applied_transition/resumed_transition IDs from actual observations.
+    a trusted-boundary-validated caller identity, and applied_transition/
+    resumed_transition IDs from actual observations.  It must report the exact
+    native PID and process-start epoch too; a PID by itself can be reused.
     Applying a profile changes configuration only: it must not execute task work.
+
+    This protocol does not authenticate a caller.  The owning adapter boundary
+    must do that before it constructs ``trusted_adapter_identity``.
     """
     def inspect(self, transition_id: str) -> dict: ...
     def checkpoint(self, transition_id: str, binding: dict) -> str: ...
@@ -129,15 +155,27 @@ class RecoveryStore:
 
     def plan(self, request_key: str, plan: dict) -> int:
         binding = plan.get('binding', {})
-        if (not _text(request_key) or any(not _text(binding.get(k)) for k in BINDING_FIELDS)
+        reviewers = plan.get('required_reviewers')
+        invalid_reviewers = (
+            not isinstance(reviewers, list) or not reviewers
+            or any(not _text(value) for value in reviewers)
+            or len(set(reviewers)) != len(reviewers)
+            or binding.get('agent_id') in reviewers
+        )
+        if (not _text(request_key) or any(not _text(binding.get(k)) for k in BINDING_FIELDS
+                                           if k not in {'native_pid', 'native_process_started_at'})
+                or not _valid_process_epoch(binding)
                 or not _text(plan.get('from_profile')) or not _text(plan.get('to_profile'))
                 or plan['from_profile'] == plan['to_profile']
                 or plan.get('qualified') is not True or not _text(plan.get('qualification_ref'))
+                # This preserved True gate is a fail-closed authorization input,
+                # not authentication. A trusted boundary must still validate the
+                # caller identity supplied below out of band.
                 or plan.get('owning_adapter_verified') is not True
+                or not _valid_trusted_caller(plan.get('trusted_adapter_identity'))
                 or plan.get('hold') is not False or plan.get('cancelled') is not False
                 or plan.get('billing') != 'subscription'
-                or not isinstance(plan.get('required_reviewers'), list)
-                or not all(_text(x) for x in plan['required_reviewers'])):
+                or invalid_reviewers):
             raise InputError('transition authorization or binding incomplete')
         profiles = plan.get('profiles', {})
         for key in (plan['from_profile'], plan['to_profile']):
@@ -210,12 +248,17 @@ def advance(store: RecoveryStore, tid: int, adapter: OwningSessionAdapter) -> di
     stamp = _time(observed.get('observed_at'))
     fresh = stamp is not None and 0 <= (datetime.now(timezone.utc) - stamp).total_seconds() <= 15
     same = all(observed.get(k) == v for k, v in plan['binding'].items())
+    observed_caller = observed.get('trusted_adapter_identity')
+    same_caller = (_valid_trusted_caller(observed_caller)
+                   and all(observed_caller.get(name) == plan['trusted_adapter_identity'][name]
+                           for name in TRUSTED_CALLER_FIELDS))
     # After resume, work may already be busy. Observing its durable receipt does
     # not dispatch another turn and must not require the resumed task to be idle.
     boundary = (phase == 'resume_pending' or
                 (observed.get('idle') is True and observed.get('pending_effects') is False
                  and observed.get('quota_available') is True and observed.get('catalog_verified') is True))
-    safe = (fresh and same and observed.get('hold') is False and observed.get('cancelled') is False
+    safe = (fresh and same and same_caller
+            and observed.get('hold') is False and observed.get('cancelled') is False
             and boundary
             and observed.get('required_reviewers') == plan['required_reviewers']
             and observed.get('qualification_ref') == plan['qualification_ref'])

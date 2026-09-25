@@ -3,9 +3,11 @@
 """Durable append-only storage for explicit accepted-work receipts.
 
 Only the explicit ``append`` API opens a writable SQLite database. ``status``
-never opens the database with SQLite at all: it reads the file bytes and loads
-an in-memory copy, so it cannot create a database, parent directory, or sidecar
-journal. It turns stored receipt rows
+never reads the database at all -- not its bytes, not through SQLite. It reads
+the newest immutable SNAPSHOT that a writer published, verifies that snapshot's
+full digest and embedded sequence, and loads those snapshot bytes into an
+in-memory copy. It therefore cannot create a database, parent directory, or
+sidecar journal, and cannot be affected by a concurrent writer. It turns stored receipt rows
 into the pure report from ``tools.bridge_work_ledger``; it is not runtime
 wiring or a collector.
 """
@@ -232,6 +234,7 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
             # Before the commit, so an unpublishable journal is refused rather
             # than committed into a state the reader can never see.
             raise JournalError("journal image exceeds the publishable size bound")
+        _assert_retention_capacity(_snapshot_dir_for(database))
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -249,6 +252,8 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
         publication, reason = PUBLICATION_PENDING, f"publish_refused:{exc}"
     except OSError as exc:
         publication, reason = PUBLICATION_PENDING, f"publish_failed:{type(exc).__name__}"
+    if publication == PUBLISHED:
+        _prune_superseded(_snapshot_dir_for(database), sequence)
     result = {"appended": appended, "duplicates": duplicates,
               "database_state": "available", "snapshot_seq": sequence,
               "publication": publication}
@@ -274,10 +279,14 @@ SNAPSHOT_NAME = re.compile(r"^snap-(\d{12})-([0-9a-f]{64})\.journal$")
 #: Bounded scan: a directory with more entries than this is refused rather than
 #: walked, so a flooded directory cannot turn a read into an unbounded job.
 MAX_SNAPSHOT_ENTRIES = 4096
-#: Retention bound. Reaching it makes publication report publication_pending.
-#: Nothing is ever deleted automatically: silent deletion of an immutable
-#: artefact is a worse failure than a visible refusal to publish.
+#: Soft prune target: how many snapshots a healthy journal settles at. It is a
+#: GOAL, not a barrier. Only snapshots strictly older than the newest are ever
+#: deleted, so reaching this bound cannot destroy the view a reader is on.
 MAX_SNAPSHOT_RETAINED = 256
+#: Tolerated overshoot above the target. Slack exists so a snapshot that cannot
+#: be deleted right now -- a reader holds it, the filesystem refuses -- delays
+#: pruning instead of blocking appends. The hard stop is target + slack.
+SNAPSHOT_RETENTION_SLACK = 64
 
 PUBLISHED = "published"
 PUBLICATION_PENDING = "publication_pending"
@@ -302,8 +311,14 @@ def _journal_key(database: Path) -> str:
     Keying the directory binds a snapshot set to the database it describes
     without the reader having to open that database.
     """
-    normalised = str(Path(database).absolute()).replace("\\", "/").casefold()
-    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:32]
+    # Case is PRESERVED. Casefolding collapsed A.sqlite and a.sqlite to one key,
+    # which on a case-sensitive host are two different databases sharing one
+    # snapshot set -- the exact borrowing bug this key exists to prevent. Only
+    # the drive letter is normalised, because that really is case-insensitive.
+    text = str(Path(database).absolute()).replace("\\", "/")
+    if len(text) > 1 and text[1] == ":":
+        text = text[0].upper() + text[1:]
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
 def _snapshot_dir_for(database: Path) -> Path:
@@ -345,6 +360,117 @@ def _snapshot_entries(directory: Path) -> list[tuple[int, str, Path]]:
     return sorted(found)
 
 
+def _retention_ceiling() -> int:
+    """The hard stop, DERIVED from the target so the two cannot drift apart.
+
+    An independent absolute was worse than useless: raising the target above a
+    fixed ceiling would have inverted the two levels silently, and lowering the
+    target left the stop unreachable. Deriving it also means a caller that
+    retunes retention retunes both levels at once.
+    """
+    return MAX_SNAPSHOT_RETAINED + SNAPSHOT_RETENTION_SLACK
+
+
+def _prune_superseded(directory: Path, newest_sequence: int,
+                      keep: int | None = None) -> int:
+    """Delete SUPERSEDED snapshots, oldest first, never the newest.
+
+    The earlier design deleted nothing, which was safe against destroying a
+    reader's view but meant the retention bound stopped publication forever:
+    appends kept committing while the reader fell permanently behind. Pruning
+    only snapshots strictly older than ``newest_sequence`` cannot destroy the
+    current view, and a reader holding an older file is protected by the
+    filesystem, which refuses the delete (measured on Windows).
+
+    ``keep`` resolves from the module constant HERE rather than in the
+    signature. As a default argument it was bound once at import, so the
+    constant looked like the live knob while nothing could actually retune it.
+
+    The budget counts DELETIONS THAT SUCCEEDED, not candidates tried, so one
+    undeletable file does not consume the whole pass and stall pruning behind
+    it forever. Failures are tolerated and leave the file for a later attempt.
+
+    Returns how many snapshots remain.
+    """
+    if keep is None:
+        keep = MAX_SNAPSHOT_RETAINED
+    entries = _snapshot_entries(directory)
+    budget = len(entries) - keep
+    for sequence, _, path in entries:
+        if budget <= 0:
+            break
+        if sequence >= newest_sequence:
+            break               # sorted: nothing further is superseded
+        try:
+            path.unlink()
+        except OSError:
+            continue            # held or refused; a later pass retries it
+        budget -= 1
+    return len(_snapshot_entries(directory))
+
+
+def _assert_retention_capacity(directory: Path) -> None:
+    """Refuse BEFORE committing only when growth is genuinely out of control.
+
+    Two levels on purpose. The target is a prune goal: going over it is normal
+    and is cleaned up after the next successful publish, so an undeletable file
+    cannot block appends. The ceiling is the real stop -- reaching it means
+    pruning has failed repeatedly, and refusing before the commit is better
+    than committing into a state the reader can never see. Neither level ever
+    produces indefinite silent lag: one prunes, the other refuses, and both are
+    visible to the caller.
+
+    The pre-commit prune passes the CURRENT newest sequence, so the snapshot a
+    reader is on now is not a candidate. Nothing is deleted on behalf of an
+    append that has not happened yet.
+    """
+    entries = _snapshot_entries(directory)
+    ceiling = _retention_ceiling()
+    if len(entries) < ceiling:
+        return
+    # Prune to the target, but never to a level that still leaves no room for
+    # the append being gated. Aiming at the bare target refused an append that
+    # pruning could in fact have made room for, whenever slack was zero.
+    keep = max(0, min(MAX_SNAPSHOT_RETAINED, ceiling - 1))
+    remaining = _prune_superseded(directory, entries[-1][0], keep)
+    if remaining >= ceiling:
+        raise JournalError(
+            "snapshot retention is full and nothing could be pruned; "
+            "publication would not be possible for this append")
+
+
+#: What the published snapshot for a sequence actually IS, as opposed to what
+#: the directory listing claims. "corrupt" is kept distinct from "absent" so
+#: recovery can repair the journal without hiding the fact that a published,
+#: immutable artefact went bad -- that is a failing disk or a tamper, and a
+#: caller that only ever sees "published" would never learn of it.
+VERIFIED, ABSENT, CORRUPT = "verified", "absent", "corrupt"
+
+
+def _published_state(directory: Path, sequence: int) -> str:
+    """Is sequence ACTUALLY published, verified, and readable?
+
+    Membership in a directory listing is a filename claim. Recovery used to
+    accept it and report already_published for a snapshot whose content had
+    been corrupted, leaving the journal with no usable published state and no
+    indication of it.
+    """
+    for entry_sequence, digest, path in _snapshot_entries(directory):
+        if entry_sequence != sequence:
+            continue
+        try:
+            _load_snapshot(path, digest, sequence)
+        except JournalError:
+            return CORRUPT
+        return VERIFIED
+    return ABSENT
+
+
+def _verify_published(directory: Path, sequence: int) -> bool:
+    """Boolean form of _published_state, for callers that only gate on it."""
+    return _published_state(directory, sequence) == VERIFIED
+
+
 def _publish_snapshot(directory: Path, sequence: int, image: bytes) -> tuple[str, str | None]:
     """Write an immutable snapshot, or report why publication did not happen.
 
@@ -365,8 +491,12 @@ def _publish_snapshot(directory: Path, sequence: int, image: bytes) -> tuple[str
             if existing_digest == digest:
                 return PUBLISHED, None      # idempotent replay
             raise JournalError("snapshot sequence already published with other content")
-        if len(_snapshot_entries(directory)) >= MAX_SNAPSHOT_RETAINED:
-            return PUBLICATION_PENDING, "retention_bound_reached"
+        if len(_snapshot_entries(directory)) >= _retention_ceiling():
+            # Only the HARD ceiling blocks publication. Refusing at the soft
+            # prune target would defeat the whole redesign: it is the condition
+            # that previously left publication stalled forever while appends
+            # kept committing. Still an outcome here, never an exception.
+            return PUBLICATION_PENDING, "retention_hard_ceiling_reached"
         temporary = directory / f".publish-{uuid.uuid4().hex}.tmp"
         with temporary.open("wb") as handle:
             handle.write(image)
@@ -495,14 +625,24 @@ def publish_pending(database: Path) -> dict[str, Any]:
 
     Appends nothing, so it cannot duplicate a receipt. It allocates a NEW
     sequence and captures a NEW image in its own transaction rather than
-    re-reading under the old sequence, because a post-commit read could contain
+    re-reading under the old one, because a post-commit read could contain
     another writer's rows.
+
+    The append path's protections apply here too, because recovery is a writer:
+    the current sequence is only treated as published when the snapshot for it
+    actually VERIFIES, the image is size-checked BEFORE the commit, and a
+    publication problem after the commit is an outcome rather than an exception.
+
+    A corrupted snapshot is REPAIRED rather than raised on, because this is the
+    recovery entry point and raising here would make the one operation whose
+    job is to restore a readable journal the one that cannot. The committed
+    database is the authority; a fresh sequence republishes it. The repair is
+    reported as ``recovered_from`` so corruption never passes as routine.
     """
     database = Path(database)
     if not database.exists():
         return {"publication": PUBLICATION_PENDING, "reason": "database_missing"}
     directory = _snapshot_dir_for(database)
-    published = {sequence for sequence, _, _ in _snapshot_entries(directory)}
     try:
         connection = sqlite3.connect(str(database), isolation_level=None)
     except sqlite3.Error as exc:
@@ -512,19 +652,39 @@ def publish_pending(database: Path) -> dict[str, Any]:
         _initialise(connection)
         current = connection.execute(
             "SELECT snapshot_seq FROM journal_metadata WHERE singleton = 1").fetchone()
-        if current and int(current[0]) in published:
+        # Verified, not merely listed. A corrupted snapshot for this sequence
+        # must NOT be reported as already published.
+        published_seq = int(current[0]) if current else 0
+        state = _published_state(directory, published_seq) if current else ABSENT
+        if state == VERIFIED:
             connection.rollback()
-            return {"publication": ALREADY_PUBLISHED, "snapshot_seq": int(current[0])}
+            return {"publication": ALREADY_PUBLISHED, "snapshot_seq": published_seq}
         sequence = _allocate_sequence(connection)
         image = connection.serialize()
+        if len(image) > MAX_DATABASE_BYTES:
+            raise JournalError("journal image exceeds the publishable size bound")
+        _assert_retention_capacity(directory)
         connection.commit()
     except BaseException:
         connection.rollback()
         raise
     finally:
         connection.close()
-    publication, reason = _publish_snapshot(directory, sequence, image)
+    # Committed. Nothing beyond here may raise, for the same reason as append.
+    try:
+        publication, reason = _publish_snapshot(directory, sequence, image)
+    except JournalError as exc:
+        publication, reason = PUBLICATION_PENDING, f"publish_refused:{exc}"
+    except OSError as exc:
+        publication, reason = PUBLICATION_PENDING, f"publish_failed:{type(exc).__name__}"
+    if publication == PUBLISHED:
+        _prune_superseded(directory, sequence)
     result = {"publication": publication, "snapshot_seq": sequence}
+    if state == CORRUPT:
+        # Recovery repairs this, but never silently: an immutable artefact that
+        # stopped verifying is evidence of a failing disk or a tamper, and a
+        # plain "published" would bury it under an ordinary-looking success.
+        result["recovered_from"] = f"corrupt_snapshot:{published_seq}"
     if reason:
         result["reason"] = reason
     return result

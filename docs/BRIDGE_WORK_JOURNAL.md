@@ -120,17 +120,59 @@ is derived from the receipts themselves rather than from any clock.
 `publish_pending()` recovers that case. It appends nothing, so it cannot
 duplicate a receipt, and it allocates a fresh sequence with a fresh
 in-transaction image rather than re-reading under the old one. It is idempotent:
-if the current sequence is already published it reports `already_published`.
+if the current sequence is already published it reports `already_published` —
+verified by loading that snapshot, not by finding its name in the listing.
 
-### Bounds, and why nothing is deleted
+If the snapshot for the current sequence exists but **fails verification**,
+recovery repairs the journal by republishing the committed database at a fresh
+sequence, and says so with `recovered_from: corrupt_snapshot:<seq>`. It does not
+raise: this is the entry point whose job is to restore a readable journal, and
+raising here would make the one operation meant to recover the one that cannot.
+Corruption is still never silent — the reader refuses an unverifiable snapshot,
+and the repair is reported rather than passing as an ordinary publish.
+
+### Bounds, and bounded retention
 
 * At most `MAX_SNAPSHOT_ENTRIES` directory entries are examined; more is a
   refusal, so a flooded directory cannot turn a read into an unbounded job.
-* At `MAX_SNAPSHOT_RETAINED` snapshots, publication reports
-  `publication_pending` with `retention_bound_reached` and the append stays
-  committed. **Nothing is ever deleted automatically.** Silently removing an
-  immutable artefact is a worse failure than a visible refusal to publish, and
-  an operator can tell the difference between "full" and "quietly discarded".
+* Retention has two levels. `MAX_SNAPSHOT_RETAINED` is a **soft prune target**:
+  after each successful publish, snapshots *strictly older* than the one just
+  published are deleted oldest-first until the target is met.
+  `SNAPSHOT_RETENTION_SLACK` is the tolerated overshoot, and the hard stop is
+  `MAX_SNAPSHOT_RETAINED + SNAPSHOT_RETENTION_SLACK`, derived rather than
+  configured separately so the two can never be set into an inverted order.
+  Only at the hard stop does an append prune pre-emptively, and only if that
+  still frees nothing is the append refused **before** its commit.
+
+#### The tradeoff, stated plainly
+
+The previous design deleted nothing. That is the safest possible answer to "can
+retention destroy a reader's view" — and it was the wrong one, because it
+converted a full directory into **permanent silent lag**: appends kept
+committing while publication reported `publication_pending` forever, so the
+reader fell further behind with every write and nothing in the system ever
+recovered. Unbounded correctness of the snapshot set was bought with unbounded
+staleness of the view, which is the failure the journal exists to prevent.
+
+Bounded deletion is safe here for a structural reason, not a hopeful one: a
+snapshot is only ever a candidate once a **newer published snapshot exists**, so
+the state a reader would load next is never the state being removed. A reader
+already holding an older file is protected by the filesystem, which refuses the
+delete while the handle is open (measured on Windows); the prune tolerates that
+refusal, steps past it to the next candidate, and retries the stuck file on a
+later pass. The pre-commit gate passes the *current* newest sequence, so it
+cannot delete the reader's present view on behalf of an append that has not
+happened yet — and a refused append leaves that view intact.
+
+What is given up: snapshot history is no longer permanent, so a superseded
+snapshot cannot be used as an audit trail of past states. The journal's
+authority was always the committed database, not the snapshot set, so nothing
+that was ever authoritative is lost — but anyone who wanted to diff old
+snapshots must copy them out, because retention will reclaim them.
+
+The alternative to both — refusing the append at the bound with no deletion at
+all — remains as the hard stop, for the case where pruning genuinely cannot
+free anything. It is a visible, pre-commit refusal, never a quiet lag.
 
 ### Append outcomes
 
@@ -174,7 +216,9 @@ absent so the claim cannot quietly become false again.
 * **Every append copies the whole image.** Fine for a dormant receipt journal;
   a blocker if it grows, at which point the shape must change rather than be
   tuned.
-* **Retention can be reached and block publication** rather than silently
-  reclaiming space.
+* **Superseded snapshots are reclaimed, so old states are not archived.** The
+  committed database remains the authority; copy a snapshot out if you need it.
+* **The hard stop can still refuse an append** when pruning frees nothing —
+  visibly and before the commit, never as silent lag.
 * **Content addressing is not authenticity.** It detects corruption; it does not
   establish that the publisher was entitled to publish.

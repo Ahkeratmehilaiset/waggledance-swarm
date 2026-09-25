@@ -355,19 +355,6 @@ def test_the_scan_is_bounded(tmp_path, monkeypatch):
         journal.journal_report(database)
 
 
-def test_retention_reports_pending_rather_than_deleting(tmp_path, monkeypatch):
-    """Silent deletion of an immutable artefact is worse than a visible refusal."""
-    database = tmp_path / "journal.sqlite3"
-    journal.append_receipts(database, [_receipt()])
-    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 1)
-    before = _tree(journal.snapshot_directory(database))
-    result = journal.append_receipts(database, [_receipt(contract_id="c2")])
-    assert result["publication"] == journal.PUBLICATION_PENDING
-    assert result["publication_reason"] == "retention_bound_reached"
-    assert result["appended"] == 1
-    assert _tree(journal.snapshot_directory(database)) == before
-
-
 def test_concurrent_readers_see_a_stable_image_while_a_writer_publishes(tmp_path):
     """The property the previous design could not provide."""
     database = tmp_path / "journal.sqlite3"
@@ -680,3 +667,323 @@ def test_status_opens_only_memory_for_every_outcome(tmp_path, monkeypatch):
     with pytest.raises(journal.JournalError):
         journal.journal_report(database)                  # error path
     assert set(seen) == {":memory:"}, f"status opened a database: {seen}"
+
+
+# --- recovery path hardening, each finding reproduced before the fix ----------
+
+
+def test_recovery_does_not_trust_a_corrupted_published_name(tmp_path):
+    """Finding 1: membership in a listing is a filename claim, not a snapshot.
+
+    publish_pending reported already_published for a sequence whose snapshot
+    content had been corrupted, leaving the journal with no usable published
+    state and no sign of it.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    target = _snapshots(database)[0]
+    target.write_bytes(b"corrupted, but the name still claims this sequence")
+    result = journal.publish_pending(database)
+    assert result["publication"] != journal.ALREADY_PUBLISHED
+    assert result["publication"] == journal.PUBLISHED
+    assert result["snapshot_seq"] == 2
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+
+
+def test_recovery_says_when_it_repaired_a_corrupted_snapshot(tmp_path):
+    """The Lead's RED test wanted a raise here; this is the divergence, tested.
+
+    Raising would make the recovery entry point the one operation that cannot
+    recover. The concern behind it -- corruption must not pass as routine --
+    is met by reporting the repair instead of burying it in a plain success.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    _snapshots(database)[0].write_bytes(b"corrupted")
+    result = journal.publish_pending(database)
+    assert result["publication"] == journal.PUBLISHED
+    assert result["recovered_from"] == "corrupt_snapshot:1"
+
+
+def test_ordinary_recovery_does_not_claim_corruption(tmp_path, monkeypatch):
+    """Non-vacuity pair: recovered_from must mark corruption, not every repair."""
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "_publish_snapshot",
+                        lambda *a: (journal.PUBLICATION_PENDING, "injected"))
+    journal.append_receipts(database, [_receipt()])   # commits, never publishes
+    monkeypatch.undo()
+    result = journal.publish_pending(database)
+    assert result["publication"] == journal.PUBLISHED
+    assert "recovered_from" not in result, result
+
+
+def test_recovery_enforces_the_size_bound_before_committing(tmp_path, monkeypatch):
+    """Finding 2: append had the pre-commit refusal, recovery did not."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    with sqlite3.connect(database) as connection:
+        before = connection.execute(
+            "SELECT snapshot_seq FROM journal_metadata").fetchone()[0]
+    monkeypatch.setattr(journal, "MAX_DATABASE_BYTES", 64)
+    with pytest.raises(journal.JournalError, match="publishable size bound"):
+        journal.publish_pending(database)
+    monkeypatch.undo()
+    with sqlite3.connect(database) as connection:
+        after = connection.execute(
+            "SELECT snapshot_seq FROM journal_metadata").fetchone()[0]
+    assert after == before, "the refused recovery advanced the sequence anyway"
+
+
+def test_recovery_publication_failure_after_commit_is_an_outcome(tmp_path,
+                                                                 monkeypatch):
+    """Finding 3: recovery must preserve committed-but-unpublished like append."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    _snapshots(database)[0].write_bytes(b"corrupted")   # force recovery to act
+
+    def exploding(*args, **kwargs):
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(journal, "_publish_snapshot", exploding)
+    result = journal.publish_pending(database)
+    monkeypatch.undo()
+    assert result["publication"] == journal.PUBLICATION_PENDING
+    assert result["reason"].startswith("publish_failed:")
+    assert "snapshot_seq" in result, "the committed sequence must still be reported"
+
+
+def test_recovery_survives_a_publish_REFUSAL_after_its_commit(tmp_path):
+    """Mutation-driven: the OSError test left `except JournalError` unproven.
+
+    Deleting that clause kept the whole suite green, because the only test of
+    the post-commit guard injected an OSError. A refusal raised by
+    _publish_snapshot itself is the case that clause exists for, and it must
+    not surface as a failed recovery over a commit that really happened.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    _snapshots(database)[0].write_bytes(b"corrupted")     # force recovery to act
+    bogus = b"a different image entirely"
+    (journal.snapshot_directory(database) /
+     ("snap-000000000002-" + hashlib.sha256(bogus).hexdigest()
+      + ".journal")).write_bytes(bogus)
+    result = journal.publish_pending(database)
+    assert result["publication"] == journal.PUBLICATION_PENDING
+    assert result["reason"].startswith("publish_refused:")
+    assert result["snapshot_seq"] == 2, "the committed sequence must be reported"
+
+
+def test_pruning_steps_past_an_undeletable_snapshot_within_one_pass(tmp_path,
+                                                                    monkeypatch):
+    """Mutation-driven: the budget must count DELETIONS, not attempts.
+
+    Spending the budget on files that refused to go left the journal parked
+    above its target with deletable snapshots still sitting there, and the
+    always-fails test could not see the difference.
+    """
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 2)
+    real_unlink = Path.unlink
+    monkeypatch.setattr(Path, "unlink",
+                        lambda self, *a, **k: (_ for _ in ()).throw(
+                            PermissionError(32, "in use")))
+    for index in range(5):
+        journal.append_receipts(database, [_receipt(contract_id=f"c{index}")])
+    assert len(_snapshots(database)) == 5, "setup did not accumulate snapshots"
+    stuck = [path for sequence, _, path in
+             journal._snapshot_entries(journal.snapshot_directory(database))
+             if sequence == 2][0]
+
+    def selective(self, *args, **kwargs):
+        if Path(self) == stuck:
+            raise PermissionError(32, "in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective)
+    journal.append_receipts(database, [_receipt(contract_id="last")])
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    remaining = sorted(sequence for sequence, _, _ in
+                       journal._snapshot_entries(journal.snapshot_directory(database)))
+    assert stuck.exists(), "the undeletable snapshot was somehow removed"
+    assert remaining == [2, 6], f"pruning stalled behind the stuck file: {remaining}"
+
+
+def test_a_refused_append_never_destroys_the_readers_current_snapshot(tmp_path,
+                                                                      monkeypatch):
+    """Mutation-driven: the pre-commit prune must exclude the CURRENT newest.
+
+    Treating the not-yet-allocated sequence as newest made every snapshot a
+    candidate, so the gate could delete the state the reader is on while
+    refusing the append that was supposed to replace it -- leaving nothing.
+    """
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 10)
+    monkeypatch.setattr(journal, "SNAPSHOT_RETENTION_SLACK", 10)
+    for index in range(3):
+        journal.append_receipts(database, [_receipt(contract_id=f"c{index}")])
+    newest = _snapshots(database)[-1]
+    assert newest.name.startswith("snap-000000000003-")
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 1)
+    monkeypatch.setattr(journal, "SNAPSHOT_RETENTION_SLACK", 0)
+    with pytest.raises(journal.JournalError, match="retention is full"):
+        journal.append_receipts(database, [_receipt(contract_id="refused")])
+    monkeypatch.undo()
+    assert newest.exists(), "the gate deleted the snapshot the reader is using"
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 3
+
+
+def test_publish_snapshot_refuses_an_existing_target_whose_content_differs(tmp_path):
+    """Direct unit test on _publish_snapshot, as requested."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    with pytest.raises(journal.JournalError,
+                       match="already published with other content"):
+        journal._publish_snapshot(directory, 1, b"a different image entirely")
+
+
+def test_verify_published_rejects_a_corrupted_snapshot(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    assert journal._verify_published(directory, 1) is True
+    _snapshots(database)[0].write_bytes(b"corrupted")
+    assert journal._verify_published(directory, 1) is False
+    assert journal._verify_published(directory, 99) is False
+
+
+# --- the journal key must not collapse distinct names -------------------------
+
+
+def test_the_journal_key_preserves_case(tmp_path):
+    """Finding 5: casefolding made A.sqlite and a.sqlite share a snapshot set.
+
+    On a case-sensitive host those are two different databases, which is the
+    borrowing bug the key exists to prevent. Case is preserved; the drive
+    letter is normalised because that genuinely is case-insensitive.
+    """
+    upper = journal._journal_key(tmp_path / "A.sqlite3")
+    lower = journal._journal_key(tmp_path / "a.sqlite3")
+    assert upper != lower
+
+
+def test_the_journal_key_normalises_only_the_drive_letter():
+    assert journal._journal_key(Path("C:/x/j.sqlite3")) == \
+           journal._journal_key(Path("c:/x/j.sqlite3"))
+
+
+def test_the_module_docstring_describes_snapshot_bytes(tmp_path):
+    """Finding 6: the docstring still described reading the database's bytes."""
+    doc = journal.__doc__ or ""
+    flat = " ".join(doc.split())
+    assert "never reads the database at all" in flat
+    assert "immutable SNAPSHOT" in flat
+    assert "it reads the file bytes and loads an in-memory copy" not in flat
+
+
+# --- bounded retention, replacing the never-delete design ---------------------
+
+
+def test_retention_prunes_superseded_snapshots_and_keeps_the_newest(tmp_path,
+                                                                    monkeypatch):
+    """Replaces the old never-delete contract, which stalled publication forever.
+
+    The previous design reported publication_pending at the bound and deleted
+    nothing, so appends kept committing while the reader fell permanently
+    behind. Pruning only SUPERSEDED snapshots cannot destroy the current view.
+    """
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 3)
+    for index in range(6):
+        result = journal.append_receipts(database, [_receipt(contract_id=f"c{index}")])
+        assert result["publication"] == journal.PUBLISHED, result
+    remaining = _snapshots(database)
+    assert len(remaining) <= 3
+    newest = journal.journal_report(database)["journal"]
+    assert newest["snapshot_seq"] == 6
+    assert newest["receipt_rows"] == 6
+
+
+def test_retention_never_deletes_the_snapshot_a_reader_is_using(tmp_path,
+                                                                monkeypatch):
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 2)
+    journal.append_receipts(database, [_receipt()])
+    current = _snapshots(database)[-1]
+    held = open(current, "rb")
+    try:
+        for index in range(4):
+            journal.append_receipts(database, [_receipt(contract_id=f"c{index}")])
+        # the held file may or may not still exist, but the NEWEST always does
+        latest = journal.journal_report(database)["journal"]
+        assert latest["snapshot_seq"] == 5
+        assert latest["receipt_rows"] == 5
+    finally:
+        held.close()
+
+
+def _fill_retention(database, count):
+    """Bring the journal to `count` published snapshots under the live bound."""
+    for index in range(count - 1):
+        journal.append_receipts(database, [_receipt(contract_id=f"fill{index}")])
+
+
+def test_capacity_is_refused_before_commit_when_nothing_can_be_pruned(tmp_path,
+                                                                      monkeypatch):
+    """The explicit capacity stop: better than committing into permanent lag."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 2)
+    monkeypatch.setattr(journal, "SNAPSHOT_RETENTION_SLACK", 0)
+    _fill_retention(database, 2)
+    assert len(_snapshots(database)) == 2, "the ceiling was not actually reached"
+    # Nothing is deletable: every prune attempt frees exactly zero.
+    monkeypatch.setattr(journal, "_prune_superseded",
+                        lambda directory, newest, keep=None:
+                            len(journal._snapshot_entries(directory)))
+    with sqlite3.connect(database) as connection:
+        before = connection.execute(
+            "SELECT COUNT(*) FROM accepted_receipts").fetchone()[0]
+    with pytest.raises(journal.JournalError, match="retention is full"):
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+    monkeypatch.undo()
+    with sqlite3.connect(database) as connection:
+        after = connection.execute(
+            "SELECT COUNT(*) FROM accepted_receipts").fetchone()[0]
+    assert after == before, "an unpublishable append was committed anyway"
+
+
+def test_reaching_the_ceiling_alone_does_not_refuse_when_pruning_frees_room(
+        tmp_path, monkeypatch):
+    """Non-vacuity pair for the test above: the REFUSAL must need both parts.
+
+    Same ceiling, same reached state, real pruning. If the capacity stop keyed
+    on "ceiling reached" instead of "ceiling reached AND nothing was freed",
+    this append would be refused too and the test above would prove nothing.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 2)
+    monkeypatch.setattr(journal, "SNAPSHOT_RETENTION_SLACK", 0)
+    _fill_retention(database, 2)
+    assert len(_snapshots(database)) == 2
+    result = journal.append_receipts(database, [_receipt(contract_id="c2")])
+    assert result["publication"] == journal.PUBLISHED, result
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 3
+
+
+def test_pruning_tolerates_an_undeletable_snapshot(tmp_path, monkeypatch):
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 2)
+    journal.append_receipts(database, [_receipt()])
+    real_unlink = Path.unlink
+
+    def refusing(self, *args, **kwargs):
+        raise PermissionError(32, "in use")
+
+    monkeypatch.setattr(Path, "unlink", refusing)
+    for index in range(3):
+        journal.append_receipts(database, [_receipt(contract_id=f"c{index}")])
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    # publication kept working even though nothing could be deleted
+    assert journal.journal_report(database)["journal"]["snapshot_seq"] == 4

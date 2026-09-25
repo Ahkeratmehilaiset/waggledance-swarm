@@ -37,7 +37,10 @@ at a later timestamp.
 
 ## Explicit operations
 
-Append is the only operation that can create or write a database:
+Append is the only operation that can CREATE a database. Two operations
+write one: append, and `publish_pending` recovery, which allocates a fresh
+sequence and republishes a committed-but-unpublished state. Status writes
+nothing and opens no database at all.
 
 ```powershell
 python tools/bridge_work_journal.py append --database .codex-audit/work-journal.sqlite3 --input receipts.json
@@ -46,7 +49,9 @@ python tools/bridge_work_journal.py append --database .codex-audit/work-journal.
 It validates the complete input before opening SQLite and appends the whole
 batch in one transaction. A conflict or interruption rolls the batch back.
 
-Status only reads an existing database with SQLite `mode=ro`:
+Status never opens the database at all. It reads the newest published
+snapshot, verifies its full digest and the sequence embedded in the image,
+and loads those bytes into an in-memory copy:
 
 ```powershell
 python tools/bridge_work_journal.py status --database .codex-audit/work-journal.sqlite3
@@ -68,7 +73,7 @@ is a digest of that database's absolute path, and are named
 modified or replaced once named, so a reader holding one has a coherent image
 no matter what a writer does next.
 
-**Snapshots are bound to one database.** They were originally keyed by
+**Snapshots are bound to one RESOLVED database path.** They were originally keyed by
 directory, so asking about a missing `b.sqlite3` returned `a.sqlite3`'s
 receipts from the shared folder. The key binds a snapshot set to the database it
 describes, and the reader derives it from the path it was given — no database
@@ -130,6 +135,42 @@ raise: this is the entry point whose job is to restore a readable journal, and
 raising here would make the one operation meant to recover the one that cannot.
 Corruption is still never silent — the reader refuses an unverifiable snapshot,
 and the repair is reported rather than passing as an ordinary publish.
+
+### What binds a snapshot set to a database
+
+The snapshot directory is keyed by a digest of the database's **resolved**
+path (`Path.resolve()`, not `absolute()`). Resolving collapses `../` segments,
+follows symlinks and junctions, and returns the on-disk casing for a file that
+exists, so one physical database reached by several equivalent spellings has
+exactly one journal. Lexical `absolute()` did not, and a status call through an
+aliased spelling reported `unavailable` for receipts genuinely committed and
+published through the canonical one.
+
+Two consequences are stated rather than implied away:
+
+* **A database that does not exist yet is case-sensitive in its spelling.**
+  `resolve()` cannot canonicalise a component that is not on disk, so on a
+  case-insensitive filesystem `New.sqlite3` and `new.sqlite3` key apart until
+  the file exists, after which both resolve to the stored casing and agree.
+  The key hashes the path *string*; note that `Path.__eq__` is case-insensitive
+  on Windows, so a test comparing `Path` objects would hide this — the
+  regression test compares derived keys.
+* **The key is no longer a pure function of the string.** It depends on
+  filesystem state, so a junction or symlink created or removed later can
+  change the key for an unchanged spelling and appear to move the journal.
+  That is the trade taken deliberately: an honest-but-wrong `unavailable` for
+  published data was judged the worse failure.
+
+### The snapshot directory is a trust boundary
+
+The directory belongs to this journal. Anyone able to create arbitrary files in
+it can already delete published snapshots, so flooding it is a denial of service
+by a party that already holds write access, not an integrity break. Two separate
+bounds keep an ordinary accident from becoming an outage: foreign entries count
+only against `MAX_SNAPSHOT_SCAN_ENTRIES`, while `MAX_SNAPSHOT_ENTRIES` counts
+only parsed snapshots. Past the scan bound, recovery is an **operator** action —
+remove the foreign files — because the alternative, letting the journal delete
+what it does not own, is exactly the guarantee that makes bounded retention safe.
 
 ### Bounds, and bounded retention
 
@@ -220,7 +261,10 @@ than an exception.
 
 ### Schema versions
 
-`_initialise` inspects the stored version **before** mutating anything. Only an
+`_initialise` creates the tables and the metadata row if they are absent,
+then inspects the stored version **before changing it**. The `INSERT OR
+IGNORE` cannot overwrite an existing row, so a database claiming version
+999 keeps it and is refused. Only an
 explicit version 1 is migrated to 2; any other unrecognised version is refused
 and left untouched. An earlier version wrote the current number
 unconditionally, silently downgrading a database that claimed version 999.
@@ -250,3 +294,10 @@ absent so the claim cannot quietly become false again.
   visibly and before the commit, never as silent lag.
 * **Content addressing is not authenticity.** It detects corruption; it does not
   establish that the publisher was entitled to publish.
+* **A database that does not exist yet is case-sensitive in its spelling.**
+  Two case spellings of the same future file key apart until it exists; see
+  *What binds a snapshot set to a database*.
+* **The journal key depends on filesystem state.** A junction or symlink created
+  or removed later can change the key for an unchanged path spelling.
+* **A flooded snapshot directory needs an operator.** Past the scan bound the
+  journal refuses rather than deleting files it does not own.

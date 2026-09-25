@@ -344,15 +344,106 @@ def test_status_is_byte_identical_read_only_on_success(tmp_path):
 # --- bounds, concurrency and retention ----------------------------------------
 
 
-def test_the_scan_is_bounded(tmp_path, monkeypatch):
+def test_foreign_files_below_the_scan_bound_do_not_break_the_journal(
+        tmp_path, monkeypatch):
+    """The old single counter let any foreign file brick the journal forever.
+
+    Five unrelated names beside the snapshots used to trip the SNAPSHOT bound,
+    refusing every read and every write with no in-module recovery, because
+    pruning must scan first and deliberately never deletes what it does not
+    own. Foreign entries now count only against the much larger scan bound.
+    """
     database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
     directory = journal.snapshot_directory(database)
     for index in range(5):
         (directory / f"filler-{index}").write_bytes(b"")
     monkeypatch.setattr(journal, "MAX_SNAPSHOT_ENTRIES", 3)
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+    assert journal.append_receipts(
+        database, [_receipt(contract_id="c2")])["appended"] == 1
+
+
+def test_the_scan_is_bounded_by_total_directory_entries(tmp_path, monkeypatch):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    for index in range(5):
+        (directory / f"filler-{index}").write_bytes(b"")
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_SCAN_ENTRIES", 3)
     with pytest.raises(journal.JournalError, match="exceeds the scan bound"):
         journal.journal_report(database)
+
+
+def test_the_snapshot_count_is_bounded_separately(tmp_path, monkeypatch):
+    """The bound that retention actually governs, counting only snapshots."""
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 64)
+    for index in range(4):
+        journal.append_receipts(database, [_receipt(contract_id=f"c{index}")])
+    assert len(_snapshots(database)) == 4, "setup did not accumulate snapshots"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_ENTRIES", 3)
+    with pytest.raises(journal.JournalError, match="exceeds the snapshot bound"):
+        journal.journal_report(database)
+
+
+def _hold_write_lock(database):
+    blocker = sqlite3.connect(str(database), isolation_level=None, timeout=0)
+    blocker.execute("BEGIN IMMEDIATE")
+    return blocker
+
+
+def test_contention_is_refused_in_this_modules_vocabulary_not_raw_sqlite3(tmp_path):
+    """RCO2 and Tools: a held lock escaped append_receipts as OperationalError.
+
+    Wrapping connect() was not enough. BEGIN IMMEDIATE and the commit are where
+    the lock actually surfaces, so every library caller could receive a raw
+    sqlite3 exception this module never documents.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    blocker = _hold_write_lock(database)
+    try:
+        with pytest.raises(journal.JournalUnavailable, match="unavailable"):
+            journal.append_receipts(database, [_receipt(contract_id="c2")])
+        with pytest.raises(journal.JournalUnavailable):
+            journal.publish_pending(database)
+    finally:
+        blocker.rollback()
+        blocker.close()
+    # and the refusal is still a JournalError, so existing callers keep working
+    assert issubclass(journal.JournalUnavailable, journal.JournalError)
+
+
+def test_status_still_answers_under_a_held_write_lock(tmp_path):
+    """Non-vacuity pair, and the snapshot-only guarantee under real contention."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    blocker = _hold_write_lock(database)
+    try:
+        assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
+def test_the_cli_separates_unavailable_from_refused(tmp_path, capsys):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    document = tmp_path / "in.json"
+    document.write_text(json.dumps({
+        "schema": journal.APPEND_SCHEMA,
+        "accepted_work": [_receipt(contract_id="c2")]}), encoding="utf-8")
+    blocker = _hold_write_lock(database)
+    try:
+        code = journal.main(["append", "--database", str(database),
+                             "--input", str(document)])
+        assert code == 3, "contention must not share the refusal exit code"
+        assert "unavailable" in capsys.readouterr().err
+        assert journal.main(["status", "--database", str(database)]) == 0
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 def test_concurrent_readers_see_a_stable_image_while_a_writer_publishes(tmp_path):
@@ -1078,6 +1169,80 @@ def test_verify_published_rejects_a_corrupted_snapshot(tmp_path):
 # --- the journal key must not collapse distinct names -------------------------
 
 
+def _case_insensitive_filesystem(root: Path) -> bool:
+    probe = root / "CaseProbe.tmp"
+    probe.write_bytes(b"")
+    try:
+        return (root / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
+def test_an_aliased_path_to_one_database_yields_one_journal(tmp_path):
+    """RCO1's finding: absolute() is lexical, so one database became two.
+
+    A status call through the aliased spelling reported unavailable for
+    receipts that were genuinely committed and published through the canonical
+    spelling, contradicting the documented binding to one database.
+    """
+    inner = tmp_path / "sub"
+    inner.mkdir()
+    canonical = inner / "journal.sqlite3"
+    alias = inner / ".." / "sub" / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    assert journal._journal_key(alias) == journal._journal_key(canonical)
+    assert journal.journal_report(alias)["journal"]["receipt_rows"] == 1
+
+
+def test_a_case_alias_of_an_existing_database_yields_one_journal(tmp_path):
+    if not _case_insensitive_filesystem(tmp_path):
+        pytest.skip("case-sensitive filesystem: the two spellings are two files")
+    canonical = tmp_path / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    shouted = tmp_path / "JOURNAL.SQLITE3"
+    assert journal._journal_key(shouted) == journal._journal_key(canonical)
+    assert journal.journal_report(shouted)["journal"]["receipt_rows"] == 1
+
+
+def test_a_symlink_alias_of_an_existing_database_yields_one_journal(tmp_path):
+    canonical = tmp_path / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    link = tmp_path / "linked.sqlite3"
+    try:
+        link.symlink_to(canonical)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not creatable here")
+    assert journal._journal_key(link) == journal._journal_key(canonical)
+    assert journal.journal_report(link)["journal"]["receipt_rows"] == 1
+
+
+def test_the_residual_case_gap_for_a_database_that_does_not_exist_yet(tmp_path):
+    """The documented residual, asserted so it cannot surprise anyone.
+
+    resolve() cannot canonicalise the case of a component that does not exist,
+    so two case spellings of the same FUTURE file still key apart until the
+    file exists. Compares the derived KEYS, never Path objects: Path.__eq__ is
+    case-insensitive on Windows and would report these equal while the key
+    strings differ, hiding the gap behind a green test.
+    """
+    upper = tmp_path / "NotYet.sqlite3"
+    lower = tmp_path / "notyet.sqlite3"
+    assert not upper.exists() and not lower.exists()
+    assert journal._journal_key(upper) != journal._journal_key(lower)
+    # ...and once the file exists, both spellings agree again.
+    journal.append_receipts(lower, [_receipt()])
+    if _case_insensitive_filesystem(tmp_path):
+        assert journal._journal_key(upper) == journal._journal_key(lower)
+
+
+def test_the_key_is_computable_for_a_database_that_does_not_exist(tmp_path):
+    """resolve() must not raise on a missing path, or a first append breaks."""
+    assert len(journal._journal_key(tmp_path / "deep" / "absent.sqlite3")) == 32
+
+
+# NOTE: the two tests below pass because their databases are never created.
+# With resolve() in place, an EXISTING pair of case spellings would agree on a
+# case-insensitive host, which is correct; see the residual test above.
 def test_the_journal_key_preserves_case(tmp_path):
     """Finding 5: casefolding made A.sqlite and a.sqlite share a snapshot set.
 
@@ -1093,6 +1258,20 @@ def test_the_journal_key_preserves_case(tmp_path):
 def test_the_journal_key_normalises_only_the_drive_letter():
     assert journal._journal_key(Path("C:/x/j.sqlite3")) == \
            journal._journal_key(Path("c:/x/j.sqlite3"))
+
+
+def test_the_module_docstring_names_both_writers(tmp_path):
+    """The Lead's finding: the header claimed append was the only writer.
+
+    publish_pending opens the database with BEGIN IMMEDIATE and commits, so
+    "only append opens a writable database" was false from the moment recovery
+    became a writer. A doc that overstates a safety property is worse than one
+    that says nothing.
+    """
+    flat = " ".join((journal.__doc__ or "").split())
+    assert "Only the explicit ``append`` API opens a writable" not in flat
+    assert "publish_pending" in flat
+    assert "Only ``append`` can CREATE one" in flat
 
 
 def test_the_module_docstring_describes_snapshot_bytes(tmp_path):

@@ -64,7 +64,12 @@ $codexHash = Get-ObserverHash $CodexExecutable
 $releaseId = $head + '-' + $pythonHash.Substring(0,12) + '-' + $codexHash.Substring(0,12)
 $release = Join-Path $root $releaseId
 [void](Assert-CapacityPath $release $root)
+# bridge_capacity_attribution.py is imported by the collector on the opt-in
+# --attribution path, so it must ship and be hashed or that path is inert.
+# bridge_model_qualification.py ships hashed for provenance only; nothing in
+# the observer runtime imports it and no runtime path is wired to it.
 $files = @('tools\bridge_capacity_advisor.py', 'tools\bridge_capacity_collector.py',
+           'tools\bridge_capacity_attribution.py', 'tools\bridge_model_qualification.py',
            'tools\bridge_capacity_recovery.py', 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1',
            'ops\windows\reboot\Get-WdCapacityStatus.ps1')
 $hashes = [ordered]@{}

@@ -4,6 +4,9 @@
 param(
     [string]$InstallRoot='C:\Python\wd-capacity-observer',
     [switch]$Summary,
+    # Opt-in only. Absent, the emitted status is byte-identical to today and
+    # nothing about models, schedules or default output changes.
+    [switch]$Attribution,
     [ValidateSet('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')]
     [string]$Agent='',
     [switch]$Json
@@ -162,7 +165,9 @@ try {
     $m=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json @jsonArgs
     if($m.schema -cne 'wd.capacity-observer-install.v1' -or $m.execution_mode -cne 'metadata_only' -or $m.source_commit -cne $current.source_commit){throw 'Observer source mismatch'}
     $release=Split-Path $manifestPath -Parent
-    foreach($leaf in @('tools\bridge_capacity_collector.py','tools\bridge_capacity_advisor.py','ops\windows\reboot\Get-WdCapacityStatus.ps1')){
+    $requiredLeaves=@('tools\bridge_capacity_collector.py','tools\bridge_capacity_advisor.py','ops\windows\reboot\Get-WdCapacityStatus.ps1')
+    if($Attribution){$requiredLeaves+='tools\bridge_capacity_attribution.py'}
+    foreach($leaf in $requiredLeaves){
         $field=$m.files.PSObject.Properties[$leaf]
         if($null -eq $field){throw 'Required reader file is not pinned'}
     }
@@ -176,7 +181,10 @@ try {
     $store=Assert-CapacityReadPath $m.store $root
     if($store -ine (Join-Path $root 'observations.sqlite')){throw 'Unrecognized observation store'}
     $reason='status_unavailable'
-    $text=& $m.python -E -s -S -B (Join-Path $release 'tools\bridge_capacity_collector.py') --store $store --status
+    # Forward the read-only attribution switch only when explicitly asked.
+    $statusArgs=@('--store',$store,'--status')
+    if($Attribution){$statusArgs+='--attribution'}
+    $text=& $m.python -E -s -S -B (Join-Path $release 'tools\bridge_capacity_collector.py') @statusArgs
     $code=$LASTEXITCODE
     $result=$text|ConvertFrom-Json @jsonArgs
     if($result.schema -cne 'wd.capacity-status.v1' -or $result.execution_allowed -ne $false){throw 'Invalid read-only status result'}
@@ -188,11 +196,19 @@ try {
         $view=[ordered]@{schema='wd.capacity-summary.v1';observed_at=$result.observed_at;
             installation=$result.installation;agents=$lanes;collection=(Get-CapacityField $result 'collection');
             execution_allowed=$false;note='Process identity, authentication history, quota and activity are separate. Pool bindings remain unverified: never sum same-provider lanes as independent capacity. Reset times are recheck times, not readiness promises. No next-turn success or automatic handoff is established.'}
-        if($Json){$view|ConvertTo-Json -Depth 12}
+        if($Attribution){
+            $view['attribution']=$result.attribution
+            $view['attribution_scope']='all_observations_not_agent_entitlement'
+        }
+        if($Json){$view|ConvertTo-Json -Depth 32}
         else {
             Write-Output ('WD CAPACITY | observed='+$result.observed_at+' | source='+$current.source_commit+' | read-only')
             $lanes|Select-Object agent,identity_state,auth_state,quota_state,observed_quota_state,activity_state,freshness,observation_age_seconds,quota_pool_binding|Format-Table -AutoSize -Wrap|Out-String -Width 240|Write-Output
             Write-Output $view.note
+            if($Attribution){
+                Write-Output 'ATTRIBUTION | all observations, not agent entitlement'
+                $view.attribution|ConvertTo-Json -Depth 32|Write-Output
+            }
         }
     }else{$result|ConvertTo-Json -Depth 32}
     exit $code

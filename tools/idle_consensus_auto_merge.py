@@ -2230,16 +2230,16 @@ def _consensus_block_scope_match(
     )
     if scoped:
         return True
-    return _event_binds_head(event, head_sha)
+    # A prose head reference is not a scope binding. In particular, a veto or
+    # clear for another task may discuss this PR's base or head in its message;
+    # letting that text alter the current task's block state contaminates the
+    # per-task consensus record. Preserve legacy unscoped block handling only
+    # when the event carries an exact structured head field.
+    return _event_binds_structured_head(event, head_sha)
 
 
-def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
-    """True only if the event references the exact head SHA.
-
-    Prefers a structured ``payload`` field; falls back to an exact full-SHA
-    substring in the message text. Because a re-push yields a different SHA,
-    an approval that named the old head will not bind the new head.
-    """
+def _event_binds_structured_head(event: Mapping[str, Any], head_sha: str) -> bool:
+    """True only when a payload field contains the exact head SHA."""
     payload = event.get("payload")
     if isinstance(payload, Mapping):
         for key in (
@@ -2253,6 +2253,18 @@ def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
             value = payload.get(key)
             if isinstance(value, str) and value.strip().lower() == head_sha:
                 return True
+    return False
+
+
+def _event_binds_head(event: Mapping[str, Any], head_sha: str) -> bool:
+    """True only if the event references the exact head SHA.
+
+    Prefers a structured ``payload`` field; falls back to an exact full-SHA
+    substring in the message text. Because a re-push yields a different SHA,
+    an approval that named the old head will not bind the new head.
+    """
+    if _event_binds_structured_head(event, head_sha):
+        return True
     message = event.get("message")
     if isinstance(message, str) and head_sha in message.lower():
         return True

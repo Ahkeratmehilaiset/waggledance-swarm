@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 import sqlite3
 import subprocess
+import threading
 import sys
 
 import pytest
@@ -1210,3 +1211,303 @@ def test_pruning_tolerates_an_undeletable_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "unlink", real_unlink)
     # publication kept working even though nothing could be deleted
     assert journal.journal_report(database)["journal"]["snapshot_seq"] == 4
+
+
+# --- findings raised on PR1728 at 750e47bd, each reproduced before the fix ----
+
+
+def _hold_write_lock(database):
+    """A genuine second connection holding BEGIN IMMEDIATE, as a rival writer."""
+    blocker = sqlite3.connect(str(database), isolation_level=None, timeout=0)
+    blocker.execute("BEGIN IMMEDIATE")
+    return blocker
+
+
+def test_contention_is_refused_in_this_modules_vocabulary(tmp_path):
+    """Tools and RCO2: a held lock escaped as a raw sqlite3.OperationalError.
+
+    Guarding connect() was never enough -- BEGIN IMMEDIATE and the commit are
+    where the lock surfaces, and the bare `except BaseException` re-raised it
+    unfiltered, so automation could not consume a stable failure.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    blocker = _hold_write_lock(database)
+    try:
+        with pytest.raises(journal.JournalUnavailable) as append_error:
+            journal.append_receipts(database, [_receipt(contract_id="c2")])
+        with pytest.raises(journal.JournalUnavailable):
+            journal.publish_pending(database)
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert isinstance(append_error.value, journal.JournalError), \
+        "callers catching JournalError must keep working"
+    assert isinstance(append_error.value.__cause__, sqlite3.Error)
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+
+
+def test_status_still_answers_under_a_held_write_lock(tmp_path):
+    """Non-vacuity pair, and the snapshot-only promise under real contention."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    blocker = _hold_write_lock(database)
+    try:
+        assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
+def test_the_cli_refuses_a_locked_database_with_exit_2_and_no_traceback(
+        tmp_path, capsys):
+    """Exactly the regression Tools specified: no traceback, documented exit 2."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    document = tmp_path / "in.json"
+    document.write_text(json.dumps({
+        "schema": journal.APPEND_SCHEMA,
+        "accepted_work": [_receipt(contract_id="c2")]}), encoding="utf-8")
+    blocker = _hold_write_lock(database)
+    try:
+        code = journal.main(["append", "--database", str(database),
+                             "--input", str(document)])
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert code == 2
+    assert "refused" in capsys.readouterr().err
+
+
+def test_the_cli_never_emits_a_traceback_for_a_sqlite_error(tmp_path, monkeypatch,
+                                                            capsys):
+    """Covers the CLI backstop, which normal paths can no longer reach.
+
+    Both writers convert contention, so the backstop clause is unreachable by
+    design -- and an untested defensive clause is exactly the kind of claim a
+    mutation run should be able to kill. This forces a raw sqlite3 error past
+    the library to assert the CLI degrades to the documented refusal rather
+    than a traceback.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+
+    def raw_failure(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(journal, "journal_report", raw_failure)
+    code = journal.main(["status", "--database", str(database)])
+    monkeypatch.undo()
+    assert code == 2, "an unconverted sqlite3 error must still be a refusal"
+    captured = capsys.readouterr()
+    assert "refused" in captured.err
+    assert "OperationalError" in captured.err
+    assert "Traceback" not in captured.err and "Traceback" not in captured.out
+
+
+def test_twenty_real_threads_append_without_loss_or_collision(tmp_path):
+    """RCO2 noted the suite had no real-thread concurrency test at all."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt(contract_id="seed")])
+    errors = []
+    barrier = threading.Barrier(20)
+
+    def worker(index):
+        barrier.wait()
+        try:
+            journal.append_receipts(database, [_receipt(contract_id=f"t{index}")])
+        except BaseException as exc:      # noqa: BLE001 - recorded, not swallowed
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    assert not any(t.is_alive() for t in threads), "a worker thread hung"
+    for error in errors:
+        assert isinstance(error, journal.JournalUnavailable), f"unexpected: {error!r}"
+    committed = journal.journal_report(database)["journal"]["receipt_rows"]
+    assert committed == 21 - len(errors), "a receipt was lost or double counted"
+    sequences = [sequence for sequence, _, _ in
+                 journal._snapshot_entries(journal.snapshot_directory(database))]
+    assert len(sequences) == len(set(sequences)), "two snapshots claimed one sequence"
+
+
+# --- RCO1: one physical database must be one journal ---------------------------
+
+
+def _case_insensitive(root):
+    probe = root / "CaseProbe.tmp"
+    probe.write_bytes(b"")
+    try:
+        return (root / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
+def test_an_aliased_path_to_one_database_yields_one_journal(tmp_path):
+    """RCO1's exact repro: absolute() is lexical, so one database became two."""
+    inner = tmp_path / "sub"
+    inner.mkdir()
+    canonical = inner / "journal.sqlite3"
+    alias = inner / ".." / "sub" / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    assert os.path.realpath(alias) == os.path.realpath(canonical), "not the same file"
+    assert journal._journal_key(alias) == journal._journal_key(canonical)
+    assert journal.journal_report(alias)["journal"]["receipt_rows"] == 1
+
+
+def test_a_case_alias_of_an_existing_database_yields_one_journal(tmp_path):
+    if not _case_insensitive(tmp_path):
+        pytest.skip("case-sensitive filesystem: two spellings are two files")
+    canonical = tmp_path / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    assert journal._journal_key(tmp_path / "JOURNAL.SQLITE3") == \
+        journal._journal_key(canonical)
+
+
+def test_a_symlink_alias_of_an_existing_database_yields_one_journal(tmp_path):
+    canonical = tmp_path / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    link = tmp_path / "linked.sqlite3"
+    try:
+        link.symlink_to(canonical)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not creatable here")
+    assert journal._journal_key(link) == journal._journal_key(canonical)
+    assert journal.journal_report(link)["journal"]["receipt_rows"] == 1
+
+
+def test_hardlinks_key_apart_which_is_the_documented_residual(tmp_path):
+    """Asserted so the documented limitation is proven, not merely claimed.
+
+    Two hardlinks to one inode are two genuine real paths. resolve() cannot
+    unify them, and unifying them would mean opening the file, which the
+    no-live-database-read promise forbids.
+    """
+    canonical = tmp_path / "journal.sqlite3"
+    journal.append_receipts(canonical, [_receipt()])
+    linked = tmp_path / "hard.sqlite3"
+    try:
+        os.link(canonical, linked)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("hardlinks not creatable here")
+    assert journal._journal_key(linked) != journal._journal_key(canonical)
+    assert journal.journal_report(linked)["journal"]["database_state"] == "unavailable"
+
+
+def test_the_residual_case_gap_for_a_database_that_does_not_exist_yet(tmp_path):
+    """Compares derived KEYS: Path.__eq__ is case-insensitive on Windows."""
+    upper = tmp_path / "NotYet.sqlite3"
+    lower = tmp_path / "notyet.sqlite3"
+    assert not upper.exists() and not lower.exists()
+    assert journal._journal_key(upper) != journal._journal_key(lower)
+    journal.append_receipts(lower, [_receipt()])
+    if _case_insensitive(tmp_path):
+        assert journal._journal_key(upper) == journal._journal_key(lower)
+
+
+def test_the_key_is_computable_for_a_database_that_does_not_exist(tmp_path):
+    """resolve() must not raise on a missing path, or a first append breaks."""
+    assert len(journal._journal_key(tmp_path / "deep" / "absent.sqlite3")) == 32
+
+
+def test_resolving_the_key_never_opens_the_database(tmp_path, monkeypatch):
+    """The no-live-database-read promise survives the aliasing fix.
+
+    resolve() touches the filesystem for PATH COMPONENTS. This asserts it never
+    turns into a database read: across key computation and every status
+    outcome, the only connection opened is ":memory:".
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    opened = []
+    real_connect = sqlite3.connect
+
+    def watched(target, *args, **kwargs):
+        opened.append(str(target))
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(journal.sqlite3, "connect", watched)
+    journal._journal_key(database)
+    journal._journal_key(tmp_path / ".." / tmp_path.name / "journal.sqlite3")
+    journal.journal_report(database)
+    journal.journal_report(tmp_path / "absent.sqlite3")
+    assert set(opened) == {":memory:"}, f"status or the key opened a database: {opened}"
+
+
+# --- RCO2: the flood is a trust boundary, and it denies all three operations ---
+
+
+def _flood(directory, count):
+    for index in range(count):
+        (directory / f"junk-{index}").write_bytes(b"")
+
+
+def test_a_flooded_snapshot_directory_denies_all_three_operations(tmp_path,
+                                                                  monkeypatch):
+    """RCO2: only status was covered; append and publish_pending were not.
+
+    The refusal is intended. What was missing is that it is proven for every
+    operation, and that the absence of an in-module recovery path is explicit.
+    """
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_ENTRIES", 8)
+    _flood(directory, 12)
+    with pytest.raises(journal.JournalError, match="scan bound"):
+        journal.journal_report(database)
+    with pytest.raises(journal.JournalError, match="scan bound"):
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+    with pytest.raises(journal.JournalError, match="scan bound"):
+        journal.publish_pending(database)
+
+
+def test_the_flood_refusal_holds_even_with_a_valid_snapshot_present(tmp_path,
+                                                                    monkeypatch):
+    """Clutter alone denies a healthy journal; no forged snapshot is needed."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    good = _snapshots(database)
+    assert len(good) == 1 and good[0].exists(), "setup needs one valid snapshot"
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_ENTRIES", 8)
+    _flood(directory, 12)
+    with pytest.raises(journal.JournalError, match="scan bound"):
+        journal.journal_report(database)
+    monkeypatch.undo()
+    for junk in directory.glob("junk-*"):
+        junk.unlink()
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
+
+
+def test_the_flood_bound_counts_every_entry_not_only_snapshots(tmp_path,
+                                                               monkeypatch):
+    """The bound is on the WALK, deliberately, and the doc says so."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_ENTRIES", 4)
+    _flood(directory, 6)
+    with pytest.raises(journal.JournalError, match="scan bound"):
+        journal.journal_report(database)
+
+
+# --- the Lead's documentation findings, asserted so they cannot regress --------
+
+
+def test_the_module_docstring_names_both_writers():
+    flat = " ".join((journal.__doc__ or "").split())
+    assert "Only the explicit ``append`` API opens a writable" not in flat
+    assert "publish_pending" in flat
+    assert "Only ``append`` can CREATE one" in flat
+
+
+def test_the_docs_do_not_claim_status_opens_the_database():
+    text = Path("docs/BRIDGE_WORK_JOURNAL.md").read_text(encoding="utf-8")
+    assert "mode=ro" not in text
+    assert "Append is the only operation that can create or write a database" not in text
+    assert "Status never opens the database at all" in text
+    assert "trusted directory" in text.lower()

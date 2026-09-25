@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Durable append-only storage for explicit accepted-work receipts.
 
-Only the explicit ``append`` API opens a writable SQLite database. ``status``
+Two APIs open a writable SQLite database: ``append``, and ``publish_pending``,
+the recovery path that republishes a committed-but-unpublished state under a
+fresh sequence. Only ``append`` can CREATE one. ``status``
 never reads the database at all -- not its bytes, not through SQLite. It reads
 the newest immutable SNAPSHOT that a writer published, verifies that snapshot's
 full digest and embedded sequence, and loads those snapshot bytes into an
@@ -46,6 +48,19 @@ DATABASE_SCHEMA_VERSION = 2
 
 class JournalError(ValueError):
     """A journal operation was refused without silently changing state."""
+
+
+class JournalUnavailable(JournalError):
+    """The database could not be reached right now; retrying may succeed.
+
+    A JournalError SUBCLASS on purpose. Contention used to leave the module as
+    a raw sqlite3.OperationalError, which is neither this module's vocabulary
+    nor anything a caller is told to expect, so automation could not consume a
+    stable failure. Subclassing means every existing `except JournalError`
+    keeps working and the CLI keeps its single documented refusal exit code,
+    while an in-process caller that can retry is still able to tell the two
+    apart.
+    """
 
 
 class JournalConflictError(JournalError):
@@ -151,9 +166,11 @@ def _initialise(connection: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO journal_metadata(singleton, schema_version) VALUES (1, ?)",
         (DATABASE_SCHEMA_VERSION,),
     )
-    # Inspect BEFORE mutating. The previous version wrote the current version
-    # unconditionally, so a database claiming version 999 was silently
-    # downgraded to 2 instead of being refused.
+    # Inspect BEFORE CHANGING THE VERSION -- not before all SQL. The schema
+    # objects above are created first, and the INSERT OR IGNORE cannot overwrite
+    # an existing row, so a database claiming 999 keeps 999 and is refused here.
+    # What must never happen unconditionally is WRITING the version: the earlier
+    # code did, silently downgrading a database claiming 999 to 2.
     observed = connection.execute(
         "SELECT schema_version FROM journal_metadata WHERE singleton = 1").fetchone()
     if observed is None:
@@ -239,6 +256,13 @@ def append_receipts(database: Path, receipts: Sequence[Mapping[str, Any]]) -> di
             raise JournalError("journal image exceeds the publishable size bound")
         _assert_retention_capacity(directory)
         connection.commit()
+    except sqlite3.Error as exc:
+        # Guarding connect() alone was never enough: BEGIN IMMEDIATE and the
+        # commit are where a concurrent writer's lock actually surfaces, past
+        # sqlite3's default busy timeout, and the bare `except BaseException`
+        # below re-raised it unfiltered into every caller.
+        connection.rollback()
+        raise JournalUnavailable(f"journal database is unavailable: {exc}") from exc
     except BaseException:
         connection.rollback()
         raise
@@ -281,7 +305,23 @@ MAX_DATABASE_BYTES = 64 * 1024 * 1024
 SNAPSHOT_DIRNAME = "snapshots"
 SNAPSHOT_NAME = re.compile(r"^snap-(\d{12})-([0-9a-f]{64})\.journal$")
 #: Bounded scan: a directory with more entries than this is refused rather than
-#: walked, so a flooded directory cannot turn a read into an unbounded job.
+#: walked, so a flooded directory cannot turn a read into an unbounded job. The
+#: bound counts EVERY directory entry, matching or not, and that is deliberate:
+#: the cost being bounded is the walk itself, not the snapshot count.
+#:
+#: TRUST BOUNDARY AND A STATED LIMITATION, because this is more than a cost
+#: guard. The snapshot directory is assumed to be a TRUSTED, journal-owned
+#: directory. Anyone able to create arbitrary files inside it can already delete
+#: published snapshots, so that party holds a trust tier comparable to write
+#: access to the database file itself. If the directory is flooded past this
+#: bound, ALL THREE operations refuse -- status, append, and publish_pending --
+#: even when a genuine, valid, loadable snapshot is still present, and there is
+#: NO IN-MODULE RECOVERY PATH: publish_pending, the module's own recovery entry
+#: point, refuses for the same reason. Recovery is an OPERATOR action, removing
+#: the foreign entries. The module will not delete files it does not own, and
+#: that refusal is exactly the guarantee that makes bounded snapshot retention
+#: safe, so widening the scan or auto-deleting clutter would trade a documented
+#: denial of service for an undocumented ability to destroy other people's data.
 MAX_SNAPSHOT_ENTRIES = 4096
 #: Soft prune target: how many snapshots a healthy journal settles at. It is a
 #: GOAL, not a barrier. Only snapshots strictly older than the newest are ever
@@ -315,11 +355,34 @@ def _journal_key(database: Path) -> str:
     Keying the directory binds a snapshot set to the database it describes
     without the reader having to open that database.
     """
-    # Case is PRESERVED. Casefolding collapsed A.sqlite and a.sqlite to one key,
-    # which on a case-sensitive host are two different databases sharing one
-    # snapshot set -- the exact borrowing bug this key exists to prevent. Only
-    # the drive letter is normalised, because that really is case-insensitive.
-    text = str(Path(database).absolute()).replace("\\", "/")
+    # resolve(), NOT absolute(). absolute() is lexical only: it leaves ../
+    # segments and symlinks intact, so ONE physical database reached by two
+    # equivalent spellings produced two journals, and status reported
+    # "unavailable" for receipts genuinely committed and published under the
+    # other spelling (empirically demonstrated in review).
+    #
+    # This does NOT weaken the no-live-database-read promise. resolve() asks the
+    # filesystem about PATH COMPONENTS -- it stats and reads links. It never
+    # opens the database, never reads a byte of it, and cannot create it. The
+    # promise is about reading the database, not about being ignorant of paths.
+    #
+    # THREE RESIDUALS, named rather than implied away:
+    #  * HARDLINKS ARE NOT UNIFIED. Two hardlinks to one inode are two genuine
+    #    real paths; resolve() returns each unchanged, so they key apart. There
+    #    is no path-only way to detect this, and detecting it would require
+    #    opening the file, which the design forbids.
+    #  * A DATABASE THAT DOES NOT EXIST YET is case-sensitive in its spelling,
+    #    because resolve() cannot canonicalise a missing component. Two case
+    #    spellings converge once the file exists. This hashes the STRING, while
+    #    Path.__eq__ on Windows is case-insensitive, so the regression tests
+    #    compare derived keys and never Path objects.
+    #  * THE KEY IS NO LONGER A PURE FUNCTION OF THE STRING. It depends on
+    #    filesystem state, so a symlink or junction created or removed later can
+    #    change it for an unchanged spelling and appear to move the journal.
+    #
+    # The trade taken: an honest-but-wrong "unavailable" for genuinely published
+    # data was judged the worse failure of the two.
+    text = str(Path(database).resolve()).replace("\\", "/")
     if len(text) > 1 and text[1] == ":":
         text = text[0].upper() + text[1:]
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
@@ -701,6 +764,10 @@ def publish_pending(database: Path) -> dict[str, Any]:
             raise JournalError("journal image exceeds the publishable size bound")
         _assert_retention_capacity(directory)
         connection.commit()
+    except sqlite3.Error as exc:
+        # Recovery is a writer too and contends for the same lock.
+        connection.rollback()
+        raise JournalUnavailable(f"journal database is unavailable: {exc}") from exc
     except BaseException:
         connection.rollback()
         raise
@@ -750,7 +817,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             result = journal_report(args.database)
     except JournalError as exc:
+        # JournalUnavailable is a JournalError, so contention reports through
+        # the SAME documented exit code as any other refusal, which is what the
+        # CLI contract promises; the distinction stays available in-process.
         print(f"journal operation refused: {exc}", file=sys.stderr)
+        return 2
+    except sqlite3.Error as exc:
+        # Backstop. Both writers convert contention above, so this should be
+        # unreachable; it exists so a path that ever forgets still produces the
+        # documented refusal instead of a traceback.
+        print(f"journal operation refused: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0

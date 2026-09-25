@@ -101,7 +101,20 @@ function Test-BridgeBoundRequest {
 }
 
 function Test-BridgeReplyBinding {
-    param($Request, $Reply, [string]$Target, [bool]$RequesterClosure=$false, [bool]$AmbiguousLegacy=$false)
+    param($Request, $Reply, [string]$Target, [bool]$RequesterClosure=$false, [bool]$AmbiguousLegacy=$false,
+        [bool]$RequireExplicitCorrelation=$false)
+    # Enforce at the shared boundary, including reader/receipt callers: a later
+    # same-task terminal event is not evidence that a control was processed.
+    $controlType = ([string](Get-BridgeContractField $Request 'type')).Trim().ToLowerInvariant()
+    $controlStatus = ([string](Get-BridgeContractField $Request 'status')).Trim().ToLowerInvariant()
+    if ($controlType -in @('decision', 'finding')) {
+        foreach ($status in @('changes_requested', 'rco_fail', 'review_failed', 'blocked')) {
+            if ($controlStatus -eq $status -or $controlStatus.StartsWith($status + '_')) {
+                $RequireExplicitCorrelation = $true
+                break
+            }
+        }
+    }
     if (Get-BridgeContractField $Request 'request_binding_conflict') { return $false }
     $requester = [string](Get-BridgeContractField $Request 'agent')
     $author = if ($RequesterClosure) { $requester } else { $Target }
@@ -137,7 +150,7 @@ function Test-BridgeReplyBinding {
             $correlated = $true
         }
     }
-    if ($null -eq $rid -and $AmbiguousLegacy -and -not $correlated) { return $false }
+    if ($null -eq $rid -and ($AmbiguousLegacy -or $RequireExplicitCorrelation) -and -not $correlated) { return $false }
     $identity = $null
     if ($RequesterClosure) { $identity = $Request }
     else {

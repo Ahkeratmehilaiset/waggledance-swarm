@@ -1,6 +1,7 @@
 """Routing closure is not reviewer-veto retraction or new task authority."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -72,6 +73,49 @@ def test_ordinary_single_legacy_request_keeps_compatibility():
     request = control()
     request.update(type='message', status='request')
     assert routing._open_requests_for_agent(agent='codex-lead-1', events=[request, done()]) == []
+
+
+@pytest.mark.parametrize('reference', [None, 'wrong', 'exact'])
+@pytest.mark.parametrize('actor', ['codex-lead-1', 'fable-5'])
+def test_powershell_control_binding_cannot_silently_close_unlinked_request(reference, actor):
+    shell = shutil.which('pwsh') or shutil.which('powershell')
+    if not shell:
+        pytest.skip('PowerShell unavailable')
+    request, reply = control(), done()
+    reply['agent'] = actor
+    reply['to'] = request['agent']
+    if reference:
+        reply['payload'] = {'request_ts_utc': request['ts_utc'] if reference == 'exact'
+                            else '2026-09-25T01:40:00Z'}
+    contract = Path(__file__).resolve().parents[2] / '.agent-bridge/bin/BridgeRequestContract.ps1'
+    script = ". '" + str(contract).replace("'", "''") + "'; $e = [Console]::In.ReadToEnd() | ConvertFrom-Json; Test-BridgeReplyBinding $e.request $e.reply 'codex-lead-1' | ConvertTo-Json -Compress"
+    result = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-Command', script],
+        input=json.dumps({'request': request, 'reply': reply}), text=True,
+        capture_output=True, check=True, timeout=30)
+    assert json.loads(result.stdout) == (reference == 'exact' and actor == 'codex-lead-1')
+
+
+@pytest.mark.parametrize('reference', [None, 'wrong', 'exact'])
+def test_full_powershell_router_control_closure_parity(tmp_path, reference):
+    shell = shutil.which('pwsh') or shutil.which('powershell')
+    if not shell:
+        pytest.skip('PowerShell unavailable')
+    request, reply = control(), done()
+    reply['to'] = request['agent']
+    if reference:
+        reply['payload'] = {'request_ts_utc': request['ts_utc'] if reference == 'exact'
+                            else '2026-09-25T01:40:00Z'}
+    rows = [request, reply]
+    (tmp_path / 'shared').mkdir()
+    (tmp_path / 'shared/events.jsonl').write_text(
+        '\n'.join(json.dumps(row) for row in rows), encoding='utf-8')
+    script = Path(__file__).resolve().parents[2] / '.agent-bridge/bin/Get-BridgeNextAction.ps1'
+    result = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-File', str(script),
+        '-Agent', 'codex-lead-1', '-Now', '2026-09-25T02:30:00Z', '-Json'],
+        env={**os.environ, 'AGENT_BRIDGE_RUNTIME_ROOT': str(tmp_path)},
+        text=True, capture_output=True, check=True, timeout=30)
+    assert json.loads(result.stdout)['open_incoming_count'] == len(
+        routing._open_requests_for_agent(agent='codex-lead-1', events=rows))
 
 
 @pytest.mark.parametrize('nested', [False, True])

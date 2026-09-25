@@ -162,7 +162,7 @@ def _canonical_json(value: Any) -> bytes:
             ensure_ascii=True,
             allow_nan=False,
         ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("not canonical JSON") from exc
 
 

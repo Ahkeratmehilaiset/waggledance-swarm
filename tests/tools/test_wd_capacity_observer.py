@@ -71,6 +71,7 @@ def test_install_retry_after_registration_failure_reuses_exact_release(tmp_path,
     installer = source / 'Install-WdCapacityObserver.ps1'
     shutil.copyfile(ROOT / 'ops/windows/reboot/Install-WdCapacityObserver.ps1', installer)
     for relative in ('tools/bridge_capacity_advisor.py', 'tools/bridge_capacity_collector.py',
+                     'tools/bridge_capacity_attribution.py', 'tools/bridge_model_qualification.py',
                      'tools/bridge_capacity_recovery.py', 'ops/windows/reboot/Invoke-WdCapacityObserver.ps1',
                      'ops/windows/reboot/Get-WdCapacityStatus.ps1'):
         target = repo / relative

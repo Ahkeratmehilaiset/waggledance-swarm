@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import builtins
+import sys
 
 import pytest
 
@@ -17,6 +18,24 @@ from tools.bridge_owning_session import (
 
 NOW = "2026-09-25T10:00:00Z"
 DESCRIPTOR_ID = "11111111-2222-4333-8444-555555555555"
+
+
+def test_adversarial_depth_is_rejected_without_escaping_validator() -> None:
+    descriptor = {}
+    for _ in range(max(10_000, sys.getrecursionlimit() * 4)):
+        descriptor = {"nested": descriptor}
+    result = validate_owning_session_descriptor(descriptor, {}, now_utc=NOW)
+    assert result["reason"] == "descriptor_not_canonical_json"
+    assert result["valid"] is False
+    assert result["control_allowed"] is False
+
+
+def test_digest_normalises_adversarial_depth_to_value_error() -> None:
+    descriptor = {}
+    for _ in range(max(10_000, sys.getrecursionlimit() * 4)):
+        descriptor = {"nested": descriptor}
+    with pytest.raises(ValueError, match="not canonical JSON"):
+        descriptor_digest(descriptor)
 
 
 def _descriptor() -> dict:

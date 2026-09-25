@@ -502,6 +502,18 @@ def test_the_domain_travels_with_the_evidence(tree):
     assert emitted["evidence"]["policy"]["domain"] == "deployment-runtime-policy"
 
 
+def test_different_in_root_final_path_is_rejected(tree, monkeypatch):
+    """Fault injection: containment is not a binding to the declared target."""
+    import tools.bridge_policy_evidence as mod
+    other = tree / "other.json"
+    other.write_bytes(b"{}")
+    monkeypatch.setattr(mod, "handle_final_path", lambda fd: str(other))
+    result = emit_evidence(root=tree, manifest=manifest())
+    assert result["evidence"] == {}
+    assert result["hash_integrity"] is False
+    assert result["unavailable"]["catalog"] == ["open_handle_target_mismatch"]
+
+
 def test_read_requests_never_exceed_remaining_budget(tree, monkeypatch):
     import builtins
     import tools.bridge_policy_evidence as mod

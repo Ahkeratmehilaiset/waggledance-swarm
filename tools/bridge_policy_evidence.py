@@ -242,6 +242,8 @@ def _hash_file(path: Path, root: Path, *, max_bytes: int) -> tuple[str, int]:
             base = _normalise_final(str(root))
             if not (opened == base or opened.startswith(base + "/")):
                 raise SourceRejected("open_handle_escapes_root")
+            if opened != _normalise_final(str(path.absolute())):
+                raise SourceRejected("open_handle_target_mismatch")
             while read < before.st_size:
                 chunk = handle.read(min(_READ_CHUNK, before.st_size - read, limit - read))
                 if not chunk:

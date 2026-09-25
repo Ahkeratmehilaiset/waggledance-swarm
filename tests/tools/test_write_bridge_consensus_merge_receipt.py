@@ -28,6 +28,34 @@ AGENT_UUIDS = {
 }
 
 
+def test_explicit_operator_path_receipt_is_truthful(tmp_path: Path) -> None:
+    from waggledance.core.magma.canonical import sha256_digest
+    status = _pr_status()
+    status["changed_paths"] = ["ops/windows/reboot/wd_supervisor.ps1"]
+    grant = {
+        "schema": "wd.operator-path-exception.v1", "repo": "example/repo",
+        "pr_number": 1174, "head": HEAD, "base": BASE,
+        "diff_digest": sha256_digest(status["diff_text"]),
+        "paths": status["changed_paths"], "approval_reference": "operator-test-instruction",
+        "issued_at": NOW.isoformat(), "expires_at": (NOW + timedelta(hours=1)).isoformat(),
+    }
+    report = write_bridge_consensus_merge_receipt(
+        pr_status=status, events_path=_events_path(tmp_path, _full_consensus()),
+        out_dir=tmp_path / "receipt", expected_head=HEAD, expected_base_sha=BASE,
+        consensus_proposal_id=TASK, repo="example/repo", from_agent="codex-lead-1",
+        bridge_task_id=TASK, now_utc=NOW, operator_path_exception=grant,
+    )
+    directory = Path(report["receipt_bundle_path"]).parent
+    payload = json.loads((directory / "payload-001-merge.json").read_text())
+    assert payload["path_gate"]["allowed"] is False
+    assert payload["operator_path_exception"]["grant"] == grant
+    assert payload["original_gate"]["ok"] is False
+    assert verify_manifest(Path(report["receipt_bundle_path"]))["ok"] is True
+    bundle_text = "".join(p.read_text() for p in directory.glob("*.json"))
+    assert "path_gate:allowlist_clean" not in bundle_text
+    assert "path_gate:explicit_operator_exception" in bundle_text
+
+
 def _main_args(tmp_path: Path, status_path: Path) -> list[str]:
     return [
         "--pr-status-file",

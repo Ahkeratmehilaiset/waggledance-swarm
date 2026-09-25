@@ -38,6 +38,8 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
     bridge_events_path_matches_root,
 )
 from waggledance.core.work_queue import resolve_bridge_root  # noqa: E402
+from tools.operator_path_exception import apply_operator_path_exception  # noqa: E402
+from copy import deepcopy
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -77,6 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--now", default="")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--operator-path-exception-json", default="",
+                        help="Explicit operator invocation only: exact-bound grant JSON; not authentication.")
     return parser
 
 
@@ -113,6 +117,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             method=args.method,
             apply=args.apply,
             now_utc=now_utc,
+            operator_path_exception=(json.loads(args.operator_path_exception_json)
+                                     if args.operator_path_exception_json else None),
         )
     except ValueError as exc:
         report = {
@@ -160,6 +166,7 @@ def merge_with_bridge_receipt(
     apply: bool = False,
     now_utc: datetime | None = None,
     runner: Runner | None = None,
+    operator_path_exception: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run snapshot + receipt preflight, then optionally merge exact head."""
     if type(pr_number) is not int or pr_number < 1:
@@ -217,6 +224,7 @@ def merge_with_bridge_receipt(
     if method not in {"squash", "merge", "rebase"}:
         raise ValueError("method must be squash, merge, or rebase")
 
+    operator_path_exception = deepcopy(operator_path_exception)
     run = runner if runner is not None else _run_command
     snapshot_path = out_dir / "pr-status.json"
     receipt_dir = out_dir / "receipt"
@@ -266,6 +274,7 @@ def merge_with_bridge_receipt(
             from_agent=from_agent,
             bridge_task_id=bridge_task_id,
             now_utc=effective_now_utc,
+            operator_path_exception=operator_path_exception,
         )
     except BridgeConsensusMergeReceiptError as exc:
         return _blocked(
@@ -352,6 +361,10 @@ def merge_with_bridge_receipt(
         )
     except AutoMergeGateError as exc:
         fresh_gate = dict(exc.report)
+    fresh_gate = apply_operator_path_exception(
+        fresh_gate, grant=operator_path_exception, pr_status=verified_snapshot,
+        repo=repo, head=expected_head, base=expected_base_sha, now=_utc_now(),
+    )
     if fresh_gate.get("ok") is not True:
         return _blocked(
             decision="apply_gate_recheck_failed",

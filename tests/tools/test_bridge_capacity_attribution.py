@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import pytest
 from pathlib import Path
 import subprocess
 import sys
@@ -562,3 +563,21 @@ def test_lead_collector_module_import_supports_attribution(monkeypatch, capsys):
     assert collector.main(["--status", "--attribution", "--store", "unused.sqlite"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["attribution"]["state"] == "available"
+
+
+@pytest.mark.parametrize("contents", [b'\xff', b'[' * 2000 + b']' * 2000,
+                                     b'{"n":' + b'9' * 5000 + b'}'],
+                         ids=["invalid-utf8", "deep-nesting", "huge-integer"])
+def test_lead_malformed_input_has_safe_cli_error(tmp_path, contents):
+    source = tmp_path / "status.json"
+    source.write_bytes(contents)
+    result = subprocess.run([sys.executable, str(SCRIPT), "--input", str(source), "--json"],
+                            capture_output=True, text=True, cwd=ROOT)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+
+
+def test_lead_schema_error_does_not_echo_value():
+    with pytest.raises(InputError) as error:
+        load_attestation({"schema": "SYNTHETIC_SECRET"})
+    assert "SYNTHETIC_SECRET" not in str(error.value)

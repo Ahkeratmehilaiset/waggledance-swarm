@@ -337,7 +337,7 @@ def load_attestation(document: Any, *, now: datetime | None = None,
     if not isinstance(document, Mapping):
         raise InputError("attestation must be a JSON object")
     if document.get("schema") != ATTESTATION_SCHEMA:
-        raise InputError(f"unsupported attestation schema: {document.get('schema')!r}")
+        raise InputError("unsupported attestation schema")
     entries = document.get("entries")
     if not isinstance(entries, list):
         raise InputError("attestation must contain an 'entries' list")
@@ -642,6 +642,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                               recent_seconds=args.recent_seconds)
     except InputError as exc:
         print(f"input error: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, RecursionError):
+        # Parser/encoding/IO errors can contain input values or local paths.
+        print("input error: unreadable or malformed input", file=sys.stderr)
         return 2
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

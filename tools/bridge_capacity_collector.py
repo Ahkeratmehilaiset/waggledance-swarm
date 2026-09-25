@@ -527,6 +527,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--provider', choices=['codex', 'claude'])
     parser.add_argument('--status', action='store_true')
+    parser.add_argument('--attribution', action='store_true',
+                        help='Augment --status with an additive, read-only attribution block. '
+                             'Off by default; existing output is unchanged without it.')
     parser.add_argument('--scheduled', action='store_true', help='Budgeted Codex metadata poll, safe to repeat.')
     parser.add_argument('--statusline', action='store_true', help='Compact Claude statusline output after ingestion.')
     parser.add_argument('--claude-hook', action='store_true', help='Record native lifecycle metadata; no model decision or retry.')
@@ -553,6 +556,19 @@ def main(argv=None) -> int:
     if args.status:
         try:
             result = status(args.store)
+            if args.attribution:
+                # Additive, read-only. Imported lazily and failure-isolated so a
+                # classifier problem can never change the status exit path or
+                # reach any code that reserves a poll or saves an observation.
+                try:
+                    if __package__:
+                        from .bridge_capacity_attribution import attribution_block
+                    else:
+                        from bridge_capacity_attribution import attribution_block
+                    result['attribution'] = attribution_block(result)
+                except Exception as exc:
+                    result['attribution'] = {'state': 'unavailable',
+                                             'reason': type(exc).__name__}
             encoded = json.dumps(result, allow_nan=False)
         except (InputError, OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             print(json.dumps({'schema': 'wd.capacity-status.v1', 'state': 'unknown',

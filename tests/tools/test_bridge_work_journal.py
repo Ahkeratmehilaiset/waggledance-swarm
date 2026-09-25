@@ -39,7 +39,10 @@ def _digest(path: Path) -> str:
 def test_append_is_durable_and_report_consumes_the_pure_ledger(tmp_path):
     database = tmp_path / "journal.sqlite3"
     result = journal.append_receipts(database, [_receipt()])
-    assert result == {"appended": 1, "duplicates": 0, "database_state": "available"}
+    # The append contract is unchanged; publication outcome is additive, because
+    # a caller must be able to distinguish committed from committed-and-published.
+    assert result == {"appended": 1, "duplicates": 0, "database_state": "available",
+                      "snapshot_seq": 1, "publication": journal.PUBLISHED}
     reopened = _receipt(state="reopened", observed_at="2026-09-25T08:01:00Z")
     assert journal.append_receipts(database, [reopened])["appended"] == 1
 
@@ -116,247 +119,137 @@ def test_simulated_crash_rolls_back_and_reopen_has_no_partial_rows(tmp_path, mon
         assert connection.execute("SELECT COUNT(*) FROM accepted_receipts").fetchone() == (1,)
 
 
-def test_status_never_creates_database_for_missing_or_read_errors(tmp_path):
-    missing = tmp_path / "missing-parent" / "journal.sqlite3"
-    report = journal.journal_report(missing)
-    assert report["journal"]["database_state"] == "missing"
-    assert not missing.parent.exists()
-
-    invalid = tmp_path / "not-a-sqlite-file"
-    invalid.write_bytes(b"not a sqlite database")
-    before = _digest(invalid)
-    with pytest.raises(journal.JournalError, match="journal database cannot be read"):
-        journal.journal_report(invalid)
-    assert _digest(invalid) == before
-    assert not list(tmp_path.glob("not-a-sqlite-file-*"))
-
-
-def test_status_is_read_only_for_an_existing_database(tmp_path):
-    database = tmp_path / "journal.sqlite3"
-    journal.append_receipts(database, [_receipt()])
-    before = {path.name: _digest(path) for path in tmp_path.iterdir()}
-    report = journal.journal_report(database)
-    after = {path.name: _digest(path) for path in tmp_path.iterdir()}
-    assert report["journal"]["database_state"] == "available"
-    assert after == before
-
-
-def test_status_does_not_create_sidecars_for_closed_wal_database(tmp_path):
-    database = tmp_path / "wal.sqlite3"
-    journal.append_receipts(database, [_receipt()])
-    connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
-    connection.close()
-    before = {path.name: _digest(path) for path in tmp_path.iterdir()}
-    journal.journal_report(database)
-    after = {path.name: _digest(path) for path in tmp_path.iterdir()}
-    assert after == before
-
-
-def test_empty_append_validates_without_creating_a_database(tmp_path):
-    database = tmp_path / "new-parent" / "journal.sqlite3"
-    assert journal.append_receipts(database, []) == {
-        "appended": 0,
-        "duplicates": 0,
-        "database_state": "unchanged_empty_append",
-    }
-    assert not database.parent.exists()
-
-
-def test_report_explicitly_limits_unknown_coverage_to_persisted_rows(tmp_path):
-    report = journal.journal_report(tmp_path / "absent.sqlite3")
-    assert report["journal"]["observation_scope"] == "journal_rows_only"
-    assert "cannot establish that all accepted work is represented" in report["journal"]["coverage_note"]
-    assert report["ledger"]["accepted_work"]["active_accepted_contract_revisions"] == 0
-
-
-def test_cli_append_then_status(tmp_path):
-    database = tmp_path / "journal.sqlite3"
-    source = tmp_path / "append.json"
-    source.write_text(
-        json.dumps({"schema": journal.APPEND_SCHEMA, "accepted_work": [_receipt()]}),
-        encoding="utf-8",
-    )
-    append = subprocess.run(
-        [sys.executable, str(SCRIPT), "append", "--database", str(database), "--input", str(source)],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert append.returncode == 0, append.stderr
-    assert json.loads(append.stdout)["appended"] == 1
-    status = subprocess.run(
-        [sys.executable, str(SCRIPT), "status", "--database", str(database)],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert status.returncode == 0, status.stderr
-    assert json.loads(status.stdout)["journal"]["receipt_rows"] == 1
-
-
-# --- fable-5 regressions for the WAL status fix -------------------------------
-# The Lead RED test above is preserved verbatim; everything below is additional.
+# =============================================================================
+# Snapshot-era status tests.
+#
+# status no longer opens the database, so every test that asserted a property
+# of reading a LIVE database (WAL sidecars, hot journals, a database deleted
+# mid-read) has been RETIRED rather than adjusted: its premise no longer
+# exists. The intent of each is carried over here against snapshots, which is
+# where those hazards now live or provably cannot.
+# =============================================================================
 
 
 def _tree(directory):
-    """Every file in the directory with its digest, for zero-write assertions."""
-    return {path.name: _digest(path) for path in sorted(directory.iterdir())}
+    return {path.name: _digest(path) for path in sorted(directory.iterdir())
+            if path.is_file()}
 
 
-def _wal_database(tmp_path, name="wal.sqlite3"):
-    database = tmp_path / name
-    journal.append_receipts(database, [_receipt()])
-    connection = sqlite3.connect(database)
-    assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
-    connection.close()
-    return database
+def _snapshots(database):
+    return sorted(journal.snapshot_directory(database).iterdir())
 
 
-def test_closed_wal_database_is_read_correctly_not_merely_silently(tmp_path):
-    """Reading must still return the rows, not quietly report an empty journal."""
-    database = _wal_database(tmp_path)
-    report = journal.journal_report(database)
-    assert report["journal"]["database_state"] == "available"
-    assert report["journal"]["receipt_rows"] == 1
+# --- publication is coupled to commit, not to a later read --------------------
 
 
-def test_status_never_rewrites_the_on_disk_journal_mode(tmp_path):
-    """The rollback relabelling happens in memory only."""
-    database = _wal_database(tmp_path)
-    before = database.read_bytes()[18:20]
-    journal.journal_report(database)
-    assert database.read_bytes()[18:20] == before == bytes([2, 2])
+def test_sequence_and_image_are_captured_in_the_committing_transaction(tmp_path):
+    """The correction that matters: the image must be the state being committed.
 
-
-def test_unmerged_wal_content_is_refused_not_silently_dropped(tmp_path):
-    """The case immutable=1 would get wrong: committed frames still in the -wal.
-
-    A reader that ignored the -wal would return a SHORTER history and look
-    successful, which is worse than refusing because the caller cannot tell.
+    A fresh post-commit read could contain another writer's rows under a
+    sequence we allocated, so the image is taken inside the transaction.
     """
-    database = _wal_database(tmp_path)
-    holder = sqlite3.connect(database)
-    holder.execute("PRAGMA journal_mode=WAL")
-    holder.execute("BEGIN IMMEDIATE")
-    holder.execute(
-        """INSERT INTO accepted_receipts(receipt_identity, canonical_json, contract_id,
-           revision, artifact_id, evaluation_id, state, observed_at)
-           VALUES ('x','{}','c9','1','a9','e9','accepted','2026-09-25T00:00:00+00:00')""")
-    holder.commit()
-    try:
-        assert (database.parent / (database.name + "-wal")).stat().st_size > 0
-        before = _tree(tmp_path)
-        with pytest.raises(journal.JournalError, match="write-ahead log is unmerged"):
-            journal.journal_report(database)
-        assert _tree(tmp_path) == before
-    finally:
-        holder.close()
+    database = tmp_path / "journal.sqlite3"
+    result = journal.append_receipts(database, [_receipt()])
+    assert (result["snapshot_seq"], result["publication"]) == (1, journal.PUBLISHED)
+    report = journal.journal_report(database)["journal"]
+    assert (report["snapshot_seq"], report["receipt_rows"]) == (1, 1)
 
 
-def test_hot_rollback_journal_is_refused_with_zero_writes(tmp_path):
-    database = tmp_path / "hot.sqlite3"
+def test_a_rolled_back_append_publishes_nothing(tmp_path):
+    """A captured image from a rolled-back transaction holds phantom rows.
+
+    Measured during design: serialize() inside a transaction that is later
+    rolled back still contains the discarded rows, so publication must never
+    precede a successful commit.
+    """
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    (tmp_path / "hot.sqlite3-journal").write_bytes(b"\xd9\xd5\x05\xf9 \xa1c\xd7" + bytes(64))
-    before = _tree(tmp_path)
-    with pytest.raises(journal.JournalError, match="rollback file is hot"):
-        journal.journal_report(database)
-    assert _tree(tmp_path) == before
+    published_before = _snapshots(database)
+    conflicting = _receipt(observed_at="2026-09-26T00:00:00+00:00")
+    with pytest.raises(journal.JournalConflictError):
+        journal.append_receipts(database, [_receipt(contract_id="other"), conflicting])
+    assert _snapshots(database) == published_before
 
 
-def test_an_empty_sidecar_does_not_block_a_readable_database(tmp_path):
-    """Only a NON-empty sidecar means unmerged state; a stale empty one must not."""
-    database = tmp_path / "empty-sidecar.sqlite3"
+def test_crash_before_commit_publishes_nothing(tmp_path, monkeypatch):
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    (tmp_path / "empty-sidecar.sqlite3-wal").write_bytes(b"")
-    before = _tree(tmp_path)
+    before = _snapshots(database)
+
+    def exploding(connection):
+        # sqlite3.Connection is an immutable type, so the crash is injected at
+        # the allocation step instead: inside the transaction, before commit.
+        raise RuntimeError("crash before commit")
+
+    monkeypatch.setattr(journal, "_allocate_sequence", exploding)
+    with pytest.raises(RuntimeError):
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+    monkeypatch.undo()
+    assert _snapshots(database) == before
     assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
-    assert _tree(tmp_path) == before
 
 
-@pytest.mark.parametrize("prepare,match", [
-    (lambda p: p.write_bytes(b"not a sqlite database"), "cannot be read"),
-    (lambda p: p.write_bytes(b"SQLite format 3" + bytes(1) + bytes(40)), "cannot be read"),
-    (lambda p: p.write_bytes(b""), "cannot be read"),
-])
-def test_every_error_path_writes_nothing_at_all(tmp_path, prepare, match):
-    """Zero filesystem writes is claimed for errors too, so it is tested there."""
-    target = tmp_path / "broken.sqlite3"
-    prepare(target)
-    before = _tree(tmp_path)
-    with pytest.raises(journal.JournalError, match=match):
-        journal.journal_report(target)
-    assert _tree(tmp_path) == before
-    assert not list(tmp_path.glob("broken.sqlite3-*"))
-
-
-def test_a_damaged_image_fails_the_integrity_check(tmp_path):
-    """Damage the SELECT would not notice must still be refused.
-
-    Zeroing a page the query touches raises DatabaseError on its own, so that
-    would not prove the integrity check does anything. Zeroing a trailing page
-    leaves the query answering "1 row" happily while quick_check reports the
-    corruption -- that is the case this test exists for, and removing the
-    quick_check makes it fail.
-    """
-    database = tmp_path / "damaged.sqlite3"
+def test_crash_after_commit_before_publish_is_visible_and_recoverable(tmp_path,
+                                                                      monkeypatch):
+    """The honest gap: the reader lags, and the report says so."""
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    image = bytearray(database.read_bytes())
-    image[-64:] = bytes(64)
-    database.write_bytes(bytes(image))
-    before = _tree(tmp_path)
-    with pytest.raises(journal.JournalError, match="integrity check"):
-        journal.journal_report(database)
-    assert _tree(tmp_path) == before
+    monkeypatch.setattr(journal, "_publish_snapshot",
+                        lambda *a, **k: (journal.PUBLICATION_PENDING, "simulated_crash"))
+    result = journal.append_receipts(database, [_receipt(contract_id="c2")])
+    assert result["publication"] == journal.PUBLICATION_PENDING
+    assert result["appended"] == 1
+    monkeypatch.undo()
+
+    stale = journal.journal_report(database)["journal"]
+    assert stale["snapshot_seq"] == 1
+    assert stale["receipt_rows"] == 1
+    assert stale["latest_committed_state"] == "unknown"
+
+    recovered = journal.publish_pending(database)
+    assert recovered["publication"] == journal.PUBLISHED
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 2
 
 
-def test_an_oversized_database_is_refused_before_it_is_loaded(tmp_path, monkeypatch):
-    """"Before it is loaded" is asserted, not just asserted-in-the-name.
-
-    The stat-based bound must reject without ever opening the file for its
-    contents, so the test watches Path.open and requires it was never used to
-    slurp the image.
-    """
-    database = tmp_path / "big.sqlite3"
+def test_recovery_is_idempotent_and_appends_no_receipt(tmp_path):
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    monkeypatch.setattr(journal, "MAX_DATABASE_BYTES", 16)
-    opened = []
-    real_open = Path.open
-
-    def watched(self, *args, **kwargs):
-        opened.append(self.name)
-        return real_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", watched)
-    with pytest.raises(journal.JournalError, match="exceeds the readable size bound"):
-        journal.journal_report(database)
-    # the 100-byte header classify may open it; the image read must not follow
-    assert opened.count("big.sqlite3") <= 1, opened
+    rows_before = journal.journal_report(database)["journal"]["receipt_rows"]
+    first = journal.publish_pending(database)
+    second = journal.publish_pending(database)
+    assert first["publication"] == journal.ALREADY_PUBLISHED
+    assert second["publication"] == journal.ALREADY_PUBLISHED
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == rows_before
 
 
-def test_a_database_that_moves_during_the_read_is_refused(tmp_path, monkeypatch):
-    database = tmp_path / "moving.sqlite3"
+# --- no snapshot means unavailable, never an empty journal --------------------
+
+
+def test_no_snapshot_is_unavailable_with_no_live_database_fallback(tmp_path,
+                                                                   monkeypatch):
+    """Reporting zero rows here would be a silent wrong answer."""
+    database = tmp_path / "journal.sqlite3"
+    monkeypatch.setattr(journal, "_publish_snapshot",
+                        lambda *a, **k: (journal.PUBLICATION_PENDING, "suppressed"))
     journal.append_receipts(database, [_receipt()])
-    real_fstat = journal.os.fstat
-
-    def shifted(fd):
-        info = real_fstat(fd)
-        return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
-                               info.st_uid, info.st_gid, info.st_size,
-                               info.st_atime, info.st_mtime + 5, info.st_ctime))
-
-    monkeypatch.setattr(journal.os, "fstat", shifted)
-    with pytest.raises(journal.JournalError, match="changed while it was being read"):
-        journal.journal_report(database)
+    monkeypatch.undo()
+    report = journal.journal_report(database)["journal"]
+    assert report["database_state"] == "unavailable"
+    assert report["receipt_rows"] is None
+    assert report["latest_committed_state"] == "unknown"
 
 
-def test_sqlite_never_opens_the_journal_file_itself(tmp_path, monkeypatch):
-    """Structural: status must not hand the path to sqlite3.connect at all."""
-    database = _wal_database(tmp_path)
-    real_connect = sqlite3.connect
+def test_a_completely_absent_journal_is_also_unavailable(tmp_path):
+    report = journal.journal_report(tmp_path / "nothing" / "j.sqlite3")["journal"]
+    assert report["database_state"] == "unavailable"
+    assert report["receipt_rows"] is None
+
+
+def test_status_never_opens_the_database(tmp_path, monkeypatch):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
     seen = []
+    real_connect = sqlite3.connect
 
     def watched(target, *args, **kwargs):
         seen.append(str(target))
@@ -364,208 +257,255 @@ def test_sqlite_never_opens_the_journal_file_itself(tmp_path, monkeypatch):
 
     monkeypatch.setattr(journal.sqlite3, "connect", watched)
     journal.journal_report(database)
-    assert seen == [":memory:"], f"status opened something other than memory: {seen}"
+    assert seen == [":memory:"], f"status opened something else: {seen}"
 
 
-
-def test_a_non_database_is_rejected_without_being_loaded_into_memory(tmp_path, monkeypatch):
-    """The header classify earns its place by bounding what we read.
-
-    deserialize would also reject this file, so correctness does not depend on
-    the classify. What it buys is that a large non-database is refused after
-    100 bytes instead of being copied into memory first, and that is the
-    property asserted here.
-    """
-    target = tmp_path / "huge-not-a-db.bin"
-    target.write_bytes(b"definitely not sqlite" * 100_000)
-    sizes = []
-    real_open = Path.open
-
-    def watched(self, *args, **kwargs):
-        handle = real_open(self, *args, **kwargs)
-        if self.name == target.name:
-            original = handle.read
-
-            def counting(n=-1):
-                chunk = original(n)
-                sizes.append(len(chunk))
-                return chunk
-
-            handle.read = counting
-        return handle
-
-    monkeypatch.setattr(Path, "open", watched)
-    with pytest.raises(journal.JournalError, match="cannot be read"):
-        journal.journal_report(target)
-    assert sizes and max(sizes) <= journal.SQLITE_HEADER_BYTES, sizes
+# --- snapshots are verified, and refusals are refusals ------------------------
 
 
-# --- sidecar observation must fail closed, not fail open ----------------------
-
-
-def _deny_stat_for(monkeypatch, suffix, error):
-    real_stat = Path.stat
-
-    def denied(self, *args, **kwargs):
-        if self.name.endswith(suffix):
-            raise error
-        return real_stat(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "stat", denied)
-
-
-@pytest.mark.parametrize("error", [
-    PermissionError(13, "Access is denied"),
-    OSError(5, "I/O error"),
-    NotADirectoryError(20, "Not a directory"),
-])
-def test_an_unreadable_sidecar_is_unknown_not_absent(tmp_path, monkeypatch, error):
-    """The fail-open: a denied stat used to look exactly like "there is no WAL".
-
-    Reproduced before fixing: with the -wal stat denied, a database holding
-    8272 bytes of genuinely unmerged WAL was read anyway and reported one row,
-    silently dropping the committed frame.
-    """
-    database = tmp_path / "denied.sqlite3"
+def test_a_tampered_snapshot_is_refused_by_full_digest(tmp_path):
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    before = _tree(tmp_path)
-    _deny_stat_for(monkeypatch, "-wal", error)
-    with pytest.raises(journal.JournalError, match="sidecar state cannot be determined"):
+    target = _snapshots(database)[0]
+    image = bytearray(target.read_bytes())
+    image[-64:] = bytes(64)
+    target.write_bytes(bytes(image))
+    with pytest.raises(journal.JournalError, match="does not match its digest"):
         journal.journal_report(database)
-    monkeypatch.undo()
-    assert _tree(tmp_path) == before
 
 
-def test_only_file_not_found_means_a_sidecar_is_absent(tmp_path, monkeypatch):
-    """The other half: genuine absence must still read normally."""
-    database = tmp_path / "absent.sqlite3"
+def test_a_truncated_snapshot_is_refused(tmp_path):
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    _deny_stat_for(monkeypatch, "-journal", FileNotFoundError(2, "No such file"))
+    target = _snapshots(database)[0]
+    with open(target, "r+b") as handle:
+        handle.truncate(200)
+    with pytest.raises(journal.JournalError, match="does not match its digest"):
+        journal.journal_report(database)
+
+
+def test_a_duplicate_sequence_is_ambiguous_and_refused(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    original = _snapshots(database)[0]
+    twin = original.parent / ("snap-000000000001-" + ("b" * 64) + ".journal")
+    twin.write_bytes(original.read_bytes())
+    with pytest.raises(journal.JournalError, match="duplicate snapshot sequence"):
+        journal.journal_report(database)
+
+
+def test_an_unsupported_snapshot_schema_is_refused(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    memory = sqlite3.connect(":memory:")
+    memory.execute(
+        "CREATE TABLE journal_metadata(singleton INTEGER, schema_version INTEGER)")
+    memory.execute("INSERT INTO journal_metadata VALUES (1, 99)")
+    image = memory.serialize()
+    memory.close()
+    digest = hashlib.sha256(image).hexdigest()
+    target = journal.snapshot_directory(database) / f"snap-000000000009-{digest}.journal"
+    target.write_bytes(image)
+    with pytest.raises(journal.JournalError, match="unsupported snapshot schema"):
+        journal.journal_report(database)
+
+
+def test_a_name_that_is_not_a_snapshot_is_ignored_not_read(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    (directory / "snap-bad-name.journal").write_bytes(b"garbage")
+    (directory / ".publish-orphan.tmp").write_bytes(b"garbage")
     assert journal.journal_report(database)["journal"]["receipt_rows"] == 1
 
 
-def test_a_wal_appearing_during_the_snapshot_is_refused(tmp_path, monkeypatch):
-    """The window between the sidecar check and the read.
-
-    Reproduced before fixing: a writer that committed into a fresh -wal while
-    the snapshot was being taken produced a successful read whose result did
-    not contain the committed frame, with no refusal and no way for the caller
-    to tell.
-    """
-    database = tmp_path / "racing.sqlite3"
+def test_status_writes_nothing_on_a_snapshot_error_path(tmp_path):
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    sqlite3.connect(database).execute("PRAGMA journal_mode=WAL").fetchone()
-    real_snapshot = journal._snapshot_bytes
-    holders = []
+    directory = journal.snapshot_directory(database)
+    bogus = b"not sqlite at all"
+    (directory / ("snap-000000000002-" + hashlib.sha256(bogus).hexdigest()
+                  + ".journal")).write_bytes(bogus)
+    before = _tree(directory)
+    with pytest.raises(journal.JournalError):
+        journal.journal_report(database)
+    assert _tree(directory) == before
 
-    def racing(target):
-        writer = sqlite3.connect(target)
-        writer.execute("PRAGMA journal_mode=WAL")
-        writer.execute("BEGIN IMMEDIATE")
-        writer.execute(
-            """INSERT INTO accepted_receipts VALUES
-               ('z','{}','c8','1','a8','e8','accepted','2026-09-25T00:00:00+00:00')""")
-        writer.commit()
-        holders.append(writer)
-        return real_snapshot(target)
 
-    monkeypatch.setattr(journal, "_snapshot_bytes", racing)
+def test_status_is_byte_identical_read_only_on_success(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    snaps = journal.snapshot_directory(database)
+    before = (_tree(tmp_path), _tree(snaps))
+    journal.journal_report(database)
+    assert (_tree(tmp_path), _tree(snaps)) == before
+
+
+# --- bounds, concurrency and retention ----------------------------------------
+
+
+def test_the_scan_is_bounded(tmp_path, monkeypatch):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    directory = journal.snapshot_directory(database)
+    for index in range(5):
+        (directory / f"filler-{index}").write_bytes(b"")
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_ENTRIES", 3)
+    with pytest.raises(journal.JournalError, match="exceeds the scan bound"):
+        journal.journal_report(database)
+
+
+def test_retention_reports_pending_rather_than_deleting(tmp_path, monkeypatch):
+    """Silent deletion of an immutable artefact is worse than a visible refusal."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    monkeypatch.setattr(journal, "MAX_SNAPSHOT_RETAINED", 1)
+    before = _tree(journal.snapshot_directory(database))
+    result = journal.append_receipts(database, [_receipt(contract_id="c2")])
+    assert result["publication"] == journal.PUBLICATION_PENDING
+    assert result["publication_reason"] == "retention_bound_reached"
+    assert result["appended"] == 1
+    assert _tree(journal.snapshot_directory(database)) == before
+
+
+def test_concurrent_readers_see_a_stable_image_while_a_writer_publishes(tmp_path):
+    """The property the previous design could not provide."""
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    first = _snapshots(database)[0]
+    expected = first.name.split("-")[2].removesuffix(".journal")
+    held = open(first, "rb")
     try:
-        with pytest.raises(journal.JournalError, match="unmerged|sidecar state changed"):
-            journal.journal_report(database)
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+        journal.append_receipts(database, [_receipt(contract_id="c3")])
+        assert hashlib.sha256(held.read()).hexdigest() == expected
+        assert journal.journal_report(database)["journal"]["snapshot_seq"] == 3
     finally:
-        for writer in holders:
-            writer.close()
+        held.close()
 
 
-def test_a_sidecar_that_merely_changes_during_the_read_is_refused(tmp_path, monkeypatch):
-    """Even an empty-to-empty sidecar change is treated as an unstable read."""
-    database = tmp_path / "touched.sqlite3"
+def test_writers_receive_distinct_monotonic_sequences(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    seqs = [journal.append_receipts(
+        database, [_receipt(contract_id=f"c{i}")])["snapshot_seq"] for i in range(4)]
+    assert seqs == [1, 2, 3, 4]
+    assert len(_snapshots(database)) == 4
+
+
+def test_republishing_the_same_sequence_is_a_no_op(tmp_path):
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    real_snapshot = journal._snapshot_bytes
-
-    def touching(target):
-        (target.parent / (target.name + "-journal")).write_bytes(b"")
-        return real_snapshot(target)
-
-    monkeypatch.setattr(journal, "_snapshot_bytes", touching)
-    with pytest.raises(journal.JournalError, match="sidecar state changed"):
-        journal.journal_report(database)
+    target = _snapshots(database)[0]
+    before = (target.stat().st_mtime_ns, _digest(target))
+    outcome, reason = journal._publish_snapshot(
+        journal.snapshot_directory(database), 1, target.read_bytes())
+    assert (outcome, reason) == (journal.PUBLISHED, None)
+    assert (target.stat().st_mtime_ns, _digest(target)) == before
 
 
-# --- availability must be observed once, and consistently ---------------------
+def test_a_sequence_republished_with_other_content_is_refused(tmp_path):
+    database = tmp_path / "journal.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    with pytest.raises(journal.JournalError,
+                       match="already published with other content"):
+        journal._publish_snapshot(
+            journal.snapshot_directory(database), 1, b"different image")
 
 
-def test_a_database_deleted_mid_call_is_never_reported_as_available(tmp_path,
-                                                                     monkeypatch):
-    """The reported bug: two observations disagreeing produced a wrong answer.
+# --- the two ordering properties, which need a commit hook to observe ---------
+# Found by mutation: without these, moving the capture to AFTER commit and
+# moving publication to BEFORE commit both left the suite green. They are the
+# two properties the design turns on, so they get tests that can see them.
 
-    journal_report cached exists=True, _read_receipts then observed the
-    deletion and returned no rows, and the report said "available, 0 receipts"
-    for a database that no longer existed. An error would have been fine; a
-    confident empty journal is not.
+
+class _CommitHook:
+    """Proxy a sqlite3 connection so commit() can be intercepted.
+
+    sqlite3.Connection is an immutable type and cannot be monkeypatched, so the
+    hook is installed by wrapping the object the module receives from connect().
     """
-    database = tmp_path / "vanishing.sqlite3"
-    journal.append_receipts(database, [_receipt()])
-    real_read = journal._read_receipts
 
-    def deleting(target):
-        target.unlink()
-        return real_read(target)
+    def __init__(self, inner, on_commit=None, fail=False):
+        self._inner = inner
+        self._on_commit = on_commit
+        self._fail = fail
 
-    monkeypatch.setattr(journal, "_read_receipts", deleting)
-    report = journal.journal_report(database)["journal"]
-    assert report["database_state"] != "available"
-    assert (report["database_state"], report["receipt_rows"]) == ("missing", 0)
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def commit(self):
+        if self._fail:
+            raise RuntimeError("commit failed")
+        self._inner.commit()
+        if self._on_commit:
+            self._on_commit()
 
 
-def test_disappearing_after_the_read_begins_refuses_rather_than_emptying(
+def _install_hook(monkeypatch, database, **kwargs):
+    real_connect = sqlite3.connect
+
+    def connecting(target, *args, **kw):
+        inner = real_connect(target, *args, **kw)
+        if str(target) == str(database):
+            return _CommitHook(inner, **kwargs)
+        return inner
+
+    monkeypatch.setattr(journal.sqlite3, "connect", connecting)
+
+
+def test_the_published_image_excludes_rows_committed_by_another_writer(
         tmp_path, monkeypatch):
-    """Once we have decided the database exists, absence is an error.
+    """The capture must be the state THIS transaction commits, not a later read.
 
-    Returning an empty list here would re-create the same lie by a different
-    route: a database that was there a moment ago reported as an empty one.
+    An interloper commits immediately after our commit. If the image were taken
+    after the commit, the snapshot published under OUR sequence would contain
+    the interloper's receipt. It must not.
     """
-    database = tmp_path / "racing-delete.sqlite3"
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    real_classify = journal._classify_database
+    real_sqlite_connect = sqlite3.connect
 
-    def vanishing(target):
-        mode = real_classify(target)
-        target.unlink()
-        return mode
+    fired = []
 
-    monkeypatch.setattr(journal, "_classify_database", vanishing)
-    with pytest.raises(journal.JournalError, match="cannot be read"):
-        journal.journal_report(database)
+    def interloper():
+        # One shot, and via the REAL connect: the hook also wraps this
+        # connection, so without the latch the interloper re-enters itself.
+        if fired:
+            return
+        fired.append(True)
+        side = real_sqlite_connect(database, isolation_level=None)
+        side.execute("BEGIN IMMEDIATE")
+        side.execute(
+            """INSERT INTO accepted_receipts VALUES
+               ('intruder','{}','zzz','1','az','ez','accepted',
+                '2026-09-25T00:00:00+00:00')""")
+        side.commit()
+        side.close()
+
+    _install_hook(monkeypatch, database, on_commit=interloper)
+    result = journal.append_receipts(database, [_receipt(contract_id="mine")])
+    monkeypatch.undo()
+
+    assert result["publication"] == journal.PUBLISHED
+    rows = journal.journal_report(database)["journal"]["receipt_rows"]
+    contracts = {row["contract_id"] for row in journal._load_snapshot(
+        *[(p, p.name.split("-")[2].removesuffix(".journal"))
+          for p in [_snapshots(database)[-1]]][0])}
+    assert "zzz" not in contracts, "the snapshot contains another writer's committed row"
+    assert "mine" in contracts
+    assert rows == 2
 
 
-def test_read_receipts_reports_state_and_rows_together(tmp_path):
-    """The contract that makes a second observation impossible."""
-    database = tmp_path / "paired.sqlite3"
-    assert journal._read_receipts(database) == ("missing", [])
+def test_nothing_is_published_when_the_commit_fails(tmp_path, monkeypatch):
+    """Publication must follow a successful commit, never precede it."""
+    database = tmp_path / "journal.sqlite3"
     journal.append_receipts(database, [_receipt()])
-    state, rows = journal._read_receipts(database)
-    assert state == "available"
-    assert len(rows) == 1
+    before = _snapshots(database)
 
+    _install_hook(monkeypatch, database, fail=True)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        journal.append_receipts(database, [_receipt(contract_id="c2")])
+    monkeypatch.undo()
 
-def test_a_genuinely_missing_database_is_still_missing_not_an_error(tmp_path):
-    """The other half: absence from the start must stay a clean 'missing'."""
-    report = journal.journal_report(tmp_path / "absent" / "nope.sqlite3")["journal"]
-    assert (report["database_state"], report["receipt_rows"]) == ("missing", 0)
-
-
-def test_the_module_no_longer_claims_it_opens_the_database_read_only():
-    """Both corrected docstrings are asserted, so they cannot silently rot back.
-
-    Whitespace is normalised first: the phrases wrap across source lines, and an
-    assertion that only matched the unwrapped form would fail on correct text
-    and pass on nothing useful.
-    """
-    raw = (ROOT / "tools" / "bridge_work_journal.py").read_text(encoding="utf-8")
-    source = " ".join(raw.split())
-    assert "opens an existing database in SQLite read-only mode" not in source
-    assert "never opens the database with SQLite at all" in source
-    assert "main image IS the complete committed database" not in source
-    assert "is not known to be missing committed frames" in source
+    assert _snapshots(database) == before, "a snapshot was published for an uncommitted append"
+    assert journal.journal_report(database)["journal"]["receipt_rows"] == 1

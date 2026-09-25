@@ -57,75 +57,87 @@ schema—also not for a missing or malformed database. Its output nests the
 deterministic report from `tools.bridge_work_ledger`; no money, usage, source
 authority, or coverage outside explicitly stored receipt rows is invented.
 
-### How the zero-write guarantee is achieved
+### Status reads published snapshots, never the database
 
-An earlier version made that claim while opening the database with
-`?mode=ro`, which creates `-shm` and `-wal` for a WAL-mode database — so the
-claim was false exactly where it mattered. SQLite now never opens the file at
-all:
+`append` publishes an **immutable snapshot** of the state it commits. `status`
+reads the newest published snapshot and **never opens the database at all**.
 
-1. **Classify from the header.** The first 100 bytes are read directly; header
-   byte 18 gives the journal mode. `PRAGMA journal_mode` cannot be used for
-   this, because by the time it answers, the sidecars already exist. A file
-   that is not a database is refused here, after 100 bytes, rather than being
-   copied into memory first.
-2. **Refuse unmerged state.** A non-empty `-wal` may hold committed frames that
-   are not in the main file, and a hot `-journal` means the main file may be
-   mid-transaction. Either is **refused**. This is the case `immutable=1` alone
-   would get wrong: it would ignore those frames and return a shorter history
-   while looking successful, which is worse than refusing because the caller
-   cannot tell that receipts were dropped.
-3. **Snapshot into memory.** The image is read once, bounded, with the file
-   identity (`st_ino`/`st_dev`/size/mtime) compared across the read; a file
-   that moves mid-read is refused rather than reported.
-4. **Load the copy.** The in-memory copy — never the file — is relabelled from
-   WAL to rollback in its header, because SQLite cannot deserialize a WAL image
-   into an in-memory database. This is sound *only* because step 2 already
-   established the main image is the complete committed database.
-5. **Validate coherence.** `PRAGMA quick_check` must return `ok`. A trailing
-   damaged page can otherwise let the query return a plausible short history.
+Snapshots live in `snapshots/` beside the database and are named
+`snap-<12-digit sequence>-<full sha256 of the image>.journal`. A file is never
+modified or replaced once named, so a reader holding one has a coherent image
+no matter what a writer does next.
 
-The result is that `status` performs `stat` and a read-only `open`, and nothing
-else, on every path including every error path. The regression tests assert the
-directory is byte-identical before and after, for success, WAL, hot journal,
-corruption and truncation alike.
+**Publication is coupled to the commit, not to a later read.** Inside the same
+write transaction that appends the receipts, the sequence is allocated from
+`journal_metadata.snapshot_seq` and the image is captured with
+`Connection.serialize()`. An in-transaction serialize includes the pending rows
+(verified). Publication then happens **only after the commit succeeds**, because
+an image captured from a transaction that later rolls back contains rows that
+were never committed (also verified). A fresh post-commit read is not used: it
+could contain another writer's rows under a sequence we allocated.
 
-### Unknown is not absent
+Publishing writes a temp file in the same directory, fsyncs, and renames it to a
+name that does not yet exist. It never replaces a live file, because
+`os.replace` onto an existing target fails on Windows while a reader holds it
+open (measured).
 
-Only `FileNotFoundError` means a sidecar is absent. A permission denial, an IO
-error or any other `OSError` while observing `-wal`/`-journal` leaves their
-state **unknown**, and unknown is refused.
+### What `status` guarantees, exactly
 
-An earlier version caught `OSError` broadly and continued, so a stat that was
-merely *denied* looked exactly like a database with no unmerged frames.
-Reproduced: with the `-wal` stat denied, a database holding 8 272 bytes of
-genuinely unmerged WAL was read anyway and reported one row, silently dropping
-the committed frame.
+* It performs `scandir`, `stat` and read-only `open`, and nothing else, on every
+  path including every error path.
+* It verifies the **full sha256** of the content against the digest in the name.
+* A duplicate sequence, an unparseable image, a failed `quick_check`, an
+  unsupported schema or an oversize file are all **refusals**.
+* With **no published snapshot** the state is `unavailable` and `receipt_rows`
+  is `None`. There is no live-database fallback, and this is deliberately not
+  reported as an empty journal: a journal whose state is unknown and a journal
+  with no receipts are different things.
 
-### Concurrency limits — what is detected, and what is not
+### What `status` does NOT tell you
 
-The sidecars are observed **twice**, once before the snapshot and once after,
-and the read is refused if either observation shows unmerged content or if the
-two observations differ at all — including a size-preserving touch.
+`latest_committed_state` is **always `"unknown"`**. Because the reader never
+opens the database, it cannot know whether a commit exists that has not been
+published. Concretely: after a crash between commit and publish, the newest
+snapshot is **stale and is not current authority**. `snapshot_seq` and
+`snapshot_as_of` describe the snapshot, not the database, and `snapshot_as_of`
+is derived from the receipts themselves rather than from any clock.
 
-That is **detection, not exclusion**, and the difference matters:
+`publish_pending()` recovers that case. It appends nothing, so it cannot
+duplicate a receipt, and it allocates a fresh sequence with a fresh
+in-transaction image rather than re-reading under the old one. It is idempotent:
+if the current sequence is already published it reports `already_published`.
 
-* **Detected:** a writer that creates or grows a `-wal`, or leaves a hot
-  `-journal`, at any point that either observation can see. Reproduced before
-  the fix: a writer committing into a fresh `-wal` during the snapshot produced
-  a successful read whose result silently lacked the committed frame.
-* **NOT detected:** a writer that creates, commits, checkpoints and *removes*
-  a `-wal` entirely between the two observations. Both observations would show
-  the same absent state and the snapshot could still be torn.
-* **NOT attempted:** reading a database that has unmerged state. That is
-  refused outright, so `status` is unavailable while a writer holds
-  uncheckpointed frames.
+### Bounds, and why nothing is deleted
 
-So `status` does **not** claim a coherent snapshot against a live writer. It
-claims that no sidecar change was observed across the read, and refuses
-otherwise. A guarantee against a concurrent writer would need a different
-storage design — coordinated locking or a writer that publishes immutable
-snapshots — and is deliberately not claimed here.
+* At most `MAX_SNAPSHOT_ENTRIES` directory entries are examined; more is a
+  refusal, so a flooded directory cannot turn a read into an unbounded job.
+* At `MAX_SNAPSHOT_RETAINED` snapshots, publication reports
+  `publication_pending` with `retention_bound_reached` and the append stays
+  committed. **Nothing is ever deleted automatically.** Silently removing an
+  immutable artefact is a worse failure than a visible refusal to publish, and
+  an operator can tell the difference between "full" and "quietly discarded".
 
-The `journal.coverage_note` and nested ledger notes are intentional: an empty
-or partial local journal cannot prove that all accepted work is represented.
+### Append outcomes
+
+`append_receipts` returns `publication` alongside the append result, so
+committed-but-unpublished is distinguishable from committed-and-published:
+
+| `publication` | meaning |
+| --- | --- |
+| `published` | committed, and the snapshot for `snapshot_seq` exists |
+| `publication_pending` | **committed**, but not published; `publication_reason` says why |
+
+A `publication_pending` result is not a failed append. The receipts are durable;
+only the reader's view is behind, and `publish_pending()` closes the gap.
+
+### Remaining limitations
+
+* **Readers can lag a committed append across a crash.** Inherent to publishing
+  separately from committing.
+* **Every append copies the whole image.** Fine for a dormant receipt journal;
+  a blocker if it grows, at which point the shape must change rather than be
+  tuned.
+* **Retention can be reached and block publication** rather than silently
+  reclaiming space.
+* **Content addressing is not authenticity.** It detects corruption; it does not
+  establish that the publisher was entitled to publish.

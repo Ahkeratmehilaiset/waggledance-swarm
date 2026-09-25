@@ -1723,6 +1723,153 @@ def test_bridge_consensus_cleared_status_resets_prior_same_agent_block(
     assert build_tools["approved"] is False
 
 
+def test_bridge_consensus_ignores_cross_task_veto_with_prose_target_head(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="changes_requested",
+            task_id="pr-1728-unrelated-task",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {
+            "message": f"PR1728 veto cites unrelated PR1724 base {HEAD}",
+            "payload": {"head": OTHER_BASE},
+        },
+    ]
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+
+    assert report["decision"] == "auto_merge_plan_ready"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is True
+    assert report["bridge_consensus"]["ok"] is True
+
+
+def test_bridge_consensus_cross_task_clear_does_not_clear_target_veto(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="changes_requested",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {"message": f"target veto exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="done",
+            status="changes_requested_cleared",
+            task_id="pr-1728-unrelated-task",
+            ts="2026-06-07T17:40:00Z",
+        )
+        | {
+            "message": f"PR1728 clear cites unrelated PR1724 base {HEAD}",
+            "payload": {"head": OTHER_BASE},
+        },
+    ]
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is False
+    assert report["bridge_consensus"]["ok"] is False
+
+
+def test_bridge_consensus_preserves_same_task_veto(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _bridge_event(
+            agent="codex-lead-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:34:11Z",
+        )
+        | {"message": f"lead pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="build_consensus_pass",
+            ts="2026-06-07T17:38:40Z",
+        )
+        | {"message": f"tools pass exact head {HEAD}", "payload": {"head": HEAD}},
+        _rco_pass(),
+        _bridge_event(
+            agent="codex-tools-1",
+            type_="decision",
+            status="changes_requested",
+            ts="2026-06-07T17:39:47Z",
+        )
+        | {"message": "same-task veto", "payload": {"head": HEAD}},
+    ]
+
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, events),
+        bridge_task_id="idle-consensus-001",
+        require_bridge_consensus=True,
+    )
+
+    assert report["decision"] == "operator_review_required"
+    assert report["bridge_peer_gate"]["clear_to_merge"] is False
+    assert report["bridge_consensus"]["ok"] is False
+
+
 def test_bridge_consensus_no_changes_requested_text_does_not_clear_real_block(
     tmp_path: Path,
 ) -> None:

@@ -466,7 +466,7 @@ def _reject_duplicate_keys(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
     seen: set[str] = set()
     for name, _ in pairs:
         if name in seen:
-            raise InputError(f"duplicate JSON key: {name!r}")
+            raise InputError("duplicate JSON key")
         seen.add(name)
     return dict(pairs)
 

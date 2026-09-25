@@ -428,3 +428,15 @@ def test_cli_rejects_bad_input_with_exit_code_two(tmp_path):
     )
     assert proc.returncode == 2
     assert "duplicate JSON key" in proc.stderr
+    assert "observations" not in proc.stderr
+
+
+def test_duplicate_key_cli_does_not_disclose_input(tmp_path):
+    marker = "SYNTHETIC_SENSITIVE_FIELD"
+    source = tmp_path / "duplicate.json"
+    source.write_text('{"' + marker + '":1,"' + marker + '":2}', encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--input", str(source), "--json"],
+                          capture_output=True, text=True, cwd=ROOT)
+    assert proc.returncode == 2
+    assert "duplicate JSON key" in proc.stderr
+    assert marker not in proc.stderr

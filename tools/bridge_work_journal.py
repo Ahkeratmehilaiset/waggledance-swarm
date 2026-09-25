@@ -3,8 +3,9 @@
 """Durable append-only storage for explicit accepted-work receipts.
 
 Only the explicit ``append`` API opens a writable SQLite database. ``status``
-opens an existing database in SQLite read-only mode and cannot create a
-database, parent directory, or sidecar journal. It turns stored receipt rows
+never opens the database with SQLite at all: it reads the file bytes and loads
+an in-memory copy, so it cannot create a database, parent directory, or sidecar
+journal. It turns stored receipt rows
 into the pure report from ``tools.bridge_work_ledger``; it is not runtime
 wiring or a collector.
 """
@@ -318,12 +319,14 @@ def _as_rollback_image(image: bytes) -> bytes:
     database cannot run WAL. Rewriting header bytes 18 and 19 in the copy makes
     it loadable.
 
-    This is only sound because ``_refuse_unmerged_sidecars`` has already
-    established that no -wal and no hot -journal hold committed state, so the
-    main image IS the complete committed database. Under that precondition the
-    journal-mode label describes how a writer would behave, and there is no
-    writer here. If the precondition were dropped this would silently discard
-    committed frames, which is exactly the failure mode we are avoiding.
+    This is only sound because no unmerged -wal and no hot -journal were
+    OBSERVED across the read, so the main image is not known to be missing
+    committed frames. That is an observation, not a guarantee: a writer that
+    created, committed, checkpointed and removed a -wal between the two
+    observations would defeat it. See the concurrency limits in
+    docs/BRIDGE_WORK_JOURNAL.md. If the observation were dropped entirely this
+    would silently discard committed frames, which is the failure being
+    avoided.
     """
     if len(image) < SQLITE_HEADER_BYTES:
         raise JournalError("journal database cannot be read")
@@ -333,8 +336,14 @@ def _as_rollback_image(image: bytes) -> bytes:
     return bytes(copy)
 
 
-def _read_receipts(database: Path) -> list[dict[str, str]]:
-    """Read receipts with ZERO filesystem writes, on every path.
+def _read_receipts(database: Path) -> tuple[str, list[dict[str, str]]]:
+    """Observe availability ONCE and read receipts, with zero filesystem writes.
+
+    Returns ``(state, rows)``. The caller must not take its own view of whether
+    the database exists: two separate observations could disagree, and they did.
+    A cached ``exists=True`` in the caller combined with a later absence here
+    produced the report "available, 0 receipts" for a database that had been
+    deleted -- a confidently wrong answer, which is worse than an error.
 
     SQLite never opens the file. The image is copied into memory and attached
     to an in-memory database, so no journal, no -shm and no -wal can be created
@@ -342,9 +351,12 @@ def _read_receipts(database: Path) -> list[dict[str, str]]:
     state is not wholly inside the main file is refused instead.
     """
     if not database.exists():
-        return []
+        return "missing", []
     if not database.is_file():
         raise JournalError("database path is not a regular file")
+    # From here the database was observed to exist. If it disappears while we
+    # are reading, every step below raises rather than degrading to an empty
+    # list, so a vanished database can never be reported as an empty one.
     _classify_database(database)
     before_sidecars = _sidecar_signature(database)
     _refuse_unmerged_sidecars(before_sidecars)
@@ -380,21 +392,21 @@ def _read_receipts(database: Path) -> list[dict[str, str]]:
     finally:
         connection.close()
     fields = ("contract_id", "revision", "artifact_id", "evaluation_id", "state", "observed_at")
-    return [dict(zip(fields, row, strict=True)) for row in rows]
+    return "available", [dict(zip(fields, row, strict=True)) for row in rows]
 
 
 def journal_report(database: Path) -> dict[str, Any]:
     """Build a deterministic ledger report without creating or modifying a DB."""
     database = Path(database)
-    exists = database.exists()
-    receipts = _read_receipts(database)
+    # One observation, from one place. See _read_receipts.
+    state, receipts = _read_receipts(database)
     ledger = build_report(
         {"schema": INPUT_SCHEMA, "usage_attempts": [], "accepted_work": receipts}
     )
     return {
         "schema": REPORT_SCHEMA,
         "journal": {
-            "database_state": "available" if exists else "missing",
+            "database_state": state,
             "receipt_rows": len(receipts),
             "observation_scope": "journal_rows_only",
             "coverage_note": (

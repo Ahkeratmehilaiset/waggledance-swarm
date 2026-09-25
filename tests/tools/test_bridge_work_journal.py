@@ -491,3 +491,81 @@ def test_a_sidecar_that_merely_changes_during_the_read_is_refused(tmp_path, monk
     monkeypatch.setattr(journal, "_snapshot_bytes", touching)
     with pytest.raises(journal.JournalError, match="sidecar state changed"):
         journal.journal_report(database)
+
+
+# --- availability must be observed once, and consistently ---------------------
+
+
+def test_a_database_deleted_mid_call_is_never_reported_as_available(tmp_path,
+                                                                     monkeypatch):
+    """The reported bug: two observations disagreeing produced a wrong answer.
+
+    journal_report cached exists=True, _read_receipts then observed the
+    deletion and returned no rows, and the report said "available, 0 receipts"
+    for a database that no longer existed. An error would have been fine; a
+    confident empty journal is not.
+    """
+    database = tmp_path / "vanishing.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    real_read = journal._read_receipts
+
+    def deleting(target):
+        target.unlink()
+        return real_read(target)
+
+    monkeypatch.setattr(journal, "_read_receipts", deleting)
+    report = journal.journal_report(database)["journal"]
+    assert report["database_state"] != "available"
+    assert (report["database_state"], report["receipt_rows"]) == ("missing", 0)
+
+
+def test_disappearing_after_the_read_begins_refuses_rather_than_emptying(
+        tmp_path, monkeypatch):
+    """Once we have decided the database exists, absence is an error.
+
+    Returning an empty list here would re-create the same lie by a different
+    route: a database that was there a moment ago reported as an empty one.
+    """
+    database = tmp_path / "racing-delete.sqlite3"
+    journal.append_receipts(database, [_receipt()])
+    real_classify = journal._classify_database
+
+    def vanishing(target):
+        mode = real_classify(target)
+        target.unlink()
+        return mode
+
+    monkeypatch.setattr(journal, "_classify_database", vanishing)
+    with pytest.raises(journal.JournalError, match="cannot be read"):
+        journal.journal_report(database)
+
+
+def test_read_receipts_reports_state_and_rows_together(tmp_path):
+    """The contract that makes a second observation impossible."""
+    database = tmp_path / "paired.sqlite3"
+    assert journal._read_receipts(database) == ("missing", [])
+    journal.append_receipts(database, [_receipt()])
+    state, rows = journal._read_receipts(database)
+    assert state == "available"
+    assert len(rows) == 1
+
+
+def test_a_genuinely_missing_database_is_still_missing_not_an_error(tmp_path):
+    """The other half: absence from the start must stay a clean 'missing'."""
+    report = journal.journal_report(tmp_path / "absent" / "nope.sqlite3")["journal"]
+    assert (report["database_state"], report["receipt_rows"]) == ("missing", 0)
+
+
+def test_the_module_no_longer_claims_it_opens_the_database_read_only():
+    """Both corrected docstrings are asserted, so they cannot silently rot back.
+
+    Whitespace is normalised first: the phrases wrap across source lines, and an
+    assertion that only matched the unwrapped form would fail on correct text
+    and pass on nothing useful.
+    """
+    raw = (ROOT / "tools" / "bridge_work_journal.py").read_text(encoding="utf-8")
+    source = " ".join(raw.split())
+    assert "opens an existing database in SQLite read-only mode" not in source
+    assert "never opens the database with SQLite at all" in source
+    assert "main image IS the complete committed database" not in source
+    assert "is not known to be missing committed frames" in source

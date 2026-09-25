@@ -38,6 +38,7 @@ def request_is_bound(request: Mapping[str, Any]) -> bool:
 def reply_matches_request(
     request: Mapping[str, Any], reply: Mapping[str, Any], target: str,
     *, requester_closure: bool = False, ambiguous_legacy: bool = False,
+    require_explicit_correlation: bool = False,
 ) -> bool:
     """Check correlation only; callers must also require a substantive closure."""
     if request.get("request_binding_conflict"):
@@ -84,7 +85,7 @@ def reply_matches_request(
             if (rid is None or actual is not None) and actual != expected:
                 return False
             correlated = True
-    if rid is None and ambiguous_legacy and not correlated:
+    if rid is None and (ambiguous_legacy or require_explicit_correlation) and not correlated:
         return False
     if requester_closure:
         expected_identity = request

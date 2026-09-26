@@ -3609,6 +3609,7 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         }
     )
     $opaqueHostsBlock = $opaqueToolsHosts.Count -gt 0 -and -not (
+        $toolsConversationSurface -ceq 'native_terminal' -and
         $opaqueReadinessTargets.Count -eq 0 -and
         $wrapperProcesses.Count -eq 0 -and $legacyConsumers.Count -eq 0 -and
         (Test-ToolsReadinessOwnerGone -Processes $toolsProcessSnapshot `

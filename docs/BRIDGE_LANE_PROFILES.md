@@ -42,12 +42,25 @@ versioned wrapper. Its validator, `tools/lane_profile_catalog.py`, covers every 
   `_profile_checks` checks at runtime. It needs qualification classes, the lane's
   role and subscription billing. A lane may not mix providers or account pools,
   because a resume keeps the conversation but cannot move it.
-- Signature state decides approval. A catalog whose `operator_signature` starts with
-  `UNSIGNED` must mark every profile `approved: false`, so the advisor finds no
-  admissible candidate and no shadow decision counts an unqualified profile. A signed
-  catalog must mark every allowed profile `approved: true` with a real
-  `qualification_ref`. A placeholder (REQUIRED, PLACEHOLDER, SYNTHETIC, TODO or
-  UNSIGNED) never counts.
+- Signature state decides approval, for every profile any advisor agent binding can
+  reach, not only the lane-listed ones. A catalog whose `operator_signature` starts
+  with `UNSIGNED` (ignoring case and leading whitespace) must mark every profile
+  `approved: false`, so the advisor finds no admissible candidate and no shadow
+  decision counts an unqualified profile. A signed catalog must mark every reachable
+  profile `approved: true` with a real `qualification_ref`.
+  - The placeholder refusal is a **heuristic**. It rejects references containing
+    REQUIRED, PLACEHOLDER, SYNTHETIC, TODO or UNSIGNED, and would accept others such
+    as TBD. It is a tripwire, not proof that a qualification exists.
+  - "Signed" is a **label**. The validator reads the signature text but cannot verify
+    that the operator wrote it. The signature is operator-attested by an
+    operator-reviewed PR that records the catalog's sha256. It fails safe, because a
+    signed catalog must then carry real approvals on every reachable profile.
+- Exit criteria may be stricter than the operator spec, never weaker. They must
+  require at least 20 shadow decisions over 5 days with 0 marked wrong, and at least
+  10 approve transitions with 1 induced rollback and 0 wrong-process kills.
+- Loader guards, the same as the advisor loader's: a bounded read (at most 256 KiB
+  plus 1 byte is ever read), no duplicate JSON keys, no non-finite numbers, no
+  RecursionError, and no symlink or reparse-point catalog path.
 - `catalog_ref`, `operator_signature`: the operator signs by replacing
   `operator_signature` in a reviewed PR. The validator records the signature; it does
   not verify it.
@@ -77,6 +90,14 @@ mode is `shadow` whatever `fleet.mode` says.
 A reviewer lane never lowers without an operator ack, even inside its floor, because
 a reviewed party must not weaken its reviewer. An unknown current profile always
 parks, since a raise from an unknown state cannot be proven to be a raise.
+
+## What is measured
+
+Only the shipped defaults were measured on 2026-09-26. Lead's and Tools' profiles
+were confirmed by `read_native_codex`, and the Claude lanes by their statusline. The
+stronger options (gpt-6-sol, claude-opus-5-5-xhigh) are catalog choices, not
+measurements. The Claude effort enum matches the installed CLI's `--effort` help. The
+Codex enum, and `max` in particular, is not verifiable from codex-cli 0.157.1.
 
 ## Shipped defaults
 

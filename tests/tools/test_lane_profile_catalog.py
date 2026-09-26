@@ -289,3 +289,128 @@ def test_signed_catalog_refuses_a_placeholder_reachable_only_by_binding():
 def test_signed_catalog_accepts_a_real_binding_only_profile():
     catalog = binding_only_profile(signed_catalog(), approved=True, qualification_ref="qual-real-099")
     assert validate_catalog(catalog)
+
+
+def test_loader_refuses_duplicate_keys(tmp_path):
+    text = SHIPPED.read_text(encoding="utf-8").replace(
+        '"verify_timeout_seconds": 900,', '"verify_timeout_seconds": 900, "mode": "auto",', 1)
+    path = tmp_path / "catalog.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CatalogError, match="duplicate JSON key"):
+        load_catalog(path)
+
+
+def test_loader_maps_a_nesting_bomb_to_catalog_error(tmp_path):
+    path = tmp_path / "catalog.json"
+    path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(CatalogError):
+        load_catalog(path)
+
+
+def test_loader_never_reads_the_whole_file_before_the_size_bound(tmp_path, monkeypatch):
+    path = tmp_path / "catalog.json"
+    path.write_bytes(b" " * (2 * 256 * 1024))
+    monkeypatch.setattr(Path, "read_bytes",
+                        lambda self: (_ for _ in ()).throw(AssertionError("unbounded read")))
+    with pytest.raises(CatalogError, match="size bound"):
+        load_catalog(path)
+
+
+
+# ---- claude-rco-1 NB3 test gaps and NB4 exit floors (review of 45b95c13)
+
+@pytest.mark.parametrize("name,apply", [
+    ("cooldown zero", mutate(["lanes", "fable-5", "cooldown_seconds"], 0)),
+    ("cooldown above a day", mutate(["lanes", "fable-5", "cooldown_seconds"], 86_401)),
+    ("reviewer flag as int", mutate(["lanes", "claude-rco-1", "reviewer"], 1)),
+    ("extra fleet key", mutate(["fleet", "extra"], 1)),
+    ("missing fleet key", mutate(["fleet", "verify_timeout_seconds"], delete=True)),
+    ("approve_exit missing", mutate(["fleet", "approve_exit"], delete=True)),
+    ("approve_exit wrong type", mutate(["fleet", "approve_exit", "min_transitions"], "10")),
+    ("duplicate effort name", mutate(["providers", "claude", "efforts"], ["low", "low", "xhigh", "medium"])),
+    ("limits not a list", mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "limits"], {})),
+    ("shadow exit below spec", mutate(["fleet", "shadow_exit", "min_decisions"], 19)),
+    ("shadow days below spec", mutate(["fleet", "shadow_exit", "min_days"], 4)),
+    ("shadow tolerates wrong decisions", mutate(["fleet", "shadow_exit", "max_operator_marked_wrong"], 1)),
+    ("approve exit below spec", mutate(["fleet", "approve_exit", "min_transitions"], 9)),
+    ("approve without an induced rollback", mutate(["fleet", "approve_exit", "min_induced_rollbacks"], 0)),
+    ("approve tolerates wrong kills", mutate(["fleet", "approve_exit", "max_wrong_process_kills"], 1)),
+])
+def test_nb3_and_exit_floor_gaps_are_refused(name, apply):
+    with pytest.raises(CatalogError):
+        validate_catalog(apply(shipped()))
+
+
+def test_exit_criteria_may_be_stricter_than_the_spec():
+    catalog = shipped()
+    catalog["fleet"]["shadow_exit"].update(min_decisions=40, min_days=10)
+    catalog["fleet"]["approve_exit"].update(min_transitions=20, min_induced_rollbacks=3)
+    assert validate_catalog(catalog)
+
+
+@pytest.mark.parametrize("reference", ["TODO-qual", "unsigned-qual"])
+def test_todo_and_unsigned_placeholders_are_refused_when_signed(reference):
+    catalog = signed_catalog()
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-medium"]["qualification_ref"] = reference
+    with pytest.raises(CatalogError, match="not approved with a real qualification_ref"):
+        validate_catalog(catalog)
+
+
+@pytest.mark.parametrize("signature,signed", [
+    ("unsigned-default", False), ("  UNSIGNED-DEFAULT", False), ("Unsigned", False),
+    ("operator 2026-09-26", True)])
+def test_is_signed_is_case_and_whitespace_insensitive(signature, signed):
+    assert is_signed({"operator_signature": signature}) is signed
+
+
+def test_blank_signature_is_refused_by_the_signature_guard_itself():
+    # An unsigned (approved:false) catalog, so the approval rule cannot mask this guard.
+    catalog = shipped()
+    catalog["operator_signature"] = "   "
+    with pytest.raises(CatalogError, match="operator_signature required"):
+        validate_catalog(catalog)
+
+
+def test_nan_anywhere_is_refused_at_parse_time(tmp_path):
+    text = SHIPPED.read_text(encoding="utf-8").replace('"cooldown_seconds": 3600', '"cooldown_seconds": NaN', 1)
+    path = tmp_path / "catalog.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CatalogError, match="non-finite JSON number"):
+        load_catalog(path)
+
+
+def test_loader_refuses_a_symlinked_catalog(tmp_path):
+    link = tmp_path / "link.json"
+    try:
+        link.symlink_to(SHIPPED)
+    except OSError:
+        pytest.skip("symlinks unavailable to this user")
+    with pytest.raises(CatalogError, match="symlink or reparse point"):
+        load_catalog(link)
+
+
+def test_loader_requests_at_most_the_bound_plus_one_byte(tmp_path, monkeypatch):
+    # Pins the read size itself, not just the absence of Path.read_bytes.
+    path = tmp_path / "catalog.json"
+    path.write_bytes(b" " * (2 * 256 * 1024))
+    requested = []
+    real_open = Path.open
+
+    class Recording:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def read(self, size=-1):
+            requested.append(size)
+            return self._stream.read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._stream.close()
+
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: Recording(real_open(self, *a, **k)))
+    with pytest.raises(CatalogError, match="size bound"):
+        load_catalog(path)
+    assert requested == [256 * 1024 + 1]

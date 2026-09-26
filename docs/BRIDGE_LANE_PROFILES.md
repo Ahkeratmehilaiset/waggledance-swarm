@@ -184,6 +184,58 @@ account pool (the collector reports `None` today) is `unverified`, not `invalid`
 The Claude context suffix (`[1m]`) is stripped for the comparison, and the raw value
 is reported.
 
+## Relaunch checks (D4 steps 1-2, PR-3a)
+
+`tools/wd_lane_relaunch.py` is pure. Every verdict carries
+`execution_allowed: false`: passing a check is not authority.
+
+- `check_request(catalog, request, history)`:
+  - A catalog park (target not allowed, below floor, unknown current, reviewer
+    lowering, unknown lane) parks with `operator_ack_required`. The same profile aborts.
+  - Otherwise it checks the per-lane hourly budget, the fleet hourly total and the
+    lane cooldown against prior receipts.
+  - Unparseable or future-dated history parks; it is never read as "no history".
+  - A request whose lane or target is not a string, or whose current profile is
+    neither a string nor absent, parks as `request_malformed` and never raises.
+- `check_safe_boundary(state, lane=...)`: the measurement must name `lane` itself
+  (otherwise `lane_state_names_another_lane`). The lane must be idle, with
+  `pending_effects` false, no previous-turn blocker, no open claims, and a fresh
+  measurement at most 60 s old with a known current session. Unknown values and
+  hostile types block and never raise.
+  - Every unresolved request bound to the **current** session blocks regardless of
+    age (Lead LPS-B2).
+  - A request bound to another session blocks unless the lane's recorded
+    `session_lineage` (session -> successor rows written by the launcher) chains from
+    that session to the current one. A `superseded` flag on the request is ignored.
+    The measured current session must be the lineage head: a recorded successor of
+    the current session (or a cycle through it) means measurement and lineage
+    disagree. That case, and malformed, forked, cyclic or over-long lineage (more than
+    64 steps), is unknown and blocks.
+  - The supervisor is never a target.
+
+## Planner (D5, PR-3a)
+
+`tools/wd_lane_profile_planner.py`'s `plan_lane(...)` returns one decision,
+`wd.lane-profile-plan.v1`, and never acts:
+
+- The current profile comes only from a `valid` session binding for the same lane,
+  mapped to an allowed profile. A binding that names another lane (or none) parks as
+  `binding_names_another_lane`, so it can never count as a shadow decision for this
+  lane. The Claude context suffix is stripped with the binding module's own rule
+  (`_base_model`), so the planner and the binding cannot disagree. Anything else parks.
+- A lane that is not a catalog string, or a quota map that is not a mapping, parks and
+  never raises.
+- Admission `KEEP` with an available bucket keeps. `KEEP` with an unmeasured current
+  bucket parks (`current_bucket_unknown`): no measurement is not evidence of
+  exhaustion. `PARK` or unknown admission parks.
+- An exhausted or limited bucket, or `ESCALATE`, looks for another allowed profile,
+  strongest first. It stays within the floor, and reviewers only raise. `ESCALATE`
+  only raises.
+- A candidate must have an `available` bucket (unknown counts as not available) and
+  must pass `check_request`. All Claude profiles share the `claude` bucket, so
+  exhaustion there has no Claude escape, and the planner says so by parking.
+- In `shadow` the strongest result is `would_relaunch`.
+
 ## Governance
 
 The catalog, its floors and any change to `fleet.mode` are (a)-class, needing an

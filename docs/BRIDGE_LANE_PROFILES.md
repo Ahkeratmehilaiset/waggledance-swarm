@@ -236,6 +236,129 @@ is reported.
   exhaustion there has no Claude escape, and the planner says so by parking.
 - In `shadow` the strongest result is `would_relaunch`.
 
+## Relaunch executor (D4 steps 3-9, PR-3b)
+
+`tools/wd_lane_relaunch_executor.py`'s `Executor(...).run()` drives one transition
+through an injected `Ports` object. There is no production implementation and
+nothing calls it; PR-4 wires it, and that is (a)-class.
+
+**Journal.** It uses the existing `RecoveryStore`, not a second journal. A relaunch
+replaces the process, so it does not use the same-process `advance()` driver.
+Instead it journals both epochs:
+- the source epoch is the measured pid, creation time, session and thread, measured
+  before the stop;
+- the target epoch is bound once, only from the launcher-written D2 `launched` facts,
+  and only when execution evidence (pin `manifest_and_launcher_verified`, pid,
+  creation time, native conversation id) agrees and a post-launch observation shows
+  the target model and effort;
+- a caller-supplied pid is never accepted.
+
+**Ports.** Every side effect goes through the port, and four ports carry authority:
+- `authenticate(request)` authenticates both the process running the executor and
+  the origin of the request, including when the request event was written.
+  Nothing is taken from constructor or request labels.
+- `processes(lane)` enumerates the lane's attested **native session** processes,
+  including a late target. These are the provider CLI processes whose
+  execution-evidence ancestry names the lane's session, each with pid, creation time,
+  pin status and native conversation id. Launcher, host shell and MCP or tool child
+  processes are not session processes and are not listed. Every stop requires exactly
+  one row, so an attribution that also listed such children would fail closed and
+  never proceed (rco-2 F1).
+- `resume_lane(lane, epoch, checkpoint)` returns exactly `True` only when the bound
+  session confirms that it received the checkpoint or resumed its provider thread.
+- `verify_catalog_signature(catalog_sha256, operator_signature)` returns exactly
+  `True` only when the operator's signature over that exact digest verifies out of
+  band. `is_signed` alone is a label and never makes auto reachable (rco-2 F5).
+
+**Order.** Fail closed at every step:
+1. Request shape (lane, request_id, requested_by identity, both profiles).
+2. Authentication (Lead review R7):
+   - an unauthenticated or malformed answer parks with `principal_unauthenticated`;
+   - the claimed requester must equal the authenticated one, and only a Lead
+     request is executed;
+   - for another lane, the executor must be that same Lead session;
+   - Lead's own lane runs only through the `supervisor` principal;
+   - the journal's `trusted_adapter_identity` carries the port's
+     `verification_ref`;
+   - the authenticated request time must be at most 900 s old and not in the
+     future. This bounds the replay of a parked or aborted request, which the
+     journal's key does not deduplicate (rco-2 F4).
+3. `check_request` against the durable journal (Lead review R6, rco-2 F2/F3):
+   - a lane-profile transition counts, fleet-wide, from its first stop marker. That
+     is a `stop_intent_at` row journaled at `checkpointed` just before `stop()` is
+     called, or the `source_stopped_at` marker on the `apply_pending` row;
+   - a process stop cannot share a SQLite transaction with the journal. Journaling
+     the intent first means a crash between the stop and the phase change still
+     counts, as does a transition held at `checkpointed` after a raising stop. The
+     error is on the safe side: an attempt that crashed before `stop()` also
+     counts;
+   - only an attempt whose stop verifiably did not happen ends at
+     `cancelled_before_apply` and is not counted. Aborted and parked attempts never
+     journal a stop marker;
+   - emitted receipts and the request's `history` field are never read;
+   - an unreadable journal, or a stopped transition without its marker, parks with
+     `relaunch_history_unknown`.
+4. Mode gate: shadow gives `would_relaunch` and touches nothing. approve fails closed.
+   Only exactly `auto` proceeds. It needs a signed catalog whose signature over this
+   exact digest the `verify_catalog_signature` port verifies
+   (`catalog_signature_unverified` otherwise).
+5. The measured state must name the request's lane, on both measurements. Then:
+   - `check_safe_boundary`;
+   - the current profile is verified from the measured process and an observation
+     at most 300 s old. The request's or record's claim is never trusted (rco-2
+     residual B);
+   - execution evidence must show exactly one lane process: the measured source,
+     pin-verified.
+6. Claim the record, the transition lock and the readiness path with a lease of at
+   least 2 x verify_timeout + 600 s. Re-measure, re-prove the source from evidence,
+   and abort if anything changed.
+7. The new process's launch preconditions are checked before the old one stops.
+8. Continuity: provider resume, or a fresh checkpoint.
+9. Journal planned -> quiesced (record written) -> checkpointed.
+10. Journal the stop intent, stop only the verified source instance, then
+    apply_pending (with the stop marker) and launch. If `stop()` raises, the source's fate is reconciled: it cancels only
+    when the enumeration shows exactly one lane process, pin-verified, that is the
+    exact stop target. Anything else (none, several, unreadable, unverified or
+    mismatched) is an unknown fate and holds the reservation for the operator.
+11. Verify within `verify_timeout_seconds`, counted from when the launch returns,
+    with a creation-time skew of 2 s between sources. The lane must then have
+    exactly one process. A launch that raises is treated as a target that never
+    bound. Otherwise decide the stray from the enumerated processes:
+    - no live process: nothing is stopped;
+    - exactly one evidence-verified process that the launcher record corroborates
+      (pid and creation time): that process is stopped;
+    - any other case, including a second (late) process, a pid named only by the
+      record or an unverified pin: `stray_identity_unproven`, nothing is stopped
+      and an operator reconciles.
+
+    Then make exactly one rollback. The rollback record is previous -> previous, a
+    restore and never a lowering.
+12. Resume: after verification the journal moves to `resume_pending`, and
+    `resume_lane` delivers the checkpoint (or `provider_resume`) to the bound
+    session. Only an exact `True` reaches `resumed`, and the same holds after a
+    rollback.
+13. Receipt, then release the claim.
+
+**Outcomes** (`decision/profile_transition`, schema `wd.lane-profile-transition-receipt.v1`):
+- `applied` and `rolled_back` end the journal at `resumed`, which frees the quota
+  reservation.
+- An unconfirmed resume gives `failed` with `resume_not_confirmed` and
+  `operator_required`, and holds the journal at `resume_pending`.
+- A failed source stop ends at `cancelled_before_apply`, and the record is rewritten
+  previous -> previous so the next launch cannot apply the aborted target.
+- An unexpected exception still yields a `failed` receipt (`executor_exception`).
+  Before the source stop it cancels the reservation and neutralises the record.
+  After it, or when the stop's outcome is unknown, the reservation stays held
+  (`operator_required`). A failing emit or claim release is recorded in the
+  returned reasons.
+- A failed rollback leaves the lane stopped, the journal at `apply_pending` and the
+  reservation held. Only an operator reconciles it (`operator_required`).
+- A second transition on a reserved quota bucket is refused by the journal (`parked`).
+
+**Record I/O** (rco-2 residual A) refuses a record path whose file or any existing
+ancestor is a symlink or junction. A junctioned `lane_profiles` directory cannot
+redirect reads or writes outside the runtime root.
+
 ## Governance
 
 The catalog, its floors and any change to `fleet.mode` are (a)-class, needing an

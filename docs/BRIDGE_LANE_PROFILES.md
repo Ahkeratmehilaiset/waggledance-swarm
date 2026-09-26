@@ -289,9 +289,10 @@ Instead it journals both epochs:
 8. Continuity: provider resume, or a fresh checkpoint.
 9. Journal planned -> quiesced (record written) -> checkpointed.
 10. Stop only the verified source instance, then apply_pending (with the stop marker)
-    and launch. If `stop()` raises, the source's fate is reconciled: only
-    pin-verified evidence of that very process proves it alive, which cancels.
-    Anything else is an unknown fate and holds the reservation for the operator.
+    and launch. If `stop()` raises, the source's fate is reconciled: it cancels only
+    when the enumeration shows exactly one lane process, pin-verified, that is the
+    exact stop target. Anything else (none, several, unreadable, unverified or
+    mismatched) is an unknown fate and holds the reservation for the operator.
 11. Verify within `verify_timeout_seconds`, counted from when the launch returns,
     with a creation-time skew of 2 s between sources. The lane must then have
     exactly one process. A launch that raises is treated as a target that never

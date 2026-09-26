@@ -1150,3 +1150,41 @@ def test_r7_a_non_lead_principal_is_refused_even_with_leads_session(tmp_path, au
     ports.authenticate = auth
     payload, _, _ = run(tmp_path, ports)
     assert payload["reasons"] == ["executor_is_not_the_requesting_lead"] and ports.claims == []
+
+
+class _StopRaisesAndADuplicateAppears(FakePorts):
+    """Lead review PR1739-R7: stop() raises without killing the verified source, and meanwhile a
+    second verified lane process appears."""
+
+    def stop(self, lane, pid, started_at):
+        self.stops.append((pid, started_at))
+        self.extra_processes = [dict(LATE)]
+        raise TimeoutError("exit not confirmed")
+
+
+def test_r7_a_duplicate_during_a_raising_stop_is_an_unknown_fate(tmp_path, auto_mode):
+    ports = _StopRaisesAndADuplicateAppears()
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_exception", "TimeoutError", "operator_required"]
+    assert phase(store, ex.tid) == "checkpointed"
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reservations WHERE transition_id=?", (ex.tid,)).fetchone()[0] > 0
+
+
+@pytest.mark.parametrize("rows", ["none", "empty", "mismatched-start"])
+def test_r7_after_a_raising_stop_only_the_single_exact_source_cancels(tmp_path, auto_mode, rows):
+    class _Stop(FakePorts):
+        def stop(self, lane, pid, started_at):
+            self.stops.append((pid, started_at))
+            if rows == "empty":
+                self.proc = {"pid": None, "started": None, "thread": None, "session": None}
+            elif rows == "mismatched-start":
+                self.proc = dict(self.proc, started=iso(NOW - timedelta(minutes=5)))
+            raise TimeoutError("exit not confirmed")
+    ports = _Stop()
+    if rows == "none":
+        original = ports.processes
+        ports.processes = lambda lane: None if ports.stops else original(lane)
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_exception", "TimeoutError", "operator_required"]
+    assert phase(store, ex.tid) == "checkpointed"

@@ -206,19 +206,23 @@ class Executor:
         return None
 
     def _source_gone(self) -> bool:
-        """After a stop() that raised: True unless verified evidence still shows that very process alive.
+        """After a stop() that raised: True unless verified evidence shows that very process alive, alone.
 
-        Only pin-verified evidence naming the stop target's pid and creation time
-        proves it survived; anything else is an unknown fate, which counts as
-        down and holds the reservation for the operator (Lead review R2).
+        Only enumeration with exactly one lane process, pin-verified and naming
+        the stop target's pid and creation time, proves the source survived
+        untouched; anything else (none, several, unreadable, unverified,
+        mismatched) is an unknown fate, which counts as down and holds the
+        reservation for the operator (Lead review R2 and PR1739-R7).
         """
         rows = self._processes()
-        if rows is None:
-            return True  # cannot tell: assume it is down, which holds the reservation
-        alive = any(row.get("pin_status") == VERIFIED_PIN
-                    and type(row.get("pid")) is int and row["pid"] == self.stop_target[0]
-                    and _same_instant(row.get("process_started_at"), self.stop_target[1])
-                    for row in rows)
+        if rows is None or len(rows) != 1:
+            # Unreadable, none, or several lane processes (a duplicate may have
+            # started while stop() ran): an unknown fate holds the reservation.
+            return True
+        row = rows[0]
+        alive = (row.get("pin_status") == VERIFIED_PIN
+                 and type(row.get("pid")) is int and row["pid"] == self.stop_target[0]
+                 and _same_instant(row.get("process_started_at"), self.stop_target[1]))
         return not alive
 
     def _fresh_observations(self, obs: Any) -> dict:

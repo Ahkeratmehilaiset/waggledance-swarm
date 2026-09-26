@@ -245,3 +245,95 @@ def test_runtime_commit_application_rejects_rehearsal_candidate_drift():
         application["blockers"]
     )
     assert application["live_runtime_commit_authorized"] is False
+
+
+def _forged_children_envelope(envelope: dict, child_ids: list) -> dict:
+    """Return the envelope with child evidence swapped for ``child_ids``.
+
+    The forged plan_id is honestly recomputed over the degenerate child
+    set, mirroring evidence produced (or corrupted) outside
+    ``plan_subdivision``. Digest-rederive guardrails may also trip; the
+    regression pins the plan-invariant blocker specifically.
+    """
+    return {
+        **envelope,
+        "new_child_cell_ids": list(child_ids),
+        "plan_id": so.compute_plan_id(
+            parent_cell_id=envelope["parent_cell_id"],
+            new_child_cell_ids=tuple(child_ids),
+        ),
+    }
+
+
+def test_runtime_commit_application_rejects_empty_children_evidence():
+    topology, envelope, rehearsal = _ready_evidence()
+    forged = _forged_children_envelope(envelope, [])
+
+    application = build_subdivision_runtime_commit_application(
+        topology=topology,
+        commit_envelope=forged,
+        runtime_rehearsal=rehearsal,
+    )
+
+    assert application["ok"] is False
+    assert "plan_rebuildable_from_envelope" in application["blockers"]
+    assert "commit_candidate_topology_buildable" in application["blockers"]
+    assert application["commit_candidate_topology"] == {}
+    assert application["runtime_commit_performed"] is False
+
+
+def test_runtime_commit_application_rejects_duplicate_children_evidence():
+    topology, envelope, rehearsal = _ready_evidence()
+    forged = _forged_children_envelope(
+        envelope,
+        ["thermal.heating", "thermal.heating", "thermal.cooling"],
+    )
+
+    application = build_subdivision_runtime_commit_application(
+        topology=topology,
+        commit_envelope=forged,
+        runtime_rehearsal=rehearsal,
+    )
+
+    assert application["ok"] is False
+    assert "plan_rebuildable_from_envelope" in application["blockers"]
+    assert application["commit_candidate_topology"] == {}
+
+
+def test_runtime_commit_application_rejects_parent_in_children_evidence():
+    topology, envelope, rehearsal = _ready_evidence()
+    forged = _forged_children_envelope(
+        envelope,
+        ["thermal", "thermal.heating"],
+    )
+
+    application = build_subdivision_runtime_commit_application(
+        topology=topology,
+        commit_envelope=forged,
+        runtime_rehearsal=rehearsal,
+    )
+
+    assert application["ok"] is False
+    assert "plan_rebuildable_from_envelope" in application["blockers"]
+    assert application["commit_candidate_topology"] == {}
+
+
+def test_runtime_commit_application_valid_control_rebuilds_plan():
+    topology, envelope, rehearsal = _ready_evidence()
+
+    application = build_subdivision_runtime_commit_application(
+        topology=topology,
+        commit_envelope=envelope,
+        runtime_rehearsal=rehearsal,
+    )
+
+    assert application["ok"] is True
+    assert "plan_rebuildable_from_envelope" not in application["blockers"]
+    assert application["new_child_cell_ids"] == [
+        "thermal.cooling",
+        "thermal.heating",
+    ]
+    children = application["commit_candidate_topology"]["cells"]["thermal"][
+        "child_cell_ids"
+    ]
+    assert "thermal.cooling" in children and "thermal.heating" in children

@@ -106,6 +106,10 @@ def superseded_by_lineage(bound_session: str, current_session: str, lineage: Any
         if successors.get(session, successor) != successor or session == successor:
             return None
         successors[session] = successor
+    if current_session in successors:
+        # The measured current session must be the lineage head. A recorded successor (or a cycle through it)
+        # means the measurement and the lineage disagree: unknown, never proof of supersession.
+        return None
     cursor = bound_session
     for _ in range(MAX_LINEAGE_STEPS):
         cursor = successors.get(cursor)

@@ -382,7 +382,23 @@ def _journal_key(database: Path) -> str:
     #
     # The trade taken: an honest-but-wrong "unavailable" for genuinely published
     # data was judged the worse failure of the two.
-    text = str(Path(database).resolve()).replace("\\", "/")
+    raw = str(database).replace("\\", "/")
+    # A Windows drive path is absolute in the bridge's production environment,
+    # but pathlib on a POSIX reviewer/CI host treats it as relative and prefixes
+    # the checkout directory.  That makes the same journal acquire a host-
+    # dependent key before it ever reaches Windows.  Recognise this narrow,
+    # unambiguous spelling lexically; normal host paths still receive the
+    # symlink-aware resolve() behaviour described above.
+    if (
+        os.name != "nt"
+        and len(raw) > 2
+        and raw[1] == ":"
+        and raw[2] == "/"
+        and raw[0].isalpha()
+    ):
+        text = raw
+    else:
+        text = str(Path(database).resolve()).replace("\\", "/")
     if len(text) > 1 and text[1] == ":":
         text = text[0].upper() + text[1:]
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]

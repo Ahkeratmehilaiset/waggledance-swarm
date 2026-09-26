@@ -1091,7 +1091,12 @@ def test_the_journal_key_preserves_case(tmp_path):
     assert upper != lower
 
 
-def test_the_journal_key_normalises_only_the_drive_letter():
+def test_the_journal_key_normalises_only_the_drive_letter(monkeypatch):
+    def reject_host_resolution(_path):
+        raise AssertionError("a Windows drive path must not use POSIX resolution")
+
+    monkeypatch.setattr(journal.os, "name", "posix")
+    monkeypatch.setattr(Path, "resolve", reject_host_resolution)
     assert journal._journal_key(Path("C:/x/j.sqlite3")) == \
            journal._journal_key(Path("c:/x/j.sqlite3"))
 

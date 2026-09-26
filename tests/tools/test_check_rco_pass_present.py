@@ -919,6 +919,39 @@ def test_payload_exact_head_qualifies_without_message_sha() -> None:
     assert result["has_qualifying_rco_pass_at_head"] is True
 
 
+def test_payload_exact_head_conflict_cannot_be_overridden_by_message() -> None:
+    events = [
+        _rco_event(
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS for {OTHER_HEAD}; requested SHA mention: {HEAD}",
+            payload={"exact_head": OTHER_HEAD},
+        )
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["decision"] == "no_qualifying_pass"
+    assert result["has_qualifying_rco_pass_at_head"] is False
+    assert result["has_stale_rco_pass_at_other_head"] is True
+
+
+def test_malformed_payload_exact_head_cannot_fall_back_to_message() -> None:
+    events = [
+        _rco_event(
+            status="rco_pass",
+            type_="decision",
+            message=f"RCO_PASS at exact head {HEAD}",
+            payload={"exact_head": {"sha": HEAD}},
+        )
+    ]
+
+    result = check_rco_pass_present(events=events, task_id=TASK, head=HEAD)
+
+    assert result["decision"] == "no_qualifying_pass"
+    assert result["has_qualifying_rco_pass_at_head"] is False
+
+
 def test_payload_exact_head_allows_case_and_whitespace() -> None:
     events = [
         _rco_event(

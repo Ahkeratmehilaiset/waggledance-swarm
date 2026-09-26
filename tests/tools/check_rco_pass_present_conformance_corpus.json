@@ -311,6 +311,117 @@
         "latest_rco_is_veto": true
       },
       "cli_expect_nonzero": true
+    },
+    {
+      "name": "structured_exact_head_names_another_head_message_names_requested_head",
+      "description": "payload.exact_head names another head while the message names the requested --head -> REFUSE. Free text cannot override a structured claim.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS for b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0; requested SHA mention: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+          "payload": {
+            "exact_head": "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          }
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "structured_head_only_names_another_head_message_names_requested_head",
+      "description": "payload.head (no exact_head) names another head while the message names the requested --head -> REFUSE. payload.head is a structured claim too.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS for b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0; requested SHA mention: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+          "payload": {
+            "head": "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          }
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "conflicting_structured_head_and_exact_head",
+      "description": "payload.head and payload.exact_head disagree, one of them naming the requested --head -> REFUSE. Conflicting structured claims bind nothing.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+          "payload": {
+            "head": "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            "exact_head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          }
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": true
+    },
+    {
+      "name": "malformed_structured_exact_head_not_rescued_by_message",
+      "description": "payload.exact_head is not a string while the message names the requested --head -> REFUSE. A malformed structured claim binds nothing.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+          "payload": {
+            "exact_head": {
+              "sha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+            }
+          }
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": false,
+        "decision": "no_qualifying_pass",
+        "has_qualifying_rco_pass_at_head": false,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": true
     }
   ],
   "allow_cases": [
@@ -444,6 +555,61 @@
         "claude-rco-2"
       ],
       "author_agent": "codex-lead-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": false
+    },
+    {
+      "name": "structured_exact_head_binds_when_message_also_names_a_retracted_head",
+      "description": "payload head and exact_head name the requested --head; the message also names a previously rejected head -> ALLOW at --head only.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0; retracts my changes_requested at b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+          "payload": {
+            "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            "exact_head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          }
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
+      "expected": {
+        "ok": true,
+        "decision": "rco_pass_present",
+        "has_qualifying_rco_pass_at_head": true,
+        "latest_rco_is_veto": false
+      },
+      "cli_expect_nonzero": false
+    },
+    {
+      "name": "structured_head_only_binds_when_message_names_other_shas",
+      "description": "payload.head (no exact_head) names the requested --head and the message names it too, plus other SHAs -> ALLOW at --head only.",
+      "events": [
+        {
+          "ts_utc": "2026-06-03T10:00:00Z",
+          "agent": "claude-rco-1",
+          "type": "decision",
+          "status": "rco_pass",
+          "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+          "message": "RCO_PASS at exact head a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0; base b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+          "payload": {
+            "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          }
+        }
+      ],
+      "task_id": "waggledance/grok-scout-1/rco-pass-gate-conformance-corpus-20260603",
+      "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "rco_agent": "claude-rco-1",
       "expected": {
         "ok": true,
         "decision": "rco_pass_present",

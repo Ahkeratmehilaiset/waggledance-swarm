@@ -3,8 +3,8 @@
 
 Enforces CLAUDE.md Rule 9a: "RCO absence = NO merge". A valid
 recognized RCO `RCO_PASS` (type=decision or rco_review, status=rco_pass)
-whose *message* contains the exact --head SHA string, or whose structured
-``payload.exact_head`` equals it, must be present for
+whose structured ``payload.exact_head`` equals --head, or whose message
+contains the exact SHA when no structured head claim contradicts it, must be present for
 the --task-id (canonical branch name) at the *exact* --head. The passing
 RCO must not be the PR author.
 
@@ -14,8 +14,11 @@ Fail-closed rules (per spec):
    when agents write `author-agent/rest` while the queue supplied
    `author-agent-rest`, or the reverse. No other task-id mismatch counts.
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
-   AND message contains the exact --head (40-char SHA) string or
-   payload.exact_head equals it.
+   AND payload.exact_head equals the exact --head (40-char SHA), or the
+   message contains it. Structured claims are authoritative and cannot be
+   overridden by prose: a malformed claim, a claim for another head, or
+   payload.head and payload.exact_head disagreeing bind nothing. payload.head
+   alone still never satisfies the gate; the message must name it too.
 3. If a recognized RCO veto supersedes the satisfying RCO_PASS
    (changes_requested / finding / blocked / rco_block* etc), REFUSE.
 4. If NO qualifying RCO_PASS-at-exact-head exists, REFUSE. Silence/absence
@@ -708,14 +711,37 @@ def _is_qualifying_rco_pass(
     return False
 
 
-def _event_binds_head(event: Mapping[str, Any], head: str) -> bool:
+_STRUCTURED_HEAD_KEYS = ("exact_head", "head")
+
+
+def _structured_head_claims(event: Mapping[str, Any]) -> set[str | None] | None:
+    """Return normalized structured head claims, or ``None`` when absent.
+
+    Present claims are authoritative. A malformed claim, a claim for another
+    head, or two claims that disagree cannot be rescued by free text.
+    """
     payload = event.get("payload")
-    if isinstance(payload, Mapping):
-        value = payload.get("exact_head")
-        if isinstance(value, str) and value.strip().lower() == head:
+    if not isinstance(payload, Mapping):
+        return None
+    present = [key for key in _STRUCTURED_HEAD_KEYS if key in payload]
+    if not present:
+        return None
+    return {
+        payload[key].strip().lower() if isinstance(payload[key], str) else None
+        for key in present
+    }
+
+
+def _event_binds_head(event: Mapping[str, Any], head: str) -> bool:
+    claims = _structured_head_claims(event)
+    if claims is not None:
+        if claims != {head}:
+            return False
+        if "exact_head" in event["payload"]:
             return True
+        # payload.head alone does not satisfy the gate without a prose binding.
     message = str(event.get("message", "") or "")
-    # Per legacy spec: message contains the exact --head SHA string.
+    # Prose binds only when no structured claim contradicts it.
     # Use substring match on the provided head (caller normalizes to lower hex).
     if head in message:
         return True
@@ -763,8 +789,12 @@ def _is_rco_pass_shape(event: Mapping[str, Any]) -> bool:
 
 
 def _event_head_candidates(event: Mapping[str, Any]) -> list[str]:
-    text_parts = [str(event.get("message", "") or "")]
+    claims = _structured_head_claims(event)
+    if claims is not None:
+        return sorted(claim for claim in claims if claim and SHA_RE.fullmatch(claim))
+
     payload = event.get("payload")
+    text_parts = [str(event.get("message", "") or "")]
     if isinstance(payload, Mapping):
         for key in (
             "head",

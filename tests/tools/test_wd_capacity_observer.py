@@ -574,13 +574,49 @@ switch ($Case) {
     $global:wd_test_task.Actions=@([pscustomobject]@{Execute=$Launcher;Arguments=('"C:\evil\powershell.exe" ' + $inner);WorkingDirectory=$global:wd_test_task.Actions[0].WorkingDirectory})
     Expect-Refusal 'Existing task is not this exact Limited observer; refusing replacement' { Install }
   }
+  'foreign-prefixed' {
+    # Pins the Execute == launcher check: a foreign exe carrying exactly the
+    # silent-shaped arguments must still be refused.
+    Install
+    $global:wd_test_task.Principal.UserId=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $a = $global:wd_test_task.Actions[0]
+    $global:wd_test_task.Actions=@([pscustomobject]@{Execute='C:\Windows\System32\cmd.exe';Arguments=$a.Arguments;WorkingDirectory=$a.WorkingDirectory})
+    Expect-Refusal 'Existing task is not this exact Limited observer; refusing replacement' { Install }
+  }
+  'tampered-direct' {
+    # Pins inner == arguments on the shape branch: a same-release direct task
+    # whose arguments were changed is an update, never a silent shape repair.
+    Install -LauncherPath (Join-Path $Root 'missing-launcher.exe')
+    $global:wd_test_task.Principal.UserId=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $a = $global:wd_test_task.Actions[0]
+    $global:wd_test_task.Actions=@([pscustomobject]@{Execute=$a.Execute;Arguments=($a.Arguments + ' -Extra');WorkingDirectory=$a.WorkingDirectory})
+    Expect-Refusal 'A verified observer update requires -Apply -Update' { Install }
+    "exports=$global:wd_test_exports"
+  }
+  'launcher-relative' {
+    Expect-Refusal 'Absolute silent launcher .exe path required' { Install -LauncherPath 'wd_silent_launch.exe' }
+  }
+  'launcher-not-exe' {
+    Expect-Refusal 'Absolute silent launcher .exe path required' { Install -LauncherPath ($Launcher + '.cmd') }
+  }
+  'downgrade' {
+    # A silent task must not quietly fall back to the flashing direct host.
+    Install
+    $global:wd_test_task.Principal.UserId=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Remove-Item -LiteralPath $Launcher
+    Expect-Refusal 'Silent task launcher is missing; refusing to downgrade the observer task' { Install }
+    "exports=$global:wd_test_exports"
+    Show-Task
+  }
 }
 'shape-harness-complete'
 '''
 
 
 @pytest.mark.parametrize('host', HOSTS or [None])
-@pytest.mark.parametrize('case', ['silent', 'absent', 'tampered', 'migrate', 'update', 'foreign'])
+@pytest.mark.parametrize('case', ['silent', 'absent', 'tampered', 'migrate', 'update', 'foreign',
+                                  'foreign-prefixed', 'tampered-direct', 'downgrade',
+                                  'launcher-relative', 'launcher-not-exe'])
 def test_observer_task_starts_through_the_pinned_silent_launcher(tmp_path, host, case):
     """A console host started by an Interactive task flashes a window every
     minute; the task must start through the hash-pinned GUI launcher."""
@@ -638,3 +674,15 @@ def test_observer_task_starts_through_the_pinned_silent_launcher(tmp_path, host,
         assert '2222222222222222222222222222222222222222' in fields['arguments']
     if case == 'foreign':
         assert proc.stdout.count('refused=Existing task is not this exact Limited observer') == 2
+    if case == 'foreign-prefixed':
+        assert fields['refused'] == 'Existing task is not this exact Limited observer; refusing replacement'
+    if case == 'tampered-direct':
+        assert fields['refused'] == 'A verified observer update requires -Apply -Update'
+        assert fields['exports'] == '0'
+    if case in ('launcher-relative', 'launcher-not-exe'):
+        assert fields['refused'] == 'Absolute silent launcher .exe path required'
+    if case == 'downgrade':
+        assert fields['refused'] == 'Silent task launcher is missing; refusing to downgrade the observer task'
+        assert fields['exports'] == '0'
+        # The task is untouched: still the silent shape.
+        assert fields['execute'] == str(launcher)

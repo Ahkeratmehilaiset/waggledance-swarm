@@ -50,7 +50,11 @@ python tools/check_rco_pass_present.py \
 - A qualifying PASS requires:
   - `type` in {"decision", "rco_review"}
   - `status` in {"rco_pass"}
-  - `message` contains the exact `--head` string (head-exact binding)
+  - head-exact binding: `payload.exact_head` equals the exact `--head`, or the
+    `message` contains it. Structured claims are authoritative: a malformed
+    claim, a claim for another head, or `payload.head` and `payload.exact_head`
+    disagreeing bind nothing and free text cannot rescue them. `payload.head`
+    alone never satisfies the gate; the message must name it too
 - Veto rule (most-recent-wins by append order in events.jsonl):
   - If the *most recent* event from any recognized RCO on the task is a veto
     (status changes_requested / blocked* or type finding/blocked), refuse

@@ -421,3 +421,37 @@ def test_hostile_requests_and_histories_never_raise(value):
     verdict = check_request(CATALOG, dict(REQUEST), value, now=NOW)["verdict"]
     assert verdict == (PROCEED if type(value) is list and value == [] else PARK)
     assert check_request(CATALOG, dict(REQUEST), [value], now=NOW)["verdict"] == PARK
+
+
+# ---------------------------------------------------------------- rco-2 N4: hostile planner inputs
+
+@pytest.mark.parametrize("field", ["lane", "binding", "admission", "quota_states", "history"])
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_planner_arguments_never_raise_and_never_propose(field, value):
+    args = dict(binding=binding(lane="claude-rco-1"), admission="ESCALATE", quota_states=CLAUDE_OK, history=[],
+                now=NOW)
+    lane = "claude-rco-1"
+    if field == "lane":
+        lane = value
+    else:
+        args[field] = value
+    decision = plan_lane(CATALOG, DIGEST, lane, **args)
+    # ESCALATE with a healthy bucket would propose opus; only the unchanged valid history ([]) may still do so.
+    allowed = {"park", "would_relaunch"} if (field == "history" and type(value) is list and value == []) \
+        else {"park"}
+    assert decision["action"] in allowed and decision["execution_allowed"] is False
+
+
+@pytest.mark.parametrize("field", ["session_identity", "observed_model_raw", "observed_effort", "lane"])
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_binding_fields_park(field, value):
+    hostile = binding(lane="claude-rco-1")
+    hostile[field] = value
+    decision = plan_lane(CATALOG, DIGEST, "claude-rco-1", binding=hostile, admission="ESCALATE",
+                         quota_states=CLAUDE_OK, history=[], now=NOW)  # not plan(): it fills a missing lane
+    assert decision["action"] == "park"
+
+
+def test_the_escalate_success_twin_still_proposes():
+    decision = plan(binding=binding(lane="claude-rco-1"), admission="ESCALATE")
+    assert (decision["action"], decision["target_profile"]) == ("would_relaunch", "claude-opus-5-5-xhigh")

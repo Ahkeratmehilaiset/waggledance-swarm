@@ -207,8 +207,10 @@ is reported.
   - A request bound to another session blocks unless the lane's recorded
     `session_lineage` (session -> successor rows written by the launcher) chains from
     that session to the current one. A `superseded` flag on the request is ignored.
-    Malformed, forked, cyclic or over-long lineage (more than 64 steps) is unknown
-    and blocks.
+    The measured current session must be the lineage head: a recorded successor of
+    the current session (or a cycle through it) means measurement and lineage
+    disagree. That case, and malformed, forked, cyclic or over-long lineage (more than
+    64 steps), is unknown and blocks.
   - The supervisor is never a target.
 
 ## Planner (D5, PR-3a)
@@ -219,8 +221,13 @@ is reported.
 - The current profile comes only from a `valid` session binding for the same lane,
   mapped to an allowed profile. A binding that names another lane (or none) parks as
   `binding_names_another_lane`, so it can never count as a shadow decision for this
-  lane. The Claude context suffix is stripped. Anything else parks.
-- Admission `KEEP` with an available bucket keeps. `PARK` or unknown parks.
+  lane. The Claude context suffix is stripped with the binding module's own rule
+  (`_base_model`), so the planner and the binding cannot disagree. Anything else parks.
+- A lane that is not a catalog string, or a quota map that is not a mapping, parks and
+  never raises.
+- Admission `KEEP` with an available bucket keeps. `KEEP` with an unmeasured current
+  bucket parks (`current_bucket_unknown`): no measurement is not evidence of
+  exhaustion. `PARK` or unknown admission parks.
 - An exhausted or limited bucket, or `ESCALATE`, looks for another allowed profile,
   strongest first. It stays within the floor, and reviewers only raise. `ESCALATE`
   only raises.

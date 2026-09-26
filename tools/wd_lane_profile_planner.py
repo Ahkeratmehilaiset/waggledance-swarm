@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from tools.lane_profile_binding import _base_model
 from tools.lane_profile_catalog import effective_mode
 from tools.wd_lane_relaunch import PROCEED, check_request
 
@@ -71,15 +72,18 @@ def plan_lane(catalog: dict, catalog_sha256: str, lane: str, *, binding: dict, a
     now = now or datetime.now(timezone.utc)
     mode = effective_mode(catalog)
     base = {"catalog_sha256": catalog_sha256, "decided_at": now.isoformat()}
-    if lane not in catalog["lanes"]:
-        return _decision(lane, PARK, ["lane_not_in_catalog"], mode, **base)
+    if not isinstance(lane, str) or lane not in catalog["lanes"]:
+        return _decision(lane if isinstance(lane, str) else None, PARK, ["lane_not_in_catalog"], mode, **base)
+    if not isinstance(quota_states, dict):
+        # rco-2 N4: an unmeasured quota map parks; it never raises and never means "available".
+        return _decision(lane, PARK, ["quota_states_unknown"], mode, **base)
     if not isinstance(binding, dict) or binding.get("session_identity") != "valid":
         return _decision(lane, PARK, ["current_profile_unverified"], mode, **base)
     if binding.get("lane") != lane:
         # Lead review of #1738: a binding for another lane must not count as a
         # decision for this one, even in shadow, or it corrupts the exit metrics.
         return _decision(lane, PARK, ["binding_names_another_lane"], mode, **base)
-    current = profile_for_observation(catalog, lane, _strip(binding.get("observed_model_raw")),
+    current = profile_for_observation(catalog, lane, _base_model(binding.get("observed_model_raw")),
                                       binding.get("observed_effort"))
     if current is None:
         return _decision(lane, PARK, ["current_profile_not_in_catalog"], mode, **base)
@@ -90,6 +94,9 @@ def plan_lane(catalog: dict, catalog_sha256: str, lane: str, *, binding: dict, a
         return _decision(lane, PARK, ["admission_park"], mode, current_profile=current, **base)
     if admission == "KEEP" and current_state == AVAILABLE:
         return _decision(lane, KEEP, ["current_profile_healthy"], mode, current_profile=current, **base)
+    if admission == "KEEP" and current_state == "unknown":
+        # No measurement is not evidence of exhaustion: do not propose a disruptive relaunch on it.
+        return _decision(lane, PARK, ["current_bucket_unknown"], mode, current_profile=current, **base)
     spec = catalog["lanes"][lane]
     allowed = spec["allowed_profiles"]
     current_index = allowed.index(current)
@@ -114,9 +121,3 @@ def plan_lane(catalog: dict, catalog_sha256: str, lane: str, *, binding: dict, a
                          target_profile=target, **base)
     return _decision(lane, PARK, [why, "no_admissible_candidate"], mode, current_profile=current,
                      rejected=rejected, **base)
-
-
-def _strip(model: Any) -> Any:
-    if isinstance(model, str) and model.endswith("]") and "[" in model:
-        return model[: model.rindex("[")]
-    return model

@@ -591,3 +591,116 @@ class TestPersistenceRuntimeWiring:
         rt.world_store = broken_store
         result = rt.execute_mission("observe", "test mission")
         assert "goal_id" in result
+
+
+# ── Literal-True persisted pass flags (fail-closed) ──────────────
+
+class _ExplosiveStr(str):
+    """A JSON-serialisable value whose truthiness must never be consulted."""
+
+    def __bool__(self):  # pragma: no cover - reaching this IS the failure
+        raise AssertionError(
+            "truthiness of a persisted pass flag must not be evaluated")
+
+
+_NOT_LITERAL_TRUE_PASSED = [
+    "false", "true", "True", "yes", 1, 2, 1.0, [0], ["passed"],
+    {"passed": True}, _ExplosiveStr("true"),
+]
+
+
+class TestSQLiteVerifierStoreLiteralPass:
+    """The indexed ``passed`` column must follow the literal-True rule."""
+
+    def setup_method(self):
+        self.store = SQLiteVerifierStore(db_path=":memory:")
+
+    def teardown_method(self):
+        self.store.close()
+
+    @pytest.mark.parametrize("value", _NOT_LITERAL_TRUE_PASSED, ids=repr)
+    def test_non_literal_true_is_indexed_as_not_passed(self, value):
+        rid = self.store.save_result(
+            {"passed": value, "confidence": 0.9},
+            action_id="act-1", capability_id="solve.math")
+        assert self.store.list_results(passed=True) == []
+        failed = self.store.list_results(passed=False)
+        assert [r["result_id"] for r in failed] == [rid]
+        assert failed[0]["passed"] is False
+        assert self.store.pass_rate() == 0.0
+        assert self.store.pass_rate(capability_id="solve.math") == 0.0
+        stats = self.store.stats()
+        assert (stats["passed"], stats["failed"]) == (0, 1)
+        assert stats["pass_rate"] == 0.0
+        # The raw payload is still preserved verbatim for the audit trail.
+        assert self.store.get_result(rid)["passed"] == value
+
+    def test_literal_true_passes_missing_and_false_do_not(self):
+        rid_true = self.store.save_result({"passed": True}, action_id="t")
+        self.store.save_result({"confidence": 0.9}, action_id="missing")
+        self.store.save_result({"passed": False}, action_id="f")
+        passed = self.store.list_results(passed=True)
+        assert [r["result_id"] for r in passed] == [rid_true]
+        assert passed[0]["passed"] is True
+        assert len(self.store.list_results(passed=False)) == 2
+        assert self.store.pass_rate() == pytest.approx(1 / 3)
+        assert self.store.stats()["passed"] == 1
+
+    def test_pass_rate_ignores_truthy_stand_ins_beside_a_real_pass(self):
+        self.store.save_result({"passed": True}, action_id="real")
+        for stand_in in ("false", 1, [0]):
+            self.store.save_result({"passed": stand_in}, action_id="stand-in")
+        assert self.store.pass_rate() == pytest.approx(0.25)
+        stats = self.store.stats()
+        assert (stats["total"], stats["passed"], stats["failed"]) == (4, 1, 3)
+
+
+class TestSQLiteCaseStoreLiteralVerifierPass:
+    """The indexed ``verifier_passed`` column must follow the literal-True rule."""
+
+    def setup_method(self):
+        self.store = SQLiteCaseStore(db_path=":memory:")
+
+    def teardown_method(self):
+        self.store.close()
+
+    @staticmethod
+    def _case(tid, verifier_result, intent="solve"):
+        case = {
+            "trajectory_id": tid,
+            "goal": {"type": "SOLVE", "description": "test"},
+            "quality_grade": "gold",
+            "profile": "cottage",
+            "selected_capabilities": [{"capability_id": "solve.math"}],
+        }
+        if verifier_result is not None:
+            case["verifier_result"] = verifier_result
+        return case
+
+    @pytest.mark.parametrize("value", _NOT_LITERAL_TRUE_PASSED, ids=repr)
+    def test_non_literal_true_verifier_pass_is_indexed_false(self, value):
+        self.store.save_case(
+            self._case("t1", {"passed": value, "confidence": 0.9}),
+            intent="solve")
+        cases = self.store.list_cases()
+        assert len(cases) == 1
+        assert cases[0]["verifier_passed"] is False
+        # The raw payload is still preserved verbatim.
+        assert self.store.get_case("t1")["verifier_result"]["passed"] == value
+
+    def test_literal_true_passes_missing_and_false_do_not(self):
+        self.store.save_case(
+            self._case("t-true", {"passed": True, "confidence": 0.9}),
+            intent="i-true")
+        self.store.save_case(self._case("t-none", None), intent="i-none")
+        self.store.save_case(
+            self._case("t-missing", {"confidence": 0.9}), intent="i-missing")
+        self.store.save_case(
+            self._case("t-false", {"passed": False, "confidence": 0.9}),
+            intent="i-false")
+        flags = {
+            intent: self.store.list_cases(intent=intent)[0]["verifier_passed"]
+            for intent in ("i-true", "i-none", "i-missing", "i-false")
+        }
+        assert flags == {"i-true": True, "i-none": False,
+                         "i-missing": False, "i-false": False}

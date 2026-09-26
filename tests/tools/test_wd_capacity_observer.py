@@ -506,3 +506,135 @@ def test_observer_installer_refuses_junction_root_before_any_write(tmp_path, hos
     finally:
         assert junction.parent==tmp_path and junction.lstat().st_file_attributes & 0x400
         junction.rmdir()
+
+
+SHAPE_HARNESS = r'''
+param($Installer,$Python,$Root,$Launcher,$LauncherSha,$Case)
+$ErrorActionPreference='Stop'
+$global:wd_test_attempt=0
+$global:wd_test_starts=0
+$global:wd_test_exports=0
+$global:wd_test_task=$null
+$global:wd_test_head='1111111111111111111111111111111111111111'
+function git { $global:LASTEXITCODE=0; if($args -contains 'rev-parse') { $global:wd_test_head } }
+function New-ScheduledTaskAction { param($Execute,$Argument,$WorkingDirectory) [pscustomobject]@{Execute=$Execute;Arguments=$Argument;WorkingDirectory=$WorkingDirectory} }
+function New-ScheduledTaskTrigger { param([switch]$AtLogOn,$User,[switch]$Once,$At,$RepetitionInterval) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances,$ExecutionTimeLimit,[switch]$StartWhenAvailable) [pscustomobject]@{} }
+function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
+function Get-ScheduledTask { param($TaskName,$ErrorAction) $global:wd_test_task }
+function Export-ScheduledTask { param($TaskName) $global:wd_test_exports++; '<Task>previous fixture</Task>' }
+function Register-ScheduledTask { param($TaskName,$Action,$Trigger,$Settings,$Principal,[switch]$Force)
+  $global:wd_test_attempt++
+  $global:wd_test_task=[pscustomobject]@{Actions=@($Action);Principal=$Principal;State='Ready'}
+}
+function Start-ScheduledTask {param($TaskName) $global:wd_test_starts++}
+$hostPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+function Install([string]$LauncherPath=$Launcher, [switch]$Update) {
+  & $Installer -PythonExecutable $Python -CodexExecutable $Python -InstallRoot $Root -Apply -Update:$Update -SilentLauncher $LauncherPath -SilentLauncherSha256 $LauncherSha
+}
+function Show-Task { $a=$global:wd_test_task.Actions[0]; "execute=$($a.Execute)"; "arguments=$($a.Arguments)" }
+function Expect-Refusal([string]$Message, [scriptblock]$Body) {
+  $attempts=$global:wd_test_attempt; $starts=$global:wd_test_starts
+  try { & $Body; throw 'refusal expected' } catch { if($_.Exception.Message -ne $Message){throw} }
+  if($global:wd_test_attempt -ne $attempts -or $global:wd_test_starts -ne $starts){throw 'refusal had side effects'}
+  "refused=$Message"
+}
+switch ($Case) {
+  'silent' { Install; Show-Task }
+  'absent' { Install -LauncherPath (Join-Path $Root 'missing-launcher.exe'); Show-Task }
+  'tampered' {
+    Expect-Refusal 'Silent task launcher integrity mismatch; refusing registration' { Install }
+  }
+  'migrate' {
+    Install -LauncherPath (Join-Path $Root 'missing-launcher.exe')
+    if($global:wd_test_task.Actions[0].Execute -ine $hostPath){throw 'fixture did not start direct'}
+    $global:wd_test_task.Principal.UserId=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Install
+    "attempts=$global:wd_test_attempt"
+    "exports=$global:wd_test_exports"
+    Show-Task
+    Install
+    "attempts-after-rerun=$global:wd_test_attempt"
+  }
+  'update' {
+    Install
+    $global:wd_test_task.Principal.UserId=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $global:wd_test_head='2222222222222222222222222222222222222222'
+    Expect-Refusal 'A verified observer update requires -Apply -Update' { Install }
+    Install -Update
+    "attempts=$global:wd_test_attempt"
+    Show-Task
+  }
+  'foreign' {
+    Install
+    $global:wd_test_task.Principal.UserId=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $inner = $global:wd_test_task.Actions[0].Arguments.Substring(('"' + $hostPath + '" ').Length)
+    $global:wd_test_task.Actions=@([pscustomobject]@{Execute='C:\Windows\System32\cmd.exe';Arguments=$inner;WorkingDirectory=$global:wd_test_task.Actions[0].WorkingDirectory})
+    Expect-Refusal 'Existing task is not this exact Limited observer; refusing replacement' { Install }
+    $global:wd_test_task.Actions=@([pscustomobject]@{Execute=$Launcher;Arguments=('"C:\evil\powershell.exe" ' + $inner);WorkingDirectory=$global:wd_test_task.Actions[0].WorkingDirectory})
+    Expect-Refusal 'Existing task is not this exact Limited observer; refusing replacement' { Install }
+  }
+}
+'shape-harness-complete'
+'''
+
+
+@pytest.mark.parametrize('host', HOSTS or [None])
+@pytest.mark.parametrize('case', ['silent', 'absent', 'tampered', 'migrate', 'update', 'foreign'])
+def test_observer_task_starts_through_the_pinned_silent_launcher(tmp_path, host, case):
+    """A console host started by an Interactive task flashes a window every
+    minute; the task must start through the hash-pinned GUI launcher."""
+    if host is None:
+        pytest.skip('Windows PowerShell unavailable')
+    repo = tmp_path / 'repo'
+    source = repo / 'ops/windows/reboot'
+    source.mkdir(parents=True)
+    installer = source / 'Install-WdCapacityObserver.ps1'
+    shutil.copyfile(ROOT / 'ops/windows/reboot/Install-WdCapacityObserver.ps1', installer)
+    for relative in ('tools/bridge_capacity_advisor.py', 'tools/bridge_capacity_collector.py',
+                     'tools/bridge_capacity_attribution.py', 'tools/bridge_model_qualification.py',
+                     'tools/bridge_capacity_recovery.py', 'ops/windows/reboot/Invoke-WdCapacityObserver.ps1',
+                     'ops/windows/reboot/Get-WdCapacityStatus.ps1'):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('fixture source')
+    launcher = tmp_path / 'wd_silent_launch.exe'
+    launcher.write_bytes(b'fixture launcher')
+    pinned = sha(launcher) if case != 'tampered' else '0' * 64
+    harness = tmp_path / 'shape.ps1'
+    harness.write_text(SHAPE_HARNESS, encoding='utf-8')
+    root = tmp_path / 'installed'
+    proc = subprocess.run([host, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                           '-File', str(harness), '-Installer', str(installer), '-Python', PYTHON,
+                           '-Root', str(root), '-Launcher', str(launcher), '-LauncherSha', pinned,
+                           '-Case', case],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert 'shape-harness-complete' in proc.stdout
+    fields = dict(line.split('=', 1) for line in proc.stdout.splitlines() if '=' in line)
+    host_path = os.path.join(os.environ['WINDIR'], r'System32\WindowsPowerShell\v1.0\powershell.exe')
+    silent_prefix = f'"{host_path}" '
+    if case in ('silent', 'migrate', 'update'):
+        assert fields['execute'] == str(launcher)
+        assert fields['arguments'].startswith(silent_prefix)
+        inner = fields['arguments'][len(silent_prefix):]
+        assert inner.startswith('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden ')
+        assert '-ManifestPath "' in inner and '-ManifestSha256 ' in inner
+    if case == 'absent':
+        # Success twin of 'silent': no launcher keeps today's direct host.
+        assert fields['execute'] == host_path
+        assert fields['arguments'].startswith('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden ')
+    if case == 'tampered':
+        assert fields['refused'] == 'Silent task launcher integrity mismatch; refusing registration'
+    if case == 'migrate':
+        # Same release: the shape change re-registers once, with a backup, and
+        # without -Update; a rerun on the new shape changes nothing.
+        assert fields['attempts'] == '2' and fields['exports'] == '1'
+        assert fields['attempts-after-rerun'] == '2'
+        assert any(p.name.startswith('task-before-launch-shape-') for p in root.iterdir())
+    if case == 'update':
+        assert fields['refused'] == 'A verified observer update requires -Apply -Update'
+        assert fields['attempts'] == '2'
+        assert '2222222222222222222222222222222222222222' in fields['arguments']
+    if case == 'foreign':
+        assert proc.stdout.count('refused=Existing task is not this exact Limited observer') == 2

@@ -5,6 +5,9 @@ Install a hash-pinned, Limited, metadata-only capacity observer.
 .DESCRIPTION
 Default is a plan. -Apply registers a minute task and logon trigger;
 the collector admits at most one provider request per five minutes.
+The task starts through the hash-pinned GUI-subsystem wd_silent_launch.exe
+when it is present, because a console host started by an Interactive task
+opens a window before -WindowStyle Hidden can take effect: once a minute.
 This does not change the bridge supervisor, models, terminals or Grok budget.
 The source tree must be clean; required CI/review gates are the caller's duty.
 #>
@@ -14,7 +17,9 @@ param(
     [Parameter(Mandatory)][string]$CodexExecutable,
     [string]$InstallRoot = 'C:\Python\wd-capacity-observer',
     [switch]$Apply,
-    [switch]$Update
+    [switch]$Update,
+    [string]$SilentLauncher = 'C:\Python\wd_silent_launch.exe',
+    [string]$SilentLauncherSha256 = '4CD4FBED01E3EAD1C999493212F7499137C0937F597BDD5172C0EFEEDA3F509F'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -116,8 +121,33 @@ $runner = Join-Path $release 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1'
 $hostPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
     $runner + '" -ManifestPath "' + $manifestPath + '" -ManifestSha256 ' + $anchor
+# The launcher waits for the host and returns its exit code, so the task's
+# IgnoreNew and two-minute limit still bound the real observer run. A present
+# launcher with the wrong hash is refused; an absent one keeps the direct host.
+$silentPrefix = '"' + $hostPath + '" '
+$taskExecute = $hostPath
+$taskArguments = $arguments
+if (Test-Path -LiteralPath $SilentLauncher -PathType Leaf) {
+    if ((Get-ObserverHash $SilentLauncher) -ine $SilentLauncherSha256) {
+        throw 'Silent task launcher integrity mismatch; refusing registration'
+    }
+    $taskExecute = $SilentLauncher
+    $taskArguments = $silentPrefix + $arguments
+} else {
+    Write-Warning 'wd_silent_launch.exe is absent; the observer task will flash a console window each minute'
+}
+# Both registered shapes wrap the same observer invocation. Return that inner
+# invocation, or $null for any action this installer did not register.
+function Get-ObserverInvocation($TaskAction) {
+    if ($TaskAction.Execute -ieq $hostPath) { return [string]$TaskAction.Arguments }
+    if ($TaskAction.Execute -ieq $SilentLauncher -and
+        ([string]$TaskAction.Arguments).StartsWith($silentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return ([string]$TaskAction.Arguments).Substring($silentPrefix.Length)
+    }
+    return $null
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute $hostPath -Argument $arguments -WorkingDirectory $release
+$action = New-ScheduledTaskAction -Execute $taskExecute -Argument $taskArguments -WorkingDirectory $release
 $triggers = @(
     (New-ScheduledTaskTrigger -AtLogOn -User $identity),
     (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1))
@@ -138,12 +168,21 @@ if ($old) {
                 [Security.Principal.SecurityIdentifier]).Value
         }
     } catch { $ownerSid = $null }
-    if (@($old.Actions).Count -ne 1 -or $old.Actions[0].Execute -ine $hostPath -or
+    $oldInvocation = if (@($old.Actions).Count -eq 1) { Get-ObserverInvocation $old.Actions[0] } else { $null }
+    if ($null -eq $oldInvocation -or
         $ownerSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
         [string]$old.Principal.RunLevel -cne 'Limited') {
         throw 'Existing task is not this exact Limited observer; refusing replacement'
     }
-    if ($old.Actions[0].Arguments -cne $arguments -or $old.Actions[0].WorkingDirectory -ine $release) {
+    if ($oldInvocation -ceq $arguments -and $old.Actions[0].WorkingDirectory -ieq $release -and
+        $old.Actions[0].Execute -ine $taskExecute) {
+        # Same release, only the launch shape differs: no code changes, so this
+        # needs no -Update, but keep the prior registration as a backup.
+        if ([string]$old.State -ceq 'Running') { throw 'Existing observer is still running; retry after its bounded invocation ends' }
+        $backup = Join-Path $root ('task-before-launch-shape-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ') + '.xml')
+        Export-ScheduledTask -TaskName 'WD-CapacityObserver' | Set-Content -LiteralPath $backup -Encoding UTF8
+        Register-ScheduledTask -TaskName 'WD-CapacityObserver' -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Force | Out-Null
+    } elseif ($oldInvocation -cne $arguments -or $old.Actions[0].WorkingDirectory -ine $release) {
         if (-not $Update) { throw 'A verified observer update requires -Apply -Update' }
         $current = Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw | ConvertFrom-Json
         $priorManifest = Assert-CapacityPath ([string]$current.manifest) $root
@@ -155,7 +194,7 @@ if ($old) {
         $priorRunner = Join-Path $priorRelease 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1'
         $priorArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
             $priorRunner + '" -ManifestPath "' + $priorManifest + '" -ManifestSha256 ' + $current.manifest_sha256
-        if ($old.Actions[0].Arguments -cne $priorArguments -or $old.Actions[0].WorkingDirectory -ine $priorRelease -or
+        if ($oldInvocation -cne $priorArguments -or $old.Actions[0].WorkingDirectory -ine $priorRelease -or
             [string]$old.State -ceq 'Running') { throw 'Existing observer differs or is still running; retry after its bounded invocation ends' }
         $backup = Join-Path $root ('task-before-update-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ') + '.xml')
         Export-ScheduledTask -TaskName 'WD-CapacityObserver' | Set-Content -LiteralPath $backup -Encoding UTF8

@@ -26,6 +26,7 @@ PROCEED = "proceed"
 PARK = "park"
 ABORT = "abort"
 SUPERVISOR = "supervisor"
+MAX_LINEAGE_STEPS = 64
 
 
 def _verdict(verdict: str, reasons: list[str], **extra: Any) -> dict:
@@ -41,7 +42,14 @@ def check_request(catalog: dict, request: dict, history: list, *, now: datetime 
     always False: passing a check is not authority to act.
     """
     now = now or datetime.now(timezone.utc)
-    lane = request.get("lane")
+    # Hostile types park before any lookup; an absent current profile is a
+    # catalog question (current_profile_unknown) for the operator, not malformed.
+    if (not isinstance(request, dict)
+            or not (isinstance(request.get("lane"), str) and request["lane"])
+            or not (isinstance(request.get("target_profile"), str) and request["target_profile"])
+            or not (request.get("current_profile") is None or isinstance(request["current_profile"], str))):
+        return _verdict(PARK, ["request_malformed"], operator_ack_required=False)
+    lane = request["lane"]
     spec = catalog["lanes"].get(lane)
     if spec is None:
         return _verdict(PARK, ["lane_not_in_catalog"], operator_ack_required=True)
@@ -75,29 +83,71 @@ def check_request(catalog: dict, request: dict, history: list, *, now: datetime 
     return _verdict(PROCEED, [transition["reason"]], transition=transition["verdict"])
 
 
-def check_safe_boundary(state: dict, *, now: datetime | None = None, max_age_seconds: int = 60) -> dict:
-    """Step 2: may this lane be stopped now without abandoning anything?
+def superseded_by_lineage(bound_session: str, current_session: str, lineage: Any) -> bool | None:
+    """Whether ``bound_session`` is an ancestor of ``current_session`` in the lane's lineage.
 
-    ``state`` is a fresh measurement of the lane: current_session_id,
-    observed_at, idle, pending_effects, previous_turn_blocker, open_claims and
-    unresolved_requests. Each unresolved request carries request_id,
-    bound_session_id and superseded (True only when a successor session is
-    recorded).
+    ``lineage`` is the lane's durable session history as recorded by the
+    launcher: a list of ``{"session_id", "successor_session_id"}`` rows, one per
+    relaunch. A request is superseded only when its bound session has a
+    recorded chain of successors ending at the current session (Lead review of
+    #1738: never a caller boolean). Returns None when the lineage is malformed
+    or ambiguous (a session with two successors), which the caller treats as
+    unknown.
+    """
+    if not isinstance(lineage, list):
+        return None
+    successors: dict[str, str] = {}
+    for row in lineage:
+        if not isinstance(row, dict):
+            return None
+        session, successor = row.get("session_id"), row.get("successor_session_id")
+        if not (isinstance(session, str) and session and isinstance(successor, str) and successor):
+            return None
+        if successors.get(session, successor) != successor or session == successor:
+            return None
+        successors[session] = successor
+    cursor = bound_session
+    for _ in range(MAX_LINEAGE_STEPS):
+        cursor = successors.get(cursor)
+        if cursor is None:
+            return False
+        if cursor == current_session:
+            return True
+    return None  # a cycle or an implausibly long chain: unknown, never superseded
+
+
+def check_safe_boundary(state: Any, *, lane: str, now: datetime | None = None,
+                        max_age_seconds: int = 60) -> dict:
+    """Step 2: may ``lane`` be stopped now without abandoning anything?
+
+    ``state`` is a fresh measurement that must name ``lane`` itself (Lead
+    review of #1738: evidence is explicitly lane-bound). It carries
+    current_session_id, observed_at, idle, pending_effects,
+    previous_turn_blocker, open_claims, unresolved_requests (each with
+    request_id and bound_session_id) and session_lineage (see
+    ``superseded_by_lineage``).
 
     Every unresolved request bound to the lane's current session blocks,
     regardless of age (Lead review LPS-B2): the selector's 12 h freshness
     cutoff does not apply here. A request bound to another session blocks
-    unless it is provably superseded. Unknown values block. ``supervisor`` is
-    never a relaunch target.
+    unless the recorded lineage proves that session superseded; a
+    ``superseded`` flag on the request itself is ignored. Unknown values and
+    hostile types block and never raise. ``supervisor`` is never a relaunch
+    target.
     """
     now = now or datetime.now(timezone.utc)
     reasons: list[str] = []
     if not isinstance(state, dict):
         return _verdict(ABORT, ["lane_state_missing"])
-    if state.get("lane") == SUPERVISOR or state.get("is_supervisor") is not False:
+    if not isinstance(lane, str) or not lane or lane == SUPERVISOR:
+        return _verdict(ABORT, ["target_is_or_may_be_the_supervisor"])
+    if state.get("lane") != lane:
+        return _verdict(ABORT, ["lane_state_names_another_lane"])
+    if state.get("is_supervisor") is not False:
         return _verdict(ABORT, ["target_is_or_may_be_the_supervisor"])
     observed = _utc(state.get("observed_at"))
-    if observed is None or not 0 <= (now - observed).total_seconds() <= max_age_seconds:
+    if (observed is None or type(max_age_seconds) is not int or max_age_seconds < 0
+            or not 0 <= (now - observed).total_seconds() <= max_age_seconds):
         return _verdict(ABORT, ["lane_state_stale_or_unknown"])
     session = state.get("current_session_id")
     if not isinstance(session, str) or not session:
@@ -117,13 +167,19 @@ def check_safe_boundary(state: dict, *, now: datetime | None = None, max_age_sec
     if not isinstance(requests, list):
         reasons.append("unresolved_requests_unknown")
     else:
+        lineage = state.get("session_lineage")
         for item in requests:
             bound = item.get("bound_session_id") if isinstance(item, dict) else None
             if not isinstance(bound, str) or not bound:
                 reasons.append("request_binding_unknown")
-            elif bound == session:
+                continue
+            if bound == session:
                 reasons.append("unresolved_request_bound_to_current_session")
-            elif item.get("superseded") is not True:
+                continue
+            superseded = superseded_by_lineage(bound, session, lineage)
+            if superseded is None:
+                reasons.append("session_lineage_unknown")
+            elif not superseded:
                 reasons.append("unresolved_request_not_provably_superseded")
     if reasons:
         return _verdict(ABORT, sorted(set(reasons)))

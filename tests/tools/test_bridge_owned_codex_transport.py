@@ -489,6 +489,7 @@ def test_the_module_adds_no_third_party_dependency():
             assert root in {
                 "__future__", "collections", "dataclasses", "hashlib", "json",
                 "pathlib", "queue", "threading", "time", "typing", "subprocess",
+                "weakref",
             }, f"unexpected dependency: {root}"
 
 
@@ -825,6 +826,18 @@ def test_an_unpinned_observation_claims_nothing_about_provenance():
     result = transport.observe_owned_app_server(spawner(child), client_info=CLIENT)
     assert result["file_digest_verified"] is False
     assert result["child_identity_verified"] is False
+    assert result["observed"] == "child_returned_by_supplied_spawn"
+
+
+def test_a_forged_pinned_digest_attribute_cannot_claim_child_identity():
+    child = FakeAppServer()
+    spawn = spawner(child)
+    spawn.wd_pinned_executable_digest = "0" * 64
+
+    result = transport.observe_owned_app_server(spawn, client_info=CLIENT)
+
+    assert result["child_identity_verified"] is False
+    assert result["file_digest_verified"] is False
     assert result["observed"] == "child_returned_by_supplied_spawn"
 
 

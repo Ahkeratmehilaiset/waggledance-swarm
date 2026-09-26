@@ -45,6 +45,7 @@ import queue
 import threading
 import time
 from typing import Any
+import weakref
 
 #: The complete set of methods this transport may ever send. Read-only and
 #: pre-turn by design: initialize/initialized are the mandatory handshake, and
@@ -143,8 +144,14 @@ def default_spawn(executable: Path, arguments: Sequence[str]) -> Any:
     )
 
 
-#: Marks a spawn callable whose child provenance this module actually knows.
-_PINNED_SPAWN_ATTRIBUTE = "wd_pinned_executable_digest"
+#: Module-issued spawn closures whose child provenance this module can describe.
+#: A public callback attribute was forgeable and therefore could not support an
+#: identity claim.  Weak keys keep no spawn alive and exact object identity keeps
+#: an unrelated callback from claiming provenance by copying visible metadata.
+_PINNED_SPAWNS: weakref.WeakKeyDictionary[Callable[[], Any], str] = (
+    weakref.WeakKeyDictionary()
+)
+_PINNED_SPAWNS_LOCK = threading.Lock()
 
 
 def pinned_spawn(executable: Path | str, expected_sha256: str,
@@ -170,7 +177,8 @@ def pinned_spawn(executable: Path | str, expected_sha256: str,
         verify_executable(path, expected_sha256)
         return default_spawn(path, argv)
 
-    setattr(spawn, _PINNED_SPAWN_ATTRIBUTE, expected_sha256.lower())
+    with _PINNED_SPAWNS_LOCK:
+        _PINNED_SPAWNS[spawn] = expected_sha256.lower()
     return spawn
 
 
@@ -523,7 +531,13 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
     then says the child merely came from a supplied callback, rather than
     asserting a provenance this function cannot establish.
     """
-    pinned_digest = getattr(spawn, _PINNED_SPAWN_ATTRIBUTE, None)
+    try:
+        with _PINNED_SPAWNS_LOCK:
+            pinned_digest = _PINNED_SPAWNS.get(spawn)
+    except TypeError:
+        # Some callable objects cannot be weak-referenced.  They remain valid
+        # injected spawners, but cannot be a module-issued pinned spawn.
+        pinned_digest = None
     verification: dict[str, Any] = {
         "file_digest_verified": False,
         "executable_digest": None,

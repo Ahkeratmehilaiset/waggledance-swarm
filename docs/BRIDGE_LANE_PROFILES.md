@@ -138,6 +138,17 @@ are atomic (temp file, fsync, rename). Reads are bounded to 64 KiB and reject Na
   can be verified.
 - **`auto`:** `apply` with the exact provider, model, effort and transition id.
 
+`launch_decision` never raises. A hostile record (nesting bomb, oversized integer,
+out-of-range offset, a directory or locked file, duplicate keys) gives `native` with
+`record_unusable`. `auto` also re-validates the catalog and requires it to be signed,
+so apply never rides on a caller-built dict. `read_record` refuses symlinks and
+reparse points, and never reads more than 64 KiB + 1 byte.
+
+A record is a temporary override. When it expires (at most 24 h), the next launch is
+`native` again, and the profile reverts. That is intended. A lasting change belongs
+in the catalog default, by an operator-signed PR. `write_record` does not validate:
+its callers (D4) validate before writing, and every read validates again.
+
 Nothing in PR-2 calls this. The launcher wiring is PR-4, which is (a)-class.
 
 ## Session binding (D3, PR-2)
@@ -163,6 +174,11 @@ and never merges them:
   profile's `(provider, limit id)` quota rows must be present, all with the profile's
   account pool. A thread binding never authenticates a quota row, and a quota row
   never authenticates a session.
+
+Input contract: `live_processes` maps pid to the process creation time, and every
+timestamp is an aware ISO-8601 string. A CIM DateTime must be converted first; an
+unconverted value fails closed as `process_epoch_unparseable`. An unobserved quota
+account pool (the collector reports `None` today) is `unverified`, not `invalid`.
 
 `profile_observed` (`match` | `mismatch` | `unverified`) compares model and effort.
 The Claude context suffix (`[1m]`) is stripped for the comparison, and the raw value

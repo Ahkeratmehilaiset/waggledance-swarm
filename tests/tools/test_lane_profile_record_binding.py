@@ -140,9 +140,46 @@ def test_approve_fails_closed_without_a_verifiable_ack(tmp_path):
     assert decision["fallback_event"]["reason"] == "operator_ack_unverifiable"
 
 
-def test_auto_applies_only_a_valid_record(tmp_path):
+def signed_auto_catalog() -> dict:
+    catalog = catalog_with("auto", "auto")
+    catalog["operator_signature"] = "operator 2026-09-26 reviewed PR"
+    for number, profile in enumerate(catalog["capacity_policy"]["profiles"].values()):
+        profile.update(approved=True, qualification_ref=f"qual-2026-09-26-{number:03d}")
+    return catalog
+
+
+def test_auto_is_unreachable_while_the_advisor_is_shadow_only(tmp_path):
+    # The advisor accepts only a shadow capacity policy, so an "auto" policy never
+    # validates and apply is unreachable today, signed or not.
     write_record(record_path(tmp_path, "claude-rco-1"), record())
-    decision = launch_decision(tmp_path, "claude-rco-1", catalog_with("auto", "auto"), DIGEST, now=NOW)
+    decision = launch_decision(tmp_path, "claude-rco-1", signed_auto_catalog(), DIGEST, now=NOW)
+    assert (decision["action"], decision["fallback_event"]["reason"]) == ("native", "catalog_invalid")
+
+
+@pytest.fixture
+def future_advisor(monkeypatch):
+    """Simulate a future advisor that accepts an auto policy, to exercise the apply path."""
+    import tools.lane_profile_record as module
+    monkeypatch.setattr(module, "validate_catalog", lambda catalog: catalog)
+
+
+def test_auto_refuses_an_unsigned_catalog(tmp_path, future_advisor):
+    write_record(record_path(tmp_path, "claude-rco-1"), record())
+    unsigned = launch_decision(tmp_path, "claude-rco-1", catalog_with("auto", "auto"), DIGEST, now=NOW)
+    assert (unsigned["action"], unsigned["fallback_event"]["reason"]) == ("native", "catalog_unsigned")
+
+
+def test_auto_refuses_an_invalid_catalog(tmp_path):
+    write_record(record_path(tmp_path, "claude-rco-1"), record())
+    broken = signed_auto_catalog()
+    broken["lanes"]["claude-rco-1"]["floor"] = 9
+    invalid = launch_decision(tmp_path, "claude-rco-1", broken, DIGEST, now=NOW)
+    assert (invalid["action"], invalid["fallback_event"]["reason"]) == ("native", "catalog_invalid")
+
+
+def test_auto_applies_only_a_valid_record(tmp_path, future_advisor):
+    write_record(record_path(tmp_path, "claude-rco-1"), record())
+    decision = launch_decision(tmp_path, "claude-rco-1", signed_auto_catalog(), DIGEST, now=NOW)
     assert decision["action"] == "apply"
     assert decision["profile"] == {"profile_id": "claude-opus-5-5-xhigh", "provider": "claude",
                                    "model": "claude-opus-5-5", "effort": "xhigh", "transition_id": "tid-1"}
@@ -151,16 +188,16 @@ def test_auto_applies_only_a_valid_record(tmp_path):
 @pytest.mark.parametrize("change", [
     dict(expires_at=iso(NOW - timedelta(seconds=1))), dict(catalog_sha256="1" * 64),
     dict(desired_profile="claude-sonnet-5-xhigh", previous_profile="claude-opus-5-5-xhigh")])
-def test_unusable_record_falls_back_to_native_with_an_event(tmp_path, change):
+def test_unusable_record_falls_back_to_native_with_an_event(tmp_path, change, future_advisor):
     write_record(record_path(tmp_path, "claude-rco-1"), record(**change))
-    decision = launch_decision(tmp_path, "claude-rco-1", catalog_with("auto", "auto"), DIGEST, now=NOW)
+    decision = launch_decision(tmp_path, "claude-rco-1", signed_auto_catalog(), DIGEST, now=NOW)
     assert decision["action"] == "native"
     assert decision["fallback_event"]["reason"] == "record_unusable"
 
 
-def test_record_filed_under_another_lane_is_not_applied(tmp_path):
+def test_record_filed_under_another_lane_is_not_applied(tmp_path, future_advisor):
     write_record(record_path(tmp_path, "claude-rco-2"), record(lane="claude-rco-1"))
-    decision = launch_decision(tmp_path, "claude-rco-2", catalog_with("auto", "auto"), DIGEST, now=NOW)
+    decision = launch_decision(tmp_path, "claude-rco-2", signed_auto_catalog(), DIGEST, now=NOW)
     assert decision["action"] == "native"
     assert decision["fallback_event"]["detail"] == "record names another lane"
 
@@ -246,7 +283,9 @@ def test_quota_binding_is_independent_of_session_binding():
     other = [dict(rows[0], account_pool="someone-else")]
     assert bind_lane(record(), CATALOG, live_processes={}, quota_rows=other)["quota_pool_binding"] == "invalid"
     unknown = [dict(rows[0], account_pool=None)]
-    assert bind_lane(record(), CATALOG, live_processes={}, quota_rows=unknown)["quota_pool_binding"] == "invalid"
+    # rco-1 NB2: the collector emits account_pool None; unknown is not different.
+    result = bind_lane(record(), CATALOG, live_processes={}, quota_rows=unknown)
+    assert (result["quota_pool_binding"], result["quota_reason"]) == ("unverified", "account_pool_unobserved")
     assert bind_lane(record(), CATALOG, live_processes={})["quota_pool_binding"] == "unverified"
 
 
@@ -365,3 +404,132 @@ def test_process_started_exactly_at_record_creation_binds():
     live = {4242: iso(NOW - timedelta(minutes=5))}
     assert bind_lane(record_, CATALOG, live_processes=live,
                      claude_observations=claude_obs(at=NOW))["session_identity"] == "valid"
+
+
+def _patch_setup(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from tools.lane_profile_catalog import load_catalog
+    from tools import lane_profile_record as rec
+    catalog, sha = load_catalog(Path(__file__).resolve().parents[2] / "configs" / "lane_profile_catalog.json")
+    now = datetime(2026, 9, 26, 16, 0, 0, tzinfo=timezone.utc)
+    iso = lambda d: d.isoformat().replace("+00:00", "Z")
+    record = {"schema": rec.SCHEMA, "lane": "fable-5", "desired_profile": "claude-opus-5-5-xhigh",
+              "previous_profile": "claude-opus-5-5-medium", "reason": "quota",
+              "requested_by": {"agent": "codex-lead-1", "agent_uuid": "0198c1e2-3a4b-7c5d-8e6f-1234567890ab", "session_id": "s1"},
+              "request_id": "r1", "transition_id": "t1", "created_at": iso(now - timedelta(minutes=10)),
+              "expires_at": iso(now + timedelta(hours=1)), "catalog_sha256": sha, "launched": None}
+    path = rec.record_path(tmp_path, "fable-5")
+    path.parent.mkdir(parents=True)
+    return rec, catalog, sha, now, record, path
+
+
+@pytest.mark.parametrize("name", ["nesting bomb", "huge integer", "offset overflow low", "offset overflow high",
+                                  "directory", "duplicate key"])
+def test_launch_decision_never_raises_on_a_hostile_record(tmp_path, name):
+    import json as _json
+    rec, catalog, sha, now, record, path = _patch_setup(tmp_path)
+    if name == "nesting bomb":
+        path.write_text("[" * 20000 + "]" * 20000, encoding="utf-8")
+    elif name == "huge integer":
+        path.write_text('{"pid": 1' + "0" * 5000 + "}", encoding="utf-8")
+    elif name == "offset overflow low":
+        path.write_text(_json.dumps(dict(record, created_at="0001-01-01T00:00:00+23:59")), encoding="utf-8")
+    elif name == "offset overflow high":
+        path.write_text(_json.dumps(dict(record, expires_at="9999-12-31T23:59:59-23:59")), encoding="utf-8")
+    elif name == "directory":
+        path.mkdir()
+    else:
+        text = _json.dumps(record).replace('"desired_profile": "claude-opus-5-5-xhigh"',
+                                           '"desired_profile": "claude-opus-5-5-xhigh", "desired_profile": "claude-opus-5-5-medium"', 1)
+        path.write_text(text, encoding="utf-8")
+    decision = rec.launch_decision(tmp_path, "fable-5", catalog, sha, now=now)
+    assert decision["action"] == "native" and decision["would_apply"] is None
+    assert decision["fallback_event"]["reason"] == "record_unusable"
+
+
+def test_binding_tolerates_hostile_evidence_rows(tmp_path):
+    from datetime import timedelta
+    from tools.lane_profile_binding import bind_lane
+    rec, catalog, sha, now, record, path = _patch_setup(tmp_path)
+    iso = lambda d: d.isoformat().replace("+00:00", "Z")
+    thread = "0198c1e2-3a4b-7c5d-8e6f-1234567890ab"
+    record["launched"] = {"native_thread_id": thread, "pid": 4242, "process_started_at": iso(now - timedelta(minutes=5)),
+                          "session_id": "s2", "run_id": "r2", "launched_at": iso(now - timedelta(minutes=4))}
+    live = {4242: iso(now - timedelta(minutes=5))}
+    hostile_obs = [{"provider": "claude", "native_thread_id": thread, "observed_at": "0001-01-01T00:00:00+23:59",
+                    "model": "claude-opus-5-5", "effort": "xhigh"}]
+    result = bind_lane(record, catalog, live_processes=live, claude_observations=hostile_obs,
+                       quota_rows=[{"provider": ["x"], "limit_id": "claude", "account_pool": ["p"]}])
+    assert result["session_identity"] == "unbound"
+    assert result["quota_pool_binding"] == "unverified"
+
+
+
+# ---- claude-rco-1 NB5 test gaps (review of e68fd365)
+
+@pytest.mark.parametrize("change,match", [
+    (dict(launched=dict(launched(), process_started_at="not-a-time")), "aware ISO"),
+    (dict(launched=dict(launched(), launched_at="2026-09-26 12:00")), "aware ISO"),
+    (dict(launched=dict(launched(), session_id=" ")), "session_id required"),
+    (dict(launched=dict(launched(), run_id="")), "run_id required"),
+    (dict(requested_by={"agent": "codex-lead-1", "agent_uuid": "NOT-A-UUID", "session_id": "s"}), "requested_by"),
+])
+def test_nb5_record_gaps_are_refused(change, match):
+    with pytest.raises(RecordError, match=match):
+        validate_record(record(**change), CATALOG, DIGEST, now=NOW)
+
+
+# ---- mutation survivors after the rco-1 robustness patch
+
+def test_read_record_requests_at_most_the_bound_plus_one_byte(tmp_path, monkeypatch):
+    path = tmp_path / "r.json"
+    path.write_bytes(b" " * (2 * 64 * 1024))
+    requested = []
+    real_open = Path.open
+
+    class Recording:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def read(self, size=-1):
+            requested.append(size)
+            return self._stream.read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._stream.close()
+
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: Recording(real_open(self, *a, **k)))
+    with pytest.raises(RecordError, match="size bound"):
+        read_record(path)
+    assert requested == [64 * 1024 + 1]
+
+
+def test_read_record_maps_an_unreadable_path_itself(tmp_path):
+    path = tmp_path / "r.json"
+    path.mkdir()
+    with pytest.raises(RecordError, match="record unreadable"):
+        read_record(path)
+
+
+def test_launch_decision_survives_an_unexpected_error(tmp_path, monkeypatch):
+    import tools.lane_profile_record as module
+    write_record(record_path(tmp_path, "claude-rco-1"), record())
+    monkeypatch.setattr(module, "validate_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    decision = launch_decision(tmp_path, "claude-rco-1", CATALOG, DIGEST, now=NOW)
+    assert decision["action"] == "native"
+    assert decision["fallback_event"] == {"reason": "record_unusable", "detail": "unexpected RuntimeError"}
+
+
+def test_shadow_never_applies_even_with_a_signed_catalog(tmp_path):
+    catalog = json.loads(json.dumps(CATALOG))
+    catalog["operator_signature"] = "operator 2026-09-26 reviewed PR"
+    for number, profile in enumerate(catalog["capacity_policy"]["profiles"].values()):
+        profile.update(approved=True, qualification_ref=f"qual-2026-09-26-{number:03d}")
+    write_record(record_path(tmp_path, "claude-rco-1"), record())
+    decision = launch_decision(tmp_path, "claude-rco-1", catalog, DIGEST, now=NOW)
+    assert decision["mode"] == "shadow"
+    assert (decision["action"], decision["profile"], decision["fallback_event"]) == ("native", None, None)
+    assert decision["would_apply"]["profile_id"] == "claude-opus-5-5-xhigh"

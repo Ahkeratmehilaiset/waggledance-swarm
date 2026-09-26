@@ -146,12 +146,17 @@ def _compare(result: dict, profile: dict, model: Any, effort: Any) -> None:
 def _bind_quota(result: dict, profile: dict, rows: list | None) -> None:
     wanted = {(profile["provider"], limit["id"]) for limit in profile["limits"]}
     matching = [r for r in (rows or []) if isinstance(r, dict)
-                and (r.get("provider"), r.get("limit_id")) in wanted]
+                and isinstance(r.get("provider"), str) and isinstance(r.get("limit_id"), str)
+                and (r["provider"], r["limit_id"]) in wanted]
     if not matching:
         return
-    pools = {r.get("account_pool") for r in matching}
+    pools = {p if isinstance(p, str) else None for p in (r.get("account_pool") for r in matching)}
+    if None in pools:
+        # The collector reports account_pool None today: unknown is not different.
+        result.update(quota_pool_binding="unverified", quota_reason="account_pool_unobserved")
+        return
     if pools != {profile["account_pool"]}:
-        result.update(quota_pool_binding="invalid", quota_reason="account_pool_differs_or_unknown")
+        result.update(quota_pool_binding="invalid", quota_reason="account_pool_differs")
         return
     if {(r["provider"], r["limit_id"]) for r in matching} != wanted:
         result.update(quota_pool_binding="unverified", quota_reason="not_every_limit_observed")

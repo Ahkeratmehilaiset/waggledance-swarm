@@ -195,12 +195,20 @@ is reported.
   - Otherwise it checks the per-lane hourly budget, the fleet hourly total and the
     lane cooldown against prior receipts.
   - Unparseable or future-dated history parks; it is never read as "no history".
-- `check_safe_boundary(state)`: the lane must be idle, with `pending_effects`
-  false, no previous-turn blocker, no open claims, and a fresh measurement at most
-  60 s old with a known current session. Unknown values block.
+  - A request whose lane or target is not a string, or whose current profile is
+    neither a string nor absent, parks as `request_malformed` and never raises.
+- `check_safe_boundary(state, lane=...)`: the measurement must name `lane` itself
+  (otherwise `lane_state_names_another_lane`). The lane must be idle, with
+  `pending_effects` false, no previous-turn blocker, no open claims, and a fresh
+  measurement at most 60 s old with a known current session. Unknown values and
+  hostile types block and never raise.
   - Every unresolved request bound to the **current** session blocks regardless of
-    age (Lead LPS-B2). A request bound to another session blocks unless it is
-    provably superseded.
+    age (Lead LPS-B2).
+  - A request bound to another session blocks unless the lane's recorded
+    `session_lineage` (session -> successor rows written by the launcher) chains from
+    that session to the current one. A `superseded` flag on the request is ignored.
+    Malformed, forked, cyclic or over-long lineage (more than 64 steps) is unknown
+    and blocks.
   - The supervisor is never a target.
 
 ## Planner (D5, PR-3a)
@@ -208,8 +216,10 @@ is reported.
 `tools/wd_lane_profile_planner.py`'s `plan_lane(...)` returns one decision,
 `wd.lane-profile-plan.v1`, and never acts:
 
-- The current profile comes only from a `valid` session binding mapped to an allowed
-  profile. The Claude context suffix is stripped. Anything else parks.
+- The current profile comes only from a `valid` session binding for the same lane,
+  mapped to an allowed profile. A binding that names another lane (or none) parks as
+  `binding_names_another_lane`, so it can never count as a shadow decision for this
+  lane. The Claude context suffix is stripped. Anything else parks.
 - Admission `KEEP` with an available bucket keeps. `PARK` or unknown parks.
 - An exhausted or limited bucket, or `ESCALATE`, looks for another allowed profile,
   strongest first. It stays within the floor, and reviewers only raise. `ESCALATE`

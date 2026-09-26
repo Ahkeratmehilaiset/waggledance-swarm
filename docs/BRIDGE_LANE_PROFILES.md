@@ -35,6 +35,12 @@ versioned wrapper. Its validator, `tools/lane_profile_catalog.py`, covers every 
 - `fleet`: `mode` (`shadow` | `approve` | `auto`), `max_relaunches_per_hour_total`
   (no lane budget may exceed it), `verify_timeout_seconds`, and the `shadow_exit` and
   `approve_exit` criteria.
+- Runtime admissibility: every profile a lane lists must pass what the advisor's
+  `_profile_checks` would demand at runtime. It must be approved with a
+  `qualification_ref`, have qualification classes, carry the lane's role and use
+  subscription billing. A lane may not mix providers or account pools, because a
+  resume keeps the conversation but cannot move it. A profile the runtime could never
+  select is refused rather than listed.
 - `catalog_ref`, `operator_signature`: the operator signs by replacing
   `operator_signature` in a reviewed PR. The validator records the signature; it does
   not verify it.
@@ -42,6 +48,13 @@ versioned wrapper. Its validator, `tools/lane_profile_catalog.py`, covers every 
 `load_catalog(path)` reads exactly that one file, bounded to 256 KiB, UTF-8 JSON
 with no NaN or Infinity. It returns the catalog and the sha256 of its bytes. Every
 later receipt carries that hash.
+
+## Effective mode
+
+`effective_mode(catalog)` returns the weaker of `fleet.mode` and
+`capacity_policy.mode`. It is the only mode a consumer may act on, so `fleet.mode` is
+not a second switch. The advisor accepts only a shadow policy, so today the effective
+mode is `shadow` whatever `fleet.mode` says.
 
 ## Transition classification
 

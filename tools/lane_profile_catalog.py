@@ -140,12 +140,41 @@ def _validate_lanes(lanes: Any, policy: dict) -> None:
             raise CatalogError(f"lane {lane} default must be an allowed profile")
         if allowed.index(spec["default"]) > floor:
             raise CatalogError(f"lane {lane} default must not be below its floor")
+        _check_runtime_admissible(lane, allowed, binding["role"], profiles)
         _positive_int(spec["max_relaunches_per_hour"], f"lane {lane} max_relaunches_per_hour", 12)
         _positive_int(spec["cooldown_seconds"], f"lane {lane} cooldown_seconds", 86_400)
         if type(spec["reviewer"]) is not bool:
             raise CatalogError(f"lane {lane} reviewer must be a boolean")
         if (lane in REVIEWER_LANES) != spec["reviewer"]:
             raise CatalogError(f"lane {lane} reviewer flag does not match the reviewer lane set")
+
+
+def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dict) -> None:
+    """Refuse statically what the advisor's _profile_checks would refuse at runtime.
+
+    A profile the advisor can never select is not a real option; listing it would
+    only make the catalog claim a choice the runtime does not have.
+    """
+    first = profiles[allowed[0]]
+    for profile_id in allowed:
+        profile = profiles[profile_id]
+        if profile.get("approved") is not True or not (
+                isinstance(profile.get("qualification_ref"), str)
+                and profile["qualification_ref"].strip()):
+            raise CatalogError(f"lane {lane} profile {profile_id} is not approved with a qualification_ref")
+        qualified_for = profile.get("qualified_for")
+        if (not isinstance(qualified_for, list) or not qualified_for
+                or not all(isinstance(q, str) and q for q in qualified_for)):
+            raise CatalogError(f"lane {lane} profile {profile_id} has no qualification classes")
+        roles = profile.get("roles")
+        if not isinstance(roles, list) or role not in roles:
+            raise CatalogError(f"lane {lane} profile {profile_id} is not qualified for role {role}")
+        if profile.get("billing") != "subscription":
+            raise CatalogError(f"lane {lane} profile {profile_id} is not subscription billing")
+        # Resume keeps the conversation; it cannot move it across providers or accounts.
+        if (profile["provider"] != first["provider"]
+                or profile["account_pool"] != first["account_pool"]):
+            raise CatalogError(f"lane {lane} mixes providers or account pools")
 
 
 def _validate_fleet(fleet: Any, lanes: dict) -> None:
@@ -198,6 +227,20 @@ def validate_catalog(catalog: Any) -> dict:
     _validate_lanes(catalog["lanes"], policy)
     _validate_fleet(catalog["fleet"], catalog["lanes"])
     return catalog
+
+
+def effective_mode(catalog: dict) -> str:
+    """The one mode consumers may act on: the weaker of fleet.mode and the policy mode.
+
+    fleet.mode is not a second switch. The advisor accepts only a shadow policy,
+    so while the capacity policy is shadow the effective mode is shadow whatever
+    fleet.mode says.
+    """
+    policy_mode = catalog["capacity_policy"]["mode"]
+    fleet_mode = catalog["fleet"]["mode"]
+    if policy_mode not in MODES or fleet_mode not in MODES:
+        return "shadow"
+    return MODES[min(MODES.index(policy_mode), MODES.index(fleet_mode))]
 
 
 def load_catalog(path: str | Path) -> tuple[dict, str]:
@@ -253,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     except (CatalogError, OSError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 2
-    print(json.dumps({"ok": True, "catalog_sha256": digest, "mode": catalog["fleet"]["mode"],
+    print(json.dumps({"ok": True, "catalog_sha256": digest, "mode": effective_mode(catalog),
                       "lanes": sorted(catalog["lanes"])}))
     return 0
 

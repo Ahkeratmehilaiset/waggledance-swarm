@@ -12,6 +12,7 @@ import pytest
 from tools.lane_profile_catalog import (
     CatalogError,
     classify_transition,
+    effective_mode,
     load_catalog,
     validate_catalog,
 )
@@ -89,6 +90,12 @@ BAD = {
     "no lane policy binding": mutate(["capacity_policy", "agents", "fable-5"], delete=True),
     "exit criterion missing": mutate(["fleet", "shadow_exit", "min_days"], delete=True),
     "verify timeout zero": mutate(["fleet", "verify_timeout_seconds"], 0),
+    "unapproved allowed profile": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "approved"], False),
+    "blank qualification_ref": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "qualification_ref"], " "),
+    "no qualification classes": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "qualified_for"], []),
+    "role not qualified": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "roles"], ["lead"]),
+    "paid api billing": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "billing"], "api"),
+    "cross account pool": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "account_pool"], "other-pool"),
 }
 
 
@@ -167,3 +174,30 @@ def test_validation_does_not_mutate_the_catalog():
     before = copy.deepcopy(catalog)
     validate_catalog(catalog)
     assert catalog == before
+
+
+@pytest.mark.parametrize("fleet_mode", ["shadow", "approve", "auto"])
+def test_fleet_mode_is_not_a_second_switch(fleet_mode):
+    # The advisor accepts only a shadow policy, so the effective mode stays shadow.
+    catalog = shipped()
+    catalog["fleet"]["mode"] = fleet_mode
+    assert effective_mode(validate_catalog(catalog)) == "shadow"
+
+
+@pytest.mark.parametrize("policy_mode,fleet_mode,expected", [
+    ("shadow", "auto", "shadow"), ("approve", "auto", "approve"),
+    ("auto", "approve", "approve"), ("auto", "auto", "auto"), ("live", "auto", "shadow")])
+def test_effective_mode_is_the_minimum(policy_mode, fleet_mode, expected):
+    catalog = {"capacity_policy": {"mode": policy_mode}, "fleet": {"mode": fleet_mode}}
+    assert effective_mode(catalog) == expected
+
+
+def test_cross_provider_lane_is_refused():
+    catalog = shipped()
+    policy = catalog["capacity_policy"]
+    policy["agents"]["fable-5"]["profiles"] = ["claude-opus-5-5-xhigh", "codex-gpt-6-sol-high"]
+    policy["profiles"]["codex-gpt-6-sol-high"]["roles"].append("fable")
+    catalog["lanes"]["fable-5"].update(allowed_profiles=["claude-opus-5-5-xhigh", "codex-gpt-6-sol-high"],
+                                       default="codex-gpt-6-sol-high")
+    with pytest.raises(CatalogError, match="mixes providers"):
+        validate_catalog(catalog)

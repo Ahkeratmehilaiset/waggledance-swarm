@@ -2704,6 +2704,11 @@ if ($cliName -ieq 'claude.cmd') {
   }
   if ($nativeLead) {
     $launchArguments += @('--cd', $worktree, '--ask-for-approval', 'never', '--sandbox', 'danger-full-access')
+    # Codex 0.157+ auto-starts a shared app-server daemon and refuses to do
+    # so from an elevated terminal, exiting 1 before the TUI opens. Operator
+    # lanes run elevated, so keep the interactive CLI in-process. Codex
+    # ignores an unknown [features] key, so older CLIs are unaffected.
+    $launchArguments += @('-c', 'features.daemon_auto_start=false')
   }
   if ($nativeLead -and $nativeResume.initial_context_delivered) {
     $startupPrompt = $continuationPrompt

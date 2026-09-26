@@ -93,8 +93,8 @@ def _bind_claude(result: dict, launched: dict, profile: dict, observations: list
         result.update(session_identity="unbound", session_reason="no_observation_since_launch")
         return
     observed_at, newest = max(dated, key=lambda pair: pair[0])
-    started = _utc(launched["process_started_at"])
-    if observed_at is None or started is None or observed_at < started:
+    boundary = _launch_boundary(launched)
+    if boundary is None or observed_at < boundary:
         result.update(session_identity="unbound", session_reason="no_observation_since_launch")
         return
     result.update(session_identity="valid", session_reason="thread_and_process_match")
@@ -105,13 +105,26 @@ def _bind_codex(result: dict, launched: dict, profile: dict, native: dict | None
     if not isinstance(native, dict) or native.get("native_thread_id") != launched["native_thread_id"]:
         result.update(session_identity="unbound", session_reason="no_rollout_for_recorded_thread")
         return
-    turn, started = _utc(native.get("observed_at")), _utc(launched["process_started_at"])
-    if turn is None or started is None or turn <= started:
+    turn, boundary = _utc(native.get("observed_at")), _launch_boundary(launched)
+    if turn is None or boundary is None or turn <= boundary:
         # read_native_codex reports only the latest turn; it must postdate the new process.
         result.update(session_identity="unbound", session_reason="no_turn_since_launch")
         return
     result.update(session_identity="valid", session_reason="thread_and_process_match")
     _compare(result, profile, native.get("model"), native.get("effort"))
+
+
+def _launch_boundary(launched: dict):
+    """Evidence counts only from the moment the launcher recorded the target profile.
+
+    A process can start before the launcher records and applies its profile, so
+    the process start time is not a freshness boundary; launched_at is. An
+    inverted pair (launched before the process started) yields no boundary.
+    """
+    started, recorded = _utc(launched["process_started_at"]), _utc(launched["launched_at"])
+    if started is None or recorded is None or recorded < started:
+        return None
+    return recorded
 
 
 def _compare(result: dict, profile: dict, model: Any, effort: Any) -> None:

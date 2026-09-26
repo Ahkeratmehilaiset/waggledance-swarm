@@ -63,7 +63,7 @@ def record_path(runtime_root: str | Path, lane: str) -> Path:
     return Path(runtime_root) / "lane_profiles" / f"{lane}.json"
 
 
-def _validate_launched(launched: Any) -> None:
+def _validate_launched(launched: Any, now: datetime) -> None:
     if launched is None:
         return
     if not isinstance(launched, dict) or set(launched) != set(LAUNCHED):
@@ -78,6 +78,11 @@ def _validate_launched(launched: Any) -> None:
     for key in ("session_id", "run_id"):
         if not _text(launched[key], 256):
             raise RecordError(f"launched.{key} required")
+    started, recorded = _utc(launched["process_started_at"]), _utc(launched["launched_at"])
+    if recorded < started:
+        raise RecordError("launched.launched_at precedes the process start")
+    if recorded > now:
+        raise RecordError("launched.launched_at is in the future")
 
 
 def validate_record(record: Any, catalog: dict, catalog_sha256: str, *,
@@ -119,7 +124,7 @@ def validate_record(record: Any, catalog: dict, catalog_sha256: str, *,
     verdict = classify_transition(catalog, lane, record["previous_profile"], record["desired_profile"])
     if verdict["verdict"] == "park":
         raise RecordError(f"transition requires an operator ack: {verdict['reason']}")
-    _validate_launched(record["launched"])
+    _validate_launched(record["launched"], now)
     return record
 
 

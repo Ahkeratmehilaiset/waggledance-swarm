@@ -128,9 +128,13 @@ and never merges them:
   live with the recorded creation time, within 2 s, or it is `invalid` (dead, or pid
   reused).
   - Claude: the capacity observation's `native_thread_id` must equal the recorded
-    thread, observed at or after the launch.
+    thread, observed at or after `launched_at`.
   - Codex: the `read_native_codex` result must name the recorded thread, with a turn
-    strictly after the launch.
+    strictly after `launched_at`.
+  - The freshness boundary is `launched_at`, the moment the launcher recorded the
+    target profile, not the process start. A process can exist before its profile is
+    applied. A record whose `launched_at` precedes `process_started_at`, or lies in the
+    future, is refused, and an inverted pair binds nothing.
   - Missing evidence is `unbound`, never valid.
 - **`quota_pool_binding`** (`valid` | `unverified` | `invalid`). Every one of the
   profile's `(provider, limit id)` quota rows must be present, all with the profile's

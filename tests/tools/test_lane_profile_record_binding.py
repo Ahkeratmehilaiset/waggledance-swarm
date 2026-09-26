@@ -272,3 +272,53 @@ def test_quota_binding_needs_every_limit_of_the_profile():
     assert (result["quota_pool_binding"], result["quota_reason"]) == ("unverified", "not_every_limit_observed")
     both = one + [dict(one[0], limit_id="codex-bonus")]
     assert bind_lane(rec, catalog, live_processes={}, quota_rows=both)["quota_pool_binding"] == "valid"
+
+
+def gap_launched() -> dict:
+    """Lead PR1737-B1 reproducer: process started 11:50, launcher recorded 11:59."""
+    rec = launched(started=NOW - timedelta(minutes=10))
+    rec["launched_at"] = iso(NOW - timedelta(minutes=1))
+    return rec
+
+
+GAP_LIVE = {4242: iso(NOW - timedelta(minutes=10))}
+
+
+def test_claude_evidence_between_process_start_and_launch_is_not_valid():
+    rec = record(launched=gap_launched())
+    mid = claude_obs(at=NOW - timedelta(minutes=5))
+    result = bind_lane(rec, CATALOG, live_processes=GAP_LIVE, claude_observations=mid)
+    assert (result["session_identity"], result["session_reason"]) == ("unbound", "no_observation_since_launch")
+    assert result["profile_observed"] == "unverified"
+    after = claude_obs(at=NOW)
+    assert bind_lane(rec, CATALOG, live_processes=GAP_LIVE, claude_observations=after)["session_identity"] == "valid"
+
+
+def test_codex_turn_between_process_start_and_launch_is_not_valid():
+    rec = dict(codex_record(), launched=gap_launched())
+    mid = {"native_thread_id": THREAD, "observed_at": iso(NOW - timedelta(minutes=5)),
+           "model": "gpt-6-sol", "effort": "high"}
+    result = bind_lane(rec, CATALOG, live_processes=GAP_LIVE, codex_native=mid)
+    assert (result["session_identity"], result["session_reason"]) == ("unbound", "no_turn_since_launch")
+    at_launch = dict(mid, observed_at=gap_launched()["launched_at"])
+    assert bind_lane(rec, CATALOG, live_processes=GAP_LIVE, codex_native=at_launch)["session_identity"] == "unbound"
+    after = dict(mid, observed_at=iso(NOW))
+    assert bind_lane(rec, CATALOG, live_processes=GAP_LIVE, codex_native=after)["session_identity"] == "valid"
+
+
+def test_inverted_launch_timestamps_bind_nothing():
+    rec = launched(started=NOW - timedelta(minutes=1))
+    rec["launched_at"] = iso(NOW - timedelta(minutes=5))
+    result = bind_lane(record(launched=rec), CATALOG, live_processes=LIVE, claude_observations=claude_obs())
+    assert result["session_identity"] == "unbound"
+
+
+@pytest.mark.parametrize("launched_at,match", [
+    (NOW - timedelta(minutes=20), "precedes the process start"),
+    (NOW + timedelta(minutes=1), "in the future"),
+])
+def test_record_refuses_bad_launch_ordering(launched_at, match):
+    rec = gap_launched()
+    rec["launched_at"] = iso(launched_at)
+    with pytest.raises(RecordError, match=match):
+        validate_record(record(launched=rec), CATALOG, DIGEST, now=NOW)

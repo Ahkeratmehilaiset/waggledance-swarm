@@ -328,6 +328,36 @@ function ConvertTo-WdToolsNativeArgument {
     return '"' + $escaped + '"'
 }
 
+function Invoke-WdLaneProfileShadowRead {
+    # Lane profile switching PR-4: read the D2 lane profile record through the
+    # pinned bridge package and log what a profile switch would do. A read, never
+    # a switch: this returns nothing the caller uses, it never changes the model,
+    # effort or argv, and any failure launches native exactly as before.
+    param(
+        [Parameter(Mandatory)] [string] $BundleRoot,
+        [Parameter(Mandatory)] [string] $RuntimeRoot,
+        [Parameter(Mandatory)] [string] $Lane,
+        [Parameter(Mandatory)] [string] $Launcher,
+        [string] $Model = '',
+        [string] $Effort = ''
+    )
+    # Windows PowerShell 5.1 drops an empty native argument; never send one.
+    if ([string]::IsNullOrWhiteSpace($Model)) { $Model = 'unset' }
+    if ([string]::IsNullOrWhiteSpace($Effort)) { $Effort = 'unset' }
+    try {
+        $probeOutput = @(Invoke-WdBridgePythonTool -BundleRoot $BundleRoot `
+            -Tool 'tools/lane_profile_launch_probe.py' -ToolArguments @(
+                '--runtime-root', $RuntimeRoot, '--lane', $Lane, '--launcher', $Launcher,
+                '--argv-model', $Model, '--argv-effort', $Effort))
+        $probeLine = [string]($probeOutput | Select-Object -Last 1)
+        if ($probeLine.Length -gt 600) { $probeLine = $probeLine.Substring(0, 600) + '...' }
+        Write-Host ('  lane profile (shadow read, argv unchanged): {0}' -f $probeLine)
+    } catch {
+        Write-Host ('  lane profile (shadow read) unavailable, launching native: {0}' -f
+            $_.Exception.GetType().Name)
+    }
+}
+
 function Get-WdNativeToolsArguments {
     param($Saved, [string] $Worktree, [string] $Model, [string] $Effort,
         [string] $Prompt, [string] $ImagePath, [string[]] $WritableRoots, [bool] $NetworkAccess)
@@ -2287,6 +2317,12 @@ Assert-ToolsBootstrapIntegrity `
     -BootstrapRoot $bootstrapRoot `
     -ConfigPath $configFull `
     -LoadedConfigHash $loadedConfigHash
+
+if ($null -ne $bridgeCodeContext -and -not $ValidateOnly) {
+    Invoke-WdLaneProfileShadowRead -BundleRoot $PSScriptRoot -RuntimeRoot $runtimeRoot `
+        -Lane $agent -Launcher 'start-wd-tools-consumer' -Model ([string]$model) `
+        -Effort ([string]$reasoningEffort)
+}
 
 if ($conversationSurface -cin @('local_window','native_terminal')) {
     if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {

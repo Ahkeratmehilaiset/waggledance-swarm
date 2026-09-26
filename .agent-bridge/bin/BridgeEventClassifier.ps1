@@ -130,6 +130,16 @@ function Test-BridgeRequestLikeEvent {
         return $true
     }
 
+    # A negative review remains a substantive reply / gate signal, not an
+    # implicit new assignment. An explicit new request_id above takes priority.
+    if ($Event.PSObject.Properties['in_reply_to_request_id'] -and
+        $null -ne $Event.in_reply_to_request_id) { return $false }
+    if ($Event.PSObject.Properties['payload'] -and $null -ne $Event.payload) {
+        $payload = $Event.payload
+        if ($payload.PSObject.Properties['in_reply_to_request_id'] -and
+            $null -ne $payload.in_reply_to_request_id) { return $false }
+    }
+
     $requestTypes = @('message','handoff','blocked','finding','decision','done','wake_request')
     $requestStatuses = @(
         'request','ready','blocked','open','proposal',

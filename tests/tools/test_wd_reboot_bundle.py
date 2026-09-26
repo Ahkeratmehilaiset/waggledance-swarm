@@ -827,6 +827,34 @@ foreach ($name in @('Resolve-NormalizedPath','Assert-LanePathWithoutReparse','Re
  . ([scriptblock]::Create($fn.Extent.Text))
 }}
 $lane=[pscustomobject]@{{conversation_config_baseline=[pscustomobject]@{{path='{config}';security_sha256='{security_digest}'}}}}
+# This fixture must exercise project-config ancestry without inheriting a real
+# user-home .codex/config.toml above pytest's temporary directory.  The
+# production function remains unchanged: the test-only shim hides only such
+# external ancestor config paths and delegates every normal Test-Path call.
+$fixtureRoot=[IO.Path]::GetFullPath('{tmp_path}')
+function Test-Path {{
+ [CmdletBinding(DefaultParameterSetName='Path')]
+ param(
+  [Parameter(ParameterSetName='Path',Position=0)][string[]]$Path,
+  [Parameter(ParameterSetName='LiteralPath')][string[]]$LiteralPath,
+  [ValidateSet('Any','Container','Leaf')][string]$PathType
+ )
+ $candidates=if($PSBoundParameters.ContainsKey('LiteralPath')){{$LiteralPath}}else{{$Path}}
+ foreach($candidate in @($candidates)){{
+  if(-not $candidate){{continue}}
+  $full=[IO.Path]::GetFullPath($candidate)
+  $parent=[IO.Path]::GetDirectoryName($full)
+  $isCodexConfig=([IO.Path]::GetFileName($full) -ceq 'config.toml' -and
+    [IO.Path]::GetFileName($parent) -ceq '.codex')
+  $insideFixture=($full -ceq $fixtureRoot -or
+    $full.StartsWith($fixtureRoot.TrimEnd('\\')+'\\',[StringComparison]::OrdinalIgnoreCase))
+  if($isCodexConfig -and -not $insideFixture){{return $false}}
+ }}
+ $forward=@{{}}
+ if($PSBoundParameters.ContainsKey('LiteralPath')){{$forward['LiteralPath']=$LiteralPath}}else{{$forward['Path']=$Path}}
+ if($PSBoundParameters.ContainsKey('PathType')){{$forward['PathType']=$PathType}}
+ return Microsoft.PowerShell.Management\\Test-Path @forward
+}}
 $ok=Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}'
 $original=[IO.File]::ReadAllText('{config}')
 [IO.File]::AppendAllText('{config}', '[notice]'+"`n"+'hidden = true'+"`n"+'[tui.model_availability_nux]'+"`n"+'count = 999'+"`n")
@@ -841,13 +869,17 @@ $lane.conversation_config_baseline.security_sha256=Get-WdCodexSecurityFingerprin
 try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}' | Out-Null }} catch {{ $blocked++ }}
 [IO.File]::WriteAllText('{config}', 'approval_policy = "never"'+[Environment]::NewLine+'sandbox_mode = "danger-full-access"')
 $lane.conversation_config_baseline.security_sha256=Get-WdCodexSecurityFingerprint -Text (Read-Utf8LaneSnapshot -Path '{config}').Text
+[void][IO.Directory]::CreateDirectory('{tmp_path / '.codex'}')
+[IO.File]::WriteAllText('{tmp_path / '.codex/config.toml'}', 'sandbox_mode = "read-only"')
+try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}' | Out-Null }} catch {{ $blocked++ }}
+[IO.File]::Delete('{tmp_path / '.codex/config.toml'}')
 [void][IO.Directory]::CreateDirectory('{worktree / '.codex'}')
 [IO.File]::WriteAllText('{worktree / '.codex/config.toml'}', 'sandbox_mode = "read-only"')
 try {{ Assert-WdLeadInteractivePostureBaseline -Lane $lane -Worktree '{worktree}' -UserConfigPath '{config}' | Out-Null }} catch {{ $blocked++ }}
 [pscustomobject]@{{hash=$ok.sha256;sandbox=$ok.sandbox_mode;approval=$ok.approval_policy;blocked=$blocked;ui_accepted=($ui.security_sha256 -ceq $ok.security_sha256 -and $ui.sha256 -cne $ok.sha256)}} | ConvertTo-Json -Compress
 """, executable=ps, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout) == {"hash": digest, "sandbox": "danger-full-access", "approval": "never", "blocked": 4, "ui_accepted": True}
+    assert json.loads(result.stdout) == {"hash": digest, "sandbox": "danger-full-access", "approval": "never", "blocked": 5, "ui_accepted": True}
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)

@@ -219,6 +219,53 @@ is reported.
   exhaustion there has no Claude escape, and the planner says so by parking.
 - In `shadow` the strongest result is `would_relaunch`.
 
+## Relaunch executor (D4 steps 3-9, PR-3b)
+
+`tools/wd_lane_relaunch_executor.py`'s `Executor(...).run()` drives one transition
+through an injected `Ports` object. There is no production implementation and
+nothing calls it; PR-4 wires it, and that is (a)-class.
+
+**Journal.** It uses the existing `RecoveryStore`, not a second journal. A relaunch
+replaces the process, so it does not use the same-process `advance()` driver.
+Instead it journals both epochs:
+- the source epoch is the measured pid, creation time, session and thread, measured
+  before the stop;
+- the target epoch is bound once, only from the launcher-written D2 `launched` facts,
+  and only when execution evidence (pin `manifest_and_launcher_verified`, pid,
+  creation time, native conversation id) agrees and a post-launch observation shows
+  the target model and effort;
+- a caller-supplied pid is never accepted.
+
+**Order.** Fail closed at every step:
+1. `check_request`.
+2. Mode gate: shadow gives `would_relaunch` and touches nothing. approve fails closed.
+   auto needs a signed catalog. Lead's own lane runs only through the `supervisor`
+   executor.
+3. `check_safe_boundary`, and the current profile verified from the measured process
+   and observations. The request's or record's claim is never trusted (rco-2 residual B).
+4. Claim the record, the transition lock and the readiness path with a lease of at
+   least 2 x verify_timeout + 600 s, re-measure, and abort if anything changed.
+5. The new process's launch preconditions are checked before the old one stops.
+6. Continuity: provider resume, or a fresh checkpoint.
+7. Journal planned -> quiesced (record written) -> checkpointed.
+8. Stop only the verified source instance, then apply_pending and launch.
+9. Verify within `verify_timeout_seconds`. Otherwise stop the stray target by its
+   recorded identity and make exactly one rollback. The rollback record is
+   previous -> previous, a restore and never a lowering.
+10. Receipt, then release the claim.
+
+**Outcomes** (`decision/profile_transition`, schema `wd.lane-profile-transition-receipt.v1`):
+- `applied` and `rolled_back` end the journal at `resumed`, which frees the quota
+  reservation.
+- A failed source stop ends at `cancelled_before_apply`.
+- A failed rollback leaves the lane stopped, the journal at `apply_pending` and the
+  reservation held. Only an operator reconciles it (`operator_required`).
+- A second transition on a reserved quota bucket is refused by the journal (`parked`).
+
+**Record I/O** (rco-2 residual A) refuses a record path whose file or any existing
+ancestor is a symlink or junction. A junctioned `lane_profiles` directory cannot
+redirect reads or writes outside the runtime root.
+
 ## Governance
 
 The catalog, its floors and any change to `fleet.mode` are (a)-class, needing an

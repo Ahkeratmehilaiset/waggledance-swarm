@@ -862,6 +862,30 @@ def test_a_pinned_spawn_refuses_forced_launch_input_mutation(tmp_path, monkeypat
     assert launched == []
 
 
+def test_an_equal_hash_impostor_cannot_claim_pinned_child_identity(tmp_path):
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"good cli")
+    issued = transport.pinned_spawn(
+        binary, hashlib.sha256(binary.read_bytes()).hexdigest())
+    child = FakeAppServer()
+
+    class Impostor:
+        def __hash__(self):
+            return hash(issued)
+
+        def __eq__(self, other):
+            return other is issued
+
+        def __call__(self):
+            return child
+
+    result = transport.observe_owned_app_server(Impostor(), client_info=CLIENT)
+
+    assert result["child_identity_verified"] is False
+    assert result["file_digest_verified"] is False
+    assert result["observed"] == "child_returned_by_supplied_spawn"
+
+
 def test_only_a_pinned_spawn_reports_a_verified_child(tmp_path, monkeypatch):
     """pinned_spawn binds the digest and the start into one decision.
 

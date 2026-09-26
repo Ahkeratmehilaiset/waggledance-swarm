@@ -150,10 +150,32 @@ def default_spawn(executable: Path, arguments: Sequence[str]) -> Any:
 #: writable cells, so neither can support an identity claim.  Weak keys keep no
 #: spawn alive; the copied tuple detects even forced mutation of object slots.
 _PinnedState = tuple[str, str, tuple[str, ...]]
-_PINNED_SPAWNS: weakref.WeakKeyDictionary[Callable[[], Any], _PinnedState] = (
-    weakref.WeakKeyDictionary()
-)
+_PinnedRegistration = tuple[weakref.ReferenceType[Any], _PinnedState]
+_PINNED_SPAWNS: dict[int, _PinnedRegistration] = {}
 _PINNED_SPAWNS_LOCK = threading.Lock()
+
+
+def _registered_pinned_state(spawn: Callable[[], Any]) -> _PinnedState | None:
+    """Return issuance state only for this exact live object, never an equal one."""
+    with _PINNED_SPAWNS_LOCK:
+        registration = _PINNED_SPAWNS.get(id(spawn))
+        if registration is None or registration[0]() is not spawn:
+            return None
+        return registration[1]
+
+
+def _register_pinned_spawn(spawn: "_PinnedSpawn") -> None:
+    key = id(spawn)
+
+    def discard(reference: weakref.ReferenceType[Any]) -> None:
+        with _PINNED_SPAWNS_LOCK:
+            current = _PINNED_SPAWNS.get(key)
+            if current is not None and current[0] is reference:
+                del _PINNED_SPAWNS[key]
+
+    reference = weakref.ref(spawn, discard)
+    with _PINNED_SPAWNS_LOCK:
+        _PINNED_SPAWNS[key] = (reference, spawn._state())
 
 
 class _PinnedSpawn:
@@ -169,8 +191,7 @@ class _PinnedSpawn:
         return (str(self._path), self._expected_sha256, self._argv)
 
     def __call__(self) -> Any:
-        with _PINNED_SPAWNS_LOCK:
-            issued = _PINNED_SPAWNS.get(self)
+        issued = _registered_pinned_state(self)
         if issued is None or self._state() != issued:
             raise TransportRefused("pinned spawn launch inputs changed after issuance")
         verify_executable(self._path, self._expected_sha256)
@@ -197,8 +218,7 @@ def pinned_spawn(executable: Path | str, expected_sha256: str,
     argv = tuple(str(argument) for argument in arguments)
 
     spawn = _PinnedSpawn(path, expected_sha256, argv)
-    with _PINNED_SPAWNS_LOCK:
-        _PINNED_SPAWNS[spawn] = spawn._state()
+    _register_pinned_spawn(spawn)
     return spawn
 
 
@@ -551,13 +571,7 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
     then says the child merely came from a supplied callback, rather than
     asserting a provenance this function cannot establish.
     """
-    try:
-        with _PINNED_SPAWNS_LOCK:
-            pinned_state = _PINNED_SPAWNS.get(spawn)
-    except TypeError:
-        # Some callable objects cannot be weak-referenced.  They remain valid
-        # injected spawners, but cannot be a module-issued pinned spawn.
-        pinned_state = None
+    pinned_state = _registered_pinned_state(spawn)
     pinned_digest = pinned_state[1] if pinned_state is not None else None
     verification: dict[str, Any] = {
         "file_digest_verified": False,

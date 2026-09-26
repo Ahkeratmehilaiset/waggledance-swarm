@@ -391,6 +391,8 @@ class Executor:
                     marker = None
                 key = "stop_intent_at" if row["phase"] == "checkpointed" else "source_stopped_at"
                 stamp = marker.get(key) if isinstance(marker, dict) else None
+                if row["tid"] not in stops and isinstance(marker, dict) and key in marker and _utc(stamp) is None:
+                    return None  # a stop marker that is present but unusable: unknown, never silently dropped
                 if (row["tid"] not in stops and _utc(stamp) is not None
                         and isinstance(binding.get("agent_id"), str)):
                     stops[row["tid"]] = {"lane": binding["agent_id"], "ts_utc": stamp, "outcome": "stop_attempted"}

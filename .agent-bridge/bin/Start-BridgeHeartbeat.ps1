@@ -27,6 +27,7 @@ param(
     [int] $MaxIterations = 0,
     [int] $MaxIdleWithoutClaimIterations = 5,
     [string] $RuntimeRoot = '',
+    [string] $SessionId = '',
     [string] $Role = '',
     [string] $AgentUuid = '',
     [string[]] $Capabilities = @()
@@ -34,6 +35,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# B7: the one shared claim-lease / session-heartbeat implementation.
+# Every lease writer goes through it, so there is a single CAS to review.
+. (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
 
 if ($env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED -eq '0') {
     Write-Output "Start-BridgeHeartbeat: disabled via WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0; exiting."
@@ -84,11 +89,26 @@ function Get-AgentActiveClaimCount {
 }
 
 $sleepMs = if ($IntervalMs -gt 0) { $IntervalMs } else { [Math]::Max(1, $IntervalSeconds) * 1000 }
+$beatIntervalSeconds = [Math]::Max(1, [int][Math]::Round($sleepMs / 1000.0))
+# B7: a session heartbeat must survive a few missed beats but not a dead
+# session, so the TTL is a small multiple of the beat interval.
+$sessionTtlSeconds = [Math]::Max(60, $beatIntervalSeconds * 3)
+$ownerIdentity = Get-BridgeOwnerIdentity -SessionId $SessionId
+if ($null -eq $ownerIdentity) {
+    Write-Warning (
+        'Start-BridgeHeartbeat: no owner identity (session id plus ' +
+        'AGENT_BRIDGE_OWNER_TOKEN); claims cannot be kept alive by this ' +
+        'helper. Start the session via Start-AgentBridgeSession.ps1.')
+}
 $iteration = 0
 $idleWithoutClaimIterations = 0
 while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     $iteration++
-    Start-Sleep -Milliseconds $sleepMs
+    # B7: beat immediately on the first iteration. Sleeping first left a
+    # freshly created claim unprotected for a whole interval.
+    if ($iteration -gt 1) {
+        Start-Sleep -Milliseconds $sleepMs
+    }
     $activeClaimCount = Get-AgentActiveClaimCount -Root $bridgeRoot -AgentName $Agent
     if ($activeClaimCount -le 0) {
         $idleWithoutClaimIterations++
@@ -104,6 +124,16 @@ while ($MaxIterations -le 0 -or $iteration -lt $MaxIterations) {
     }
 
     $idleWithoutClaimIterations = 0
+    # B7: durable session heartbeat first, then the claim lease, both
+    # atomic and independent of the emit below. Send-Liveness bumps the
+    # lease through the same shared helper, so a failing event writer
+    # cannot stop the keepalive.
+    if ($null -ne $ownerIdentity) {
+        [void](Write-BridgeSessionHeartbeat -Root $bridgeRoot -AgentName $Agent `
+            -Identity $ownerIdentity -TtlSeconds $sessionTtlSeconds)
+        [void](Update-BridgeClaimLease -Root $bridgeRoot -AgentName $Agent `
+            -Identity $ownerIdentity)
+    }
     try {
         & $sendLiveness `
             -Agent $Agent `

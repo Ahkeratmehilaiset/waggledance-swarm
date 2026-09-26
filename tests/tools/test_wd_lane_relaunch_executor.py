@@ -49,6 +49,7 @@ class FakePorts:
                  principal="codex-lead-1", resume_ok=True):
         self.clock = NOW
         self.principal, self.requester, self.auth_ok = principal, None, True
+        self.request_ts, self.signature_ok, self.signature_checks = None, True, []
         self.resume_ok, self.resumed = resume_ok, []
         self.extra_processes: list = []
         self.lane = lane
@@ -89,7 +90,15 @@ class FakePorts:
         lead = self.principal == "codex-lead-1"
         executor = {"principal": self.principal, "agent_uuid": LEAD_UUID if lead else "sup-uuid",
                     "session_id": "lead-S" if lead else "sup-S", "verification_ref": "auth-1"}
-        return {"executor": executor, "requester": dict(self.requester or claimed or {})}
+        requester = dict(self.requester or claimed or {})
+        requester.setdefault("request_ts_utc", self.request_ts or iso(self.clock - timedelta(seconds=30)))
+        return {"executor": executor, "requester": requester}
+
+    def verify_catalog_signature(self, catalog_sha256, operator_signature):
+        self.signature_checks.append((catalog_sha256, operator_signature))
+        if isinstance(self.signature_ok, Exception):
+            raise self.signature_ok
+        return self.signature_ok
 
     def processes(self, lane):
         # Built from evidence() so a test that forges evidence forges every enumeration.
@@ -1188,3 +1197,111 @@ def test_r7_after_a_raising_stop_only_the_single_exact_source_cancels(tmp_path, 
     payload, store, ex = run(tmp_path, ports)
     assert payload["reasons"] == ["executor_exception", "TimeoutError", "operator_required"]
     assert phase(store, ex.tid) == "checkpointed"
+
+
+# ---------------------------------------------------------------- rco-2 F2/F3: stop intent counts
+
+def test_f2_a_crash_between_the_stop_and_apply_pending_still_counts(tmp_path, auto_mode, monkeypatch):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    real_move = store.move
+
+    def crashing_move(tid, expected, phase, **kwargs):
+        if phase == "apply_pending":
+            raise OSError("host lost power")
+        return real_move(tid, expected, phase, **kwargs)
+    monkeypatch.setattr(store, "move", crashing_move)
+    ports = FakePorts()
+    first, ex = run_with_store(tmp_path, ports, store)
+    assert first["outcome"] == "failed" and ports.stops == [(100, _SOURCE_STARTED)]
+    assert phase(store, ex.tid) == "checkpointed"
+    assert [e["lane"] for e in ex._journal_history()] == ["claude-rco-1"]
+
+
+def test_f3_a_transition_held_after_a_raising_stop_counts(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    first, ex = run_with_store(tmp_path, _StopKillsThenRaises(), store)
+    assert "operator_required" in first["reasons"] and phase(store, ex.tid) == "checkpointed"
+    assert [(e["lane"], e["outcome"]) for e in ex._journal_history()] == [("claude-rco-1", "stop_attempted")]
+
+
+def test_f3_a_raising_stop_that_left_the_source_alone_and_alive_is_not_counted(tmp_path, auto_mode):
+    class _StopRaisesSourceAlive(FakePorts):
+        def stop(self, lane, pid, started_at):
+            self.stops.append((pid, started_at))
+            raise TimeoutError("exit not confirmed")
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    first, ex = run_with_store(tmp_path, _StopRaisesSourceAlive(), store)
+    assert phase(store, ex.tid) == "cancelled_before_apply"
+    assert ex._journal_history() == []
+
+
+def test_f2_the_stop_intent_is_journaled_before_the_stop(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    seen = {}
+
+    class _Watch(FakePorts):
+        def stop(self, lane, pid, started_at):
+            with store.connect() as db:
+                seen["rows"] = [json.loads(r[0]) for r in db.execute(
+                    "SELECT reason FROM journal WHERE phase='checkpointed' AND reason IS NOT NULL")]
+            return super().stop(lane, pid, started_at)
+    payload, _ = run_with_store(tmp_path, _Watch(), store)
+    assert payload["outcome"] == "applied"
+    assert seen["rows"] == [{"stop_intent_at": iso(NOW)}]
+
+
+# ---------------------------------------------------------------- rco-2 F4: request age
+
+@pytest.mark.parametrize("stamp,reason", [
+    ("", "request_time_unauthenticated"),
+    ("yesterday", "request_time_unauthenticated"),
+    (iso(NOW - timedelta(seconds=901)), "request_stale_or_from_the_future"),
+    (iso(NOW + timedelta(seconds=5)), "request_stale_or_from_the_future"),
+])
+def test_f4_request_age_is_authenticated_and_bounded(tmp_path, auto_mode, stamp, reason):
+    ports = FakePorts()
+    ports.request_ts = stamp or None
+    if stamp == "":
+        original = ports.authenticate
+        ports.authenticate = lambda request: {**original(request),
+                                              "requester": {k: v for k, v in original(request)["requester"].items()
+                                                            if k != "request_ts_utc"}}
+    payload, _, _ = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("parked", [reason])
+    assert ports.claims == [] and ports.stops == []
+
+
+@pytest.mark.parametrize("age", [0, 900])
+def test_f4_a_request_within_the_age_bound_proceeds(tmp_path, auto_mode, age):
+    ports = FakePorts()
+    ports.request_ts = iso(NOW - timedelta(seconds=age))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "applied"
+
+
+def test_f4_the_request_time_comes_from_the_port_not_the_request(tmp_path, auto_mode):
+    req = request()
+    req["requested_by"] = dict(req["requested_by"], request_ts_utc=iso(NOW))  # a fresh label is ignored
+    ports = FakePorts()
+    ports.request_ts = iso(NOW - timedelta(hours=2))
+    ports.requester = {k: v for k, v in request()["requested_by"].items()}
+    payload, _, _ = run(tmp_path, ports, req=req)
+    assert payload["reasons"] == ["request_stale_or_from_the_future"]
+
+
+# ---------------------------------------------------------------- rco-2 F5: catalog signature
+
+@pytest.mark.parametrize("answer", [False, None, "yes", 1, PermissionError("no key")], ids=repr)
+def test_f5_auto_needs_a_verified_catalog_signature(tmp_path, auto_mode, answer):
+    ports = FakePorts()
+    ports.signature_ok = answer
+    payload, _, _ = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("parked", ["catalog_signature_unverified"])
+    assert ports.claims == [] and ports.stops == []
+
+
+def test_f5_the_signature_is_checked_over_this_exact_catalog(tmp_path, auto_mode):
+    ports = FakePorts()
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "applied"
+    assert ports.signature_checks == [(DIGEST, "operator 2026-09-26 reviewed PR")]

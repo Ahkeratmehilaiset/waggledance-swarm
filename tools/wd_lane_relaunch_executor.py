@@ -67,6 +67,7 @@ SUPERVISOR = "supervisor"
 TASK_ID = "lane-profile-switching"
 VERIFIED_PIN = "manifest_and_launcher_verified"
 IDENTITY_KEYS = ("agent", "agent_uuid", "session_id")
+REQUEST_MAX_AGE_SECONDS = 900  # a request older than this is stale and must be re-issued (rco-2 F4)
 
 
 class Ports(Protocol):
@@ -85,6 +86,7 @@ class Ports(Protocol):
     def stop(self, lane: str, pid: int, started_at: str) -> bool: ...
     def launch(self, lane: str, profile: dict | None) -> None: ...
     def resume_lane(self, lane: str, epoch: dict, checkpoint: str) -> bool: ...
+    def verify_catalog_signature(self, catalog_sha256: str, operator_signature: str) -> bool: ...
     def read_record(self, lane: str) -> dict: ...
     def write_record(self, lane: str, record: dict) -> None: ...
     def emit(self, event: dict) -> None: ...
@@ -93,14 +95,22 @@ class Ports(Protocol):
 # Port contracts (production implementations arrive with the runtime wiring):
 #
 # authenticate(request) -> {"executor": {"principal", "agent_uuid", "session_id",
-#     "verification_ref"}, "requester": {"agent", "agent_uuid", "session_id"}} or None.
-#     The port authenticates BOTH the process running this executor and the origin
-#     of the request event; the executor never trusts a label it was handed.
-# processes(lane) -> every live process attributed to the lane, each
-#     {"pid", "process_started_at", "pin_status", "native_conversation_id"}, or None
-#     when enumeration failed. Late targets must appear here too.
+#     "verification_ref"}, "requester": {"agent", "agent_uuid", "session_id",
+#     "request_ts_utc"}} or None. The port authenticates BOTH the process running
+#     this executor and the origin of the request event, including when that event
+#     was written; the executor never trusts a label it was handed.
+# processes(lane) -> the lane's attested NATIVE SESSION processes: the provider CLI
+#     process(es) whose execution-evidence ancestry names this lane's session, each
+#     {"pid", "process_started_at", "pin_status", "native_conversation_id"}; None
+#     when enumeration failed. Launcher, host shell and MCP/tool child processes are
+#     not session processes and are not listed. Late targets must appear here too.
+#     Every stop requires exactly one row, so an attribution that also lists such
+#     children fails closed and never proceeds (rco-2 F1).
 # resume_lane(lane, epoch, checkpoint) -> True only when the relaunched session
 #     confirms it received the checkpoint or resumed its provider thread.
+# verify_catalog_signature(catalog_sha256, operator_signature) -> True only when the
+#     operator's signature over exactly this catalog digest verifies out of band;
+#     ``is_signed`` alone is a label and never makes auto reachable (rco-2 F5).
 
 
 class ClaimConflict(Exception):
@@ -318,6 +328,13 @@ class Executor:
                 or not all(isinstance(requester.get(k), str) and requester[k] for k in IDENTITY_KEYS)):
             return self._receipt("parked", ["principal_unauthenticated"])
         self.principal, self.executor = executor, executor["principal"]
+        written = _utc(requester.get("request_ts_utc"))
+        if written is None:
+            return self._receipt("parked", ["request_time_unauthenticated"])
+        age = (self.ports.now() - written).total_seconds()
+        if not 0 <= age <= REQUEST_MAX_AGE_SECONDS:
+            # rco-2 F4: bounds replay of a parked or aborted request and refuses stale intent.
+            return self._receipt("parked", ["request_stale_or_from_the_future"])
         claimed = self.request["requested_by"]
         if any(claimed.get(k) != requester[k] for k in IDENTITY_KEYS):
             return self._receipt("aborted", ["requester_not_authenticated_as_claimed"])
@@ -332,46 +349,56 @@ class Executor:
         return None
 
     def _journal_history(self) -> list | None:
-        """Counted relaunches: lane-profile transitions whose source stop is journaled (Lead review R6).
+        """Counted relaunches: lane-profile transitions that attempted a source stop (Lead R6, rco-2 F2/F3).
 
         Read from the durable RecoveryStore, fleet-wide, never from emitted
-        receipts: a transition counts from the ``apply_pending`` row written in
-        the same SQLite transaction as its source stop, stamped by this
-        executor's clock. Aborted, parked and cancelled attempts never reach
-        ``apply_pending`` and so never count. A lane-profile transition that
-        reached ``apply_pending`` without a readable stop marker makes the
-        history unknown.
+        receipts. A transition counts from its FIRST stop marker: the
+        ``stop_intent_at`` row journaled at ``checkpointed`` just before
+        ``stop()``, or the ``source_stopped_at`` row at ``apply_pending`` (older
+        journals). Only an attempt whose stop verifiably did not happen ends at
+        ``cancelled_before_apply`` and is not counted, so a crash between the stop
+        and the phase change, and a transition held after a raising stop, both
+        count. Aborted and parked attempts never journal a stop marker. A
+        lane-profile transition that reached ``apply_pending`` without any marker,
+        or an unreadable journal, makes the history unknown.
         """
         try:
             with self.store.connect() as db:
                 rows = db.execute(
-                    "SELECT j.transition_id AS tid, t.plan AS plan, j.reason AS reason FROM journal j "
-                    "JOIN transitions t ON t.id = j.transition_id WHERE j.phase = 'apply_pending' "
-                    "ORDER BY j.sequence").fetchall()
+                    "SELECT j.transition_id AS tid, j.phase AS phase, j.reason AS reason, t.plan AS plan, "
+                    "t.phase AS final FROM journal j JOIN transitions t ON t.id = j.transition_id "
+                    "WHERE j.phase IN ('checkpointed', 'apply_pending') ORDER BY j.sequence").fetchall()
         except Exception:  # noqa: BLE001 - an unreadable journal is unknown, never empty
             return None
         stops: dict[int, dict] = {}
-        pending: set[int] = set()
+        applied: set[int] = set()
+        cancelled: set[int] = set()
         try:
             for row in rows:
-                binding = json.loads(row["plan"]).get("binding")
-                if not isinstance(binding, dict) or binding.get("task_id") != TASK_ID:
+                plan = json.loads(row["plan"])
+                binding = plan.get("binding") if isinstance(plan, dict) else None
+                if not isinstance(binding, dict):
+                    return None
+                if binding.get("task_id") != TASK_ID:
                     continue
-                pending.add(row["tid"])
+                if row["final"] == "cancelled_before_apply":
+                    cancelled.add(row["tid"])
+                if row["phase"] == "apply_pending":
+                    applied.add(row["tid"])
                 try:
                     marker = json.loads(row["reason"]) if row["reason"] else None
                 except ValueError:
                     marker = None
-                if (row["tid"] not in stops and isinstance(marker, dict)
-                        and _utc(marker.get("source_stopped_at")) is not None
+                key = "stop_intent_at" if row["phase"] == "checkpointed" else "source_stopped_at"
+                stamp = marker.get(key) if isinstance(marker, dict) else None
+                if (row["tid"] not in stops and _utc(stamp) is not None
                         and isinstance(binding.get("agent_id"), str)):
-                    stops[row["tid"]] = {"lane": binding["agent_id"], "ts_utc": marker["source_stopped_at"],
-                                         "outcome": "source_stopped"}
+                    stops[row["tid"]] = {"lane": binding["agent_id"], "ts_utc": stamp, "outcome": "stop_attempted"}
         except (ValueError, TypeError, AttributeError, KeyError):
             return None
-        if pending - set(stops):
+        if applied - set(stops):
             return None
-        return list(stops.values())
+        return [entry for tid, entry in stops.items() if tid not in cancelled or tid in applied]
 
     def _neutralise_record(self) -> None:
         """B3: a transition that never launched must not leave its target record live."""
@@ -407,6 +434,12 @@ class Executor:
             return self._receipt("parked", ["mode_not_auto"])
         if not is_signed(self.catalog):
             return self._receipt("parked", ["catalog_unsigned"])
+        try:
+            verified = self.ports.verify_catalog_signature(self.digest, self.catalog["operator_signature"]) is True
+        except Exception:  # noqa: BLE001 - an unverifiable signature is not a signature
+            verified = False
+        if not verified:
+            return self._receipt("parked", ["catalog_signature_unverified"])
 
         state = self.ports.measure(self.lane)
         if not isinstance(state, dict) or state.get("lane") != self.lane:
@@ -472,6 +505,11 @@ class Executor:
         self.steps.append("journaled_and_recorded")
 
         self.stop_target = (state["pid"], state["process_started_at"])
+        # rco-2 F2/F3: journal the intent BEFORE the stop. A process stop cannot share a
+        # SQLite transaction with the journal, so a crash after stop() and before the
+        # apply_pending row would otherwise leave a stopped source uncounted.
+        self.store.move(self.tid, "checkpointed", "checkpointed",
+                        reason=json.dumps({"stop_intent_at": _iso(self.ports.now())}))
         self.stop_in_flight = True
         stopped = self.ports.stop(self.lane, state["pid"], state["process_started_at"])
         self.stop_in_flight = False

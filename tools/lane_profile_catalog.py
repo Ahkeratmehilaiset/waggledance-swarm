@@ -39,7 +39,8 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.bridge_capacity_advisor import InputError, _validate_policy  # noqa: E402
+from tools.bridge_capacity_advisor import (  # noqa: E402
+    InputError, _finite_float, _invalid_constant, _pairs, _validate_policy)
 
 SCHEMA = "wd.lane-profile-catalog.v1"
 MODES = ("shadow", "approve", "auto")
@@ -84,11 +85,22 @@ def _mapping(value: Any, label: str) -> dict:
     return value
 
 
+# The operator spec's rollout floors (spec v3 Part A "Rollout"). A catalog may
+# demand more evidence before leaving a mode, never less: minimums may only
+# rise, and the tolerated-failure maximums stay at zero.
+EXIT_MINIMUMS = {"min_decisions": 20, "min_days": 5, "min_transitions": 10, "min_induced_rollbacks": 1}
+EXIT_MAXIMUMS = {"max_operator_marked_wrong": 0, "max_wrong_process_kills": 0}
+
+
 def _validate_exit(block: Any, label: str, keys: tuple[str, ...]) -> None:
     if not isinstance(block, dict) or set(block) != set(keys):
         raise CatalogError(f"{label} must define exactly {', '.join(keys)}")
     for key in keys:
-        _nonneg_int(block[key], f"{label}.{key}", 10_000)
+        value = _nonneg_int(block[key], f"{label}.{key}", 10_000)
+        if key in EXIT_MINIMUMS and value < EXIT_MINIMUMS[key]:
+            raise CatalogError(f"{label}.{key} is weaker than the operator spec floor {EXIT_MINIMUMS[key]}")
+        if key in EXIT_MAXIMUMS and value > EXIT_MAXIMUMS[key]:
+            raise CatalogError(f"{label}.{key} tolerates more than the operator spec allows")
 
 
 def _validate_providers(providers: Any, profiles: dict) -> None:
@@ -283,15 +295,24 @@ def effective_mode(catalog: dict) -> str:
 
 
 def load_catalog(path: str | Path) -> tuple[dict, str]:
-    """Read exactly one catalog file; return (catalog, sha256 of its bytes)."""
-    data = Path(path).read_bytes()
+    """Read exactly one catalog file; return (catalog, sha256 of its bytes).
+
+    Same input guards as the advisor loader: a bounded read, no duplicate keys,
+    no non-finite numbers, no RecursionError, and no symlink or reparse point.
+    """
+    path = Path(path)
+    if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+        raise CatalogError("catalog path is a symlink or reparse point")
+    with path.open("rb") as stream:
+        data = stream.read(MAX_CATALOG_BYTES + 1)
     if len(data) > MAX_CATALOG_BYTES:
         raise CatalogError("catalog exceeds the size bound")
     try:
-        catalog = json.loads(data.decode("utf-8"),
-                             parse_constant=lambda name: (_ for _ in ()).throw(
-                                 CatalogError(f"non-finite JSON constant {name}")))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        catalog = json.loads(data.decode("utf-8"), object_pairs_hook=_pairs,
+                             parse_constant=_invalid_constant, parse_float=_finite_float)
+    except InputError as exc:
+        raise CatalogError(str(exc)) from None
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise CatalogError(f"catalog is not UTF-8 JSON: {exc.__class__.__name__}") from None
     return validate_catalog(catalog), hashlib.sha256(data).hexdigest()
 

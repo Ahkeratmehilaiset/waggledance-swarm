@@ -102,7 +102,7 @@ def state(**overrides):
 
 
 def test_clean_lane_is_at_a_safe_boundary():
-    assert check_safe_boundary(state(), now=NOW)["verdict"] == PROCEED
+    assert check_safe_boundary(state(), lane="claude-rco-1", now=NOW)["verdict"] == PROCEED
 
 
 @pytest.mark.parametrize("change,reason", [
@@ -117,35 +117,87 @@ def test_clean_lane_is_at_a_safe_boundary():
     # Lead LPS-B2: an old request bound to the current session still blocks.
     (dict(unresolved_requests=[{"request_id": "r", "bound_session_id": "sess-now", "age_hours": 40}]),
      "unresolved_request_bound_to_current_session"),
-    (dict(unresolved_requests=[{"request_id": "r", "bound_session_id": "sess-old", "superseded": False}]),
-     "unresolved_request_not_provably_superseded"),
+    (dict(unresolved_requests=[{"request_id": "r", "bound_session_id": "sess-old", "superseded": False}],
+          session_lineage=[]), "unresolved_request_not_provably_superseded"),
     (dict(unresolved_requests=[{"request_id": "r", "bound_session_id": None}]), "request_binding_unknown"),
 ])
 def test_unsafe_states_abort(change, reason):
-    result = check_safe_boundary(state(**change), now=NOW)
+    result = check_safe_boundary(state(**change), lane="claude-rco-1", now=NOW)
     assert result["verdict"] == ABORT and reason in result["reasons"]
 
 
-def test_provably_superseded_request_does_not_block():
+LINEAGE = [{"session_id": "sess-old", "successor_session_id": "sess-mid"},
+           {"session_id": "sess-mid", "successor_session_id": "sess-now"}]
+
+
+def test_a_request_superseded_by_recorded_lineage_does_not_block():
+    old = {"request_id": "r", "bound_session_id": "sess-old"}
+    result = check_safe_boundary(state(unresolved_requests=[old], session_lineage=LINEAGE),
+                                 lane="claude-rco-1", now=NOW)
+    assert result["verdict"] == PROCEED
+
+
+def test_a_caller_superseded_flag_is_never_trusted():
+    # Lead review of #1738: superseded is derived from lineage, never a caller boolean.
     old = {"request_id": "r", "bound_session_id": "sess-old", "superseded": True}
-    assert check_safe_boundary(state(unresolved_requests=[old]), now=NOW)["verdict"] == PROCEED
+    result = check_safe_boundary(state(unresolved_requests=[old], session_lineage=[]),
+                                 lane="claude-rco-1", now=NOW)
+    assert result["reasons"] == ["unresolved_request_not_provably_superseded"]
+
+
+@pytest.mark.parametrize("start,lineage,expected", [
+    ("sess-old", LINEAGE, True),
+    ("sess-old", LINEAGE[:1], False),  # the chain stops before the current session
+    ("sess-old", [{"session_id": "sess-other", "successor_session_id": "sess-now"}], False),  # not an ancestor
+    ("sess-old", None, None),
+    ("sess-old", "x", None),
+    ("sess-old", [None], None),
+    ("sess-old", [{"session_id": "sess-old"}], None),
+    ("sess-old", [{"session_id": "sess-old", "successor_session_id": "sess-old"}], None),  # self-successor
+    ("sess-old", LINEAGE + [{"session_id": "sess-old", "successor_session_id": "sess-fork"}], None),  # forked
+    ("a", [{"session_id": "a", "successor_session_id": "b"}, {"session_id": "b", "successor_session_id": "a"}],
+     None),  # cycle
+    ("sess-old", [{"session_id": "sess-old", "successor_session_id": 7}], None),
+])
+def test_lineage_derivation(start, lineage, expected):
+    from tools.wd_lane_relaunch import superseded_by_lineage
+    assert superseded_by_lineage(start, "sess-now", lineage) is expected
+
+
+def test_a_cyclic_lineage_is_unknown_and_blocks():
+    cycle = [{"session_id": "sess-old", "successor_session_id": "x"},
+             {"session_id": "x", "successor_session_id": "sess-old"}]
+    old = {"request_id": "r", "bound_session_id": "sess-old"}
+    result = check_safe_boundary(state(unresolved_requests=[old], session_lineage=cycle),
+                                 lane="claude-rco-1", now=NOW)
+    assert result["reasons"] == ["session_lineage_unknown"]
+
+
+def test_a_long_but_finite_lineage_still_resolves():
+    from tools.wd_lane_relaunch import MAX_LINEAGE_STEPS, superseded_by_lineage
+    chain = [{"session_id": f"s{i}", "successor_session_id": f"s{i + 1}"} for i in range(MAX_LINEAGE_STEPS)]
+    assert superseded_by_lineage("s0", f"s{MAX_LINEAGE_STEPS}", chain) is True
+    longer = chain + [{"session_id": f"s{MAX_LINEAGE_STEPS}", "successor_session_id": "beyond"}]
+    assert superseded_by_lineage("s0", "beyond", longer) is None
 
 
 @pytest.mark.parametrize("change,reason", [
-    (dict(lane="supervisor"), "target_is_or_may_be_the_supervisor"),
+    (dict(lane="supervisor"), "lane_state_names_another_lane"),
+    (dict(lane="claude-rco-2"), "lane_state_names_another_lane"),
+    (dict(lane=None), "lane_state_names_another_lane"),
     (dict(is_supervisor=None), "target_is_or_may_be_the_supervisor"),
     (dict(observed_at=iso(NOW - timedelta(minutes=5))), "lane_state_stale_or_unknown"),
     (dict(observed_at=iso(NOW + timedelta(minutes=5))), "lane_state_stale_or_unknown"),
     (dict(current_session_id=""), "current_session_unknown"),
 ])
 def test_boundary_preconditions(change, reason):
-    assert check_safe_boundary(state(**change), now=NOW)["reasons"] == [reason]
+    assert check_safe_boundary(state(**change), lane="claude-rco-1", now=NOW)["reasons"] == [reason]
 
 
 # ------------------------------------------------------------ planner (D5)
 
-def binding(model="claude-sonnet-5", effort="xhigh", identity="valid"):
-    return {"session_identity": identity, "observed_model_raw": model, "observed_effort": effort}
+def binding(model="claude-sonnet-5", effort="xhigh", identity="valid", lane=None):
+    return {"session_identity": identity, "observed_model_raw": model, "observed_effort": effort, "lane": lane}
 
 
 CLAUDE_OK = {("claude", "claude"): "available"}
@@ -154,6 +206,8 @@ CLAUDE_OK = {("claude", "claude"): "available"}
 def plan(lane="claude-rco-1", **kwargs):
     args = dict(binding=binding(), admission="KEEP", quota_states=CLAUDE_OK, history=[], now=NOW)
     args.update(kwargs)
+    if isinstance(args["binding"], dict) and args["binding"].get("lane") is None:
+        args["binding"] = dict(args["binding"], lane=lane)
     return plan_lane(CATALOG, DIGEST, lane, **args)
 
 
@@ -248,7 +302,7 @@ def distinct_bucket_catalog(floor: int = 1) -> dict:
 
 def plan_tools(current_model, admission, states, floor=1):
     catalog = distinct_bucket_catalog(floor)
-    return plan_lane(catalog, DIGEST, "codex-tools-1", binding=binding(model=current_model, effort="medium"),
+    return plan_lane(catalog, DIGEST, "codex-tools-1", binding=binding(model=current_model, effort="medium", lane="codex-tools-1"),
                      admission=admission, quota_states=states, history=[], now=NOW)
 
 
@@ -276,3 +330,94 @@ def test_escalate_only_ever_raises():
     decision = plan_tools("model-b", "ESCALATE", catalog_states, floor=2)
     assert decision["action"] == "park"
     assert decision["rejected"] == ["codex-a:bucket_exhausted"]
+
+
+
+# ---------------------------------------------------------------- Lead review of #1738
+
+def test_supervisor_is_never_a_target_even_when_the_state_agrees():
+    result = check_safe_boundary(state(lane="supervisor"), lane="supervisor", now=NOW)
+    assert result["reasons"] == ["target_is_or_may_be_the_supervisor"]
+
+
+@pytest.mark.parametrize("other", ["claude-rco-2", "codex-lead-1"])
+def test_planner_refuses_a_binding_for_another_lane(other):
+    decision = plan(binding=binding(lane=other))
+    assert (decision["action"], decision["reasons"]) == ("park", ["binding_names_another_lane"])
+
+
+def test_planner_refuses_a_binding_without_a_lane():
+    decision = plan_lane(CATALOG, DIGEST, "claude-rco-1",
+                         binding={"session_identity": "valid", "observed_model_raw": "claude-sonnet-5",
+                                  "observed_effort": "xhigh"},
+                         admission="KEEP", quota_states=CLAUDE_OK, history=[], now=NOW)
+    assert decision["reasons"] == ["binding_names_another_lane"]
+
+
+def test_planner_accepts_its_own_lane_binding():
+    assert plan(binding=binding(lane="claude-rco-1"))["action"] == "keep"
+
+
+HOSTILE = [None, True, 0, 1.5, "", "x", [], ["x"], {}, {"a": 1}, float("nan"), object()]
+BOUNDARY_FIELDS = ["lane", "is_supervisor", "observed_at", "current_session_id", "idle", "pending_effects",
+                   "previous_turn_blocker", "open_claims", "unresolved_requests", "session_lineage"]
+
+
+@pytest.mark.parametrize("field", BOUNDARY_FIELDS)
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_boundary_fields_never_raise_and_never_proceed_unsafely(field, value):
+    old = {"request_id": "r", "bound_session_id": "sess-old"}
+    measured = state(unresolved_requests=[old], session_lineage=LINEAGE)
+    measured[field] = value
+    result = check_safe_boundary(measured, lane="claude-rco-1", now=NOW)
+    valid = ((field in ("open_claims", "unresolved_requests") and type(value) is list and value == [])
+             or (field == "idle" and value is True))
+    assert result["verdict"] == (PROCEED if valid else ABORT)
+
+
+def test_a_valid_state_with_lineage_is_the_success_twin():
+    old = {"request_id": "r", "bound_session_id": "sess-old"}
+    measured = state(unresolved_requests=[old], session_lineage=LINEAGE)
+    assert check_safe_boundary(measured, lane="claude-rco-1", now=NOW)["verdict"] == PROCEED
+
+
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_request_items_block(value):
+    result = check_safe_boundary(state(unresolved_requests=[value], session_lineage=LINEAGE),
+                                 lane="claude-rco-1", now=NOW)
+    assert result["verdict"] == ABORT
+
+
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_state_and_lane_arguments_never_raise(value):
+    assert check_safe_boundary(value, lane="claude-rco-1", now=NOW)["verdict"] == ABORT
+    assert check_safe_boundary(state(), lane=value, now=NOW)["verdict"] == ABORT
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, None, True, "60"], ids=repr)
+def test_hostile_max_age_fails_closed(value):
+    assert check_safe_boundary(state(), lane="claude-rco-1", now=NOW, max_age_seconds=value)["verdict"] == ABORT
+
+
+def test_max_age_zero_accepts_a_same_instant_measurement():
+    assert check_safe_boundary(state(), lane="claude-rco-1", now=NOW, max_age_seconds=0)["verdict"] == PROCEED
+
+
+REQUEST = {"lane": "claude-rco-1", "current_profile": "claude-sonnet-5-xhigh",
+           "target_profile": "claude-opus-5-5-xhigh"}
+
+
+@pytest.mark.parametrize("field", ["lane", "current_profile", "target_profile"])
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_request_fields_park_and_never_raise(field, value):
+    req = dict(REQUEST)
+    req[field] = value
+    assert check_request(CATALOG, req, [], now=NOW)["verdict"] != PROCEED
+
+
+@pytest.mark.parametrize("value", HOSTILE, ids=repr)
+def test_hostile_requests_and_histories_never_raise(value):
+    assert check_request(CATALOG, value, [], now=NOW)["verdict"] == PARK
+    verdict = check_request(CATALOG, dict(REQUEST), value, now=NOW)["verdict"]
+    assert verdict == (PROCEED if type(value) is list and value == [] else PARK)
+    assert check_request(CATALOG, dict(REQUEST), [value], now=NOW)["verdict"] == PARK

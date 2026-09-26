@@ -11,7 +11,8 @@ shadow exit criterion.
 
 Rules (spec v3 D5):
 
-* The current profile must be known from a valid session binding; otherwise PARK.
+* The current profile must be known from a valid session binding for this
+  lane; otherwise PARK.
 * Admission ``KEEP`` with an available current quota bucket: keep.
 * Admission ``PARK`` or anything unknown: park.
 * The current bucket exhausted or limited, or admission ``ESCALATE``: look for
@@ -74,6 +75,10 @@ def plan_lane(catalog: dict, catalog_sha256: str, lane: str, *, binding: dict, a
         return _decision(lane, PARK, ["lane_not_in_catalog"], mode, **base)
     if not isinstance(binding, dict) or binding.get("session_identity") != "valid":
         return _decision(lane, PARK, ["current_profile_unverified"], mode, **base)
+    if binding.get("lane") != lane:
+        # Lead review of #1738: a binding for another lane must not count as a
+        # decision for this one, even in shadow, or it corrupts the exit metrics.
+        return _decision(lane, PARK, ["binding_names_another_lane"], mode, **base)
     current = profile_for_observation(catalog, lane, _strip(binding.get("observed_model_raw")),
                                       binding.get("observed_effort"))
     if current is None:

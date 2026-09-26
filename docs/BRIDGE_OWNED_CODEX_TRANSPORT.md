@@ -122,8 +122,10 @@ agreed with each other while both disagreed with the server.
 * `child_identity_verified` is a *different* claim and is true only when the
   spawn came from `pinned_spawn`. The module records an immutable copy of its
   path, digest and argv at issuance in an exact-object identity registry (not
-  equality-based weak-key lookup), refuses if the spawn object's inputs later
-  differ, then verifies the digest and starts **that
+  equality-based weak-key lookup). The observer derives the actual launch
+  directly from that registered snapshot and never dispatches through the
+  caller-held object's mutable class or `__call__`; it then verifies the digest
+  and starts **that
   file**, so the pin and the child are one decision instead of two. Hashing a
   path and then calling an unrelated callable links them by nothing: `spawn` is
   arbitrary and may start anything. Every other spawn — including every fake in

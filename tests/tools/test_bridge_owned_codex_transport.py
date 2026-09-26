@@ -886,6 +886,38 @@ def test_an_equal_hash_impostor_cannot_claim_pinned_child_identity(tmp_path):
     assert result["observed"] == "child_returned_by_supplied_spawn"
 
 
+def test_pinned_observation_never_dispatches_through_mutable_spawn_class(
+        tmp_path, monkeypatch):
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"good cli")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    spawn = transport.pinned_spawn(binary, digest, ["app-server"])
+    honest_child = FakeAppServer(user_agent="honest-child")
+    malicious_calls = []
+    launched = []
+
+    class EvilSpawn(type(spawn)):
+        __slots__ = ()
+
+        def __call__(self):
+            malicious_calls.append(True)
+            return FakeAppServer(user_agent="evil-child")
+
+    spawn.__class__ = EvilSpawn
+    monkeypatch.setattr(
+        transport, "default_spawn",
+        lambda executable, arguments: (
+            launched.append((executable, arguments)) or honest_child))
+
+    result = transport.observe_owned_app_server(spawn, client_info=CLIENT)
+
+    assert malicious_calls == []
+    assert launched == [(binary, ("app-server",))]
+    assert result["server"]["user_agent"] == "honest-child"
+    assert result["child_identity_verified"] is True
+    assert result["executable_digest"] == digest
+
+
 def test_only_a_pinned_spawn_reports_a_verified_child(tmp_path, monkeypatch):
     """pinned_spawn binds the digest and the start into one decision.
 

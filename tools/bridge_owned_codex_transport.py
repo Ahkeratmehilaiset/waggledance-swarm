@@ -178,6 +178,25 @@ def _register_pinned_spawn(spawn: "_PinnedSpawn") -> None:
         _PINNED_SPAWNS[key] = (reference, spawn._state())
 
 
+def _spawn_from_issued_state(issued: _PinnedState) -> Any:
+    """Verify and launch only the registry snapshot, not caller-held behavior."""
+    path_text, expected_sha256, argv = issued
+    path = Path(path_text)
+    verify_executable(path, expected_sha256)
+    return default_spawn(path, argv)
+
+
+def _live_pinned_state(spawn: Callable[[], Any]) -> _PinnedState | None:
+    """Read issued slots without dispatching through a reassigned class."""
+    try:
+        path = object.__getattribute__(spawn, "_path")
+        digest = object.__getattribute__(spawn, "_expected_sha256")
+        argv = object.__getattribute__(spawn, "_argv")
+    except (AttributeError, TypeError):
+        return None
+    return (str(path), digest, argv)
+
+
 class _PinnedSpawn:
     __slots__ = ("_path", "_expected_sha256", "_argv", "__weakref__")
 
@@ -192,10 +211,9 @@ class _PinnedSpawn:
 
     def __call__(self) -> Any:
         issued = _registered_pinned_state(self)
-        if issued is None or self._state() != issued:
+        if issued is None or _live_pinned_state(self) != issued:
             raise TransportRefused("pinned spawn launch inputs changed after issuance")
-        verify_executable(self._path, self._expected_sha256)
-        return default_spawn(self._path, self._argv)
+        return _spawn_from_issued_state(issued)
 
 
 def pinned_spawn(executable: Path | str, expected_sha256: str,
@@ -573,6 +591,16 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
     """
     pinned_state = _registered_pinned_state(spawn)
     pinned_digest = pinned_state[1] if pinned_state is not None else None
+    effective_spawn = spawn
+    if pinned_state is not None:
+        if _live_pinned_state(spawn) != pinned_state:
+            raise TransportRefused("pinned spawn launch inputs changed after issuance")
+        # The caller retains the issued lookup token and can mutate its slots,
+        # class, or __call__.  None of that may choose the verified child.  The
+        # actual launch is derived exclusively from the immutable registry
+        # snapshot captured above; the caller-held object is never invoked on
+        # the verified path.
+        effective_spawn = lambda: _spawn_from_issued_state(pinned_state)
     verification: dict[str, Any] = {
         "file_digest_verified": False,
         "executable_digest": None,
@@ -599,7 +627,7 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
             "child_identity_verified": True,
             "verification_note": "pinned_spawn verified the digest and started that file",
         }
-    with OwnedAppServer(spawn, client_info=client_info,
+    with OwnedAppServer(effective_spawn, client_info=client_info,
                         deadline_seconds=deadline_seconds) as server:
         handshake = server.initialize()
         models = server.list_models(limit=limit)

@@ -182,6 +182,17 @@ DEFAULT_PRODUCTION_IDLE_WARN_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_AGE_MINUTES = 12.0
 DEFAULT_WAKE_DELIVERY_MIN_REPEATS = 2
 DEFAULT_WAKE_DELIVERY_MAX_AGE_HOURS = 12.0
+# When the requested row tail does not fit the reader's byte budget, the
+# window may shrink only if its timestamps prove it still reaches back past
+# every age window this tool decides on, plus this allowance for clock skew
+# between writers. A window that cannot prove that fails closed.
+HISTORY_COVERAGE_SKEW_HOURS = 24.0
+# The window's start time is the newest timestamp among its first rows, so
+# one late-appended old row (a spool restore) cannot make the window look
+# older than it is.
+HISTORY_COVERAGE_PROBE_ROWS = 1000
+# Never shrink below this many rows.
+HISTORY_MIN_FALLBACK_ROWS = 1000
 DEFAULT_WAKE_DELIVERY_SELF_LIVENESS_WINDOW_MINUTES = 40.0
 BRIDGE_FOLLOW_NUDGE_TASK_PREFIX = "bridge-follow-nudge-"
 WAKE_FILE_FRESHNESS_TOLERANCE_SECONDS = 2.0
@@ -285,7 +296,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = args.events or (bridge_root / "shared" / "events.jsonl")
-        events = read_events(events_path, tail=args.tail)
+        coverage_now = datetime.now(timezone.utc)
+        if args.now:
+            coverage_now = _parse_utc(args.now) or coverage_now
+        events, history_window = read_events_covering(
+            events_path,
+            tail=args.tail,
+            covers_since=_required_history_start(
+                coverage_now,
+                open_request_max_age_hours=args.open_request_max_age_hours,
+                stale_report_max_age_hours=args.stale_report_max_age_hours,
+            ),
+        )
         claims = list_claims(bridge_root=bridge_root)
         now_utc = datetime.now(timezone.utc)
         if args.now:
@@ -321,6 +343,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 production_liveness_suppressed_agents
             ),
         )
+        if history_window["mode"] != "row_tail":
+            report["history_window"] = history_window
     except (BridgeNextActionError, WorkQueueError) as exc:
         if isinstance(exc, BridgeNextActionError):
             report = exc.report
@@ -350,24 +374,121 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def read_events(path: Path, *, tail: int = 50000) -> list[dict[str, Any]]:
     """Read selected JSONL rows, skipping ASCII blanks/null; fail closed otherwise."""
-    generation_path = path.with_name("events.generation.json")
-    snapshot = read_bridge_log_tail_lines(
-        path,
-        tail_rows=tail if tail > 0 else MAX_MAX_ROWS,
-        max_bytes=MAX_MAX_BYTES,
-        generation_path=generation_path,
+    events, _window = read_events_covering(path, tail=tail, covers_since=None)
+    return events
+
+
+def _required_history_start(
+    now_utc: datetime,
+    *,
+    open_request_max_age_hours: float | None,
+    stale_report_max_age_hours: float | None,
+) -> datetime | None:
+    """Oldest instant any age window of this tool can still act on."""
+
+    ages = [
+        hours
+        for hours in (open_request_max_age_hours, stale_report_max_age_hours)
+        if hours is not None and math.isfinite(hours) and hours > 0
+    ]
+    if not ages:
+        # An unbounded age window needs unbounded history: never shrink.
+        return None
+    return now_utc - timedelta(hours=max(ages) + HISTORY_COVERAGE_SKEW_HOURS)
+
+
+def _snapshot_unavailable(reason: str) -> BridgeNextActionError:
+    return BridgeNextActionError(
+        {
+            "ok": False,
+            "decision": "bridge_next_action_error",
+            "errors": [f"bridge event snapshot unavailable: {reason}"],
+        }
     )
+
+
+def read_events_covering(
+    path: Path,
+    *,
+    tail: int = 50000,
+    covers_since: datetime | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read the row tail, or a smaller window proven to cover the required time.
+
+    The requested row count is only a proxy for enough history. When those
+    rows exceed the reader's byte budget, halve the row count and accept the
+    smaller window only if its start time is at or before covers_since.
+    Anything else fails closed exactly as before, so a window that cannot
+    prove it is sufficient never produces a recommendation.
+    """
+
+    requested = tail if tail > 0 else MAX_MAX_ROWS
+    rows = requested
+    while True:
+        snapshot = _read_tail_snapshot(path, rows)
+        if (
+            snapshot.status is BridgeReadStatus.BLOCKED
+            and snapshot.reason == "tail_exceeds_max_bytes"
+            and covers_since is not None
+            and rows // 2 >= HISTORY_MIN_FALLBACK_ROWS
+        ):
+            rows //= 2
+            continue
+        break
     if snapshot.status is BridgeReadStatus.IDLE and snapshot.reason == "log_missing":
-        return []
+        return [], {"mode": "row_tail", "requested_rows": requested}
     if snapshot.status not in {BridgeReadStatus.OK, BridgeReadStatus.IDLE}:
-        raise BridgeNextActionError(
-            {
-                "ok": False,
-                "decision": "bridge_next_action_error",
-                "errors": [f"bridge event snapshot unavailable: {snapshot.reason}"],
-            }
+        raise _snapshot_unavailable(snapshot.reason)
+    events = _parse_selected_rows(snapshot.lines)
+    if rows == requested:
+        return events, {"mode": "row_tail", "requested_rows": requested}
+    assert covers_since is not None
+    window_start = _window_start_time(events)
+    if window_start is None or window_start > covers_since:
+        started = (
+            _format_utc(window_start)
+            if window_start is not None
+            else "at an unknown time"
         )
-    lines = list(snapshot.lines)
+        raise _snapshot_unavailable(
+            "tail_exceeds_max_bytes; byte-bounded window of "
+            f"{len(snapshot.lines)} rows starts {started}, "
+            f"after the required {_format_utc(covers_since)}"
+        )
+    return events, {
+        "mode": "time_covered",
+        "requested_rows": requested,
+        "selected_rows": len(snapshot.lines),
+        "window_start_utc": _format_utc(window_start),
+        "required_start_utc": _format_utc(covers_since),
+    }
+
+
+def _read_tail_snapshot(path: Path, rows: int) -> Any:
+    return read_bridge_log_tail_lines(
+        path,
+        tail_rows=rows,
+        max_bytes=MAX_MAX_BYTES,
+        generation_path=path.with_name("events.generation.json"),
+    )
+
+
+def _window_start_time(events: Sequence[Mapping[str, Any]]) -> datetime | None:
+    """Newest parseable timestamp among the window's first rows."""
+
+    probe = [
+        parsed
+        for parsed in (
+            _parse_utc(_event_ts(event))
+            for event in events[:HISTORY_COVERAGE_PROBE_ROWS]
+        )
+        if parsed is not None
+    ]
+    return max(probe) if probe else None
+
+
+def _parse_selected_rows(selected: Sequence[str]) -> list[dict[str, Any]]:
+    lines = list(selected)
     events: list[dict[str, Any]] = []
     for selected_row, raw in enumerate(lines, start=1):
         ascii_trimmed = raw.strip(" \t\r")

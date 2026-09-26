@@ -3,8 +3,8 @@
 
 Enforces CLAUDE.md Rule 9a: "RCO absence = NO merge". A valid
 recognized RCO `RCO_PASS` (type=decision or rco_review, status=rco_pass)
-whose *message* contains the exact --head SHA string, or whose structured
-``payload.exact_head`` equals it, must be present for
+whose structured ``payload.exact_head`` equals --head, or whose message
+contains the exact SHA only when that structured field is absent, must be present for
 the --task-id (canonical branch name) at the *exact* --head. The passing
 RCO must not be the PR author.
 
@@ -14,8 +14,9 @@ Fail-closed rules (per spec):
    when agents write `author-agent/rest` while the queue supplied
    `author-agent-rest`, or the reverse. No other task-id mismatch counts.
 2. A PASS counts ONLY if type in {decision, rco_review}, status in {rco_pass},
-   AND message contains the exact --head (40-char SHA) string or
-   payload.exact_head equals it.
+   AND payload.exact_head equals the exact --head (40-char SHA), or the
+   legacy message contains it when payload.exact_head is absent. A present
+   structured field is authoritative and cannot be overridden by prose.
 3. If a recognized RCO veto supersedes the satisfying RCO_PASS
    (changes_requested / finding / blocked / rco_block* etc), REFUSE.
 4. If NO qualifying RCO_PASS-at-exact-head exists, REFUSE. Silence/absence
@@ -710,12 +711,13 @@ def _is_qualifying_rco_pass(
 
 def _event_binds_head(event: Mapping[str, Any], head: str) -> bool:
     payload = event.get("payload")
-    if isinstance(payload, Mapping):
+    if isinstance(payload, Mapping) and "exact_head" in payload:
         value = payload.get("exact_head")
-        if isinstance(value, str) and value.strip().lower() == head:
-            return True
+        return isinstance(value, str) and value.strip().lower() == head
     message = str(event.get("message", "") or "")
-    # Per legacy spec: message contains the exact --head SHA string.
+    # Legacy events may bind through prose only when no structured exact-head
+    # assertion exists.  A conflicting or malformed structured claim must not
+    # be rescued by mentioning the requested SHA elsewhere in the message.
     # Use substring match on the provided head (caller normalizes to lower hex).
     if head in message:
         return True
@@ -763,8 +765,15 @@ def _is_rco_pass_shape(event: Mapping[str, Any]) -> bool:
 
 
 def _event_head_candidates(event: Mapping[str, Any]) -> list[str]:
-    text_parts = [str(event.get("message", "") or "")]
     payload = event.get("payload")
+    if isinstance(payload, Mapping) and "exact_head" in payload:
+        value = payload.get("exact_head")
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return [normalized] if SHA_RE.fullmatch(normalized) else []
+        return []
+
+    text_parts = [str(event.get("message", "") or "")]
     if isinstance(payload, Mapping):
         for key in (
             "head",

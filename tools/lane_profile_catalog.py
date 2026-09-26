@@ -110,7 +110,7 @@ def _validate_providers(providers: Any, profiles: dict) -> None:
             raise CatalogError(f"profile {profile_id} effort is not in the provider enum")
 
 
-def _validate_lanes(lanes: Any, policy: dict, signed: bool) -> None:
+def _validate_lanes(lanes: Any, policy: dict) -> None:
     if not isinstance(lanes, dict) or not lanes:
         raise CatalogError("lanes must be a nonempty object")
     profiles = policy["profiles"]
@@ -147,7 +147,7 @@ def _validate_lanes(lanes: Any, policy: dict, signed: bool) -> None:
             raise CatalogError(f"lane {lane} default must be an allowed profile")
         if allowed.index(spec["default"]) > floor:
             raise CatalogError(f"lane {lane} default must not be below its floor")
-        _check_runtime_admissible(lane, allowed, binding["role"], profiles, signed)
+        _check_runtime_admissible(lane, allowed, binding["role"], profiles)
         _positive_int(spec["max_relaunches_per_hour"], f"lane {lane} max_relaunches_per_hour", 12)
         _positive_int(spec["cooldown_seconds"], f"lane {lane} cooldown_seconds", 86_400)
         if type(spec["reviewer"]) is not bool:
@@ -162,28 +162,15 @@ def is_signed(catalog: dict) -> bool:
     return isinstance(signature, str) and not signature.strip().upper().startswith(UNSIGNED_PREFIX)
 
 
-def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dict,
-                              signed: bool) -> None:
+def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dict) -> None:
     """Refuse statically what the advisor's _profile_checks would refuse at runtime.
 
-    Unsigned catalog: every profile must be unapproved, so the advisor can never
-    find an admissible candidate and no shadow decision counts an unqualified
-    profile. Signed catalog: every allowed profile must be approved with a real
-    qualification_ref; a placeholder never satisfies it.
+    Approval is not checked here: _check_signature_invariant covers every
+    advisor-reachable profile, not only the ones a lane lists.
     """
     first = profiles[allowed[0]]
     for profile_id in allowed:
         profile = profiles[profile_id]
-        reference = profile.get("qualification_ref")
-        if not isinstance(reference, str) or not reference.strip():
-            raise CatalogError(f"lane {lane} profile {profile_id} has no qualification_ref")
-        if not signed:
-            if profile.get("approved") is not False:
-                raise CatalogError(f"lane {lane} profile {profile_id} is approved in an unsigned catalog")
-        elif profile.get("approved") is not True or any(
-                marker in reference.upper() for marker in PLACEHOLDER_MARKERS):
-            raise CatalogError(
-                f"lane {lane} profile {profile_id} is not approved with a real qualification_ref")
         qualified_for = profile.get("qualified_for")
         if (not isinstance(qualified_for, list) or not qualified_for
                 or not all(isinstance(q, str) and q for q in qualified_for)):
@@ -197,6 +184,31 @@ def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dic
         if (profile["provider"] != first["provider"]
                 or profile["account_pool"] != first["account_pool"]):
             raise CatalogError(f"lane {lane} mixes providers or account pools")
+
+
+def _check_signature_invariant(policy: dict, signed: bool) -> None:
+    """Approval follows the signature, for every profile the advisor can reach.
+
+    The advisor selects from each agent binding's profile list, not from the
+    lanes section, so a lane-only check would leave an approved profile
+    reachable through a binding alone. Unsigned catalog: every profile in the
+    policy must be unapproved. Signed catalog: every profile reachable through
+    an agent binding must be approved with a real, non-placeholder
+    qualification_ref.
+    """
+    profiles = policy["profiles"]
+    reachable = {pid for binding in policy["agents"].values() for pid in binding["profiles"]}
+    for profile_id, profile in profiles.items():
+        reference = profile.get("qualification_ref")
+        if not isinstance(reference, str) or not reference.strip():
+            raise CatalogError(f"profile {profile_id} has no qualification_ref")
+        if not signed:
+            if profile.get("approved") is not False:
+                raise CatalogError(f"profile {profile_id} is approved in an unsigned catalog")
+        elif profile_id in reachable and (
+                profile.get("approved") is not True
+                or any(marker in reference.upper() for marker in PLACEHOLDER_MARKERS)):
+            raise CatalogError(f"profile {profile_id} is not approved with a real qualification_ref")
 
 
 def _validate_fleet(fleet: Any, lanes: dict) -> None:
@@ -250,7 +262,8 @@ def validate_catalog(catalog: Any) -> dict:
     except InputError as exc:
         raise CatalogError(f"embedded capacity policy is invalid: {exc}") from None
     _validate_providers(catalog["providers"], policy["profiles"])
-    _validate_lanes(catalog["lanes"], policy, is_signed(catalog))
+    _check_signature_invariant(policy, is_signed(catalog))
+    _validate_lanes(catalog["lanes"], policy)
     _validate_fleet(catalog["fleet"], catalog["lanes"])
     return catalog
 

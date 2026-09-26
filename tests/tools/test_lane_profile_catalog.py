@@ -252,3 +252,40 @@ def test_shipped_unsigned_catalog_yields_no_admissible_candidate():
             task = {"qualification_class": profile["qualified_for"][0]}
             issues = _profile_checks(profile, binding, agent, task, {"state": "available"}, policy, now)
             assert "qualification_not_approved" in issues, (lane, profile_id, issues)
+
+
+def binding_only_profile(catalog: dict, **fields) -> dict:
+    """Lead PR1736-B3 reproducer: a profile reachable only through an advisor binding."""
+    policy = catalog["capacity_policy"]
+    clone = dict(policy["profiles"]["claude-opus-5-5-medium"], **fields)
+    policy["profiles"]["claude-opus-5-5-shadowed"] = clone
+    policy["agents"]["fable-5"]["profiles"].append("claude-opus-5-5-shadowed")
+    return catalog
+
+
+def test_unsigned_catalog_refuses_an_approved_profile_reachable_only_by_binding():
+    catalog = binding_only_profile(shipped(), approved=True, qualification_ref="REAL-QUAL-REF")
+    with pytest.raises(CatalogError, match="approved in an unsigned catalog"):
+        validate_catalog(catalog)
+
+
+def test_unsigned_catalog_refuses_an_approved_profile_no_binding_reaches():
+    catalog = shipped()
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-medium"]["approved"] = True
+    catalog["capacity_policy"]["agents"]["fable-5"]["profiles"] = ["claude-opus-5-5-xhigh"]
+    catalog["lanes"]["fable-5"].update(allowed_profiles=["claude-opus-5-5-xhigh"], floor=0,
+                                       default="claude-opus-5-5-xhigh")
+    with pytest.raises(CatalogError, match="approved in an unsigned catalog"):
+        validate_catalog(catalog)
+
+
+def test_signed_catalog_refuses_a_placeholder_reachable_only_by_binding():
+    catalog = binding_only_profile(signed_catalog(), approved=True,
+                                   qualification_ref="OPERATOR-SIGNATURE-REQUIRED")
+    with pytest.raises(CatalogError, match="not approved with a real qualification_ref"):
+        validate_catalog(catalog)
+
+
+def test_signed_catalog_accepts_a_real_binding_only_profile():
+    catalog = binding_only_profile(signed_catalog(), approved=True, qualification_ref="qual-real-099")
+    assert validate_catalog(catalog)

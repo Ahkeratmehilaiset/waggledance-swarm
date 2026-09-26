@@ -63,7 +63,7 @@ def record_path(runtime_root: str | Path, lane: str) -> Path:
     return Path(runtime_root) / "lane_profiles" / f"{lane}.json"
 
 
-def _validate_launched(launched: Any, now: datetime) -> None:
+def _validate_launched(launched: Any, created: datetime, now: datetime) -> None:
     if launched is None:
         return
     if not isinstance(launched, dict) or set(launched) != set(LAUNCHED):
@@ -79,6 +79,10 @@ def _validate_launched(launched: Any, now: datetime) -> None:
         if not _text(launched[key], 256):
             raise RecordError(f"launched.{key} required")
     started, recorded = _utc(launched["process_started_at"]), _utc(launched["launched_at"])
+    # Causal order (Lead PR1737-B2): the relaunched process is created after the
+    # transition record, and the launcher records it after it starts.
+    if started < created:
+        raise RecordError("launched.process_started_at precedes the record creation")
     if recorded < started:
         raise RecordError("launched.launched_at precedes the process start")
     if recorded > now:
@@ -124,7 +128,7 @@ def validate_record(record: Any, catalog: dict, catalog_sha256: str, *,
     verdict = classify_transition(catalog, lane, record["previous_profile"], record["desired_profile"])
     if verdict["verdict"] == "park":
         raise RecordError(f"transition requires an operator ack: {verdict['reason']}")
-    _validate_launched(record["launched"], now)
+    _validate_launched(record["launched"], created, now)
     return record
 
 

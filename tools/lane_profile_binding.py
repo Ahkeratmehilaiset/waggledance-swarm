@@ -71,16 +71,17 @@ def bind_lane(record: dict, catalog: dict, *, live_processes: dict,
         if not alive:
             result.update(session_identity="invalid", session_reason=reason)
         elif provider == "claude":
-            _bind_claude(result, launched, profile, claude_observations)
+            _bind_claude(result, launched, profile, claude_observations, _utc(record.get("created_at")))
         elif provider == "codex":
-            _bind_codex(result, launched, profile, codex_native)
+            _bind_codex(result, launched, profile, codex_native, _utc(record.get("created_at")))
         else:
             result.update(session_identity="invalid", session_reason="unsupported_provider")
     _bind_quota(result, profile, quota_rows)
     return result
 
 
-def _bind_claude(result: dict, launched: dict, profile: dict, observations: list | None) -> None:
+def _bind_claude(result: dict, launched: dict, profile: dict, observations: list | None,
+                 created) -> None:
     thread = launched["native_thread_id"]
     rows = [o for o in (observations or []) if isinstance(o, dict)
             and o.get("provider") == "claude" and o.get("native_thread_id") == thread]
@@ -93,7 +94,7 @@ def _bind_claude(result: dict, launched: dict, profile: dict, observations: list
         result.update(session_identity="unbound", session_reason="no_observation_since_launch")
         return
     observed_at, newest = max(dated, key=lambda pair: pair[0])
-    boundary = _launch_boundary(launched)
+    boundary = _launch_boundary(launched, created)
     if boundary is None or observed_at < boundary:
         result.update(session_identity="unbound", session_reason="no_observation_since_launch")
         return
@@ -101,11 +102,11 @@ def _bind_claude(result: dict, launched: dict, profile: dict, observations: list
     _compare(result, profile, newest.get("model"), newest.get("effort"))
 
 
-def _bind_codex(result: dict, launched: dict, profile: dict, native: dict | None) -> None:
+def _bind_codex(result: dict, launched: dict, profile: dict, native: dict | None, created) -> None:
     if not isinstance(native, dict) or native.get("native_thread_id") != launched["native_thread_id"]:
         result.update(session_identity="unbound", session_reason="no_rollout_for_recorded_thread")
         return
-    turn, boundary = _utc(native.get("observed_at")), _launch_boundary(launched)
+    turn, boundary = _utc(native.get("observed_at")), _launch_boundary(launched, created)
     if turn is None or boundary is None or turn <= boundary:
         # read_native_codex reports only the latest turn; it must postdate the new process.
         result.update(session_identity="unbound", session_reason="no_turn_since_launch")
@@ -114,7 +115,7 @@ def _bind_codex(result: dict, launched: dict, profile: dict, native: dict | None
     _compare(result, profile, native.get("model"), native.get("effort"))
 
 
-def _launch_boundary(launched: dict):
+def _launch_boundary(launched: dict, created):
     """Evidence counts only from the moment the launcher recorded the target profile.
 
     A process can start before the launcher records and applies its profile, so
@@ -122,7 +123,11 @@ def _launch_boundary(launched: dict):
     inverted pair (launched before the process started) yields no boundary.
     """
     started, recorded = _utc(launched["process_started_at"]), _utc(launched["launched_at"])
-    if started is None or recorded is None or recorded < started:
+    if started is None or recorded is None or created is None:
+        return None
+    # Enforce created_at <= process_started_at <= launched_at here too, so a
+    # caller that skipped validate_record still cannot bind an older epoch.
+    if started < created or recorded < started:
         return None
     return recorded
 

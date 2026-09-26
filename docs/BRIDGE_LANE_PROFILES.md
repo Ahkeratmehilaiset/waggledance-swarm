@@ -133,8 +133,10 @@ and never merges them:
     strictly after `launched_at`.
   - The freshness boundary is `launched_at`, the moment the launcher recorded the
     target profile, not the process start. A process can exist before its profile is
-    applied. A record whose `launched_at` precedes `process_started_at`, or lies in the
-    future, is refused, and an inverted pair binds nothing.
+    applied. The causal order is `created_at <= process_started_at <= launched_at <=
+    now`: the relaunched process is created after the transition record. A record
+    violating it is refused, and binding re-checks the order, so an older epoch never
+    binds a newer transition.
   - Missing evidence is `unbound`, never valid.
 - **`quota_pool_binding`** (`valid` | `unverified` | `invalid`). Every one of the
   profile's `(provider, limit id)` quota rows must be present, all with the profile's

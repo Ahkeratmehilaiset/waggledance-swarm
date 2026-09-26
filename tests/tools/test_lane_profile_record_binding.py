@@ -37,7 +37,7 @@ def record(**overrides) -> dict:
         "reason": "review load", "requested_by": {"agent": "codex-lead-1", "agent_uuid": LEAD_UUID,
                                                   "session_id": "wd-lane-codex-lead-1-x"},
         "request_id": "req-1", "transition_id": "tid-1",
-        "created_at": iso(NOW - timedelta(minutes=5)), "expires_at": iso(NOW + timedelta(hours=1)),
+        "created_at": iso(NOW - timedelta(minutes=15)), "expires_at": iso(NOW + timedelta(hours=1)),
         "catalog_sha256": DIGEST, "launched": None,
     }
     base.update(overrides)
@@ -322,3 +322,46 @@ def test_record_refuses_bad_launch_ordering(launched_at, match):
     rec["launched_at"] = iso(launched_at)
     with pytest.raises(RecordError, match=match):
         validate_record(record(launched=rec), CATALOG, DIGEST, now=NOW)
+
+
+def pre_record_epoch() -> tuple[dict, dict]:
+    """Lead PR1737-B2 reproducer: created 11:55, process 11:50, launched 11:54."""
+    rec = launched(started=NOW - timedelta(minutes=10))
+    rec["launched_at"] = iso(NOW - timedelta(minutes=6))
+    record_ = record(created_at=iso(NOW - timedelta(minutes=5)), launched=rec)
+    return record_, {4242: iso(NOW - timedelta(minutes=10))}
+
+
+def test_record_refuses_a_process_older_than_the_record():
+    record_, _ = pre_record_epoch()
+    with pytest.raises(RecordError, match="precedes the record creation"):
+        validate_record(record_, CATALOG, DIGEST, now=NOW)
+
+
+def test_claude_pre_record_epoch_cannot_bind():
+    record_, live = pre_record_epoch()
+    evidence = claude_obs(at=NOW - timedelta(minutes=5, seconds=30))
+    result = bind_lane(record_, CATALOG, live_processes=live, claude_observations=evidence)
+    assert result["session_identity"] == "unbound" and result["profile_observed"] == "unverified"
+    # Even evidence after launch cannot rescue an epoch that predates the record.
+    later = claude_obs(at=NOW)
+    assert bind_lane(record_, CATALOG, live_processes=live, claude_observations=later)["session_identity"] == "unbound"
+
+
+def test_codex_pre_record_epoch_cannot_bind():
+    record_, live = pre_record_epoch()
+    record_.update(lane="codex-tools-1", desired_profile="codex-gpt-6-sol-high",
+                   previous_profile="codex-gpt-5.6-terra-medium")
+    turn = {"native_thread_id": THREAD, "observed_at": iso(NOW), "model": "gpt-6-sol", "effort": "high"}
+    result = bind_lane(record_, CATALOG, live_processes=live, codex_native=turn)
+    assert result["session_identity"] == "unbound" and result["profile_observed"] == "unverified"
+
+
+def test_process_started_exactly_at_record_creation_binds():
+    rec = launched(started=NOW - timedelta(minutes=5))
+    rec["launched_at"] = iso(NOW - timedelta(minutes=4))
+    record_ = record(created_at=iso(NOW - timedelta(minutes=5)), launched=rec)
+    assert validate_record(record_, CATALOG, DIGEST, now=NOW)
+    live = {4242: iso(NOW - timedelta(minutes=5))}
+    assert bind_lane(record_, CATALOG, live_processes=live,
+                     claude_observations=claude_obs(at=NOW))["session_identity"] == "valid"

@@ -55,6 +55,11 @@ POLICY_KEYS = frozenset({"schema", "mode", "policy_ref", "observation_ttl_second
 PROFILE_KEYS = frozenset({"provider", "account_pool", "model", "effort", "billing", "approved",
                           "qualification_ref", "qualified_for", "roles", "limits"})
 AGENT_BINDING_KEYS = frozenset({"role", "profiles"})
+LIMIT_KEYS = frozenset({"id", "windows"})
+# A catalog is signed only once the operator replaces this prefix in a reviewed PR.
+UNSIGNED_PREFIX = "UNSIGNED"
+# Placeholder qualification references that must never count as a qualification.
+PLACEHOLDER_MARKERS = ("REQUIRED", "PLACEHOLDER", "SYNTHETIC", "TODO", "UNSIGNED")
 
 
 class CatalogError(ValueError):
@@ -90,7 +95,9 @@ def _validate_providers(providers: Any, profiles: dict) -> None:
     if not isinstance(providers, dict) or not providers:
         raise CatalogError("providers must map each provider to its effort enum")
     for name, spec in providers.items():
-        efforts = spec.get("efforts") if isinstance(spec, dict) else None
+        if not isinstance(spec, dict) or set(spec) != {"efforts"}:
+            raise CatalogError(f"providers.{name} must define exactly efforts")
+        efforts = spec["efforts"]
         if (not isinstance(efforts, list) or not efforts
                 or not all(isinstance(e, str) and e for e in efforts)
                 or len(set(efforts)) != len(efforts)):
@@ -103,7 +110,7 @@ def _validate_providers(providers: Any, profiles: dict) -> None:
             raise CatalogError(f"profile {profile_id} effort is not in the provider enum")
 
 
-def _validate_lanes(lanes: Any, policy: dict) -> None:
+def _validate_lanes(lanes: Any, policy: dict, signed: bool) -> None:
     if not isinstance(lanes, dict) or not lanes:
         raise CatalogError("lanes must be a nonempty object")
     profiles = policy["profiles"]
@@ -140,7 +147,7 @@ def _validate_lanes(lanes: Any, policy: dict) -> None:
             raise CatalogError(f"lane {lane} default must be an allowed profile")
         if allowed.index(spec["default"]) > floor:
             raise CatalogError(f"lane {lane} default must not be below its floor")
-        _check_runtime_admissible(lane, allowed, binding["role"], profiles)
+        _check_runtime_admissible(lane, allowed, binding["role"], profiles, signed)
         _positive_int(spec["max_relaunches_per_hour"], f"lane {lane} max_relaunches_per_hour", 12)
         _positive_int(spec["cooldown_seconds"], f"lane {lane} cooldown_seconds", 86_400)
         if type(spec["reviewer"]) is not bool:
@@ -149,19 +156,34 @@ def _validate_lanes(lanes: Any, policy: dict) -> None:
             raise CatalogError(f"lane {lane} reviewer flag does not match the reviewer lane set")
 
 
-def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dict) -> None:
+def is_signed(catalog: dict) -> bool:
+    """A catalog counts as operator-signed only when its signature is not the unsigned default."""
+    signature = catalog.get("operator_signature")
+    return isinstance(signature, str) and not signature.strip().upper().startswith(UNSIGNED_PREFIX)
+
+
+def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dict,
+                              signed: bool) -> None:
     """Refuse statically what the advisor's _profile_checks would refuse at runtime.
 
-    A profile the advisor can never select is not a real option; listing it would
-    only make the catalog claim a choice the runtime does not have.
+    Unsigned catalog: every profile must be unapproved, so the advisor can never
+    find an admissible candidate and no shadow decision counts an unqualified
+    profile. Signed catalog: every allowed profile must be approved with a real
+    qualification_ref; a placeholder never satisfies it.
     """
     first = profiles[allowed[0]]
     for profile_id in allowed:
         profile = profiles[profile_id]
-        if profile.get("approved") is not True or not (
-                isinstance(profile.get("qualification_ref"), str)
-                and profile["qualification_ref"].strip()):
-            raise CatalogError(f"lane {lane} profile {profile_id} is not approved with a qualification_ref")
+        reference = profile.get("qualification_ref")
+        if not isinstance(reference, str) or not reference.strip():
+            raise CatalogError(f"lane {lane} profile {profile_id} has no qualification_ref")
+        if not signed:
+            if profile.get("approved") is not False:
+                raise CatalogError(f"lane {lane} profile {profile_id} is approved in an unsigned catalog")
+        elif profile.get("approved") is not True or any(
+                marker in reference.upper() for marker in PLACEHOLDER_MARKERS):
+            raise CatalogError(
+                f"lane {lane} profile {profile_id} is not approved with a real qualification_ref")
         qualified_for = profile.get("qualified_for")
         if (not isinstance(qualified_for, list) or not qualified_for
                 or not all(isinstance(q, str) and q for q in qualified_for)):
@@ -216,6 +238,10 @@ def validate_catalog(catalog: Any) -> dict:
     for profile_id, profile in _mapping(policy.get("profiles"), "capacity_policy.profiles").items():
         if not isinstance(profile, dict) or set(profile) != PROFILE_KEYS:
             raise CatalogError(f"profile {profile_id} must carry exactly the advisor profile fields")
+        limits = profile.get("limits")
+        if not isinstance(limits, list) or any(
+                not isinstance(limit, dict) or set(limit) != LIMIT_KEYS for limit in limits):
+            raise CatalogError(f"profile {profile_id} limits must each carry exactly id and windows")
     for agent_id, binding in _mapping(policy.get("agents"), "capacity_policy.agents").items():
         if not isinstance(binding, dict) or set(binding) != AGENT_BINDING_KEYS:
             raise CatalogError(f"agent binding {agent_id} must carry exactly role and profiles")
@@ -224,7 +250,7 @@ def validate_catalog(catalog: Any) -> dict:
     except InputError as exc:
         raise CatalogError(f"embedded capacity policy is invalid: {exc}") from None
     _validate_providers(catalog["providers"], policy["profiles"])
-    _validate_lanes(catalog["lanes"], policy)
+    _validate_lanes(catalog["lanes"], policy, is_signed(catalog))
     _validate_fleet(catalog["fleet"], catalog["lanes"])
     return catalog
 

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from tools.bridge_capacity_advisor import _profile_checks
 from tools.lane_profile_catalog import (
     CatalogError,
+    is_signed,
     classify_transition,
     effective_mode,
     load_catalog,
@@ -90,7 +93,10 @@ BAD = {
     "no lane policy binding": mutate(["capacity_policy", "agents", "fable-5"], delete=True),
     "exit criterion missing": mutate(["fleet", "shadow_exit", "min_days"], delete=True),
     "verify timeout zero": mutate(["fleet", "verify_timeout_seconds"], 0),
-    "unapproved allowed profile": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "approved"], False),
+    "approved in an unsigned catalog": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "approved"], True),
+    "field smuggled into a provider": mutate(["providers", "claude", "ignored"], 1),
+    "field smuggled into a quota limit": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "limits"],
+                                                [{"id": "claude", "windows": ["five_hour"], "ignored": 1}]),
     "blank qualification_ref": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "qualification_ref"], " "),
     "no qualification classes": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "qualified_for"], []),
     "role not qualified": mutate(["capacity_policy", "profiles", "claude-opus-5-5-medium", "roles"], ["lead"]),
@@ -201,3 +207,48 @@ def test_cross_provider_lane_is_refused():
                                        default="codex-gpt-6-sol-high")
     with pytest.raises(CatalogError, match="mixes providers"):
         validate_catalog(catalog)
+
+
+def signed_catalog() -> dict:
+    catalog = shipped()
+    catalog["operator_signature"] = "operator 2026-09-26 reviewed PR"
+    for number, profile in enumerate(catalog["capacity_policy"]["profiles"].values()):
+        profile["approved"] = True
+        profile["qualification_ref"] = f"qual-2026-09-26-{number:03d}"
+    return catalog
+
+
+def test_signed_state_is_read_from_the_signature():
+    assert is_signed(shipped()) is False
+    assert is_signed(signed_catalog()) is True
+    assert validate_catalog(signed_catalog())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("approved", False),
+    ("qualification_ref", "OPERATOR-SIGNATURE-REQUIRED"),
+    ("qualification_ref", "placeholder-ref"),
+    ("qualification_ref", "SYNTHETIC-NOT-A-LIVE-APPROVAL"),
+])
+def test_signed_catalog_needs_real_approvals(field, value):
+    catalog = signed_catalog()
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-medium"][field] = value
+    with pytest.raises(CatalogError, match="not approved with a real qualification_ref"):
+        validate_catalog(catalog)
+
+
+def test_shipped_unsigned_catalog_yields_no_admissible_candidate():
+    # Lead review PR1736-B2: run the advisor's own runtime check on every lane profile.
+    catalog = shipped()
+    policy = catalog["capacity_policy"]
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+    for lane, spec in catalog["lanes"].items():
+        binding = policy["agents"][lane]
+        for profile_id in spec["allowed_profiles"]:
+            profile = policy["profiles"][profile_id]
+            agent = {"provider": profile["provider"], "current_profile": spec["default"],
+                     "catalog": [{"model": profile["model"], "effort": profile["effort"],
+                                  "source_ref": "fixture", "observed_at": now.isoformat()}]}
+            task = {"qualification_class": profile["qualified_for"][0]}
+            issues = _profile_checks(profile, binding, agent, task, {"state": "available"}, policy, now)
+            assert "qualification_not_approved" in issues, (lane, profile_id, issues)

@@ -18,42 +18,42 @@
       "claude-opus-5-5-xhigh": {
         "provider": "claude", "account_pool": "operator-claude-subscription",
         "model": "claude-opus-5-5", "effort": "xhigh", "billing": "subscription",
-        "approved": true, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
         "qualified_for": ["wd-review", "wd-routine-coding"], "roles": ["rco1", "rco2", "fable"],
         "limits": [{"id": "claude", "windows": ["five_hour", "seven_day"]}]
       },
       "claude-opus-5-5-medium": {
         "provider": "claude", "account_pool": "operator-claude-subscription",
         "model": "claude-opus-5-5", "effort": "medium", "billing": "subscription",
-        "approved": true, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
         "qualified_for": ["wd-routine-coding"], "roles": ["fable"],
         "limits": [{"id": "claude", "windows": ["five_hour", "seven_day"]}]
       },
       "claude-sonnet-5-xhigh": {
         "provider": "claude", "account_pool": "operator-claude-subscription",
         "model": "claude-sonnet-5", "effort": "xhigh", "billing": "subscription",
-        "approved": true, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
         "qualified_for": ["wd-review"], "roles": ["rco1", "rco2"],
         "limits": [{"id": "claude", "windows": ["five_hour", "seven_day"]}]
       },
       "codex-gpt-6-sol-high": {
         "provider": "codex", "account_pool": "operator-chatgpt-subscription",
         "model": "gpt-6-sol", "effort": "high", "billing": "subscription",
-        "approved": true, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
         "qualified_for": ["wd-routine-coding"], "roles": ["lead", "tools"],
         "limits": [{"id": "codex", "windows": ["primary"]}]
       },
       "codex-gpt-5.6-sol-medium": {
         "provider": "codex", "account_pool": "operator-chatgpt-subscription",
         "model": "gpt-5.6-sol", "effort": "medium", "billing": "subscription",
-        "approved": true, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
         "qualified_for": ["wd-routine-coding"], "roles": ["lead"],
         "limits": [{"id": "codex", "windows": ["primary"]}]
       },
       "codex-gpt-5.6-terra-medium": {
         "provider": "codex", "account_pool": "operator-chatgpt-subscription",
         "model": "gpt-5.6-terra", "effort": "medium", "billing": "subscription",
-        "approved": true, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
         "qualified_for": ["wd-routine-coding"], "roles": ["tools"],
         "limits": [{"id": "codex", "windows": ["primary"]}]
       }

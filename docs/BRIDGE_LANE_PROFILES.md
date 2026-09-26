@@ -35,12 +35,19 @@ versioned wrapper. Its validator, `tools/lane_profile_catalog.py`, covers every 
 - `fleet`: `mode` (`shadow` | `approve` | `auto`), `max_relaunches_per_hour_total`
   (no lane budget may exceed it), `verify_timeout_seconds`, and the `shadow_exit` and
   `approve_exit` criteria.
+- Exact keys everywhere: the root, each provider (exactly `efforts`), the policy
+  root, each profile, each quota limit (exactly `id` and `windows`) and each agent
+  binding. An unknown key anywhere is refused.
 - Runtime admissibility: every profile a lane lists must pass what the advisor's
-  `_profile_checks` would demand at runtime. It must be approved with a
-  `qualification_ref`, have qualification classes, carry the lane's role and use
-  subscription billing. A lane may not mix providers or account pools, because a
-  resume keeps the conversation but cannot move it. A profile the runtime could never
-  select is refused rather than listed.
+  `_profile_checks` checks at runtime. It needs qualification classes, the lane's
+  role and subscription billing. A lane may not mix providers or account pools,
+  because a resume keeps the conversation but cannot move it.
+- Signature state decides approval. A catalog whose `operator_signature` starts with
+  `UNSIGNED` must mark every profile `approved: false`, so the advisor finds no
+  admissible candidate and no shadow decision counts an unqualified profile. A signed
+  catalog must mark every allowed profile `approved: true` with a real
+  `qualification_ref`. A placeholder (REQUIRED, PLACEHOLDER, SYNTHETIC, TODO or
+  UNSIGNED) never counts.
 - `catalog_ref`, `operator_signature`: the operator signs by replacing
   `operator_signature` in a reviewed PR. The validator records the signature; it does
   not verify it.
@@ -77,7 +84,8 @@ The defaults are the profiles measured on 2026-09-26: rco-1 and rco-2 on
 claude-sonnet-5 xhigh, Lead on gpt-5.6-sol medium, Tools on gpt-5.6-terra medium,
 and fable-5 on claude-opus-5-5 medium. Each lane gets one stronger option. Each
 lane's floor is its current profile, so the shipped catalog permits raise-or-same
-only. The mode is `shadow`, and the signature reads `UNSIGNED-DEFAULT`.
+only. The mode is `shadow`, the signature reads `UNSIGNED-DEFAULT`, and every
+profile is `approved: false` until the operator signs.
 
 ## Governance
 

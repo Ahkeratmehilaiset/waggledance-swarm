@@ -55,6 +55,11 @@ foreach ($path in @($PythonExecutable, $CodexExecutable)) {
     if (-not [IO.Path]::IsPathRooted($path) -or [IO.Path]::GetExtension($path) -ine '.exe' -or
         -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Absolute native executable required' }
 }
+# The launcher may be absent, but its path is held to the same shape rules.
+if (-not [IO.Path]::IsPathRooted($SilentLauncher) -or [IO.Path]::GetExtension($SilentLauncher) -ine '.exe') {
+    throw 'Absolute silent launcher .exe path required'
+}
+[void](Assert-CapacityPath $SilentLauncher ([IO.Path]::GetPathRoot($SilentLauncher)))
 $root = [IO.Path]::GetFullPath($InstallRoot)
 if (-not $root.StartsWith('C:\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Persistent C: install required' }
 [void](Assert-CapacityPath $root ([IO.Path]::GetPathRoot($root)))
@@ -121,9 +126,14 @@ $runner = Join-Path $release 'ops\windows\reboot\Invoke-WdCapacityObserver.ps1'
 $hostPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
     $runner + '" -ManifestPath "' + $manifestPath + '" -ManifestSha256 ' + $anchor
-# The launcher waits for the host and returns its exit code, so the task's
-# IgnoreNew and two-minute limit still bound the real observer run. A present
-# launcher with the wrong hash is refused; an absent one keeps the direct host.
+# The launcher waits for the host and returns its exit code (measured), so
+# IgnoreNew still prevents overlapping runs. The task's two-minute limit does
+# NOT bound the observer through the launcher: on expiry Task Scheduler ends
+# the launcher and the host keeps running (measured 2026-09-26). The real
+# bound is the collector's own 45-second whole-call timeout. The launcher's
+# hash is verified here at install time only, like the runner. A present
+# launcher with the wrong hash is refused; an absent one keeps the direct host
+# for a new or direct task and refuses to downgrade a silent one.
 $silentPrefix = '"' + $hostPath + '" '
 $taskExecute = $hostPath
 $taskArguments = $arguments
@@ -173,6 +183,11 @@ if ($old) {
         $ownerSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -or
         [string]$old.Principal.RunLevel -cne 'Limited') {
         throw 'Existing task is not this exact Limited observer; refusing replacement'
+    }
+    if ($old.Actions[0].Execute -ieq $SilentLauncher -and $taskExecute -ieq $hostPath) {
+        # Match Set-WdTaskConsoleContainment.ps1: a missing launcher must not
+        # quietly turn a silent task back into a once-a-minute console flash.
+        throw 'Silent task launcher is missing; refusing to downgrade the observer task'
     }
     if ($oldInvocation -ceq $arguments -and $old.Actions[0].WorkingDirectory -ieq $release -and
         $old.Actions[0].Execute -ine $taskExecute) {

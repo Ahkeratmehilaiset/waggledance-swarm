@@ -26,7 +26,8 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.lane_profile_catalog import LANES, classify_transition, effective_mode  # noqa: E402
+from tools.lane_profile_catalog import (  # noqa: E402
+    LANES, CatalogError, classify_transition, effective_mode, is_signed, validate_catalog)
 
 SCHEMA = "wd.lane-profile-record.v1"
 MAX_RECORD_BYTES = 64 * 1024
@@ -51,9 +52,10 @@ def _utc(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        return parsed.astimezone(timezone.utc) if parsed.utcoffset() is not None else None
+    except (ValueError, OverflowError):
+        # astimezone overflows for offsets at the ends of the datetime range.
         return None
-    return parsed.astimezone(timezone.utc) if parsed.utcoffset() is not None else None
 
 
 def record_path(runtime_root: str | Path, lane: str) -> Path:
@@ -136,19 +138,37 @@ def read_record(path: str | Path) -> dict:
     """Read one record file, bounded, plain JSON; a missing file is RecordError too."""
     path = Path(path)
     try:
-        data = path.read_bytes()
+        if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+            raise RecordError("record path is a symlink or reparse point")
+        with path.open("rb") as stream:
+            data = stream.read(MAX_RECORD_BYTES + 1)
     except FileNotFoundError:
         raise RecordError("no record") from None
+    except OSError as exc:
+        # A directory, a sharing violation or a permission error is an unusable record, not a crash.
+        raise RecordError(f"record unreadable: {exc.__class__.__name__}") from None
     if len(data) > MAX_RECORD_BYTES:
         raise RecordError("record exceeds the size bound")
     try:
-        return json.loads(data.decode("utf-8"), parse_constant=_refuse_constant)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_refuse_constant)
+    except RecordError:
+        raise
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # ValueError also covers the integer-digit limit; RecursionError a nesting bomb.
         raise RecordError("record is not UTF-8 JSON") from None
 
 
 def _refuse_constant(name: str) -> None:
     raise RecordError(f"non-finite JSON constant {name}")
+
+
+def _pairs(pairs: list) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RecordError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 def write_record(path: str | Path, record: dict) -> None:
@@ -197,6 +217,10 @@ def launch_decision(runtime_root: str | Path, lane: str, catalog: dict, catalog_
         if str(exc) != "no record":
             decision["fallback_event"] = {"reason": "record_unusable", "detail": str(exc)}
         return decision
+    except Exception as exc:  # the launcher-facing oracle never raises: unusable means native
+        decision["fallback_event"] = {"reason": "record_unusable",
+                                      "detail": f"unexpected {exc.__class__.__name__}"}
+        return decision
     if record["lane"] != lane:
         decision["fallback_event"] = {"reason": "record_unusable", "detail": "record names another lane"}
         return decision
@@ -206,6 +230,16 @@ def launch_decision(runtime_root: str | Path, lane: str, catalog: dict, catalog_
               "transition_id": record["transition_id"]}
     decision["would_apply"] = target
     if mode == "auto":
+        # Defense in depth (rco-1 NB1): apply never rides on a caller-built dict.
+        try:
+            validate_catalog(catalog)
+        except CatalogError as exc:
+            decision["fallback_event"] = {"reason": "catalog_invalid", "detail": str(exc)}
+            return decision
+        if not is_signed(catalog):
+            decision["fallback_event"] = {"reason": "catalog_unsigned",
+                                          "detail": "auto requires an operator-signed catalog"}
+            return decision
         decision.update(action="apply", profile=target)
     elif mode == "approve":
         # approve needs a verified per-transition operator ack. No operator

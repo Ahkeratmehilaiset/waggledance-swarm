@@ -19,9 +19,14 @@ production implementation here and nothing in the runtime calls this module:
 the launcher and supervisor wiring is PR-4, which is (a)-class. Order, fail
 closed at every step (spec v3 D4, as amended by the Lead and RCO reviews):
 
-1. ``check_request`` (catalog, budgets, cooldown); 2. mode gate: shadow only
-   returns would_relaunch, approve fails closed without a verifiable operator
-   ack, auto proceeds; Lead's own lane only via the supervisor executor;
+0. authenticate the executing principal and the requester through the
+   ``authenticate`` port (never constructor or request labels): only a Lead
+   request is executed, by Lead for other lanes and by the supervisor for
+   Lead's own lane;
+1. ``check_request`` (catalog, budgets, cooldown) against the durable journal:
+   only transitions that actually stopped a source process count;
+2. mode gate: shadow only returns would_relaunch, approve fails closed without
+   a verifiable operator ack, only exactly auto proceeds;
 3. measure the lane, ``check_safe_boundary``, and verify the CURRENT profile from
    D3 binding evidence (never from the record's self-declared previous_profile);
 4. take the claim (record, transition lock and readiness paths), then re-measure
@@ -30,9 +35,13 @@ closed at every step (spec v3 D4, as amended by the Lead and RCO reviews):
 6. launch preconditions of the NEW process verified before the old one stops;
 7. journal planned -> quiesced (D2 record written) -> checkpointed;
 8. stop the verified source instance, then apply_pending + launch;
-9. verify within the timeout; else exactly one rollback to the previous profile;
-   rollback failure leaves the lane stopped and the journal reservation held for
-   operator reconciliation;
+9. verify within the timeout, counted from when the launch returns; the lane
+   must then have exactly one process. Else exactly one rollback to the previous
+   profile; rollback failure leaves the lane stopped and the journal reservation
+   held for operator reconciliation;
+9b. deliver the checkpoint (or provider resume) through ``resume_lane``; the
+   journal reaches ``resumed`` only when that step confirms, otherwise it holds
+   at ``resume_pending`` for the operator;
 10. a ``decision/profile_transition`` receipt for every outcome; release the claim.
 """
 from __future__ import annotations
@@ -51,8 +60,13 @@ from tools.wd_lane_relaunch import PROCEED, check_request, check_safe_boundary
 
 LEAD = "codex-lead-1"
 EPOCH_SKEW_SECONDS = 2.0
+OBSERVATION_MAX_AGE_SECONDS = 300  # the current profile is shown by a recent observation, not any since launch
 REQUEST_KEYS = ("lane", "request_id", "requested_by", "current_profile", "target_profile")
 REVIEWERS = ("claude-rco-1", "claude-rco-2")
+SUPERVISOR = "supervisor"
+TASK_ID = "lane-profile-switching"
+VERIFIED_PIN = "manifest_and_launcher_verified"
+IDENTITY_KEYS = ("agent", "agent_uuid", "session_id")
 
 
 class Ports(Protocol):
@@ -60,9 +74,9 @@ class Ports(Protocol):
 
     def now(self) -> datetime: ...
     def sleep(self, seconds: float) -> None: ...
+    def authenticate(self, request: dict) -> dict | None: ...
     def measure(self, lane: str) -> dict: ...
-    def history(self, lane: str) -> list | None: ...
-    def evidence(self, lane: str) -> dict: ...
+    def processes(self, lane: str) -> list[dict] | None: ...
     def observations(self, lane: str) -> dict: ...
     def take_claim(self, lane: str, scope: list[str], lease_seconds: int) -> str: ...
     def release_claim(self, claim_id: str) -> None: ...
@@ -70,9 +84,23 @@ class Ports(Protocol):
     def checkpoint(self, lane: str) -> str: ...
     def stop(self, lane: str, pid: int, started_at: str) -> bool: ...
     def launch(self, lane: str, profile: dict | None) -> None: ...
+    def resume_lane(self, lane: str, epoch: dict, checkpoint: str) -> bool: ...
     def read_record(self, lane: str) -> dict: ...
     def write_record(self, lane: str, record: dict) -> None: ...
     def emit(self, event: dict) -> None: ...
+
+
+# Port contracts (production implementations arrive with the runtime wiring):
+#
+# authenticate(request) -> {"executor": {"principal", "agent_uuid", "session_id",
+#     "verification_ref"}, "requester": {"agent", "agent_uuid", "session_id"}} or None.
+#     The port authenticates BOTH the process running this executor and the origin
+#     of the request event; the executor never trusts a label it was handed.
+# processes(lane) -> every live process attributed to the lane, each
+#     {"pid", "process_started_at", "pin_status", "native_conversation_id"}, or None
+#     when enumeration failed. Late targets must appear here too.
+# resume_lane(lane, epoch, checkpoint) -> True only when the relaunched session
+#     confirms it received the checkpoint or resumed its provider thread.
 
 
 class ClaimConflict(Exception):
@@ -97,9 +125,12 @@ class Executor:
     """One relaunch attempt. Construct per request; ``run()`` returns the receipt."""
 
     def __init__(self, *, catalog: dict, catalog_sha256: str, store: RecoveryStore, ports: Ports,
-                 runtime_root: str, request: dict, executor: str, lease_seconds: int | None = None):
+                 runtime_root: str, request: dict, lease_seconds: int | None = None):
         self.catalog, self.digest, self.store, self.ports = catalog, catalog_sha256, store, ports
-        self.runtime_root, self.request, self.executor = runtime_root, request, executor
+        self.runtime_root, self.request = runtime_root, request
+        self.executor: str | None = None      # set only from the authenticate port
+        self.principal: dict | None = None
+        self.checkpoint = None
         self.lane = request.get("lane") if isinstance(request, dict) else None
         timeout = catalog["fleet"]["verify_timeout_seconds"]
         self.lease_seconds = lease_seconds or timeout * 2 + 600
@@ -144,6 +175,66 @@ class Executor:
         root = str(record_path(self.runtime_root, self.lane))
         return [root, root + ".transition.lock", f"{self.runtime_root}/readiness/{self.lane}.json"]
 
+    def _processes(self) -> list[dict] | None:
+        """Every live process the evidence port attributes to this lane, or None when unknown."""
+        try:
+            rows = self.ports.processes(self.lane)
+        except Exception:  # noqa: BLE001 - unreadable evidence proves nothing
+            return None
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            return None
+        return rows
+
+    def _source_unproven(self, state: dict) -> str | None:
+        """None when execution evidence names the process about to be stopped as this lane's ONLY one.
+
+        The measured pid is the port's own report; the target is bound through evidence ancestry, so the
+        process that is killed is proven the same way. A second lane process (a late target, a duplicate)
+        means the lane is not the single process the stop would leave behind. Anything else refuses.
+        """
+        rows = self._processes()
+        if rows is None:
+            return "source_evidence_unavailable"
+        if len(rows) != 1:
+            return "lane_process_count_not_one"
+        evidence = rows[0]
+        if (evidence.get("pin_status") != VERIFIED_PIN
+                or type(evidence.get("pid")) is not int or evidence["pid"] != state.get("pid")
+                or not _same_instant(evidence.get("process_started_at"), state.get("process_started_at"))
+                or evidence.get("native_conversation_id") != state.get("native_thread_id")):
+            return "source_not_proven_by_evidence"
+        return None
+
+    def _source_gone(self) -> bool:
+        """After a stop() that raised: True unless verified evidence still shows that very process alive.
+
+        Only pin-verified evidence naming the stop target's pid and creation time
+        proves it survived; anything else is an unknown fate, which counts as
+        down and holds the reservation for the operator (Lead review R2).
+        """
+        rows = self._processes()
+        if rows is None:
+            return True  # cannot tell: assume it is down, which holds the reservation
+        alive = any(row.get("pin_status") == VERIFIED_PIN
+                    and type(row.get("pid")) is int and row["pid"] == self.stop_target[0]
+                    and _same_instant(row.get("process_started_at"), self.stop_target[1])
+                    for row in rows)
+        return not alive
+
+    def _fresh_observations(self, obs: Any) -> dict:
+        """Only observations from the last OBSERVATION_MAX_AGE_SECONDS: an old row need not show the profile now."""
+        now = self.ports.now()
+
+        def young(row: Any) -> bool:
+            stamp = _utc(row.get("observed_at")) if isinstance(row, dict) else None
+            return stamp is not None and 0 <= (now - stamp).total_seconds() <= OBSERVATION_MAX_AGE_SECONDS
+
+        if not isinstance(obs, dict):
+            return {"claude": None, "codex": None}
+        claude, codex = obs.get("claude"), obs.get("codex")
+        return {"claude": [row for row in claude if young(row)] if isinstance(claude, list) else None,
+                "codex": codex if young(codex) else None}
+
     def _verify_current(self, state: dict) -> str | None:
         """The current profile, verified from measured evidence (rco-2 residual B).
 
@@ -165,7 +256,7 @@ class Executor:
         if (current not in self.catalog["lanes"][self.lane]["allowed_profiles"]
                 or type(state.get("pid")) is not int or _utc(started) is None):
             return None
-        obs = self.ports.observations(self.lane)
+        obs = self._fresh_observations(self.ports.observations(self.lane))
         result = bind_lane(measured, self.catalog, live_processes={state["pid"]: started},
                            claude_observations=obs.get("claude"), codex_native=obs.get("codex"))
         if result["session_identity"] == "valid" and result["profile_observed"] == "match":
@@ -177,6 +268,8 @@ class Executor:
     def run(self) -> dict:
         """One transition; every outcome, including an unexpected exception, yields a receipt."""
         self.source_stopped = False
+        self.stop_in_flight = False
+        self.stop_target = None
         self.record_written = False
         try:
             return self._run()
@@ -185,12 +278,14 @@ class Executor:
 
     def _on_exception(self, exc: Exception) -> dict:
         reasons = ["executor_exception", exc.__class__.__name__]
+        # A stop() that raised may or may not have killed the source: treat it as stopped and hold.
+        down = self.source_stopped or (self.stop_in_flight and self._source_gone())
         if self.tid is not None:
             try:
                 row = self.store.get(self.tid)
-                if not self.source_stopped and row["phase"] in ("planned", "quiesced", "checkpointed"):
+                if not down and row["phase"] in ("planned", "quiesced", "checkpointed"):
                     self.store.move(self.tid, row["phase"], "cancelled_before_apply", reason="executor_exception")
-                elif self.source_stopped:
+                elif down:
                     # The lane is down: hold the reservation for the operator (never free it blindly).
                     self.store.move(self.tid, row["phase"], row["phase"], reason="executor_exception")
                     reasons.append("operator_required")
@@ -201,9 +296,78 @@ class Executor:
                 self._neutralise_record()
             except Exception:  # noqa: BLE001
                 reasons.append("record_not_neutralised")
-        if self.source_stopped and "operator_required" not in reasons:
+        if down and "operator_required" not in reasons:
             reasons.append("operator_required")
         return self._receipt("failed", reasons)
+
+    def _authenticate(self) -> dict | None:
+        """Bind executor and requester to identities the port authenticated; None when accepted."""
+        try:
+            result = self.ports.authenticate(self.request)
+        except Exception:  # noqa: BLE001 - an authentication failure is never a pass
+            result = None
+        executor = result.get("executor") if isinstance(result, dict) else None
+        requester = result.get("requester") if isinstance(result, dict) else None
+        if (not isinstance(executor, dict) or not isinstance(requester, dict)
+                or not all(isinstance(executor.get(k), str) and executor[k]
+                           for k in ("principal", "agent_uuid", "session_id", "verification_ref"))
+                or not all(isinstance(requester.get(k), str) and requester[k] for k in IDENTITY_KEYS)):
+            return self._receipt("parked", ["principal_unauthenticated"])
+        self.principal, self.executor = executor, executor["principal"]
+        claimed = self.request["requested_by"]
+        if any(claimed.get(k) != requester[k] for k in IDENTITY_KEYS):
+            return self._receipt("aborted", ["requester_not_authenticated_as_claimed"])
+        if requester["agent"] != LEAD:
+            return self._receipt("aborted", ["requester_is_not_lead"])
+        if self.lane == LEAD:
+            if self.executor != SUPERVISOR:
+                return self._receipt("aborted", ["self_transition_requires_supervisor"])
+        elif (self.executor != LEAD or executor["agent_uuid"] != requester["agent_uuid"]
+              or executor["session_id"] != requester["session_id"]):
+            return self._receipt("aborted", ["executor_is_not_the_requesting_lead"])
+        return None
+
+    def _journal_history(self) -> list | None:
+        """Counted relaunches: lane-profile transitions whose source stop is journaled (Lead review R6).
+
+        Read from the durable RecoveryStore, fleet-wide, never from emitted
+        receipts: a transition counts from the ``apply_pending`` row written in
+        the same SQLite transaction as its source stop, stamped by this
+        executor's clock. Aborted, parked and cancelled attempts never reach
+        ``apply_pending`` and so never count. A lane-profile transition that
+        reached ``apply_pending`` without a readable stop marker makes the
+        history unknown.
+        """
+        try:
+            with self.store.connect() as db:
+                rows = db.execute(
+                    "SELECT j.transition_id AS tid, t.plan AS plan, j.reason AS reason FROM journal j "
+                    "JOIN transitions t ON t.id = j.transition_id WHERE j.phase = 'apply_pending' "
+                    "ORDER BY j.sequence").fetchall()
+        except Exception:  # noqa: BLE001 - an unreadable journal is unknown, never empty
+            return None
+        stops: dict[int, dict] = {}
+        pending: set[int] = set()
+        try:
+            for row in rows:
+                binding = json.loads(row["plan"]).get("binding")
+                if not isinstance(binding, dict) or binding.get("task_id") != TASK_ID:
+                    continue
+                pending.add(row["tid"])
+                try:
+                    marker = json.loads(row["reason"]) if row["reason"] else None
+                except ValueError:
+                    marker = None
+                if (row["tid"] not in stops and isinstance(marker, dict)
+                        and _utc(marker.get("source_stopped_at")) is not None
+                        and isinstance(binding.get("agent_id"), str)):
+                    stops[row["tid"]] = {"lane": binding["agent_id"], "ts_utc": marker["source_stopped_at"],
+                                         "outcome": "source_stopped"}
+        except (ValueError, TypeError, AttributeError, KeyError):
+            return None
+        if pending - set(stops):
+            return None
+        return list(stops.values())
 
     def _neutralise_record(self) -> None:
         """B3: a transition that never launched must not leave its target record live."""
@@ -220,10 +384,10 @@ class Executor:
                            for k in ("agent", "agent_uuid", "session_id"))
                 or not isinstance(self.request["request_id"], str) or not self.request["request_id"]):
             return self._receipt("aborted", ["request_shape_invalid"])
-        try:
-            history = self.ports.history(self.lane)  # never the request: a requester must not pick its budget
-        except Exception:  # noqa: BLE001 - unreadable receipts are unknown, never empty
-            history = None
+        refusal = self._authenticate()
+        if refusal is not None:
+            return refusal
+        history = self._journal_history()  # never the request, never best-effort receipts
         if history is None:
             return self._receipt("park", ["relaunch_history_unknown"])
         check = check_request(self.catalog, self.request, history, now=now)
@@ -235,19 +399,22 @@ class Executor:
             return self._receipt("would_relaunch", ["shadow_mode"])
         if mode == "approve":
             return self._receipt("parked", ["operator_ack_unverifiable"])
+        if mode != "auto":  # fail closed: only a mode this code knows as auto may execute
+            return self._receipt("parked", ["mode_not_auto"])
         if not is_signed(self.catalog):
             return self._receipt("parked", ["catalog_unsigned"])
-        if self.lane == LEAD and self.executor != "supervisor":
-            return self._receipt("aborted", ["self_transition_requires_supervisor"])
 
         state = self.ports.measure(self.lane)
         if not isinstance(state, dict) or state.get("lane") != self.lane:
             return self._receipt("aborted", ["measurement_names_another_lane"])
-        boundary = check_safe_boundary(state, now=now)
+        boundary = check_safe_boundary(state, lane=self.lane, now=now)
         if boundary["verdict"] != PROCEED:
             return self._receipt("aborted", boundary["reasons"])
         if self._verify_current(state) is None:
             return self._receipt("aborted", ["current_profile_unverified"])
+        unproven = self._source_unproven(state)
+        if unproven:
+            return self._receipt("aborted", [unproven])
         try:
             validate_record(self._record(now, self._profile(self.request["target_profile"]),
                                          self._profile(self.request["current_profile"])),
@@ -262,11 +429,14 @@ class Executor:
             return self._receipt("aborted", ["claim_conflict", str(exc)])
         again = self.ports.measure(self.lane)
         if (not isinstance(again, dict) or again.get("lane") != self.lane
-                or check_safe_boundary(again, now=self.ports.now())["verdict"] != PROCEED
+                or check_safe_boundary(again, lane=self.lane, now=self.ports.now())["verdict"] != PROCEED
                 or again.get("current_session_id") != state.get("current_session_id")
                 or again.get("pid") != state.get("pid")
                 or again.get("process_started_at") != state.get("process_started_at")):
             return self._receipt("aborted", ["lane_changed_after_claim"])
+        unproven = self._source_unproven(again)
+        if unproven:
+            return self._receipt("aborted", [unproven])
         self.steps.append("claimed_and_remeasured")
 
         target = self._profile(self.request["target_profile"])
@@ -293,27 +463,30 @@ class Executor:
         created = self.ports.now()
         self.ports.write_record(self.lane, self._record(created, target, previous))
         self.record_written = True
+        self.checkpoint = checkpoint
         self.store.move(self.tid, "quiesced", "checkpointed", checkpoint=checkpoint)
         self.steps.append("journaled_and_recorded")
 
-        if not self.ports.stop(self.lane, state["pid"], state["process_started_at"]):
+        self.stop_target = (state["pid"], state["process_started_at"])
+        self.stop_in_flight = True
+        stopped = self.ports.stop(self.lane, state["pid"], state["process_started_at"])
+        self.stop_in_flight = False
+        if not stopped:
             self.store.move(self.tid, "checkpointed", "cancelled_before_apply", reason="source_stop_failed")
             self._neutralise_record()
             return self._receipt("failed", ["source_stop_failed"])
         self.source_stopped = True
-        self.store.move(self.tid, "checkpointed", "apply_pending")
+        self.store.move(self.tid, "checkpointed", "apply_pending",
+                        reason=json.dumps({"source_stopped_at": _iso(self.ports.now())}))
         self.steps.append("source_stopped")
         try:
             self.ports.launch(self.lane, target)
         except Exception:  # noqa: BLE001 - a failed launch is verified like any other: it rolls back
             self.steps.append("target_launch_raised")
-        bound = self._await_target(created, target)
+        bound = self._await_target(target)
         if bound is not None:
             self.store.move(self.tid, "apply_pending", "verified", reason=json.dumps(bound, sort_keys=True))
-            self.store.move(self.tid, "verified", "resume_pending")
-            self.store.move(self.tid, "resume_pending", "resumed")
-            return self._receipt("applied", ["target_verified"], target_epoch=bound,
-                                 source_epoch=self._source_epoch(state))
+            return self._resume(bound, state, "applied", ["target_verified"])
         return self._rollback(state, target, previous)
 
     def _rollback(self, state: dict, target: dict, previous: dict) -> dict:
@@ -334,14 +507,28 @@ class Executor:
             self.ports.launch(self.lane, previous)
         except Exception:  # noqa: BLE001
             self.steps.append("rollback_launch_raised")
-        bound = self._await_target(created, previous)
+        bound = self._await_target(previous)
         if bound is None:
             # Leave the lane stopped and the quota reservation held: only an operator reconciles.
             self.store.move(self.tid, "apply_pending", "apply_pending", reason="rollback_failed:not_verified")
             return self._receipt("failed", ["verify_timeout", "rollback_failed", "operator_required"])
-        self.store.move(self.tid, "apply_pending", "resumed", reason="rolled_back_to_previous")
-        return self._receipt("rolled_back", ["verify_timeout"], target_epoch=bound,
-                             source_epoch=self._source_epoch(state))
+        self.store.move(self.tid, "apply_pending", "verified", reason="rolled_back_to_previous")
+        return self._resume(bound, state, "rolled_back", ["verify_timeout"])
+
+    def _resume(self, bound: dict, state: dict, outcome: str, reasons: list[str]) -> dict:
+        """Deliver continuity to the bound session; only a confirmed resume reaches ``resumed``."""
+        self.store.move(self.tid, "verified", "resume_pending")
+        try:
+            confirmed = self.ports.resume_lane(self.lane, dict(bound), self.checkpoint) is True
+        except Exception:  # noqa: BLE001 - an unconfirmed resume is not a resume
+            confirmed = False
+        if not confirmed:
+            # The new session runs but has not confirmed its continuity: hold the
+            # reservation at resume_pending for the operator, never mark resumed.
+            return self._receipt("failed", [*reasons, "resume_not_confirmed", "operator_required"],
+                                 target_epoch=bound, source_epoch=self._source_epoch(state))
+        self.store.move(self.tid, "resume_pending", "resumed", reason="continuity_delivered")
+        return self._receipt(outcome, reasons, target_epoch=bound, source_epoch=self._source_epoch(state))
 
     # ------------------------------------------------------ target binding
 
@@ -352,13 +539,20 @@ class Executor:
         identity (dict) when the launcher record corroborates it, or "conflict"
         when a live process exists that nothing corroborates (fail closed).
         """
-        evidence = self.ports.evidence(self.lane)
-        pid, started = evidence.get("pid"), evidence.get("process_started_at")
-        if pid is None:
+        rows = self._processes()
+        if rows is None:
+            return "conflict"
+        if not rows:
             return None
+        if len(rows) != 1:
+            return "conflict"  # a late target next to another process: an operator must look
+        evidence = rows[0]
+        pid, started = evidence.get("pid"), evidence.get("process_started_at")
+        if type(pid) is not int:
+            return "conflict"
         if pid == state["pid"] and _same_instant(started, state["process_started_at"]):
             return "conflict"  # the source is somehow alive again: an operator must look
-        if evidence.get("pin_status") != "manifest_and_launcher_verified":
+        if evidence.get("pin_status") != VERIFIED_PIN:
             return "conflict"
         facts = self._launched_facts()
         if facts is None or facts.get("pid") != pid or not _same_instant(facts.get("process_started_at"), started):
@@ -373,8 +567,9 @@ class Executor:
         launched = record.get("launched") if isinstance(record, dict) else None
         return launched if isinstance(launched, dict) else None
 
-    def _await_target(self, created: datetime, profile: dict) -> dict | None:
-        deadline = created + timedelta(seconds=self.catalog["fleet"]["verify_timeout_seconds"])
+    def _await_target(self, profile: dict) -> dict | None:
+        # The window opens when the launch returns: a slow stop must not eat it and force a spurious rollback.
+        deadline = self.ports.now() + timedelta(seconds=self.catalog["fleet"]["verify_timeout_seconds"])
         while self.ports.now() <= deadline:
             bound = self._bind_target(profile)
             if bound is not None:
@@ -392,8 +587,11 @@ class Executor:
         launched = record.get("launched")
         if launched is None or record["desired_profile"] != profile["profile_id"]:
             return None
-        evidence = self.ports.evidence(self.lane)
-        if (evidence.get("pin_status") != "manifest_and_launcher_verified"
+        rows = self._processes()
+        if rows is None or len(rows) != 1:
+            return None  # the bound lane must be exactly one process, late targets included
+        evidence = rows[0]
+        if (evidence.get("pin_status") != VERIFIED_PIN
                 or evidence.get("pid") != launched["pid"]
                 or not _same_instant(evidence.get("process_started_at"), launched["process_started_at"])
                 or evidence.get("native_conversation_id") != launched["native_thread_id"]):
@@ -423,7 +621,7 @@ class Executor:
         return {
             "binding": {
                 "agent_id": self.lane, "session_id": state["current_session_id"],
-                "native_thread_id": state["native_thread_id"], "task_id": "lane-profile-switching",
+                "native_thread_id": state["native_thread_id"], "task_id": TASK_ID,
                 "request_id": self.request["request_id"], "head": self.digest,
                 "claim_id": self.claim_id, "scope_digest": _digest(self._scope()),
                 "authority_ref": self.catalog["operator_signature"], "policy_digest": self.digest,
@@ -434,8 +632,8 @@ class Executor:
             "qualified": profile["approved"] is True,
             "qualification_ref": profile["qualification_ref"],
             "owning_adapter_verified": True,
-            "trusted_adapter_identity": {"principal": self.executor,
-                                         "verification_ref": self.request["request_id"]},
+            "trusted_adapter_identity": {"principal": self.principal["principal"],
+                                         "verification_ref": self.principal["verification_ref"]},
             "hold": False, "cancelled": False, "billing": profile["billing"],
             "required_reviewers": [r for r in REVIEWERS if r != self.lane],
             "profiles": {p["profile_id"]: {"model": p["model"], "effort": p["effort"]}

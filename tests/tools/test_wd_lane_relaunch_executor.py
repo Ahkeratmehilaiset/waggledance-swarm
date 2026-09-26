@@ -46,9 +46,11 @@ class FakePorts:
     def __init__(self, *, lane="claude-rco-1", launches=("good",), stop_ok=True, claim_conflict=False,
                  preflight=(), resume=True, checkpoint="ckpt-1", change_after_claim=False,
                  current_obs_profile="claude-sonnet-5-xhigh", evidence_pin="manifest_and_launcher_verified",
-                 history=()):
+                 principal="codex-lead-1", resume_ok=True):
         self.clock = NOW
-        self.receipts = list(history)
+        self.principal, self.requester, self.auth_ok = principal, None, True
+        self.resume_ok, self.resumed = resume_ok, []
+        self.extra_processes: list = []
         self.lane = lane
         self.proc = {"pid": 100, "started": iso(NOW - timedelta(minutes=30)), "thread": T1, "session": "S1"}
         self.launches = list(launches)
@@ -80,8 +82,26 @@ class FakePorts:
                 "pid": self.proc["pid"], "process_started_at": self.proc["started"],
                 "native_thread_id": self.proc["thread"], "resume_supported": self.resume}
 
-    def history(self, lane):
-        return None if self.receipts is None else list(self.receipts)
+    def authenticate(self, request):
+        if not self.auth_ok:
+            return None
+        claimed = request.get("requested_by") if isinstance(request, dict) else None
+        lead = self.principal == "codex-lead-1"
+        executor = {"principal": self.principal, "agent_uuid": LEAD_UUID if lead else "sup-uuid",
+                    "session_id": "lead-S" if lead else "sup-S", "verification_ref": "auth-1"}
+        return {"executor": executor, "requester": dict(self.requester or claimed or {})}
+
+    def processes(self, lane):
+        # Built from evidence() so a test that forges evidence forges every enumeration.
+        facts = self.evidence(lane)
+        rows = [facts] if isinstance(facts, dict) and facts.get("pid") is not None else []
+        return rows + [dict(row) for row in self.extra_processes]
+
+    def resume_lane(self, lane, epoch, checkpoint):
+        self.resumed.append((lane, epoch["pid"], checkpoint))
+        if isinstance(self.resume_ok, Exception):
+            raise self.resume_ok
+        return self.resume_ok
 
     def evidence(self, lane):
         return {"pin_status": self.evidence_pin, "pid": self.proc["pid"],
@@ -150,9 +170,10 @@ def request(lane="claude-rco-1", current="claude-sonnet-5-xhigh", target="claude
 
 
 def run(tmp_path, ports, *, catalog=None, req=None, executor="lead"):
+    ports.principal = {"lead": "codex-lead-1", "supervisor": "supervisor"}.get(executor, executor)
     store = RecoveryStore(tmp_path / "journal.sqlite")
     ex = Executor(catalog=catalog or signed_catalog(), catalog_sha256=DIGEST, store=store, ports=ports,
-                  runtime_root=str(tmp_path / "runtime"), request=req or request(), executor=executor)
+                  runtime_root=str(tmp_path / "runtime"), request=req or request())
     receipt = ex.run()
     return receipt["payload"], store, ex
 
@@ -183,7 +204,7 @@ def test_approve_fails_closed(tmp_path, monkeypatch):
 
 def test_lead_self_transition_only_through_the_supervisor(tmp_path, auto_mode):
     lead = request(lane="codex-lead-1", current="codex-gpt-5.6-sol-medium", target="codex-gpt-6-sol-high")
-    payload, _, _ = run(tmp_path, FakePorts(lane="codex-lead-1"), req=lead, executor="lead")
+    payload, _, _ = run(tmp_path, FakePorts(lane="codex-lead-1"), req=lead)
     assert payload["reasons"] == ["self_transition_requires_supervisor"]
 
 
@@ -330,12 +351,14 @@ def test_unverified_pin_status_never_binds_the_target(tmp_path, auto_mode):
 def test_journal_refuses_a_second_transition_on_the_same_bucket(tmp_path, auto_mode):
     store = RecoveryStore(tmp_path / "journal.sqlite")
     first = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=FakePorts(launches=("silent", "silent")),
-                     runtime_root=str(tmp_path / "rt"), request=request(), executor="lead").run()
+                     runtime_root=str(tmp_path / "rt"), request=request()).run()
     assert first["payload"]["outcome"] == "failed"
-    second_req = dict(request(), request_id="req-2")
-    ports = FakePorts()
+    # claude-rco-2 has its own lane budget but shares the Claude quota bucket, still reserved by the
+    # failed first transition: the journal, not the budget, refuses it.
+    second_req = dict(request(lane="claude-rco-2"), request_id="req-2")
+    ports = FakePorts(lane="claude-rco-2")
     second = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=ports,
-                      runtime_root=str(tmp_path / "rt2"), request=second_req, executor="lead").run()
+                      runtime_root=str(tmp_path / "rt2"), request=second_req).run()
     assert (second["payload"]["outcome"], second["payload"]["reasons"][0]) == ("parked", "journal_refused")
     assert ports.stops == []
 
@@ -388,21 +411,106 @@ def test_record_io_still_works_on_a_plain_tree(tmp_path):
 
 # ---- claude-rco-1 review of 486fe124 (B1-B5)
 
-def test_b1_budget_uses_port_receipts_not_the_request(tmp_path, auto_mode):
-    recent = [{"lane": "claude-rco-1", "ts_utc": iso(NOW - timedelta(minutes=10)), "outcome": "applied"}]
-    ports = FakePorts(history=recent)
+def seed_stop(store, lane, minutes_ago, *, task_id="lane-profile-switching", marker=True, key=None):
+    """A journaled source stop, written the way the executor writes it."""
+    import sqlite3
+    db = sqlite3.connect(store.path)
+    with db:
+        plan = json.dumps({"binding": {"agent_id": lane, "task_id": task_id}})
+        cursor = db.execute("INSERT INTO transitions(request_key,fingerprint,plan,phase) VALUES (?,?,?,?)",
+                            (key or f"{lane}:{minutes_ago}:{task_id}", "f", plan, "resumed"))
+        reason = json.dumps({"source_stopped_at": iso(NOW - timedelta(minutes=minutes_ago))}) if marker else None
+        db.execute("INSERT INTO journal(transition_id,phase,observed_at,reason) VALUES (?,?,?,?)",
+                   (cursor.lastrowid, "apply_pending", iso(NOW), reason))
+    db.close()
+
+
+def run_with_store(tmp_path, ports, store, req=None):
+    ex = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=ports,
+                  runtime_root=str(tmp_path / "runtime"), request=req or request())
+    return ex.run()["payload"], ex
+
+
+def test_r6_budget_counts_journaled_source_stops_not_the_request(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    seed_stop(store, "claude-rco-1", 10)
     req = request()
-    req["history"] = []  # a requester omitting or blanking history must not defeat the budget
-    payload, _, _ = run(tmp_path, ports, req=req)
-    assert (payload["outcome"], payload["reasons"]) == ("park", ["lane_budget_exhausted", "lane_cooldown"])
-    assert ports.stops == []
-
-
-def test_b1_unreadable_history_parks(tmp_path, auto_mode):
+    req["history"] = []  # a requester blanking its history cannot defeat the budget
     ports = FakePorts()
-    ports.receipts = None
-    payload, _, _ = run(tmp_path, ports)
+    payload, _ = run_with_store(tmp_path, ports, store, req)
+    assert (payload["outcome"], payload["reasons"]) == ("park", ["lane_budget_exhausted", "lane_cooldown"])
+    assert ports.stops == [] and ports.claims == []
+
+
+def test_r6_a_requester_claimed_history_is_ignored(tmp_path, auto_mode):
+    req = request()
+    req["history"] = [{"lane": "claude-rco-1", "ts_utc": iso(NOW - timedelta(minutes=1)), "outcome": "applied"}]
+    payload, _, _ = run(tmp_path, FakePorts(), req=req)
+    assert payload["outcome"] == "applied"
+
+
+def test_r6_fleet_budget_is_counted_across_lanes(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    for i, lane in enumerate(["fable-5", "fable-5", "codex-tools-1", "codex-tools-1"]):
+        seed_stop(store, lane, 10 + i)
+    ports = FakePorts()
+    payload, _ = run_with_store(tmp_path, ports, store)
+    assert (payload["outcome"], payload["reasons"]) == ("park", ["fleet_budget_exhausted"])
+    assert ports.stops == [] and ports.claims == []
+
+
+def test_r6_three_fleet_stops_leave_room_for_a_fourth(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    for i, lane in enumerate(["fable-5", "fable-5", "codex-tools-1"]):
+        seed_stop(store, lane, 10 + i)
+    payload, _ = run_with_store(tmp_path, FakePorts(), store)
+    assert payload["outcome"] == "applied"
+
+
+def test_r6_other_tasks_in_the_store_are_not_counted(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    seed_stop(store, "claude-rco-1", 10, task_id="capacity-recovery")
+    payload, _ = run_with_store(tmp_path, FakePorts(), store)
+    assert payload["outcome"] == "applied"
+
+
+def test_r6_a_stop_without_its_marker_makes_history_unknown(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    seed_stop(store, "codex-tools-1", 10, marker=False)
+    ports = FakePorts()
+    payload, _ = run_with_store(tmp_path, ports, store)
     assert (payload["outcome"], payload["reasons"]) == ("park", ["relaunch_history_unknown"])
+    assert ports.claims == []
+
+
+def test_r6_an_unreadable_journal_parks(tmp_path, auto_mode, monkeypatch):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    monkeypatch.setattr(store, "connect", lambda: (_ for _ in ()).throw(OSError("locked")))
+    ports = FakePorts()
+    payload, _ = run_with_store(tmp_path, ports, store)
+    assert (payload["outcome"], payload["reasons"]) == ("park", ["relaunch_history_unknown"])
+    assert ports.claims == []
+
+
+def test_r6_an_applied_transition_counts_for_the_next_request(tmp_path, auto_mode):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    first, _ = run_with_store(tmp_path, FakePorts(), store)
+    assert first["outcome"] == "applied"
+    # The same raise again (say the operator reverted the lane): the journaled stop is counted.
+    second, _ = run_with_store(tmp_path, FakePorts(), store, dict(request(), request_id="req-2"))
+    assert (second["outcome"], second["reasons"]) == ("park", ["lane_budget_exhausted", "lane_cooldown"])
+
+
+@pytest.mark.parametrize("ports_kwargs", [dict(stop_ok=False), dict(claim_conflict=True), dict(preflight=("x",))])
+def test_r6_attempts_that_never_stopped_the_source_do_not_count(tmp_path, auto_mode, ports_kwargs):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    first, _ = run_with_store(tmp_path, FakePorts(**ports_kwargs), store)
+    assert first["outcome"] in ("failed", "aborted")
+    second, _ = run_with_store(tmp_path, FakePorts(), store, dict(request(), request_id="req-2"))
+    assert second["outcome"] == "applied"
+
+
+
 
 
 def test_b2_rollback_never_kills_a_pid_only_the_record_names(tmp_path, auto_mode):
@@ -447,7 +555,11 @@ def test_b4_raising_launch_is_rolled_back_with_a_receipt(tmp_path, auto_mode):
 
 def test_b4_exception_after_stop_holds_the_reservation_and_reports(tmp_path, auto_mode):
     ports = FakePorts()
-    ports.evidence = lambda lane: (_ for _ in ()).throw(RuntimeError("evidence port down"))
+    original = ports.read_record
+    # The record port fails only once the source is gone, i.e. after the stop. (An evidence port that
+    # raises no longer escapes: enumeration failure is handled as unknown evidence.)
+    ports.read_record = lambda lane: (original(lane) if ports.proc["pid"] == 100
+                                      else (_ for _ in ()).throw(RuntimeError("record port down")))
     payload, store, ex = run(tmp_path, ports)
     assert payload["outcome"] == "failed"
     assert payload["reasons"][:2] == ["executor_exception", "RuntimeError"] and "operator_required" in payload["reasons"]
@@ -473,8 +585,7 @@ def test_b4_exception_before_stop_cancels_and_neutralises(tmp_path, auto_mode):
     assert record["desired_profile"] == record["previous_profile"]
     # The quota window is free again: a valid follow-up is not blocked by the journal.
     follow = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=FakePorts(),
-                      runtime_root=str(tmp_path / "rt3"), request=dict(request(), request_id="req-9"),
-                      executor="lead").run()
+                      runtime_root=str(tmp_path / "rt3"), request=dict(request(), request_id="req-9")).run()
     assert follow["payload"]["outcome"] == "applied"
 
 
@@ -532,12 +643,7 @@ def test_target_binding_requires_the_record_to_name_the_target_profile(tmp_path,
 
 # ---- adopted from claude-rco-1's patch offer for #1739
 
-def test_b1_raising_history_port_parks(tmp_path, auto_mode):
-    ports = FakePorts()
-    ports.history = lambda lane: (_ for _ in ()).throw(OSError("receipts unreadable"))
-    payload, _, _ = run(tmp_path, ports)
-    assert (payload["outcome"], payload["reasons"]) == ("park", ["relaunch_history_unknown"])
-    assert ports.claims == [] and ports.stops == []
+
 
 
 def test_b3_neutralised_record_launches_the_previous_profile(tmp_path, auto_mode, monkeypatch):
@@ -569,8 +675,7 @@ def test_b4_exception_before_stop_frees_the_window_and_leaves_the_source(tmp_pat
     if ex.tid is not None:
         assert phase(store, ex.tid) == "cancelled_before_apply"
     follow = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=FakePorts(),
-                      runtime_root=str(tmp_path / "rt4"), request=dict(request(), request_id="req-2"),
-                      executor="lead").run()
+                      runtime_root=str(tmp_path / "rt4"), request=dict(request(), request_id="req-2")).run()
     assert follow["payload"]["outcome"] == "applied"
 
 
@@ -586,7 +691,462 @@ def test_b4_failing_emit_still_returns_the_outcome_and_releases(tmp_path, auto_m
 def test_b4_non_object_request_aborts(tmp_path, auto_mode, bad):
     ports = FakePorts()
     ex = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=RecoveryStore(tmp_path / "j.sqlite"),
-                  ports=ports, runtime_root=str(tmp_path / "rt"), request=bad, executor="lead")
+                  ports=ports, runtime_root=str(tmp_path / "rt"), request=bad)
     payload = ex.run()["payload"]
     assert (payload["outcome"], payload["reasons"]) == ("aborted", ["request_shape_invalid"])
     assert ports.claims == []
+
+
+
+# ---- claude-rco-2 review of 66ee1732: source proof, unknown stop, verify window, unknown mode, stale observation
+
+class _EvidenceFor(FakePorts):
+    """Execution evidence that disagrees with the measured source, on every call or only on one of them."""
+
+    def __init__(self, mutate, *, only_call=None, **kwargs):
+        super().__init__(**kwargs)
+        self._mutate, self._only_call, self.evidence_calls = mutate, only_call, 0
+
+    def evidence(self, lane):
+        self.evidence_calls += 1
+        facts = super().evidence(lane)
+        return self._mutate(facts) if self._only_call in (None, self.evidence_calls) else facts
+
+
+_SOURCE_STARTED = iso(NOW - timedelta(minutes=30))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda f: {**f, "pid": 4242},
+    lambda f: {**f, "pid": "100"},
+    lambda f: {**f, "pin_status": "mismatch"},
+    lambda f: {**f, "native_conversation_id": T3},
+    lambda f: {**f, "process_started_at": iso(NOW - timedelta(minutes=30) + timedelta(seconds=10))},
+    lambda f: None,
+], ids=["other-pid", "string-pid", "unverified-pin", "other-conversation", "start-time-off-by-10s", "not-a-dict"])
+def test_source_pid_must_be_proven_by_evidence_before_anything_is_claimed(tmp_path, auto_mode, mutate):
+    ports = _EvidenceFor(mutate, only_call=1)
+    payload, _, ex = run(tmp_path, ports)
+    # A non-dict evidence row means no enumerated process at all: the count is not one.
+    expected = "lane_process_count_not_one" if mutate({"pid": 1}) is None else "source_not_proven_by_evidence"
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", [expected])
+    assert ports.stops == [] and ports.claims == [] and ex.tid is None
+
+
+def test_source_pid_is_proven_again_after_the_claim(tmp_path, auto_mode):
+    ports = _EvidenceFor(lambda f: {**f, "pid": 4242}, only_call=2)
+    payload, _, ex = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", ["source_not_proven_by_evidence"])
+    assert ports.stops == [] and ports.released == ["claim-1"] and ex.tid is None
+
+
+def test_unreadable_source_evidence_refuses(tmp_path, auto_mode):
+    class Raises(FakePorts):
+        def evidence(self, lane):
+            raise OSError("oracle down")
+
+    ports = Raises()
+    payload, _, _ = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", ["source_evidence_unavailable"])
+    assert ports.stops == [] and ports.claims == []
+
+
+def test_source_evidence_within_the_start_time_skew_still_proves_it(tmp_path, auto_mode):
+    shifted = iso(NOW - timedelta(minutes=30) + timedelta(seconds=1))
+    ports = _EvidenceFor(lambda f: {**f, "process_started_at": shifted}, only_call=1)
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "applied" and ports.stops == [(100, _SOURCE_STARTED)]
+
+
+class _StopKillsThenRaises(FakePorts):
+    def stop(self, lane, pid, started_at):
+        super().stop(lane, pid, started_at)  # the process really is gone
+        raise TimeoutError("exit not confirmed")
+
+
+def test_a_stop_that_raises_leaves_the_source_unknown_so_the_reservation_is_held(tmp_path, auto_mode):
+    ports = _StopKillsThenRaises()
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "failed"
+    assert payload["reasons"] == ["executor_exception", "TimeoutError", "operator_required"]
+    assert phase(store, ex.tid) == "checkpointed"
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reservations WHERE transition_id=?", (ex.tid,)).fetchone()[0] > 0
+    # Whatever restarts the lane meanwhile must not pick up the aborted target.
+    assert ports.records["claude-rco-1"]["desired_profile"] == "claude-sonnet-5-xhigh"
+    assert ports.released == ["claim-1"]
+
+
+def test_a_stop_that_raises_with_no_readable_evidence_is_treated_as_down(tmp_path, auto_mode):
+    ports = _StopKillsThenRaises()
+    original = ports.evidence
+    ports.evidence = lambda lane: (original(lane) if ports.proc["pid"] == 100
+                                   else (_ for _ in ()).throw(OSError("oracle down")))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_exception", "TimeoutError", "operator_required"]
+    assert phase(store, ex.tid) == "checkpointed"
+
+
+def test_observations_older_than_the_limit_are_dropped_for_every_provider(tmp_path):
+    store = RecoveryStore(tmp_path / "journal.sqlite")
+    ex = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=FakePorts(),
+                  runtime_root=str(tmp_path / "runtime"), request=request())
+    fresh, stale = iso(NOW - timedelta(seconds=60)), iso(NOW - timedelta(seconds=3600))
+    kept = ex._fresh_observations({"claude": [{"observed_at": fresh}, {"observed_at": stale}, "junk", {}],
+                                   "codex": {"observed_at": stale}})
+    assert kept == {"claude": [{"observed_at": fresh}], "codex": None}
+    assert ex._fresh_observations({"claude": None, "codex": {"observed_at": fresh}}) == {
+        "claude": None, "codex": {"observed_at": fresh}}
+    assert ex._fresh_observations(None) == {"claude": None, "codex": None}
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda r: r["requested_by"].update(agent="mallory"),
+    lambda r: r["requested_by"].update(role="extra"),
+    lambda r: r["requested_by"].update(agent_uuid="not-a-uuid"),
+    lambda r: r.update(reason="x" * 600),
+], ids=["requester-not-a-lane", "requester-extra-key", "requester-uuid-malformed", "reason-too-long"])
+def test_a_request_whose_record_would_be_invalid_aborts_before_the_claim(tmp_path, auto_mode, mutate):
+    # Shaped like a request, but the D2 record built from it fails validate_record: the launcher would ignore the
+    # record and the target would never bind, so the lane would be down for two verify windows. Refuse before any stop.
+    req = request()
+    mutate(req)
+    ports = FakePorts()
+    payload, _, ex = run(tmp_path, ports, req=req)
+    # A forged requester is now refused earlier, by the authenticated principal binding (Lead review R7).
+    assert payload["outcome"] == "aborted" and payload["reasons"][0] in (
+        "record_would_be_invalid", "requester_is_not_lead", "executor_is_not_the_requesting_lead")
+    assert ports.stops == [] and ports.claims == [] and ports.proc["pid"] == 100 and ex.tid is None
+
+
+class _RemeasureDiffers(FakePorts):
+    def __init__(self, field, value, **kwargs):
+        super().__init__(**kwargs)
+        self.field, self.value = field, value
+
+    def measure(self, lane):
+        state = super().measure(lane)
+        if self.measures > 1:
+            state[self.field] = self.value
+        return state
+
+
+@pytest.mark.parametrize("field,value", [("pid", 101), ("process_started_at", iso(NOW - timedelta(minutes=29)))])
+def test_a_lane_process_that_changes_between_the_check_and_the_claim_aborts(tmp_path, auto_mode, field, value):
+    ports = _RemeasureDiffers(field, value)
+    payload, _, ex = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", ["lane_changed_after_claim"])
+    assert ports.stops == [] and ports.released == ["claim-1"] and ex.tid is None
+
+
+class _SourceRisesAgain(FakePorts):
+    """A silent launch, then evidence showing the SOURCE process alive again, and a record that also names it."""
+
+    def launch(self, lane, profile):
+        self.records[lane]["launched"] = {"native_thread_id": T1, "pid": 100, "process_started_at": _SOURCE_STARTED,
+                                          "session_id": "S1", "run_id": "S1", "launched_at": _SOURCE_STARTED}
+
+    def evidence(self, lane):
+        return {"pin_status": "manifest_and_launcher_verified", "pid": 100, "process_started_at": _SOURCE_STARTED,
+                "native_conversation_id": T1}
+
+
+def test_a_source_that_is_alive_again_is_never_stopped_a_second_time_by_the_rollback(tmp_path, auto_mode):
+    ports = _SourceRisesAgain()
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["verify_timeout", "stray_identity_unproven", "operator_required"]
+    assert ports.stops == [(100, _SOURCE_STARTED)]
+    assert phase(store, ex.tid) == "apply_pending"
+
+
+def test_a_failing_claim_release_is_reported_and_never_raised(tmp_path, auto_mode):
+    ports = FakePorts(stop_ok=False)
+    ports.release_claim = lambda claim_id: (_ for _ in ()).throw(OSError("claims store locked"))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "failed" and "claim_not_released" in payload["reasons"]
+
+
+def test_a_raising_stop_with_another_process_in_evidence_is_treated_as_down(tmp_path, auto_mode):
+    ports = _StopKillsThenRaises()
+    original = ports.evidence
+    ports.evidence = lambda lane: (original(lane) if ports.proc["pid"] == 100
+                                   else {**original(lane), "pid": 4242, "process_started_at": _SOURCE_STARTED})
+    payload, store, ex = run(tmp_path, ports)
+    assert "operator_required" in payload["reasons"] and phase(store, ex.tid) == "checkpointed"
+
+
+def test_evidence_naming_another_conversation_never_binds_the_target(tmp_path, auto_mode):
+    ports = FakePorts(launches=("good", "good"))
+    original = ports.evidence
+    ports.evidence = lambda lane: (dict(original(lane), native_conversation_id=T3) if ports.proc["pid"] == 200
+                                   else original(lane))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "rolled_back"
+
+
+
+
+
+class _SlowStop(FakePorts):
+    def __init__(self, seconds, **kwargs):
+        super().__init__(**kwargs)
+        self.seconds = seconds
+
+    def stop(self, lane, pid, started_at):
+        ok = super().stop(lane, pid, started_at)
+        self.clock += timedelta(seconds=self.seconds)
+        return ok
+
+
+def test_the_verify_window_opens_when_the_launch_returns_not_before_the_stop(tmp_path, auto_mode):
+    ports = _SlowStop(BASE["fleet"]["verify_timeout_seconds"] + 1)
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "applied" and ports.stops == [(100, _SOURCE_STARTED)]
+
+
+def test_a_silent_launcher_still_gets_the_whole_window_after_a_slow_stop(tmp_path, auto_mode):
+    timeout = BASE["fleet"]["verify_timeout_seconds"]
+    ports = _SlowStop(120, launches=("silent", "good"))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "rolled_back"
+    assert ports.clock >= NOW + timedelta(seconds=120 + timeout)
+
+
+@pytest.mark.parametrize("mode", ["disabled", "off", "dry-run", ""])
+def test_an_unknown_mode_never_executes(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(executor_module, "effective_mode", lambda catalog: mode)
+    ports = FakePorts()
+    payload, _, ex = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("parked", ["mode_not_auto"])
+    assert ports.claims == [] and ports.stops == [] and ports.records == {} and ex.tid is None
+
+
+@pytest.mark.parametrize("age_seconds,verified", [(299, True), (300, True), (301, False), (29 * 60, False), (-60, False)])
+def test_the_current_profile_needs_a_recent_observation(tmp_path, auto_mode, age_seconds, verified):
+    ports = FakePorts()
+    ports.obs[0]["observed_at"] = iso(NOW - timedelta(seconds=age_seconds))
+    payload, _, _ = run(tmp_path, ports)
+    if verified:
+        assert payload["outcome"] == "applied"
+    else:
+        assert payload["reasons"] == ["current_profile_unverified"] and ports.stops == [] and ports.claims == []
+
+
+
+# ---------------------------------------------------------------- Lead review R7: principal
+
+@pytest.mark.parametrize("breaks", ["none", "raises", "no-executor", "empty-ref", "requester-not-dict"])
+def test_r7_an_unauthenticated_principal_parks_before_anything(tmp_path, auto_mode, breaks):
+    ports = FakePorts()
+    original = ports.authenticate
+
+    def auth(request):
+        if breaks == "none":
+            return None
+        if breaks == "raises":
+            raise PermissionError("no token")
+        result = original(request)
+        if breaks == "no-executor":
+            del result["executor"]
+        elif breaks == "empty-ref":
+            result["executor"]["verification_ref"] = ""
+        else:
+            result["requester"] = "codex-lead-1"
+        return result
+    ports.authenticate = auth
+    payload, _, ex = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("parked", ["principal_unauthenticated"])
+    assert ports.claims == [] and ports.stops == [] and ex.tid is None and payload["executor"] is None
+
+
+@pytest.mark.parametrize("field", ["agent_uuid", "session_id"])
+def test_r7_a_request_claiming_another_identity_is_refused(tmp_path, auto_mode, field):
+    ports = FakePorts()
+    ports.requester = dict(request()["requested_by"], **{field: "someone-else"})
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["reasons"] == ["requester_not_authenticated_as_claimed"] and ports.claims == []
+
+
+def test_r7_only_lead_requests_are_executed(tmp_path, auto_mode):
+    req = request()
+    req["requested_by"] = {"agent": "claude-rco-2", "agent_uuid": "rco2-uuid", "session_id": "rco2-S"}
+    ports = FakePorts()
+    payload, _, _ = run(tmp_path, ports, req=req)
+    assert payload["reasons"] == ["requester_is_not_lead"] and ports.claims == []
+
+
+def test_r7_lead_executes_only_its_own_session_request(tmp_path, auto_mode):
+    req = request()
+    req["requested_by"] = dict(req["requested_by"], session_id="an-older-lead-session")
+    ports = FakePorts()
+    ports.requester = dict(req["requested_by"])  # authenticated, but not the executing session
+    payload, _, _ = run(tmp_path, ports, req=req)
+    assert payload["reasons"] == ["executor_is_not_the_requesting_lead"] and ports.claims == []
+
+
+def test_r7_the_supervisor_executes_only_leads_own_lane(tmp_path, auto_mode):
+    ports = FakePorts()
+    payload, _, _ = run(tmp_path, ports, executor="supervisor")
+    assert payload["reasons"] == ["executor_is_not_the_requesting_lead"] and ports.claims == []
+
+
+@pytest.mark.parametrize("principal", ["codex-tools-1", "operator", "codex-lead-1-shadow"])
+def test_r7_no_other_principal_executes(tmp_path, auto_mode, principal):
+    ports = FakePorts()
+    payload, _, _ = run(tmp_path, ports, executor=principal)
+    assert payload["outcome"] == "aborted" and ports.claims == []
+
+
+def test_r7_the_journal_and_receipt_carry_the_authenticated_principal(tmp_path, auto_mode):
+    ports = FakePorts()
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "applied" and payload["executor"] == "codex-lead-1"
+    plan = json.loads(store.get(ex.tid)["plan"])
+    assert plan["trusted_adapter_identity"] == {"principal": "codex-lead-1", "verification_ref": "auth-1"}
+
+
+def test_r7_the_constructor_takes_no_executor_label(tmp_path):
+    with pytest.raises(TypeError):
+        Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=RecoveryStore(tmp_path / "j.sqlite"),
+                 ports=FakePorts(), runtime_root=str(tmp_path), request=request(), executor="supervisor")
+
+
+# ---------------------------------------------------------------- Lead review R7: resume
+
+@pytest.mark.parametrize("resume_supported,delivered", [(False, "ckpt-1"), (True, "provider_resume")])
+def test_r7_continuity_is_delivered_to_the_bound_session(tmp_path, auto_mode, resume_supported, delivered):
+    ports = FakePorts(resume=resume_supported)
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "applied" and phase(store, ex.tid) == "resumed"
+    assert ports.resumed == [("claude-rco-1", 200, delivered)]
+
+
+@pytest.mark.parametrize("answer", [False, None, "yes", 1, RuntimeError("session gone")], ids=repr)
+def test_r7_an_unconfirmed_resume_never_reaches_resumed(tmp_path, auto_mode, answer):
+    ports = FakePorts(resume_ok=answer)
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "failed"
+    assert payload["reasons"] == ["target_verified", "resume_not_confirmed", "operator_required"]
+    assert phase(store, ex.tid) == "resume_pending" and ports.released == ["claim-1"]
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reservations WHERE transition_id=?", (ex.tid,)).fetchone()[0] > 0
+
+
+def test_r7_a_rollback_also_needs_a_confirmed_resume(tmp_path, auto_mode):
+    ports = FakePorts(launches=("wrong_model", "good"), resume_ok=False)
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["verify_timeout", "resume_not_confirmed", "operator_required"]
+    assert phase(store, ex.tid) == "resume_pending"
+
+
+def test_r7_a_confirmed_rollback_reaches_resumed(tmp_path, auto_mode):
+    ports = FakePorts(launches=("wrong_model", "good"))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "rolled_back" and phase(store, ex.tid) == "resumed"
+    assert [pid for _, pid, _ in ports.resumed] == [201]
+
+
+# ---------------------------------------------------------------- Lead review R7: every process
+
+LATE = {"pin_status": "manifest_and_launcher_verified", "pid": 777,
+        "process_started_at": iso(NOW - timedelta(minutes=2)), "native_conversation_id": "late-thread"}
+
+
+def test_r7_a_second_lane_process_before_the_stop_aborts(tmp_path, auto_mode):
+    ports = FakePorts()
+    ports.extra_processes = [dict(LATE)]
+    payload, _, ex = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", ["lane_process_count_not_one"])
+    assert ports.stops == [] and ports.claims == [] and ex.tid is None
+
+
+@pytest.mark.parametrize("answer", [None, "x", [None], RuntimeError("down")], ids=repr)
+def test_r7_unenumerable_processes_abort_before_the_claim(tmp_path, auto_mode, answer):
+    ports = FakePorts()
+
+    def processes(lane):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    ports.processes = processes
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["reasons"] == ["source_evidence_unavailable"] and ports.claims == []
+
+
+class _LateTarget(FakePorts):
+    """The launcher's first process shows up late, next to whatever else runs."""
+
+    def launch(self, lane, profile):
+        super().launch(lane, profile)
+        if len(self.launches) == 1:  # after the first launch only
+            self.extra_processes = [dict(LATE)]
+
+
+def test_r7_a_late_extra_process_blocks_the_target_binding_and_the_stray_stop(tmp_path, auto_mode):
+    ports = _LateTarget(launches=("good", "good"))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "failed"
+    assert payload["reasons"] == ["verify_timeout", "stray_identity_unproven", "operator_required"]
+    assert [pid for pid, _ in ports.stops] == [100]  # neither the target nor the late process is killed
+    assert phase(store, ex.tid) == "apply_pending"
+
+
+def test_r7_a_late_process_during_the_rollback_blocks_its_binding(tmp_path, auto_mode):
+    ports = FakePorts(launches=("wrong_model", "good"))
+    original = ports.launch
+
+    def launch(lane, profile):
+        original(lane, profile)
+        if profile["profile_id"] == "claude-sonnet-5-xhigh":  # the rollback launch
+            ports.extra_processes = [dict(LATE)]
+    ports.launch = launch
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["verify_timeout", "rollback_failed", "operator_required"]
+    assert phase(store, ex.tid) == "apply_pending"
+
+
+def test_r7_a_stray_is_stopped_only_when_it_is_the_single_corroborated_process(tmp_path, auto_mode):
+    ports = FakePorts(launches=("wrong_model", "good"))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "rolled_back" and [pid for pid, _ in ports.stops] == [100, 200]
+
+
+# ---------------------------------------------------------------- R2 tightening: unverified evidence
+
+def test_after_a_raising_stop_unverified_evidence_of_the_source_still_holds(tmp_path, auto_mode):
+    class _StopRaisesSourceStaysUnverified(FakePorts):
+        def stop(self, lane, pid, started_at):
+            self.stops.append((pid, started_at))
+            self.evidence_pin = "mismatch"  # the source still runs, but the oracle is no longer verified
+            raise TimeoutError("exit not confirmed")
+    ports = _StopRaisesSourceStaysUnverified()
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_exception", "TimeoutError", "operator_required"]
+    assert phase(store, ex.tid) == "checkpointed"
+
+
+def test_after_a_raising_stop_verified_evidence_of_the_live_source_cancels(tmp_path, auto_mode):
+    class _StopRaisesSourceAlive(FakePorts):
+        def stop(self, lane, pid, started_at):
+            self.stops.append((pid, started_at))
+            raise TimeoutError("exit not confirmed")  # and the source is in fact still alive and verified
+    ports = _StopRaisesSourceAlive()
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_exception", "TimeoutError"]
+    assert phase(store, ex.tid) == "cancelled_before_apply"
+
+
+def test_r7_a_non_lead_principal_is_refused_even_with_leads_session(tmp_path, auto_mode):
+    # The principal name is load-bearing on its own: matching uuid and session do not make a supervisor
+    # (or any other principal) the requesting Lead for another lane.
+    ports = FakePorts()
+    original = ports.authenticate
+
+    def auth(request):
+        result = original(request)
+        result["executor"] = dict(result["executor"], principal="supervisor", agent_uuid=LEAD_UUID,
+                                  session_id="lead-S")
+        return result
+    ports.authenticate = auth
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_is_not_the_requesting_lead"] and ports.claims == []

@@ -333,7 +333,10 @@ function Get-WdNativeToolsArguments {
         [string] $Prompt, [string] $ImagePath, [string[]] $WritableRoots, [bool] $NetworkAccess)
     $nativeArguments = @('resume', [string]$Saved.thread_id, '--cd', $Worktree,
         '--ask-for-approval', 'never', '--sandbox', 'workspace-write',
-        '-c', ('sandbox_workspace_write.network_access={0}' -f $NetworkAccess.ToString().ToLowerInvariant()))
+        '-c', ('sandbox_workspace_write.network_access={0}' -f $NetworkAccess.ToString().ToLowerInvariant()),
+        # Codex 0.157+ refuses to auto-start its shared daemon from an elevated
+        # terminal; keep the interactive Tools CLI in-process (see start-wd-agent).
+        '-c', 'features.daemon_auto_start=false')
     if ($Model -cne 'native') {
         $nativeArguments += @('--model', $Model, '-c', ('model_reasoning_effort="{0}"' -f $Effort))
     }

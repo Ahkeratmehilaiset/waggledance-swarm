@@ -64,6 +64,14 @@ $launchArguments | ConvertTo-Json -Compress
         assert args[args.index('--sandbox') + 1] == 'danger-full-access'
     else:
         assert args[args.index('--settings') + 1] == str(settings)
+    # Codex 0.157+ refuses to auto-start its shared daemon from an elevated
+    # terminal and exits 1; both interactive Codex lanes must stay in-process.
+    daemon_off = [args[i + 1] for i, a in enumerate(args[:-1]) if a == '-c'
+                  and args[i + 1].startswith('features.daemon_auto_start=')]
+    if lane in ('lead', 'tools'):
+        assert daemon_off == ['features.daemon_auto_start=false']
+    else:
+        assert daemon_off == []
 
 
 def test_shipped_fleet_delegates_native_model_selection():

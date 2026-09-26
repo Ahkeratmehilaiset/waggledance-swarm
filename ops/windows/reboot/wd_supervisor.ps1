@@ -1928,6 +1928,35 @@ function Test-ToolsReadinessTargetsProcess {
     }
 }
 
+function Test-ToolsReadinessOwnerGone {
+    # True only when the readiness record names a wrapper that is provably no
+    # longer running: its PID is absent, or the PID was reused by a process with
+    # a different creation time. A missing or unreadable record proves nothing.
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Processes,
+        [Parameter(Mandatory)] [string] $ReadinessPath
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $ReadinessPath -PathType Leaf)) {
+            return $false
+        }
+        $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+        $recordedPid = [int]$record.pid
+        if ($recordedPid -le 0) { return $false }
+        $recordedStart = ConvertTo-SupervisorUtc $record.process_start_utc
+        $live = @($Processes | Where-Object { [int]$_.ProcessId -eq $recordedPid })
+        if ($live.Count -eq 0) { return $true }
+        if ($live.Count -ne 1) { return $false }
+        $liveStart = ConvertTo-SupervisorUtc $live[0].CreationDate
+        return [Math]::Abs(($liveStart - $recordedStart).TotalSeconds) -gt 2
+    }
+    catch {
+        return $false
+    }
+}
+
 function Test-ToolsWrapperWithinStartupGrace {
     param(
         [Parameter(Mandatory)] $Process,
@@ -3566,15 +3595,32 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         '-Generation', $toolsGeneration
     )
 
-    if ($opaqueToolsHosts.Count -gt 0) {
-        $opaqueReadinessTargets = @(
-            $opaqueToolsHosts | Where-Object {
-                Test-ToolsReadinessTargetsProcess -Process $_ `
-                    -Generation $toolsGeneration -ReadinessPath $readinessPath
-            }
-        )
-        if ($opaqueToolsHosts.Count -eq 1 -and
-            $opaqueReadinessTargets.Count -eq 1 -and
+    # Elevated shells are unreadable from this Limited task, so on an operator
+    # desktop that runs elevated terminals several opaque hosts are normal. An
+    # opaque host still blocks, except in two provable cases: the readiness
+    # record names exactly one of them (the wrapper is alive but unreadable),
+    # or the recorded wrapper is gone and nothing readable claims the role. A
+    # duplicate that is still starting unseen is refused before native launch
+    # by the wrapper's .wd-turn-codex-tools-1.lock and cold-start owner pointer.
+    $opaqueReadinessTargets = @(
+        $opaqueToolsHosts | Where-Object {
+            Test-ToolsReadinessTargetsProcess -Process $_ `
+                -Generation $toolsGeneration -ReadinessPath $readinessPath
+        }
+    )
+    $opaqueHostsBlock = $opaqueToolsHosts.Count -gt 0 -and -not (
+        $toolsConversationSurface -ceq 'native_terminal' -and
+        $opaqueReadinessTargets.Count -eq 0 -and
+        $wrapperProcesses.Count -eq 0 -and $legacyConsumers.Count -eq 0 -and
+        (Test-ToolsReadinessOwnerGone -Processes $toolsProcessSnapshot `
+            -ReadinessPath $readinessPath)
+    )
+    if ($opaqueToolsHosts.Count -gt 0 -and -not $opaqueHostsBlock) {
+        $actions.Add("IGNORED $($opaqueToolsHosts.Count) unreadable host(s) for consumer-loop:${toolsAgent}: recorded wrapper is gone")
+    }
+
+    if ($opaqueHostsBlock) {
+        if ($opaqueReadinessTargets.Count -eq 1 -and
             $wrapperProcesses.Count -eq 0 -and $legacyConsumers.Count -eq 0) {
             $actions.Add("UNVERIFIABLE consumer-loop:$toolsAgent unreadable host command line; no process changes")
         } else {

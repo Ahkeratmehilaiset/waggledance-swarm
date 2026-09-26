@@ -45,8 +45,10 @@ def auto_mode(monkeypatch):
 class FakePorts:
     def __init__(self, *, lane="claude-rco-1", launches=("good",), stop_ok=True, claim_conflict=False,
                  preflight=(), resume=True, checkpoint="ckpt-1", change_after_claim=False,
-                 current_obs_profile="claude-sonnet-5-xhigh", evidence_pin="manifest_and_launcher_verified"):
+                 current_obs_profile="claude-sonnet-5-xhigh", evidence_pin="manifest_and_launcher_verified",
+                 history=()):
         self.clock = NOW
+        self.receipts = list(history)
         self.lane = lane
         self.proc = {"pid": 100, "started": iso(NOW - timedelta(minutes=30)), "thread": T1, "session": "S1"}
         self.launches = list(launches)
@@ -77,6 +79,9 @@ class FakePorts:
                 "previous_turn_blocker": False, "open_claims": [], "unresolved_requests": [],
                 "pid": self.proc["pid"], "process_started_at": self.proc["started"],
                 "native_thread_id": self.proc["thread"], "resume_supported": self.resume}
+
+    def history(self, lane):
+        return None if self.receipts is None else list(self.receipts)
 
     def evidence(self, lane):
         return {"pin_status": self.evidence_pin, "pid": self.proc["pid"],
@@ -113,6 +118,8 @@ class FakePorts:
         behaviour = self.launches.pop(0) if self.launches else "silent"
         if behaviour == "silent":
             return
+        if behaviour == "raise":
+            raise RuntimeError("launcher crashed")
         pid, thread = self.next_pid, self.threads.pop(0)
         self.next_pid += 1
         started = iso(self.clock)
@@ -304,7 +311,10 @@ def test_evidence_ancestry_mismatch_never_binds_the_target(tmp_path, auto_mode):
         return facts
     ports.evidence = forged
     payload, _, _ = run(tmp_path, ports)
-    assert payload["outcome"] == "rolled_back"
+    # The target never binds; the stray cannot be proven either, so nothing is killed from the record.
+    assert payload["outcome"] == "failed"
+    assert payload["reasons"] == ["verify_timeout", "stray_identity_unproven", "operator_required"]
+    assert [pid for pid, _ in ports.stops] == [100]
 
 
 def test_unverified_pin_status_never_binds_the_target(tmp_path, auto_mode):
@@ -313,7 +323,8 @@ def test_unverified_pin_status_never_binds_the_target(tmp_path, auto_mode):
     ports.evidence = lambda lane: dict(original(lane), pin_status="mismatch") if ports.proc["pid"] == 200 \
         else original(lane)
     payload, _, _ = run(tmp_path, ports)
-    assert payload["outcome"] == "rolled_back"
+    assert payload["outcome"] == "failed" and "stray_identity_unproven" in payload["reasons"]
+    assert [pid for pid, _ in ports.stops] == [100]
 
 
 def test_journal_refuses_a_second_transition_on_the_same_bucket(tmp_path, auto_mode):
@@ -372,3 +383,210 @@ def test_record_io_still_works_on_a_plain_tree(tmp_path):
     path = record_path(tmp_path / "runtime", "claude-rco-1")
     write_record(path, {"schema": "x"})
     assert read_record(path) == {"schema": "x"}
+
+
+
+# ---- claude-rco-1 review of 486fe124 (B1-B5)
+
+def test_b1_budget_uses_port_receipts_not_the_request(tmp_path, auto_mode):
+    recent = [{"lane": "claude-rco-1", "ts_utc": iso(NOW - timedelta(minutes=10)), "outcome": "applied"}]
+    ports = FakePorts(history=recent)
+    req = request()
+    req["history"] = []  # a requester omitting or blanking history must not defeat the budget
+    payload, _, _ = run(tmp_path, ports, req=req)
+    assert (payload["outcome"], payload["reasons"]) == ("park", ["lane_budget_exhausted", "lane_cooldown"])
+    assert ports.stops == []
+
+
+def test_b1_unreadable_history_parks(tmp_path, auto_mode):
+    ports = FakePorts()
+    ports.receipts = None
+    payload, _, _ = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("park", ["relaunch_history_unknown"])
+
+
+def test_b2_rollback_never_kills_a_pid_only_the_record_names(tmp_path, auto_mode):
+    ports = FakePorts(launches=("wrong_model",))
+    original_launch = ports.launch
+
+    def launch_with_forged_record(lane, profile):
+        original_launch(lane, profile)
+        ports.records[lane]["launched"]["pid"] = 4242  # the record lies; evidence says 200
+    ports.launch = launch_with_forged_record
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["reasons"] == ["verify_timeout", "stray_identity_unproven", "operator_required"]
+    assert 4242 not in [pid for pid, _ in ports.stops]
+
+
+def test_b2_live_unrecorded_target_is_never_doubled(tmp_path, auto_mode):
+    # NB-d: the launcher started the target but never recorded it; do not launch a second one.
+    ports = FakePorts(launches=("good",))
+    original_launch = ports.launch
+
+    def launch_unrecorded(lane, profile):
+        original_launch(lane, profile)
+        ports.records[lane]["launched"] = None
+    ports.launch = launch_unrecorded
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "failed" and "stray_identity_unproven" in payload["reasons"]
+    assert ports.launches == []  # no rollback launch happened
+
+
+def test_b3_stop_failure_neutralises_the_target_record(tmp_path, auto_mode):
+    ports = FakePorts(stop_ok=False)
+    run(tmp_path, ports)
+    record = ports.records["claude-rco-1"]
+    assert record["desired_profile"] == record["previous_profile"] == "claude-sonnet-5-xhigh"
+
+
+def test_b4_raising_launch_is_rolled_back_with_a_receipt(tmp_path, auto_mode):
+    ports = FakePorts(launches=("raise", "good"))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "rolled_back" and ports.released == ["claim-1"]
+
+
+def test_b4_exception_after_stop_holds_the_reservation_and_reports(tmp_path, auto_mode):
+    ports = FakePorts()
+    ports.evidence = lambda lane: (_ for _ in ()).throw(RuntimeError("evidence port down"))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "failed"
+    assert payload["reasons"][:2] == ["executor_exception", "RuntimeError"] and "operator_required" in payload["reasons"]
+    assert phase(store, ex.tid) == "apply_pending" and ports.released == ["claim-1"]
+
+
+def test_b4_request_without_requested_by_aborts_before_the_claim(tmp_path, auto_mode):
+    ports = FakePorts()
+    req = request()
+    del req["requested_by"]
+    payload, _, ex = run(tmp_path, ports, req=req)
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", ["request_shape_invalid"])
+    assert ports.claims == [] and ex.tid is None
+
+
+def test_b4_exception_before_stop_cancels_and_neutralises(tmp_path, auto_mode):
+    ports = FakePorts()
+    ports.stop = lambda lane, pid, started: (_ for _ in ()).throw(RuntimeError("stop port down"))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"] == ["executor_exception", "RuntimeError"]
+    assert phase(store, ex.tid) == "cancelled_before_apply"
+    record = ports.records["claude-rco-1"]
+    assert record["desired_profile"] == record["previous_profile"]
+    # The quota window is free again: a valid follow-up is not blocked by the journal.
+    follow = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=FakePorts(),
+                      runtime_root=str(tmp_path / "rt3"), request=dict(request(), request_id="req-9"),
+                      executor="lead").run()
+    assert follow["payload"]["outcome"] == "applied"
+
+
+@pytest.mark.parametrize("which", [1, 2])
+def test_b5_measurement_of_another_lane_is_refused(tmp_path, auto_mode, which):
+    ports = FakePorts()
+    original = ports.measure
+    calls = {"n": 0}
+
+    def measure(lane):
+        calls["n"] += 1
+        state = original(lane)
+        return dict(state, lane="codex-tools-1") if calls["n"] == which else state
+    ports.measure = measure
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "aborted"
+    assert payload["reasons"] in (["measurement_names_another_lane"], ["lane_changed_after_claim"])
+    assert ports.stops == []
+
+
+def test_nbc_start_time_precision_within_skew_still_binds(tmp_path, auto_mode):
+    ports = FakePorts()
+    original = ports.evidence
+
+    def coarse(lane):
+        facts = original(lane)
+        if facts["pid"] == 200:
+            facts["process_started_at"] = iso(datetime.fromisoformat(
+                facts["process_started_at"].replace("Z", "+00:00")) + timedelta(milliseconds=900))
+        return facts
+    ports.evidence = coarse
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "applied"
+
+
+def test_target_binding_requires_the_record_to_name_the_target_profile(tmp_path, auto_mode):
+    # The process and its model match, but the launcher record says it launched a different profile.
+    ports = FakePorts(launches=("good", "good"))
+    original_launch = ports.launch
+    calls = {"n": 0}
+
+    def launch_mislabelled(lane, profile):
+        calls["n"] += 1
+        if calls["n"] == 1:  # a different, consistently observed profile is launched and recorded
+            other = signed_catalog()["capacity_policy"]["profiles"]["claude-sonnet-5-xhigh"]
+            original_launch(lane, other)
+            ports.records[lane]["desired_profile"] = "claude-sonnet-5-xhigh"
+        else:
+            original_launch(lane, profile)
+    ports.launch = launch_mislabelled
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] != "applied"
+
+
+
+# ---- adopted from claude-rco-1's patch offer for #1739
+
+def test_b1_raising_history_port_parks(tmp_path, auto_mode):
+    ports = FakePorts()
+    ports.history = lambda lane: (_ for _ in ()).throw(OSError("receipts unreadable"))
+    payload, _, _ = run(tmp_path, ports)
+    assert (payload["outcome"], payload["reasons"]) == ("park", ["relaunch_history_unknown"])
+    assert ports.claims == [] and ports.stops == []
+
+
+def test_b3_neutralised_record_launches_the_previous_profile(tmp_path, auto_mode, monkeypatch):
+    import tools.lane_profile_record as record_module
+    ports = FakePorts(stop_ok=False)
+    run(tmp_path, ports)
+    monkeypatch.setattr(record_module, "effective_mode", lambda catalog: "auto")
+    root = tmp_path / "rt"
+    record_module.write_record(record_module.record_path(root, "claude-rco-1"), ports.records["claude-rco-1"])
+    decision = record_module.launch_decision(root, "claude-rco-1", signed_catalog(), DIGEST,
+                                             now=NOW + timedelta(hours=1))
+    assert decision["profile"]["profile_id"] == "claude-sonnet-5-xhigh"
+
+
+def test_b4_rollback_launch_that_raises_fails_closed(tmp_path, auto_mode):
+    ports = FakePorts(launches=("raise", "raise"))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["outcome"] == "failed" and "operator_required" in payload["reasons"]
+    assert phase(store, ex.tid) == "apply_pending" and ports.released == ["claim-1"]
+
+
+@pytest.mark.parametrize("broken", ["write_record", "preflight_launch"])
+def test_b4_exception_before_stop_frees_the_window_and_leaves_the_source(tmp_path, auto_mode, broken):
+    ports = FakePorts()
+    setattr(ports, broken, lambda *a, **k: (_ for _ in ()).throw(RuntimeError("port failed")))
+    payload, store, ex = run(tmp_path, ports)
+    assert payload["reasons"][:2] == ["executor_exception", "RuntimeError"]
+    assert ports.released == ["claim-1"] and ports.proc["pid"] == 100 and ports.stops == []
+    if ex.tid is not None:
+        assert phase(store, ex.tid) == "cancelled_before_apply"
+    follow = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=store, ports=FakePorts(),
+                      runtime_root=str(tmp_path / "rt4"), request=dict(request(), request_id="req-2"),
+                      executor="lead").run()
+    assert follow["payload"]["outcome"] == "applied"
+
+
+def test_b4_failing_emit_still_returns_the_outcome_and_releases(tmp_path, auto_mode):
+    ports = FakePorts(stop_ok=False)
+    ports.emit = lambda event: (_ for _ in ()).throw(OSError("bridge down"))
+    payload, _, _ = run(tmp_path, ports)
+    assert payload["outcome"] == "failed" and payload["reasons"] == ["source_stop_failed", "receipt_not_emitted"]
+    assert ports.released == ["claim-1"]
+
+
+@pytest.mark.parametrize("bad", [None, "lane", ["x"]])
+def test_b4_non_object_request_aborts(tmp_path, auto_mode, bad):
+    ports = FakePorts()
+    ex = Executor(catalog=signed_catalog(), catalog_sha256=DIGEST, store=RecoveryStore(tmp_path / "j.sqlite"),
+                  ports=ports, runtime_root=str(tmp_path / "rt"), request=bad, executor="lead")
+    payload = ex.run()["payload"]
+    assert (payload["outcome"], payload["reasons"]) == ("aborted", ["request_shape_invalid"])
+    assert ports.claims == []

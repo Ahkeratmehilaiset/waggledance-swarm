@@ -237,11 +237,15 @@ Instead it journals both epochs:
 - a caller-supplied pid is never accepted.
 
 **Order.** Fail closed at every step:
-1. `check_request`.
+1. Request shape (lane, request_id, requested_by identity, both profiles), then
+   `check_request` against receipts from the `history` port. A request's own
+   `history` field is ignored, so a requester cannot pick its own budget. An
+   unreadable receipt history parks with `relaunch_history_unknown`.
 2. Mode gate: shadow gives `would_relaunch` and touches nothing. approve fails closed.
    auto needs a signed catalog. Lead's own lane runs only through the `supervisor`
    executor.
-3. `check_safe_boundary`, and the current profile verified from the measured process
+3. The measured state must name the request's lane, on both measurements.
+   Then `check_safe_boundary`, and the current profile verified from the measured process
    and observations. The request's or record's claim is never trusted (rco-2 residual B).
 4. Claim the record, the transition lock and the readiness path with a lease of at
    least 2 x verify_timeout + 600 s, re-measure, and abort if anything changed.
@@ -249,15 +253,27 @@ Instead it journals both epochs:
 6. Continuity: provider resume, or a fresh checkpoint.
 7. Journal planned -> quiesced (record written) -> checkpointed.
 8. Stop only the verified source instance, then apply_pending and launch.
-9. Verify within `verify_timeout_seconds`. Otherwise stop the stray target by its
-   recorded identity and make exactly one rollback. The rollback record is
+9. Verify within `verify_timeout_seconds`, with a creation-time skew of 2 s between
+   sources. A launch that raises is treated as a target that never bound.
+   Otherwise decide the stray from execution evidence:
+   - no live process: nothing is stopped;
+   - an evidence-verified process that the launcher record corroborates (pid and
+     creation time): that process is stopped;
+   - any other case, including a pid named only by the record or an unverified pin:
+     `stray_identity_unproven`, nothing is stopped and an operator reconciles.
+   Then make exactly one rollback. The rollback record is
    previous -> previous, a restore and never a lowering.
 10. Receipt, then release the claim.
 
 **Outcomes** (`decision/profile_transition`, schema `wd.lane-profile-transition-receipt.v1`):
 - `applied` and `rolled_back` end the journal at `resumed`, which frees the quota
   reservation.
-- A failed source stop ends at `cancelled_before_apply`.
+- A failed source stop ends at `cancelled_before_apply`, and the record is rewritten
+  previous -> previous so the next launch cannot apply the aborted target.
+- An unexpected exception still yields a `failed` receipt (`executor_exception`).
+  Before the source stop it cancels the reservation and neutralises the record.
+  After it, the reservation stays held (`operator_required`). A failing emit or
+  claim release is recorded in the returned reasons.
 - A failed rollback leaves the lane stopped, the journal at `apply_pending` and the
   reservation held. Only an operator reconciles it (`operator_required`).
 - A second transition on a reserved quota bucket is refused by the journal (`parked`).

@@ -168,6 +168,41 @@ and never merges them:
 The Claude context suffix (`[1m]`) is stripped for the comparison, and the raw value
 is reported.
 
+## Relaunch checks (D4 steps 1-2, PR-3a)
+
+`tools/wd_lane_relaunch.py` is pure. Every verdict carries
+`execution_allowed: false`: passing a check is not authority.
+
+- `check_request(catalog, request, history)`:
+  - A catalog park (target not allowed, below floor, unknown current, reviewer
+    lowering, unknown lane) parks with `operator_ack_required`. The same profile aborts.
+  - Otherwise it checks the per-lane hourly budget, the fleet hourly total and the
+    lane cooldown against prior receipts.
+  - Unparseable or future-dated history parks; it is never read as "no history".
+- `check_safe_boundary(state)`: the lane must be idle, with `pending_effects`
+  false, no previous-turn blocker, no open claims, and a fresh measurement at most
+  60 s old with a known current session. Unknown values block.
+  - Every unresolved request bound to the **current** session blocks regardless of
+    age (Lead LPS-B2). A request bound to another session blocks unless it is
+    provably superseded.
+  - The supervisor is never a target.
+
+## Planner (D5, PR-3a)
+
+`tools/wd_lane_profile_planner.py`'s `plan_lane(...)` returns one decision,
+`wd.lane-profile-plan.v1`, and never acts:
+
+- The current profile comes only from a `valid` session binding mapped to an allowed
+  profile. The Claude context suffix is stripped. Anything else parks.
+- Admission `KEEP` with an available bucket keeps. `PARK` or unknown parks.
+- An exhausted or limited bucket, or `ESCALATE`, looks for another allowed profile,
+  strongest first. It stays within the floor, and reviewers only raise. `ESCALATE`
+  only raises.
+- A candidate must have an `available` bucket (unknown counts as not available) and
+  must pass `check_request`. All Claude profiles share the `claude` bucket, so
+  exhaustion there has no Claude escape, and the planner says so by parking.
+- In `shadow` the strongest result is `would_relaunch`.
+
 ## Governance
 
 The catalog, its floors and any change to `fleet.mode` are (a)-class, needing an

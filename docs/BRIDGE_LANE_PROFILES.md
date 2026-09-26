@@ -87,6 +87,60 @@ lane's floor is its current profile, so the shipped catalog permits raise-or-sam
 only. The mode is `shadow`, the signature reads `UNSIGNED-DEFAULT`, and every
 profile is `approved: false` until the operator signs.
 
+## Lane runtime record (D2, PR-2)
+
+`tools/lane_profile_record.py`. The record lives at
+`<runtime_root>/lane_profiles/<lane>.json`; `record_path` refuses anything but a known
+lane, so there is no traversal. It is runtime state, and `wd-fleet.json` keeps
+`"model": "native"`. Schema `wd.lane-profile-record.v1`, with exact keys:
+
+- **Transition fields:** `lane`, `desired_profile`, `previous_profile`, `reason`,
+  `request_id` and `transition_id`.
+- **`requested_by`:** a lane plus its `agent_uuid` and `session_id`. The label
+  `operator` is not an identity and is refused.
+- **Lifetime:** `created_at` and `expires_at`, which must be aware timestamps. The
+  lifetime is positive and at most 24 h, and a record created in the future is refused.
+- **`catalog_sha256`:** must equal the loaded catalog's hash.
+- **`launched`:** `null`, or exactly `native_thread_id`, `pid`, `process_started_at`,
+  `session_id`, `run_id` and `launched_at`.
+
+A record whose previous-to-desired transition would `park` is refused. A reviewer
+lowering or a below-floor target needs an operator decision, never a record. Writes
+are atomic (temp file, fsync, rename). Reads are bounded to 64 KiB and reject NaN.
+
+`launch_decision(runtime_root, lane, catalog, digest)` is the launcher's question:
+- **No record:** `native`, silently.
+- **Unusable record** (expired, wrong hash, park, another lane): `native` plus a
+  `fallback_event`.
+- **`shadow`:** always `native`, and `would_apply` names the profile.
+- **`approve`:** fails closed with `operator_ack_unverifiable` until an operator ack
+  can be verified.
+- **`auto`:** `apply` with the exact provider, model, effort and transition id.
+
+Nothing in PR-2 calls this. The launcher wiring is PR-4, which is (a)-class.
+
+## Session binding (D3, PR-2)
+
+`tools/lane_profile_binding.py`'s `bind_lane(...)` reports two independent states
+and never merges them:
+
+- **`session_identity`** (`valid` | `unbound` | `invalid`). The recorded pid must be
+  live with the recorded creation time, within 2 s, or it is `invalid` (dead, or pid
+  reused).
+  - Claude: the capacity observation's `native_thread_id` must equal the recorded
+    thread, observed at or after the launch.
+  - Codex: the `read_native_codex` result must name the recorded thread, with a turn
+    strictly after the launch.
+  - Missing evidence is `unbound`, never valid.
+- **`quota_pool_binding`** (`valid` | `unverified` | `invalid`). Every one of the
+  profile's `(provider, limit id)` quota rows must be present, all with the profile's
+  account pool. A thread binding never authenticates a quota row, and a quota row
+  never authenticates a session.
+
+`profile_observed` (`match` | `mismatch` | `unverified`) compares model and effort.
+The Claude context suffix (`[1m]`) is stripped for the comparison, and the raw value
+is reported.
+
 ## Governance
 
 The catalog, its floors and any change to `fleet.mode` are (a)-class, needing an

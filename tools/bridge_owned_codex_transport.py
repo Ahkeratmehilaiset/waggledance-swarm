@@ -144,14 +144,37 @@ def default_spawn(executable: Path, arguments: Sequence[str]) -> Any:
     )
 
 
-#: Module-issued spawn closures whose child provenance this module can describe.
-#: A public callback attribute was forgeable and therefore could not support an
-#: identity claim.  Weak keys keep no spawn alive and exact object identity keeps
-#: an unrelated callback from claiming provenance by copying visible metadata.
-_PINNED_SPAWNS: weakref.WeakKeyDictionary[Callable[[], Any], str] = (
+#: Module-issued spawn objects whose child provenance this module can describe.
+#: The value is an immutable copy of the launch inputs captured at issuance.
+#: A public callback attribute was forgeable, and a function closure exposes
+#: writable cells, so neither can support an identity claim.  Weak keys keep no
+#: spawn alive; the copied tuple detects even forced mutation of object slots.
+_PinnedState = tuple[str, str, tuple[str, ...]]
+_PINNED_SPAWNS: weakref.WeakKeyDictionary[Callable[[], Any], _PinnedState] = (
     weakref.WeakKeyDictionary()
 )
 _PINNED_SPAWNS_LOCK = threading.Lock()
+
+
+class _PinnedSpawn:
+    __slots__ = ("_path", "_expected_sha256", "_argv", "__weakref__")
+
+    def __init__(self, path: Path, expected_sha256: str,
+                 argv: tuple[str, ...]) -> None:
+        self._path = path
+        self._expected_sha256 = expected_sha256.lower()
+        self._argv = argv
+
+    def _state(self) -> _PinnedState:
+        return (str(self._path), self._expected_sha256, self._argv)
+
+    def __call__(self) -> Any:
+        with _PINNED_SPAWNS_LOCK:
+            issued = _PINNED_SPAWNS.get(self)
+        if issued is None or self._state() != issued:
+            raise TransportRefused("pinned spawn launch inputs changed after issuance")
+        verify_executable(self._path, self._expected_sha256)
+        return default_spawn(self._path, self._argv)
 
 
 def pinned_spawn(executable: Path | str, expected_sha256: str,
@@ -173,12 +196,9 @@ def pinned_spawn(executable: Path | str, expected_sha256: str,
     path = Path(executable)
     argv = tuple(str(argument) for argument in arguments)
 
-    def spawn() -> Any:
-        verify_executable(path, expected_sha256)
-        return default_spawn(path, argv)
-
+    spawn = _PinnedSpawn(path, expected_sha256, argv)
     with _PINNED_SPAWNS_LOCK:
-        _PINNED_SPAWNS[spawn] = expected_sha256.lower()
+        _PINNED_SPAWNS[spawn] = spawn._state()
     return spawn
 
 
@@ -533,11 +553,12 @@ def observe_owned_app_server(spawn: Callable[[], Any], *,
     """
     try:
         with _PINNED_SPAWNS_LOCK:
-            pinned_digest = _PINNED_SPAWNS.get(spawn)
+            pinned_state = _PINNED_SPAWNS.get(spawn)
     except TypeError:
         # Some callable objects cannot be weak-referenced.  They remain valid
         # injected spawners, but cannot be a module-issued pinned spawn.
-        pinned_digest = None
+        pinned_state = None
+    pinned_digest = pinned_state[1] if pinned_state is not None else None
     verification: dict[str, Any] = {
         "file_digest_verified": False,
         "executable_digest": None,

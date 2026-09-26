@@ -841,6 +841,27 @@ def test_a_forged_pinned_digest_attribute_cannot_claim_child_identity():
     assert result["observed"] == "child_returned_by_supplied_spawn"
 
 
+def test_a_pinned_spawn_refuses_forced_launch_input_mutation(tmp_path, monkeypatch):
+    good = tmp_path / "codex.exe"
+    evil = tmp_path / "evil.exe"
+    good.write_bytes(b"good cli")
+    evil.write_bytes(b"evil cli")
+    spawn = transport.pinned_spawn(
+        good, hashlib.sha256(good.read_bytes()).hexdigest(), ["app-server"])
+    launched = []
+    monkeypatch.setattr(
+        transport, "default_spawn",
+        lambda executable, arguments: launched.append((executable, arguments)))
+
+    object.__setattr__(spawn, "_path", evil)
+    object.__setattr__(
+        spawn, "_expected_sha256", hashlib.sha256(evil.read_bytes()).hexdigest())
+
+    with pytest.raises(TransportRefused, match="launch inputs changed"):
+        transport.observe_owned_app_server(spawn, client_info=CLIENT)
+    assert launched == []
+
+
 def test_only_a_pinned_spawn_reports_a_verified_child(tmp_path, monkeypatch):
     """pinned_spawn binds the digest and the start into one decision.
 

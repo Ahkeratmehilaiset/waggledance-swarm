@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import time
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -32,6 +34,71 @@ FAILURE_STATUSES = {
 WINDOWS_NATIVE_DRAIN_AVAILABLE = os.name == "nt" and bool(
     shutil.which("powershell.exe") or shutil.which("pwsh")
 )
+
+
+@pytest.fixture
+def fake_named_mutex_kernel(monkeypatch):
+    kernel = SimpleNamespace(
+        CreateMutexExW=Mock(return_value=42),
+        WaitForSingleObject=Mock(return_value=0),
+        ReleaseMutex=Mock(return_value=True),
+        CloseHandle=Mock(return_value=True),
+    )
+    monkeypatch.setattr(accepted_queue_preflight, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+    return kernel
+
+
+def test_named_mutex_lease_uses_minimum_rights_and_preserves_timeout(fake_named_mutex_kernel):
+    kernel = fake_named_mutex_kernel
+    with accepted_queue_preflight._bridge_named_mutex_lease(name="unique-test", label="test"):
+        pass
+    kernel.CreateMutexExW.assert_called_once_with(None, "unique-test", 0, 0x00100001)
+    kernel.WaitForSingleObject.assert_called_once_with(42, 5_000)
+    kernel.ReleaseMutex.assert_called_once_with(42)
+    kernel.CloseHandle.assert_called_once_with(42)
+
+
+@pytest.mark.parametrize("wait, error, release", [
+    (0x00000102, ValueError, False),
+    (0x00000080, ValueError, True),
+    (0xFFFFFFFF, OSError, False),
+    (0x12345678, OSError, False),
+])
+def test_named_mutex_lease_wait_failure_closes_handle(fake_named_mutex_kernel, wait, error, release):
+    kernel = fake_named_mutex_kernel
+    kernel.WaitForSingleObject.return_value = wait
+    with pytest.raises(error):
+        with accepted_queue_preflight._bridge_named_mutex_lease(name="unique-test", label="test"):
+            pytest.fail("failed wait must not yield")
+    assert kernel.ReleaseMutex.call_count == int(release)
+    kernel.CloseHandle.assert_called_once_with(42)
+
+
+@pytest.mark.parametrize("release_ok, close_ok, expected", [
+    (False, True, "release failed"),
+    (True, False, "close failed"),
+    (False, False, "release failed"),
+])
+def test_named_mutex_lease_cleanup_errors(fake_named_mutex_kernel, release_ok, close_ok, expected):
+    kernel = fake_named_mutex_kernel
+    kernel.ReleaseMutex.return_value = release_ok
+    kernel.CloseHandle.return_value = close_ok
+    with pytest.raises(OSError, match=expected):
+        with accepted_queue_preflight._bridge_named_mutex_lease(name="unique-test", label="test"):
+            pass
+    kernel.CloseHandle.assert_called_once_with(42)
+
+
+def test_named_mutex_lease_creation_error_has_no_handle_to_close(fake_named_mutex_kernel):
+    kernel = fake_named_mutex_kernel
+    kernel.CreateMutexExW.return_value = 0
+    with pytest.raises(OSError, match="creation failed"):
+        with accepted_queue_preflight._bridge_named_mutex_lease(name="unique-test", label="test"):
+            pytest.fail("failed creation must not yield")
+    kernel.WaitForSingleObject.assert_not_called()
+    kernel.CloseHandle.assert_not_called()
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path]:

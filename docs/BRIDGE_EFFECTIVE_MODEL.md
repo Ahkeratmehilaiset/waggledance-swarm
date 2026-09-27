@@ -98,6 +98,21 @@ This matters for Sonnet 5, the reviewer lanes' default.
 A project `.codex/config.toml` inside the worktree that sets a model, effort or profile
 is reported with `project_config_precedence_unverified`, and the result is unknown.
 
+## Configuration directories and resumed sessions
+
+- `CLAUDE_CONFIG_DIR` ("All settings ... are stored under this path") and `CODEX_HOME` decide
+  where the user settings, the server-managed cache and the Codex `config.toml` are read,
+  as they do for the launchers. A settings `env` block that sets `CLAUDE_CONFIG_DIR` fails
+  closed.
+- `resume_transcript`: a resumed Claude session keeps the model saved in its transcript
+  (model-config.md). `--model`, `ANTHROPIC_MODEL` and an `ANTHROPIC_DEFAULT_MODEL` that
+  decides a new session still win. A family variable (`ANTHROPIC_DEFAULT_OPUS_MODEL` and its
+  siblings) fails closed. Only the transcript tail (8 MiB) is read, and a cut first line is
+  never trusted. Effort has no resume tier in the documented order, so it resolves as for a
+  fresh launch.
+- `unset` is the launchers' spelling of an empty value and means nothing on argv, like
+  `native`.
+
 ## Managed settings
 
 Claude Code managed settings come in three forms, and all three are checked:

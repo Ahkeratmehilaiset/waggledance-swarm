@@ -35,11 +35,12 @@ class Claude:
         self.managed = tmp_path / "managed-settings.json"
         self.worktree.mkdir(parents=True)
 
-    def resolve(self, *, argv_model="native", argv_effort="native", env=None, cli=False, registry=None):
+    def resolve(self, *, argv_model="native", argv_effort="native", env=None, cli=False, registry=None,
+                resume=None):
         return resolve_claude(argv_model=argv_model, argv_effort=argv_effort, env=env or {},
                               user_settings=self.user, worktree=self.worktree,
                               cli_settings=self.cli if cli else None, managed_settings=self.managed,
-                              managed_registry=registry or (lambda: []))
+                              managed_registry=registry or (lambda: []), resume_transcript=resume)
 
 
 # ---------------------------------------------------------------- Claude
@@ -701,6 +702,9 @@ SONNET_XHIGH = {"model": "claude-sonnet-5", "effortLevel": "xhigh"}
 @pytest.mark.parametrize("env,issue", [
     ({"MAX_THINKING_TOKENS": "0"}, "thinking_off:MAX_THINKING_TOKENS"),
     ({"MAX_THINKING_TOKENS": " 0 "}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": "00"}, "thinking_off:MAX_THINKING_TOKENS"),       # zero, not the string "0"
+    ({"MAX_THINKING_TOKENS": "0000"}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": "٠"}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),  # non-ASCII digit
     ({"MAX_THINKING_TOKENS": "lots"}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),
     ({"MAX_THINKING_TOKENS": ""}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),
     ({"CLAUDE_CODE_DISABLE_THINKING": "1"}, "thinking_parameter_omitted:CLAUDE_CODE_DISABLE_THINKING"),
@@ -752,3 +756,162 @@ def test_models_that_always_think_ignore_the_thinking_switches(tmp_path, model):
                 "modelSettings": {model.replace("[1m]", ""): {"effortLevel": "high"}}})
     r = c.resolve(env={"MAX_THINKING_TOKENS": "0", "CLAUDE_CODE_DISABLE_THINKING": "1"})
     assert r["resolved"] is True, r["issues"]
+
+
+# ---------------------------------------------------------------- a resumed session keeps its transcript model
+
+THREAD = "0f3c2b1a-1111-4222-8333-944455556666"
+
+
+def turn(model, *, sidechain=False, kind="assistant"):
+    return {"type": kind, "isSidechain": sidechain, "message": {"model": model, "content": []}}
+
+
+def transcript(tmp_path, records, name="t.jsonl") -> Path:
+    path = tmp_path / name
+    path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+MODEL_COMMAND = {"type": "user", "message": {"content": "<command-name>/model</command-name>\n<command-args></command-args>"}}
+
+
+def test_a_resumed_session_keeps_its_transcript_model(tmp_path):
+    # model-config: resumed sessions "keep the model they were using when the transcript was
+    # saved, regardless of the current model setting".
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    path = transcript(tmp_path, [turn("claude-opus-5-5"), turn("claude-sonnet-5")])
+    r = c.resolve(resume=path)
+    assert (r["model"], r["model_source"], r["effort"], r["resolved"]) == \
+        ("claude-sonnet-5", "resume_transcript", "high", True)
+    assert {"layer": "resume_transcript", "path": str(path), "state": "read"} in r["sources"]
+
+
+@pytest.mark.parametrize("how,source", [("argv", "argv"), ("env", "env:ANTHROPIC_MODEL"),
+                                        ("default_env", "env:ANTHROPIC_DEFAULT_MODEL")])
+def test_the_launch_model_beats_the_restored_model(tmp_path, how, source):
+    c = Claude(tmp_path)
+    js(c.user, {"effortLevel": "high"} if how == "default_env" else {"model": "claude-sonnet-5", "effortLevel": "high"})
+    path = transcript(tmp_path, [turn("claude-haiku-4-5")])
+    kwargs = {"argv": {"argv_model": "claude-opus-5"}, "env": {"env": {"ANTHROPIC_MODEL": "claude-opus-5"}},
+              "default_env": {"env": {"ANTHROPIC_DEFAULT_MODEL": "claude-opus-5"}}}[how]
+    r = c.resolve(resume=path, **kwargs)
+    assert (r["model"], r["model_source"]) == ("claude-opus-5", source)
+
+
+def test_a_default_model_variable_that_a_file_outranks_does_not_beat_the_transcript(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=transcript(tmp_path, [turn("claude-opus-5")]), env={"ANTHROPIC_DEFAULT_MODEL": "claude-haiku-4-5"})
+    assert (r["model"], r["model_source"]) == ("claude-opus-5", "resume_transcript")
+
+
+@pytest.mark.parametrize("key", ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"])
+def test_a_model_family_variable_on_resume_is_unknown(tmp_path, key):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=transcript(tmp_path, [turn("claude-sonnet-5")]), env={key: "claude-sonnet-5"})
+    assert (r["model"], r["resolved"]) == (None, False) and "resume_model_family_variable_unverified" in r["issues"]
+    assert c.resolve(env={key: "claude-sonnet-5"})["resolved"] is True        # not resuming: no effect
+
+
+def test_side_threads_and_synthetic_turns_are_skipped(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    path = transcript(tmp_path, [turn("claude-opus-5"), turn("claude-haiku-4-5", sidechain=True), turn("<synthetic>"),
+                                 {"type": "user", "message": {"content": "hi"}}, {"type": "system"}])
+    assert c.resolve(resume=path)["model"] == "claude-opus-5"
+
+
+@pytest.mark.parametrize("records", [
+    [turn("claude-opus-5"), MODEL_COMMAND],                          # /model after the last turn
+    [turn("claude-opus-5"), "{not json"],                            # an unreadable line before the answer
+    [turn("claude-opus-5"), "[1, 2]"],                               # a line that is not an object
+    [{"type": "user", "message": {"content": "hi"}}],                # no assistant turn
+    [turn(None)],                                                    # the last turn names no model
+    [turn(5)],
+    [],
+])
+def test_an_undecidable_transcript_is_unknown(tmp_path, records):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=transcript(tmp_path, records))
+    assert (r["model"], r["resolved"]) == (None, False) and "resume_transcript_model_undecidable" in r["issues"]
+    assert "model_from_unpinned_builtin_default" not in r["issues"] and "model_missing" not in r["issues"]
+
+
+def test_a_model_command_before_the_last_turn_is_history(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    assert c.resolve(resume=transcript(tmp_path, [MODEL_COMMAND, turn("claude-opus-5")]))["model"] == "claude-opus-5"
+
+
+def test_a_missing_or_linked_transcript_is_unknown(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=tmp_path / "gone.jsonl")
+    assert r["resolved"] is False and "resume_transcript_model_undecidable" in r["issues"]
+    real = transcript(tmp_path, [turn("claude-opus-5")], name="real.jsonl")
+    link = tmp_path / "link.jsonl"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    assert "resume_transcript_model_undecidable" in c.resolve(resume=link)["issues"]
+
+
+def test_only_the_tail_is_read_and_a_cut_first_line_is_dropped(tmp_path, monkeypatch):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    last = json.dumps(turn("claude-opus-5")) + "\n"
+    path = transcript(tmp_path, [turn("claude-haiku-4-5")] * 50 + [turn("claude-opus-5")])
+    monkeypatch.setattr(eff_module, "TRANSCRIPT_TAIL_BYTES", len(last) + 7)   # cuts into the line before
+    assert c.resolve(resume=path)["model"] == "claude-opus-5"
+    monkeypatch.setattr(eff_module, "TRANSCRIPT_TAIL_BYTES", len(last) - 3)   # the last turn itself is cut
+    assert "resume_transcript_model_undecidable" in c.resolve(resume=path)["issues"]
+
+
+def test_the_transcript_path_follows_the_launcher_rule(tmp_path):
+    from tools.lane_effective_model import SourceError, claude_transcript_path
+    path = claude_transcript_path(tmp_path, Path("C:/Python/wt-a_b"), THREAD)
+    assert path == tmp_path / "projects" / "C--Python-wt-a-b" / f"{THREAD}.jsonl"
+    for bad in ("../x", THREAD.upper(), THREAD + ".jsonl", "", None):
+        with pytest.raises(SourceError):
+            claude_transcript_path(tmp_path, Path("C:/wt"), bad)
+
+
+def test_the_cli_refuses_a_resume_without_a_worktree(capsys):
+    assert main(["--lane", "claude-rco-1", "--cli", "claude", "--claude-resume-thread", THREAD]) == 2
+
+
+@pytest.mark.parametrize("spelling", ["unset", "native", ""])
+def test_the_launchers_empty_spelling_is_not_a_claude_model(tmp_path, spelling):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(argv_model=spelling, argv_effort=spelling)
+    assert (r["model"], r["model_source"], r["effort_source"]) == ("claude-sonnet-5", "user", "user")
+
+
+
+def test_a_last_turn_without_a_model_does_not_fall_back_to_an_older_turn(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    for last in (turn(None), turn(5), turn("  ")):
+        r = c.resolve(resume=transcript(tmp_path, [turn("claude-opus-5"), last]))
+        assert (r["model"], r["resolved"]) == (None, False), last
+
+
+def test_a_cut_first_line_is_never_trusted_even_when_it_parses(tmp_path, monkeypatch):
+    # The tail's first line may start mid-line. A cut inside the leading blanks of an assistant
+    # line still parses as that turn; it must be dropped, not read.
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    padded = " " * 40 + json.dumps(turn("claude-haiku-4-5"))
+    user = json.dumps({"type": "user", "message": {"content": "hi"}})
+    path = transcript(tmp_path, [padded, user])
+    monkeypatch.setattr(eff_module, "TRANSCRIPT_TAIL_BYTES", len(user) + 1 + len(padded) + 1 - 10)
+    r = c.resolve(resume=path)
+    assert (r["model"], r["resolved"]) == (None, False)
+    assert "resume_transcript_model_undecidable" in r["issues"]

@@ -14,7 +14,10 @@ but nothing escalated it, because it was a sentence and not a gate.
    is built. They now also pass:
    - `--cli` (`claude` / `codex`);
    - the lane `--worktree`;
-   - for Claude, the launcher's own `--settings` file.
+   - for Claude, the launcher's own `--settings` file;
+   - for a Claude launch that resumes a recorded conversation, `--claude-resume-thread`.
+     A resumed session "keeps the model it was using when the transcript was saved"
+     (model-config.md), so the preflight reads that transcript, not the settings file.
 2. The probe resolves the effective model and effort with `tools/lane_effective_model.py`
    (PR-7a: the CLIs' documented precedence, fail closed) and classifies the result against
    the signed catalog. The resolved values, their sources and the verdict go into the lane's
@@ -22,14 +25,21 @@ but nothing escalated it, because it was a sentence and not a gate.
 3. **The status code is the only signal the launcher reads:**
    - `0`: the verdict is `allowed` (or no `--cli` was given);
    - `3`: attention. The verdict is `below_floor`, `not_in_lane_allowlist`,
-     `provider_mismatch` or `unknown`, or the preflight could not run.
-4. On `3`, the launcher posts **one** bridge event with the pinned writer, under the lane's
-   own identity:
-   - type `status`, status `launch_preflight_attention`, task `lane-profile-switching`,
-     to `operator,codex-lead-1`;
-   - a fixed message;
-   - a payload of lane, launcher, run id, `enforcement: alert_only` and the path of the
-     shadow log.
+     `provider_mismatch` or `unknown`, or the resolver itself failed;
+   - any other code, or a probe that cannot run at all: the preflight is **unavailable**
+     (claude-rco-2 N2 on #1745). Without this, a broken probe would look exactly like an
+     allowed launch.
+4. On attention or unavailable, when a preflight was requested, the launcher posts **one**
+   bridge event with the pinned writer, under the lane's own identity:
+   - type `status`, task `lane-profile-switching`, to `operator,codex-lead-1`;
+   - status `launch_preflight_attention` or `launch_preflight_unavailable`, each with its
+     own fixed message;
+   - a payload of lane, launcher, run id, `preflight` (`attention` / `unavailable`),
+     `enforcement: alert_only` and the path of the shadow log.
+
+   The identity shape (agent, run id, role, agent uuid, session id = run id, capabilities)
+   is the one both launchers already use for the events they post on every launch, such as
+   `target_state_manifested`, so the pinned writer accepts it in production.
 
    The launcher never parses the probe's output. The details live in the shadow log, so no
    probe text can reach argv, the model, the effort or the event fields.
@@ -47,15 +57,37 @@ launcher passes each lane's signed profile explicitly (`--model` / `--effort`; f
 per-lane `--settings` layer). The effective profile is then resolved from argv and can be
 `allowed`, and the gate can refuse without an outage. PR-9 is operator-signed.
 
+## Configuration directories and resumed sessions
+
+The preflight reads the files the CLI will read:
+- `CODEX_HOME` moves the Codex `config.toml`, and `CLAUDE_CONFIG_DIR` moves every Claude
+  settings file and the transcripts. Both launchers honour them, and so does the preflight
+  (claude-rco-1 B1 on #1745). A settings `env` block that sets `CLAUDE_CONFIG_DIR` fails
+  closed.
+- A resumed Claude launch keeps its transcript's model. `--model` and `ANTHROPIC_MODEL`
+  still win, and so does `ANTHROPIC_DEFAULT_MODEL` when a new session would start on it.
+  The `ANTHROPIC_DEFAULT_*_MODEL` family variables fail closed on a resume. The model is
+  the last main-thread assistant turn in the transcript tail; side threads and synthetic
+  turns are skipped. Any of these makes it `unknown`:
+  - a `/model` command after that turn;
+  - an unreadable line before it;
+  - a turn without a model;
+  - a missing or linked transcript.
+- Codex resumes on the current configuration: the CLI warns "resuming session with
+  different model", and recorded threads change model across restarts. So a Codex resume
+  reads `config.toml` like a fresh launch.
+
 ## Measured on this machine, 2026-09-27
 
-| Lane | Effective (source) | Verdict | Launch |
-|---|---|---|---|
-| codex-lead-1, codex-tools-1 | gpt-6-luna / xhigh (`~/.codex/config.toml`) | `not_in_lane_allowlist` | continues, attention event |
-| claude-rco-1, claude-rco-2, fable-5 | built-in default model / xhigh (`~/.claude/settings.json`) | `unknown` | continues, attention event |
+| Lane | Effective (source) | Verdict |
+|---|---|---|
+| codex-lead-1, codex-tools-1, morning | gpt-6-luna / xhigh (`~/.codex/config.toml`) | `not_in_lane_allowlist` |
+| codex-lead-1, codex-tools-1, after the operator's change | gpt-6-sol / high (`~/.codex/config.toml`) | `allowed` |
+| fable-5, fresh launch | built-in default model; user `effortLevel` not applicable | `unknown` |
+| fable-5, resumed (its real launch) | claude-opus-5-5 (transcript) / xhigh (`modelSettings`) | `allowed` |
 
-Until the operator pins profiles, **every launch will post an attention event**. That is
-the truth about the fleet today, made visible at the moment it matters.
+Until the operator pins profiles, a launch on an unpinned default posts an attention event.
+That is the truth about the fleet, made visible at the moment it matters.
 
 ## The operator's planted-fault check
 

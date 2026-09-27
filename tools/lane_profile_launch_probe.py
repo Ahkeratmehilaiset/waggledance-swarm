@@ -98,24 +98,35 @@ def probe(runtime_root: str | Path, lane: str, launcher: str, argv_model: str, a
 def preflight(catalog_path: str | Path, lane: str, cli: str, argv_model: str, argv_effort: str, *,
               worktree: str | Path | None = None, claude_cli_settings: str | Path | None = None,
               codex_config: str | Path | None = None, claude_user_settings: str | Path | None = None,
-              claude_managed_settings: str | Path | None = None, env: dict | None = None) -> dict:
+              claude_managed_settings: str | Path | None = None, env: dict | None = None,
+              claude_resume_thread: str | None = None) -> dict:
     """The effective launch profile and its catalog verdict. Never raises: failure is ``unknown``."""
     result: dict[str, Any] = {"cli": cli, "effective": None, "verdict": "unknown", "reasons": [], "profile": None}
     try:
-        from tools.lane_effective_model import DEFAULT_CLAUDE_MANAGED, classify, resolve_claude, resolve_codex
+        from tools.lane_effective_model import (DEFAULT_CLAUDE_MANAGED, SourceError, claude_config_dir,
+                                                claude_transcript_path, classify, codex_home, resolve_claude,
+                                                resolve_codex)
         from tools.lane_profile_catalog import load_catalog
         catalog, _ = load_catalog(catalog_path)
         tree = Path(worktree) if worktree else None
+        environment = os.environ if env is None else env
         if cli == "claude":
+            resume = None
+            if claude_resume_thread is not None:
+                # A resumed session keeps the model saved in its transcript (model-config.md).
+                if tree is None:
+                    raise SourceError("a resumed launch needs the worktree")
+                resume = claude_transcript_path(claude_config_dir(environment), tree, claude_resume_thread)
             resolved = resolve_claude(
-                argv_model=argv_model, argv_effort=argv_effort, env=os.environ if env is None else env,
+                argv_model=argv_model, argv_effort=argv_effort, env=environment,
                 user_settings=Path(claude_user_settings) if claude_user_settings
-                else Path.home() / ".claude" / "settings.json",
+                else claude_config_dir(environment) / "settings.json",
                 worktree=tree, cli_settings=Path(claude_cli_settings) if claude_cli_settings else None,
-                managed_settings=Path(claude_managed_settings) if claude_managed_settings else DEFAULT_CLAUDE_MANAGED)
+                managed_settings=Path(claude_managed_settings) if claude_managed_settings else DEFAULT_CLAUDE_MANAGED,
+                resume_transcript=resume)
         elif cli == "codex":
             resolved = resolve_codex(argv_model=argv_model, argv_effort=argv_effort, worktree=tree,
-                                     config=Path(codex_config) if codex_config else Path.home() / ".codex" / "config.toml")
+                                     config=Path(codex_config) if codex_config else codex_home(environment) / "config.toml")
         else:
             result["reasons"] = ["cli_unknown"]
             return result
@@ -162,13 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--claude-cli-settings", default=None)
     parser.add_argument("--codex-config", default=None, help="default: ~/.codex/config.toml")
     parser.add_argument("--claude-user-settings", default=None, help="default: ~/.claude/settings.json")
+    parser.add_argument("--claude-resume-thread", default=None, help="the session a Claude launch resumes")
     args = parser.parse_args(argv)
     entry = probe(args.runtime_root, args.lane, args.launcher, args.argv_model, args.argv_effort,
                   catalog_path=args.catalog)
     entry["preflight"] = None if args.cli is None else preflight(
         args.catalog, args.lane, args.cli, args.argv_model, args.argv_effort,
         worktree=args.worktree, claude_cli_settings=args.claude_cli_settings,
-        codex_config=args.codex_config, claude_user_settings=args.claude_user_settings)
+        codex_config=args.codex_config, claude_user_settings=args.claude_user_settings,
+        claude_resume_thread=args.claude_resume_thread)
     entry["log"] = append_entry(args.runtime_root, entry)
     print(json.dumps(entry, sort_keys=True, separators=(",", ":")))
     attention = entry["preflight"] is not None and entry["preflight"]["verdict"] != "allowed"

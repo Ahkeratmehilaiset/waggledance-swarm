@@ -80,7 +80,9 @@ from tools.lane_profile_catalog import LANES, load_catalog  # noqa: E402
 
 SCHEMA = "wd.lane-effective-model.v1"
 MAX_SOURCE_BYTES = 1024 * 1024
-NATIVE = ("", "native", None)
+# "unset" is how the launchers spell an empty value to the probe (Windows PowerShell 5.1 drops an
+# empty native argument), so it means "nothing on argv", exactly like "native".
+NATIVE = ("", "native", "unset", None)
 CLAUDE_ALIASES = frozenset({"opus", "sonnet", "haiku", "fable", "default", "opusplan", "best", "latest"})
 _SUFFIX = re.compile(r"\[[^\]]*\]$")
 EXIT_ALLOWED, EXIT_ERROR, EXIT_ATTENTION = 0, 2, 3
@@ -100,15 +102,38 @@ USER_EFFORT_LEVEL_APPLIES = frozenset({
     "claude-opus-5", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8",
     "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})
 USER_EFFORT_LEVEL_IGNORED = frozenset({"claude-opus-5-5"})
-# settings-reference effortLevel / modelSettings: the only accepted settings levels ("max isn't
-# accepted as a level in either key"); "auto" keeps its own model-default handling.
+# The only accepted settings levels: the effortLevel and modelSettings type lists in
+# settings-reference.md, and model-config.md: "`max` isn't accepted as a level in either key".
+# "auto" keeps its own model-default handling.
 SETTINGS_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "auto"})
 # "You can't turn thinking off on Opus 5.5 or the Fable models" (model-config.md).
 THINKING_ALWAYS_ON = frozenset({"claude-opus-5-5"})
 THINKING_ALWAYS_ON_PREFIXES = ("claude-fable-",)
 _DATE = re.compile(r"-\d{8}$")
+# A resumed session "keeps the model it was using when the transcript was saved, regardless of the
+# current model setting"; --model and ANTHROPIC_MODEL still win, and so does ANTHROPIC_DEFAULT_MODEL
+# when a new session would start on it (model-config.md). The family variables below "take
+# precedence over the restored model" in a way the docs do not spell out, so they fail closed.
+MODEL_FAMILY_ENV = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL")
+RESUME_WINS_OVER_TRANSCRIPT = ("argv", "env:ANTHROPIC_MODEL", "env:ANTHROPIC_DEFAULT_MODEL")
+TRANSCRIPT_TAIL_BYTES = 8 * 1024 * 1024
+_THREAD = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$")
+_MODEL_COMMAND = "<command-name>/model</command-name>"
 ENV_MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
-                  "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING")
+                  "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING", "CLAUDE_CONFIG_DIR")
+
+
+def claude_config_dir(env: Mapping[str, str]) -> Path:
+    """``CLAUDE_CONFIG_DIR`` ("All settings ... are stored under this path", env-vars.md), else ``~/.claude``."""
+    value = _text(env.get("CLAUDE_CONFIG_DIR"))
+    return Path(os.path.abspath(value)) if value else Path.home() / ".claude"
+
+
+def codex_home(env: Mapping[str, str]) -> Path:
+    """``CODEX_HOME`` (read the same way by start-wd-agent), else ``~/.codex``."""
+    value = _text(env.get("CODEX_HOME"))
+    return Path(os.path.abspath(value)) if value else Path.home() / ".codex"
 
 
 class SourceError(ValueError):
@@ -167,6 +192,62 @@ def _toml(path: Path) -> dict | None:
 
 def _text(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def claude_transcript_path(config_dir: Path, worktree: Path, thread: str) -> Path:
+    """Where Claude Code keeps a lane's conversation: the launcher's Get-WdClaudeResumeState rule."""
+    if not isinstance(thread, str) or not _THREAD.match(thread):
+        raise SourceError("resume thread is not a session id")
+    return config_dir / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(worktree)) / f"{thread}.jsonl"
+
+
+def _is_model_command(record: dict) -> bool:
+    message = record.get("message")
+    contents = [record.get("content"), message.get("content") if isinstance(message, dict) else None]
+    return any(isinstance(content, str) and _MODEL_COMMAND in content for content in contents)
+
+
+def transcript_model(path: Path) -> str:
+    """The model of the last main-thread assistant turn; SourceError when that is not decidable.
+
+    Only the tail is read (``TRANSCRIPT_TAIL_BYTES``). A ``/model`` command after the last turn,
+    an unreadable line before the answer, or no assistant turn in the tail fails closed.
+    """
+    try:
+        if not path.exists() and not path.is_symlink():
+            raise SourceError(f"{path.name}: resume transcript missing")
+        if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
+            raise SourceError(f"{path.name}: symlink or reparse point")
+        with path.open("rb") as stream:
+            start = max(0, stream.seek(0, os.SEEK_END) - TRANSCRIPT_TAIL_BYTES)
+            stream.seek(start)
+            data = stream.read(TRANSCRIPT_TAIL_BYTES)
+    except OSError as exc:
+        raise SourceError(f"{path.name}: unreadable ({exc.__class__.__name__})") from None
+    lines = data.split(b"\n")
+    if start > 0:
+        lines = lines[1:]                       # the first line of a tail may be cut
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            raise SourceError(f"{path.name}: unreadable line before the last turn") from None
+        if not isinstance(record, dict):
+            raise SourceError(f"{path.name}: a line that is not an object")
+        if record.get("type") == "user" and _is_model_command(record):
+            raise SourceError(f"{path.name}: /model after the last turn")
+        if record.get("type") != "assistant" or record.get("isSidechain") is True:
+            continue
+        message = record.get("message")
+        model = message.get("model") if isinstance(message, dict) else None
+        if model == "<synthetic>":
+            continue
+        if not _text(model):
+            raise SourceError(f"{path.name}: the last turn names no model")
+        return _text(model)
+    raise SourceError(f"{path.name}: no assistant turn in the transcript tail")
 
 
 def managed_registry_settings(keys: tuple[tuple[str, str], ...] = MANAGED_REGISTRY_KEYS) -> list[str]:
@@ -312,9 +393,10 @@ def _thinking_issues(layers: list[tuple[str, dict]], model_id: str | None, env: 
         issues.append("thinking_parameter_omitted:CLAUDE_CODE_DISABLE_THINKING")
     if budget is not None:
         text = _text(budget)
-        if text == "0":
+        digits = text is not None and text.isascii() and text.isdigit()
+        if digits and int(text) == 0:          # "0", "00", "0000": all zero
             issues.append("thinking_off:MAX_THINKING_TOKENS")
-        elif text is None or not text.isdigit():
+        elif not digits:
             issues.append("thinking_budget_unreadable:MAX_THINKING_TOKENS")
         return issues                       # a positive budget turns thinking on over the setting
     for name, value in layers:
@@ -338,7 +420,8 @@ def _result(provider: str, model: str | None, effort: str | None, model_source: 
 def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapping[str, str],
                    user_settings: Path, worktree: Path | None, cli_settings: Path | None = None,
                    managed_settings: Path = DEFAULT_CLAUDE_MANAGED,
-                   managed_registry: Callable[[], list[str]] = managed_registry_settings) -> dict:
+                   managed_registry: Callable[[], list[str]] = managed_registry_settings,
+                   resume_transcript: Path | None = None) -> dict:
     """The model and effort a Claude Code launch will start with, and where each comes from."""
     issues: list[str] = []
     sources: list[dict] = []
@@ -401,8 +484,23 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         else:
             if _text(env.get("ANTHROPIC_DEFAULT_MODEL")):
                 model, model_source = env["ANTHROPIC_DEFAULT_MODEL"], "env:ANTHROPIC_DEFAULT_MODEL"
+    if resume_transcript is not None and model_source not in RESUME_WINS_OVER_TRANSCRIPT:
+        model, model_source = None, "resume_transcript"
+        if any(_text(env.get(key)) for key in MODEL_FAMILY_ENV):
+            issues.append("resume_model_family_variable_unverified")
+            sources.append({"layer": "resume_transcript", "path": str(resume_transcript), "state": "not_read"})
+        else:
+            try:
+                model = transcript_model(resume_transcript)
+                sources.append({"layer": "resume_transcript", "path": str(resume_transcript), "state": "read"})
+            except SourceError as exc:
+                issues.append("resume_transcript_model_undecidable")
+                sources.append({"layer": "resume_transcript", "path": str(resume_transcript),
+                                "state": "unreadable", "detail": str(exc)})
     if model_source == "builtin_default":
         issues.append("model_from_unpinned_builtin_default")
+        model_id = None
+    elif model is None:
         model_id = None
     else:
         model_id, issue = normalize_claude_model(model)
@@ -538,10 +636,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--argv-effort", default="native")
     parser.add_argument("--worktree", default=None)
     parser.add_argument("--catalog", default=str(DEFAULT_CATALOG))
-    parser.add_argument("--claude-user-settings", default=str(Path.home() / ".claude" / "settings.json"))
+    parser.add_argument("--claude-user-settings", default=str(claude_config_dir(os.environ) / "settings.json"))
+    parser.add_argument("--claude-resume-thread", default=None,
+                        help="the session a Claude launch resumes; needs --worktree")
     parser.add_argument("--claude-cli-settings", default=None)
     parser.add_argument("--claude-managed-settings", default=str(DEFAULT_CLAUDE_MANAGED))
-    parser.add_argument("--codex-config", default=str(Path.home() / ".codex" / "config.toml"))
+    parser.add_argument("--codex-config", default=str(codex_home(os.environ) / "config.toml"))
     args = parser.parse_args(argv)
     try:
         catalog, digest = load_catalog(args.catalog)
@@ -549,11 +649,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"schema": SCHEMA, "error": f"{exc.__class__.__name__}: {exc}"}))
         return EXIT_ERROR
     worktree = Path(args.worktree) if args.worktree else None
+    resume = None
+    if args.claude_resume_thread is not None:
+        try:
+            if worktree is None:
+                raise SourceError("--claude-resume-thread needs --worktree")
+            resume = claude_transcript_path(claude_config_dir(os.environ), worktree, args.claude_resume_thread)
+        except SourceError as exc:
+            print(json.dumps({"schema": SCHEMA, "error": f"SourceError: {exc}"}))
+            return EXIT_ERROR
     if args.cli == "claude":
         resolved = resolve_claude(argv_model=args.argv_model, argv_effort=args.argv_effort, env=os.environ,
                                   user_settings=Path(args.claude_user_settings), worktree=worktree,
                                   cli_settings=Path(args.claude_cli_settings) if args.claude_cli_settings else None,
-                                  managed_settings=Path(args.claude_managed_settings))
+                                  managed_settings=Path(args.claude_managed_settings), resume_transcript=resume)
     else:
         resolved = resolve_codex(argv_model=args.argv_model, argv_effort=args.argv_effort,
                                  config=Path(args.codex_config), worktree=worktree)

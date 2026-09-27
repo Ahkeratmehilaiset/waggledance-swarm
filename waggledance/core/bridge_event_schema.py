@@ -101,6 +101,31 @@ class BridgeEvent(BaseModel):
     in_reply_to_requester: dict[str, StrictStr] | None = None
     expected_responders: dict[str, dict[str, StrictStr]] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _payload_cannot_override_envelope(cls, value: Any) -> Any:
+        # Check raw presence before model defaults can manufacture an envelope.
+        if not isinstance(value, Mapping) or not isinstance(value.get("payload"), Mapping):
+            return value
+        for key in (
+            "agent", "agent_uuid", "session_id", "run_id", "task_id",
+            "request_id", "request_digest", "expected_responders",
+            "in_reply_to_request_id", "in_reply_to_request_digest",
+            "in_reply_to_requester",
+        ):
+            if key not in value["payload"]:
+                continue
+            if key not in value:
+                raise ValueError(f"payload contract field {key} requires top-level field")
+            try:
+                top = json.dumps(value[key], sort_keys=True, separators=(",", ":"), allow_nan=False)
+                nested = json.dumps(value["payload"][key], sort_keys=True, separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"payload contract field {key} is not canonical JSON") from exc
+            if top != nested:
+                raise ValueError(f"payload contract field {key} conflicts with top-level field")
+        return value
+
     @field_validator("request_id", "in_reply_to_request_id")
     @classmethod
     def _request_identifier(cls, value: str | None) -> str | None:

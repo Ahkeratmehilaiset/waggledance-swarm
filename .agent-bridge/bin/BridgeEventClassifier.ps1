@@ -197,7 +197,7 @@ function Test-BridgeAnswerEvent {
 
     # `wake_request` is request-like, never a closure/answer: a nudge must not
     # mark another agent's open request as answered.
-    if (@('status','intent','wake_request') -contains $type) { return $false }
+    if (@('status','intent','wake_request','triage_disposition') -contains $type) { return $false }
     return $true
 }
 

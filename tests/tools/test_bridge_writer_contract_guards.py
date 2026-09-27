@@ -43,6 +43,7 @@ def test_payload_cannot_poison_writer_identity(tmp_path, shell, key):
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("kind,status", [("status", "ready_for_fresh_restart"),
     ("intent", "ready"), ("wake_request", "request"),
+    ("triage_disposition", "recorded"), ("consumer_tick", "recorded"),
     ("message", "received"), ("message", "seen"), ("message", "acknowledged")]
     + [("message", status) for status in (
         "queued", "queued_for_processing", "queue_accepted", "accepted",
@@ -57,7 +58,8 @@ def test_bound_nonanswer_is_refused_before_append(tmp_path, shell, kind, status)
     before = rows(tmp_path)
     request = json.loads(before.splitlines()[-1])
     result = write(shell, tmp_path, "-Type", kind, "-Status", status,
-                   "-To", "operator", "-ReplyToEventJson", json.dumps(request))
+                   "-To", "operator", "-ReplyToEventJson", json.dumps(request),
+                   "-PayloadJson", json.dumps({"disposition": "ack_dispatch", "target_event_id": "fixture"}))
     assert result.returncode != 0, result.stdout
     assert "substantive answer" in result.stderr
     assert rows(tmp_path) == before

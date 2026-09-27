@@ -41,11 +41,20 @@ precedence", model-config.md, env-vars):
   5.5 and the Fable models. A profile's effort then no longer describes the
   session, so thinking that may be off fails closed.
 
-Codex CLI: ``--model`` and ``-c model_reasoning_effort=`` on argv >
-``config.toml``'s selected ``[profiles.<profile>]`` > top-level ``model`` and
-``model_reasoning_effort`` > built-in default. A project ``.codex/config.toml``
-inside the worktree is reported as a source whose precedence is not verified;
-when it sets a value, the result is unknown.
+Codex CLI: ``--model`` and ``-c model_reasoning_effort=`` on argv > top-level
+``model`` and ``model_reasoning_effort`` in ``$CODEX_HOME/config.toml`` (default
+``~/.codex``) > built-in default. Since Codex 0.134.0 a profile is a separate
+``<name>.config.toml`` chosen only with ``--profile``; the old ``profile =``
+selector and inline ``[profiles.<name>]`` tables are "no longer supported"
+(OpenAI Codex docs, config-advanced). The launchers never pass ``--profile``,
+and what 0.157 does with the legacy keys is not verified, so either one fails
+closed. A project ``.codex/config.toml`` inside the worktree is reported as a
+source whose precedence is not verified; when it sets a value, the result is
+unknown.
+
+Configuration directories: ``CLAUDE_CONFIG_DIR`` ("All settings ... are stored
+under this path") and ``CODEX_HOME`` move the user files, as they do for the
+launchers; the CLI defaults follow them.
 
 Fail closed
 -----------
@@ -426,7 +435,7 @@ def _result(provider: str, model: str | None, effort: str | None, model_source: 
 def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapping[str, str],
                    user_settings: Path, worktree: Path | None, cli_settings: Path | None = None,
                    managed_settings: Path = DEFAULT_CLAUDE_MANAGED,
-                   managed_registry: Callable[[], list[str]] = managed_registry_settings,
+                   managed_registry: Callable[[], list[str]] | None = None,
                    resume_transcript: Path | None = None) -> dict:
     """The model and effort a Claude Code launch will start with, and where each comes from."""
     issues: list[str] = []
@@ -453,7 +462,8 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         sources.append({"layer": name, "path": str(path), "state": "read"})
         layers.append((name, value))
     try:
-        registry_hits = list(managed_registry())
+        # Looked up at call time, so the CLI path can be isolated in tests.
+        registry_hits = list((managed_registry or managed_registry_settings)())
     except Exception as exc:  # noqa: BLE001 - a policy store we cannot read is not "no policy"
         registry_hits = [f"registry:unreadable:{exc.__class__.__name__}"]
     for hit in registry_hits:
@@ -572,15 +582,12 @@ def resolve_codex(*, argv_model: str | None, argv_effort: str | None, config: Pa
         issues.append("user_config_unreadable")
         sources.append({"layer": "user_config", "path": str(config), "state": "unreadable", "detail": str(exc)})
     cfg = cfg or {}
-    selected: dict = {}
-    profile_name = cfg.get("profile")
-    if profile_name is not None:
-        profiles = cfg.get("profiles")
-        entry = profiles.get(profile_name) if isinstance(profiles, dict) and isinstance(profile_name, str) else None
-        if isinstance(entry, dict):
-            selected = entry
-        else:
-            issues.append("selected_profile_missing")
+    for key in ("profile", "profiles"):
+        if key in cfg:
+            # "In Codex 0.134.0 and later, --profile no longer reads [profiles.profile-name] from
+            # config.toml, and the top-level profile = "profile-name" selector is no longer
+            # supported." What the CLI does with them is not verified - fail closed.
+            issues.append(f"codex_legacy_profile_unsupported:{key}")
     if worktree is not None:
         project = worktree / ".codex" / "config.toml"
         try:
@@ -591,19 +598,16 @@ def resolve_codex(*, argv_model: str | None, argv_effort: str | None, config: Pa
             sources.append({"layer": "project_config", "path": str(project), "state": "unreadable", "detail": str(exc)})
         if project_cfg is not None:
             sources.append({"layer": "project_config", "path": str(project), "state": "read"})
-            if any(key in project_cfg for key in ("model", "model_reasoning_effort", "profile")):
+            if any(key in project_cfg for key in ("model", "model_reasoning_effort", "profile", "profiles")):
                 issues.append("project_config_precedence_unverified")
 
-    for source_name, source in (("profile", selected), ("user_config", cfg)):
-        for key in ("model", "model_reasoning_effort"):
-            if key in source and not isinstance(source[key], str):
-                issues.append(f"{key}_not_a_string_in_{source_name}")
+    for key in ("model", "model_reasoning_effort"):
+        if key in cfg and not isinstance(cfg[key], str):
+            issues.append(f"{key}_not_a_string_in_user_config")
 
     def pick(argv: str | None, key: str) -> tuple[str | None, str]:
         if _text(argv) not in NATIVE:
             return argv, "argv"
-        if _text(selected.get(key)):
-            return selected[key], f"profile:{profile_name}"
         if _text(cfg.get(key)):
             return cfg[key], "user_config"
         return None, "builtin_default"

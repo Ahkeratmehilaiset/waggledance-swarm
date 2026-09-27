@@ -91,19 +91,28 @@ This matters for Sonnet 5, the reviewer lanes' default.
 
 **Codex CLI:**
 1. `--model` and `-c model_reasoning_effort=` on argv;
-2. the `[profiles.<name>]` selected by `config.toml`'s `profile`;
-3. the top-level `model` and `model_reasoning_effort`;
-4. the built-in default.
+2. the top-level `model` and `model_reasoning_effort` in `$CODEX_HOME/config.toml`
+   (default `~/.codex`);
+3. the built-in default.
+
+Since Codex 0.134.0 a profile is a separate `<name>.config.toml`, chosen only with
+`--profile`. The OpenAI docs (config-advanced) say the old `profile = "..."` selector and
+inline `[profiles.<name>]` tables are "no longer supported". The launchers never pass
+`--profile`, and what Codex 0.157 does with the legacy keys is not verified. So either key
+gives `codex_legacy_profile_unsupported:<key>` and the result is unknown; it is never read
+as the active profile (codex-tools-1 B2).
 
 A project `.codex/config.toml` inside the worktree that sets a model, effort or profile
 is reported with `project_config_precedence_unverified`, and the result is unknown.
 
 ## Configuration directories and resumed sessions
 
-- `CLAUDE_CONFIG_DIR` ("All settings ... are stored under this path") and `CODEX_HOME` decide
-  where the user settings, the server-managed cache and the Codex `config.toml` are read,
-  as they do for the launchers. A settings `env` block that sets `CLAUDE_CONFIG_DIR` fails
-  closed.
+`CLAUDE_CONFIG_DIR` ("All settings ... are stored under this path") and `CODEX_HOME` move
+the user settings, the server-managed cache and the Codex `config.toml`. The launchers
+honour both, and so do the resolver CLI's defaults (codex-tools-1 B1). A settings `env`
+block that sets `CLAUDE_CONFIG_DIR` fails closed, and a blank value means the default
+directory.
+
 - `resume_transcript`: a resumed Claude session keeps the model saved in its transcript
   (model-config.md). `--model`, `ANTHROPIC_MODEL` and an `ANTHROPIC_DEFAULT_MODEL` that
   decides a new session still win. A family variable (`ANTHROPIC_DEFAULT_OPUS_MODEL` and its

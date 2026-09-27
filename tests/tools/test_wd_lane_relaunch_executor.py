@@ -14,7 +14,7 @@ from tools.lane_profile_catalog import load_catalog
 from tools.wd_lane_relaunch_executor import ClaimConflict, Executor
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE, DIGEST = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+BASE, DIGEST = load_catalog(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 T1 = "11111111-1111-4111-8111-111111111111"
 T2 = "22222222-2222-4222-8222-222222222222"

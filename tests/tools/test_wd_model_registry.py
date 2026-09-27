@@ -28,7 +28,7 @@ from tools.wd_model_registry import (
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY, REGISTRY_SHA = load_registry(ROOT / "configs" / "model_registry.json")
-CATALOG, CATALOG_SHA = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+CATALOG, CATALOG_SHA = load_catalog(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")
 CURRENT = {"codex-lead-1": "gpt-5.6-terra:medium", "codex-tools-1": "gpt-6-luna:low",
            "claude-rco-1": "claude-sonnet-5:xhigh", "claude-rco-2": "claude-sonnet-5:xhigh",
            "fable-5": "claude-opus-5-5:medium"}

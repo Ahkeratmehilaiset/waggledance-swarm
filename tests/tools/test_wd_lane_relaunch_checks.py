@@ -19,7 +19,7 @@ from tools.wd_lane_profile_planner import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG, DIGEST = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+CATALOG, DIGEST = load_catalog(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 
 

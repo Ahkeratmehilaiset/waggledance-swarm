@@ -15,7 +15,7 @@ from tools.lane_profile_launch_probe import EXIT_ATTENTION, EXIT_OK, main, prefl
 
 ROOT = Path(__file__).resolve().parents[2]
 REBOOT = ROOT / "ops" / "windows" / "reboot"
-CATALOG = ROOT / "configs" / "lane_profile_catalog.json"
+CATALOG = ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json"
 HOSTS = list(dict.fromkeys(filter(None, [shutil.which("pwsh"), shutil.which("powershell.exe")])))
 
 

@@ -15,7 +15,7 @@ from tools.lane_profile_catalog import load_catalog
 from tools.wd_capacity_pacing import main, pace, pace_windows, read_samples, recommend
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG, DIGEST = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+CATALOG, DIGEST = load_catalog(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 CURRENT = {"fable-5": "claude-opus-5-5-medium", "claude-rco-1": "claude-sonnet-5-xhigh",
            "claude-rco-2": "claude-sonnet-5-xhigh", "codex-lead-1": "codex-gpt-5.6-sol-medium",

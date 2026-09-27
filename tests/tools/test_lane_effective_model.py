@@ -14,7 +14,7 @@ from tools.lane_effective_model import classify, main, normalize_claude_model, r
 from tools.lane_profile_catalog import load_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG, DIGEST = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+CATALOG, DIGEST = load_catalog(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")
 # What /effort writes today: the level saved under the model's canonical id.
 OPUS_HIGH = {"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}}}
 

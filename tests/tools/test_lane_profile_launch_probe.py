@@ -19,7 +19,7 @@ from tools.lane_profile_record import record_path, write_record
 
 ROOT = Path(__file__).resolve().parents[2]
 REBOOT = ROOT / "ops" / "windows" / "reboot"
-CATALOG_PATH = ROOT / "configs" / "lane_profile_catalog.json"
+CATALOG_PATH = ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json"
 CATALOG, DIGEST = load_catalog(CATALOG_PATH)
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 LEAD_UUID = "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101"

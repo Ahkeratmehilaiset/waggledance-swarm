@@ -20,7 +20,19 @@ SHELLS = list(dict.fromkeys(filter(None, [shutil.which("pwsh"), shutil.which("po
     ("opaque-whitespace", 0, 0, "CONFLICT"),
     ("opaque-stale-ready", 0, 0, "CONFLICT"),
     ("opaque-and-stale-wrapper", 0, 0, "CONFLICT"),
+    # Headless has no lifetime lock, so a healthy wrapper does not settle it.
     ("opaque-and-healthy-wrapper", 0, 0, "CONFLICT"),
+    # A ready native-terminal wrapper holds the role and its lifetime lock: the
+    # opaque hosts are reported unverified, and nothing is launched or stopped.
+    ("native-opaque-and-healthy-wrapper", 0, 0,
+     "UNVERIFIED 1 unreadable host(s) beside ready consumer-loop:codex-tools-1 pid=43; no process changes"),
+    ("native-many-opaque-and-healthy-wrapper", 0, 0, "UNVERIFIED 4 unreadable host(s)"),
+    ("dry-native-opaque-and-healthy-wrapper", 0, 0, "UNVERIFIED 1 unreadable host(s)"),
+    # Anything short of exactly that still blocks, without touching a process.
+    ("native-opaque-and-starting-wrapper", 0, 0, "unreadable host ownership"),
+    ("native-opaque-and-stale-wrapper", 0, 0, "unreadable host ownership"),
+    ("native-opaque-healthy-and-stale-wrapper", 0, 0, "unreadable host ownership"),
+    ("native-opaque-healthy-wrapper-and-legacy", 0, 0, "unreadable host ownership"),
     ("empty", 1, 0, "LAUNCHED"),
     ("unrelated-opaque", 1, 0, "LAUNCHED"),
     ("self-only", 1, 0, "LAUNCHED"),
@@ -60,7 +72,7 @@ $actions=[Collections.Generic.List[string]]::new()
 $toolsLauncher='launcher.ps1'; $configuredToolsLauncher='launcher.ps1'; $toolsConfig='config.json'
 $toolsGeneration='generation'; $toolsAgent='codex-tools-1'; $toolsValidation=@{}
 $tools=@{codex_timeout_seconds=60}; $readinessPath='never-read.json'
-$toolsConversationSurface=if ($case -like 'headless-*') {'headless'} elseif ($case -like '*owner-gone*') {'native_terminal'} else {'headless'}
+$toolsConversationSurface=if ($case -like 'headless-*') {'headless'} elseif ($case -like '*owner-gone*' -or $case -like '*native-*') {'native_terminal'} else {'headless'}
 $toolsPowerShellHost='never-start.exe'; $toolsConflictPath='never-write.json'
 $Apply= -not $case.StartsWith('dry-')
 if ($case -like 'many-opaque*') {
@@ -73,19 +85,34 @@ if ($case -like 'opaque*' -or $case -like 'dry-opaque*' -or $case -like 'headles
 if ($case -in @('healthy','stale-wrapper','opaque-and-stale-wrapper','opaque-and-healthy-wrapper','opaque-owner-gone-with-wrapper')) {
     $script:fixture+= [pscustomobject]@{ProcessId=43;Name='pwsh.exe';CommandLine='wrapper'}
 }
+if ($case -like '*native-*') {
+    $script:fixture+= [pscustomobject]@{ProcessId=42;Name='powershell.exe';CommandLine=$null}
+    if ($case -like '*native-many-*') {
+        foreach ($id in 50,51,52) { $script:fixture+= [pscustomobject]@{ProcessId=$id;Name='pwsh.exe';CommandLine=$null} }
+    }
+    $script:fixture+= [pscustomobject]@{ProcessId=43;Name='powershell.exe';CommandLine='wrapper'}
+    if ($case -eq 'native-opaque-healthy-and-stale-wrapper') {
+        $script:fixture+= [pscustomobject]@{ProcessId=45;Name='powershell.exe';CommandLine='wrapper-stale'}
+    }
+}
 if ($case -eq 'unrelated-opaque') {$script:fixture+= [pscustomobject]@{ProcessId=44;Name='other.exe';CommandLine=$null}}
 if ($case -eq 'self-only') {$script:fixture+= [pscustomobject]@{ProcessId=$selfPid;Name='pwsh.exe';CommandLine=$null}}
 function Get-CimInstance { param($ClassName,$ErrorAction) return $script:fixture }
 function Assert-WdToolsLauncherGeneration { param($Processes,$AllowedPaths) }
 function Test-NamedCommandLineArgument { param($CommandLine,$HostKind,$Name,$Value)
-    if ($Name -eq 'Generation' -and $case -in @('stale-wrapper','opaque-and-stale-wrapper')) {return $false}
-    return $CommandLine -eq 'wrapper'
+    if ($Name -eq 'Generation' -and ($case -in @('stale-wrapper','opaque-and-stale-wrapper','native-opaque-and-stale-wrapper') -or $CommandLine -eq 'wrapper-stale')) {return $false}
+    return $CommandLine -in @('wrapper','wrapper-stale')
 }
-function Test-ToolsWrapperReadiness { param($Process,$Tools,$Validation,$Generation,$ConfigPath,$ReadinessPath) return $case -in @('healthy','opaque-and-healthy-wrapper') }
+function Test-ToolsWrapperReadiness { param($Process,$Tools,$Validation,$Generation,$ConfigPath,$ReadinessPath)
+    return $case -in @('healthy','opaque-and-healthy-wrapper') -or ($case -like '*native-*healthy*' -and $Process.ProcessId -eq 43)
+}
 function Test-ToolsReadinessTargetsProcess { param($Process,$Generation,$ReadinessPath) return $case -in @('opaque-ready','many-opaque-ready') -and $Process.ProcessId -eq 42 }
 function Test-ToolsWrapperWithinStartupGrace { param($Process,$GraceSeconds) return $false }
 function Test-ToolsReadinessOwnerGone { param($Processes,$ReadinessPath) return $case -like '*owner-gone*' }
-function Get-AgentCommandProcesses { return @() }
+function Get-AgentCommandProcesses {
+    if ($case -like '*-and-legacy') { return @([pscustomobject]@{ProcessId=46;Name='powershell.exe';CommandLine='legacy'}) }
+    return @()
+}
 function Assert-MachineToolsConfigExact { param($MachineConfigPath) }
 function Assert-SupervisorBundleFileIntegrity { param($RelativePath) }
 function Stop-VerifiedProcessTree { param($RootProcess,$InitialProcesses,$ConflictPath) $script:stops++; return 1 }
@@ -100,6 +127,8 @@ function Start-OutOfTaskJobPowerShell { param($HostPath,$Arguments,$Label,[switc
     assert observed["launches"] == launches, observed
     assert observed["stops"] == stops, observed
     assert marker in observed["actions"], observed
+    if "CONFLICT" not in marker and "ownership" not in marker:
+        assert "CONFLICT" not in observed["actions"], observed
 
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell unavailable")
@@ -218,3 +247,46 @@ function Start-OutOfTaskJobPowerShell { param($HostPath,$Arguments,$Label,[switc
     assert observed["launches"] == launches, observed
     assert observed["stops"] == 0, observed
     assert marker in observed["actions"], observed
+
+
+CONSUMER = ROOT / "ops/windows/reboot/start-wd-tools-consumer.ps1"
+LOCK_OPEN = ("$nativeToolsLease = [IO.File]::Open($nativeLock,[IO.FileMode]::OpenOrCreate,"
+             "[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)")
+LOCK_RELEASE = "} finally { if ($null -ne $nativeToolsLease) { $nativeToolsLease.Dispose() } }"
+
+
+def test_a_ready_native_wrapper_holds_the_lifetime_lock():
+    """The supervisor's ready-wrapper case rests on this ordering in the consumer."""
+    text = CONSUMER.read_text(encoding="utf-8")
+    assert text.count(LOCK_OPEN) == 1 and text.count(LOCK_RELEASE) == 1
+    assert text.count("$nativeToolsLease.Dispose()") == 1           # released only at the very end
+    opened = text.index(LOCK_OPEN)
+    terminal = text.index("Invoke-WdNativeToolsTerminal -Saved $nativeToolsSaved")
+    assert opened < terminal < text.index(LOCK_RELEASE)
+    assert text.rfind("\ntry {\n", 0, opened) == text.rfind("\ntry {\n", 0, terminal)   # one top-level try spans both
+    function = text[text.index("function Invoke-WdNativeToolsTerminal"):]
+    function = function[:function.index("\nfunction ")]
+    ready = function.index("$record.schema='wd.tools-consumer-ready.v3'")
+    assert ready < function.index("Write-WdTurnJson $ReadinessPath $record")
+    assert function.index("Write-WdTurnJson $ReadinessPath $record") < function.index("$native.WaitForExit()")
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_second_opener_of_the_lock_is_refused(tmp_path, shell):
+    lock = str(tmp_path / ".wd-turn-codex-tools-1.lock").replace("'", "''")
+    opener = LOCK_OPEN.split(" = ", 1)[1]
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$nativeLock = '{lock}'
+$first = {opener}
+try {{
+    try {{ $second = {opener}; $second.Dispose(); 'second-opened' }}
+    catch [System.IO.IOException] {{ 'refused' }}
+}} finally {{ $first.Dispose() }}
+$third = {opener}; $third.Dispose(); 'reopened-after-release'
+"""
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["refused", "reopened-after-release"]

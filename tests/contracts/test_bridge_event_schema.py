@@ -87,9 +87,10 @@ def test_json_line_rejects_duplicate_envelope_keys(raw_keys: str) -> None:
         validate_event_line(line)
 
 
-def test_result_keys_are_not_treated_as_bridge_envelope_aliases() -> None:
-    event = _good_event(payload={"result": {"Status": "detail", "status": "separate detail"}})
-    assert validate_event_line(json.dumps(event)).payload["result"] == event["payload"]["result"]
+@pytest.mark.parametrize("data_key", ["result", "payload"])
+def test_result_keys_are_not_treated_as_bridge_envelope_aliases(data_key: str) -> None:
+    event = _good_event(payload={data_key: {"Status": "detail", "status": "separate detail"}})
+    assert validate_event_line(json.dumps(event)).payload[data_key] == event["payload"][data_key]
 
 
 def test_json_line_rejects_duplicate_immediate_payload_keys() -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from waggledance.core.bridge_event_schema import validate_event
 from waggledance.core.work_queue import claim_task, release_task
 
@@ -29,7 +31,12 @@ def _bridge_event(task_id: str) -> dict[str, object]:
 
 def test_bridge_namespaced_task_id_is_work_queue_claimable(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-tools-1")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "task-id-test")
+    monkeypatch.setenv("AGENT_BRIDGE_RUN_ID", "task-id-test")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "task-id-test-token")
     task_id = "codex-tools-1/magma-share-admission-status-bridge-template-20260613"
     bridge = tmp_path / ".agent-bridge"
 

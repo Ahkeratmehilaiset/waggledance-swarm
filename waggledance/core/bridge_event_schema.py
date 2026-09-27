@@ -439,7 +439,9 @@ class _JsonObjectPairs(list):
     """Keep raw JSON object keys until event/payload duplicates are checked."""
 
 
-def _decode_event_json_pairs(value: Any, *, check_keys: bool = True) -> Any:
+def _decode_event_json_pairs(
+    value: Any, *, check_keys: bool = True, event_root: bool = True
+) -> Any:
     if isinstance(value, _JsonObjectPairs):
         decoded: dict[str, Any] = {}
         seen: set[str] = set()
@@ -449,11 +451,14 @@ def _decode_event_json_pairs(value: Any, *, check_keys: bool = True) -> Any:
                 raise ValueError(f"duplicate case-insensitive bridge field {key}")
             seen.add(folded)
             decoded[key] = _decode_event_json_pairs(
-                item, check_keys=check_keys and folded == "payload"
+                item, check_keys=event_root and folded == "payload", event_root=False
             )
         return decoded
     if isinstance(value, list):
-        return [_decode_event_json_pairs(item, check_keys=False) for item in value]
+        return [
+            _decode_event_json_pairs(item, check_keys=False, event_root=False)
+            for item in value
+        ]
     return value
 
 

@@ -23,11 +23,17 @@ precedence", model-config.md, env-vars):
   ``.claude/settings.local.json`` > project ``.claude/settings.json`` > user
   ``~/.claude/settings.json`` > ``ANTHROPIC_DEFAULT_MODEL`` (only when no file
   sets ``model``) > built-in default;
-* effort: managed settings > ``--effort`` > ``--settings`` > local > project >
-  user. In a settings file the per-model ``modelSettings.<model>.effortLevel``
-  and the global ``effortLevel`` may both be present. When they disagree, the
-  precedence between them is not documented, so the result is ambiguous and
-  therefore unknown.
+* effort (settings-reference.md ``effortLevel``, ``modelSettings``,
+  ``maxEffortLevel`` and ``ultracode``; model-config.md "Adjust effort level"):
+  ``CLAUDE_CODE_EFFORT_LEVEL`` > ``--effort`` > the ``ultracode`` setting (runs
+  at ``xhigh``) > settings > the model's default. In settings, per model, the
+  highest-precedence file that sets either that model's
+  ``modelSettings.<model>.effortLevel`` or a top-level ``effortLevel`` that
+  applies to the model decides; within one file the model's own level wins. A
+  top-level ``effortLevel`` in the USER file applies only to Opus 5, Fable 5.1
+  and earlier models: Opus 5.5 and later ignore it. Any ``maxEffortLevel`` cap
+  below ``max`` fails closed, as does ``--effort`` against ``ultracode: true``,
+  whose order is not documented.
 
 Codex CLI: ``--model`` and ``-c model_reasoning_effort=`` on argv >
 ``config.toml``'s selected ``[profiles.<profile>]`` > top-level ``model`` and
@@ -38,12 +44,17 @@ when it sets a value, the result is unknown.
 Fail closed
 -----------
 A value from a built-in default, an unresolved alias (``opus``, ``sonnet``,
-``default`` ...), an unreadable or ambiguous source, or managed settings yields
+``default`` ...), an unreadable or undecidable source, or managed settings yields
 ``None``. ``classify`` then gives ``unknown``, never a guess. Managed settings are
-detected in both documented Windows forms: the ``managed-settings.json`` file
-and a ``Settings`` registry value under ``SOFTWARE/Policies/ClaudeCode`` in HKLM
-(Group Policy or MDM) or HKCU. A registry key that exists but cannot be read
-counts as managed too (claude-rco-2 review of #1744).
+detected in three forms: the ``managed-settings.json`` file, a ``Settings``
+registry value under ``SOFTWARE/Policies/ClaudeCode`` in HKLM (Group Policy or
+MDM) or HKCU, and the local cache of server-managed settings,
+``~/.claude/remote-settings.json``. A registry key that exists but cannot be read
+counts as managed too (claude-rco-2 and claude-rco-1 reviews of #1744).
+
+Not modelled offline: server-managed settings on a first launch before any cache
+exists, an organization default model that overrides user selection, and
+organization effort limits. These live in the account, not on this machine.
 """
 from __future__ import annotations
 
@@ -73,6 +84,18 @@ DEFAULT_CLAUDE_MANAGED = Path(r"C:\Program Files\ClaudeCode\managed-settings.jso
 # Documented registry delivery of the same managed settings (value "Settings").
 MANAGED_REGISTRY_KEYS = (("HKLM", r"SOFTWARE\Policies\ClaudeCode"), ("HKCU", r"SOFTWARE\Policies\ClaudeCode"))
 MANAGED_REGISTRY_VALUE = "Settings"
+MANAGED_LAYERS = frozenset({"managed", "managed_remote_cache"})
+# A top-level effortLevel in the USER file "keeps applying where it applied before, on Opus 5,
+# Fable 5.1, and earlier models"; "Opus 5.5 and models released after it ignore it"
+# (settings-reference.md effortLevel). Earlier by the CLI release that added each model
+# (model-config.md: Sonnet 5 v2.1.197, Opus 5 v2.1.219, Opus 5.5 v2.1.280). A model in
+# neither set is unverified, and a user-file effortLevel that would decide for it fails closed.
+USER_EFFORT_LEVEL_APPLIES = frozenset({
+    "claude-opus-5", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8",
+    "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})
+USER_EFFORT_LEVEL_IGNORED = frozenset({"claude-opus-5-5"})
+_DATE = re.compile(r"-\d{8}$")
+ENV_MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL")
 
 
 class SourceError(ValueError):
@@ -170,6 +193,89 @@ def normalize_claude_model(value: Any) -> tuple[str | None, str | None]:
     return base, None
 
 
+def canonical_claude_model(model_id: str) -> str:
+    """The ``modelSettings`` key for a model id: no ``[1m]`` suffix, no date suffix (documented matching)."""
+    return _DATE.sub("", _SUFFIX.sub("", model_id))
+
+
+def _model_entries(name: str, value: dict, key: str, issues: list[str]) -> list[dict]:
+    """This model's ``modelSettings`` entry in one settings file (at most one: keys are unique).
+
+    Claude Code writes entries "under the model's canonical name" and matches the model's
+    suffixed and dated ids to that entry. Whether it also reads a suffixed, dated or alias KEY
+    is not documented, so such a key for this model fails closed.
+    """
+    entries = value.get("modelSettings")
+    if entries is None:
+        return []
+    if not isinstance(entries, dict):
+        issues.append(f"modelSettings_not_an_object_in_{name}")
+        return []
+    found: list[dict] = []
+    for entry_key, entry in entries.items():
+        entry_model, key_issue = normalize_claude_model(entry_key)
+        if key_issue:
+            # An alias or blank key may name this model.
+            issues.append(f"modelSettings_key_unresolved_in_{name}")
+            continue
+        if canonical_claude_model(entry_model) != key:
+            continue
+        if entry_key != key:
+            issues.append(f"modelSettings_key_not_canonical_in_{name}")
+            continue
+        if not isinstance(entry, dict):
+            issues.append(f"modelSettings_entry_not_an_object_in_{name}")
+            continue
+        found.append(entry)
+    return found
+
+
+def _settings_effort(layers: list[tuple[str, dict]], model_id: str | None,
+                     issues: list[str]) -> tuple[str | None, str]:
+    """(effort, source) from settings files, or (None, source) with an issue when not decidable."""
+    local: list[str] = []
+    effort, source = None, "builtin_default"
+    key = canonical_claude_model(model_id) if model_id is not None else None
+    for name, value in layers:
+        saved = None
+        for entry in _model_entries(name, value, key, local) if key is not None else []:
+            if "effortLevel" in entry:
+                saved = _text(entry["effortLevel"])
+                if saved is None:
+                    local.append(f"modelSettings_effortLevel_not_a_string_in_{name}")
+        top = _text(value.get("effortLevel"))
+        if top and name == "user" and not saved:
+            if key in USER_EFFORT_LEVEL_IGNORED:
+                top = None
+            elif key not in USER_EFFORT_LEVEL_APPLIES:
+                local.append("user_effort_level_applicability_unverified")
+                source = name
+                break
+        if saved:
+            effort, source = saved, f"{name}:modelSettings"
+            break
+        if top:
+            effort, source = top, name
+            break
+    issues.extend(local)
+    return (None if local else effort), source
+
+
+def _effort_caps(layers: list[tuple[str, dict]], model_id: str | None, issues: list[str]) -> None:
+    """Any ``maxEffortLevel`` below ``max`` that may apply: caps lower every source; fail closed."""
+    key = canonical_claude_model(model_id) if model_id is not None else None
+    for name, value in layers:
+        caps = [value.get("maxEffortLevel")]
+        if key is not None:
+            caps += [entry.get("maxEffortLevel") for entry in _model_entries(name, value, key, [])]
+        elif isinstance(value.get("modelSettings"), dict):
+            # Unknown model: any per-model cap in the file may be its own.
+            caps += [entry.get("maxEffortLevel") for entry in value["modelSettings"].values()
+                     if isinstance(entry, dict)]
+        if any(cap is not None and cap != "max" for cap in caps):
+            issues.append(f"effort_cap_in_{name}")
+
+
 def _result(provider: str, model: str | None, effort: str | None, model_source: str, effort_source: str,
             issues: list[str], sources: list[dict]) -> dict:
     return {"schema": SCHEMA, "provider": provider, "model": model, "effort": effort,
@@ -193,6 +299,8 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         candidates += [("project_local", worktree / ".claude" / "settings.local.json"),
                        ("project", worktree / ".claude" / "settings.json")]
     candidates.append(("user", user_settings))
+    # Server-managed settings from the claude.ai console are cached next to the user file.
+    candidates.append(("managed_remote_cache", user_settings.parent / "remote-settings.json"))
     for name, path in candidates:
         try:
             value = _json(path)
@@ -210,9 +318,23 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         registry_hits = [f"registry:unreadable:{exc.__class__.__name__}"]
     for hit in registry_hits:
         sources.append({"layer": "managed_registry", "path": hit, "state": "present"})
-    if any(name == "managed" for name, _ in layers) or registry_hits:
+    if any(name in MANAGED_LAYERS for name, _ in layers) or registry_hits:
         # Managed settings can pin or cap model and effort; we do not model them - fail closed.
         issues.append("managed_settings_present")
+    layers = [(name, value) for name, value in layers if name not in MANAGED_LAYERS]
+    for name, value in layers:
+        block = value.get("env")
+        if isinstance(block, dict):
+            for key in ENV_MODEL_KEYS:
+                if key in block:
+                    # A settings env block sets these for the session; its order against the
+                    # process environment and the file keys is not documented - fail closed.
+                    issues.append(f"env_block_sets_{key}_in_{name}")
+        for key in ("model", "effortLevel"):
+            if key in value and not isinstance(value[key], str):
+                issues.append(f"{key}_not_a_string_in_{name}")
+        if "ultracode" in value and not isinstance(value["ultracode"], bool):
+            issues.append(f"ultracode_not_a_boolean_in_{name}")
 
     # ---- model
     model, model_source = None, "builtin_default"
@@ -222,7 +344,7 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         model, model_source = env["ANTHROPIC_MODEL"], "env:ANTHROPIC_MODEL"
     else:
         for name, value in layers:
-            if name != "managed" and _text(value.get("model")):
+            if _text(value.get("model")):
                 model, model_source = value["model"], name
                 break
         else:
@@ -238,25 +360,32 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
 
     # ---- effort
     effort, effort_source = None, "builtin_default"
-    if _text(argv_effort) not in NATIVE:
-        effort, effort_source = argv_effort, "argv"
+    env_effort = _text(env.get("CLAUDE_CODE_EFFORT_LEVEL"))
+    argv_level = _text(argv_effort) if _text(argv_effort) not in NATIVE else None
+    ultracode, ultracode_layer = None, None
+    for name, value in layers:
+        if "ultracode" in value:           # a plain key: the highest-precedence file that sets it
+            ultracode, ultracode_layer = value["ultracode"], name
+            break
+    if env_effort:
+        # "CLAUDE_CODE_EFFORT_LEVEL takes precedence over both" (--effort and effortLevel).
+        effort, effort_source = env_effort, "env:CLAUDE_CODE_EFFORT_LEVEL"
+        if env_effort == "ultracode":
+            issues.append("env_effort_ultracode_not_accepted")    # documented: the variable rejects it
+            effort = None
+    elif argv_level:
+        effort, effort_source = argv_level, "argv"
+        if argv_level == "ultracode":
+            effort = "xhigh"               # "starts the session at xhigh effort with ultracode on"
+        elif ultracode is True and argv_level != "xhigh":
+            issues.append("argv_effort_against_ultracode_setting_unverified")
+            effort = None
+    elif ultracode is True:
+        # "Ultracode runs the session at xhigh effort and takes precedence over effortLevel and modelSettings."
+        effort, effort_source = "xhigh", f"ultracode:{ultracode_layer}"
     else:
-        for name, value in layers:
-            if name == "managed":
-                continue
-            per_model = None
-            model_settings = value.get("modelSettings")
-            if model_id is not None and isinstance(model_settings, dict):
-                entry = model_settings.get(model_id)
-                per_model = _text(entry.get("effortLevel")) if isinstance(entry, dict) else None
-            global_level = _text(value.get("effortLevel"))
-            if per_model and global_level and per_model != global_level:
-                issues.append(f"effort_ambiguous_in_{name}")
-                effort_source = name
-                break
-            if per_model or global_level:
-                effort, effort_source = per_model or global_level, name
-                break
+        effort, effort_source = _settings_effort(layers, model_id, issues)
+    _effort_caps(layers, model_id, issues)
     if effort_source == "builtin_default":
         issues.append("effort_from_model_tuned_default")
     if effort == "auto":
@@ -299,6 +428,11 @@ def resolve_codex(*, argv_model: str | None, argv_effort: str | None, config: Pa
             sources.append({"layer": "project_config", "path": str(project), "state": "read"})
             if any(key in project_cfg for key in ("model", "model_reasoning_effort", "profile")):
                 issues.append("project_config_precedence_unverified")
+
+    for source_name, source in (("profile", selected), ("user_config", cfg)):
+        for key in ("model", "model_reasoning_effort"):
+            if key in source and not isinstance(source[key], str):
+                issues.append(f"{key}_not_a_string_in_{source_name}")
 
     def pick(argv: str | None, key: str) -> tuple[str | None, str]:
         if _text(argv) not in NATIVE:

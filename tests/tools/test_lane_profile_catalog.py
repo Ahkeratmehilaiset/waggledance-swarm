@@ -470,6 +470,11 @@ def test_the_shipped_catalog_is_unsigned_so_nothing_is_approved():
 
 BURST_BAD = {
     "burst not a list": ("burst_profiles", "claude-opus-5-5-max"),
+    # claude-rco-2 on #1746: a string is also refused by the duplicate check, so these pin the type check itself
+    "burst an object": ("burst_profiles", {"claude-opus-5-5-max": 1}),
+    "burst a number": ("burst_profiles", 5),
+    "burst an empty string": ("burst_profiles", ""),
+    "burst an unhashable element": ("burst_profiles", [["claude-opus-5-5-max"]]),
     "burst unknown profile": ("burst_profiles", ["nope"]),
     "burst duplicate": ("burst_profiles", ["claude-opus-5-5-max", "claude-opus-5-5-max"]),
     "burst repeats an allowed profile": ("burst_profiles", ["claude-opus-5-5-xhigh"]),
@@ -536,3 +541,16 @@ def test_an_unsigned_catalog_refuses_an_approved_burst_profile():
     catalog["capacity_policy"]["profiles"]["claude-opus-5-5-max"]["approved"] = True
     with pytest.raises(CatalogError, match="approved in an unsigned catalog"):
         validate_catalog(catalog)
+
+
+
+def test_a_boot_profile_below_the_floor_is_refused():
+    # claude-rco-2 N3 on #1746: a lane must never boot straight into a below-floor profile.
+    catalog = shipped()
+    lead = catalog["lanes"]["codex-lead-1"]
+    lead["floor"] = 2                                   # sol high is now the weakest allowed choice
+    lead["boot_profile"] = "codex-gpt-6-sol-medium"     # index 3: below the floor
+    with pytest.raises(CatalogError, match="boot_profile must not be below its floor"):
+        validate_catalog(catalog)
+    lead["boot_profile"] = "codex-gpt-6-sol-high"       # index 2: exactly at the floor is the success twin
+    validate_catalog(catalog)

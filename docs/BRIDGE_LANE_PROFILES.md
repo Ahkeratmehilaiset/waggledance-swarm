@@ -41,7 +41,8 @@ versioned wrapper. Its validator, `tools/lane_profile_catalog.py`, covers every 
     reachable profile. Nothing consumes them yet; the T2 decision policy (PR-11) will.
   - `boot_profile`: the steady profile a boot or a session restore starts on, normally the
     strongest planning profile, before T1 switches the lane to its production default
-    (PR-10). It must be an allowed profile, never a burst one. Nothing consumes it yet.
+    (PR-10). It must be an allowed profile, never a burst one, and never below the lane's
+    floor (claude-rco-2 N3 on #1746). Nothing consumes it yet.
 - `fleet`: `mode` (`shadow` | `approve` | `auto`), `max_relaunches_per_hour_total`
   (no lane budget may exceed it), `verify_timeout_seconds`, and the `shadow_exit` and
   `approve_exit` criteria.

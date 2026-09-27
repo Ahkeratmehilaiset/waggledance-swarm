@@ -177,9 +177,13 @@ def _validate_lanes(lanes: Any, policy: dict) -> None:
         # binding, so a burst profile must not be reachable through it (plan v3/v4).
         if set(burst) & set(binding["profiles"]):
             raise CatalogError(f"lane {lane} burst_profiles must not be in the advisor agent binding")
-        if "boot_profile" in spec and spec["boot_profile"] not in allowed:
-            # Boot on a known steady profile (the strongest planning one), never on a burst one.
-            raise CatalogError(f"lane {lane} boot_profile must be an allowed profile")
+        if "boot_profile" in spec:
+            # Boot on a known steady profile (the strongest planning one), never on a burst one,
+            # and never below the floor (claude-rco-2 N3 on #1746).
+            if spec["boot_profile"] not in allowed:
+                raise CatalogError(f"lane {lane} boot_profile must be an allowed profile")
+            if allowed.index(spec["boot_profile"]) > spec["floor"]:
+                raise CatalogError(f"lane {lane} boot_profile must not be below its floor")
         _check_runtime_admissible(lane, allowed + burst, binding["role"], profiles)
         _positive_int(spec["max_relaunches_per_hour"], f"lane {lane} max_relaunches_per_hour", 12)
         _positive_int(spec["cooldown_seconds"], f"lane {lane} cooldown_seconds", 86_400)

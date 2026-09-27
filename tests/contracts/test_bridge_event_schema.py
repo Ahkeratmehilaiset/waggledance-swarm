@@ -56,6 +56,50 @@ def test_valid_write_agent_event_shape_validates() -> None:
     assert model.model_extra == {"extra_future_field": "allowed"}
 
 
+@pytest.mark.parametrize("alias", ["Payload", "STATUS", "Type", "TO", "Message", "Task_ID", "REQUEST_ID", "In_Reply_To_Request_Id"])
+def test_case_variant_envelope_keys_are_rejected(alias: str) -> None:
+    event = _good_event()
+    event[alias] = {"in_reply_to_request_id": "req-1"} if alias == "Payload" else "shadow"
+    with pytest.raises(Exception, match="canonical|duplicate"):
+        validate_event(event)
+
+
+@pytest.mark.parametrize("alias", ["In_Reply_To_Request_Id", "Request_ID", "STATUS", "Type", "Payload"])
+def test_case_variant_payload_keys_are_rejected_without_banning_result_data(alias: str) -> None:
+    event = _good_event(payload={alias: "shadow", "result": {"Unknown": 1, "unknown": 2}})
+    with pytest.raises(Exception, match="canonical|duplicate"):
+        validate_event(event)
+    accepted = validate_event(_good_event(payload={"result": {"Unknown": 1, "unknown": 2}}))
+    assert accepted.payload["result"] == {"Unknown": 1, "unknown": 2}
+
+
+@pytest.mark.parametrize("raw_keys", [
+    '"payload":{},"Payload":{"in_reply_to_request_id":"req-1"}',
+    '"payload":{},"payload":{"in_reply_to_request_id":"req-1"}',
+    '"status":"ready","STATUS":"answered"',
+])
+def test_json_line_rejects_duplicate_envelope_keys(raw_keys: str) -> None:
+    event = _good_event()
+    event.pop("payload", None)
+    event.pop("status", None)
+    line = json.dumps(event)[:-1] + "," + raw_keys + "}"
+    with pytest.raises(ValueError, match="duplicate|canonical"):
+        validate_event_line(line)
+
+
+def test_result_keys_are_not_treated_as_bridge_envelope_aliases() -> None:
+    event = _good_event(payload={"result": {"Status": "detail", "status": "separate detail"}})
+    assert validate_event_line(json.dumps(event)).payload["result"] == event["payload"]["result"]
+
+
+def test_json_line_rejects_duplicate_immediate_payload_keys() -> None:
+    event = _good_event()
+    event.pop("payload")
+    line = json.dumps(event)[:-1] + ',"payload":{"result":{},"Result":{"shadow":true}}}'
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_event_line(line)
+
+
 def test_comma_separated_targets_are_validated_per_agent() -> None:
     model = validate_event(_good_event(type="message", to="claude,operator"))
 

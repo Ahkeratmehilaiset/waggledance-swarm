@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from tools.bridge_next_action import _is_answer_like, _is_ack_or_infrastructure
+from waggledance.core.bridge_event_schema import validate_event
 
 
 @pytest.mark.parametrize("kind", ["triage_disposition", "consumer_tick"])
@@ -35,6 +36,25 @@ CLASSIFIER = (
     / "bin"
     / "BridgeEventClassifier.ps1"
 )
+
+
+def test_python_rejects_payload_alias_powershell_would_resolve() -> None:
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if shell is None:
+        pytest.skip("PowerShell is required")
+    event = {
+        "ts_utc": "2026-09-27T23:00:00Z", "agent": "codex-tools-1",
+        "type": "message", "status": "answered", "task_id": "fixture/task",
+        "to": "codex-lead-1", "message": "reply", "pid": 123,
+        "cwd": "C:\\Python\\project2", "Payload": {"in_reply_to_request_id": "req-1"},
+    }
+    helper = CLASSIFIER.with_name("BridgeRequestContract.ps1")
+    script = f". '{helper}'; $e=$input|ConvertFrom-Json; Get-BridgeContractField $e 'in_reply_to_request_id'"
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                            input=json.dumps(event), text=True, capture_output=True, check=True)
+    assert result.stdout.strip() == "req-1"
+    with pytest.raises(Exception, match="canonical|duplicate"):
+        validate_event(event)
 
 
 def _classify(status: str) -> dict[str, bool]:

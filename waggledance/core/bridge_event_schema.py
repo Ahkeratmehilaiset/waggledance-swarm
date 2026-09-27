@@ -113,15 +113,24 @@ class BridgeEvent(BaseModel):
             "in_reply_to_request_id", "in_reply_to_request_digest",
             "in_reply_to_requester",
         )
+        canonical_keys = {key.casefold(): key for key in cls.model_fields}
         payload = value.get("payload")
         # PowerShell's property lookup ignores case. Refuse alternate spellings
-        # (including duplicate envelope keys) instead of letting readers disagree.
+        # and case-duplicates at the two parser-visible levels. Nested result
+        # objects remain application data, not bridge envelope fields.
         for fields in (value, payload):
             if not isinstance(fields, Mapping):
                 continue
+            seen: set[str] = set()
             for key in fields:
-                if isinstance(key, str) and key.casefold() in contract_keys and key not in contract_keys:
-                    raise ValueError(f"contract field {key} requires canonical lower-case spelling")
+                if not isinstance(key, str):
+                    continue
+                folded = key.casefold()
+                if folded in seen:
+                    raise ValueError(f"duplicate case-insensitive bridge field {key}")
+                seen.add(folded)
+                if folded in canonical_keys and key != canonical_keys[folded]:
+                    raise ValueError(f"bridge field {key} requires canonical lower-case spelling")
         if not isinstance(payload, Mapping):
             return value
         for key in contract_keys:
@@ -407,9 +416,11 @@ def validate_event_line(
 ) -> BridgeEvent:
     """Validate one JSONL line from ``events.jsonl``."""
     try:
-        decoded = json.loads(line)
+        decoded = _decode_event_json_pairs(json.loads(line, object_pairs_hook=_JsonObjectPairs))
     except json.JSONDecodeError as exc:
         raise ValueError(f"line {line_no}: invalid JSON: {exc.msg}") from exc
+    except ValueError as exc:
+        raise ValueError(f"line {line_no}: {exc}") from exc
     if not isinstance(decoded, Mapping):
         raise ValueError(f"line {line_no}: event must be a JSON object")
     try:
@@ -422,6 +433,28 @@ def validate_event_line(
         line_no=line_no,
     )
     return model
+
+
+class _JsonObjectPairs(list):
+    """Keep raw JSON object keys until event/payload duplicates are checked."""
+
+
+def _decode_event_json_pairs(value: Any, *, check_keys: bool = True) -> Any:
+    if isinstance(value, _JsonObjectPairs):
+        decoded: dict[str, Any] = {}
+        seen: set[str] = set()
+        for key, item in value:
+            folded = key.casefold()
+            if check_keys and folded in seen:
+                raise ValueError(f"duplicate case-insensitive bridge field {key}")
+            seen.add(folded)
+            decoded[key] = _decode_event_json_pairs(
+                item, check_keys=check_keys and folded == "payload"
+            )
+        return decoded
+    if isinstance(value, list):
+        return [_decode_event_json_pairs(item, check_keys=False) for item in value]
+    return value
 
 
 def validate_event_file(

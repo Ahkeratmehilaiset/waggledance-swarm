@@ -16,7 +16,7 @@ import tools.bridge_named_mutex as named_mutex
 
 
 LOGON = "S-1-5-5-0-367215"
-EXPECTED = f"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;{LOGON})"
+EXPECTED = f"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120001;;;{LOGON})"
 
 
 @pytest.mark.parametrize("groups", [
@@ -40,7 +40,7 @@ def test_logon_sid_selection_ignores_other_groups():
 
 def test_dacl_shape_compares_ace_order_but_not_rights():
     assert named_mutex._dacl_shape(EXPECTED) == named_mutex._dacl_shape(
-        f"D:(A;;0x00100001;;;{LOGON})(A;;GA;;;BA)(A;;GA;;;SY)"
+        f"D:(A;;0x00120001;;;{LOGON})(A;;GA;;;BA)(A;;GA;;;SY)"
     )
     assert named_mutex._dacl_shape(EXPECTED) != named_mutex._dacl_shape(
         f"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{LOGON})"
@@ -135,7 +135,7 @@ def test_real_unique_name_create_then_open_and_dacl_diagnostic(capsys):
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     named_mutex._configure(kernel, advapi)
     assert re.fullmatch(
-        r"D:\(A;;GA;;;SY\)\(A;;GA;;;BA\)\(A;;0x00100001;;;S-1-5-5-\d+-\d+\)",
+        r"D:\(A;;GA;;;SY\)\(A;;GA;;;BA\)\(A;;0x00120001;;;S-1-5-5-\d+-\d+\)",
         named_mutex._creation_sddl(kernel, advapi),
     )
     name = rf"Local\WaggleDanceBridgeNamedMutexTest-{uuid.uuid4().hex}"

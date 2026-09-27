@@ -17,6 +17,7 @@ from typing import Any
 
 MUTEX_ACCESS = 0x00100001  # SYNCHRONIZE | MUTEX_MODIFY_STATE
 READ_CONTROL = 0x00020000
+CREATION_LOGON_ACCESS = MUTEX_ACCESS | READ_CONTROL
 ERROR_INSUFFICIENT_BUFFER = 122
 ERROR_ALREADY_EXISTS = 183
 SE_GROUP_ENABLED = 0x00000004
@@ -156,7 +157,7 @@ def _creation_sddl(kernel32: Any, advapi32: Any) -> str:
             if item.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID:
                 groups.append((_sid_text(kernel32, advapi32, item.Sid), item.Attributes))
         logon_sid = _select_logon_sid(groups)
-        return f"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;{logon_sid})"
+        return f"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x{CREATION_LOGON_ACCESS:08x};;;{logon_sid})"
     finally:
         kernel32.CloseHandle(token)
 

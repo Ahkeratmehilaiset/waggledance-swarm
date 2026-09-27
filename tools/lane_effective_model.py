@@ -219,7 +219,15 @@ def claude_transcript_path(config_dir: Path, worktree: Path, thread: str) -> Pat
 def _is_model_command(record: dict) -> bool:
     message = record.get("message")
     contents = [record.get("content"), message.get("content") if isinstance(message, dict) else None]
-    return any(isinstance(content, str) and _MODEL_COMMAND in content for content in contents)
+    texts: list[str] = []
+    for content in contents:
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            # Block-list content: a /model marker in any text block counts (Grok review of #1745).
+            texts += [block.get("text") for block in content
+                      if isinstance(block, dict) and isinstance(block.get("text"), str)]
+    return any(_MODEL_COMMAND in text for text in texts)
 
 
 def transcript_model(path: Path) -> str:
@@ -342,6 +350,22 @@ def _model_entries(name: str, value: dict, key: str, issues: list[str]) -> list[
     return found
 
 
+def _uncertain_entries(value: dict, key: str) -> list[tuple[str, dict]]:
+    """``modelSettings`` entries whose key may or may not name this model: an alias or blank key,
+    or a suffixed or dated key that canonicalizes to it."""
+    entries = value.get("modelSettings")
+    if not isinstance(entries, dict):
+        return []
+    found = []
+    for entry_key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_model, key_issue = normalize_claude_model(entry_key)
+        if key_issue or (canonical_claude_model(entry_model) == key and entry_key != key):
+            found.append((entry_key, entry))
+    return found
+
+
 def _settings_effort(layers: list[tuple[str, dict]], model_id: str | None,
                      issues: list[str]) -> tuple[str | None, str]:
     """(effort, source) from settings files, or (None, source) with an issue when not decidable."""
@@ -389,6 +413,11 @@ def _effort_caps(layers: list[tuple[str, dict]], model_id: str | None, issues: l
                 # "That entry replaces this key for the model only within the settings source
                 # that sets both" (settings-reference maxEffortLevel; claude-rco-1 NB3 on #1744).
                 caps = own
+            # A cap under a key that MAY name this model (alias, suffixed or dated key) is not
+            # documented as read or ignored, so it counts (Grok third-family review of #1745).
+            caps += [entry.get("maxEffortLevel") for entry_key, entry in _uncertain_entries(value, key)]
+            if "modelSettings" in value and not isinstance(value["modelSettings"], dict):
+                caps.append("undecidable")
         elif isinstance(value.get("modelSettings"), dict):
             # Unknown model: any per-model cap in the file may be its own.
             caps += [entry.get("maxEffortLevel") for entry in value["modelSettings"].values()
@@ -486,6 +515,9 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         for key in ("model", "effortLevel"):
             if key in value and not isinstance(value[key], str):
                 issues.append(f"{key}_not_a_string_in_{name}")
+            elif key in value and not value[key].strip():
+                # Whether the CLI treats a blank value as unset is not documented (Grok review).
+                issues.append(f"{key}_blank_in_{name}")
         if "ultracode" in value and not isinstance(value["ultracode"], bool):
             issues.append(f"ultracode_not_a_boolean_in_{name}")
         if "availableModels" in value:

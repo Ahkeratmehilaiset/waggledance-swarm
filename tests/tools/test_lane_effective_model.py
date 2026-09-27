@@ -1082,3 +1082,54 @@ def test_an_assistant_turn_that_quotes_the_marker_is_still_a_turn(tmp_path, cont
     quoting = {'type': 'assistant', 'isSidechain': False, 'content': _MODEL_CMD,
                'message': {'model': 'claude-opus-5', 'content': content}}
     assert transcript_model(_transcript(tmp_path, _TURN, quoting)) == 'claude-opus-5'
+
+
+
+# ---------------------------------------------------------------- Grok third-family review of #1745 (verified)
+
+@pytest.mark.parametrize("cap_key", ["claude-opus-5-5[1m]", "claude-opus-5-5-20260101", "opus", " "])
+def test_a_cap_under_a_key_that_may_name_the_model_counts_even_below_the_deciding_file(tmp_path, cap_key):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})          # decides the effort
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {cap_key: {"maxEffortLevel": "low"}}})
+    r = c.resolve()
+    assert r["resolved"] is False and "effort_cap_in_user" in r["issues"]
+
+
+def test_a_cap_for_another_model_still_does_not_count(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-sonnet-5": {"maxEffortLevel": "low"}}})
+    assert c.resolve()["resolved"] is True
+
+
+def test_a_malformed_model_settings_below_the_deciding_file_is_a_possible_cap(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": ["x"]})
+    assert "effort_cap_in_user" in c.resolve()["issues"]
+
+
+@pytest.mark.parametrize("key", ["model", "effortLevel"])
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_model_or_effort_is_not_unset(tmp_path, key, blank):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "low"})
+    js(c.worktree / ".claude" / "settings.json", {key: blank})
+    r = c.resolve()
+    assert r["resolved"] is False and f"{key}_blank_in_project" in r["issues"]
+
+
+@pytest.mark.parametrize("where", ["message", "top"])
+def test_a_model_command_in_block_list_content_fails_closed(tmp_path, where):
+    from tools.lane_effective_model import SourceError, transcript_model
+    blocks = [{"type": "text", "text": "<command-name>/model</command-name>"}]
+    record = {"type": "user", "message": {"content": blocks}} if where == "message" else {"type": "system", "content": blocks}
+    with pytest.raises(SourceError, match="/model after the last turn"):
+        transcript_model(transcript(tmp_path, [turn("claude-opus-5"), record]))
+
+
+def test_block_list_content_without_the_marker_is_harmless(tmp_path):
+    from tools.lane_effective_model import transcript_model
+    record = {"type": "user", "message": {"content": [{"type": "text", "text": "hello"}, {"type": "image"}]}}
+    assert transcript_model(transcript(tmp_path, [turn("claude-opus-5"), record])) == "claude-opus-5"

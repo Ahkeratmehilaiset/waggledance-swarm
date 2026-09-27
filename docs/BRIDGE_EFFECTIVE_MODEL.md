@@ -20,7 +20,8 @@ signed catalog, a refusal) is PR-7b.
 ## Precedence
 
 **Claude Code**, documented in code.claude.com/docs/en/settings.md "Settings precedence",
-model-config.md and env-vars.
+settings-reference.md (`effortLevel`, `modelSettings`, `maxEffortLevel`, `ultracode`, `env`),
+model-config.md "Adjust effort level" and env-vars.
 
 Model:
 1. managed settings;
@@ -34,17 +35,42 @@ Model:
 9. the built-in default.
 
 Effort:
-1. managed settings;
-2. `--effort`;
-3. the `--settings` file;
-4. project local;
-5. project;
-6. user.
+1. `CLAUDE_CODE_EFFORT_LEVEL` ("takes precedence over both" `--effort` and `effortLevel`);
+2. `--effort` (`--effort ultracode` runs at `xhigh`);
+3. the `ultracode` setting: `true` runs at `xhigh` and "takes precedence over `effortLevel`
+   and `modelSettings` entries". The highest-precedence file that sets the key decides;
+4. settings files, per model: the highest-precedence file (`--settings`, project local,
+   project, user) that sets either that model's `modelSettings.<model>.effortLevel` or a
+   top-level `effortLevel` that applies to the model decides. Within one file, the
+   model's own level wins over the top-level key;
+5. the model's default, which is unknown here (an organization can change it).
 
-Within one settings file, the per-model `modelSettings.<model>.effortLevel` and the global
-`effortLevel` may both be present. When they disagree, their precedence is not
-documented, so the effort is **ambiguous** and therefore unknown. `effortLevel: auto`
-means the model's tuned default, which is unknown.
+A top-level `effortLevel` in the **user** file is the older form `/effort` wrote. It still
+applies to Opus 5, Fable 5.1 and earlier models, but "Opus 5.5 and models released after
+it ignore it". The module lists the models it applies to (`USER_EFFORT_LEVEL_APPLIES`,
+with Sonnet 5 placed as earlier by the CLI version that added it: v2.1.197, before Opus 5
+at v2.1.219 and Opus 5.5 at v2.1.280). For a model in neither list, including every future
+model, a user-file `effortLevel` that would decide gives
+`user_effort_level_applicability_unverified`. So the list fails closed, not open (B4 from
+claude-rco-2, with claude-rco-1 concurring).
+
+`modelSettings` entries match by the model's canonical id: `claude-opus-5-5[1m]` and a
+dated id use the `claude-opus-5-5` and undated entries. An alias, suffixed or dated
+**key** for the model is not documented as read, so it fails closed.
+
+These also fail closed:
+- any `maxEffortLevel` cap below `max` that may apply to the model, top-level or per
+  model, in any file (a cap lowers every source, `--effort` and the variable included);
+- `--effort` other than `xhigh` together with `ultracode: true` (their order is not
+  documented);
+- `CLAUDE_CODE_EFFORT_LEVEL=ultracode` (documented as not accepted);
+- a settings `env` block that sets `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_MODEL` or
+  `CLAUDE_CODE_EFFORT_LEVEL` (its order against the process environment is not
+  documented);
+- a non-string `model` or `effortLevel`, a non-boolean `ultracode`, and a malformed
+  `modelSettings`.
+
+`auto`, from a file or the variable, means the model's tuned default, which is unknown.
 
 **Codex CLI:**
 1. `--model` and `-c model_reasoning_effort=` on argv;
@@ -57,16 +83,26 @@ is reported with `project_config_precedence_unverified`, and the result is unkno
 
 ## Managed settings
 
-Claude Code managed settings arrive in two documented Windows forms, and both are checked:
+Claude Code managed settings come in three forms, and all three are checked:
 - the `C:\Program Files\ClaudeCode\managed-settings.json` file (the legacy
   `C:\ProgramData` path is not read by the CLI);
 - a `Settings` registry value (REG_SZ or REG_EXPAND_SZ) under
-  `SOFTWARE\Policies\ClaudeCode`, in HKLM (Group Policy or MDM) or in HKCU (user-scoped).
+  `SOFTWARE\Policies\ClaudeCode`, in HKLM (Group Policy or MDM) or in HKCU (user-scoped);
+- server-managed settings from the claude.ai console, through their local cache
+  `~/.claude/remote-settings.json` (claude-rco-1 B2).
 
 Any of these makes the result `managed_settings_present`, and so unknown:
-- a present, non-blank value;
-- a key that exists but cannot be read;
+- a present file or cache, even an empty one, whose own values are never read;
+- an unreadable file or cache;
+- a present, non-blank registry value;
+- a registry key that exists but cannot be read;
 - a registry that raises.
+
+**Not modelled offline.** These live in the account, not on this machine, so a
+`resolved` result cannot rule them out:
+- server-managed settings on a first launch, before any cache exists;
+- an organization default model that overrides the user's selection;
+- organization effort limits.
 
 Managed settings can pin or cap the model and effort, which this module does not model
 (claude-rco-2 review of #1744). The tests exercise the real registry reader against a
@@ -75,8 +111,8 @@ throwaway HKCU key; the real policy key is never written.
 ## Fail closed
 
 The resolver never guesses. A value from a built-in default, an alias (`opus`,
-`sonnet`, `default`, ...), an unreadable or ambiguous source, or a managed-settings file
-is `None`, with the reason in `issues`. A source counts as unreadable when it is:
+`sonnet`, `default`, ...), an unreadable or undecidable source, or any form of managed
+settings is `None`, with the reason in `issues`. A source counts as unreadable when it is:
 - not JSON or TOML;
 - a JSON value that is not an object, or one with duplicate keys;
 - over 1 MiB;
@@ -102,6 +138,9 @@ error.
 | Lane | Would launch on | From | Verdict |
 |---|---|---|---|
 | codex-lead-1, codex-tools-1 | gpt-6-luna / xhigh | `~/.codex/config.toml` | `not_in_lane_allowlist` (not in the catalog) |
-| claude-rco-1, claude-rco-2, fable-5 | built-in default model / xhigh | no `model` key; effort from `~/.claude/settings.json` | `unknown` (unpinned default model) |
+| claude-rco-1, claude-rco-2, fable-5 | built-in default model / unknown effort | no `model` key; the user file's `effortLevel` cannot be applied to an unknown model | `unknown` (unpinned default model) |
+
+Later the same day, after the operator moved `config.toml` to `gpt-6-sol / high`, both
+Codex lanes resolve to `gpt-6-sol / high`, `allowed`.
 
 The planted-fault check is a test: a `luna / low` config for Lead is never `allowed`.

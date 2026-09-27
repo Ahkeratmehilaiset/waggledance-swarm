@@ -15,6 +15,8 @@ from tools.lane_profile_catalog import load_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG, DIGEST = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+# What /effort writes today: the level saved under the model's canonical id.
+OPUS_HIGH = {"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}}}
 
 
 def js(path: Path, value) -> Path:
@@ -44,10 +46,10 @@ class Claude:
 
 def test_claude_user_settings_decide_when_nothing_overrides(tmp_path):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "medium"})
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "medium"})
     r = c.resolve()
     assert (r["model"], r["effort"], r["model_source"], r["effort_source"], r["resolved"]) == \
-        ("claude-opus-5-5", "medium", "user", "user", True)
+        ("claude-sonnet-5", "medium", "user", "user", True)
 
 
 def test_claude_argv_beats_env_and_every_file(tmp_path):
@@ -114,12 +116,16 @@ def test_per_model_effort_is_used_for_the_resolved_model(tmp_path):
     assert c.resolve()["effort"] == "high"
 
 
-def test_per_model_and_global_effort_that_disagree_are_ambiguous(tmp_path):
+@pytest.mark.parametrize("layer", ["user", "project"])
+def test_the_models_own_level_beats_effortLevel_in_the_same_file(tmp_path, layer):
+    # settings-reference modelSettings: "A model's effortLevel here takes precedence over the
+    # top-level effortLevel in the same settings file."
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "xhigh",
-                "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}}})
+    path = c.user if layer == "user" else c.worktree / ".claude" / "settings.json"
+    js(path, {"model": "claude-sonnet-5", "effortLevel": "xhigh",
+              "modelSettings": {"claude-sonnet-5": {"effortLevel": "medium"}}})
     r = c.resolve()
-    assert (r["effort"], r["resolved"]) == (None, False) and "effort_ambiguous_in_user" in r["issues"]
+    assert (r["effort"], r["effort_source"], r["resolved"]) == ("medium", f"{layer}:modelSettings", True)
 
 
 def test_per_model_and_global_effort_that_agree_resolve(tmp_path):
@@ -129,16 +135,17 @@ def test_per_model_and_global_effort_that_agree_resolve(tmp_path):
     assert (c.resolve()["effort"], c.resolve()["resolved"]) == ("xhigh", True)
 
 
-def test_effort_auto_is_the_model_tuned_default(tmp_path):
+@pytest.mark.parametrize("where", ["settings", "env"])
+def test_effort_auto_is_the_model_tuned_default(tmp_path, where):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "auto"})
-    r = c.resolve()
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "auto" if where == "settings" else "high"})
+    r = c.resolve(env={"CLAUDE_CODE_EFFORT_LEVEL": "auto"} if where == "env" else None)
     assert r["effort"] is None and "effort_auto_is_model_tuned_default" in r["issues"]
 
 
 def test_managed_settings_fail_closed(tmp_path):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    js(c.user, dict(OPUS_HIGH))
     js(c.managed, {"maxEffortLevel": "medium"})
     r = c.resolve()
     assert r["resolved"] is False and "managed_settings_present" in r["issues"]
@@ -154,7 +161,7 @@ def test_an_unreadable_settings_file_fails_closed(tmp_path, content):
 
 def test_an_oversized_settings_file_fails_closed(tmp_path, monkeypatch):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    js(c.user, dict(OPUS_HIGH))
     monkeypatch.setattr(eff_module, "MAX_SOURCE_BYTES", 10)
     r = c.resolve()
     assert "user_unreadable" in r["issues"]
@@ -163,14 +170,14 @@ def test_an_oversized_settings_file_fails_closed(tmp_path, monkeypatch):
 
 def test_a_settings_file_exactly_at_the_size_bound_is_read(tmp_path, monkeypatch):
     c = Claude(tmp_path)
-    path = js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    path = js(c.user, dict(OPUS_HIGH))
     monkeypatch.setattr(eff_module, "MAX_SOURCE_BYTES", path.stat().st_size)
     assert c.resolve()["resolved"] is True
 
 
 def test_a_symlinked_settings_file_fails_closed(tmp_path):
     c = Claude(tmp_path)
-    real = js(tmp_path / "real.json", {"model": "claude-opus-5-5", "effortLevel": "high"})
+    real = js(tmp_path / "real.json", dict(OPUS_HIGH))
     c.user.parent.mkdir(parents=True)
     try:
         c.user.symlink_to(real)
@@ -304,7 +311,7 @@ def test_cli_planted_fault_luna_low_is_flagged(tmp_path, capsys):
 @pytest.mark.parametrize("hits", [["HKLM"], ["HKCU"], ["HKLM:unreadable"]])
 def test_registry_managed_settings_fail_closed(tmp_path, hits):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    js(c.user, dict(OPUS_HIGH))
     r = c.resolve(registry=lambda: hits)
     assert r["resolved"] is False and "managed_settings_present" in r["issues"]
     assert {"layer": "managed_registry", "path": hits[0], "state": "present"} in r["sources"]
@@ -312,13 +319,13 @@ def test_registry_managed_settings_fail_closed(tmp_path, hits):
 
 def test_no_registry_policy_still_resolves(tmp_path):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    js(c.user, dict(OPUS_HIGH))
     assert c.resolve(registry=lambda: [])["resolved"] is True
 
 
 def test_an_unreadable_registry_is_not_no_policy(tmp_path):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    js(c.user, dict(OPUS_HIGH))
 
     def boom():
         raise PermissionError("denied")
@@ -337,6 +344,10 @@ def temp_policy_key():
     winreg.CreateKey(winreg.HKEY_CURRENT_USER, path)
     yield path
     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\WaggleDanceTest")
+    except OSError:
+        pass                                                   # another run still has a key under it
 
 
 def test_the_real_registry_reader_finds_a_settings_value(temp_policy_key):
@@ -375,3 +386,267 @@ def test_a_policy_key_that_cannot_be_read_counts_as_managed(monkeypatch):
         raise PermissionError("access denied")
     monkeypatch.setattr(winreg, "OpenKey", denied)
     assert managed_registry_settings((("HKLM", r"SOFTWARE\Policies\ClaudeCode"),)) == ["HKLM:unreadable"]
+
+
+# ---------------------------------------------------------------- documented sources (claude-rco-1 review of #1744)
+
+def _lane_default():
+    spec = CATALOG["lanes"]["claude-rco-1"]
+    profile = CATALOG["capacity_policy"]["profiles"][spec["default"]]
+    return profile["model"], profile["effort"]
+
+
+def test_claude_code_effort_level_env_beats_settings(tmp_path):
+    c = Claude(tmp_path)
+    model, effort = _lane_default()
+    js(c.user, {"model": model, "effortLevel": effort})
+    r = c.resolve(env={"CLAUDE_CODE_EFFORT_LEVEL": "low"})
+    assert (r["effort"], r["effort_source"]) == ("low", "env:CLAUDE_CODE_EFFORT_LEVEL")
+    assert classify(CATALOG, "claude-rco-1", r)["verdict"] != "allowed"
+
+
+def test_the_effort_env_beats_argv(tmp_path):
+    # settings-reference effortLevel: "--effort takes precedence over this key for one session,
+    # and CLAUDE_CODE_EFFORT_LEVEL takes precedence over both".
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5"})
+    r = c.resolve(argv_effort="high", env={"CLAUDE_CODE_EFFORT_LEVEL": "low"})
+    assert (r["effort"], r["effort_source"], r["resolved"]) == ("low", "env:CLAUDE_CODE_EFFORT_LEVEL", True)
+
+
+@pytest.mark.parametrize("key", ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"])
+def test_a_settings_env_block_that_sets_model_or_effort_is_unknown(tmp_path, key):
+    c = Claude(tmp_path)
+    model, effort = _lane_default()
+    js(c.user, {"model": model, "effortLevel": effort, "env": {key: "x"}})
+    r = c.resolve()
+    assert r["resolved"] is False and f"env_block_sets_{key}_in_user" in r["issues"]
+
+
+def test_an_unrelated_env_block_is_harmless(tmp_path):
+    c = Claude(tmp_path)
+    model, effort = _lane_default()
+    js(c.user, {"model": model, "effortLevel": effort, "env": {"DISABLE_TELEMETRY": "1"}})
+    assert c.resolve()["resolved"] is True
+
+
+@pytest.mark.parametrize("payload", [{"model": "claude-haiku-4-5"}, {}])
+def test_server_managed_settings_cache_fails_closed(tmp_path, payload):
+    c = Claude(tmp_path)
+    model, effort = _lane_default()
+    js(c.user, {"model": model, "effortLevel": effort})
+    js(c.user.parent / "remote-settings.json", payload)
+    r = c.resolve()
+    assert r["resolved"] is False and "managed_settings_present" in r["issues"]
+    assert (r["model"], r["model_source"]) == (model, "user")    # the cache's own model is never read
+
+
+def test_an_unreadable_server_managed_cache_fails_closed(tmp_path):
+    c = Claude(tmp_path)
+    model, effort = _lane_default()
+    js(c.user, {"model": model, "effortLevel": effort})
+    js(c.user.parent / "remote-settings.json", "{not json")
+    r = c.resolve()
+    assert r["resolved"] is False and "managed_remote_cache_unreadable" in r["issues"]
+
+
+@pytest.mark.parametrize("key,bad", [("model", 123), ("effortLevel", ["low"])])
+def test_a_non_string_value_in_a_higher_file_does_not_fall_through(tmp_path, key, bad):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "low"})
+    js(c.worktree / ".claude" / "settings.json", {key: bad})
+    r = c.resolve()
+    assert r["resolved"] is False and f"{key}_not_a_string_in_project" in r["issues"]
+
+
+@pytest.mark.parametrize("where", ["profile", "user_config"])
+def test_codex_a_non_string_value_does_not_fall_through(tmp_path, where):
+    if where == "profile":
+        text = 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\nprofile = "p"\n[profiles.p]\nmodel = ["x"]\n'
+    else:
+        text = 'model = 5\nmodel_reasoning_effort = "low"\n'
+    r = resolve_codex(argv_model="native", argv_effort="native", config=toml(tmp_path / "config.toml", text))
+    assert r["resolved"] is False and f"model_not_a_string_in_{where}" in r["issues"]
+
+
+def test_codex_argv_beats_the_selected_profile(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'profile = "lead"\n[profiles.lead]\nmodel = "gpt-6-luna"\n'
+                                         'model_reasoning_effort = "low"\n')
+    r = resolve_codex(argv_model="gpt-6-sol", argv_effort="high", config=cfg)
+    assert (r["model"], r["effort"], r["model_source"], r["effort_source"]) == ("gpt-6-sol", "high", "argv", "argv")
+
+
+# ---------------------------------------------------------------- documented effort order (rco-1 N3/N4)
+
+def test_opus_5_5_ignores_a_user_file_effortLevel(tmp_path):
+    # settings-reference effortLevel: "Opus 5.5 and models released after it ignore it".
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "xhigh"})
+    r = c.resolve()
+    assert (r["effort"], r["effort_source"], r["resolved"]) == (None, "builtin_default", False)
+    assert "effort_from_model_tuned_default" in r["issues"]
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-5-5[1m]"])
+def test_a_project_file_effortLevel_applies_to_every_model(tmp_path, model):
+    c = Claude(tmp_path)
+    js(c.user, {"model": model, "effortLevel": "low"})
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})
+    r = c.resolve()
+    assert (r["effort"], r["effort_source"], r["resolved"]) == ("high", "project", True)
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1"])
+def test_a_user_file_effortLevel_applies_to_earlier_models(tmp_path, model):
+    c = Claude(tmp_path)
+    js(c.user, {"model": model, "effortLevel": "high"})
+    assert (c.resolve()["effort"], c.resolve()["resolved"]) == ("high", True)
+
+
+def test_a_user_file_effortLevel_for_an_unlisted_model_is_unknown(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-6", "effortLevel": "high"})
+    r = c.resolve()
+    assert (r["effort"], r["resolved"]) == (None, False)
+    assert "user_effort_level_applicability_unverified" in r["issues"]
+    js(c.user, {"model": "claude-opus-6", "modelSettings": {"claude-opus-6": {"effortLevel": "high"}}})
+    assert c.resolve()["resolved"] is True                    # its own saved level is fine
+
+
+def test_across_files_the_highest_file_that_sets_a_level_for_the_model_decides(tmp_path):
+    # settings-reference modelSettings: "an effortLevel in managed settings outranks a level
+    # you saved in user settings" - the same rule for any higher-precedence file.
+    c = Claude(tmp_path)
+    js(c.user, OPUS_HIGH)
+    project = c.worktree / ".claude" / "settings.json"
+    js(project, {"effortLevel": "low"})
+    assert (c.resolve()["effort"], c.resolve()["effort_source"]) == ("low", "project")
+    js(project, {"modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}}})
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "xhigh"})
+    assert (c.resolve()["effort"], c.resolve()["effort_source"]) == ("medium", "project:modelSettings")
+
+
+def test_another_models_saved_level_does_not_decide(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"modelSettings": {"claude-sonnet-5": {"effortLevel": "low"}}})
+    js(c.user, OPUS_HIGH)
+    assert (c.resolve()["effort"], c.resolve()["effort_source"]) == ("high", "user:modelSettings")
+
+
+@pytest.mark.parametrize("model,key", [("claude-opus-5-5[1m]", "claude-opus-5-5"),
+                                       ("claude-haiku-4-5-20251001", "claude-haiku-4-5")])
+def test_saved_levels_match_suffixed_and_dated_model_ids(tmp_path, model, key):
+    c = Claude(tmp_path)
+    js(c.user, {"model": model, "modelSettings": {key: {"effortLevel": "low"}}})
+    r = c.resolve()
+    assert (r["effort"], r["resolved"]) == ("low", True)
+    assert r["model"] == model.replace("[1m]", "")           # the reported id keeps its date
+
+
+@pytest.mark.parametrize("model_settings,issue", [
+    ({"opus": {"effortLevel": "low"}}, "modelSettings_key_unresolved_in_user"),
+    ({"claude-opus-5-5[1m]": {"effortLevel": "low"}}, "modelSettings_key_not_canonical_in_user"),
+    ({"claude-opus-5-5": {"effortLevel": "low"}, "claude-opus-5-5[1m]": {"effortLevel": "low"}},
+     "modelSettings_key_not_canonical_in_user"),
+    ({"claude-opus-5-5": {"effortLevel": 3}}, "modelSettings_effortLevel_not_a_string_in_user"),
+    ({"claude-opus-5-5": "high"}, "modelSettings_entry_not_an_object_in_user"),
+    (["claude-opus-5-5"], "modelSettings_not_an_object_in_user"),
+])
+def test_an_undecidable_saved_level_fails_closed(tmp_path, model_settings, issue):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": model_settings})
+    r = c.resolve()
+    assert (r["effort"], r["resolved"]) == (None, False) and issue in r["issues"]
+
+
+def test_a_dated_key_for_the_model_fails_closed(tmp_path):
+    # Claude Code writes the canonical id; a dated key is not documented as read.
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-haiku-4-5", "modelSettings": {"claude-haiku-4-5-20251001": {"effortLevel": "low"}}})
+    r = c.resolve()
+    assert (r["effort"], r["resolved"]) == (None, False)
+    assert "modelSettings_key_not_canonical_in_user" in r["issues"]
+
+
+@pytest.mark.parametrize("settings,capped", [
+    ({"maxEffortLevel": "medium"}, True),
+    ({"maxEffortLevel": "max"}, False),
+    ({"modelSettings": {"claude-opus-5-5": {"maxEffortLevel": "low"}}}, True),
+    ({"modelSettings": {"claude-opus-5-5": {"maxEffortLevel": "max"}}}, False),
+    ({"modelSettings": {"claude-sonnet-5": {"maxEffortLevel": "low"}}}, False),
+])
+def test_an_effort_cap_fails_closed_even_under_argv(tmp_path, settings, capped):
+    # settings-reference maxEffortLevel: any higher level "runs at the cap instead, including one
+    # from ... --effort, CLAUDE_CODE_EFFORT_LEVEL".
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", settings)
+    js(c.user, OPUS_HIGH)
+    r = c.resolve(argv_effort="xhigh")
+    assert ("effort_cap_in_project" in r["issues"]) is capped
+    assert r["resolved"] is (not capped)
+
+
+@pytest.mark.parametrize("entry,capped", [({"maxEffortLevel": "low"}, True), ({"effortLevel": "xhigh"}, False),
+                                          ({"maxEffortLevel": "max"}, False)])
+def test_a_saved_cap_with_an_unresolved_model_fails_closed(tmp_path, entry, capped):
+    c = Claude(tmp_path)
+    js(c.user, {"modelSettings": {"claude-opus-5-5": entry}})     # today's machine: no model key
+    assert ("effort_cap_in_user" in c.resolve()["issues"]) is capped
+
+
+@pytest.mark.parametrize("layer", ["user", "project"])
+def test_the_ultracode_setting_runs_at_xhigh_over_saved_levels(tmp_path, layer):
+    # settings-reference ultracode: "runs the session at xhigh effort and takes precedence over
+    # effortLevel and modelSettings entries".
+    c = Claude(tmp_path)
+    js(c.user, OPUS_HIGH)
+    path = c.user if layer == "user" else c.worktree / ".claude" / "settings.json"
+    js(path, {**(OPUS_HIGH if layer == "user" else {}), "ultracode": True})
+    r = c.resolve()
+    assert (r["effort"], r["effort_source"], r["resolved"]) == ("xhigh", f"ultracode:{layer}", True)
+
+
+def test_a_higher_file_can_switch_ultracode_off(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {**OPUS_HIGH, "ultracode": True})
+    js(c.worktree / ".claude" / "settings.json", {"ultracode": False})
+    assert (c.resolve()["effort"], c.resolve()["effort_source"]) == ("high", "user:modelSettings")
+
+
+def test_argv_against_the_ultracode_setting_is_unknown(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {**OPUS_HIGH, "ultracode": True})
+    r = c.resolve(argv_effort="medium")
+    assert (r["effort"], r["resolved"]) == (None, False)
+    assert "argv_effort_against_ultracode_setting_unverified" in r["issues"]
+    assert (c.resolve(argv_effort="xhigh")["effort"], c.resolve(argv_effort="xhigh")["resolved"]) == ("xhigh", True)
+
+
+def test_the_effort_env_beats_the_ultracode_setting(tmp_path):
+    # model-config: "When CLAUDE_CODE_EFFORT_LEVEL is set to a level other than xhigh, requests
+    # run at that level".
+    c = Claude(tmp_path)
+    js(c.user, {**OPUS_HIGH, "ultracode": True})
+    r = c.resolve(env={"CLAUDE_CODE_EFFORT_LEVEL": "low"})
+    assert (r["effort"], r["effort_source"], r["resolved"]) == ("low", "env:CLAUDE_CODE_EFFORT_LEVEL", True)
+
+
+def test_argv_ultracode_is_xhigh(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, OPUS_HIGH)
+    r = c.resolve(argv_effort="ultracode")
+    assert (r["effort"], r["effort_source"], r["resolved"]) == ("xhigh", "argv", True)
+
+
+def test_the_effort_env_does_not_accept_ultracode(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, OPUS_HIGH)
+    r = c.resolve(env={"CLAUDE_CODE_EFFORT_LEVEL": "ultracode"})
+    assert (r["effort"], r["resolved"]) == (None, False) and "env_effort_ultracode_not_accepted" in r["issues"]
+
+
+def test_a_non_boolean_ultracode_fails_closed(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {**OPUS_HIGH, "ultracode": "yes"})
+    r = c.resolve()
+    assert r["resolved"] is False and "ultracode_not_a_boolean_in_user" in r["issues"]

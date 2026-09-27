@@ -93,12 +93,16 @@ def read_samples(store: str | Path, *, limit: int = MAX_HISTORY_ROWS) -> list[di
         raise ValueError("not an SQLite observer store")
     if 2 in header[18:20]:
         raise ValueError("WAL store is unsupported without a read-only snapshot")
-    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as db:
-        db.execute("BEGIN")
-        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if "observations" not in tables:
-            raise ValueError("not an observer store")
-        rows = db.execute("SELECT data FROM observations ORDER BY sequence DESC LIMIT ?", (limit,)).fetchall()
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as db:
+            db.execute("BEGIN")
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "observations" not in tables:
+                raise ValueError("not an observer store")
+            rows = db.execute("SELECT data FROM observations ORDER BY sequence DESC LIMIT ?", (limit,)).fetchall()
+    except sqlite3.Error as exc:
+        # claude-rco-1 B1: a malformed but real store is unreadable, reported like any other refusal.
+        raise ValueError(f"observer store unreadable: {exc.__class__.__name__}") from None
     samples = []
     for (raw,) in rows:
         try:

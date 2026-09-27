@@ -268,7 +268,7 @@ def test_a_wal_store_is_refused(tmp_path):
 def test_non_stores_are_refused(tmp_path, content):
     path = tmp_path / "obs.sqlite"
     path.write_bytes(content)
-    with pytest.raises((ValueError, sqlite3.DatabaseError)):
+    with pytest.raises(ValueError):
         read_samples(path)
 
 
@@ -311,3 +311,33 @@ def test_a_short_window_on_pace_does_not_block_a_raise():
     # only an overrun of a short window blocks a raise.
     result = lanes(world(claude_5h=(50, 60)))
     assert (result["claude-rco-1"]["verdict"], result["claude-rco-1"]["target_profile"]) ==         ("raise", "claude-opus-5-5-xhigh")
+
+
+
+@pytest.mark.parametrize("schema", [
+    "CREATE TABLE observations (sequence INTEGER PRIMARY KEY, provider TEXT)",          # no data column
+    "CREATE TABLE observations (x INTEGER)",                                             # no sequence column
+])
+def test_a_real_store_with_the_wrong_shape_is_a_clean_refusal(tmp_path, capsys, schema):
+    # claude-rco-1 B1: a malformed-but-real SQLite store must be a ValueError, never an sqlite3 crash.
+    path = tmp_path / "obs.sqlite"
+    db = sqlite3.connect(path)
+    db.execute(schema)
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="unreadable"):
+        read_samples(path)
+    assert main(["--store", str(path)]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["execution_allowed"] is False and "unreadable" in report["error"]
+
+
+def test_a_corrupted_page_is_a_clean_refusal(tmp_path, capsys):
+    now = datetime.now(timezone.utc)
+    store = make_store(tmp_path / "obs.sqlite",
+                       [codex_row(i, now, int((now + timedelta(days=1)).timestamp())) for i in range(200)])
+    data = bytearray(store.read_bytes())
+    data[4096:8192] = bytes([255]) * 4096            # destroy the second page
+    store.write_bytes(bytes(data))
+    assert main(["--store", str(store)]) == 2
+    assert json.loads(capsys.readouterr().out)["execution_allowed"] is False

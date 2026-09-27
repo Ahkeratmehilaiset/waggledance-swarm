@@ -215,6 +215,11 @@ $ownerIdentity = Get-BridgeOwnerIdentity
 if ($null -ne $ownerIdentity) {
     $claim['owner_session_id'] = [string]$ownerIdentity.owner_session_id
     $claim['owner_token_sha256'] = [string]$ownerIdentity.owner_token_sha256
+} else {
+    # Marks a B7-era claim made without an identity, so Release can tell
+    # it apart from a pre-B7 claim and let an identity-less caller release
+    # it by agent label, as before B7.
+    $claim['owner_identity'] = 'none'
 }
 if ($Role) { $claim['role'] = $Role }
 if ($AgentUuid) { $claim['agent_uuid'] = $AgentUuid }

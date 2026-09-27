@@ -441,6 +441,55 @@ try {
         -Passed (-not (Test-Path -LiteralPath $legacyPath)) `
         -Detail 'explicit adoption is allowed and visible'
 
+    # A claim made WITHOUT an identity is marked owner_identity=none. An
+    # identity-less caller releases it by label, as before B7; a caller
+    # with an identity still needs the explicit switch.
+    $savedToken = $env:AGENT_BRIDGE_OWNER_TOKEN
+    $savedRun = $env:AGENT_BRIDGE_RUN_ID
+    Remove-Item Env:\AGENT_BRIDGE_OWNER_TOKEN, Env:\AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    & $claimTask -Agent codex -TaskId 'b7-noid' -Summary 'B7 identity-less claim' `
+        -Mode write -WriteScope 'tests/smoke/b7-noid' | Out-Null
+    $noIdPath = Join-Path $claimsDir 'b7-noid.json'
+    $noIdObj = Get-Content -Raw -Path $noIdPath -Encoding UTF8 | ConvertFrom-Json
+    Add-Check -Name 'an identity-less claim is marked owner_identity=none' `
+        -Passed ($noIdObj.PSObject.Properties['owner_identity'] -and
+            [string]$noIdObj.owner_identity -ceq 'none' -and
+            -not $noIdObj.PSObject.Properties['owner_token_sha256']) `
+        -Detail "owner_identity present=$([bool]$noIdObj.PSObject.Properties['owner_identity'])"
+    $env:AGENT_BRIDGE_OWNER_TOKEN = $savedToken
+    $env:AGENT_BRIDGE_RUN_ID = $savedRun
+    try {
+        & $releaseTask -Agent codex -TaskId 'b7-noid' -Status done `
+            -Message 'identity-bearing release of an identity-less claim' 2>&1 | Out-Null
+    } catch { }
+    Add-Check -Name 'a caller with an identity cannot release an identity-less claim silently' `
+        -Passed (Test-Path -LiteralPath $noIdPath) `
+        -Detail 'adoption still needs -AllowLegacyUnownedClaim'
+    Remove-Item Env:\AGENT_BRIDGE_OWNER_TOKEN, Env:\AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    & $releaseTask -Agent codex -TaskId 'b7-noid' -Status done `
+        -Message 'identity-less release of an identity-less claim' 2>&1 | Out-Null
+    Add-Check -Name 'an identity-less caller releases its identity-less claim' `
+        -Passed (-not (Test-Path -LiteralPath $noIdPath)) `
+        -Detail 'label authority, as before B7'
+
+    & $claimTask -Agent codex -TaskId 'b7-noid-legacy' -Summary 'B7 unmarked legacy claim' `
+        -Mode write -WriteScope 'tests/smoke/b7-noid-legacy' | Out-Null
+    $unmarkedPath = Join-Path $claimsDir 'b7-noid-legacy.json'
+    $unmarkedObj = Get-Content -Raw -Path $unmarkedPath -Encoding UTF8 | ConvertFrom-Json
+    $unmarkedObj.PSObject.Properties.Remove('owner_identity')
+    ($unmarkedObj | ConvertTo-Json -Depth 8) | Set-Content -Path $unmarkedPath -Encoding UTF8
+    try {
+        & $releaseTask -Agent codex -TaskId 'b7-noid-legacy' -Status done `
+            -Message 'identity-less release of an unmarked claim' 2>&1 | Out-Null
+    } catch { }
+    Add-Check -Name 'an identity-less caller cannot release an unmarked pre-B7 claim silently' `
+        -Passed (Test-Path -LiteralPath $unmarkedPath) `
+        -Detail 'only the owner_identity=none marker allows label release'
+    & $releaseTask -Agent codex -TaskId 'b7-noid-legacy' -Status done `
+        -Message 'cleanup' -AllowLegacyUnownedClaim 2>&1 | Out-Null
+    $env:AGENT_BRIDGE_OWNER_TOKEN = $savedToken
+    $env:AGENT_BRIDGE_RUN_ID = $savedRun
+
     # -- B7: lease defaults --------------------------------------
     $writeLease = (& $claimTask -Agent codex -TaskId 'b7-lease-write' `
         -Summary 'B7 write lease' -Mode write -WriteScope 'tests/smoke/b7-lease').lease_seconds

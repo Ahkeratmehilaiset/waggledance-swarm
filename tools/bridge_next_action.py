@@ -1164,7 +1164,10 @@ def _deduplicate_repeated_wake_requests(
                     correlation_field(previous, "request_digest") != correlation_field(request, "request_digest")):
                     deduped[index] = dict(previous, request_binding_conflict=True)
             else:
-                deduped[index] = request
+                previous = deduped[index]
+                if (_event_ts(previous) != _event_ts(request)
+                        or request_content(previous) != request_content(request)):
+                    deduped[index] = request
     return deduped
 
 
@@ -1299,8 +1302,11 @@ def _idle_protocol_progressed(
 
 def _build_idle_protocol_progress_index(
     events: Sequence[Mapping[str, Any]],
-) -> dict[str, str]:
-    progress_index: dict[str, str] = {}
+) -> dict[str, Any]:
+    progress_index: dict[str, Any] = {
+        "_positions": {id(event): position for position, event in enumerate(events)},
+        "_events": {},
+    }
     for event in events:
         payload = _payload(event)
         if payload.get("protocol_version") != "idle-protocol.v1":
@@ -1313,14 +1319,14 @@ def _build_idle_protocol_progress_index(
             "rejected_event_id",
         ):
             proposal_id = str(payload.get(field) or "")
-            if proposal_id and event_ts > progress_index.get(proposal_id, ""):
-                progress_index[proposal_id] = event_ts
+            if proposal_id:
+                progress_index["_events"].setdefault(proposal_id, []).append(event)
     return progress_index
 
 
 def _idle_protocol_progressed_by_index(
     request: Mapping[str, Any],
-    progress_index: Mapping[str, str],
+    progress_index: Mapping[str, Any],
 ) -> bool:
     payload = _payload(request)
     if payload.get("protocol_version") != "idle-protocol.v1":
@@ -1328,8 +1334,10 @@ def _idle_protocol_progressed_by_index(
     proposal_id = str(payload.get("proposal_id") or "")
     if not proposal_id:
         return False
-    request_ts = _event_ts(request)
-    return progress_index.get(proposal_id, "") > request_ts
+    positions = progress_index.get("_positions", {})
+    return any(reply_follows_request(request, answer,
+        request_position=positions.get(id(request)), reply_position=positions.get(id(answer)))
+        for answer in progress_index.get("_events", {}).get(proposal_id, ()))
 
 
 def _is_control_signal(event: Mapping[str, Any]) -> bool:

@@ -39,12 +39,20 @@ def scenario(case, bound):
         answer.update(agent="lead", type="wake_request", status="closed", to="peer")
     elif case == "third_party":
         answer.update(agent="other", type="done", status="done")
-    rows = [answer, request] if case == "before" else [request, answer]
-    return rows, case not in {"control", "withdrawal"}
+    elif case.startswith("idle_"):
+        request["payload"] = {"protocol_version": "idle-protocol.v1", "proposal_id": "proposal-1"}
+        answer.update(type="intent", status="processing", payload={
+            "protocol_version": "idle-protocol.v1", "responds_to": "proposal-1"})
+        if case == "idle_offset":
+            answer["ts_utc"] = "2026-09-27T20:00:00+03:00"
+    rows = [answer, request] if case in {"before", "idle_before"} else [request, answer]
+    if case == "identical_replay":
+        rows.append(dict(request))
+    return rows, case not in {"control", "withdrawal", "identical_replay"}
 
 
 CASES = ["control", "withdrawal", "before", "offset", "fraction", "equal", "naive",
-         "not_done", "undone", "incomplete", "third_party"]
+         "not_done", "undone", "incomplete", "third_party", "identical_replay", "idle_before", "idle_offset"]
 
 
 @pytest.mark.parametrize("case", CASES)

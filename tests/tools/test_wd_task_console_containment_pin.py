@@ -172,7 +172,10 @@ def run_apply(ps: str, tmp_path: Path, tasks: dict, change: str = "", at: str = 
     script_path = tmp_path / "containment-under-test.ps1"
     script_path.write_text(text, encoding="utf-8-sig")
     seeds = "\n".join(f"$global:WdTasks[{q(name)}] = {literal}" for name, literal in tasks.items())
+    # Like load(): Windows PowerShell must not inherit a PowerShell 7 module path, or
+    # Get-FileHash does not resolve when pytest itself runs under pwsh.
     harness = f"""
+if ($PSVersionTable.PSEdition -eq 'Desktop') {{ $env:PSModulePath = Join-Path $PSHOME 'Modules' }}
 $ErrorActionPreference = 'Stop'
 $global:WdTasks = @{{}}
 $global:WdCalls = New-Object 'System.Collections.Generic.List[string]'

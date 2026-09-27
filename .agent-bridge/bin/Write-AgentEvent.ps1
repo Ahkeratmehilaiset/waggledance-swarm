@@ -541,9 +541,32 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 # Replies consume the full request, never the lossy next-action summary.
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+
+function Assert-WriterContractEnvelope {
+    param([Parameter(Mandatory)] $Event)
+    # Get-BridgeContractField deliberately fails closed on conflicting copies.
+    # Do not publish such a copy into last_<agent>, where it would poison the
+    # expected responder identity of every subsequent request to that lane.
+    foreach ($key in @('agent','agent_uuid','session_id','run_id','task_id',
+            'request_id','request_digest','expected_responders',
+            'in_reply_to_request_id','in_reply_to_request_digest','in_reply_to_requester')) {
+        $nested = $Event.payload.PSObject.Properties[$key]
+        if ($null -eq $nested) { continue }
+        $direct = $Event.PSObject.Properties[$key]
+        if (($null -ne $direct -and
+                (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) -or
+            ($null -eq $direct -and $key -cin @('agent','agent_uuid','session_id','run_id','task_id'))) {
+            throw "Conflicting payload contract field '$key'; put observational data under payload.result or a descriptive non-contract name"
+        }
+    }
+}
+Assert-WriterContractEnvelope ([pscustomobject]$event)
 $bindingWarnings = @()
 if ($ReplyToEventJson) {
     if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
+    if (-not (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
+        throw 'ReplyToEventJson requires a substantive answer type/status, not an ACK or status notice'
+    }
     $replyTo = $ReplyToEventJson | ConvertFrom-Json @jsonArguments
     $replyId = Get-BridgeContractField $replyTo 'request_id'
     if ($replyId -isnot [string] -or $replyId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'ReplyToEventJson requires a valid request_id' }
@@ -591,6 +614,9 @@ if ($ReplyToEventJson) {
             $identity = [ordered]@{}
             foreach ($key in @('agent_uuid','session_id','run_id')) {
                 $value = Get-BridgeContractField $seen $key
+                if ($null -ne $value -and $value -isnot [string]) {
+                    throw "Cannot freeze conflicting responder identity for '$target' ($key); obtain a clean current identity event before issuing a new request"
+                }
                 if ($value) { $identity[$key] = $value }
             }
             if ([string]$seen.agent -ceq $target -and $identity.Count -eq 3) { $identities[$target] = [pscustomobject]$identity }
@@ -610,6 +636,7 @@ if ($ReplyToEventJson) {
     try { $event['request_digest'] = [BitConverter]::ToString($hasher.ComputeHash($identityBytes)).Replace('-','').ToLowerInvariant() }
     finally { $hasher.Dispose() }
 }
+Assert-WriterContractEnvelope ([pscustomobject]$event)
 
 function Get-BridgeTargetKey {
     param([AllowNull()] [string] $Targets)

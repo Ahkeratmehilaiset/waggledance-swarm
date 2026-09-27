@@ -65,6 +65,19 @@ def test_claude_preflight_on_an_unpinned_default_is_unknown(tmp_path):
     assert result["verdict"] == "unknown" and "model_from_unpinned_builtin_default" in result["reasons"]
 
 
+@pytest.mark.parametrize("value,verdict", [
+    # B4 (claude-rco-2): Opus 5.5 ignores a user-file top-level effortLevel and starts at its
+    # own default, so this launch is NOT opus-5-5 / xhigh.
+    ({"model": "claude-opus-5-5", "effortLevel": "xhigh"}, "unknown"),
+    ({"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}, "allowed"),
+])
+def test_claude_preflight_follows_the_opus_5_5_effort_rule(tmp_path, value, verdict):
+    settings = claude_settings(tmp_path, value)
+    result = preflight(CATALOG, "claude-rco-1", "claude", "native", "native", worktree=tmp_path,
+                       claude_user_settings=settings, claude_managed_settings=missing_managed(tmp_path), env={})
+    assert result["verdict"] == verdict
+
+
 def test_claude_argv_profile_is_what_counts(tmp_path):
     settings = claude_settings(tmp_path, {"model": "claude-haiku-4-5", "effortLevel": "low"})
     result = preflight(CATALOG, "fable-5", "claude", "claude-opus-5-5", "medium", worktree=tmp_path,

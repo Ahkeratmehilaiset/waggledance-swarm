@@ -79,12 +79,22 @@ function Get-BridgeOwnerIdentity {
         [string] $OwnerToken = ''
     )
 
+    # The session comes from the process owner context that
+    # Start-AgentBridgeSession.ps1 and Start-AgentBridgeConsumerLoop.ps1
+    # establish (AgentBridgeSessionIdentity.ps1), else from the run id.
+    # The consumer loop removes AGENT_BRIDGE_RUN_ID, so the owner session is
+    # the only identity it has. When both are set they must agree; two
+    # different answers are no identity at all.
+    $ownerSession = [string]$env:AGENT_BRIDGE_OWNER_SESSION_ID
+    $runSession = [string]$env:AGENT_BRIDGE_RUN_ID
     $sessionId = if ($SessionId) {
         $SessionId
-    } elseif ($env:AGENT_BRIDGE_RUN_ID) {
-        [string]$env:AGENT_BRIDGE_RUN_ID
-    } else {
+    } elseif ($ownerSession -and $runSession -and $ownerSession -cne $runSession) {
         ''
+    } elseif ($ownerSession) {
+        $ownerSession
+    } else {
+        $runSession
     }
     # Read the env var directly and guard the unset case: under
     # Set-StrictMode, dereferencing .Value on a missing Env: item throws
@@ -116,20 +126,28 @@ function Get-BridgeHeartbeatsDir {
 
 function Get-BridgeSessionHeartbeatPath {
     <#
-        Canonical, collision-resistant artifact path for one session.
+        Canonical, collision-resistant artifact path for one owner: its
+        session id AND its token hash.
 
-        The filename is the SHA-256 of the session id, NOT a sanitized
-        form of it: sanitizing is lossy, so two distinct sessions such as
-        'wd/alpha' and 'wd_alpha' would map to the same file and could
-        overwrite or delete each other's liveness proof.
+        The filename is a SHA-256, NOT a sanitized form of the session id:
+        sanitizing is lossy, so two distinct sessions such as 'wd/alpha' and
+        'wd_alpha' would map to the same file and could overwrite or delete
+        each other's liveness proof.
+
+        The token hash is part of the name because a session id is not
+        unique to one process: every lane of one reboot run shares the run
+        id, and a lane restarted within that run gets it again. Keyed by
+        the session alone, the first writer owned the file and every other
+        owner's heartbeat was refused, so its claims had no protection.
     #>
     param(
         [Parameter(Mandatory)] [string] $Root,
-        [Parameter(Mandatory)] [AllowEmptyString()] [string] $SessionId
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $SessionId,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $TokenSha256
     )
 
-    if (-not $SessionId) { return '' }
-    $digest = Get-BridgeSha256Hex -Value $SessionId
+    if (-not $SessionId -or -not $TokenSha256) { return '' }
+    $digest = Get-BridgeSha256Hex -Value ($SessionId + "`n" + $TokenSha256)
     if (-not $digest) { return '' }
     return (Join-Path (Get-BridgeHeartbeatsDir -Root $Root) ($digest + '.json'))
 }
@@ -332,14 +350,18 @@ function Write-BridgeSessionHeartbeat {
         } catch { return $false }
     }
     $path = Get-BridgeSessionHeartbeatPath -Root $Root `
-        -SessionId ([string]$Identity.owner_session_id)
+        -SessionId ([string]$Identity.owner_session_id) `
+        -TokenSha256 ([string]$Identity.owner_token_sha256)
     if (-not $path) { return $false }
 
     $lock = Enter-BridgeClaimLock -ClaimPath $path
     if ($null -eq $lock) { return $false }
     try {
         # Identity recheck under the lock: never overwrite an artifact
-        # belonging to a different session or token.
+        # belonging to a different session or token. The path already
+        # names this owner, so a mismatch here means a damaged or foreign
+        # file; the refusal warns, because a silent stop is the failure
+        # mode B7 exists to remove.
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $existing = $null
             try {
@@ -351,6 +373,8 @@ function Write-BridgeSessionHeartbeat {
                 $existing.PSObject.Properties['owner_token_sha256']) {
                 if (([string]$existing.owner_session_id -cne [string]$Identity.owner_session_id) -or
                     ([string]$existing.owner_token_sha256 -cne [string]$Identity.owner_token_sha256)) {
+                    Write-Warning ("session heartbeat refused: {0} holds a different owner" -f
+                        (Split-Path -Leaf $path))
                     return $false
                 }
             }
@@ -399,7 +423,8 @@ function Remove-BridgeSessionHeartbeat {
     if ($null -eq $Identity) { $Identity = Get-BridgeOwnerIdentity -SessionId $SessionId }
     if ($null -eq $Identity) { return $false }
     $path = Get-BridgeSessionHeartbeatPath -Root $Root `
-        -SessionId ([string]$Identity.owner_session_id)
+        -SessionId ([string]$Identity.owner_session_id) `
+        -TokenSha256 ([string]$Identity.owner_token_sha256)
     if (-not $path) { return $false }
 
     $lock = Enter-BridgeClaimLock -ClaimPath $path
@@ -456,7 +481,8 @@ function Test-BridgeSessionHeartbeatLive {
     $claimToken = [string]$Claim.owner_token_sha256
     if (-not $claimSession -or -not $claimToken) { return $false }
 
-    $path = Get-BridgeSessionHeartbeatPath -Root $Root -SessionId $claimSession
+    $path = Get-BridgeSessionHeartbeatPath -Root $Root -SessionId $claimSession `
+        -TokenSha256 $claimToken
     if (-not $path) { return $false }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
     try {

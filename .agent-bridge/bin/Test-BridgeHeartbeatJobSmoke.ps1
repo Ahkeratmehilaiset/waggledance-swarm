@@ -16,6 +16,9 @@ $heartbeat = Join-Path $bridgeBin 'Start-BridgeHeartbeat.ps1'
 $tempRoot = Join-Path $env:TEMP "bridge-r23-1-heartbeat-$([guid]::NewGuid().ToString('N').Substring(0,12))"
 $savedRoot = $env:AGENT_BRIDGE_RUNTIME_ROOT
 $savedToggle = $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED
+# A lane shell carries its own owner context; the smoke sets identities itself.
+$savedOwnerSession = $env:AGENT_BRIDGE_OWNER_SESSION_ID
+Remove-Item Env:AGENT_BRIDGE_OWNER_SESSION_ID -ErrorAction SilentlyContinue
 
 function Read-Claim {
     param([string] $RuntimeRoot, [string] $TaskId)
@@ -142,7 +145,8 @@ try {
 
     # B7 proof 4: the durable session heartbeat exists and is identity-bound.
     . (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
-    $beatPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'r23-1-smoke-session'
+    $beatPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'r23-1-smoke-session' `
+        -TokenSha256 ([string]$before.owner_token_sha256)
     if (-not (Test-Path -LiteralPath $beatPath -PathType Leaf)) {
         Write-Host "  [FAIL] session heartbeat artifact missing" -ForegroundColor Red
         exit 1
@@ -164,8 +168,9 @@ try {
         Write-Host "  [FAIL] collision fixture is not actually colliding" -ForegroundColor Red
         exit 1
     }
-    $pathA = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId $collideA
-    $pathB = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId $collideB
+    $sameToken = Get-BridgeSha256Hex -Value 'collision-token'
+    $pathA = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId $collideA -TokenSha256 $sameToken
+    $pathB = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId $collideB -TokenSha256 $sameToken
     if ($pathA -eq $pathB) {
         Write-Host "  [FAIL] sanitized session ids collide on one artifact" -ForegroundColor Red
         exit 1
@@ -178,7 +183,8 @@ try {
         -OwnerToken 'successor-token-cccc'
     [void](Write-BridgeSessionHeartbeat -Root $tempRoot -AgentName codex `
         -Identity $succIdentity)
-    $succPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'successor-session'
+    $succPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'successor-session' `
+        -TokenSha256 ([string]$succIdentity.owner_token_sha256)
     $foreignIdentity = Get-BridgeOwnerIdentity -SessionId 'successor-session' `
         -OwnerToken 'a-different-token-dddd'
     $removedForeign = Remove-BridgeSessionHeartbeat -Root $tempRoot `
@@ -188,6 +194,78 @@ try {
         exit 1
     }
     Write-Host "  [PASS] stop cannot retire a successor session heartbeat" -ForegroundColor Green
+
+    # B7 proof 7: one session id, several owners. Every lane of one reboot
+    # run shares the run id, and a lane restarted after a crash (no Stop)
+    # gets it again. Each owner must still get its own live heartbeat;
+    # keyed by the session alone, only the first writer ever did.
+    $nowUtc = (Get-Date).ToUniversalTime()
+    $sharedSession = 'wd-reboot-shared-run'
+    $owners = @(
+        (Get-BridgeOwnerIdentity -SessionId $sharedSession -OwnerToken 'lane-one-token'),
+        (Get-BridgeOwnerIdentity -SessionId $sharedSession -OwnerToken 'lane-two-token'),
+        (Get-BridgeOwnerIdentity -SessionId $sharedSession -OwnerToken 'restarted-lane-token')
+    )
+    foreach ($owner in $owners) {
+        $written = Write-BridgeSessionHeartbeat -Root $tempRoot -AgentName codex `
+            -Identity $owner -WarningVariable ownerWarnings -WarningAction SilentlyContinue
+        $ownerClaim = [pscustomobject]@{
+            owner_session_id = $owner.owner_session_id
+            owner_token_sha256 = $owner.owner_token_sha256
+        }
+        if (-not $written -or @($ownerWarnings).Count -gt 0 -or
+            -not (Test-BridgeSessionHeartbeatLive -Root $tempRoot -Claim $ownerClaim -NowUtc $nowUtc)) {
+            Write-Host "  [FAIL] an owner sharing a session id got no live heartbeat" -ForegroundColor Red
+            exit 1
+        }
+    }
+    Write-Host "  [PASS] owners sharing one session id each keep a live heartbeat" -ForegroundColor Green
+
+    # B7 proof 8: a file at an owner's own path that names someone else is
+    # refused, and the refusal is not silent.
+    $damagedOwner = Get-BridgeOwnerIdentity -SessionId 'damaged-session' -OwnerToken 'damaged-token'
+    $damagedPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'damaged-session' `
+        -TokenSha256 ([string]$damagedOwner.owner_token_sha256)
+    [System.IO.File]::WriteAllText($damagedPath, (@{
+        owner_session_id = 'damaged-session'
+        owner_token_sha256 = (Get-BridgeSha256Hex -Value 'someone-else')
+        last_beat_utc = $nowUtc.ToString('o')
+        ttl_seconds = 180
+    } | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    $damagedWritten = Write-BridgeSessionHeartbeat -Root $tempRoot -AgentName codex `
+        -Identity $damagedOwner -WarningVariable damagedWarnings -WarningAction SilentlyContinue
+    if ($damagedWritten -or @($damagedWarnings).Count -ne 1) {
+        Write-Host "  [FAIL] a foreign heartbeat file was overwritten or refused silently" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [PASS] a foreign file at an owner's path is refused with a warning" -ForegroundColor Green
+
+    # B7 proof 9: the process owner context is the identity. The consumer
+    # loop removes AGENT_BRIDGE_RUN_ID and keeps AGENT_BRIDGE_OWNER_SESSION_ID;
+    # a run id that disagrees with the owner session is no identity.
+    $savedRunId = $env:AGENT_BRIDGE_RUN_ID
+    try {
+        Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+        $env:AGENT_BRIDGE_OWNER_SESSION_ID = 'consumer-codex-smoke'
+        $consumerIdentity = Get-BridgeOwnerIdentity
+        $env:AGENT_BRIDGE_RUN_ID = 'consumer-codex-smoke'
+        $agreeingIdentity = Get-BridgeOwnerIdentity
+        $env:AGENT_BRIDGE_RUN_ID = 'some-other-run'
+        $disagreeingIdentity = Get-BridgeOwnerIdentity
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_OWNER_SESSION_ID -ErrorAction SilentlyContinue
+        if ($null -ne $savedRunId) { $env:AGENT_BRIDGE_RUN_ID = $savedRunId }
+        else { Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue }
+    }
+    if ($null -eq $consumerIdentity -or
+        [string]$consumerIdentity.owner_session_id -cne 'consumer-codex-smoke' -or
+        $null -eq $agreeingIdentity -or
+        [string]$agreeingIdentity.owner_session_id -cne 'consumer-codex-smoke' -or
+        $null -ne $disagreeingIdentity) {
+        Write-Host "  [FAIL] owner session precedence is wrong" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  [PASS] the owner session is the identity; a disagreeing run id is none" -ForegroundColor Green
 
     $beforeTs = Convert-ClaimTimestampUtc $before.last_heartbeat_utc
     $afterTs = Convert-ClaimTimestampUtc $after.last_heartbeat_utc
@@ -230,6 +308,9 @@ try {
     }
     Remove-Item Env:AGENT_BRIDGE_OWNER_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
+    if ($null -ne $savedOwnerSession) {
+        $env:AGENT_BRIDGE_OWNER_SESSION_ID = $savedOwnerSession
+    }
     if ($null -ne $savedToggle) {
         $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED = $savedToggle
     } else {

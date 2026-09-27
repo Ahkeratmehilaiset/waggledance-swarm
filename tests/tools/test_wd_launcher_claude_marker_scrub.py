@@ -1,11 +1,13 @@
 """Lane launchers scrub inherited Claude session markers before starting anything (claude-rco-1 root cause, 2026-09-27)."""
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
+from test_wd_reboot_bundle import REBOOT, ROOT, LANE_TEST_SHELLS, _run_powershell
 from test_wd_startup_recovery import load
 
 LAUNCHERS = [REBOOT / "start-wd-agent.ps1", REBOOT / "start-wd-tools-consumer.ps1"]
@@ -16,10 +18,12 @@ KEEP = ["CLAUDE_CODE_DISABLE_CRON", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_MAX_
 SECRET = "tok-9f3759-secret-value"
 
 
-def scrub_script(launcher: Path, present: list[str]) -> str:
+def scrub_script(launcher: Path, present: list[str], inherited: bool = False) -> str:
     # Hermetic: the runner may itself be a Claude Code tool shell carrying these markers.
-    sets = "\n".join([f"Remove-Item -LiteralPath 'Env:{name}' -ErrorAction SilentlyContinue" for name in MARKERS]
-                     + [f"$env:{name}='{SECRET}-{name}'" for name in present + KEEP])
+    # inherited=True: the caller passes the markers in the process environment itself.
+    clear = [] if inherited else [f"Remove-Item -LiteralPath 'Env:{name}' -ErrorAction SilentlyContinue"
+                                  for name in MARKERS]
+    sets = "\n".join(clear + [f"$env:{name}='{SECRET}-{name}'" for name in present + KEEP])
     names = ",".join(f"'{name}'" for name in MARKERS)
     keep = ",".join(f"'{name}'" for name in KEEP)
     return load(launcher, "Clear-WdInheritedClaudeSessionMarkers") + f"""
@@ -27,11 +31,12 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 {sets}
 $removed = @(Clear-WdInheritedClaudeSessionMarkers)
-$exe = if (Test-Path (Join-Path $PSHOME 'powershell.exe')) {{ Join-Path $PSHOME 'powershell.exe' }} else {{ Join-Path $PSHOME 'pwsh.exe' }}
-$child = & $exe -NoProfile -NonInteractive -Command "@({names}) | Where-Object {{ [Environment]::GetEnvironmentVariable(`$_) }}"
+$exe = (Get-Process -Id $PID).Path
+# Presence, not value: a marker left behind with an empty value must still be seen.
+$child = & $exe -NoProfile -NonInteractive -Command "@({names}) | Where-Object {{ Test-Path -LiteralPath ('Env:' + `$_) }}"
 [pscustomobject]@{{
   removed = @($removed)
-  still_here = @(@({names}) | Where-Object {{ $null -ne [Environment]::GetEnvironmentVariable($_, 'Process') }})
+  still_here = @(@({names}) | Where-Object {{ Test-Path -LiteralPath ('Env:' + $_) }})
   child_sees = @($child | Where-Object {{ $_ }})
   kept = @(@({keep}) | Where-Object {{ [Environment]::GetEnvironmentVariable($_, 'Process') -eq ('{SECRET}-' + $_) }})
 }} | ConvertTo-Json -Compress
@@ -54,6 +59,22 @@ def test_every_inherited_marker_is_removed_before_a_child_can_see_it(ps, launche
 def test_a_clean_environment_removes_nothing(ps, launcher):
     record = json.loads(_run_powershell(scrub_script(launcher, []), executable=ps).stdout)
     assert record["removed"] == [] and record["kept"] == KEEP
+
+
+@pytest.mark.skipif(os.name != "nt", reason="blanked markers come from Windows relaunches with empty values")
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("launcher", LAUNCHERS, ids=lambda p: p.stem)
+def test_blanked_inherited_markers_are_removed_not_left_empty(ps, launcher):
+    # The 2026-09-27 rco-1 relaunch blanked the markers (NAME= entries). The launcher must remove the
+    # names too; a truthy value check would leave every one of them behind, empty, for the lane.
+    env = {name: value for name, value in os.environ.items() if name.upper() not in MARKERS}
+    env.update({name: "" for name in MARKERS})
+    result = subprocess.run([ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                             "-Command", scrub_script(launcher, [], inherited=True)],
+                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=True)
+    record = json.loads(result.stdout)
+    assert record["removed"] == MARKERS
+    assert record["still_here"] == [] and record["child_sees"] == []
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

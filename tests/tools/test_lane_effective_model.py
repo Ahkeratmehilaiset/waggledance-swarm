@@ -206,17 +206,33 @@ def test_codex_argv_beats_the_config(tmp_path):
     assert (r["model"], r["effort"], r["model_source"]) == ("gpt-6-sol", "high", "argv")
 
 
-def test_codex_selected_profile_beats_top_level(tmp_path):
-    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\nprofile = "lead"\n'
-                                         '[profiles.lead]\nmodel = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+@pytest.mark.parametrize("legacy,keys", [
+    ('profile = "lead"\n[profiles.lead]\nmodel = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n', ["profile", "profiles"]),
+    ('profile = "lead"\n', ["profile"]),
+    ('[profiles.lead]\nmodel = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n', ["profiles"]),
+])
+def test_codex_legacy_profiles_are_never_active_and_fail_closed(tmp_path, legacy, keys):
+    # OpenAI Codex docs (config-advanced): since 0.134.0 the profile = selector and inline
+    # [profiles.<name>] are no longer supported (codex-tools-1 B2 on #1744).
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n' + legacy)
     r = resolve_codex(argv_model="native", argv_effort="native", config=cfg)
-    assert (r["model"], r["effort"], r["model_source"]) == ("gpt-6-sol", "high", "profile:lead")
+    assert (r["model"], r["effort"], r["model_source"]) == ("gpt-6-luna", "low", "user_config")
+    assert r["resolved"] is False
+    assert [i for i in r["issues"] if i.startswith("codex_legacy_profile_unsupported")] == \
+        [f"codex_legacy_profile_unsupported:{k}" for k in keys]
+    assert classify(CATALOG, "codex-lead-1", r)["verdict"] == "unknown"
 
 
-def test_codex_a_missing_selected_profile_fails_closed(tmp_path):
+def test_codex_top_level_values_resolve_without_legacy_keys(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg)
+    assert (r["model"], r["effort"], r["model_source"], r["resolved"]) == ("gpt-6-sol", "high", "user_config", True)
+
+
+def test_codex_a_legacy_selector_naming_no_table_fails_closed(tmp_path):
     cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\nprofile = "gone"\n')
     r = resolve_codex(argv_model="native", argv_effort="native", config=cfg)
-    assert r["resolved"] is False and "selected_profile_missing" in r["issues"]
+    assert r["resolved"] is False and "codex_legacy_profile_unsupported:profile" in r["issues"]
 
 
 def test_codex_builtin_default_is_never_guessed(tmp_path):
@@ -231,10 +247,12 @@ def test_codex_unreadable_config_fails_closed(tmp_path):
     assert r["resolved"] is False and "user_config_unreadable" in r["issues"]
 
 
-def test_codex_project_config_that_sets_a_model_is_unverified(tmp_path):
+@pytest.mark.parametrize("project", ['model = "gpt-6-luna"\n', 'model_reasoning_effort = "low"\n', 'profile = "p"\n',
+                                     '[profiles.p]\nmodel = "gpt-6-luna"\n'])
+def test_codex_project_config_that_sets_a_model_is_unverified(tmp_path, project):
     cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
     worktree = tmp_path / "wt"
-    toml(worktree / ".codex" / "config.toml", 'model = "gpt-6-luna"\n')
+    toml(worktree / ".codex" / "config.toml", project)
     r = resolve_codex(argv_model="native", argv_effort="native", config=cfg, worktree=worktree)
     assert r["resolved"] is False and "project_config_precedence_unverified" in r["issues"]
 
@@ -459,19 +477,15 @@ def test_a_non_string_value_in_a_higher_file_does_not_fall_through(tmp_path, key
     assert r["resolved"] is False and f"{key}_not_a_string_in_project" in r["issues"]
 
 
-@pytest.mark.parametrize("where", ["profile", "user_config"])
-def test_codex_a_non_string_value_does_not_fall_through(tmp_path, where):
-    if where == "profile":
-        text = 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\nprofile = "p"\n[profiles.p]\nmodel = ["x"]\n'
-    else:
-        text = 'model = 5\nmodel_reasoning_effort = "low"\n'
+@pytest.mark.parametrize("key", ["model", "model_reasoning_effort"])
+def test_codex_a_non_string_value_does_not_fall_through(tmp_path, key):
+    text = 'model = 5\nmodel_reasoning_effort = "low"\n' if key == "model" else 'model = "gpt-6-sol"\nmodel_reasoning_effort = [1]\n'
     r = resolve_codex(argv_model="native", argv_effort="native", config=toml(tmp_path / "config.toml", text))
-    assert r["resolved"] is False and f"model_not_a_string_in_{where}" in r["issues"]
+    assert r["resolved"] is False and f"{key}_not_a_string_in_user_config" in r["issues"]
 
 
-def test_codex_argv_beats_the_selected_profile(tmp_path):
-    cfg = toml(tmp_path / "config.toml", 'profile = "lead"\n[profiles.lead]\nmodel = "gpt-6-luna"\n'
-                                         'model_reasoning_effort = "low"\n')
+def test_codex_argv_beats_the_config(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n')
     r = resolve_codex(argv_model="gpt-6-sol", argv_effort="high", config=cfg)
     assert (r["model"], r["effort"], r["model_source"], r["effort_source"]) == ("gpt-6-sol", "high", "argv", "argv")
 
@@ -650,3 +664,65 @@ def test_a_non_boolean_ultracode_fails_closed(tmp_path):
     js(c.user, {**OPUS_HIGH, "ultracode": "yes"})
     r = c.resolve()
     assert r["resolved"] is False and "ultracode_not_a_boolean_in_user" in r["issues"]
+
+
+
+# ---------------------------------------------------------------- config directories (codex-tools-1 B1 on #1744)
+
+def _cli(capsys, *args):
+    code = main(list(args))
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_the_cli_reads_codex_home(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    toml(tmp_path / "home" / ".codex" / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+    toml(tmp_path / "codexhome" / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n')
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    code, out = _cli(capsys, "--lane", "codex-lead-1", "--cli", "codex")
+    assert (code, out["model"]) == (0, "gpt-6-sol")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codexhome"))
+    code, out = _cli(capsys, "--lane", "codex-lead-1", "--cli", "codex")
+    assert (code, out["model"], out["classification"]["verdict"]) == (3, "gpt-6-luna", "not_in_lane_allowlist")
+
+
+def test_the_cli_reads_claude_config_dir(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for var in ("CLAUDE_CONFIG_DIR", "ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_DEFAULT_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    js(tmp_path / "home" / ".claude" / "settings.json", {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
+    js(tmp_path / "claudedir" / "settings.json", {"model": "claude-haiku-4-5", "effortLevel": "low"})
+    missing = str(tmp_path / "no-managed.json")
+    monkeypatch.setattr(eff_module, "managed_registry_settings", lambda *a, **k: [])
+    code, out = _cli(capsys, "--lane", "claude-rco-1", "--cli", "claude", "--claude-managed-settings", missing)
+    assert (code, out["model"]) == (0, "claude-sonnet-5")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claudedir"))
+    code, out = _cli(capsys, "--lane", "claude-rco-1", "--cli", "claude", "--claude-managed-settings", missing)
+    assert (code, out["model"], out["classification"]["verdict"]) == (3, "claude-haiku-4-5", "not_in_lane_allowlist")
+
+
+def test_the_server_managed_cache_follows_claude_config_dir(tmp_path):
+    from tools.lane_effective_model import claude_config_dir
+    moved = claude_config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / "claudedir")})
+    assert moved == tmp_path / "claudedir"
+    c = Claude(tmp_path)
+    c.user = moved / "settings.json"
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
+    js(moved / "remote-settings.json", {})
+    assert "managed_settings_present" in c.resolve()["issues"]
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_a_blank_config_dir_means_the_default(value):
+    from tools.lane_effective_model import claude_config_dir, codex_home
+    assert claude_config_dir({"CLAUDE_CONFIG_DIR": value}) == Path.home() / ".claude"
+    assert codex_home({"CODEX_HOME": value}) == Path.home() / ".codex"
+
+
+def test_a_settings_env_block_that_moves_the_config_dir_fails_closed(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "env": {"CLAUDE_CONFIG_DIR": str(tmp_path / "x")}})
+    r = c.resolve()
+    assert r["resolved"] is False and "env_block_sets_CLAUDE_CONFIG_DIR_in_user" in r["issues"]

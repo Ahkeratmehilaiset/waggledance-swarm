@@ -33,6 +33,17 @@ SHELLS = list(dict.fromkeys(filter(None, [shutil.which("pwsh"), shutil.which("po
     ("native-opaque-and-stale-wrapper", 0, 0, "unreadable host ownership"),
     ("native-opaque-healthy-and-stale-wrapper", 0, 0, "unreadable host ownership"),
     ("native-opaque-healthy-wrapper-and-legacy", 0, 0, "unreadable host ownership"),
+    ("native-opaque-healthy-and-second-exact-wrapper", 0, 0, "unreadable host ownership"),
+    # The readiness record naming an opaque host rules the exception out.
+    ("native-opaque-target-and-healthy-wrapper", 0, 0, "unreadable host ownership"),
+    # Only native_terminal takes the lifetime lock; every other surface blocks.
+    ("none-opaque-and-healthy-wrapper", 0, 0, "unreadable host ownership"),
+    ("local_window-opaque-and-healthy-wrapper", 0, 0, "unreadable host ownership"),
+    ("dry-native-opaque-and-starting-wrapper", 0, 0, "unreadable host ownership"),
+    ("dry-native-opaque-healthy-wrapper-and-legacy", 0, 0, "unreadable host ownership"),
+    ("dry-native-opaque-healthy-and-second-exact-wrapper", 0, 0, "unreadable host ownership"),
+    ("dry-native-opaque-target-and-healthy-wrapper", 0, 0, "unreadable host ownership"),
+    ("dry-none-opaque-and-healthy-wrapper", 0, 0, "unreadable host ownership"),
     ("empty", 1, 0, "LAUNCHED"),
     ("unrelated-opaque", 1, 0, "LAUNCHED"),
     ("self-only", 1, 0, "LAUNCHED"),
@@ -66,13 +77,21 @@ $body=@($command.CommandElements | Where-Object {$_ -is [Management.Automation.L
 if ($body.Count -ne 1) { throw 'unexpected reconciliation AST' }
 # Never dot-source the supervisor or run any top-level code.
 $action=[scriptblock]::Create($body[0].ScriptBlock.Extent.Text.Trim().Substring(1).TrimEnd().TrimEnd('}'))
+# The supervisor's own final gate: any CONFLICT action throws, so the task exits 1.
+$top=@($ast.EndBlock.Statements); $gateIndex=-1
+for ($k=0; $k -lt $top.Count; $k++) {
+    if ($top[$k] -is [Management.Automation.Language.AssignmentStatementAst] -and $top[$k].Left.Extent.Text -ceq '$conflicts') { $gateIndex=$k }
+}
+if ($gateIndex -lt 0 -or $gateIndex + 1 -ge $top.Count -or $top[$gateIndex + 1] -isnot [Management.Automation.Language.IfStatementAst]) { throw 'missing final conflict gate' }
+$gate=[scriptblock]::Create($top[$gateIndex].Extent.Text + [Environment]::NewLine + $top[$gateIndex + 1].Extent.Text)
 $case='__CASE__'; $selfPid=99999
 $script:fixture=@(); $script:launches=0; $script:stops=0
 $actions=[Collections.Generic.List[string]]::new()
 $toolsLauncher='launcher.ps1'; $configuredToolsLauncher='launcher.ps1'; $toolsConfig='config.json'
 $toolsGeneration='generation'; $toolsAgent='codex-tools-1'; $toolsValidation=@{}
 $tools=@{codex_timeout_seconds=60}; $readinessPath='never-read.json'
-$toolsConversationSurface=if ($case -like 'headless-*') {'headless'} elseif ($case -like '*owner-gone*' -or $case -like '*native-*') {'native_terminal'} else {'headless'}
+$toolsConversationSurface=if ($case -like 'headless-*') {'headless'} elseif ($case -like '*none-opaque*') {'none'} elseif ($case -like '*local_window-*') {'local_window'} elseif ($case -like '*owner-gone*' -or $case -like '*native-*') {'native_terminal'} else {'headless'}
+$readyFamily = $case -like '*native-*' -or $case -like '*none-opaque*' -or $case -like '*local_window-*'
 $toolsPowerShellHost='never-start.exe'; $toolsConflictPath='never-write.json'
 $Apply= -not $case.StartsWith('dry-')
 if ($case -like 'many-opaque*') {
@@ -85,7 +104,7 @@ if ($case -like 'opaque*' -or $case -like 'dry-opaque*' -or $case -like 'headles
 if ($case -in @('healthy','stale-wrapper','opaque-and-stale-wrapper','opaque-and-healthy-wrapper','opaque-owner-gone-with-wrapper')) {
     $script:fixture+= [pscustomobject]@{ProcessId=43;Name='pwsh.exe';CommandLine='wrapper'}
 }
-if ($case -like '*native-*') {
+if ($readyFamily) {
     $script:fixture+= [pscustomobject]@{ProcessId=42;Name='powershell.exe';CommandLine=$null}
     if ($case -like '*native-many-*') {
         foreach ($id in 50,51,52) { $script:fixture+= [pscustomobject]@{ProcessId=$id;Name='pwsh.exe';CommandLine=$null} }
@@ -93,6 +112,9 @@ if ($case -like '*native-*') {
     $script:fixture+= [pscustomobject]@{ProcessId=43;Name='powershell.exe';CommandLine='wrapper'}
     if ($case -eq 'native-opaque-healthy-and-stale-wrapper') {
         $script:fixture+= [pscustomobject]@{ProcessId=45;Name='powershell.exe';CommandLine='wrapper-stale'}
+    }
+    if ($case -like '*second-exact-wrapper') {
+        $script:fixture+= [pscustomobject]@{ProcessId=45;Name='powershell.exe';CommandLine='wrapper'}
     }
 }
 if ($case -eq 'unrelated-opaque') {$script:fixture+= [pscustomobject]@{ProcessId=44;Name='other.exe';CommandLine=$null}}
@@ -104,9 +126,11 @@ function Test-NamedCommandLineArgument { param($CommandLine,$HostKind,$Name,$Val
     return $CommandLine -in @('wrapper','wrapper-stale')
 }
 function Test-ToolsWrapperReadiness { param($Process,$Tools,$Validation,$Generation,$ConfigPath,$ReadinessPath)
-    return $case -in @('healthy','opaque-and-healthy-wrapper') -or ($case -like '*native-*healthy*' -and $Process.ProcessId -eq 43)
+    return $case -in @('healthy','opaque-and-healthy-wrapper') -or ($readyFamily -and $case -like '*healthy*' -and $Process.ProcessId -eq 43)
 }
-function Test-ToolsReadinessTargetsProcess { param($Process,$Generation,$ReadinessPath) return $case -in @('opaque-ready','many-opaque-ready') -and $Process.ProcessId -eq 42 }
+function Test-ToolsReadinessTargetsProcess { param($Process,$Generation,$ReadinessPath)
+    return ($case -in @('opaque-ready','many-opaque-ready') -or $case -like '*opaque-target-*') -and $Process.ProcessId -eq 42
+}
 function Test-ToolsWrapperWithinStartupGrace { param($Process,$GraceSeconds) return $false }
 function Test-ToolsReadinessOwnerGone { param($Processes,$ReadinessPath) return $case -like '*owner-gone*' }
 function Get-AgentCommandProcesses {
@@ -119,16 +143,20 @@ function Stop-VerifiedProcessTree { param($RootProcess,$InitialProcesses,$Confli
 function Start-OutOfTaskJobPowerShell { param($HostPath,$Arguments,$Label,[switch]$VisibleTerminal) $script:launches++; $actions.Add('LAUNCHED') }
 & $action
 [pscustomobject]@{launches=$script:launches;stops=$script:stops;actions=($actions -join '|')} | ConvertTo-Json -Compress
+& $gate
 """.replace("__SOURCE__", source).replace("__CASE__", case)
     result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
                             cwd=ROOT, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr
-    observed = json.loads(result.stdout)
+    conflict = "CONFLICT" in marker or "ownership" in marker
+    observed = json.loads(result.stdout.splitlines()[0])
     assert observed["launches"] == launches, observed
     assert observed["stops"] == stops, observed
     assert marker in observed["actions"], observed
-    if "CONFLICT" not in marker and "ownership" not in marker:
+    if conflict:
+        assert result.returncode == 1 and "supervisor reconciliation conflict" in result.stderr, result.stderr
+    else:
         assert "CONFLICT" not in observed["actions"], observed
+        assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.skipif(not SHELLS, reason="PowerShell unavailable")
@@ -290,3 +318,111 @@ $third = {opener}; $third.Dispose(); 'reopened-after-release'
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["refused", "reopened-after-release"]
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("case,expected", [
+    ("same-pid-and-start", True),
+    ("start-within-skew", True),
+    ("pid-reused", False),
+    ("record-without-start", False),
+    ("process-without-start", False),
+    ("other-generation", False),
+    ("other-pid", False),
+    ("no-record", False),
+])
+def test_readiness_names_an_opaque_host_only_with_its_start_time(tmp_path, shell, case, expected):
+    source = str(ROOT / "ops/windows/reboot/wd_supervisor.ps1").replace("'", "''")
+    record = tmp_path / "ready.json"
+    if case != "no-record":
+        body = {"pid": 42, "generation": "other" if case == "other-generation" else "generation"}
+        if case != "record-without-start":
+            body["process_start_utc"] = STARTED
+        record.write_text(json.dumps(body), encoding="utf-8")
+    created = {"start-within-skew": "'2026-09-26T08:17:09Z'", "pid-reused": "'2026-09-26T08:17:11Z'",
+               "process-without-start": "$null"}.get(case, "'2026-09-26T08:17:08Z'")
+    pid = 43 if case == "other-pid" else 42
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$ast=[Management.Automation.Language.Parser]::ParseFile('__SOURCE__',[ref]$null,[ref]$null)
+foreach ($name in 'ConvertTo-SupervisorUtc','Test-ToolsReadinessTargetsProcess') {
+    $fn=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}, $true)
+    if ($null -eq $fn) { throw "missing $name" }
+    . ([scriptblock]::Create($fn.Extent.Text))
+}
+$process=[pscustomobject]@{ProcessId=__PID__;Name='powershell.exe';CommandLine=$null;CreationDate=__CREATED__}
+[bool](Test-ToolsReadinessTargetsProcess -Process $process -Generation 'generation' -ReadinessPath '__RECORD__') | ConvertTo-Json -Compress
+""".replace("__SOURCE__", source).replace("__PID__", str(pid)).replace("__CREATED__", created) \
+        .replace("__RECORD__", str(record).replace("'", "''"))
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                            cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) is expected
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("held", [True, False])
+def test_a_refused_second_consumer_leaves_readiness_byte_identical(tmp_path, shell, held):
+    """Run the consumer's real code from the lifetime lock to its first readiness change.
+
+    With the lock held (a live wrapper), that code must fail at the lease and leave the
+    ready wrapper's readiness file byte-identical. The twin without a holder must pass the
+    lease and reach the readiness removal, so the refusal is not vacuous.
+    """
+    text = CONSUMER.read_text(encoding="utf-8")
+    start = text.index("if ($conversationSurface -ceq 'native_terminal') {\n    if ([Console]::IsInputRedirected)")
+    anchor = "    Remove-Item -LiteralPath $readinessPath -Force -ErrorAction Stop\n}\n"
+    end = text.index(anchor, start) + len(anchor)
+    code = text[start:end]
+    assert LOCK_OPEN in code and code.count("[Console]::IsInputRedirected") == 1
+    assert code.index(LOCK_OPEN) < code.index("Remove-Item -LiteralPath $readinessPath")
+    # pytest's stdin is not a console; that guard is the only line substituted.
+    code = code.replace("[Console]::IsInputRedirected", "$false")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    readiness_root = tmp_path / "ready"
+    readiness_root.mkdir()
+    readiness = readiness_root / "codex-tools-1.json"
+    original = b'{"schema":"wd.tools-consumer-ready.v3","pid":4242}\r\n'
+    readiness.write_bytes(original)
+    slice_path = tmp_path / "slice.ps1"
+    slice_path.write_text(code, encoding="utf-8")
+    quote = lambda p: str(p).replace("'", "''")
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$conversationSurface = 'native_terminal'
+$runtimeRoot = '{quote(runtime)}'
+$readinessRoot = '{quote(readiness_root)}'
+$readinessPath = '{quote(readiness)}'
+$worktree = '{quote(tmp_path)}'
+$verifiedConversationCode = @{{ 'Invoke-WdLaneTurnLoop.ps1' = '' }}
+function Get-WdNativeToolsRuntimeFunctions {{ param($VerifiedCode) return {{ }} }}
+function Assert-WdTurnPath {{ param($Path) return $Path }}
+function Get-WdPreviousTurnBlocker {{ param($Path, $Agent) return $null }}
+function Get-WdNativeToolsResumeState {{ param($Worktree) return $null }}
+$holder = $null
+if (${'true' if held else 'false'}) {{
+    $holder = [IO.File]::Open((Join-Path $runtimeRoot '.wd-turn-codex-tools-1.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+}}
+$nativeToolsLease = $null
+try {{
+    . '{quote(slice_path)}'
+    'passed-lease'
+}} catch [System.IO.IOException] {{
+    'refused-at-lease'
+}} finally {{
+    if ($null -ne $nativeToolsLease) {{ $nativeToolsLease.Dispose() }}
+    if ($null -ne $holder) {{ $holder.Dispose() }}
+}}
+"""
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    if held:
+        assert result.stdout.split() == ["refused-at-lease"]
+        assert readiness.read_bytes() == original
+    else:
+        assert result.stdout.split() == ["passed-lease"]
+        assert not readiness.exists()            # the live path goes on to replace readiness

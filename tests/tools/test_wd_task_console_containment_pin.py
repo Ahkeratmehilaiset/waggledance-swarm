@@ -131,9 +131,10 @@ def test_only_the_agent_value_job_takes_a_pin_and_apply_keeps_it():
     assert "-Arguments ([string]$job.original_arguments + $pin)" in text
 
 
-# The whole script under -Apply, with Task Scheduler mocked. Only four lines are
-# substituted: the launcher path and hash, the bundle store, and the Administrator
-# check, which becomes the point between plan and apply where a test can change a task.
+# The whole script under -Apply, with Task Scheduler mocked. Only four exact
+# substitutions are made: the launcher path and hash, the bundle store, and
+# the Windows principal block. The test hook remains the point between plan
+# and apply where a test can change a task, including under Linux pwsh.
 WEEKLY = "WD-AgentValue-Weekly"
 STALL = "WD-ConsensusStallDetector"
 LEGACY = "WD-BridgeMergeDriver"
@@ -149,7 +150,10 @@ SUBSTITUTED = {
     "$silentLauncher = 'C:\\Python\\wd_silent_launch.exe'": "$silentLauncher = {launcher}",
     "$silentLauncherSha256 = '4CD4FBED01E3EAD1C999493212F7499137C0937F597BDD5172C0EFEEDA3F509F'": "$silentLauncherSha256 = {launcher_sha}",
     "$bundleStore = 'C:\\Python\\wd-reboot-bundles'": "$bundleStore = {store}",
-    "$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)": "(Test-WdTestAdministrator)",
+    "$identity = [Security.Principal.WindowsIdentity]::GetCurrent()\n"
+    "$principal = New-Object Security.Principal.WindowsPrincipal($identity)\n"
+    "if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {":
+        "if (-not (Test-WdTestAdministrator)) {{",
 }
 LAUNCHER_BYTES = b"not a real launcher"
 

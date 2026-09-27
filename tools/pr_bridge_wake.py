@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,6 +19,8 @@ from typing import Any, Callable, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from waggledance.core.work_queue import resolve_bridge_root
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_STATUS_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
@@ -215,8 +218,9 @@ def emit_bridge_event(
     run_id: str = "",
     runner: Runner | None = None,
 ) -> dict[str, Any]:
-    root = Path(bridge_root) if bridge_root is not None else ROOT / ".agent-bridge"
-    writer = root / "bin" / "Write-AgentEvent.ps1"
+    root = resolve_bridge_root(bridge_root).resolve()
+    pinned_bin = os.environ.get("WD_BRIDGE_BIN", "").strip()
+    writer = (Path(pinned_bin) if pinned_bin else root / "bin") / "Write-AgentEvent.ps1"
     if not writer.exists():
         raise _invalid("missing_writer", f"Write-AgentEvent.ps1 not found at {writer}")
     payload = json.dumps(event["payload"], sort_keys=True, separators=(",", ":"))
@@ -247,8 +251,9 @@ def emit_bridge_event(
     ]
     if run_id:
         command.extend(["-RunId", run_id])
-    run = runner or _run_command
-    result = run(command)
+    writer_env = os.environ.copy()
+    writer_env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)
+    result = runner(command) if runner else _run_command(command, env=writer_env)
     return_code = int(getattr(result, "returncode", 0))
     if return_code != 0:
         raise PrBridgeWakeError(
@@ -332,8 +337,10 @@ def emit_bridge_event(
     }
 
 
-def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=False, capture_output=True, text=True)
+def _run_command(
+    command: Sequence[str], *, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=False, capture_output=True, text=True, env=env)
 
 
 def _invalid(decision: str, message: str) -> PrBridgeWakeError:

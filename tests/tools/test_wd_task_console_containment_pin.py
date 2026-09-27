@@ -129,3 +129,236 @@ def test_only_the_agent_value_job_takes_a_pin_and_apply_keeps_it():
     assert "Argument = $hiddenArguments" in text
     assert "-Arguments ([string]$job.hidden_arguments + $pin)" in text
     assert "-Arguments ([string]$job.original_arguments + $pin)" in text
+
+
+# The whole script under -Apply, with Task Scheduler mocked. Only four lines are
+# substituted: the launcher path and hash, the bundle store, and the Administrator
+# check, which becomes the point between plan and apply where a test can change a task.
+WEEKLY = "WD-AgentValue-Weekly"
+STALL = "WD-ConsensusStallDetector"
+LEGACY = "WD-BridgeMergeDriver"
+WEEKLY_EXECUTE = "C:\\Python\\project2-master\\.python\\Python313\\python.exe"
+STALL_EXECUTE = "C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe"
+STALL_ORIGINAL = "C:\\Python\\wd_consensus_stall_detector.py --alert"
+STALL_HIDDEN = f'"{STALL_EXECUTE}" "C:\\Python\\wd_consensus_stall_detector.py" --alert'
+STALL_OTHER = "C:\\Python\\other.py"
+STALL_WD = "C:\\Python"
+OTHER_EXECUTE = "C:\\Python\\other.exe"
+LEGACY_ARGUMENTS = "-NoProfile -ExecutionPolicy Bypass -File C:\\Python\\Invoke-BridgeMergeDriver.ps1 -Loop -PollSeconds 120"
+SUBSTITUTED = {
+    "$silentLauncher = 'C:\\Python\\wd_silent_launch.exe'": "$silentLauncher = {launcher}",
+    "$silentLauncherSha256 = '4CD4FBED01E3EAD1C999493212F7499137C0937F597BDD5172C0EFEEDA3F509F'": "$silentLauncherSha256 = {launcher_sha}",
+    "$bundleStore = 'C:\\Python\\wd-reboot-bundles'": "$bundleStore = {store}",
+    "$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)": "(Test-WdTestAdministrator)",
+}
+LAUNCHER_BYTES = b"not a real launcher"
+
+
+def task_literal(execute: str, arguments: str, working_directory: str = "", enabled: bool = False) -> str:
+    return f"(New-WdTestTask {q(execute)} {q(arguments)} {q(working_directory)} ${str(enabled).lower()})"
+
+
+def run_apply(ps: str, tmp_path: Path, tasks: dict, change: str = "", at: str = "admin", apply: bool = True,
+              set_enables: bool = False) -> dict:
+    """Runs the script over mocked tasks; `change` is PowerShell that runs once, at `at`."""
+    launcher = tmp_path / "wd_silent_launch.exe"
+    launcher.write_bytes(LAUNCHER_BYTES)
+    text = SCRIPT.read_text(encoding="utf-8")
+    values = {"launcher": q(launcher), "launcher_sha": q(hashlib.sha256(LAUNCHER_BYTES).hexdigest().upper()),
+              "store": q(tmp_path / "store")}
+    for old, new in SUBSTITUTED.items():
+        assert text.count(old) == 1, old
+        text = text.replace(old, new.format(**values))
+    script_path = tmp_path / "containment-under-test.ps1"
+    script_path.write_text(text, encoding="utf-8-sig")
+    seeds = "\n".join(f"$global:WdTasks[{q(name)}] = {literal}" for name, literal in tasks.items())
+    harness = f"""
+$ErrorActionPreference = 'Stop'
+$global:WdTasks = @{{}}
+$global:WdCalls = New-Object 'System.Collections.Generic.List[string]'
+$global:WdChanged = $false
+$global:WdSetEnables = ${str(set_enables).lower()}
+function global:New-WdTestTask($execute, $arguments, $workingDirectory, $enabled) {{
+  [pscustomobject]@{{
+    Actions = @([pscustomobject]@{{ Execute = $execute; Arguments = $arguments; WorkingDirectory = $workingDirectory }})
+    Settings = [pscustomobject]@{{ Enabled = [bool]$enabled }}
+    State = 'Ready'
+  }}
+}}
+function global:Invoke-WdTestChange([string] $at) {{
+  if ($at -ne {q(at)} -or $global:WdChanged) {{ return }}
+  $global:WdChanged = $true
+  {change}
+}}
+function global:Test-WdTestAdministrator {{ Invoke-WdTestChange 'admin'; $true }}
+function global:Get-ScheduledTask {{
+  [CmdletBinding()] param($TaskPath, $TaskName)
+  if ($global:WdTasks.ContainsKey($TaskName)) {{ $global:WdTasks[$TaskName] }}
+}}
+function global:New-ScheduledTaskAction {{
+  [CmdletBinding()] param($Execute, $Argument, $WorkingDirectory)
+  [pscustomobject]@{{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory }}
+}}
+function global:Set-ScheduledTask {{
+  [CmdletBinding()] param($TaskPath, $TaskName, $Action)
+  $global:WdCalls.Add("set $TaskName")
+  $old = $global:WdTasks[$TaskName]
+  $global:WdTasks[$TaskName] = [pscustomobject]@{{
+    Actions = @($Action)
+    Settings = [pscustomobject]@{{ Enabled = ([bool]$old.Settings.Enabled -or $global:WdSetEnables) }}
+    State = 'Ready'
+  }}
+}}
+function global:Disable-ScheduledTask {{
+  [CmdletBinding()] param($TaskPath, $TaskName)
+  $global:WdCalls.Add("disable $TaskName")
+  $global:WdTasks[$TaskName].Settings.Enabled = $false
+  Invoke-WdTestChange 'hold'
+}}
+function global:Stop-ScheduledTask {{
+  [CmdletBinding()] param($TaskPath, $TaskName)
+  $global:WdCalls.Add("stop $TaskName")
+}}
+{seeds}
+$errorText = ''
+$result = $null
+try {{
+  $result = & {q(script_path)} {'-Apply' if apply else ''}
+}} catch {{
+  $errorText = $_.Exception.Message
+}}
+$final = @{{}}
+foreach ($name in @($global:WdTasks.Keys)) {{
+  $t = $global:WdTasks[$name]
+  $a = @($t.Actions)[0]
+  $final[$name] = @{{ execute = [string]$a.Execute; arguments = [string]$a.Arguments;
+    working_directory = [string]$a.WorkingDirectory; enabled = [bool]$t.Settings.Enabled }}
+}}
+@{{ error = $errorText; result = $result; calls = [string[]]$global:WdCalls.ToArray(); tasks = $final }} |
+  ConvertTo-Json -Depth 6 -Compress
+"""
+    record = json.loads(_run_powershell(harness, executable=ps).stdout)
+    record["launcher"] = str(launcher)
+    return record
+
+
+def weekly_original(suffix: str = "", enabled: bool = False) -> str:
+    return task_literal(WEEKLY_EXECUTE, ORIGINAL + suffix, "", enabled)
+
+
+def legacy_enabled() -> str:
+    return task_literal("powershell.exe", LEGACY_ARGUMENTS, "", enabled=True)
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_apply_wraps_a_pinned_disabled_task_keeping_its_pin_and_disabled_state(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    record = run_apply(ps, tmp_path, {
+        WEEKLY: weekly_original(good, enabled=False),
+        STALL: task_literal(STALL_EXECUTE, STALL_ORIGINAL, "C:\\Python", enabled=True),
+        LEGACY: legacy_enabled(),
+    })
+    assert record["error"] == ""
+    assert record["calls"] == [f"disable {LEGACY}", f"stop {LEGACY}", f"set {STALL}", f"set {WEEKLY}"]
+    assert record["tasks"][WEEKLY] == {"execute": record["launcher"], "arguments": BASE + good,
+                                       "working_directory": "", "enabled": False}
+    assert record["tasks"][STALL] == {"execute": record["launcher"], "arguments": STALL_HIDDEN,
+                                      "working_directory": "C:\\Python", "enabled": True}
+    assert record["tasks"][LEGACY]["enabled"] is False
+    assert record["result"]["applied"] is True
+    assert record["result"]["legacy"] == "hold-exact"
+    jobs = {job["name"]: job for job in record["result"]["jobs"]}
+    assert jobs[WEEKLY] == {"name": WEEKLY, "action": "hidden-exact", "enabled": False}
+    assert jobs[STALL] == {"name": STALL, "action": "hidden-exact", "enabled": True}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_apply_leaves_an_already_hidden_pinned_task_untouched(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    launcher = tmp_path / "wd_silent_launch.exe"
+    record = run_apply(ps, tmp_path, {WEEKLY: task_literal(str(launcher), BASE + good, "", enabled=False)})
+    assert record["error"] == ""
+    assert record["calls"] == []
+    assert record["tasks"][WEEKLY]["arguments"] == BASE + good
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["wrong_hash", "trailing_argument", "no_bundle"])
+def test_apply_with_an_unverified_pin_changes_nothing(ps, tmp_path, case):
+    store = tmp_path / "store"
+    sha = bundle(store)
+    arguments = {"wrong_hash": pin(store, GEN, "0" * 64), "trailing_argument": pin(store, GEN, sha) + " --days 30",
+                 "no_bundle": pin(store, "e" * 40, sha)}[case]
+    record = run_apply(ps, tmp_path, {WEEKLY: weekly_original(arguments), LEGACY: legacy_enabled()})
+    assert "scheduled console task action drifted: WD-AgentValue-Weekly" in record["error"]
+    assert record["calls"] == []                                   # not even the legacy HOLD
+    assert record["tasks"][WEEKLY]["arguments"] == ORIGINAL + arguments
+    assert record["tasks"][LEGACY]["enabled"] is True
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("at", ["admin", "hold"])
+@pytest.mark.parametrize("case", ["other_pin", "other_action", "other_execute", "enabled", "bundle_removed", "appeared",
+                                  "vanished", "unpinned_other_arguments"])
+def test_a_task_that_changes_between_plan_and_apply_is_not_overwritten(ps, tmp_path, case, at):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    other_generation = "f" * 40
+    other = pin(store, other_generation, bundle(store, other_generation, b'{"source_commit":"y"}'))
+    change = {
+        "other_pin": f"$global:WdTasks[{q(WEEKLY)}] = {weekly_original(other)}",
+        "other_action": f"$global:WdTasks[{q(WEEKLY)}] = {weekly_original(good + ' --days 30')}",
+        "other_execute": f"$global:WdTasks[{q(WEEKLY)}] = {task_literal(OTHER_EXECUTE, ORIGINAL + good)}",
+        "enabled": f"$global:WdTasks[{q(WEEKLY)}].Settings.Enabled = $true",
+        "bundle_removed": f"Remove-Item -LiteralPath {q(store / GEN / 'deployment-manifest.json')}",
+        "appeared": f"$global:WdTasks[{q(STALL)}] = {task_literal(STALL_EXECUTE, STALL_OTHER, STALL_WD, True)}",
+        "vanished": f"$global:WdTasks.Remove({q(WEEKLY)})",
+        "unpinned_other_arguments":
+            f"$global:WdTasks[{q(STALL)}] = {task_literal(STALL_EXECUTE, STALL_OTHER, STALL_WD, True)}",
+    }[case]
+    tasks = {WEEKLY: weekly_original(good), LEGACY: legacy_enabled()}
+    if case == "unpinned_other_arguments":
+        tasks[STALL] = task_literal(STALL_EXECUTE, STALL_ORIGINAL, STALL_WD, True)
+    record = run_apply(ps, tmp_path, tasks, change=change, at=at)
+    changed_task = STALL if case in ("appeared", "unpinned_other_arguments") else WEEKLY
+    assert f"scheduled console task changed between plan and apply: {changed_task}" in record["error"]
+    assert not [call for call in record["calls"] if call.startswith("set ")]
+    if at == "admin":
+        assert record["calls"] == []                               # refused before the legacy HOLD
+    expected = {
+        "other_pin": ORIGINAL + other,
+        "other_action": ORIGINAL + good + " --days 30",
+        "other_execute": ORIGINAL + good,
+        "enabled": ORIGINAL + good,
+        "bundle_removed": ORIGINAL + good,
+        "appeared": ORIGINAL + good,
+        "unpinned_other_arguments": ORIGINAL + good,
+    }
+    if case in expected:
+        assert record["tasks"][WEEKLY]["execute"] == (OTHER_EXECUTE if case == "other_execute" else WEEKLY_EXECUTE)
+        assert record["tasks"][WEEKLY]["arguments"] == expected[case]
+    if case in ("appeared", "unpinned_other_arguments"):
+        assert record["tasks"][STALL]["arguments"] == STALL_OTHER
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_apply_postcondition_catches_a_changed_enabled_state(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    record = run_apply(ps, tmp_path, {WEEKLY: weekly_original(good)}, set_enables=True)
+    assert "scheduled console task postcondition failed: WD-AgentValue-Weekly" in record["error"]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_a_dry_run_changes_nothing(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    record = run_apply(ps, tmp_path, {WEEKLY: weekly_original(good), LEGACY: legacy_enabled()}, apply=False)
+    assert record["error"] == ""
+    assert record["calls"] == []
+    assert record["result"]["applied"] is False
+    assert record["result"]["legacy"] == "would-hold"
+    assert record["result"]["jobs"] == [{"name": STALL, "action": "absent-skip", "enabled": False},
+                                        {"name": WEEKLY, "action": "wrap-hidden", "enabled": False}]

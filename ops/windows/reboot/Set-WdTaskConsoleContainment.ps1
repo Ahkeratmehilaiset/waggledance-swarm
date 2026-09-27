@@ -8,7 +8,8 @@
   loop and routes two read-only reporting jobs through the existing hidden
   process launcher. Task triggers, principals, settings, enabled state, and
   working directories are otherwise preserved. Unknown action drift fails
-  closed before mutation.
+  closed before mutation, and so does any change to a job's task between the
+  plan and the apply.
 #>
 [CmdletBinding()]
 param([switch] $Apply)
@@ -97,6 +98,34 @@ function Test-ActionExact {
   )
 }
 
+function Assert-TaskUnchangedSincePlan {
+  # Apply changes only the exact task the plan verified. Any of these fails closed
+  # before the task is changed: a task that appeared or vanished, another action,
+  # another enabled state, or a pin that no longer verifies.
+  param(
+    [Parameter(Mandatory)] $Job,
+    [AllowNull()] $Planned,
+    [AllowNull()] $Task,
+    [Parameter(Mandatory)] [AllowEmptyString()] [string] $Pin,
+    [Parameter(Mandatory)] [string] $BundleStore
+  )
+
+  if ($null -eq $Planned -and $null -eq $Task) { return }
+  if (
+    $null -eq $Planned -or
+    $null -eq $Task -or
+    [bool]$Task.Settings.Enabled -ne [bool]$Planned.enabled -or
+    -not (Test-ActionExact `
+      -Task $Task `
+      -Execute ([string]$Planned.execute) `
+      -Arguments ([string]$Planned.arguments) `
+      -WorkingDirectory ([string]$Planned.working_directory)) -or
+    [string](Get-TaskBridgePin -Task $Task -Job $Job -BundleStore $BundleStore) -cne $Pin
+  ) {
+    throw "scheduled console task changed between plan and apply: $($Job.name)"
+  }
+}
+
 function Assert-SilentLauncher {
   if (-not (Test-Path -LiteralPath $silentLauncher -PathType Leaf)) {
     throw "silent WD launcher is missing: $silentLauncher"
@@ -144,6 +173,7 @@ $jobs = @(
 
 $plans = New-Object 'System.Collections.Generic.List[object]'
 $pins = @{}
+$planned = @{}
 foreach ($job in $jobs) {
   $task = Get-RootTask -Name ([string]$job.name)
   if ($null -eq $task) {
@@ -168,6 +198,12 @@ foreach ($job in $jobs) {
     -WorkingDirectory ([string]$job.hidden_working_directory)
   if (-not $isOriginal -and -not $isHidden) {
     throw "scheduled console task action drifted: $($job.name)"
+  }
+  $planned[[string]$job.name] = [pscustomobject]@{
+    execute = [string]@($task.Actions)[0].Execute
+    arguments = [string]@($task.Actions)[0].Arguments
+    working_directory = [string]@($task.Actions)[0].WorkingDirectory
+    enabled = [bool]$task.Settings.Enabled
   }
   [void]$plans.Add([pscustomobject]@{
     name = [string]$job.name
@@ -198,6 +234,16 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
   throw 'scheduled-task console containment requires an Administrator PowerShell'
 }
 
+# Check every job before the first change, then each job again just before its own.
+foreach ($job in $jobs) {
+  Assert-TaskUnchangedSincePlan `
+    -Job $job `
+    -Planned $planned[[string]$job.name] `
+    -Task (Get-RootTask -Name ([string]$job.name)) `
+    -Pin ([string]$pins[[string]$job.name]) `
+    -BundleStore $bundleStore
+}
+
 if ($null -ne $legacy) {
   Disable-ScheduledTask -TaskPath '\' -TaskName $legacyName | Out-Null
   Stop-ScheduledTask -TaskPath '\' -TaskName $legacyName -ErrorAction SilentlyContinue
@@ -213,6 +259,12 @@ if ($null -ne $legacy) {
 
 foreach ($job in $jobs) {
   $task = Get-RootTask -Name ([string]$job.name)
+  Assert-TaskUnchangedSincePlan `
+    -Job $job `
+    -Planned $planned[[string]$job.name] `
+    -Task $task `
+    -Pin ([string]$pins[[string]$job.name]) `
+    -BundleStore $bundleStore
   if ($null -eq $task) { continue }
   $enabledBefore = [bool]$task.Settings.Enabled
   # Wrapping keeps the verified pin the plan saw; the metric cannot run without it.

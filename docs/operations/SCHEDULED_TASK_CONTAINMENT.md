@@ -31,6 +31,38 @@ The containment accepts this pin, and only this pin, when all of these hold:
 
 When `-Apply` wraps the task into its hidden form, it keeps the verified pin.
 
+## Between plan and apply
+
+`-Apply` first plans, then checks for an Administrator shell, then changes
+tasks. It changes a task only if the task is still exactly what the plan
+verified. It re-reads each job's task twice: once before the first change
+(the legacy merge-driver HOLD), and once more just before changing that task.
+Each time it requires:
+
+- the task exists now if and only if it existed at the plan;
+- the same single action: execute, arguments and working directory;
+- the same enabled state;
+- the same pin, which still verifies against its bundle.
+
+Anything else stops the run with "scheduled console task changed between plan
+and apply", and that task is left as it is. Task Scheduler has no
+compare-and-set, so a change made between the last re-read and the write
+itself can still be lost. The postcondition then re-reads the task and
+requires the hidden form, the planned pin and the unchanged enabled state.
+
+`tests/tools/test_wd_task_console_containment_pin.py` runs the whole script
+with `-Apply` against mocked Task Scheduler cmdlets. It substitutes only four
+things: the launcher path, the launcher hash, the bundle store, and the
+Administrator check. The tests cover:
+
+- wrapping a pinned, disabled task into the hidden form, keeping both the pin
+  and the disabled state;
+- leaving a task that is already hidden untouched;
+- a task with an unverified pin: the run changes nothing, not even the legacy
+  HOLD;
+- each kind of change between plan and apply, made both before the HOLD and
+  after it: none overwrites the task.
+
 ## Why
 
 On 2026-09-27 a cold-boot rehearsal found a boot blocker. The rehearsal is

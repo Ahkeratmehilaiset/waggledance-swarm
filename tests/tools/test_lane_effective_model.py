@@ -692,15 +692,26 @@ def test_the_cli_reads_claude_config_dir(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for var in ("CLAUDE_CONFIG_DIR", "ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "ANTHROPIC_DEFAULT_MODEL"):
         monkeypatch.delenv(var, raising=False)
+    seen = []
     js(tmp_path / "home" / ".claude" / "settings.json", {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
     js(tmp_path / "claudedir" / "settings.json", {"model": "claude-haiku-4-5", "effortLevel": "low"})
     missing = str(tmp_path / "no-managed.json")
-    monkeypatch.setattr(eff_module, "managed_registry_settings", lambda *a, **k: [])
+    monkeypatch.setattr(eff_module, "managed_registry_settings", lambda *a, **k: seen.append(1) or [])
     code, out = _cli(capsys, "--lane", "claude-rco-1", "--cli", "claude", "--claude-managed-settings", missing)
     assert (code, out["model"]) == (0, "claude-sonnet-5")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claudedir"))
     code, out = _cli(capsys, "--lane", "claude-rco-1", "--cli", "claude", "--claude-managed-settings", missing)
     assert (code, out["model"], out["classification"]["verdict"]) == (3, "claude-haiku-4-5", "not_in_lane_allowlist")
+    assert seen == [1, 1]                         # the registry reader is looked up at call time
+
+
+def test_the_cli_path_fails_closed_on_a_registry_policy(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claudedir"))
+    js(tmp_path / "claudedir" / "settings.json", {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
+    monkeypatch.setattr(eff_module, "managed_registry_settings", lambda *a, **k: ["HKLM"])
+    code, out = _cli(capsys, "--lane", "claude-rco-1", "--cli", "claude",
+                     "--claude-managed-settings", str(tmp_path / "no-managed.json"))
+    assert code == 3 and "managed_settings_present" in out["issues"]
 
 
 def test_the_server_managed_cache_follows_claude_config_dir(tmp_path):

@@ -308,7 +308,7 @@ def _result(provider: str, model: str | None, effort: str | None, model_source: 
 def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapping[str, str],
                    user_settings: Path, worktree: Path | None, cli_settings: Path | None = None,
                    managed_settings: Path = DEFAULT_CLAUDE_MANAGED,
-                   managed_registry: Callable[[], list[str]] = managed_registry_settings) -> dict:
+                   managed_registry: Callable[[], list[str]] | None = None) -> dict:
     """The model and effort a Claude Code launch will start with, and where each comes from."""
     issues: list[str] = []
     sources: list[dict] = []
@@ -334,7 +334,8 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
         sources.append({"layer": name, "path": str(path), "state": "read"})
         layers.append((name, value))
     try:
-        registry_hits = list(managed_registry())
+        # Looked up at call time, so the CLI path can be isolated in tests.
+        registry_hits = list((managed_registry or managed_registry_settings)())
     except Exception as exc:  # noqa: BLE001 - a policy store we cannot read is not "no policy"
         registry_hits = [f"registry:unreadable:{exc.__class__.__name__}"]
     for hit in registry_hits:

@@ -22,10 +22,17 @@ from tools.lane_profile_catalog import (
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED = ROOT / "configs" / "lane_profile_catalog.json"
+# Logic tests (transitions, provider mixing) use a frozen copy so a catalog content change
+# never breaks them; tests of the shipped catalog itself keep reading SHIPPED.
+FROZEN = ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json"
 
 
 def shipped() -> dict:
     return json.loads(SHIPPED.read_text(encoding="utf-8"))
+
+
+def frozen() -> dict:
+    return json.loads(FROZEN.read_text(encoding="utf-8"))
 
 
 def write(tmp_path: Path, catalog: dict) -> Path:
@@ -78,7 +85,7 @@ BAD = {
                                 ["claude-opus-5-5-xhigh", "claude-opus-5-5-xhigh"]),
     "reordered vs policy": mutate(["lanes", "fable-5", "allowed_profiles"],
                                   ["claude-opus-5-5-medium", "claude-opus-5-5-xhigh"]),
-    "floor out of range": mutate(["lanes", "fable-5", "floor"], 2),
+    "floor out of range": mutate(["lanes", "fable-5", "floor"], 3),
     "floor not int": mutate(["lanes", "fable-5", "floor"], True),
     "default not allowed": mutate(["lanes", "fable-5", "default"], "claude-sonnet-5-xhigh"),
     "zero budget": mutate(["lanes", "fable-5", "max_relaunches_per_hour"], 0),
@@ -147,7 +154,7 @@ def test_non_finite_json_and_oversize_are_refused(tmp_path):
 
 def three_step_catalog() -> dict:
     """A non-reviewer lane with three profiles and the floor at the weakest."""
-    catalog = shipped()
+    catalog = frozen()
     profiles = catalog["capacity_policy"]["profiles"]
     profiles["claude-opus-5-5-low"] = dict(profiles["claude-opus-5-5-medium"], effort="low")
     order = ["claude-opus-5-5-xhigh", "claude-opus-5-5-medium", "claude-opus-5-5-low"]
@@ -199,7 +206,7 @@ def test_effective_mode_is_the_minimum(policy_mode, fleet_mode, expected):
 
 
 def test_cross_provider_lane_is_refused():
-    catalog = shipped()
+    catalog = frozen()
     policy = catalog["capacity_policy"]
     policy["agents"]["fable-5"]["profiles"] = ["claude-opus-5-5-xhigh", "codex-gpt-6-sol-high"]
     policy["profiles"]["codex-gpt-6-sol-high"]["roles"].append("fable")
@@ -414,3 +421,136 @@ def test_loader_requests_at_most_the_bound_plus_one_byte(tmp_path, monkeypatch):
     with pytest.raises(CatalogError, match="size bound"):
         load_catalog(path)
     assert requested == [256 * 1024 + 1]
+
+
+
+# ---------------------------------------------------------------- PR-8: operator-accepted defaults (2026-09-27)
+
+ACCEPTED = {   # lane: (default, boot_profile, steady allowlist strongest first, burst_profiles)
+    "codex-lead-1": ("codex-gpt-6-sol-high", "codex-gpt-6-astra-medium",
+                     ["codex-gpt-6-astra-medium", "codex-gpt-6-sol-xhigh", "codex-gpt-6-sol-high", "codex-gpt-6-sol-medium"],
+                     ["codex-gpt-6-astra-xhigh", "codex-gpt-6-astra-max", "codex-gpt-6-astra-ultra"]),
+    "codex-tools-1": ("codex-gpt-6-sol-medium", "codex-gpt-6-sol-high",
+                      ["codex-gpt-6-sol-high", "codex-gpt-6-sol-medium"],
+                      ["codex-gpt-6-sol-xhigh", "codex-gpt-6-sol-max", "codex-gpt-6-sol-ultra"]),
+    "claude-rco-1": ("claude-opus-5-5-medium", "claude-opus-5-5-high",
+                     ["claude-opus-5-5-xhigh", "claude-opus-5-5-high", "claude-opus-5-5-medium"], ["claude-opus-5-5-max"]),
+    "claude-rco-2": ("claude-opus-5-5-medium", "claude-opus-5-5-high",
+                     ["claude-opus-5-5-xhigh", "claude-opus-5-5-high", "claude-opus-5-5-medium"], ["claude-opus-5-5-max"]),
+    "fable-5": ("claude-opus-5-5-high", "claude-opus-5-5-xhigh",
+                ["claude-opus-5-5-xhigh", "claude-opus-5-5-high", "claude-opus-5-5-medium"], ["claude-opus-5-5-max"]),
+}
+
+
+@pytest.mark.parametrize("lane", sorted(ACCEPTED))
+def test_the_shipped_lanes_carry_the_operator_accepted_defaults(lane):
+    default, boot, allowed, burst = ACCEPTED[lane]
+    spec = shipped()["lanes"][lane]
+    assert (spec["default"], spec["boot_profile"], spec["allowed_profiles"], spec["burst_profiles"]) == \
+        (default, boot, allowed, burst)
+    assert spec["floor"] == len(allowed) - 1                   # the weakest steady profile is the floor
+
+
+def test_retired_profiles_are_gone_and_bursts_are_max_ultra_or_above_the_ceiling():
+    catalog = shipped()
+    profiles = catalog["capacity_policy"]["profiles"]
+    for retired in ("claude-sonnet-5-xhigh", "codex-gpt-5.6-sol-medium", "codex-gpt-5.6-terra-medium"):
+        assert retired not in profiles
+    for lane, spec in catalog["lanes"].items():
+        binding = catalog["capacity_policy"]["agents"][lane]["profiles"]
+        assert not set(spec["burst_profiles"]) & set(binding)   # the advisor can never pick a burst
+        assert spec["default"] not in spec["burst_profiles"] and spec["boot_profile"] in spec["allowed_profiles"]
+
+
+def test_the_shipped_catalog_is_unsigned_so_nothing_is_approved():
+    catalog = shipped()
+    assert catalog["operator_signature"].startswith("UNSIGNED-DEFAULT")
+    assert all(p["approved"] is False for p in catalog["capacity_policy"]["profiles"].values())
+
+
+BURST_BAD = {
+    "burst not a list": ("burst_profiles", "claude-opus-5-5-max"),
+    # claude-rco-2 on #1746: a string is also refused by the duplicate check, so these pin the type check itself
+    "burst an object": ("burst_profiles", {"claude-opus-5-5-max": 1}),
+    "burst a number": ("burst_profiles", 5),
+    "burst an empty string": ("burst_profiles", ""),
+    "burst an unhashable element": ("burst_profiles", [["claude-opus-5-5-max"]]),
+    "burst unknown profile": ("burst_profiles", ["nope"]),
+    "burst duplicate": ("burst_profiles", ["claude-opus-5-5-max", "claude-opus-5-5-max"]),
+    "burst repeats an allowed profile": ("burst_profiles", ["claude-opus-5-5-xhigh"]),
+    "boot profile not allowed": ("boot_profile", "claude-opus-5-5-max"),
+    "boot profile unknown": ("boot_profile", "nope"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BURST_BAD))
+def test_malformed_burst_or_boot_profiles_are_refused(tmp_path, name):
+    key, value = BURST_BAD[name]
+    catalog = shipped()
+    catalog["lanes"]["fable-5"][key] = value
+    with pytest.raises(CatalogError):
+        load_catalog(write(tmp_path, catalog))
+
+
+def test_a_burst_that_repeats_an_allowed_profile_names_that_error():
+    catalog = shipped()
+    catalog["lanes"]["fable-5"]["burst_profiles"] = ["claude-opus-5-5-xhigh"]
+    with pytest.raises(CatalogError, match="must not repeat allowed_profiles"):
+        validate_catalog(catalog)
+
+
+def test_a_burst_profile_the_advisor_can_reach_is_refused():
+    catalog = shipped()
+    catalog["capacity_policy"]["agents"]["fable-5"]["profiles"].append("claude-opus-5-5-max")
+    with pytest.raises(CatalogError, match="advisor agent binding"):
+        validate_catalog(catalog)
+
+
+def test_a_burst_profile_for_another_role_or_provider_is_refused():
+    catalog = shipped()
+    catalog["lanes"]["fable-5"]["burst_profiles"] = ["codex-gpt-6-astra-max"]      # other provider and role
+    with pytest.raises(CatalogError):
+        validate_catalog(catalog)
+    catalog = shipped()
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-max"]["roles"] = ["rco1", "rco2"]
+    with pytest.raises(CatalogError, match="not qualified for role fable"):
+        validate_catalog(catalog)
+
+
+def test_burst_and_boot_are_optional():
+    catalog = shipped()
+    for spec in catalog["lanes"].values():
+        del spec["burst_profiles"], spec["boot_profile"]
+    validate_catalog(catalog)
+
+
+def test_a_signed_catalog_must_approve_burst_profiles_too():
+    catalog = shipped()
+    catalog["operator_signature"] = "operator: signed 2026-09-27"
+    for pid, profile in catalog["capacity_policy"]["profiles"].items():
+        profile["approved"] = True
+        profile["qualification_ref"] = f"qualification:{pid}:run-1"
+    validate_catalog(catalog)                                            # the success twin
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-max"]["approved"] = False
+    with pytest.raises(CatalogError, match="claude-opus-5-5-max is not approved"):
+        validate_catalog(catalog)
+
+
+def test_an_unsigned_catalog_refuses_an_approved_burst_profile():
+    catalog = shipped()
+    catalog["capacity_policy"]["profiles"]["claude-opus-5-5-max"]["approved"] = True
+    with pytest.raises(CatalogError, match="approved in an unsigned catalog"):
+        validate_catalog(catalog)
+
+
+
+def test_a_boot_profile_below_the_floor_is_refused():
+    # claude-rco-2 N3 on #1746: a lane must never boot straight into a below-floor profile.
+    catalog = shipped()
+    lead = catalog["lanes"]["codex-lead-1"]
+    lead["floor"] = 2                                   # sol high is now the weakest allowed choice
+    lead["boot_profile"] = "codex-gpt-6-sol-medium"     # index 3: below the floor
+    with pytest.raises(CatalogError, match="boot_profile must not be below its floor"):
+        validate_catalog(catalog)
+    lead["boot_profile"] = "codex-gpt-6-sol-high"       # index 2: exactly at the floor is the success twin
+    validate_catalog(catalog)

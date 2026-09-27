@@ -31,7 +31,18 @@ versioned wrapper. Its validator, `tools/lane_profile_catalog.py`, covers every 
   reorder it. The other fields are `floor` (the lowest index Lead may choose without
   an operator ack), `default` (never below the floor), `max_relaunches_per_hour`,
   `cooldown_seconds` and `reviewer`, which must be true exactly for claude-rco-1 and
-  claude-rco-2.
+  claude-rco-2. Two optional fields (PR-8):
+  - `burst_profiles`: profiles used only for a justified burst or an end-of-window sprint
+    (plan v3), never as a default or a steady raise target. They must be known profiles.
+    They must not repeat `allowed_profiles`, and they must not appear in the lane's advisor
+    agent binding, so the advisor can never pick one. They must pass the same runtime checks
+    as the allowed profiles: same provider and account pool, the lane's role, subscription
+    billing and qualification classes. In a signed catalog they must be approved like any
+    reachable profile. Nothing consumes them yet; the T2 decision policy (PR-11) will.
+  - `boot_profile`: the steady profile a boot or a session restore starts on, normally the
+    strongest planning profile, before T1 switches the lane to its production default
+    (PR-10). It must be an allowed profile, never a burst one, and never below the lane's
+    floor (claude-rco-2 N3 on #1746). Nothing consumes it yet.
 - `fleet`: `mode` (`shadow` | `approve` | `auto`), `max_relaunches_per_hour_total`
   (no lane budget may exceed it), `verify_timeout_seconds`, and the `shadow_exit` and
   `approve_exit` criteria.
@@ -101,12 +112,29 @@ Codex enum, and `max` in particular, is not verifiable from codex-cli 0.157.1.
 
 ## Shipped defaults
 
-The defaults are the profiles measured on 2026-09-26: rco-1 and rco-2 on
-claude-sonnet-5 xhigh, Lead on gpt-5.6-sol medium, Tools on gpt-5.6-terra medium,
-and fable-5 on claude-opus-5-5 medium. Each lane gets one stronger option. Each
-lane's floor is its current profile, so the shipped catalog permits raise-or-same
-only. The mode is `shadow`, the signature reads `UNSIGNED-DEFAULT`, and every
-profile is `approved: false` until the operator signs.
+PR-8 ships the defaults the operator accepted on 2026-09-27, from proposal
+`catalog-refresh-proposal-pr8-v1-d735a725`. They are based on the model registry's value
+analysis (#1743): higher or equal benchmark quality at lower or similar cost per task.
+
+| Lane | Allowed (strongest first) | Default | Floor | Boot | Burst only |
+|---|---|---|---|---|---|
+| codex-lead-1 | gpt-6-astra medium, gpt-6-sol xhigh, gpt-6-sol high, gpt-6-sol medium | gpt-6-sol high | gpt-6-sol medium | gpt-6-astra medium | gpt-6-astra xhigh, max, ultra |
+| codex-tools-1 | gpt-6-sol high, gpt-6-sol medium | gpt-6-sol medium | gpt-6-sol medium | gpt-6-sol high | gpt-6-sol xhigh, max, ultra |
+| claude-rco-1, claude-rco-2 | claude-opus-5-5 xhigh, high, medium | claude-opus-5-5 medium | medium | claude-opus-5-5 high | claude-opus-5-5 max |
+| fable-5 | claude-opus-5-5 xhigh, high, medium | claude-opus-5-5 high | medium | claude-opus-5-5 xhigh | claude-opus-5-5 max |
+
+- The dominated profiles (claude-sonnet-5 xhigh, gpt-5.6-sol medium, gpt-5.6-terra medium)
+  are removed.
+- The reviewer lanes' floor is their default, so a reviewer is never lowered.
+- Grok stays outside the catalog: the advisor's provider set is Codex and Claude, and Grok
+  is paced separately (plan v3, PR-15).
+- The mode is `shadow` and the signature reads `UNSIGNED-DEFAULT`. Every profile is
+  `approved: false` until the operator signs a catalog in which each reachable profile
+  (allowed and burst) carries a real `qualification_ref`, either from the qualification
+  harness (plan v4, PR-16) or from an operator-approved reference.
+- The tests read a frozen copy of the previous catalog
+  (`tests/fixtures/lane_profile_catalog_frozen_20260927.json`). Only the shipped-catalog tests
+  read this file, so a catalog change never breaks unrelated tests.
 
 ## Lane runtime record (D2, PR-2)
 

@@ -1,103 +1,504 @@
 {
   "schema": "wd.lane-profile-catalog.v1",
-  "catalog_ref": "lane-profile-catalog-draft-2026-09-26",
-  "operator_signature": "UNSIGNED-DEFAULT: fable-5 draft from profiles measured on 2026-09-26; the operator signs by replacing this value in a reviewed PR",
+  "catalog_ref": "lane-profile-catalog-2026-09-27-operator-accepted-defaults",
+  "operator_signature": "UNSIGNED-DEFAULT: fable-5 draft of the defaults the operator accepted on 2026-09-27 (proposal catalog-refresh-proposal-pr8-v1-d735a725); the operator signs by replacing this value in a reviewed PR once each reachable profile has a real qualification_ref",
   "providers": {
-    "claude": {"efforts": ["low", "medium", "high", "xhigh", "max"]},
-    "codex": {"efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]}
+    "claude": {
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "codex": {
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    }
   },
   "capacity_policy": {
     "schema": "wd.bridge-capacity-policy.v1",
     "mode": "shadow",
-    "policy_ref": "lane-profile-catalog-draft-2026-09-26",
+    "policy_ref": "lane-profile-catalog-2026-09-27-operator-accepted-defaults",
     "observation_ttl_seconds": 900,
     "catalog_ttl_seconds": 86400,
     "switch_cooldown_seconds": 1800,
     "max_switches_per_task": 2,
     "profiles": {
-      "claude-opus-5-5-xhigh": {
-        "provider": "claude", "account_pool": "operator-claude-subscription",
-        "model": "claude-opus-5-5", "effort": "xhigh", "billing": "subscription",
-        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
-        "qualified_for": ["wd-review", "wd-routine-coding"], "roles": ["rco1", "rco2", "fable"],
-        "limits": [{"id": "claude", "windows": ["five_hour", "seven_day"]}]
+      "codex-gpt-6-astra-medium": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-astra",
+        "effort": "medium",
+        "roles": [
+          "lead"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
       },
-      "claude-opus-5-5-medium": {
-        "provider": "claude", "account_pool": "operator-claude-subscription",
-        "model": "claude-opus-5-5", "effort": "medium", "billing": "subscription",
-        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
-        "qualified_for": ["wd-routine-coding"], "roles": ["fable"],
-        "limits": [{"id": "claude", "windows": ["five_hour", "seven_day"]}]
-      },
-      "claude-sonnet-5-xhigh": {
-        "provider": "claude", "account_pool": "operator-claude-subscription",
-        "model": "claude-sonnet-5", "effort": "xhigh", "billing": "subscription",
-        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
-        "qualified_for": ["wd-review"], "roles": ["rco1", "rco2"],
-        "limits": [{"id": "claude", "windows": ["five_hour", "seven_day"]}]
+      "codex-gpt-6-sol-xhigh": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-sol",
+        "effort": "xhigh",
+        "roles": [
+          "lead",
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
       },
       "codex-gpt-6-sol-high": {
-        "provider": "codex", "account_pool": "operator-chatgpt-subscription",
-        "model": "gpt-6-sol", "effort": "high", "billing": "subscription",
-        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
-        "qualified_for": ["wd-routine-coding"], "roles": ["lead", "tools"],
-        "limits": [{"id": "codex", "windows": ["primary"]}]
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-sol",
+        "effort": "high",
+        "roles": [
+          "lead",
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
       },
-      "codex-gpt-5.6-sol-medium": {
-        "provider": "codex", "account_pool": "operator-chatgpt-subscription",
-        "model": "gpt-5.6-sol", "effort": "medium", "billing": "subscription",
-        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
-        "qualified_for": ["wd-routine-coding"], "roles": ["lead"],
-        "limits": [{"id": "codex", "windows": ["primary"]}]
+      "codex-gpt-6-sol-medium": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-sol",
+        "effort": "medium",
+        "roles": [
+          "lead",
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-routine-coding"
+        ]
       },
-      "codex-gpt-5.6-terra-medium": {
-        "provider": "codex", "account_pool": "operator-chatgpt-subscription",
-        "model": "gpt-5.6-terra", "effort": "medium", "billing": "subscription",
-        "approved": false, "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
-        "qualified_for": ["wd-routine-coding"], "roles": ["tools"],
-        "limits": [{"id": "codex", "windows": ["primary"]}]
+      "codex-gpt-6-astra-xhigh": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-astra",
+        "effort": "xhigh",
+        "roles": [
+          "lead"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
+      "codex-gpt-6-astra-max": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-astra",
+        "effort": "max",
+        "roles": [
+          "lead"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
+      "codex-gpt-6-astra-ultra": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-astra",
+        "effort": "ultra",
+        "roles": [
+          "lead"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
+      "codex-gpt-6-sol-max": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-sol",
+        "effort": "max",
+        "roles": [
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-routine-coding"
+        ]
+      },
+      "codex-gpt-6-sol-ultra": {
+        "provider": "codex",
+        "account_pool": "operator-chatgpt-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "codex",
+            "windows": [
+              "primary"
+            ]
+          }
+        ],
+        "model": "gpt-6-sol",
+        "effort": "ultra",
+        "roles": [
+          "tools"
+        ],
+        "qualified_for": [
+          "wd-routine-coding"
+        ]
+      },
+      "claude-opus-5-5-xhigh": {
+        "provider": "claude",
+        "account_pool": "operator-claude-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "claude",
+            "windows": [
+              "five_hour",
+              "seven_day"
+            ]
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "effort": "xhigh",
+        "roles": [
+          "rco1",
+          "rco2",
+          "fable"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
+      "claude-opus-5-5-high": {
+        "provider": "claude",
+        "account_pool": "operator-claude-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "claude",
+            "windows": [
+              "five_hour",
+              "seven_day"
+            ]
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "effort": "high",
+        "roles": [
+          "rco1",
+          "rco2",
+          "fable"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
+      "claude-opus-5-5-medium": {
+        "provider": "claude",
+        "account_pool": "operator-claude-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "claude",
+            "windows": [
+              "five_hour",
+              "seven_day"
+            ]
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "effort": "medium",
+        "roles": [
+          "rco1",
+          "rco2",
+          "fable"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
+      },
+      "claude-opus-5-5-max": {
+        "provider": "claude",
+        "account_pool": "operator-claude-subscription",
+        "billing": "subscription",
+        "approved": false,
+        "qualification_ref": "OPERATOR-SIGNATURE-REQUIRED",
+        "limits": [
+          {
+            "id": "claude",
+            "windows": [
+              "five_hour",
+              "seven_day"
+            ]
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "effort": "max",
+        "roles": [
+          "rco1",
+          "rco2",
+          "fable"
+        ],
+        "qualified_for": [
+          "wd-review",
+          "wd-routine-coding"
+        ]
       }
     },
     "agents": {
-      "codex-lead-1": {"role": "lead", "profiles": ["codex-gpt-6-sol-high", "codex-gpt-5.6-sol-medium"]},
-      "codex-tools-1": {"role": "tools", "profiles": ["codex-gpt-6-sol-high", "codex-gpt-5.6-terra-medium"]},
-      "claude-rco-1": {"role": "rco1", "profiles": ["claude-opus-5-5-xhigh", "claude-sonnet-5-xhigh"]},
-      "claude-rco-2": {"role": "rco2", "profiles": ["claude-opus-5-5-xhigh", "claude-sonnet-5-xhigh"]},
-      "fable-5": {"role": "fable", "profiles": ["claude-opus-5-5-xhigh", "claude-opus-5-5-medium"]}
+      "codex-lead-1": {
+        "role": "lead",
+        "profiles": [
+          "codex-gpt-6-astra-medium",
+          "codex-gpt-6-sol-xhigh",
+          "codex-gpt-6-sol-high",
+          "codex-gpt-6-sol-medium"
+        ]
+      },
+      "codex-tools-1": {
+        "role": "tools",
+        "profiles": [
+          "codex-gpt-6-sol-high",
+          "codex-gpt-6-sol-medium"
+        ]
+      },
+      "claude-rco-1": {
+        "role": "rco1",
+        "profiles": [
+          "claude-opus-5-5-xhigh",
+          "claude-opus-5-5-high",
+          "claude-opus-5-5-medium"
+        ]
+      },
+      "claude-rco-2": {
+        "role": "rco2",
+        "profiles": [
+          "claude-opus-5-5-xhigh",
+          "claude-opus-5-5-high",
+          "claude-opus-5-5-medium"
+        ]
+      },
+      "fable-5": {
+        "role": "fable",
+        "profiles": [
+          "claude-opus-5-5-xhigh",
+          "claude-opus-5-5-high",
+          "claude-opus-5-5-medium"
+        ]
+      }
     }
   },
   "lanes": {
     "codex-lead-1": {
-      "allowed_profiles": ["codex-gpt-6-sol-high", "codex-gpt-5.6-sol-medium"],
-      "floor": 1, "default": "codex-gpt-5.6-sol-medium",
-      "max_relaunches_per_hour": 1, "cooldown_seconds": 3600, "reviewer": false
+      "allowed_profiles": [
+        "codex-gpt-6-astra-medium",
+        "codex-gpt-6-sol-xhigh",
+        "codex-gpt-6-sol-high",
+        "codex-gpt-6-sol-medium"
+      ],
+      "floor": 3,
+      "default": "codex-gpt-6-sol-high",
+      "boot_profile": "codex-gpt-6-astra-medium",
+      "burst_profiles": [
+        "codex-gpt-6-astra-xhigh",
+        "codex-gpt-6-astra-max",
+        "codex-gpt-6-astra-ultra"
+      ],
+      "max_relaunches_per_hour": 1,
+      "cooldown_seconds": 3600,
+      "reviewer": false
     },
     "codex-tools-1": {
-      "allowed_profiles": ["codex-gpt-6-sol-high", "codex-gpt-5.6-terra-medium"],
-      "floor": 1, "default": "codex-gpt-5.6-terra-medium",
-      "max_relaunches_per_hour": 2, "cooldown_seconds": 1800, "reviewer": false
+      "allowed_profiles": [
+        "codex-gpt-6-sol-high",
+        "codex-gpt-6-sol-medium"
+      ],
+      "floor": 1,
+      "default": "codex-gpt-6-sol-medium",
+      "boot_profile": "codex-gpt-6-sol-high",
+      "burst_profiles": [
+        "codex-gpt-6-sol-xhigh",
+        "codex-gpt-6-sol-max",
+        "codex-gpt-6-sol-ultra"
+      ],
+      "max_relaunches_per_hour": 2,
+      "cooldown_seconds": 1800,
+      "reviewer": false
     },
     "claude-rco-1": {
-      "allowed_profiles": ["claude-opus-5-5-xhigh", "claude-sonnet-5-xhigh"],
-      "floor": 1, "default": "claude-sonnet-5-xhigh",
-      "max_relaunches_per_hour": 1, "cooldown_seconds": 3600, "reviewer": true
+      "allowed_profiles": [
+        "claude-opus-5-5-xhigh",
+        "claude-opus-5-5-high",
+        "claude-opus-5-5-medium"
+      ],
+      "floor": 2,
+      "default": "claude-opus-5-5-medium",
+      "boot_profile": "claude-opus-5-5-high",
+      "burst_profiles": [
+        "claude-opus-5-5-max"
+      ],
+      "max_relaunches_per_hour": 1,
+      "cooldown_seconds": 3600,
+      "reviewer": true
     },
     "claude-rco-2": {
-      "allowed_profiles": ["claude-opus-5-5-xhigh", "claude-sonnet-5-xhigh"],
-      "floor": 1, "default": "claude-sonnet-5-xhigh",
-      "max_relaunches_per_hour": 1, "cooldown_seconds": 3600, "reviewer": true
+      "allowed_profiles": [
+        "claude-opus-5-5-xhigh",
+        "claude-opus-5-5-high",
+        "claude-opus-5-5-medium"
+      ],
+      "floor": 2,
+      "default": "claude-opus-5-5-medium",
+      "boot_profile": "claude-opus-5-5-high",
+      "burst_profiles": [
+        "claude-opus-5-5-max"
+      ],
+      "max_relaunches_per_hour": 1,
+      "cooldown_seconds": 3600,
+      "reviewer": true
     },
     "fable-5": {
-      "allowed_profiles": ["claude-opus-5-5-xhigh", "claude-opus-5-5-medium"],
-      "floor": 1, "default": "claude-opus-5-5-medium",
-      "max_relaunches_per_hour": 2, "cooldown_seconds": 1800, "reviewer": false
+      "allowed_profiles": [
+        "claude-opus-5-5-xhigh",
+        "claude-opus-5-5-high",
+        "claude-opus-5-5-medium"
+      ],
+      "floor": 2,
+      "default": "claude-opus-5-5-high",
+      "boot_profile": "claude-opus-5-5-xhigh",
+      "burst_profiles": [
+        "claude-opus-5-5-max"
+      ],
+      "max_relaunches_per_hour": 2,
+      "cooldown_seconds": 1800,
+      "reviewer": false
     }
   },
   "fleet": {
     "mode": "shadow",
     "max_relaunches_per_hour_total": 4,
     "verify_timeout_seconds": 900,
-    "shadow_exit": {"min_decisions": 20, "min_days": 5, "max_operator_marked_wrong": 0},
-    "approve_exit": {"min_transitions": 10, "min_induced_rollbacks": 1, "max_wrong_process_kills": 0}
+    "shadow_exit": {
+      "min_decisions": 20,
+      "min_days": 5,
+      "max_operator_marked_wrong": 0
+    },
+    "approve_exit": {
+      "min_transitions": 10,
+      "min_induced_rollbacks": 1,
+      "max_wrong_process_kills": 0
+    }
   }
 }

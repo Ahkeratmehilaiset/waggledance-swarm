@@ -56,6 +56,9 @@ POLICY_KEYS = frozenset({"schema", "mode", "policy_ref", "observation_ttl_second
 PROFILE_KEYS = frozenset({"provider", "account_pool", "model", "effort", "billing", "approved",
                           "qualification_ref", "qualified_for", "roles", "limits"})
 AGENT_BINDING_KEYS = frozenset({"role", "profiles"})
+# burst_profiles: used only in a justified burst or an end-of-window sprint, never a default or a
+# steady raise target. boot_profile: the profile a boot or a session restore starts on (PR-10).
+OPTIONAL_LANE_KEYS = frozenset({"burst_profiles", "boot_profile"})
 LIMIT_KEYS = frozenset({"id", "windows"})
 # A catalog is signed only once the operator replaces this prefix in a reviewed PR.
 UNSIGNED_PREFIX = "UNSIGNED"
@@ -134,8 +137,9 @@ def _validate_lanes(lanes: Any, policy: dict) -> None:
             raise CatalogError(f"lane {lane} must be an object")
         expected = {"allowed_profiles", "floor", "default", "max_relaunches_per_hour",
                     "cooldown_seconds", "reviewer"}
-        if set(spec) != expected:
-            raise CatalogError(f"lane {lane} must define exactly {sorted(expected)}")
+        if not expected <= set(spec) <= expected | OPTIONAL_LANE_KEYS:
+            raise CatalogError(f"lane {lane} must define exactly {sorted(expected)}"
+                               f", optionally with {sorted(OPTIONAL_LANE_KEYS)}")
         allowed = spec["allowed_profiles"]
         if (not isinstance(allowed, list) or not allowed
                 or not all(isinstance(p, str) for p in allowed)
@@ -159,7 +163,28 @@ def _validate_lanes(lanes: Any, policy: dict) -> None:
             raise CatalogError(f"lane {lane} default must be an allowed profile")
         if allowed.index(spec["default"]) > floor:
             raise CatalogError(f"lane {lane} default must not be below its floor")
-        _check_runtime_admissible(lane, allowed, binding["role"], profiles)
+        burst = spec.get("burst_profiles", [])
+        if (not isinstance(burst, list)
+                or not all(isinstance(p, str) for p in burst)
+                or len(set(burst)) != len(burst)):
+            raise CatalogError(f"lane {lane} burst_profiles must be a unique list")
+        unknown = [p for p in burst if p not in profiles]
+        if unknown:
+            raise CatalogError(f"lane {lane} burst_profiles references unknown profiles {unknown}")
+        if set(burst) & set(allowed):
+            raise CatalogError(f"lane {lane} burst_profiles must not repeat allowed_profiles")
+        # A burst profile is never a steady-state choice: the advisor selects from the agent
+        # binding, so a burst profile must not be reachable through it (plan v3/v4).
+        if set(burst) & set(binding["profiles"]):
+            raise CatalogError(f"lane {lane} burst_profiles must not be in the advisor agent binding")
+        if "boot_profile" in spec:
+            # Boot on a known steady profile (the strongest planning one), never on a burst one,
+            # and never below the floor (claude-rco-2 N3 on #1746).
+            if spec["boot_profile"] not in allowed:
+                raise CatalogError(f"lane {lane} boot_profile must be an allowed profile")
+            if allowed.index(spec["boot_profile"]) > spec["floor"]:
+                raise CatalogError(f"lane {lane} boot_profile must not be below its floor")
+        _check_runtime_admissible(lane, allowed + burst, binding["role"], profiles)
         _positive_int(spec["max_relaunches_per_hour"], f"lane {lane} max_relaunches_per_hour", 12)
         _positive_int(spec["cooldown_seconds"], f"lane {lane} cooldown_seconds", 86_400)
         if type(spec["reviewer"]) is not bool:
@@ -198,7 +223,7 @@ def _check_runtime_admissible(lane: str, allowed: list, role: str, profiles: dic
             raise CatalogError(f"lane {lane} mixes providers or account pools")
 
 
-def _check_signature_invariant(policy: dict, signed: bool) -> None:
+def _check_signature_invariant(policy: dict, signed: bool, lanes: Any = None) -> None:
     """Approval follows the signature, for every profile the advisor can reach.
 
     The advisor selects from each agent binding's profile list, not from the
@@ -210,6 +235,12 @@ def _check_signature_invariant(policy: dict, signed: bool) -> None:
     """
     profiles = policy["profiles"]
     reachable = {pid for binding in policy["agents"].values() for pid in binding["profiles"]}
+    # Burst profiles are reachable through the lanes section: a signed catalog must approve them too.
+    if isinstance(lanes, dict):
+        for spec in lanes.values():
+            burst = spec.get("burst_profiles") if isinstance(spec, dict) else None
+            if isinstance(burst, list):
+                reachable |= {pid for pid in burst if isinstance(pid, str)}
     for profile_id, profile in profiles.items():
         reference = profile.get("qualification_ref")
         if not isinstance(reference, str) or not reference.strip():
@@ -274,7 +305,7 @@ def validate_catalog(catalog: Any) -> dict:
     except InputError as exc:
         raise CatalogError(f"embedded capacity policy is invalid: {exc}") from None
     _validate_providers(catalog["providers"], policy["profiles"])
-    _check_signature_invariant(policy, is_signed(catalog))
+    _check_signature_invariant(policy, is_signed(catalog), catalog["lanes"])
     _validate_lanes(catalog["lanes"], policy)
     _validate_fleet(catalog["fleet"], catalog["lanes"])
     return catalog

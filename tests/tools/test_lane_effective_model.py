@@ -14,7 +14,7 @@ from tools.lane_effective_model import classify, main, normalize_claude_model, r
 from tools.lane_profile_catalog import load_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG, DIGEST = load_catalog(ROOT / "configs" / "lane_profile_catalog.json")
+CATALOG, DIGEST = load_catalog(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")
 # What /effort writes today: the level saved under the model's canonical id.
 OPUS_HIGH = {"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}}}
 
@@ -307,10 +307,11 @@ def test_an_unknown_lane_is_unknown():
 
 def test_cli_exit_codes(tmp_path, capsys):
     cfg = toml(tmp_path / "config.toml", 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n')
-    assert main(["--lane", "codex-lead-1", "--cli", "codex", "--codex-config", str(cfg)]) == 0
+    frozen = ["--catalog", str(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")]
+    assert main(["--lane", "codex-lead-1", "--cli", "codex", "--codex-config", str(cfg), *frozen]) == 0
     assert json.loads(capsys.readouterr().out)["classification"]["verdict"] == "allowed"
     luna = toml(tmp_path / "luna.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n')
-    assert main(["--lane", "codex-lead-1", "--cli", "codex", "--codex-config", str(luna)]) == 3
+    assert main(["--lane", "codex-lead-1", "--cli", "codex", "--codex-config", str(luna), *frozen]) == 3
     assert json.loads(capsys.readouterr().out)["classification"]["verdict"] == "not_in_lane_allowlist"
     assert main(["--lane", "codex-lead-1", "--cli", "codex", "--catalog", str(tmp_path / "none.json")]) == 2
 
@@ -963,6 +964,8 @@ def test_a_third_party_provider_or_gateway_fails_closed(tmp_path, key):
 # ---------------------------------------------------------------- config directories (codex-tools-1 B1 on #1744)
 
 def _cli(capsys, *args):
+    if "--catalog" not in args:
+        args = (*args, "--catalog", str(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json"))
     code = main(list(args))
     return code, json.loads(capsys.readouterr().out)
 

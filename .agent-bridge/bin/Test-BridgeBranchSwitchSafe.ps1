@@ -55,6 +55,29 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Keep probe identity equal to the later guarded Git command. In particular,
+# GIT_DIR exported by hooks can otherwise hide a same-worktree write claim.
+$gitOverrides = @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
+    'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY') | Where-Object {
+    $null -ne [Environment]::GetEnvironmentVariable($_, 'Process')
+}
+if (@($gitOverrides).Count -gt 0) {
+    if ($Json) {
+        [pscustomobject]@{
+            agent = $Agent
+            safe = $false
+            context_error = 'git_environment_override'
+            variables = @($gitOverrides)
+        } | ConvertTo-Json -Depth 4
+    } else {
+        Write-Error -Message (
+            'BLOCKED: branch guard refuses inherited repository overrides: ' +
+            ($gitOverrides -join ', ')
+        ) -Category PermissionDenied -ErrorAction Continue
+    }
+    exit 2
+}
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {

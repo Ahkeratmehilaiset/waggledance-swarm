@@ -31,6 +31,22 @@ from tools.bridge_event_writer import (
 )
 from waggledance.core.bridge_event_schema import KNOWN_EVENT_TYPES, validate_event
 
+_PRODUCTION_APPEND_MUTEX_NAME = APPEND_MUTEX_NAME
+_PRODUCTION_QUEUE_MUTEX_NAME = QUEUE_PUBLICATION_MUTEX_NAME
+
+
+@pytest.fixture(autouse=True)
+def _isolate_all_writer_mutex_names(monkeypatch):
+    """Even early junction-rejection paths acquire native publication locks."""
+    prefix = "Local\\WdWriterTest-" + uuid.uuid4().hex + "-"
+    for symbol, suffix in (
+        ("APPEND_MUTEX_NAME", "AppendV1"),
+        ("QUEUE_PUBLICATION_MUTEX_NAME", "AcceptedQueuePublicationV1"),
+    ):
+        monkeypatch.setattr(bridge_writer, symbol, prefix + suffix)
+        # Fake backend assertions must observe the same per-test names.
+        monkeypatch.setitem(globals(), symbol, prefix + suffix)
+
 
 def _event(index: int = 1, *, agent: str = "codex") -> dict[str, object]:
     return {
@@ -553,11 +569,11 @@ def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
         (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
         (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
     ]
-    assert QUEUE_PUBLICATION_MUTEX_NAME == (
+    assert _PRODUCTION_QUEUE_MUTEX_NAME == (
         r"Global\WaggleDanceBridgeAcceptedQueuePublicationV1"
     )
     assert QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS == 10_000
-    assert APPEND_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
+    assert _PRODUCTION_APPEND_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
     assert APPEND_MUTEX_TIMEOUT_MS == 10_000
     assert result.delivery_status == "canonical"
     assert result.canonical_durable is True

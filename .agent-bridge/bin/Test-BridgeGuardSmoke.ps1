@@ -194,6 +194,38 @@ try {
     Add-Check -Name 'foreign write leaves pass-through verbs unaffected' `
         -Passed ($LASTEXITCODE -eq 0)
 
+    # Hooks commonly export GIT_DIR. Probes and the actual command must not
+    # disagree about which worktree owns a claim when called from a subfolder.
+    $probeSubdir = Join-Path $repoRoot '.codex-audit'
+    foreach ($gitEnvName in @(
+        'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
+        'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY'
+    )) {
+        $oldGitEnv = [Environment]::GetEnvironmentVariable($gitEnvName, 'Process')
+        Push-Location -LiteralPath $probeSubdir
+        try {
+            [Environment]::SetEnvironmentVariable(
+                $gitEnvName, (Join-Path $repoRoot '.git'), 'Process'
+            )
+            $probe = Invoke-GuardProbe
+            $passive = Invoke-PassiveJsonProbe
+            Add-Check -Name "inherited $gitEnvName cannot redirect branch guard" `
+                -Passed (
+                    $probe.exit_code -eq 2 -and $probe.blocked -and
+                    $passive.exit_code -eq 2 -and
+                    $null -ne $passive.report -and
+                    $passive.report.safe -eq $false
+                ) -Detail "wrapper=$($probe.exit_code) passive=$($passive.exit_code)"
+        } finally {
+            if ($null -eq $oldGitEnv) {
+                Remove-Item -LiteralPath ('Env:' + $gitEnvName) -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($gitEnvName, $oldGitEnv, 'Process')
+            }
+            Pop-Location
+        }
+    }
+
     $forceProbe = Invoke-GuardProbe -Force
     Add-Check -Name 'non-privileged force remains rejected' `
         -Passed (

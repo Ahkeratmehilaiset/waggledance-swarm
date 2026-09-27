@@ -90,6 +90,23 @@ $BranchMovingVerbs = @('switch','checkout','merge','rebase','pull')
 $verb = [string]$GitArgs[0]
 $isBranchMoving = $BranchMovingVerbs -contains $verb
 
+# A hook's inherited GIT_DIR can make rev-parse report cwd as the worktree
+# while the actual command still changes another worktree's HEAD. Refuse the
+# override rather than silently changing the caller's intended Git target.
+if ($isBranchMoving) {
+    $gitOverrides = @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR',
+        'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY') | Where-Object {
+        $null -ne [Environment]::GetEnvironmentVariable($_, 'Process')
+    }
+    if (@($gitOverrides).Count -gt 0) {
+        Write-Error -Message (
+            'BLOCKED: branch-moving git refuses inherited repository overrides: ' +
+            ($gitOverrides -join ', ')
+        ) -Category PermissionDenied -ErrorAction Continue
+        exit 2
+    }
+}
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path).
 $bridgeRoot = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) {

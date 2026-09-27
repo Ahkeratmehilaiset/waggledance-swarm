@@ -233,6 +233,7 @@
       "turn_mode": "interactive",
       "model": "native",
       "effort": "native",
+      "auto_compact_tokens": 400000,
       "resume_policy": "current_worktree",
       "worktree": "C:\\Python\\waggledance-agent-worktrees\\fable-5-hex-capability-probe-v1-20260730",
       "branch": "fable-5/hex-capability-probe-v1-20260730",

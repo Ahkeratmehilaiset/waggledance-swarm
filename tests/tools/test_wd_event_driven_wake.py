@@ -36,7 +36,7 @@ $fn=$ast.Find({{param($n)$n -is [Management.Automation.Language.FunctionDefiniti
 . ([scriptblock]::Create($fn.Extent.Text))
 $laneTrustedDrive=[IO.Path]::GetPathRoot($PSScriptRoot)
 $deploymentAnchor=[pscustomobject]@{{files=[pscustomobject]@{{'wd-claude-event-driven-settings.json'='{pin}'}}}}
-$cliName='claude.cmd';$model='opus';$effort='max';$Agent='fable-5'
+$cliName='claude.cmd';$model='opus';$effort='max';$Agent='fable-5';$autoCompactTokens=$null
 $claudeResume=[pscustomobject]@{{thread_id='9f375967-f824-4e2e-8104-7f0011117cf5'}}
 $continuationPrompt='preserve work';$startupPrompt='initial'
 $env:CLAUDE_CODE_DISABLE_CRON='0'

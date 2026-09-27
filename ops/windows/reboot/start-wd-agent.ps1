@@ -406,6 +406,24 @@ function Get-WdCodexSecurityFingerprint {
   finally { $sha.Dispose() }
 }
 
+function Get-WdLaneAutoCompactTokens {
+  # Per-lane context budget: the auto-compact window in tokens, or $null for the
+  # CLI's own default. Every tool call reads the whole context again, so a lane's
+  # cost grows with its context size (docs/BRIDGE_LANE_CONTEXT_WINDOW.md). Claude
+  # Code accepts 100K to 1M; the same range bounds the Codex limit. A present but
+  # malformed value refuses the launch instead of silently using the default.
+  param([Parameter(Mandatory)] [object] $Lane,
+    [Parameter(Mandatory)] [string] $Agent)
+
+  $property = $Lane.PSObject.Properties['auto_compact_tokens']
+  if ($null -eq $property) { return $null }
+  $value = $property.Value
+  if (($value -isnot [int] -and $value -isnot [long]) -or $value -lt 100000 -or $value -gt 1000000) {
+    throw "lane '$Agent' auto_compact_tokens must be a whole number of tokens from 100000 to 1000000"
+  }
+  return [long]$value
+}
+
 function Assert-WdLeadInteractivePostureBaseline {
   param([Parameter(Mandatory)] [object] $Lane,
     [Parameter(Mandatory)] [string] $Worktree,
@@ -2018,6 +2036,7 @@ if (-not $DryRun) {
 $cliName = [string]$lane.cli
 $model = [string]$lane.model
 $effort = [string]$lane.effort
+$autoCompactTokens = Get-WdLaneAutoCompactTokens -Lane $lane -Agent $Agent
 if ([string]::IsNullOrWhiteSpace($model)) {
   throw "lane '$Agent' has no explicit model"
 }
@@ -2345,6 +2364,7 @@ if ($nativeLead) {
 }
 $resumeThread = if ($null -ne $nativeResume) { [string]$nativeResume.thread_id } elseif ($null -ne $claudeResume) { [string]$claudeResume.thread_id } else { '' }
 if ($resumeThread) { Write-Host ("  resume:   {0} (recorded lane conversation)" -f $resumeThread) }
+if ($null -ne $autoCompactTokens) { Write-Host ("  context:  auto-compact at {0} tokens (lane auto_compact_tokens)" -f $autoCompactTokens) }
 if ($RecoverInteractive) {
   Write-Host ("  unresolved pointer: {0}" -f $manualAttemptEvidence.pointer_path)
   Write-Host ("  pending record:      {0}" -f $manualAttemptEvidence.pending_path)
@@ -2791,6 +2811,7 @@ if ($cliName -ieq 'claude.cmd') {
     $startupPrompt = $continuationPrompt
   }
   $launchArguments += @('--settings', $scheduleSettings)
+  if ($null -ne $autoCompactTokens) { $launchArguments += @('--autocompact', [string]$autoCompactTokens) }
   if ($model -cne 'native') { $launchArguments += @('--model', $model, '--effort', $effort) }
   $launchArguments += @(
     '--dangerously-skip-permissions',
@@ -2803,6 +2824,9 @@ if ($cliName -ieq 'claude.cmd') {
   }
   if ($model -cne 'native') {
     $launchArguments += @('--model', $model, '-c', ('model_reasoning_effort="{0}"' -f $effort))
+  }
+  if ($null -ne $autoCompactTokens) {
+    $launchArguments += @('-c', ('model_auto_compact_token_limit={0}' -f $autoCompactTokens))
   }
   if ($nativeLead) {
     $launchArguments += @('--cd', $worktree, '--ask-for-approval', 'never', '--sandbox', 'danger-full-access')

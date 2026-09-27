@@ -39,7 +39,7 @@ function Assert-WdLaneLaunchAvailable {{ param($Lane,$KnownLanes,$ExternalSessio
 $deploymentAnchor=[pscustomobject]@{{files=[pscustomobject]@{{'wd-claude-event-driven-settings.json'='{pin}'}}}}
 $laneTrustedDrive=[IO.Path]::GetPathRoot($PSScriptRoot)
 $cliName='{ 'claude.cmd' if lane == 'claude' else 'codex.cmd' }'
-$nativeLead=${str(lane == 'lead').lower()}; $model='native'; $effort='native'; $Agent='test'
+$nativeLead=${str(lane == 'lead').lower()}; $model='native'; $effort='native'; $Agent='test'; $autoCompactTokens=$null
 $nativeResume=[pscustomobject]@{{thread_id='{thread}'; initial_context_delivered=$true}}
 $claudeResume=$nativeResume; $worktree='C:\\work'; $lane=@{{}}; $manifest=@{{lanes=@()}}
 $externalSessions=@(); $sourceTreeMode=$false; $DryRun=$false

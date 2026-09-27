@@ -104,3 +104,18 @@ def test_observational_identity_is_allowed_under_result(tmp_path, shell):
                    "-PayloadJson", '{"result":{"session_id":"a-measured-peer-session"}}')
     assert result.returncode == 0, result.stderr
     assert len(rows(tmp_path).splitlines()) == 1
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("status", ["blocked", "ready", "changes_requested", "review_requested", "proposal_accepted"])
+def test_bound_substantive_request_like_status_is_an_answer(tmp_path, shell, status):
+    created = write(shell, tmp_path, "-Type", "message", "-Status", "request", "-To", "operator")
+    assert created.returncode == 0, created.stderr
+    request = json.loads(rows(tmp_path).splitlines()[-1])
+    result = write(shell, tmp_path, "-Type", "message", "-Status", status, "-To", "operator",
+                   "-ReplyToEventJson", json.dumps(request))
+    assert result.returncode == 0, result.stderr
+    answer = json.loads(rows(tmp_path).splitlines()[-1])
+    assert answer["in_reply_to_request_id"] == request["request_id"]
+    from waggledance.core.bridge_request_contract import reply_matches_request
+    assert reply_matches_request(request, answer, "operator")

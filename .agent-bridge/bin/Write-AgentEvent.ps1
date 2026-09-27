@@ -564,9 +564,6 @@ Assert-WriterContractEnvelope ([pscustomobject]$event)
 $bindingWarnings = @()
 if ($ReplyToEventJson) {
     if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
-    if (-not (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
-        throw 'ReplyToEventJson requires a substantive answer type/status, not an ACK or status notice'
-    }
     $replyTo = $ReplyToEventJson | ConvertFrom-Json @jsonArguments
     $replyId = Get-BridgeContractField $replyTo 'request_id'
     if ($replyId -isnot [string] -or $replyId -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') { throw 'ReplyToEventJson requires a valid request_id' }
@@ -575,6 +572,11 @@ if ($ReplyToEventJson) {
         throw 'Reply task, sender or recipient does not match the full request'
     }
     $event['in_reply_to_request_id'] = $replyId
+    # Classify the bound event: e.g. message/blocked is request-like without
+    # this field, but is a substantive response when replying to a request.
+    if (-not (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
+        throw 'ReplyToEventJson requires a substantive answer type/status, not an ACK or status notice'
+    }
     $context = [ordered]@{}
     foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
         $value = Get-BridgeContractField $replyTo $key

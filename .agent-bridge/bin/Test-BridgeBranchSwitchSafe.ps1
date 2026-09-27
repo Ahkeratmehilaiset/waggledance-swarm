@@ -8,11 +8,10 @@
     `bridge-branch-switch-during-active-claim-2026-05-09` filed by
     Codex on 2026-05-09T11:30Z.
 
-    The bridge runs as multiple agents sharing a single worktree
-    (C:\Python\project2-master). When one agent has an active write
-    claim, another agent doing `git switch / checkout / rebase /
-    merge` mutates the first agent's working tree from under them -
-    they may stage stale paths or commit on the wrong branch.
+    Branch movement can invalidate another active write claim only when both
+    operations share the same Git worktree. A separately verified worktree is
+    independent; missing, non-Git, or filesystem-alias cwd evidence fails
+    closed because disjointness cannot be proved.
 
     Run this guard immediately before any branch-changing git
     operation:
@@ -20,8 +19,9 @@
         .\.agent-bridge\bin\Test-BridgeBranchSwitchSafe.ps1 -Agent claude
 
     Exit codes:
-      0 = safe to switch (no other-agent active write claims)
-      2 = UNSAFE - another agent holds an active write claim;
+      0 = safe to switch (no blocking write claim in this worktree)
+      2 = UNSAFE - a write claim shares this worktree or has an
+          unverifiable cwd;
           use a separate worktree, ask the other agent to release,
           or pass -Force to request an override (logs a pre-execution event).
 
@@ -84,18 +84,182 @@ function Get-ActiveClaims {
     }
 }
 
-$allClaims = @(Get-ActiveClaims)
+function Get-NormalizedLiteralDirectoryPath {
+    param([Parameter(Mandatory)] [string] $Path)
 
-# Only WRITE claims by OTHER agents block - read-only claims and
-# own-agent claims do not affect a branch switch.
-$blocking = @(
-    $allClaims |
-        Where-Object {
-            [string]$_.mode -eq 'write' -and
-            [string]$_.agent -ne $Agent -and
-            $_.agent -notin @('operator','system')
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try {
+        $resolved = Resolve-Path -LiteralPath $Path -ErrorAction Stop
+        if ([string]$resolved.Provider.Name -cne 'FileSystem') { return $null }
+        $full = [System.IO.Path]::GetFullPath([string]$resolved.ProviderPath)
+        $root = [System.IO.Path]::GetPathRoot($full)
+        if ($full.Length -gt $root.Length) {
+            $full = $full.TrimEnd([char[]]@(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar
+            ))
         }
-)
+        return $full
+    } catch {
+        return $null
+    }
+}
+
+function Test-PathContainsReparsePoint {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        while ($null -ne $item) {
+            if (
+                ($item.Attributes -band
+                    [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                return $true
+            }
+            $item = $item.Parent
+        }
+        return $false
+    } catch {
+        return $true
+    }
+}
+
+function Get-VerifiedGitWorktreeContext {
+    param([Parameter(Mandatory)] [string] $Cwd)
+
+    $normalizedCwd = Get-NormalizedLiteralDirectoryPath -Path $Cwd
+    if (
+        -not $normalizedCwd -or
+        (Test-PathContainsReparsePoint -Path $normalizedCwd)
+    ) {
+        return $null
+    }
+    try {
+        $previousEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $gitOutput = @(
+                & git -C $normalizedCwd rev-parse --show-toplevel 2>$null
+            )
+            $gitExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+    } catch {
+        return $null
+    }
+    if ($gitExit -ne 0 -or $gitOutput.Count -ne 1) { return $null }
+
+    $worktreeRoot = Get-NormalizedLiteralDirectoryPath `
+        -Path ([string]$gitOutput[0])
+    if (
+        -not $worktreeRoot -or
+        (Test-PathContainsReparsePoint -Path $worktreeRoot)
+    ) {
+        return $null
+    }
+    $worktreePrefix = $worktreeRoot
+    if (
+        -not $worktreePrefix.EndsWith(
+            [string][System.IO.Path]::DirectorySeparatorChar
+        ) -and
+        -not $worktreePrefix.EndsWith(
+            [string][System.IO.Path]::AltDirectorySeparatorChar
+        )
+    ) {
+        $worktreePrefix += [System.IO.Path]::DirectorySeparatorChar
+    }
+    if (
+        -not [string]::Equals(
+            $normalizedCwd,
+            $worktreeRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -and
+        -not $normalizedCwd.StartsWith(
+            $worktreePrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        return $null
+    }
+    return [pscustomobject]@{
+        cwd           = $normalizedCwd
+        worktree_root = $worktreeRoot
+    }
+}
+
+function Test-BridgePathEqual {
+    param(
+        [Parameter(Mandatory)] [string] $Left,
+        [Parameter(Mandatory)] [string] $Right
+    )
+    return [string]::Equals(
+        $Left,
+        $Right,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+$allClaims = @(Get-ActiveClaims)
+$currentContext = Get-VerifiedGitWorktreeContext -Cwd (Get-Location).Path
+if ($null -eq $currentContext) {
+    if ($Json) {
+        [pscustomobject]@{
+            agent           = $Agent
+            active_claims   = $allClaims.Count
+            blocking_claims = 0
+            safe            = $false
+            context_error   = 'current_cwd_not_verified_git_worktree'
+            blocking_detail = @()
+        } | ConvertTo-Json -Depth 6
+    } else {
+        Write-Host (
+            'UNSAFE BRANCH SWITCH - current cwd is not a verifiable, ' +
+            'non-aliased Git worktree.'
+        ) -ForegroundColor Yellow
+    }
+    exit 2
+}
+
+$blocking = @()
+foreach ($claim in $allClaims) {
+    $claimAgent = [string]$claim.agent
+    if ($claimAgent -in @('operator','system')) { continue }
+    $claimMode = if ($claim.PSObject.Properties['mode']) {
+        [string]$claim.mode
+    } else { '' }
+    if ($claimMode -ceq 'read-only') { continue }
+    $claimCwd = if ($claim.PSObject.Properties['cwd']) {
+        [string]$claim.cwd
+    } else { '' }
+    $claimContext = Get-VerifiedGitWorktreeContext -Cwd $claimCwd
+    $reason = ''
+    if ($null -eq $claimContext) {
+        $reason = 'claim_cwd_not_verified_git_worktree'
+    } elseif (-not (Test-BridgePathEqual `
+        -Left $currentContext.worktree_root `
+        -Right $claimContext.worktree_root)) {
+        continue
+    } elseif ($claimAgent -ne $Agent) {
+        $reason = 'foreign_write_claim_in_current_worktree'
+    } elseif (-not (Test-BridgePathEqual `
+        -Left $currentContext.cwd `
+        -Right $claimContext.cwd)) {
+        $reason = 'same_agent_claim_cwd_mismatch'
+    } else {
+        continue
+    }
+    $blocking += [pscustomobject]@{
+        claim         = $claim
+        reason        = $reason
+        worktree_root = if ($null -eq $claimContext) {
+            ''
+        } else {
+            [string]$claimContext.worktree_root
+        }
+    }
+}
 
 if ($Json -and $Force) {
     Write-Error `
@@ -110,15 +274,22 @@ if ($Json) {
         active_claims     = $allClaims.Count
         blocking_claims   = $blocking.Count
         safe              = ($blocking.Count -eq 0)
+        current_worktree_root = [string]$currentContext.worktree_root
         blocking_detail   = @($blocking | ForEach-Object {
+            $claim = $_.claim
             [pscustomobject]@{
-                task_id     = [string]$_.task_id
-                agent       = [string]$_.agent
-                summary     = [string]$_.summary
-                git_branch  = if ($_.PSObject.Properties['git_branch']) {
-                    [string]$_.git_branch
+                task_id     = [string]$claim.task_id
+                agent       = [string]$claim.agent
+                summary     = [string]$claim.summary
+                git_branch  = if ($claim.PSObject.Properties['git_branch']) {
+                    [string]$claim.git_branch
                 } else { '' }
-                write_scope = @($_.write_scope)
+                write_scope = @($claim.write_scope)
+                cwd          = if ($claim.PSObject.Properties['cwd']) {
+                    [string]$claim.cwd
+                } else { '' }
+                worktree_root = [string]$_.worktree_root
+                reason        = [string]$_.reason
             }
         })
     } | ConvertTo-Json -Depth 6
@@ -129,14 +300,15 @@ if ($Json) {
 }
 
 if ($blocking.Count -eq 0) {
-    Write-Host "BRANCH SWITCH SAFE - no other-agent active write claims." `
+    Write-Host "BRANCH SWITCH SAFE - no blocking write claims in this worktree." `
         -ForegroundColor Green
     exit 0
 }
 
 Write-Host "UNSAFE BRANCH SWITCH - $($blocking.Count) other-agent write claim(s) active:" `
     -ForegroundColor Yellow
-foreach ($claim in $blocking) {
+foreach ($entry in $blocking) {
+    $claim = $entry.claim
     $branch = ''
     if ($claim.PSObject.Properties['git_branch'] -and `
         [string]$claim.git_branch) {
@@ -150,7 +322,8 @@ foreach ($claim in $blocking) {
     Write-Host ("  - {0} by {1}{2}{3}" -f `
         [string]$claim.task_id, [string]$claim.agent, $branch, $scope) `
         -ForegroundColor Yellow
-    Write-Host ("    {0}" -f [string]$claim.summary)
+    Write-Host ("    {0} ({1})" -f `
+        [string]$claim.summary, [string]$entry.reason)
 }
 
 Write-Host ''
@@ -173,8 +346,8 @@ if ($Force) {
     $blockedBy = @(
         $blocking | ForEach-Object {
             [pscustomobject]@{
-                task_id = [string]$_.task_id
-                agent   = [string]$_.agent
+                task_id = [string]$_.claim.task_id
+                agent   = [string]$_.claim.agent
             }
         }
     )

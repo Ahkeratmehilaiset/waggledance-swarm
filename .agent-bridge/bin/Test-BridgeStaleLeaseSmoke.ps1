@@ -83,6 +83,11 @@ $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
 # A lane shell carries its own owner context; the smoke sets identities itself.
 $savedOwnerSession = $env:AGENT_BRIDGE_OWNER_SESSION_ID
 Remove-Item Env:AGENT_BRIDGE_OWNER_SESSION_ID -ErrorAction SilentlyContinue
+# A lane shell is bound to its own agent label (AGENT_BRIDGE_AGENT), and the
+# bridge scripts refuse to act under any other label; this smoke acts as
+# several agents, so it runs unbound and binds explicitly where needed.
+$savedBoundAgent = $env:AGENT_BRIDGE_AGENT
+Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
 
 try {
     Write-Host 'Bridge stale-lease smoke test' -ForegroundColor Cyan
@@ -232,8 +237,14 @@ try {
     # ── 4: operator/system claims are immune ───────────────────
     Write-Host ''
     Write-Host '4. operator/system claims immune from sweep:'
-    & $claimTask -Agent operator -TaskId 'r15-smoke-operator' `
-        -Summary 'R15 smoke: operator claim' -Mode read-only | Out-Null
+    # The reserved operator label needs a session bound to it.
+    $env:AGENT_BRIDGE_AGENT = 'operator'
+    try {
+        & $claimTask -Agent operator -TaskId 'r15-smoke-operator' `
+            -Summary 'R15 smoke: operator claim' -Mode read-only | Out-Null
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
+    }
     $opClaimPath = Join-Path $claimsDir 'r15-smoke-operator.json'
 
     # Backdate it
@@ -490,6 +501,167 @@ try {
     $env:AGENT_BRIDGE_OWNER_TOKEN = $savedToken
     $env:AGENT_BRIDGE_RUN_ID = $savedRun
 
+    # -- P1: no takeover of a live owner, and no acting under another label --
+    # Every refusal below has a same-owner (or same-label) success twin, so
+    # a refusal cannot pass just because the operation is broken outright.
+    function Set-SmokeSession([string] $Session, [string] $Token) {
+        $env:AGENT_BRIDGE_RUN_ID = $Session
+        $env:AGENT_BRIDGE_OWNER_TOKEN = $Token
+    }
+    function Get-SmokeClaim([string] $Path) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+        return (Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json)
+    }
+    function Invoke-SmokeRefusable([scriptblock] $Action) {
+        # Stop-BridgeClaim exits with a code; Assert-AgentBridgeSessionIdentity
+        # throws. Either way the smoke keeps going and inspects the files.
+        try { & $Action 2>&1 | Out-Null } catch { }
+    }
+    $hashA = Get-BridgeSha256Hex -Value 'p1-token-a'
+    $p1Path = Join-Path $claimsDir 'p1-own.json'
+
+    Set-SmokeSession 'p1-session-a' 'p1-token-a'
+    & $claimTask -Agent codex -TaskId 'p1-own' -Summary 'P1 owner A' `
+        -Mode write -WriteScope 'tests/smoke/p1-own' | Out-Null
+    Set-SmokeSession 'p1-session-b' 'p1-token-b'
+    Invoke-SmokeRefusable { & $claimTask -Agent codex -TaskId 'p1-own' -Summary 'P1 takeover by B' `
+        -Mode write -WriteScope 'tests/smoke/p1-own' -Force }
+    $p1 = Get-SmokeClaim $p1Path
+    Add-Check -Name 'P1 O1: same label, other session cannot -Force-take a claim' `
+        -Passed ($null -ne $p1 -and [string]$p1.owner_token_sha256 -ceq $hashA -and
+            [string]$p1.summary -ceq 'P1 owner A') `
+        -Detail 'the claim keeps owner A'
+    Set-SmokeSession 'p1-session-a' 'p1-token-a'
+    & $claimTask -Agent codex -TaskId 'p1-own' -Summary 'P1 refresh by A' `
+        -Mode write -WriteScope 'tests/smoke/p1-own' -Force | Out-Null
+    $p1 = Get-SmokeClaim $p1Path
+    Add-Check -Name 'P1 O1 twin: the owning session refreshes its claim with -Force' `
+        -Passed ($null -ne $p1 -and [string]$p1.owner_token_sha256 -ceq $hashA -and
+            [string]$p1.summary -ceq 'P1 refresh by A') `
+        -Detail 'same owner, compare-and-swap under the claim lock'
+
+    $env:AGENT_BRIDGE_AGENT = 'operator'
+    Set-SmokeSession 'p1-session-op' 'p1-token-op'
+    try {
+        Invoke-SmokeRefusable { & $claimTask -Agent operator -TaskId 'p1-own' -Summary 'P1 operator takeover' `
+            -Mode write -WriteScope 'tests/smoke/p1-own' -Force }
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
+    }
+    $p1 = Get-SmokeClaim $p1Path
+    Add-Check -Name 'P1 O2: even a bound operator cannot -Force-take a live claim' `
+        -Passed ($null -ne $p1 -and [string]$p1.agent -ceq 'codex' -and
+            [string]$p1.owner_token_sha256 -ceq $hashA) `
+        -Detail 'fail closed: no manual takeover escape'
+    Invoke-SmokeRefusable { & $claimTask -Agent operator -TaskId 'p1-own' -Summary 'P1 unbound operator' `
+        -Mode write -WriteScope 'tests/smoke/p1-own' -Force }
+    Invoke-SmokeRefusable { & $claimTask -Agent operator -TaskId 'p1-op-unbound' -Summary 'P1 unbound operator' `
+        -Mode read-only }
+    $p1 = Get-SmokeClaim $p1Path
+    Add-Check -Name 'P1 O2b: an unbound shell cannot claim as operator' `
+        -Passed ($null -ne $p1 -and [string]$p1.agent -ceq 'codex' -and
+            -not (Test-Path -LiteralPath (Join-Path $claimsDir 'p1-op-unbound.json'))) `
+        -Detail 'the reserved label needs a session bound to it'
+
+    $env:AGENT_BRIDGE_AGENT = 'codex-lead-1'
+    Set-SmokeSession 'p1-session-l' 'p1-token-l'
+    try {
+        Invoke-SmokeRefusable { & $claimTask -Agent codex-2 -TaskId 'p1-label' -Summary 'P1 other label' `
+            -Mode write -WriteScope 'tests/smoke/p1-label' }
+        $labelRefused = -not (Test-Path -LiteralPath (Join-Path $claimsDir 'p1-label.json'))
+        $livenessRefused = $false
+        try { & $sendLiveness -Agent codex-2 -State active 2>&1 | Out-Null } catch { $livenessRefused = $true }
+        $heartbeatRefused = $false
+        try {
+            & (Join-Path $bridgeBin 'Start-BridgeHeartbeat.ps1') -Agent codex-2 -MaxIterations 1 -IntervalMs 10 2>&1 | Out-Null
+        } catch { $heartbeatRefused = $true }
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
+    }
+    $env:AGENT_BRIDGE_AGENT = 'codex-2'
+    try {
+        & $claimTask -Agent codex-2 -TaskId 'p1-label' -Summary 'P1 own label' `
+            -Mode write -WriteScope 'tests/smoke/p1-label' | Out-Null
+        $labelTwin = Test-Path -LiteralPath (Join-Path $claimsDir 'p1-label.json')
+        $livenessTwin = $true
+        try { & $sendLiveness -Agent codex-2 -State active 2>&1 | Out-Null } catch { $livenessTwin = $false }
+        $heartbeatTwin = $true
+        try {
+            & (Join-Path $bridgeBin 'Start-BridgeHeartbeat.ps1') -Agent codex-2 -MaxIterations 1 -IntervalMs 10 2>&1 | Out-Null
+        } catch { $heartbeatTwin = $false }
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
+    }
+    Add-Check -Name 'P1 O3: a session bound to one label cannot claim as another' `
+        -Passed ($labelRefused -and $labelTwin) `
+        -Detail "refused=$labelRefused; twin (bound to its own label) claimed=$labelTwin"
+    Add-Check -Name 'P1 O3: a session bound to one label cannot send liveness or run a heartbeat as another' `
+        -Passed ($livenessRefused -and $heartbeatRefused -and $livenessTwin -and $heartbeatTwin) `
+        -Detail "liveness refused=$livenessRefused twin=$livenessTwin; heartbeat refused=$heartbeatRefused twin=$heartbeatTwin"
+
+    $env:AGENT_BRIDGE_AGENT = 'codex-lead-1'
+    try {
+        Invoke-SmokeRefusable { & $releaseTask -Agent codex-2 -TaskId 'p1-label' -Status done `
+            -Message 'P1 release under another label' }
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
+    }
+    $releaseRefused = Test-Path -LiteralPath (Join-Path $claimsDir 'p1-label.json')
+    $env:AGENT_BRIDGE_AGENT = 'codex-2'
+    try {
+        Invoke-SmokeRefusable { & $releaseTask -Agent codex-2 -TaskId 'p1-label' -Status done -Message 'P1 own release' }
+    } finally {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
+    }
+    Add-Check -Name 'P1 O3: a session bound to one label cannot release as another' `
+        -Passed ($releaseRefused -and -not (Test-Path -LiteralPath (Join-Path $claimsDir 'p1-label.json'))) `
+        -Detail "refused=$releaseRefused; twin released by its own label"
+
+    # Exact task identity: 'p1/col' and 'p1_col' share the sanitized name.
+    Set-SmokeSession 'p1-session-a' 'p1-token-a'
+    & $claimTask -Agent codex -TaskId 'p1/col' -Summary 'P1 slash task' `
+        -Mode write -WriteScope 'tests/smoke/p1-col-a' | Out-Null
+    $colPath = Join-Path $claimsDir 'p1_col.json'
+    Invoke-SmokeRefusable { & $releaseTask -Agent codex -TaskId 'p1_col' -Status done `
+        -Message 'P1 release of the colliding id' }
+    $colKept = $null -ne (Get-SmokeClaim $colPath) -and [string](Get-SmokeClaim $colPath).task_id -ceq 'p1/col'
+    Add-Check -Name 'P1 O9: release of a different task id never archives a colliding claim' `
+        -Passed $colKept -Detail 'lookup is by exact task_id, not by file name'
+
+    & $claimTask -Agent codex -TaskId 'p1_col' -Summary 'P1 underscore task' `
+        -Mode write -WriteScope 'tests/smoke/p1-col-b' -Force | Out-Null
+    $colFiles = @(Get-ChildItem -LiteralPath $claimsDir -Filter 'p1_col*.json' -File)
+    $colTasks = @($colFiles | ForEach-Object {
+        [string](Get-Content -Raw -LiteralPath $_.FullName -Encoding UTF8 | ConvertFrom-Json).task_id
+    })
+    Add-Check -Name 'P1 O8: a colliding new task (even with -Force) never overwrites another task''s claim' `
+        -Passed ($colFiles.Count -eq 2 -and ($colTasks -ccontains 'p1/col') -and ($colTasks -ccontains 'p1_col')) `
+        -Detail ("files={0}" -f (($colFiles | ForEach-Object Name) -join ','))
+    Invoke-SmokeRefusable { & $releaseTask -Agent codex -TaskId 'p1/col' -Status done -Message 'P1 twin' }
+    Invoke-SmokeRefusable { & $releaseTask -Agent codex -TaskId 'p1_col' -Status done -Message 'P1 twin' }
+    Add-Check -Name 'P1 O8/O9 twin: each task releases its own claim by its exact id' `
+        -Passed (@(Get-ChildItem -LiteralPath $claimsDir -Filter 'p1_col*.json' -File).Count -eq 0) `
+        -Detail 'both released, nothing left behind'
+
+    # A claim the Python work queue wrote under a digest-suffixed name.
+    $pyTask = 'p1/py'
+    $pyPath = Join-Path $claimsDir ('p1_py-{0}.json' -f (Get-BridgeSha256Hex -Value $pyTask).Substring(0, 12))
+    $pyNow = (Get-Date).ToUniversalTime().ToString('o')
+    ([ordered]@{
+        agent = 'codex'; task_id = $pyTask; summary = 'python-written claim'; mode = 'read-only'
+        write_scope = @(); run_id = ''; claimed_at_utc = $pyNow; last_heartbeat_utc = $pyNow
+        lease_seconds = 900; owner_session_id = 'p1-session-a'; owner_token_sha256 = $hashA
+    } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $pyPath -Encoding UTF8
+    Invoke-SmokeRefusable { & $releaseTask -Agent codex -TaskId $pyTask -Status done -Message 'P1 python-named claim' }
+    Add-Check -Name 'P1 parity: PowerShell releases a claim the Python queue named' `
+        -Passed (-not (Test-Path -LiteralPath $pyPath)) `
+        -Detail 'found by exact task_id under its digest-suffixed name'
+
+    Set-SmokeSession 'p1-session-a' 'p1-token-a'
+    Invoke-SmokeRefusable { & $releaseTask -Agent codex -TaskId 'p1-own' -Status done -Message 'P1 cleanup' }
+    $env:AGENT_BRIDGE_OWNER_TOKEN = $savedToken
+    $env:AGENT_BRIDGE_RUN_ID = $savedRun
+
     # -- B7: lease defaults --------------------------------------
     $writeLease = (& $claimTask -Agent codex -TaskId 'b7-lease-write' `
         -Summary 'B7 write lease' -Mode write -WriteScope 'tests/smoke/b7-lease').lease_seconds
@@ -520,6 +692,11 @@ try {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
     if ($null -ne $savedOwnerSession) {
         $env:AGENT_BRIDGE_OWNER_SESSION_ID = $savedOwnerSession
+    }
+    if ($null -ne $savedBoundAgent) {
+        $env:AGENT_BRIDGE_AGENT = $savedBoundAgent
+    } else {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force `

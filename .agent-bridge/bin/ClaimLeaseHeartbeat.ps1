@@ -152,6 +152,80 @@ function Get-BridgeSessionHeartbeatPath {
     return (Join-Path (Get-BridgeHeartbeatsDir -Root $Root) ($digest + '.json'))
 }
 
+function Find-BridgeClaimFile {
+    <#
+        The active claim file whose task_id is EXACTLY $TaskId (ordinal,
+        case-sensitive), or $null. A file name is never trusted on its own:
+        the sanitized name is lossy ('a/b' and 'a_b' both give 'a_b.json'),
+        and the Python work queue suffixes unsafe ids with a digest, so the
+        preferred name can hold another task's claim or none at all.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $ClaimsDir,
+        [Parameter(Mandatory)] [string] $TaskId
+    )
+
+    if (-not (Test-Path -LiteralPath $ClaimsDir -PathType Container)) { return $null }
+    $preferred = Join-Path $ClaimsDir ((Get-BridgeSafeName -Name $TaskId) + '.json')
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $preferred -PathType Leaf) { $candidates.Add($preferred) }
+    foreach ($file in @(Get-ChildItem -LiteralPath $ClaimsDir -Filter '*.json' -File `
+                -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        if ($file.FullName -ne $preferred) { $candidates.Add($file.FullName) }
+    }
+    foreach ($path in $candidates) {
+        try {
+            $candidate = Get-Content -Raw -LiteralPath $path -Encoding UTF8 |
+                ConvertFrom-Json -ErrorAction Stop
+        } catch { continue }
+        if ($null -ne $candidate -and $candidate.PSObject.Properties['task_id'] -and
+            [string]$candidate.task_id -ceq $TaskId) {
+            return $path
+        }
+    }
+    return $null
+}
+
+function New-BridgeClaimPath {
+    <#
+        A file name for a NEW claim that no other task's claim occupies:
+        the sanitized name, or, when that is taken, the sanitized name plus
+        the first 12 hex digits of SHA-256(task id) - the same suffix the
+        Python work queue uses. Returns '' when the id sanitizes to nothing.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $ClaimsDir,
+        [Parameter(Mandatory)] [string] $TaskId
+    )
+
+    $safe = Get-BridgeSafeName -Name $TaskId
+    if (-not $safe) { return '' }
+    $preferred = Join-Path $ClaimsDir ($safe + '.json')
+    if (-not (Test-Path -LiteralPath $preferred)) { return $preferred }
+    $digest = (Get-BridgeSha256Hex -Value $TaskId).Substring(0, 12)
+    return (Join-Path $ClaimsDir ('{0}-{1}.json' -f $safe, $digest))
+}
+
+function Test-BridgeIdentitylessClaimPair {
+    <#
+        A claim made without an identity (marked owner_identity=none),
+        handled by a caller that also has none: the agent label is the only
+        authority either side has, exactly as before B7. An unmarked
+        unowned claim is a pre-B7 claim and is never adopted implicitly.
+    #>
+    param(
+        [Parameter(Mandatory)] $Claim,
+        $Identity
+    )
+
+    if ($null -ne $Identity) { return $false }
+    foreach ($field in @('owner_session_id', 'owner_token_sha256')) {
+        if ($Claim.PSObject.Properties[$field] -and [string]$Claim.$field) { return $false }
+    }
+    return ($Claim.PSObject.Properties['owner_identity'] -and
+        [string]$Claim.owner_identity -ceq 'none')
+}
+
 function Enter-BridgeClaimLock {
     <#
         Exclusive sibling lock for one claim file. Returns a FileStream

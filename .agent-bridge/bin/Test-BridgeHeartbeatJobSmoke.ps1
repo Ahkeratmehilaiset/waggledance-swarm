@@ -19,6 +19,11 @@ $savedToggle = $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED
 # A lane shell carries its own owner context; the smoke sets identities itself.
 $savedOwnerSession = $env:AGENT_BRIDGE_OWNER_SESSION_ID
 Remove-Item Env:AGENT_BRIDGE_OWNER_SESSION_ID -ErrorAction SilentlyContinue
+# A lane shell is bound to its own agent label (AGENT_BRIDGE_AGENT), and the
+# bridge scripts refuse to act under any other label; this smoke acts as
+# several agents, so it runs unbound and binds explicitly where needed.
+$savedBoundAgent = $env:AGENT_BRIDGE_AGENT
+Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
 
 function Read-Claim {
     param([string] $RuntimeRoot, [string] $TaskId)
@@ -310,6 +315,11 @@ try {
     Remove-Item Env:AGENT_BRIDGE_RUN_ID -ErrorAction SilentlyContinue
     if ($null -ne $savedOwnerSession) {
         $env:AGENT_BRIDGE_OWNER_SESSION_ID = $savedOwnerSession
+    }
+    if ($null -ne $savedBoundAgent) {
+        $env:AGENT_BRIDGE_AGENT = $savedBoundAgent
+    } else {
+        Remove-Item Env:AGENT_BRIDGE_AGENT -ErrorAction SilentlyContinue
     }
     if ($null -ne $savedToggle) {
         $env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED = $savedToggle

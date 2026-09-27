@@ -280,6 +280,10 @@ if ($ownClaims.Count -gt 0) {
     $safeMode = 'write-or-read-only'
 }
 
+$knownRequestAges = @($openRequests | ForEach-Object {
+    $stamp = ConvertTo-BridgeContractTime $_.ts_utc
+    if ($null -ne $stamp) { [math]::Max(0, ($nowUtc - $stamp).TotalSeconds) }
+})
 $result = [pscustomobject]@{
     agent = $Agent
     worker_class = Get-BridgeWorkerClass $Agent
@@ -291,8 +295,8 @@ $result = [pscustomobject]@{
     open_incoming_count = $openRequests.Count
     open_incoming_event_count = $openEventCount
     open_incoming_task_count = @($openRequests | Select-Object -ExpandProperty task_id -Unique).Count
-    oldest_open_request_age_seconds = if ($openRequests.Count) {
-        @($openRequests | ForEach-Object { [math]::Max(0, ($nowUtc - (ConvertTo-BridgeContractTime $_.ts_utc)).TotalSeconds) } | Measure-Object -Maximum)[0].Maximum
+    oldest_open_request_age_seconds = if ($openRequests.Count -and $knownRequestAges.Count -eq $openRequests.Count) {
+        ($knownRequestAges | Measure-Object -Maximum).Maximum
     } else { $null }
     stale_incoming_count = @($staleOpenRequests | Select-Object -ExpandProperty task_id -Unique).Count
     stale_incoming_request_count = $staleOpenRequests.Count

@@ -33,6 +33,8 @@ def scenario(case, bound):
         answer["ts_utc"] = request["ts_utc"]
     elif case == "naive":
         answer["ts_utc"] = "2026-09-27T18:31:00"
+    elif case == "naive_request":
+        request["ts_utc"] = "2026-09-27T18:30:00"
     elif case in {"not_done", "undone", "incomplete"}:
         answer.update(type="done", status=case)
     elif case == "withdrawal":
@@ -51,7 +53,7 @@ def scenario(case, bound):
     return rows, case not in {"control", "withdrawal", "identical_replay"}
 
 
-CASES = ["control", "withdrawal", "before", "offset", "fraction", "equal", "naive",
+CASES = ["control", "withdrawal", "before", "offset", "fraction", "equal", "naive", "naive_request",
          "not_done", "undone", "incomplete", "third_party", "identical_replay", "idle_before", "idle_offset"]
 
 
@@ -87,3 +89,5 @@ def test_powershell_closure_order(tmp_path, shell, case, bound):
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout[result.stdout.index("{"):])
     assert bool(data["open_incoming_count"]) == expected_open
+    if case == "naive_request":
+        assert data["oldest_open_request_age_seconds"] is None

@@ -55,6 +55,15 @@ CASES = ["control", "withdrawal", "before", "offset", "fraction", "equal", "naiv
          "not_done", "undone", "incomplete", "third_party", "identical_replay", "idle_before", "idle_offset"]
 
 
+@pytest.mark.parametrize("shell", SHELLS)
+def test_contract_rejects_unspecified_datetime_independent_of_host_timezone(shell):
+    helper = str(ROOT / ".agent-bridge/bin/BridgeRequestContract.ps1").replace("'", "''")
+    script = f". '{helper}'; $v=[datetime]::new(2026,9,27,18,31,0,[DateTimeKind]::Unspecified); if ($null -ne (ConvertTo-BridgeContractTime $v)) {{ exit 9 }}"
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=40)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize("bound", [False, True])
 def test_python_closure_order(case, bound):

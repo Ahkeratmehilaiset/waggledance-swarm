@@ -90,7 +90,11 @@ function Test-BridgeAmbiguousLegacy {
 
 function ConvertTo-BridgeContractTime {
     param($Value)
-    if ($Value -is [datetime] -or $Value -is [datetimeoffset]) { return $Value.ToUniversalTime() }
+    if ($Value -is [datetime]) {
+        if ($Value.Kind -eq [DateTimeKind]::Unspecified) { return $null }
+        return $Value.ToUniversalTime()
+    }
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime }
     if ([string]$Value -notmatch '(Z|[+-]\d\d:\d\d)$') { return $null }
     try { return [datetimeoffset]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
     catch { return $null }

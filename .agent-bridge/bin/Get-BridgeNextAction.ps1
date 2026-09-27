@@ -101,10 +101,14 @@ function Read-BridgeEventObjects {
     } else {
         @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
     }
+    $jsonArguments = @{ ErrorAction = 'Stop' }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $jsonArguments.DateKind = 'String'
+    }
     foreach ($line in $lines) {
         if (-not $line) { continue }
         try {
-            $obj = $line | ConvertFrom-Json -ErrorAction Stop
+            $obj = $line | ConvertFrom-Json @jsonArguments
             # Shape guard: a transient partial read of the shared log can
             # yield bare null / scalar / array lines. NOTE: `-is
             # [pscustomobject]` is NOT a valid shape test here - PowerShell

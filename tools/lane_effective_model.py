@@ -33,7 +33,13 @@ precedence", model-config.md, env-vars):
   top-level ``effortLevel`` in the USER file applies only to Opus 5, Fable 5.1
   and earlier models: Opus 5.5 and later ignore it. Any ``maxEffortLevel`` cap
   below ``max`` fails closed, as does ``--effort`` against ``ultracode: true``,
-  whose order is not documented.
+  whose order is not documented. A settings level outside ``low``, ``medium``,
+  ``high`` and ``xhigh`` is not accepted by the CLI and fails closed.
+* thinking (model-config.md "Extended thinking", env-vars ``MAX_THINKING_TOKENS``,
+  settings-reference ``alwaysThinkingEnabled``): ``MAX_THINKING_TOKENS=0`` or
+  ``alwaysThinkingEnabled: false`` turns thinking off on every model except Opus
+  5.5 and the Fable models. A profile's effort then no longer describes the
+  session, so thinking that may be off fails closed.
 
 Codex CLI: ``--model`` and ``-c model_reasoning_effort=`` on argv >
 ``config.toml``'s selected ``[profiles.<profile>]`` > top-level ``model`` and
@@ -94,8 +100,15 @@ USER_EFFORT_LEVEL_APPLIES = frozenset({
     "claude-opus-5", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8",
     "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})
 USER_EFFORT_LEVEL_IGNORED = frozenset({"claude-opus-5-5"})
+# settings-reference effortLevel / modelSettings: the only accepted settings levels ("max isn't
+# accepted as a level in either key"); "auto" keeps its own model-default handling.
+SETTINGS_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "auto"})
+# "You can't turn thinking off on Opus 5.5 or the Fable models" (model-config.md).
+THINKING_ALWAYS_ON = frozenset({"claude-opus-5-5"})
+THINKING_ALWAYS_ON_PREFIXES = ("claude-fable-",)
 _DATE = re.compile(r"-\d{8}$")
-ENV_MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL")
+ENV_MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
+                  "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING")
 
 
 class SourceError(ValueError):
@@ -257,6 +270,10 @@ def _settings_effort(layers: list[tuple[str, dict]], model_id: str | None,
         if top:
             effort, source = top, name
             break
+    if effort is not None and effort not in SETTINGS_EFFORT_LEVELS:
+        # e.g. "max" or "ultracode": not accepted in a settings file; what the CLI does instead
+        # is not documented (claude-rco-1 NB1 on #1744).
+        local.append(f"effortLevel_not_accepted:{effort}")
     issues.extend(local)
     return (None if local else effort), source
 
@@ -267,13 +284,47 @@ def _effort_caps(layers: list[tuple[str, dict]], model_id: str | None, issues: l
     for name, value in layers:
         caps = [value.get("maxEffortLevel")]
         if key is not None:
-            caps += [entry.get("maxEffortLevel") for entry in _model_entries(name, value, key, [])]
+            own = [entry["maxEffortLevel"] for entry in _model_entries(name, value, key, [])
+                   if "maxEffortLevel" in entry]
+            if own:
+                # "That entry replaces this key for the model only within the settings source
+                # that sets both" (settings-reference maxEffortLevel; claude-rco-1 NB3 on #1744).
+                caps = own
         elif isinstance(value.get("modelSettings"), dict):
             # Unknown model: any per-model cap in the file may be its own.
             caps += [entry.get("maxEffortLevel") for entry in value["modelSettings"].values()
                      if isinstance(entry, dict)]
         if any(cap is not None and cap != "max" for cap in caps):
             issues.append(f"effort_cap_in_{name}")
+
+
+def _thinking_issues(layers: list[tuple[str, dict]], model_id: str | None, env: Mapping[str, str]) -> list[str]:
+    """Issues when thinking may be off for this model (claude-rco-1 NB4 on #1744)."""
+    if model_id is None:
+        return []
+    key = canonical_claude_model(model_id)
+    if key in THINKING_ALWAYS_ON or key.startswith(THINKING_ALWAYS_ON_PREFIXES):
+        return []
+    issues: list[str] = []
+    budget = env.get("MAX_THINKING_TOKENS")
+    if _text(env.get("CLAUDE_CODE_DISABLE_THINKING")) not in (None, "0"):
+        # Omits the thinking parameter; "the model may still think" - not decidable.
+        issues.append("thinking_parameter_omitted:CLAUDE_CODE_DISABLE_THINKING")
+    if budget is not None:
+        text = _text(budget)
+        if text == "0":
+            issues.append("thinking_off:MAX_THINKING_TOKENS")
+        elif text is None or not text.isdigit():
+            issues.append("thinking_budget_unreadable:MAX_THINKING_TOKENS")
+        return issues                       # a positive budget turns thinking on over the setting
+    for name, value in layers:
+        if "alwaysThinkingEnabled" in value:   # a plain key: the highest-precedence file decides
+            if value["alwaysThinkingEnabled"] is False:
+                issues.append(f"thinking_off:alwaysThinkingEnabled_in_{name}")
+            elif value["alwaysThinkingEnabled"] is not True:
+                issues.append(f"alwaysThinkingEnabled_not_a_boolean_in_{name}")
+            break
+    return issues
 
 
 def _result(provider: str, model: str | None, effort: str | None, model_source: str, effort_source: str,
@@ -386,6 +437,7 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
     else:
         effort, effort_source = _settings_effort(layers, model_id, issues)
     _effort_caps(layers, model_id, issues)
+    issues.extend(_thinking_issues(layers, model_id, env))
     if effort_source == "builtin_default":
         issues.append("effort_from_model_tuned_default")
     if effort == "auto":

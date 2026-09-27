@@ -59,18 +59,35 @@ dated id use the `claude-opus-5-5` and undated entries. An alias, suffixed or da
 **key** for the model is not documented as read, so it fails closed.
 
 These also fail closed:
-- any `maxEffortLevel` cap below `max` that may apply to the model, top-level or per
-  model, in any file (a cap lowers every source, `--effort` and the variable included);
+- any `maxEffortLevel` cap below `max` that may apply to the model, in any file (a cap
+  lowers every source, `--effort` and the variable included). Within one file a
+  model's own `maxEffortLevel` replaces the file's top-level cap for that model, so
+  `max` there exempts it from that file's cap (claude-rco-1 NB3);
+- a settings level the CLI does not accept: `max` or `ultracode` in `effortLevel` or
+  `modelSettings` ("max isn't accepted as a level in either key"). Through
+  `--effort` or `CLAUDE_CODE_EFFORT_LEVEL`, `max` stays a level (claude-rco-1 NB1);
 - `--effort` other than `xhigh` together with `ultracode: true` (their order is not
   documented);
 - `CLAUDE_CODE_EFFORT_LEVEL=ultracode` (documented as not accepted);
-- a settings `env` block that sets `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_MODEL` or
-  `CLAUDE_CODE_EFFORT_LEVEL` (its order against the process environment is not
-  documented);
+- a settings `env` block that sets `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_MODEL`,
+  `CLAUDE_CODE_EFFORT_LEVEL`, `MAX_THINKING_TOKENS` or `CLAUDE_CODE_DISABLE_THINKING`
+  (its order against the process environment is not documented);
 - a non-string `model` or `effortLevel`, a non-boolean `ultracode`, and a malformed
   `modelSettings`.
 
 `auto`, from a file or the variable, means the model's tuned default, which is unknown.
+
+**Thinking** (claude-rco-1 NB4). A profile's effort describes a thinking session. On
+every model except Opus 5.5 and the Fable models, thinking can be turned off, and the
+result is then unknown:
+- `MAX_THINKING_TOKENS=0` ("Set to 0 to disable thinking on the Anthropic API, except on
+  Opus 5.5 and the Fable models"), or a budget that is not a whole number;
+- `CLAUDE_CODE_DISABLE_THINKING` other than `0`, which omits the thinking parameter:
+  "the model may still think", so the outcome is not decidable;
+- `alwaysThinkingEnabled: false` in the highest-precedence file that sets the key,
+  unless a positive `MAX_THINKING_TOKENS` turns thinking back on for the session.
+
+This matters for Sonnet 5, the reviewer lanes' default.
 
 **Codex CLI:**
 1. `--model` and `-c model_reasoning_effort=` on argv;

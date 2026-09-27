@@ -414,7 +414,8 @@ def test_the_effort_env_beats_argv(tmp_path):
     assert (r["effort"], r["effort_source"], r["resolved"]) == ("low", "env:CLAUDE_CODE_EFFORT_LEVEL", True)
 
 
-@pytest.mark.parametrize("key", ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"])
+@pytest.mark.parametrize("key", ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
+                                 "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING"])
 def test_a_settings_env_block_that_sets_model_or_effort_is_unknown(tmp_path, key):
     c = Claude(tmp_path)
     model, effort = _lane_default()
@@ -650,3 +651,104 @@ def test_a_non_boolean_ultracode_fails_closed(tmp_path):
     js(c.user, {**OPUS_HIGH, "ultracode": "yes"})
     r = c.resolve()
     assert r["resolved"] is False and "ultracode_not_a_boolean_in_user" in r["issues"]
+
+
+# ---------------------------------------------------------------- claude-rco-1 NB1/NB3/NB4 on #1744
+
+@pytest.mark.parametrize("where", ["top", "saved"])
+@pytest.mark.parametrize("level,accepted", [("max", False), ("ultracode", False), ("xhigh", True), ("low", True)])
+def test_a_settings_level_the_cli_does_not_accept_fails_closed(tmp_path, where, level, accepted):
+    # settings-reference: "max isn't accepted as a level in either key"; ultracode has its own key.
+    c = Claude(tmp_path)
+    if where == "top":
+        js(c.worktree / ".claude" / "settings.json", {"effortLevel": level})
+        js(c.user, {"model": "claude-opus-5-5"})
+    else:
+        js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": level}}})
+    r = c.resolve()
+    assert r["resolved"] is accepted
+    assert (f"effortLevel_not_accepted:{level}" in r["issues"]) is (not accepted)
+
+
+def test_max_through_argv_or_env_is_still_a_level(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, OPUS_HIGH)
+    assert (c.resolve(argv_effort="max")["effort"], c.resolve(argv_effort="max")["resolved"]) == ("max", True)
+    r = c.resolve(env={"CLAUDE_CODE_EFFORT_LEVEL": "max"})
+    assert (r["effort"], r["resolved"]) == ("max", True)
+
+
+@pytest.mark.parametrize("own,capped", [("max", False), ("low", True)])
+def test_a_per_model_cap_replaces_the_files_top_level_cap(tmp_path, own, capped):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json",
+       {"maxEffortLevel": "medium", "modelSettings": {"claude-opus-5-5": {"maxEffortLevel": own}}})
+    js(c.user, OPUS_HIGH)
+    assert ("effort_cap_in_project" in c.resolve()["issues"]) is capped
+
+
+def test_another_models_cap_does_not_replace_the_top_level_cap(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json",
+       {"maxEffortLevel": "medium", "modelSettings": {"claude-sonnet-5": {"maxEffortLevel": "max"}}})
+    js(c.user, OPUS_HIGH)
+    assert "effort_cap_in_project" in c.resolve()["issues"]
+
+
+SONNET_XHIGH = {"model": "claude-sonnet-5", "effortLevel": "xhigh"}
+
+
+@pytest.mark.parametrize("env,issue", [
+    ({"MAX_THINKING_TOKENS": "0"}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": " 0 "}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": "lots"}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": ""}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),
+    ({"CLAUDE_CODE_DISABLE_THINKING": "1"}, "thinking_parameter_omitted:CLAUDE_CODE_DISABLE_THINKING"),
+])
+def test_thinking_that_may_be_off_fails_closed_on_the_reviewer_default(tmp_path, env, issue):
+    # env-vars MAX_THINKING_TOKENS: "Set to 0 to disable thinking on the Anthropic API, except on
+    # Opus 5.5 and the Fable models". Sonnet 5 is the reviewer lanes' default (NB4).
+    c = Claude(tmp_path)
+    js(c.user, SONNET_XHIGH)
+    r = c.resolve(env=env)
+    assert r["resolved"] is False and issue in r["issues"]
+    assert classify(CATALOG, "claude-rco-1", r)["verdict"] == "unknown"
+
+
+@pytest.mark.parametrize("env", [{}, {"MAX_THINKING_TOKENS": "16000"}, {"CLAUDE_CODE_DISABLE_THINKING": "0"}])
+def test_thinking_on_resolves(tmp_path, env):
+    c = Claude(tmp_path)
+    js(c.user, SONNET_XHIGH)
+    assert c.resolve(env=env)["resolved"] is True
+
+
+@pytest.mark.parametrize("value,issue", [(False, "thinking_off:alwaysThinkingEnabled_in_user"),
+                                         ("no", "alwaysThinkingEnabled_not_a_boolean_in_user")])
+def test_always_thinking_disabled_fails_closed(tmp_path, value, issue):
+    c = Claude(tmp_path)
+    js(c.user, {**SONNET_XHIGH, "alwaysThinkingEnabled": value})
+    r = c.resolve()
+    assert r["resolved"] is False and issue in r["issues"]
+
+
+def test_a_positive_budget_turns_thinking_on_over_the_setting(tmp_path):
+    # settings-reference alwaysThinkingEnabled: "a positive value turns thinking on even when this key is false".
+    c = Claude(tmp_path)
+    js(c.user, {**SONNET_XHIGH, "alwaysThinkingEnabled": False})
+    assert c.resolve(env={"MAX_THINKING_TOKENS": "16000"})["resolved"] is True
+
+
+def test_a_higher_file_decides_always_thinking(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {**SONNET_XHIGH, "alwaysThinkingEnabled": False})
+    js(c.worktree / ".claude" / "settings.json", {"alwaysThinkingEnabled": True})
+    assert c.resolve()["resolved"] is True
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-5-5[1m]", "claude-fable-5-1", "claude-fable-6"])
+def test_models_that_always_think_ignore_the_thinking_switches(tmp_path, model):
+    c = Claude(tmp_path)
+    js(c.user, {"model": model, "alwaysThinkingEnabled": False,
+                "modelSettings": {model.replace("[1m]", ""): {"effortLevel": "high"}}})
+    r = c.resolve(env={"MAX_THINKING_TOKENS": "0", "CLAUDE_CODE_DISABLE_THINKING": "1"})
+    assert r["resolved"] is True, r["issues"]

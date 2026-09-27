@@ -287,7 +287,8 @@ def test_cli_prints_one_report_and_exits_zero(tmp_path, capsys):
     reset = int((now + timedelta(days=5)).timestamp())
     store = make_store(tmp_path / "obs.sqlite", [codex_row(5, now - timedelta(hours=10), reset),
                                                  codex_row(6, now - timedelta(minutes=1), reset)])
-    code = main(["--store", str(store), "--current-profiles", json.dumps({"codex-lead-1": "codex-gpt-5.6-sol-medium"})])
+    code = main(["--store", str(store), "--current-profiles", json.dumps({"codex-lead-1": "codex-gpt-5.6-sol-medium"}),
+                 "--catalog", str(ROOT / "tests" / "fixtures" / "lane_profile_catalog_frozen_20260927.json")])
     report = json.loads(capsys.readouterr().out)
     assert code == 0 and report["execution_allowed"] is False
     assert report["lanes"]["codex-lead-1"]["target_profile"] == "codex-gpt-6-sol-high"

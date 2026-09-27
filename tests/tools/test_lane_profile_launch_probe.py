@@ -45,6 +45,7 @@ def record(**overrides) -> dict:
 
 
 def run_probe(root, lane="claude-rco-1", **kwargs):
+    kwargs.setdefault("catalog_path", CATALOG_PATH)          # the frozen fixture, not the live catalog
     return probe(root, lane, "start-wd-agent", "native", "native", now=NOW, **kwargs)
 
 
@@ -190,7 +191,7 @@ def test_the_packaged_closure_runs_isolated_like_the_bridge_wrapper(tmp_path):
     result = subprocess.run(
         [sys.executable, "-S", "-B", str(code_root / "tools" / "lane_profile_launch_probe.py"),
          "--runtime-root", str(runtime), "--lane", "claude-rco-1", "--launcher", "start-wd-agent",
-         "--argv-model", "native", "--argv-effort", "native"],
+         "--argv-model", "native", "--argv-effort", "native", "--catalog", str(CATALOG_PATH)],
         capture_output=True, text=True, timeout=60, cwd=str(tmp_path), env=env)
     assert result.returncode == 0, result.stderr
     entry = json.loads(result.stdout.strip().splitlines()[-1])

@@ -115,8 +115,9 @@ def test_a_raising_resolver_is_attention_not_a_crash(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- probe main(): the only signal is the code
 
 def run_main(tmp_path, capsys, *extra):
+    catalog = [] if "--catalog" in extra else ["--catalog", str(CATALOG)]
     code = main(["--runtime-root", str(tmp_path / "rt"), "--lane", "codex-lead-1", "--launcher", "start-wd-agent",
-                 "--argv-model", "native", "--argv-effort", "native", *extra])
+                 "--argv-model", "native", "--argv-effort", "native", *catalog, *extra])
     return code, json.loads(capsys.readouterr().out)
 
 

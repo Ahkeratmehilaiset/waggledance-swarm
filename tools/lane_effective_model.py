@@ -373,6 +373,20 @@ def _uncertain_entries(value: dict, key: str) -> list[tuple[str, dict]]:
     return found
 
 
+def _malformed_entry_for(value: dict, key: str) -> bool:
+    """True when a ``modelSettings`` entry that is or may be this model's is not an object."""
+    entries = value.get("modelSettings")
+    if not isinstance(entries, dict):
+        return False
+    for entry_key, entry in entries.items():
+        if isinstance(entry, dict):
+            continue
+        entry_model, key_issue = normalize_claude_model(entry_key)
+        if key_issue or canonical_claude_model(entry_model) == key:
+            return True
+    return False
+
+
 def _settings_effort(layers: list[tuple[str, dict]], model_id: str | None,
                      issues: list[str]) -> tuple[str | None, str]:
     """(effort, source) from settings files, or (None, source) with an issue when not decidable."""
@@ -424,6 +438,10 @@ def _effort_caps(layers: list[tuple[str, dict]], model_id: str | None, issues: l
             # documented as read or ignored, so it counts (Grok third-family review of #1745).
             caps += [entry.get("maxEffortLevel") for entry_key, entry in _uncertain_entries(value, key)]
             if "modelSettings" in value and not isinstance(value["modelSettings"], dict):
+                caps.append("undecidable")
+            elif _malformed_entry_for(value, key):
+                # A non-object entry that may be this model's: its cap is undecidable
+                # (codex-tools-1 B4 on #1745 at 638299db).
                 caps.append("undecidable")
         elif isinstance(value.get("modelSettings"), dict):
             # Unknown model: any per-model cap in the file may be its own.

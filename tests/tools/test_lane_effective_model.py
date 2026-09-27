@@ -1181,3 +1181,22 @@ def test_deep_toml_nesting_is_a_clean_refusal(tmp_path):
 ])
 def test_only_the_documented_context_suffix_is_stripped(value, expected):
     assert normalize_claude_model(value) == expected
+
+
+
+@pytest.mark.parametrize("entry_key", ["claude-opus-5-5", "claude-opus-5-5[1m]", "opus"])
+@pytest.mark.parametrize("bad", ["low", 3, None, ["low"]])
+def test_a_malformed_entry_that_may_be_the_models_counts_below_the_deciding_file(tmp_path, entry_key, bad):
+    # codex-tools-1 B4 on #1745: a non-object entry for (or maybe for) this model is an undecidable cap.
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "xhigh"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {entry_key: bad}})
+    r = c.resolve()
+    assert r["resolved"] is False and "effort_cap_in_user" in r["issues"]
+
+
+def test_a_malformed_entry_for_another_model_is_harmless(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "xhigh"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-sonnet-5": "low"}})
+    assert c.resolve()["resolved"] is True

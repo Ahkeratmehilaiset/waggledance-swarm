@@ -218,7 +218,7 @@ class BridgeEvent(BaseModel):
         if not isinstance(self.payload, Mapping):
             raise ValueError("triage_disposition payload must be an object")
         disposition = self.payload.get("disposition")
-        if disposition not in {"ack_dispatch", "defer"}:
+        if not isinstance(disposition, str) or disposition not in {"ack_dispatch", "defer"}:
             raise ValueError(
                 "triage_disposition payload.disposition must be "
                 "ack_dispatch or defer"

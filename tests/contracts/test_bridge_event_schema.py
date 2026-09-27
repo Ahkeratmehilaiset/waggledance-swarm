@@ -275,6 +275,20 @@ def test_claim_like_events_require_task_id() -> None:
         validate_event(_good_event(type="claim", task_id="", to=""))
 
 
+@pytest.mark.parametrize("disposition", [[], {}, ["defer"], {"value": "defer"}])
+def test_unhashable_triage_disposition_is_reported_not_crashed(tmp_path, disposition):
+    event = _good_event(type="triage_disposition", status="recorded", payload={
+        "disposition": disposition, "target_event_id": "event:1",
+    })
+    path = tmp_path / "events.jsonl"
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    result = validate_event_file(path)
+    assert result.checked == 1
+    assert result.invalid == 1
+    assert result.valid == 0
+    assert "payload.disposition" in result.issues[0].error
+
+
 def test_payload_parse_error_objects_remain_valid() -> None:
     model = validate_event(
         _good_event(payload={"raw": "{not-json}", "parse_error": "bad JSON"})

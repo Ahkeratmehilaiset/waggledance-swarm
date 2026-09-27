@@ -55,6 +55,23 @@ means the model's tuned default, which is unknown.
 A project `.codex/config.toml` inside the worktree that sets a model, effort or profile
 is reported with `project_config_precedence_unverified`, and the result is unknown.
 
+## Managed settings
+
+Claude Code managed settings arrive in two documented Windows forms, and both are checked:
+- the `C:\Program Files\ClaudeCode\managed-settings.json` file (the legacy
+  `C:\ProgramData` path is not read by the CLI);
+- a `Settings` registry value (REG_SZ or REG_EXPAND_SZ) under
+  `SOFTWARE\Policies\ClaudeCode`, in HKLM (Group Policy or MDM) or in HKCU (user-scoped).
+
+Any of these makes the result `managed_settings_present`, and so unknown:
+- a present, non-blank value;
+- a key that exists but cannot be read;
+- a registry that raises.
+
+Managed settings can pin or cap the model and effort, which this module does not model
+(claude-rco-2 review of #1744). The tests exercise the real registry reader against a
+throwaway HKCU key; the real policy key is never written.
+
 ## Fail closed
 
 The resolver never guesses. A value from a built-in default, an alias (`opus`,

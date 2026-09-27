@@ -1294,13 +1294,23 @@ def test_typed_stale_head_cannot_fall_back_to_current_message_head(
 
     report = _evaluate(events=events)
 
-    if event_indexes == (2,):
-        assert report["eligible"] is True
-        assert report["decision"] == "promotion_eligible"
-    else:
-        assert report["eligible"] is False
-        assert report["decision"] == "promotion_not_eligible"
+    # A stale typed head is a structured claim for another head on EVERY event, the RCO pass included:
+    # the message naming the current head cannot rescue it (PR1740 fail-closed head binding).
+    assert report["eligible"] is False
+    assert report["decision"] == "promotion_not_eligible"
+    if set(event_indexes) & {0, 1}:
         assert "bridge consensus incomplete" in report["reasons"]
+    if 2 in event_indexes:
+        assert "missing exact-head RCO_PASS from recognized non-author RCO" in report["reasons"]
+    else:
+        assert "missing exact-head RCO_PASS from recognized non-author RCO" not in report["reasons"]
+
+
+def test_a_matching_typed_head_on_the_rco_pass_still_qualifies_beside_a_stale_consensus_head_twin() -> None:
+    # Success twin of the test above: only the RCO event differs (its typed head names the current head).
+    events = _full_events()
+    assert events[2]["payload"]["head"] == HEAD
+    assert _evaluate(events=events)["eligible"] is True
 
 
 @pytest.mark.parametrize(

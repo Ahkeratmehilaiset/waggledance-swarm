@@ -69,6 +69,20 @@ function Test-BridgeMessageAnswerStatus {
     ) -contains $Status
 }
 
+function Test-BridgeInterimMessageStatus {
+    param([AllowEmptyString()] [string] $Status)
+    Set-StrictMode -Version Latest
+
+    # Queue admission and progress receipts are not task completion. Keep
+    # unknown custom result statuses eligible for exact-bound closure.
+    return @(
+        'queued','queued_for_processing','queue_accepted',
+        'accepted','accepted_for_processing','pending','started',
+        'in_progress','processing','running','request','requested',
+        'open','proposal','waiting_for_result'
+    ) -contains $Status
+}
+
 function Test-BridgeRequesterClosureStatus {
     param([AllowEmptyString()] [string] $Status)
     Set-StrictMode -Version Latest
@@ -175,6 +189,7 @@ function Test-BridgeAnswerEvent {
     $status = [string]$Event.status
 
     if ($type -eq 'message') {
+        if (Test-BridgeInterimMessageStatus -Status $status) { return $false }
         if (Test-BridgeMessageAnswerStatus -Status $status) { return $true }
         if (Test-BridgeRequestLikeEvent -Event $Event) { return $false }
         return $true

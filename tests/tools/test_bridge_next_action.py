@@ -425,7 +425,7 @@ def test_legacy_custom_message_status_is_not_an_answer_without_binding() -> None
 
 
 @pytest.mark.parametrize(
-    "status", ["queued", "queue_accepted", "pending", "in_progress", "request"]
+    "status", ["queued", "queue_accepted", "accepted", "pending", "in_progress", "request"]
 )
 def test_exact_bound_queue_notice_is_not_a_completed_answer(status: str) -> None:
     request, reply = _restart_bound_request_and_reply()
@@ -440,6 +440,21 @@ def test_exact_bound_queue_notice_is_not_a_completed_answer(status: str) -> None
 
     assert report["action"] == "answer_incoming"
     assert report["incoming"]["request_id"] == "restart-request-1"
+
+
+def test_late_actual_answer_closes_after_interim_receipt() -> None:
+    request, reply = _restart_bound_request_and_reply()
+    receipt = dict(reply, status="accepted")
+    reply["ts_utc"] = "2026-09-27T19:02:00Z"
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, receipt, reply],
+        claims=[],
+        now_utc=datetime(2026, 9, 27, 19, 5, tzinfo=timezone.utc),
+    )
+
+    assert report["open_incoming_count"] == 0
 
 
 def test_open_request_closure_scan_is_indexed(monkeypatch) -> None:

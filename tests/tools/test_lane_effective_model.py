@@ -915,3 +915,38 @@ def test_a_cut_first_line_is_never_trusted_even_when_it_parses(tmp_path, monkeyp
     r = c.resolve(resume=path)
     assert (r["model"], r["resolved"]) == (None, False)
     assert "resume_transcript_model_undecidable" in r["issues"]
+
+
+# ---------------------------------------------------------------- availableModels (claude-rco-1 review of #1745)
+
+@pytest.mark.parametrize("allowed", [["opus"], ["claude-sonnet-5"], []])
+def test_an_available_models_list_in_any_file_fails_closed(tmp_path, allowed):
+    # model-config "Restrict model selection": a blocked `model` setting "is replaced ... and the
+    # session starts on the default model"; the list's matching rules are not modelled here.
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "availableModels": allowed})
+    r = c.resolve()
+    assert r["resolved"] is False and "available_models_in_user" in r["issues"]
+
+
+def test_an_available_models_list_in_a_project_file_fails_closed(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
+    js(c.worktree / ".claude" / "settings.json", {"availableModels": ["opus"]})
+    assert "available_models_in_project" in c.resolve()["issues"]
+
+
+
+# ---------------------------------------------------------------- third-party providers (claude-rco-1 NB-a on #1745)
+
+@pytest.mark.parametrize("key", ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                                 "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                                 "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "ANTHROPIC_BASE_URL"])
+def test_a_third_party_provider_or_gateway_fails_closed(tmp_path, key):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(env={key: "1"})
+    assert r["resolved"] is False and f"third_party_provider:{key}" in r["issues"]
+    assert c.resolve(env={key: ""})["resolved"] is True                      # empty is unset
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high", "env": {key: "1"}})
+    assert f"env_block_sets_{key}_in_user" in c.resolve()["issues"]

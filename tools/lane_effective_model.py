@@ -120,8 +120,14 @@ RESUME_WINS_OVER_TRANSCRIPT = ("argv", "env:ANTHROPIC_MODEL", "env:ANTHROPIC_DEF
 TRANSCRIPT_TAIL_BYTES = 8 * 1024 * 1024
 _THREAD = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$")
 _MODEL_COMMAND = "<command-name>/model</command-name>"
+# Another provider or a gateway changes the model ids and the resume semantics ("the transcript
+# model isn't restored at all" on provider deployment ids, model-config.md). The fleet uses the
+# Anthropic API; any of these set fails closed (claude-rco-1 NB-a on #1745).
+THIRD_PARTY_ENV = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                   "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                   "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "ANTHROPIC_BASE_URL")
 ENV_MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
-                  "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING", "CLAUDE_CONFIG_DIR")
+                  "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING", "CLAUDE_CONFIG_DIR") + THIRD_PARTY_ENV
 
 
 def claude_config_dir(env: Mapping[str, str]) -> Path:
@@ -469,6 +475,15 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
                 issues.append(f"{key}_not_a_string_in_{name}")
         if "ultracode" in value and not isinstance(value["ultracode"], bool):
             issues.append(f"ultracode_not_a_boolean_in_{name}")
+        if "availableModels" in value:
+            # "Any file" scope. A blocked model setting (or restored resume model) is replaced by
+            # the default model at startup (model-config.md "Restrict model selection"); its
+            # alias, prefix and substitution matching is not modelled here - fail closed.
+            issues.append(f"available_models_in_{name}")
+
+    for key in THIRD_PARTY_ENV:
+        if _text(env.get(key)):
+            issues.append(f"third_party_provider:{key}")
 
     # ---- model
     model, model_source = None, "builtin_default"

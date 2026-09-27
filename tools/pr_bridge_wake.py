@@ -220,6 +220,11 @@ def emit_bridge_event(
 ) -> dict[str, Any]:
     root = resolve_bridge_root(bridge_root).resolve()
     pinned_bin = os.environ.get("WD_BRIDGE_BIN", "").strip()
+    if not pinned_bin and bridge_root is None:
+        raise _invalid(
+            "missing_code_pin",
+            "Default emission requires WD_BRIDGE_BIN; explicit bridge_root is required for legacy/test mode",
+        )
     writer = (Path(pinned_bin) if pinned_bin else root / "bin") / "Write-AgentEvent.ps1"
     if not writer.exists():
         raise _invalid("missing_writer", f"Write-AgentEvent.ps1 not found at {writer}")

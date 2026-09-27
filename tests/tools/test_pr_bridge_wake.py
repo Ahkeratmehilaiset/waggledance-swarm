@@ -208,6 +208,17 @@ def test_emit_missing_pin_never_falls_back(tmp_path, monkeypatch):
     assert exc.value.report["decision"] == "missing_writer"
 
 
+def test_default_emit_without_code_pin_refuses_legacy_runtime_writer(tmp_path, monkeypatch):
+    monkeypatch.delenv("WD_BRIDGE_BIN", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))
+    writer = tmp_path / "bin/Write-AgentEvent.ps1"
+    writer.parent.mkdir()
+    writer.write_text("# legacy", encoding="utf-8")
+    with pytest.raises(PrBridgeWakeError) as exc:
+        emit_bridge_event({}, runner=lambda _: pytest.fail("must not invoke"))
+    assert exc.value.report["decision"] == "missing_code_pin"
+
+
 def test_emit_bridge_event_reports_queued_receipt_without_claiming_canonical(
     tmp_path: Path,
 ) -> None:

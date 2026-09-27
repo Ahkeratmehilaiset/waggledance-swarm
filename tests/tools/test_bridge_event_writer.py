@@ -85,6 +85,18 @@ def test_python_writer_accepts_matching_envelope_copy_and_nested_observation(key
     assert json.loads(bridge_writer._event_row_bytes(event))["payload"] == event["payload"]
 
 
+@pytest.mark.parametrize("key", MODERN_ENVELOPE)
+@pytest.mark.parametrize("location", ["payload", "envelope"])
+@pytest.mark.parametrize("matching", [False, True])
+def test_python_writer_rejects_case_variant_contract_keys(key, location, matching):
+    event = {**_event(), **MODERN_ENVELOPE}
+    event["payload"] = {}
+    destination = event["payload"] if location == "payload" else event
+    destination[key.upper()] = event[key] if matching else "poisoned"
+    with pytest.raises(BridgeEventWriteError):
+        bridge_writer._event_row_bytes(event)
+
+
 def _rows(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 

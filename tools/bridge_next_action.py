@@ -1495,7 +1495,7 @@ def _merge_blocking_signal_tokens(event: Mapping[str, Any]) -> set[str]:
 
 
 def _is_ack_or_infrastructure(event: Mapping[str, Any]) -> bool:
-    return _event_type(event) in {"heartbeat", "liveness"} or bool(
+    return _event_type(event) in {"heartbeat", "liveness", "consumer_tick"} or bool(
         _status_tokens(_event_status(event)).intersection({*KNOWN_ACK_STATUSES, "ack"})
     )
 

@@ -28,7 +28,7 @@ from tools.bridge_event_writer import (
     _checkpoint_bytes,
     write_bridge_event,
 )
-from waggledance.core.bridge_event_schema import KNOWN_EVENT_TYPES
+from waggledance.core.bridge_event_schema import KNOWN_EVENT_TYPES, validate_event
 
 
 def _event(index: int = 1, *, agent: str = "codex") -> dict[str, object]:
@@ -52,6 +52,37 @@ def _event(index: int = 1, *, agent: str = "codex") -> dict[str, object]:
 
 def _canonical(root: Path) -> Path:
     return root / "shared" / "events.jsonl"
+
+
+MODERN_ENVELOPE = {
+    "agent": "codex", "agent_uuid": "11111111-2222-3333-4444-555555555555",
+    "session_id": "current", "run_id": "current", "task_id": "fixture/task",
+    "request_id": "request-1", "request_digest": "a" * 64,
+    "expected_responders": {"claude": {"session_id": "peer"}},
+    "in_reply_to_request_id": "request-0", "in_reply_to_request_digest": "b" * 64,
+    "in_reply_to_requester": {"agent": "claude", "session_id": "peer"},
+}
+
+
+@pytest.mark.parametrize("key", MODERN_ENVELOPE)
+@pytest.mark.parametrize("payload_only", [False, True])
+def test_python_writer_rejects_modern_envelope_poisoning(key, payload_only):
+    event = {**_event(), **MODERN_ENVELOPE}
+    event["payload"] = {key: event[key] if payload_only else "different"}
+    if payload_only:
+        del event[key]
+    with pytest.raises(ValueError, match="payload contract field"):
+        validate_event(event)
+    # Replay admission may reject missing mandatory fields even earlier.
+    with pytest.raises(BridgeEventWriteError):
+        bridge_writer._event_row_bytes(event)
+
+
+@pytest.mark.parametrize("key", MODERN_ENVELOPE)
+def test_python_writer_accepts_matching_envelope_copy_and_nested_observation(key):
+    event = {**_event(), **MODERN_ENVELOPE}
+    event["payload"] = {key: event[key], "result": {"session_id": "observed-peer"}, "nonce": "legacy-nonce"}
+    assert json.loads(bridge_writer._event_row_bytes(event))["payload"] == event["payload"]
 
 
 def _rows(path: Path) -> list[dict[str, object]]:

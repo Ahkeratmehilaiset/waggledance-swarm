@@ -134,12 +134,31 @@ def validate_record(record: Any, catalog: dict, catalog_sha256: str, *,
     return record
 
 
+def _refuse_reparse_ancestry(path: Path) -> None:
+    """Refuse a record path whose file or ANY existing ancestor is a symlink or junction.
+
+    Checking only the final component (claude-rco-2 residual A) still lets a
+    junctioned lane_profiles directory redirect reads and writes outside the
+    runtime root. This walks every ancestor, the way read_native_codex and
+    Assert-WdTurnPath do. Components that do not exist yet are skipped; the
+    writer re-checks after creating its directory.
+    """
+    for component in (path, *path.parents):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RecordError(f"record path unreadable: {exc.__class__.__name__}") from None
+        if component.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise RecordError("record path or an ancestor is a symlink or reparse point")
+
+
 def read_record(path: str | Path) -> dict:
     """Read one record file, bounded, plain JSON; a missing file is RecordError too."""
     path = Path(path)
+    _refuse_reparse_ancestry(path)
     try:
-        if path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400:
-            raise RecordError("record path is a symlink or reparse point")
         with path.open("rb") as stream:
             data = stream.read(MAX_RECORD_BYTES + 1)
     except FileNotFoundError:
@@ -174,7 +193,9 @@ def _pairs(pairs: list) -> dict:
 def write_record(path: str | Path, record: dict) -> None:
     """Atomically replace the record: temp file in the same directory, fsync, rename."""
     path = Path(path)
+    _refuse_reparse_ancestry(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_reparse_ancestry(path)
     payload = json.dumps(record, indent=2, sort_keys=True).encode("utf-8")
     if len(payload) > MAX_RECORD_BYTES:
         raise RecordError("record exceeds the size bound")

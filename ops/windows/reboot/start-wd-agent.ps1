@@ -1265,28 +1265,72 @@ function Invoke-WdLaneProfileShadowRead {
   # pinned bridge package and log what a profile switch would do. A read, never
   # a switch: this returns nothing the caller uses, it never changes the model,
   # effort or argv, and any failure launches native exactly as before.
+  # PR-7b launch preflight: with -Cli, the probe also resolves the model and
+  # effort this launch will ACTUALLY get and classifies them against the
+  # catalog. Only the probe's status code is read: 3 means attention, which is
+  # answered with one bridge status event. The launch always continues (alert
+  # mode); the resolved values stay in the lane's launch-shadow log.
   param(
     [Parameter(Mandatory)] [string] $BundleRoot,
     [Parameter(Mandatory)] [string] $RuntimeRoot,
     [Parameter(Mandatory)] [string] $Lane,
     [Parameter(Mandatory)] [string] $Launcher,
     [string] $Model = '',
-    [string] $Effort = ''
+    [string] $Effort = '',
+    [string] $Cli = '',
+    [string] $Worktree = '',
+    [string] $ClaudeCliSettings = '',
+    [string] $Writer = '',
+    [string] $Role = '',
+    [string] $AgentUuid = '',
+    [string] $RunId = '',
+    [string[]] $Capabilities = @()
   )
   # Windows PowerShell 5.1 drops an empty native argument; never send one.
   if ([string]::IsNullOrWhiteSpace($Model)) { $Model = 'unset' }
   if ([string]::IsNullOrWhiteSpace($Effort)) { $Effort = 'unset' }
+  $probeArguments = @('--runtime-root', $RuntimeRoot, '--lane', $Lane, '--launcher', $Launcher,
+    '--argv-model', $Model, '--argv-effort', $Effort)
+  if ($Cli -cin @('claude', 'codex')) { $probeArguments += @('--cli', $Cli) }
+  if (-not [string]::IsNullOrWhiteSpace($Worktree)) { $probeArguments += @('--worktree', $Worktree) }
+  if (-not [string]::IsNullOrWhiteSpace($ClaudeCliSettings)) {
+    $probeArguments += @('--claude-cli-settings', $ClaudeCliSettings)
+  }
+  $attention = $false
   try {
     $probeOutput = @(Invoke-WdBridgePythonTool -BundleRoot $BundleRoot `
-      -Tool 'tools/lane_profile_launch_probe.py' -ToolArguments @(
-        '--runtime-root', $RuntimeRoot, '--lane', $Lane, '--launcher', $Launcher,
-        '--argv-model', $Model, '--argv-effort', $Effort))
+      -Tool 'tools/lane_profile_launch_probe.py' -ToolArguments $probeArguments)
     $probeLine = [string]($probeOutput | Select-Object -Last 1)
     if ($probeLine.Length -gt 600) { $probeLine = $probeLine.Substring(0, 600) + '...' }
     Write-Host ('  lane profile (shadow read, argv unchanged): {0}' -f $probeLine)
+    $attention = (Get-WdBridgeCodeLastExitCode) -eq 3
   } catch {
     Write-Host ('  lane profile (shadow read) unavailable, launching native: {0}' -f
       $_.Exception.GetType().Name)
+  }
+  if ($attention -and -not [string]::IsNullOrWhiteSpace($Writer)) {
+    try {
+      $attentionPayload = [ordered]@{
+        lane = $Lane
+        launcher = $Launcher
+        run_id = $RunId
+        preflight = 'attention'
+        enforcement = 'alert_only'
+        shadow_log = (Join-Path (Join-Path $RuntimeRoot 'lane_profiles') 'launch-shadow.jsonl')
+      } | ConvertTo-Json -Compress
+      $null = @(& $Writer -Agent $Lane -Type status -TaskId 'lane-profile-switching' `
+        -Status launch_preflight_attention -To 'operator,codex-lead-1' `
+        -Message ("Launch preflight: lane $Lane is starting on a model or effort its catalog entry " +
+          'does not allow, or one that cannot be resolved (for example a shared CLI default). ' +
+          'The launch continues in alert mode; the resolved values and their sources are in the ' +
+          'shadow_log entry for this run.') `
+        -RunId $RunId -Role $Role -AgentUuid $AgentUuid -SessionId $RunId `
+        -Capabilities $Capabilities -PayloadJson $attentionPayload)
+      Write-Host '  lane profile preflight: attention event posted'
+    } catch {
+      Write-Host ('  lane profile preflight: attention event could not be posted: {0}' -f
+        $_.Exception.GetType().Name)
+    }
   }
 }
 
@@ -2624,7 +2668,11 @@ if (
 
 if (-not $sourceTreeMode -and -not $DryRun) {
   Invoke-WdLaneProfileShadowRead -BundleRoot $PSScriptRoot -RuntimeRoot $runtimeRoot `
-    -Lane $Agent -Launcher 'start-wd-agent' -Model ([string]$model) -Effort ([string]$effort)
+    -Lane $Agent -Launcher 'start-wd-agent' -Model ([string]$model) -Effort ([string]$effort) `
+    -Cli $(if ($cliName -ieq 'claude.cmd') { 'claude' } elseif ($cliName -ieq 'codex.cmd') { 'codex' } else { '' }) `
+    -Worktree $worktree -ClaudeCliSettings (Join-Path $PSScriptRoot 'wd-claude-event-driven-settings.json') `
+    -Writer $writer -Role ([string]$lane.role) -AgentUuid ([string]$lane.agent_uuid) -RunId $RunId `
+    -Capabilities @($lane.capabilities | ForEach-Object { [string]$_ })
 }
 
 if ($launchTurnMode -ceq 'managed') {

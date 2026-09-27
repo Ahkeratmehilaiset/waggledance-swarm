@@ -12,8 +12,17 @@ It is a read, not a switch. The launcher always keeps its own model, effort and
 argv; it never reads this tool's output to decide anything. Even a decision of
 ``apply`` (possible only in a future signed ``auto`` catalog) is logged as
 ``apply_suppressed``, because PR-4 wires the read and nothing else. Every
-failure prints a ``native`` line and exits 0, so a broken record, catalog or
-log can never block or alter a launch.
+failure prints a ``native`` line, so a broken record, catalog or log can never
+block or alter a launch.
+
+Launch preflight (PR-7b): given ``--cli``, the entry also records the model and
+effort the launch will ACTUALLY get and where each comes from
+(``tools/lane_effective_model``), classified against the catalog. The exit code
+is the only signal the launcher reads: ``0`` when the effective profile is
+``allowed`` (or no ``--cli`` was given), ``3`` ("attention") for anything else,
+including a preflight that could not be evaluated. The launcher answers ``3``
+with one bridge event and still launches (alert mode); refusing is a later,
+separately signed step.
 
 See docs/BRIDGE_LANE_PROFILES.md.
 """
@@ -35,6 +44,9 @@ SCHEMA = "wd.lane-profile-launch-shadow.v1"
 LOG_NAME = "launch-shadow.jsonl"
 MAX_LOG_BYTES = 4 * 1024 * 1024
 LAUNCHERS = ("start-wd-agent", "start-wd-tools-consumer")
+CLIS = ("claude", "codex")
+EXIT_OK, EXIT_ATTENTION = 0, 3
+EFFECTIVE_KEYS = ("provider", "model", "effort", "model_source", "effort_source", "resolved", "issues")
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
 
 
@@ -83,6 +95,38 @@ def probe(runtime_root: str | Path, lane: str, launcher: str, argv_model: str, a
     return entry
 
 
+def preflight(catalog_path: str | Path, lane: str, cli: str, argv_model: str, argv_effort: str, *,
+              worktree: str | Path | None = None, claude_cli_settings: str | Path | None = None,
+              codex_config: str | Path | None = None, claude_user_settings: str | Path | None = None,
+              claude_managed_settings: str | Path | None = None, env: dict | None = None) -> dict:
+    """The effective launch profile and its catalog verdict. Never raises: failure is ``unknown``."""
+    result: dict[str, Any] = {"cli": cli, "effective": None, "verdict": "unknown", "reasons": [], "profile": None}
+    try:
+        from tools.lane_effective_model import DEFAULT_CLAUDE_MANAGED, classify, resolve_claude, resolve_codex
+        from tools.lane_profile_catalog import load_catalog
+        catalog, _ = load_catalog(catalog_path)
+        tree = Path(worktree) if worktree else None
+        if cli == "claude":
+            resolved = resolve_claude(
+                argv_model=argv_model, argv_effort=argv_effort, env=os.environ if env is None else env,
+                user_settings=Path(claude_user_settings) if claude_user_settings
+                else Path.home() / ".claude" / "settings.json",
+                worktree=tree, cli_settings=Path(claude_cli_settings) if claude_cli_settings else None,
+                managed_settings=Path(claude_managed_settings) if claude_managed_settings else DEFAULT_CLAUDE_MANAGED)
+        elif cli == "codex":
+            resolved = resolve_codex(argv_model=argv_model, argv_effort=argv_effort, worktree=tree,
+                                     config=Path(codex_config) if codex_config else Path.home() / ".codex" / "config.toml")
+        else:
+            result["reasons"] = ["cli_unknown"]
+            return result
+        verdict = classify(catalog, lane, resolved)
+        result.update(effective={key: resolved[key] for key in EFFECTIVE_KEYS}, verdict=verdict["verdict"],
+                      reasons=list(verdict["reasons"]), profile=verdict["profile"])
+    except Exception as exc:  # noqa: BLE001 - a preflight that cannot run is attention, never a pass
+        result["reasons"] = [f"preflight_failed:{exc.__class__.__name__}"]
+    return result
+
+
 def append_entry(runtime_root: str | Path, entry: dict) -> str:
     """Append one line to the shadow log; return ``logged`` or why it was not."""
     try:
@@ -113,12 +157,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--argv-model", required=True)
     parser.add_argument("--argv-effort", required=True)
     parser.add_argument("--catalog", default=str(DEFAULT_CATALOG))
+    parser.add_argument("--cli", choices=CLIS, default=None)
+    parser.add_argument("--worktree", default=None)
+    parser.add_argument("--claude-cli-settings", default=None)
+    parser.add_argument("--codex-config", default=None, help="default: ~/.codex/config.toml")
+    parser.add_argument("--claude-user-settings", default=None, help="default: ~/.claude/settings.json")
     args = parser.parse_args(argv)
     entry = probe(args.runtime_root, args.lane, args.launcher, args.argv_model, args.argv_effort,
                   catalog_path=args.catalog)
+    entry["preflight"] = None if args.cli is None else preflight(
+        args.catalog, args.lane, args.cli, args.argv_model, args.argv_effort,
+        worktree=args.worktree, claude_cli_settings=args.claude_cli_settings,
+        codex_config=args.codex_config, claude_user_settings=args.claude_user_settings)
     entry["log"] = append_entry(args.runtime_root, entry)
     print(json.dumps(entry, sort_keys=True, separators=(",", ":")))
-    return 0
+    attention = entry["preflight"] is not None and entry["preflight"]["verdict"] != "allowed"
+    return EXIT_ATTENTION if attention else EXIT_OK
 
 
 if __name__ == "__main__":

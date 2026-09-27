@@ -20,6 +20,14 @@ from waggledance.core.bridge_log_reader import BridgeLineReadResult
 from waggledance.core.work_queue import Claim, claim_task
 
 
+@pytest.fixture(autouse=True)
+def _isolate_lane_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic claim identities must not inherit the invoking live lane."""
+    for key in tuple(os.environ):
+        if key.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_")):
+            monkeypatch.delenv(key, raising=False)
+
+
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
     events_path = path / "shared" / "events.jsonl"
     events_path.parent.mkdir(parents=True)

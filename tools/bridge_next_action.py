@@ -954,12 +954,19 @@ def _build_request_closure_index(
     events: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, str]]:
     """Return latest answer-like event timestamps by task and closing agent."""
-    closure_index: dict[str, Any] = {"_answers": {}, "_versions": {}}
+    closure_index: dict[str, Any] = {
+        "_answers": {}, "_bound_messages": {}, "_versions": {},
+    }
     for event in events:
         if _is_request_like(event):
             version_key = (_event_agent(event), _task_id(event))
             closure_index["_versions"].setdefault(version_key, set()).add(_event_ts(event))
-        if not _is_answer_like(event):
+        answer_like = _is_answer_like(event)
+        if not answer_like and _is_correlated_bound_message(event):
+            closure_index["_bound_messages"].setdefault(
+                _task_id(event), []
+            ).append(event)
+        if not answer_like:
             continue
         closure_index["_answers"].setdefault(_task_id(event), []).append(event)
         event_agent = _event_agent(event)
@@ -995,13 +1002,23 @@ def _request_closed_by_index(
         (_event_agent(request), task_id), ())) > 1
     control = _is_control_signal(request)
     if request_is_bound(request) or ambiguous or control:
-        return any(reply_matches_request(
-            request, answer, agent,
-            requester_closure=_event_agent(answer) == _event_agent(request)
-                and _is_explicit_requester_closure(answer),
-            ambiguous_legacy=ambiguous,
-            require_explicit_correlation=control,
-        ) for answer in closure_index.get("_answers", {}).get(task_id, ()))
+        answer_groups = [closure_index.get("_answers", {}).get(task_id, ())]
+        if request_is_bound(request):
+            answer_groups.append(
+                closure_index.get("_bound_messages", {}).get(task_id, ())
+            )
+        return any(
+            reply_matches_request(
+                request, answer, agent,
+                requester_closure=_event_agent(answer) == _event_agent(request)
+                    and _is_explicit_requester_closure(answer),
+                ambiguous_legacy=ambiguous,
+                require_explicit_correlation=control,
+            )
+            for answers in answer_groups
+            for answer in answers
+            if not _is_interim_bound_status(_event_status(answer))
+        )
     closure_keys = []
     if task_id:
         closure_keys.append(_task_closure_key(task_id))
@@ -1495,6 +1512,28 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
         status in CLOSED_REQUEST_STATUSES
         or _is_response_only_status(status)
         or _status_has_any(status, ANSWER_STATUS_FRAGMENTS)
+    )
+
+
+def _is_interim_bound_status(status: str) -> bool:
+    return status in {
+        "queued", "queued_for_processing", "queue_accepted",
+        "accepted_for_processing", "pending", "started", "in_progress",
+        "processing", "running", "request", "requested", "open",
+        "proposal", "waiting_for_result",
+    }
+
+
+def _is_correlated_bound_message(event: Mapping[str, Any]) -> bool:
+    # A custom result status can be terminal even when it is not in the legacy
+    # status vocabulary. Only the bound-request path uses these candidates;
+    # reply_matches_request still checks the full ID/digest/nonce/identity.
+    return (
+        _event_type(event) == "message"
+        and correlation_field(event, "in_reply_to_request_id") is not None
+        and correlation_field(event, "request_id") is None
+        and not _is_ack_or_infrastructure(event)
+        and not _is_interim_bound_status(_event_status(event))
     )
 
 

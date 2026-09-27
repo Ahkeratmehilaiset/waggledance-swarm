@@ -300,6 +300,148 @@ def test_recommends_answering_latest_unanswered_incoming_request() -> None:
     assert report["stale_incoming_count"] == 0
 
 
+def _restart_bound_request_and_reply() -> tuple[dict[str, object], dict[str, object]]:
+    request = {
+        "ts_utc": "2026-09-27T19:00:00Z",
+        "agent": "codex-lead-1",
+        "agent_uuid": "lead-uuid",
+        "session_id": "lead-session",
+        "run_id": "lead-session",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "restart-checkpoint",
+        "status": "request_tools_checkpoint_before_restart",
+        "request_id": "restart-request-1",
+        "request_digest": "digest-1",
+        "expected_responders": {
+            "codex-tools-1": {
+                "agent_uuid": "tools-uuid",
+                "session_id": "old-tools-session",
+                "run_id": "old-tools-session",
+            }
+        },
+    }
+    reply = {
+        "ts_utc": "2026-09-27T19:01:00Z",
+        "agent": "codex-tools-1",
+        "agent_uuid": "tools-uuid",
+        "session_id": "old-tools-session",
+        "run_id": "old-tools-session",
+        "to": "codex-lead-1",
+        "type": "message",
+        "task_id": "restart-checkpoint",
+        "status": "ready_for_controlled_replacement",
+        "in_reply_to_request_id": "restart-request-1",
+        "in_reply_to_request_digest": "digest-1",
+        "in_reply_to_requester": {
+            "agent": "codex-lead-1",
+            "agent_uuid": "lead-uuid",
+            "session_id": "lead-session",
+            "run_id": "lead-session",
+        },
+    }
+    return request, reply
+
+
+def test_exact_bound_custom_message_answer_closes_request_after_restart() -> None:
+    request, reply = _restart_bound_request_and_reply()
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, reply],
+        claims=[],
+        now_utc=datetime(2026, 9, 27, 19, 5, tzinfo=timezone.utc),
+    )
+
+    assert report["open_incoming_count"] == 0
+    assert report["action"] != "answer_incoming"
+
+
+@pytest.mark.parametrize("wrong_field", ["digest", "nonce", "responder"])
+def test_wrong_bound_reply_cannot_consume_restart_request(wrong_field: str) -> None:
+    request, reply = _restart_bound_request_and_reply()
+    if wrong_field == "digest":
+        reply["in_reply_to_request_digest"] = "wrong-digest"
+    elif wrong_field == "nonce":
+        request["nonce"] = "right-nonce"
+        reply["nonce"] = "wrong-nonce"
+    else:
+        reply["session_id"] = "other-tools-session"
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, reply],
+        claims=[],
+        now_utc=datetime(2026, 9, 27, 19, 5, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["request_id"] == "restart-request-1"
+
+
+def test_pending_current_request_selected_after_old_bound_reply() -> None:
+    request, reply = _restart_bound_request_and_reply()
+    pending = {
+        "ts_utc": "2026-09-27T19:02:00Z",
+        "agent": "codex-lead-1",
+        "to": "codex-tools-1",
+        "type": "message",
+        "task_id": "current-request",
+        "status": "request",
+        "request_id": "current-request-2",
+    }
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, reply, pending],
+        claims=[],
+        now_utc=datetime(2026, 9, 27, 19, 5, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["request_id"] == "current-request-2"
+    assert report["open_incoming_count"] == 1
+
+
+def test_legacy_custom_message_status_is_not_an_answer_without_binding() -> None:
+    request, reply = _restart_bound_request_and_reply()
+    for key in ("request_id", "request_digest", "expected_responders"):
+        request.pop(key)
+    for key in (
+        "in_reply_to_request_id", "in_reply_to_request_digest",
+        "in_reply_to_requester",
+    ):
+        reply.pop(key)
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, reply],
+        claims=[],
+        now_utc=datetime(2026, 9, 27, 19, 5, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["task_id"] == "restart-checkpoint"
+
+
+@pytest.mark.parametrize(
+    "status", ["queued", "queue_accepted", "pending", "in_progress", "request"]
+)
+def test_exact_bound_queue_notice_is_not_a_completed_answer(status: str) -> None:
+    request, reply = _restart_bound_request_and_reply()
+    reply["status"] = status
+
+    report = recommend_next_action(
+        agent="codex-tools-1",
+        events=[request, reply],
+        claims=[],
+        now_utc=datetime(2026, 9, 27, 19, 5, tzinfo=timezone.utc),
+    )
+
+    assert report["action"] == "answer_incoming"
+    assert report["incoming"]["request_id"] == "restart-request-1"
+
+
 def test_open_request_closure_scan_is_indexed(monkeypatch) -> None:
     events: list[dict[str, object]] = []
     for index in range(200):

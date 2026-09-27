@@ -88,6 +88,15 @@ if ($claimHasOwner) {
             "mismatch); only the owning session can release it")
         exit 5
     }
+} elseif (
+    $claim.PSObject.Properties['owner_identity'] -and
+    [string]$claim.owner_identity -ceq 'none' -and
+    $null -eq (Get-BridgeOwnerIdentity -SessionId $RunId)
+) {
+    # A claim made without an identity, released by a caller that also
+    # has none: the agent label is the only authority either side has,
+    # exactly as before B7. A caller WITH an identity still has to adopt
+    # it explicitly.
 } elseif (-not $AllowLegacyUnownedClaim) {
     Write-Error (
         "claim carries no owner identity (pre-B7 claim); re-run with " +

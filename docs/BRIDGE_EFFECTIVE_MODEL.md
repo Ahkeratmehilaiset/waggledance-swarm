@@ -59,6 +59,10 @@ dated id use the `claude-opus-5-5` and undated entries. An alias, suffixed or da
 **key** for the model is not documented as read, so it fails closed.
 
 These also fail closed:
+- `availableModels` in any settings file ("Any file" scope): a blocked `model` setting is
+  replaced at startup and the session starts on the default model (model-config.md,
+  "Restrict model selection"). The list's alias, prefix and substitution matching is not
+  modelled (claude-rco-1, claude-rco-2 and codex-tools-1 on #1744);
 - any `maxEffortLevel` cap below `max` that may apply to the model, in any file (a cap
   lowers every source, `--effort` and the variable included). Within one file a
   model's own `maxEffortLevel` replaces the file's top-level cap for that model, so

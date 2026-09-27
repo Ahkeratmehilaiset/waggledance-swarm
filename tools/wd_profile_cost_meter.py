@@ -3,8 +3,8 @@
 """Measured cost per lane profile from local session logs (lane profile switching PR-13).
 
 Read-only and advisory: nothing here switches, launches or writes anything but its
-report. Only token counts, model and effort ids, lane names and timestamps leave a
-log; prompt and response content is never read into the report.
+report. Only counts, model and effort ids, lane and pool names and timestamps go
+into the report: no file path, and no prompt or response content.
 
 Sources
 -------
@@ -16,8 +16,10 @@ Sources
   turns are real API calls and count. ``<synthetic>`` turns are not. The lane is
   the session transcript's ``agent-name`` or ``custom-title`` record; a subagent
   transcript has neither and takes the lane of its session transcript. The report
-  gives each lane's last recorded turn, so a lane whose transcript stopped growing
-  shows up instead of silently reading as idle.
+  gives each lane's last recorded turn in any file written during the window, even
+  when that turn is older than the window, so a lane whose transcript stopped
+  growing shows up instead of silently reading as idle. A known lane with no
+  recorded turn in any such file is listed in ``lanes_without_recorded_turns``.
 - Codex rollouts (``$CODEX_HOME/sessions/**/rollout-*.jsonl``): ``turn_context``
   gives the model and effort, and ``token_count`` events give the session's
   cumulative ``total_token_usage``. A turn's usage is the growth of that total
@@ -51,14 +53,18 @@ change would pay off.
 
 Pool attribution
 ----------------
-Consecutive pool samples of one window instance (same ``resets_at``) form a
-segment. A segment's growth, together with the weighted tokens of that provider
+Consecutive pool samples of one window instance form a segment. An instance's
+``resets_at`` jitters by seconds, so values less than ``RESET_JITTER_SECONDS``
+apart are one instance. A segment's growth, together with the weighted tokens of that provider
 inside the segment, adds to the pool-wide estimate. That includes segments that did
 not grow: pool percentages are integers, and counting only the steps would bias the
 estimate upwards. A segment where one profile has at least ``DOMINANCE`` of the
 tokens also adds to that profile's own estimate. A segment that grew with no local
-tokens is ``unexplained`` (use outside the swarm). A segment that fell (a reset or
-an anomaly) is skipped.
+tokens is ``unexplained`` (use outside the swarm). A sample below the instance's
+high-water mark (a session's stale view) gives a falling segment, which is skipped
+and does not move the mark, so growth is counted once. A segment that starts at
+``SATURATED_PERCENT`` or above is skipped as ``skipped_saturated``: a full pool
+cannot grow, and its tokens would drag the estimate towards zero.
 """
 from __future__ import annotations
 
@@ -88,6 +94,8 @@ ACTIVITY_BIN_MINUTES = 5
 SMALL_OUTPUT_TOKENS = 300
 CACHE_READ_KINDS = ("cache_read", "cached_input")
 LOW_PRECISION_POINTS = 3.0       # below this many observed pool points an estimate is low precision
+RESET_JITTER_SECONDS = 300       # resets_at values this close are one window instance; windows last hours
+SATURATED_PERCENT = 100.0        # a pool at this level cannot grow
 MAIN_CODEX_BUCKETS = (None, "codex")
 DEFAULT_FLEET_MANIFEST = Path(__file__).resolve().parents[1] / "ops" / "windows" / "reboot" / "wd-fleet.json"
 _LANE_PREFIX = re.compile(r"^(" + "|".join(re.escape(lane) for lane in LANES) + r")(?:-|$)")
@@ -145,11 +153,14 @@ def _new_stats() -> dict:
             "turns_without_lane": 0, "ambiguous_lane_files": 0, "last_turn_by_lane": {}}
 
 
-def _note_last_turn(stats: dict, turn: dict) -> None:
-    lane = turn["lane"] or "unattributed"
+def _note_last_turn(stats: dict, lane: str | None, ts: datetime | None) -> None:
+    """The newest recorded turn of a lane, including turns older than the report window."""
+    if ts is None:
+        return
+    lane = lane or "unattributed"
     last = stats["last_turn_by_lane"].get(lane)
-    if last is None or turn["ts"] > last:
-        stats["last_turn_by_lane"][lane] = turn["ts"]
+    if last is None or ts > last:
+        stats["last_turn_by_lane"][lane] = ts
 
 
 def _lane_names(record: dict) -> set[str]:
@@ -188,7 +199,8 @@ def claude_turns(projects_root: Path, since: datetime) -> tuple[list[dict], dict
         is_subagent = path.parent.name == "subagents"
         lanes: set[str] = set()
         file_turns: list[dict] = []
-        for record in _records(path, stats):
+        file_last: datetime | None = None
+        for ordinal, record in enumerate(_records(path, stats)):
             kind = record.get("type")
             lanes |= _lane_names(record)
             if kind != "assistant":
@@ -199,12 +211,16 @@ def claude_turns(projects_root: Path, since: datetime) -> tuple[list[dict], dict
             if not isinstance(usage, dict) or not isinstance(model, str) or model == "<synthetic>":
                 continue
             ts = _utc(record.get("timestamp"))
-            if ts is None or ts < since:
+            if ts is None:
+                continue
+            file_last = ts if file_last is None or ts > file_last else file_last
+            if ts < since:
                 continue
             session = record.get("sessionId") if isinstance(record.get("sessionId"), str) else \
                 (path.parents[1].name if is_subagent else path.stem)
             ident = message.get("id") or record.get("requestId") or record.get("uuid")
-            key = (session, ident if isinstance(ident, str) else id(record))
+            # A row without an id is its own turn: its file and line position name it.
+            key = (session, ident) if isinstance(ident, str) and ident else (session, str(path), ordinal)
             if key in seen:
                 stats["duplicates"] += 1
                 continue
@@ -221,7 +237,8 @@ def claude_turns(projects_root: Path, since: datetime) -> tuple[list[dict], dict
         if is_subagent and not lanes:
             parent = path.parents[2] / f"{path.parents[1].name}.jsonl"
             if parent not in session_lanes:
-                session_lanes[parent] = _session_lane(parent, stats) if parent.is_file() else None
+                session_lanes[parent] = _session_lane(parent, stats) \
+                    if parent.is_file() and not parent.is_symlink() else None
             lane = session_lanes[parent]
         else:
             lane = _single_lane(lanes, stats)
@@ -231,7 +248,7 @@ def claude_turns(projects_root: Path, since: datetime) -> tuple[list[dict], dict
             turn["lane"] = lane
             if lane is None:
                 stats["turns_without_lane"] += 1
-            _note_last_turn(stats, turn)
+        _note_last_turn(stats, lane, file_last)
         turns += file_turns
     return turns, stats
 
@@ -293,6 +310,7 @@ def codex_turns(sessions_root: Path, since: datetime, worktrees: dict[str, str] 
     for path in _recent_files(sessions_root.glob("**/rollout-*.jsonl"), since):
         stats["files"] += 1
         lane, session, model, effort, previous = None, path.stem, None, None, None
+        file_last: datetime | None = None
         for record in _records(path, stats):
             kind = record.get("type")
             payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
@@ -323,6 +341,8 @@ def codex_turns(sessions_root: Path, since: datetime, worktrees: dict[str, str] 
                 if not any(delta.values()):
                     stats["duplicates"] += 1
                     continue
+                if ts is not None and (file_last is None or ts > file_last):
+                    file_last = ts
                 if ts is None or ts < since:
                     continue
                 uncached = max(delta["input_tokens"] - delta["cached_input_tokens"] - delta["cache_write_input_tokens"], 0)
@@ -332,8 +352,8 @@ def codex_turns(sessions_root: Path, since: datetime, worktrees: dict[str, str] 
                                    "cached_input": delta["cached_input_tokens"], "output": delta["output_tokens"]}}
                 if lane is None:
                     stats["turns_without_lane"] += 1
-                _note_last_turn(stats, turn)
                 turns.append(turn)
+        _note_last_turn(stats, lane, file_last)
     return turns, samples, stats
 
 
@@ -400,18 +420,53 @@ def lane_anatomy(turns: list[dict]) -> dict:
     return table
 
 
-def _segments(samples: list[dict]) -> list[tuple[str, datetime, datetime, float]]:
-    """(pool, start, end, growth) for consecutive samples of one window instance."""
+def _instance_resets(samples: list[dict]) -> dict[tuple, float]:
+    """(provider, window, resets_at) -> the window instance's first resets_at.
+
+    One instance reports a resets_at that jitters by seconds (Codex rollouts: up to 13 s seen),
+    so values closer than ``RESET_JITTER_SECONDS`` are one instance; split, its pieces would
+    interleave in time and count the same tokens twice (claude-rco-2 on #1747).
+    """
+    values: dict[tuple, set[float]] = {}
+    for sample in samples:
+        values.setdefault((sample["provider"], sample["window"]), set()).add(sample["resets_at"])
+    instance: dict[tuple, float] = {}
+    for (provider, window), resets in values.items():
+        first = previous = None
+        for reset in sorted(resets):
+            if previous is None or reset - previous > RESET_JITTER_SECONDS:
+                first = reset
+            instance[(provider, window, reset)] = first
+            previous = reset
+    return instance
+
+
+def _segments(samples: list[dict]) -> list[tuple[str, datetime, datetime, float | None]]:
+    """(pool, start, end, growth) for consecutive samples of one window instance.
+
+    Usage never falls inside one window instance, so a sample below the instance's high-water
+    mark is a session's stale view (several sessions report one pool). It gives a falling segment,
+    which attribution skips, and does not move the mark or the next segment's start, so growth is
+    measured from the mark and counted once (claude-rco-1 on #1747).
+    """
+    instance = _instance_resets(samples)
     pools: dict[tuple, list[dict]] = {}
     for sample in samples:
-        pools.setdefault((sample["provider"], sample["window"], sample["resets_at"]), []).append(sample)
+        key = (sample["provider"], sample["window"], sample["resets_at"])
+        pools.setdefault((sample["provider"], sample["window"], instance[key]), []).append(sample)
     segments = []
     for (provider, window, _), rows in pools.items():
         rows = sorted(rows, key=lambda row: row["observed_at"])
-        for first, second in zip(rows, rows[1:]):
-            if second["observed_at"] > first["observed_at"]:
-                segments.append((f"{provider}/{window}", first["observed_at"], second["observed_at"],
-                                 second["used_percent"] - first["used_percent"]))
+        last_at, high = rows[0]["observed_at"], rows[0]["used_percent"]
+        for row in rows[1:]:
+            if row["observed_at"] <= last_at:
+                continue
+            growth = row["used_percent"] - high
+            # A full pool cannot grow, so its segments say nothing about cost per token.
+            segments.append((f"{provider}/{window}", last_at, row["observed_at"],
+                             None if high >= SATURATED_PERCENT else growth))
+            if growth >= 0:
+                last_at, high = row["observed_at"], row["used_percent"]
     return segments
 
 
@@ -425,7 +480,11 @@ def attribute(turns: list[dict], samples: list[dict], *, dominance: float = DOMI
     pools: dict[str, dict] = {}
     for pool, start, end, growth in _segments(samples):
         entry = pools.setdefault(pool, {"segments": 0, "points": 0.0, "weighted_tokens": 0.0,
-                                        "skipped_falling": 0, "unexplained_points": 0.0, "profiles": {}})
+                                        "skipped_falling": 0, "skipped_saturated": 0, "unexplained_points": 0.0,
+                                        "profiles": {}})
+        if growth is None:
+            entry["skipped_saturated"] += 1
+            continue
         if growth < 0:
             entry["skipped_falling"] += 1
             continue
@@ -470,20 +529,22 @@ def report(*, claude_root: Path | None, codex_root: Path | None, store: Path | N
     if claude_root is not None:
         found, stats = claude_turns(claude_root, since)
         turns += found
-        sources["claude"] = dict(stats, root=str(claude_root), turns=len(found))
+        sources["claude"] = dict(stats, turns=len(found))
     if codex_root is not None:
         found, codex_samples, stats = codex_turns(codex_root, since, fleet_worktrees(fleet_manifest))
         turns += found
         samples += codex_samples
-        sources["codex"] = dict(stats, root=str(codex_root), turns=len(found), pool_samples=len(codex_samples))
+        sources["codex"] = dict(stats, turns=len(found), pool_samples=len(codex_samples))
     if store is not None:
         try:
             from tools.wd_capacity_pacing import read_samples
             observed = [s for s in read_samples(store) if s["observed_at"] >= since]
             samples += [dict(s, window=_observer_window(s)) for s in observed]
-            sources["observer"] = {"store": str(store), "pool_samples": len(observed)}
+            sources["observer"] = {"pool_samples": len(observed)}
         except (OSError, ValueError) as exc:
-            sources["observer"] = {"store": str(store), "error": exc.__class__.__name__}
+            sources["observer"] = {"error": exc.__class__.__name__}
+    seen_lanes = {lane for source in sources.values() for lane in source.get("last_turn_by_lane", {})}
+    sources["lanes_without_recorded_turns"] = sorted(set(LANES) - seen_lanes)
     return {"schema": SCHEMA, "execution_allowed": False, "since": since.isoformat(), "generated_at": now.isoformat(),
             "weights": WEIGHTS, "dominance": DOMINANCE, "sources": sources,
             "profiles": profile_rollup(turns), "lanes": lane_anatomy(turns), "pools": attribute(turns, samples),

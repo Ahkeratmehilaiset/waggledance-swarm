@@ -313,6 +313,27 @@ def test_different_window_instances_are_never_one_segment():
     assert attribute([turn("codex", "a", 55, {"output": 1})], samples) == {}
 
 
+def test_a_jittering_resets_at_is_one_window_instance():
+    # claude-rco-2 on #1747: real Codex rollouts report one instance's resets_at up to 13 s apart,
+    # interleaved in time; split into pieces, the overlapping segments counted tokens twice.
+    a = {"output": 125_000}
+    turns = [turn("codex", "a", 55, a), turn("codex", "a", 45, a), turn("codex", "a", 35, a)]
+    samples = [pool_sample(60, 10), pool_sample(50, 11, reset=RESET + 13), pool_sample(40, 12),
+               pool_sample(30, 13, reset=RESET + 13)]
+    pools = attribute(turns, samples)["codex/primary"]
+    # Split by resets_at, (60,40] and (50,30] overlap: 4 points and the 45-minute turn twice (4M).
+    assert pools["segments"] == 3 and pools["points"] == 3.0
+    assert pools["weighted_tokens"] == pytest.approx(3e6)             # each turn once
+    assert pools["points_per_million_weighted_tokens"] == 1.0
+
+
+def test_resets_at_further_apart_than_the_jitter_are_separate_instances():
+    samples = [pool_sample(60, 90, reset=RESET - 301), pool_sample(50, 2, reset=RESET)]
+    assert attribute([turn("codex", "a", 55, {"output": 1})], samples) == {}
+    samples = [pool_sample(60, 1, reset=RESET - 300), pool_sample(50, 2, reset=RESET)]     # the same-bound twin
+    assert attribute([turn("codex", "a", 55, {"output": 125_000})], samples)["codex/primary"]["points"] == 1.0
+
+
 def test_a_turn_at_a_sample_time_belongs_to_the_segment_that_sample_ends():
     samples = [pool_sample(60, 10), pool_sample(50, 12), pool_sample(40, 13)]    # the two segments grow unequally
     pools = attribute([turn("codex", "a", 50, {"output": 125_000})], samples)["codex/primary"]
@@ -395,3 +416,114 @@ def test_lane_anatomy_of_a_zero_token_lane_has_no_share():
     row = meter.lane_anatomy([turn("codex", "x", 1, {"input": 0, "output": 0})])["codex:codex-tools-1"]
     assert row["cache_read_share"] is None and row["weighted_tokens"] == 0.0
     assert meter.lane_anatomy([]) == {}
+
+
+# --- review round 1 (codex-tools-1 on 7c5a153f) -------------------------------------------------------------
+
+
+def test_rows_without_any_id_are_distinct_turns(tmp_path):
+    # B1: 40 id-less rows were collapsed to 4 when id(record) was reused after each record was freed.
+    rows = []
+    for minute in range(40):
+        row = assistant(minute + 1, None)
+        rows.append(row)
+    write_jsonl(tmp_path / "p" / "s1.jsonl", named("fable-5") + rows)
+    write_jsonl(tmp_path / "p" / "s2.jsonl", named("fable-5") + [assistant(3, None)])   # same line number, other file
+    turns, stats = claude_turns(tmp_path, SINCE)
+    assert len(turns) == 41 and stats["duplicates"] == 0
+
+
+def test_a_row_with_only_a_request_id_is_deduplicated_by_it(tmp_path):
+    first, second = assistant(5, None), assistant(5, None)
+    first["requestId"] = second["requestId"] = "req_1"
+    write_jsonl(tmp_path / "p" / "s1.jsonl", named("fable-5") + [first, second])
+    turns, stats = claude_turns(tmp_path, SINCE)
+    assert len(turns) == 1 and stats["duplicates"] == 1
+
+
+def test_the_report_carries_no_path(tmp_path, capsys):
+    # B2: the docs promise counts, ids, names and timestamps only.
+    write_jsonl(tmp_path / "claude" / "p" / "s1.jsonl", named("fable-5") + [assistant(5, "m1")])
+    rollout(tmp_path, "r1", [token_count(10, total(10, 0, 1), limits={"primary": window(3)})])
+    assert main(["--claude-projects", str(tmp_path / "claude"), "--codex-sessions", str(tmp_path / "sessions"),
+                 "--store", str(tmp_path / "missing.sqlite"), "--hours", "24", "--fleet-manifest", ""]) == 0
+    text = capsys.readouterr().out
+    report = json.loads(text)
+    assert report["sources"]["observer"] == {"error": "FileNotFoundError"}
+    for fragment in (str(tmp_path), tmp_path.name, "missing.sqlite", "rollout-r1", "s1.jsonl"):
+        assert fragment not in text
+
+
+def test_a_stopped_transcript_still_shows_its_last_turn(tmp_path):
+    # B3: a lane whose transcript was last written before the window must not vanish.
+    write_jsonl(tmp_path / "p" / "s1.jsonl", named("claude-rco-1") + [assistant(60 * 30, "old"), assistant(60 * 31, "older")])
+    turns, stats = claude_turns(tmp_path, SINCE)
+    assert turns == []
+    assert stats["last_turn_by_lane"] == {"claude-rco-1": NOW - timedelta(minutes=60 * 30)}
+
+
+def test_a_stopped_rollout_still_shows_its_last_turn(tmp_path):
+    rollout(tmp_path, "r1", [token_count(60 * 30, total(10, 0, 1)), token_count(60 * 29, total(10, 0, 1))])
+    turns, _, stats = codex_turns(tmp_path / "sessions", SINCE)
+    assert turns == [] and stats["last_turn_by_lane"] == {"codex-tools-1": NOW - timedelta(minutes=60 * 30)}
+
+
+def test_a_lane_without_any_recorded_turn_is_listed(tmp_path, capsys):
+    write_jsonl(tmp_path / "claude" / "p" / "s1.jsonl", named("fable-5") + [assistant(5, "m1")])
+    stale = write_jsonl(tmp_path / "claude" / "p" / "s2.jsonl", named("claude-rco-2") + [assistant(60 * 40, "m2")])
+    old = (NOW - timedelta(hours=40)).timestamp()
+    os.utime(stale, (old, old))                        # not written during the window, so not scanned
+    assert main(["--claude-projects", str(tmp_path / "claude"), "--codex-sessions", str(tmp_path / "none"),
+                 "--hours", "24", "--fleet-manifest", ""]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["sources"]["lanes_without_recorded_turns"] == ["claude-rco-1", "claude-rco-2", "codex-lead-1",
+                                                                 "codex-tools-1"]
+
+
+def test_a_symlinked_session_transcript_does_not_name_a_subagent_lane(tmp_path, monkeypatch):
+    # S1: the parent fallback keeps the same symlink guard as every scanned file.
+    parent = write_jsonl(tmp_path / "p" / "s1.jsonl", named("claude-rco-2") + [assistant(60 * 40, "m1")])
+    old = (NOW - timedelta(hours=40)).timestamp()
+    os.utime(parent, (old, old))
+    write_jsonl(tmp_path / "p" / "s1" / "subagents" / "agent-a.jsonl", [assistant(8, "sub1")])
+    real = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda self: self == parent or real(self))
+    turns, _ = claude_turns(tmp_path, SINCE)
+    assert [t["lane"] for t in turns] == [None]
+
+
+def test_the_last_turn_is_the_newest_across_a_lanes_transcripts(tmp_path):
+    write_jsonl(tmp_path / "p" / "s1.jsonl", named("fable-5") + [assistant(30, "m1")])     # read first, older
+    write_jsonl(tmp_path / "p" / "s2.jsonl", named("fable-5") + [assistant(5, "m2")])
+    _, stats = claude_turns(tmp_path, SINCE)
+    assert stats["last_turn_by_lane"] == {"fable-5": NOW - timedelta(minutes=5)}
+
+
+def test_a_stale_lower_view_from_another_session_never_recounts_growth():
+    # claude-rco-1 on #1747: Lead and Tools each report the same pool; a session's view can lag.
+    # 20 -> 19 (stale) -> 20 -> 21 is one point of growth, not two, and each turn counts once.
+    a = {"output": 125_000}
+    turns = [turn("codex", "a", 55, a), turn("codex", "a", 45, a), turn("codex", "a", 35, a)]
+    samples = [pool_sample(60, 20), pool_sample(50, 19), pool_sample(40, 20), pool_sample(30, 21)]
+    pools = attribute(turns, samples)["codex/primary"]
+    assert pools["points"] == 1.0 and pools["skipped_falling"] == 1
+    # (60,50] falls and is skipped; (60,40] grows 0 and holds the turns at 55 and 45; (40,30] grows 1.
+    assert pools["segments"] == 2 and pools["weighted_tokens"] == pytest.approx(3e6)
+
+
+def test_counted_growth_of_an_instance_equals_its_high_water_growth():
+    samples = [pool_sample(90 - 5 * i, used) for i, used in enumerate([10, 12, 11, 12, 13, 12, 12, 15, 14, 16])]
+    turns = [turn("codex", "a", 88 - 5 * i, {"output": 125_000}) for i in range(9)]
+    pools = attribute(turns, samples)["codex/primary"]
+    assert pools["points"] == 16 - 10
+    assert pools["weighted_tokens"] == pytest.approx(9e6)           # every turn exactly once
+
+
+def test_a_full_pool_says_nothing_about_cost_per_token():
+    # The previous Codex window sat at 100% for a day while tokens were still spent (2026-09-25/26).
+    a = {"output": 125_000}
+    turns = [turn("codex", "a", 55, a), turn("codex", "a", 45, a), turn("codex", "a", 35, a)]
+    samples = [pool_sample(60, 99), pool_sample(50, 100), pool_sample(40, 100), pool_sample(30, 100)]
+    pools = attribute(turns, samples)["codex/primary"]
+    assert pools["skipped_saturated"] == 2
+    assert pools["segments"] == 1 and pools["points"] == 1.0 and pools["weighted_tokens"] == pytest.approx(1e6)

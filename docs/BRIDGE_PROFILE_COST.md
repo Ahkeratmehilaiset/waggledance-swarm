@@ -7,8 +7,8 @@ launches, switches, writes or signals anything, and the report always carries
 demand policy (PR-11) and any context-window change can be checked against,
 before and after.
 
-Only token counts, model and effort ids, lane names and timestamps go into the
-report. Prompt and response content is never read into it.
+Only counts, model and effort ids, lane and pool names, and timestamps go into
+the report. It contains no file path, and no prompt or response content.
 
 ## Run
 
@@ -63,9 +63,12 @@ Codex `rate_limits` snapshots name a limit bucket in `limit_id`.
 - Observer samples follow the same rule: a `limit_id` other than the provider's
   own name gets its own pool.
 
-`sources.<provider>.last_turn_by_lane` gives the newest recorded turn per lane. A
-lane whose transcript stopped being written shows an old timestamp here, instead
-of silently looking idle. On 2026-09-27 both RCO transcripts had not been
+`sources.<provider>.last_turn_by_lane` gives the newest recorded turn per lane,
+from every file written during the window. It includes turns older than
+`--hours`, so a lane whose transcript stopped being written shows an old
+timestamp here, instead of silently looking idle.
+`sources.lanes_without_recorded_turns` lists every known lane that no such file
+shows a turn for. On 2026-09-27 both RCO transcripts had not been
 written since their 2026-09-26 relaunch, so their Claude use after that is
 missing from any report.
 
@@ -87,7 +90,22 @@ missing from any report.
   - percentage points per million weighted tokens, pool-wide and for each
     profile that had at least 80% of a segment's tokens;
   - unexplained growth (no local tokens in the segment);
-  - falling segments, which are skipped.
+  - falling segments and segments of a full pool, which are skipped.
+
+  A segment joins consecutive samples of one window instance. One instance
+  reports a `resets_at` that jitters by seconds (Codex rollouts: up to 13 s), so
+  values less than 300 s apart are one instance; windows last hours.
+
+  Several sessions report one pool, and a session's view can lag. Usage never
+  falls inside one instance, so a sample below the instance's high-water mark is a
+  stale view. It gives a falling segment, which is skipped. It moves neither the
+  mark nor the next segment's start, so growth is counted once and every token
+  once.
+
+  A pool at 100% cannot grow, so a segment that starts there is skipped
+  (`skipped_saturated`). The previous Codex window sat at 100% from 2026-09-25
+  17:12Z to 2026-09-26 16:01Z while tokens were still spent. Counting those
+  tokens would drag the estimate towards zero.
 
 ## Weighted tokens are a proxy
 
@@ -112,8 +130,12 @@ built on fewer than 3 points is flagged `low_precision`.
 | codex:codex-lead-1 | 1903 | 159k / 218k | 75% | 69% |
 | codex:codex-tools-1 | 1075 | 147k / 211k | 68% | 52% |
 
-The Codex primary pool moved 0.17 points per million weighted tokens, over
-16 points.
+The Codex primary pool moved 0.16 points per million weighted tokens, over
+10 points, the same over 24 h and 48 h. The first draft said 0.17 over
+16 points, for two reasons:
+- It split one window instance on a jittering `resets_at` and counted
+  overlapping segments twice.
+- It counted growth again after a session's stale lower view.
 
 Every tool call is one API request that reads the whole context again. A lane's
 cost is therefore roughly its request count times its context size, and the

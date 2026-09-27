@@ -333,28 +333,90 @@ function Invoke-WdLaneProfileShadowRead {
     # pinned bridge package and log what a profile switch would do. A read, never
     # a switch: this returns nothing the caller uses, it never changes the model,
     # effort or argv, and any failure launches native exactly as before.
+    # PR-7b launch preflight: with -Cli, the probe also resolves the model and
+    # effort this launch will ACTUALLY get and classifies them against the
+    # catalog. Only the probe's status code is read: 3 means attention; any other
+    # non-zero code, or a probe that cannot run, means the preflight is
+    # unavailable. Either is answered with one bridge status event. The launch
+    # always continues (alert mode); the resolved values stay in the lane's
+    # launch-shadow log.
     param(
         [Parameter(Mandatory)] [string] $BundleRoot,
         [Parameter(Mandatory)] [string] $RuntimeRoot,
         [Parameter(Mandatory)] [string] $Lane,
         [Parameter(Mandatory)] [string] $Launcher,
         [string] $Model = '',
-        [string] $Effort = ''
+        [string] $Effort = '',
+        [string] $Cli = '',
+        [string] $Worktree = '',
+        [string] $ClaudeCliSettings = '',
+        [string] $ClaudeResumeThread = '',
+        [string] $Writer = '',
+        [string] $Role = '',
+        [string] $AgentUuid = '',
+        [string] $RunId = '',
+        [string[]] $Capabilities = @()
     )
     # Windows PowerShell 5.1 drops an empty native argument; never send one.
     if ([string]::IsNullOrWhiteSpace($Model)) { $Model = 'unset' }
     if ([string]::IsNullOrWhiteSpace($Effort)) { $Effort = 'unset' }
+    $probeArguments = @('--runtime-root', $RuntimeRoot, '--lane', $Lane, '--launcher', $Launcher,
+        '--argv-model', $Model, '--argv-effort', $Effort)
+    $preflightRequested = $Cli -cin @('claude', 'codex')
+    if ($preflightRequested) { $probeArguments += @('--cli', $Cli) }
+    if (-not [string]::IsNullOrWhiteSpace($Worktree)) { $probeArguments += @('--worktree', $Worktree) }
+    if (-not [string]::IsNullOrWhiteSpace($ClaudeCliSettings)) {
+        $probeArguments += @('--claude-cli-settings', $ClaudeCliSettings)
+    }
+    # A resumed Claude session keeps the model saved in its transcript.
+    if ($Cli -ceq 'claude' -and -not [string]::IsNullOrWhiteSpace($ClaudeResumeThread)) {
+        $probeArguments += @('--claude-resume-thread', $ClaudeResumeThread)
+    }
+    $preflightState = 'ok'
     try {
         $probeOutput = @(Invoke-WdBridgePythonTool -BundleRoot $BundleRoot `
-            -Tool 'tools/lane_profile_launch_probe.py' -ToolArguments @(
-                '--runtime-root', $RuntimeRoot, '--lane', $Lane, '--launcher', $Launcher,
-                '--argv-model', $Model, '--argv-effort', $Effort))
+            -Tool 'tools/lane_profile_launch_probe.py' -ToolArguments $probeArguments)
         $probeLine = [string]($probeOutput | Select-Object -Last 1)
         if ($probeLine.Length -gt 600) { $probeLine = $probeLine.Substring(0, 600) + '...' }
         Write-Host ('  lane profile (shadow read, argv unchanged): {0}' -f $probeLine)
+        $probeCode = Get-WdBridgeCodeLastExitCode
+        if ($probeCode -eq 3) { $preflightState = 'attention' } elseif ($probeCode -ne 0) { $preflightState = 'unavailable' }
     } catch {
         Write-Host ('  lane profile (shadow read) unavailable, launching native: {0}' -f
             $_.Exception.GetType().Name)
+        $preflightState = 'unavailable'
+    }
+    if ($preflightRequested -and $preflightState -cne 'ok' -and -not [string]::IsNullOrWhiteSpace($Writer)) {
+        try {
+            if ($preflightState -ceq 'attention') {
+                $preflightStatus = 'launch_preflight_attention'
+                $preflightMessage = "Launch preflight: lane $Lane is starting on a model or effort its catalog entry " +
+                    'does not allow, or one that cannot be resolved (for example a shared CLI default). ' +
+                    'The launch continues in alert mode; the resolved values and their sources are in the ' +
+                    'shadow_log entry for this run.'
+            } else {
+                $preflightStatus = 'launch_preflight_unavailable'
+                $preflightMessage = "Launch preflight: lane $Lane launched without a preflight verdict because the " +
+                    'probe could not run or ended with an unexpected status. The model and effort of this launch are unchecked. ' +
+                    'The launch continues in alert mode.'
+            }
+            $preflightPayload = [ordered]@{
+                lane = $Lane
+                launcher = $Launcher
+                run_id = $RunId
+                preflight = $preflightState
+                enforcement = 'alert_only'
+                shadow_log = (Join-Path (Join-Path $RuntimeRoot 'lane_profiles') 'launch-shadow.jsonl')
+            } | ConvertTo-Json -Compress
+            $null = @(& $Writer -Agent $Lane -Type status -TaskId 'lane-profile-switching' `
+                -Status $preflightStatus -To 'operator,codex-lead-1' -Message $preflightMessage `
+                -RunId $RunId -Role $Role -AgentUuid $AgentUuid -SessionId $RunId `
+                -Capabilities $Capabilities -PayloadJson $preflightPayload)
+            Write-Host ('  lane profile preflight: {0} event posted' -f $preflightState)
+        } catch {
+            Write-Host ('  lane profile preflight: {0} event could not be posted: {1}' -f
+                $preflightState, $_.Exception.GetType().Name)
+        }
     }
 }
 
@@ -2321,7 +2383,8 @@ Assert-ToolsBootstrapIntegrity `
 if ($null -ne $bridgeCodeContext -and -not $ValidateOnly) {
     Invoke-WdLaneProfileShadowRead -BundleRoot $PSScriptRoot -RuntimeRoot $runtimeRoot `
         -Lane $agent -Launcher 'start-wd-tools-consumer' -Model ([string]$model) `
-        -Effort ([string]$reasoningEffort)
+        -Effort ([string]$reasoningEffort) -Cli 'codex' -Worktree $worktree `
+        -Writer $writer -Role $role -AgentUuid $agentUuid -RunId $runId -Capabilities $capabilities
 }
 
 if ($conversationSurface -cin @('local_window','native_terminal')) {

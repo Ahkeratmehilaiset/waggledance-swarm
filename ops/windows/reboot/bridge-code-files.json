@@ -15,6 +15,7 @@
     "tools/bridge_workflow.py",
     "tools/build_bridge_message_template.py",
     "tools/lane_profile_catalog.py",
+    "tools/lane_effective_model.py",
     "tools/lane_profile_launch_probe.py",
     "tools/lane_profile_record.py",
     "tools/validate_bridge_event.py",

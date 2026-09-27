@@ -63,18 +63,35 @@ These also fail closed:
   replaced at startup and the session starts on the default model (model-config.md,
   "Restrict model selection"). The list's alias, prefix and substitution matching is not
   modelled (claude-rco-1, claude-rco-2 and codex-tools-1 on #1744);
-- any `maxEffortLevel` cap below `max` that may apply to the model, top-level or per
-  model, in any file (a cap lowers every source, `--effort` and the variable included);
+- any `maxEffortLevel` cap below `max` that may apply to the model, in any file (a cap
+  lowers every source, `--effort` and the variable included). Within one file a
+  model's own `maxEffortLevel` replaces the file's top-level cap for that model, so
+  `max` there exempts it from that file's cap (claude-rco-1 NB3);
+- a settings level the CLI does not accept: `max` or `ultracode` in `effortLevel` or
+  `modelSettings` ("max isn't accepted as a level in either key"). Through
+  `--effort` or `CLAUDE_CODE_EFFORT_LEVEL`, `max` stays a level (claude-rco-1 NB1);
 - `--effort` other than `xhigh` together with `ultracode: true` (their order is not
   documented);
 - `CLAUDE_CODE_EFFORT_LEVEL=ultracode` (documented as not accepted);
-- a settings `env` block that sets `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_MODEL` or
-  `CLAUDE_CODE_EFFORT_LEVEL` (its order against the process environment is not
-  documented);
+- a settings `env` block that sets `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_MODEL`,
+  `CLAUDE_CODE_EFFORT_LEVEL`, `MAX_THINKING_TOKENS` or `CLAUDE_CODE_DISABLE_THINKING`
+  (its order against the process environment is not documented);
 - a non-string `model` or `effortLevel`, a non-boolean `ultracode`, and a malformed
   `modelSettings`.
 
 `auto`, from a file or the variable, means the model's tuned default, which is unknown.
+
+**Thinking** (claude-rco-1 NB4). A profile's effort describes a thinking session. On
+every model except Opus 5.5 and the Fable models, thinking can be turned off, and the
+result is then unknown:
+- `MAX_THINKING_TOKENS=0` ("Set to 0 to disable thinking on the Anthropic API, except on
+  Opus 5.5 and the Fable models"), or a budget that is not a whole number;
+- `CLAUDE_CODE_DISABLE_THINKING` other than `0`, which omits the thinking parameter:
+  "the model may still think", so the outcome is not decidable;
+- `alwaysThinkingEnabled: false` in the highest-precedence file that sets the key,
+  unless a positive `MAX_THINKING_TOKENS` turns thinking back on for the session.
+
+This matters for Sonnet 5, the reviewer lanes' default.
 
 **Codex CLI:**
 1. `--model` and `-c model_reasoning_effort=` on argv;
@@ -92,13 +109,22 @@ as the active profile (codex-tools-1 B2).
 A project `.codex/config.toml` inside the worktree that sets a model, effort or profile
 is reported with `project_config_precedence_unverified`, and the result is unknown.
 
-## Configuration directories
+## Configuration directories and resumed sessions
 
 `CLAUDE_CONFIG_DIR` ("All settings ... are stored under this path") and `CODEX_HOME` move
 the user settings, the server-managed cache and the Codex `config.toml`. The launchers
 honour both, and so do the resolver CLI's defaults (codex-tools-1 B1). A settings `env`
 block that sets `CLAUDE_CONFIG_DIR` fails closed, and a blank value means the default
 directory.
+
+- `resume_transcript`: a resumed Claude session keeps the model saved in its transcript
+  (model-config.md). `--model`, `ANTHROPIC_MODEL` and an `ANTHROPIC_DEFAULT_MODEL` that
+  decides a new session still win. A family variable (`ANTHROPIC_DEFAULT_OPUS_MODEL` and its
+  siblings) fails closed. Only the transcript tail (8 MiB) is read, and a cut first line is
+  never trusted. Effort has no resume tier in the documented order, so it resolves as for a
+  fresh launch.
+- `unset` is the launchers' spelling of an empty value and means nothing on argv, like
+  `native`.
 
 ## Managed settings
 

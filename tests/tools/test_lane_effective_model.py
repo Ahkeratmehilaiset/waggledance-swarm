@@ -35,11 +35,12 @@ class Claude:
         self.managed = tmp_path / "managed-settings.json"
         self.worktree.mkdir(parents=True)
 
-    def resolve(self, *, argv_model="native", argv_effort="native", env=None, cli=False, registry=None):
+    def resolve(self, *, argv_model="native", argv_effort="native", env=None, cli=False, registry=None,
+                resume=None):
         return resolve_claude(argv_model=argv_model, argv_effort=argv_effort, env=env or {},
                               user_settings=self.user, worktree=self.worktree,
                               cli_settings=self.cli if cli else None, managed_settings=self.managed,
-                              managed_registry=registry or (lambda: []))
+                              managed_registry=registry or (lambda: []), resume_transcript=resume)
 
 
 # ---------------------------------------------------------------- Claude
@@ -432,7 +433,8 @@ def test_the_effort_env_beats_argv(tmp_path):
     assert (r["effort"], r["effort_source"], r["resolved"]) == ("low", "env:CLAUDE_CODE_EFFORT_LEVEL", True)
 
 
-@pytest.mark.parametrize("key", ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"])
+@pytest.mark.parametrize("key", ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
+                                 "MAX_THINKING_TOKENS", "CLAUDE_CODE_DISABLE_THINKING"])
 def test_a_settings_env_block_that_sets_model_or_effort_is_unknown(tmp_path, key):
     c = Claude(tmp_path)
     model, effort = _lane_default()
@@ -660,6 +662,303 @@ def test_a_non_boolean_ultracode_fails_closed(tmp_path):
     assert r["resolved"] is False and "ultracode_not_a_boolean_in_user" in r["issues"]
 
 
+# ---------------------------------------------------------------- claude-rco-1 NB1/NB3/NB4 on #1744
+
+@pytest.mark.parametrize("where", ["top", "saved"])
+@pytest.mark.parametrize("level,accepted", [("max", False), ("ultracode", False), ("xhigh", True), ("low", True)])
+def test_a_settings_level_the_cli_does_not_accept_fails_closed(tmp_path, where, level, accepted):
+    # settings-reference: "max isn't accepted as a level in either key"; ultracode has its own key.
+    c = Claude(tmp_path)
+    if where == "top":
+        js(c.worktree / ".claude" / "settings.json", {"effortLevel": level})
+        js(c.user, {"model": "claude-opus-5-5"})
+    else:
+        js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": level}}})
+    r = c.resolve()
+    assert r["resolved"] is accepted
+    assert (f"effortLevel_not_accepted:{level}" in r["issues"]) is (not accepted)
+
+
+def test_max_through_argv_or_env_is_still_a_level(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, OPUS_HIGH)
+    assert (c.resolve(argv_effort="max")["effort"], c.resolve(argv_effort="max")["resolved"]) == ("max", True)
+    r = c.resolve(env={"CLAUDE_CODE_EFFORT_LEVEL": "max"})
+    assert (r["effort"], r["resolved"]) == ("max", True)
+
+
+@pytest.mark.parametrize("own,capped", [("max", False), ("low", True)])
+def test_a_per_model_cap_replaces_the_files_top_level_cap(tmp_path, own, capped):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json",
+       {"maxEffortLevel": "medium", "modelSettings": {"claude-opus-5-5": {"maxEffortLevel": own}}})
+    js(c.user, OPUS_HIGH)
+    assert ("effort_cap_in_project" in c.resolve()["issues"]) is capped
+
+
+def test_another_models_cap_does_not_replace_the_top_level_cap(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json",
+       {"maxEffortLevel": "medium", "modelSettings": {"claude-sonnet-5": {"maxEffortLevel": "max"}}})
+    js(c.user, OPUS_HIGH)
+    assert "effort_cap_in_project" in c.resolve()["issues"]
+
+
+SONNET_XHIGH = {"model": "claude-sonnet-5", "effortLevel": "xhigh"}
+
+
+@pytest.mark.parametrize("env,issue", [
+    ({"MAX_THINKING_TOKENS": "0"}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": " 0 "}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": "00"}, "thinking_off:MAX_THINKING_TOKENS"),       # zero, not the string "0"
+    ({"MAX_THINKING_TOKENS": "0000"}, "thinking_off:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": "٠"}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),  # non-ASCII digit
+    ({"MAX_THINKING_TOKENS": "lots"}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),
+    ({"MAX_THINKING_TOKENS": ""}, "thinking_budget_unreadable:MAX_THINKING_TOKENS"),
+    ({"CLAUDE_CODE_DISABLE_THINKING": "1"}, "thinking_parameter_omitted:CLAUDE_CODE_DISABLE_THINKING"),
+])
+def test_thinking_that_may_be_off_fails_closed_on_the_reviewer_default(tmp_path, env, issue):
+    # env-vars MAX_THINKING_TOKENS: "Set to 0 to disable thinking on the Anthropic API, except on
+    # Opus 5.5 and the Fable models". Sonnet 5 is the reviewer lanes' default (NB4).
+    c = Claude(tmp_path)
+    js(c.user, SONNET_XHIGH)
+    r = c.resolve(env=env)
+    assert r["resolved"] is False and issue in r["issues"]
+    assert classify(CATALOG, "claude-rco-1", r)["verdict"] == "unknown"
+
+
+@pytest.mark.parametrize("env", [{}, {"MAX_THINKING_TOKENS": "16000"}, {"CLAUDE_CODE_DISABLE_THINKING": "0"}])
+def test_thinking_on_resolves(tmp_path, env):
+    c = Claude(tmp_path)
+    js(c.user, SONNET_XHIGH)
+    assert c.resolve(env=env)["resolved"] is True
+
+
+@pytest.mark.parametrize("value,issue", [(False, "thinking_off:alwaysThinkingEnabled_in_user"),
+                                         ("no", "alwaysThinkingEnabled_not_a_boolean_in_user")])
+def test_always_thinking_disabled_fails_closed(tmp_path, value, issue):
+    c = Claude(tmp_path)
+    js(c.user, {**SONNET_XHIGH, "alwaysThinkingEnabled": value})
+    r = c.resolve()
+    assert r["resolved"] is False and issue in r["issues"]
+
+
+def test_a_positive_budget_turns_thinking_on_over_the_setting(tmp_path):
+    # settings-reference alwaysThinkingEnabled: "a positive value turns thinking on even when this key is false".
+    c = Claude(tmp_path)
+    js(c.user, {**SONNET_XHIGH, "alwaysThinkingEnabled": False})
+    assert c.resolve(env={"MAX_THINKING_TOKENS": "16000"})["resolved"] is True
+
+
+def test_a_higher_file_decides_always_thinking(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {**SONNET_XHIGH, "alwaysThinkingEnabled": False})
+    js(c.worktree / ".claude" / "settings.json", {"alwaysThinkingEnabled": True})
+    assert c.resolve()["resolved"] is True
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-5-5[1m]", "claude-fable-5-1", "claude-fable-6"])
+def test_models_that_always_think_ignore_the_thinking_switches(tmp_path, model):
+    c = Claude(tmp_path)
+    js(c.user, {"model": model, "alwaysThinkingEnabled": False,
+                "modelSettings": {model.replace("[1m]", ""): {"effortLevel": "high"}}})
+    r = c.resolve(env={"MAX_THINKING_TOKENS": "0", "CLAUDE_CODE_DISABLE_THINKING": "1"})
+    assert r["resolved"] is True, r["issues"]
+
+
+# ---------------------------------------------------------------- a resumed session keeps its transcript model
+
+THREAD = "0f3c2b1a-1111-4222-8333-944455556666"
+
+
+def turn(model, *, sidechain=False, kind="assistant"):
+    return {"type": kind, "isSidechain": sidechain, "message": {"model": model, "content": []}}
+
+
+def transcript(tmp_path, records, name="t.jsonl") -> Path:
+    path = tmp_path / name
+    path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+MODEL_COMMAND = {"type": "user", "message": {"content": "<command-name>/model</command-name>\n<command-args></command-args>"}}
+
+
+def test_a_resumed_session_keeps_its_transcript_model(tmp_path):
+    # model-config: resumed sessions "keep the model they were using when the transcript was
+    # saved, regardless of the current model setting".
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    path = transcript(tmp_path, [turn("claude-opus-5-5"), turn("claude-sonnet-5")])
+    r = c.resolve(resume=path)
+    assert (r["model"], r["model_source"], r["effort"], r["resolved"]) == \
+        ("claude-sonnet-5", "resume_transcript", "high", True)
+    assert {"layer": "resume_transcript", "path": str(path), "state": "read"} in r["sources"]
+
+
+@pytest.mark.parametrize("how,source", [("argv", "argv"), ("env", "env:ANTHROPIC_MODEL"),
+                                        ("default_env", "env:ANTHROPIC_DEFAULT_MODEL")])
+def test_the_launch_model_beats_the_restored_model(tmp_path, how, source):
+    c = Claude(tmp_path)
+    js(c.user, {"effortLevel": "high"} if how == "default_env" else {"model": "claude-sonnet-5", "effortLevel": "high"})
+    path = transcript(tmp_path, [turn("claude-haiku-4-5")])
+    kwargs = {"argv": {"argv_model": "claude-opus-5"}, "env": {"env": {"ANTHROPIC_MODEL": "claude-opus-5"}},
+              "default_env": {"env": {"ANTHROPIC_DEFAULT_MODEL": "claude-opus-5"}}}[how]
+    r = c.resolve(resume=path, **kwargs)
+    assert (r["model"], r["model_source"]) == ("claude-opus-5", source)
+
+
+def test_a_default_model_variable_that_a_file_outranks_does_not_beat_the_transcript(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=transcript(tmp_path, [turn("claude-opus-5")]), env={"ANTHROPIC_DEFAULT_MODEL": "claude-haiku-4-5"})
+    assert (r["model"], r["model_source"]) == ("claude-opus-5", "resume_transcript")
+
+
+@pytest.mark.parametrize("key", ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"])
+def test_a_model_family_variable_on_resume_is_unknown(tmp_path, key):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=transcript(tmp_path, [turn("claude-sonnet-5")]), env={key: "claude-sonnet-5"})
+    assert (r["model"], r["resolved"]) == (None, False) and "resume_model_family_variable_unverified" in r["issues"]
+    assert c.resolve(env={key: "claude-sonnet-5"})["resolved"] is True        # not resuming: no effect
+
+
+def test_side_threads_and_synthetic_turns_are_skipped(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    path = transcript(tmp_path, [turn("claude-opus-5"), turn("claude-haiku-4-5", sidechain=True), turn("<synthetic>"),
+                                 {"type": "user", "message": {"content": "hi"}}, {"type": "system"}])
+    assert c.resolve(resume=path)["model"] == "claude-opus-5"
+
+
+@pytest.mark.parametrize("records", [
+    [turn("claude-opus-5"), MODEL_COMMAND],                          # /model after the last turn
+    [turn("claude-opus-5"), "{not json"],                            # an unreadable line before the answer
+    [turn("claude-opus-5"), "[1, 2]"],                               # a line that is not an object
+    [{"type": "user", "message": {"content": "hi"}}],                # no assistant turn
+    [turn(None)],                                                    # the last turn names no model
+    [turn(5)],
+    [],
+])
+def test_an_undecidable_transcript_is_unknown(tmp_path, records):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=transcript(tmp_path, records))
+    assert (r["model"], r["resolved"]) == (None, False) and "resume_transcript_model_undecidable" in r["issues"]
+    assert "model_from_unpinned_builtin_default" not in r["issues"] and "model_missing" not in r["issues"]
+
+
+def test_a_model_command_before_the_last_turn_is_history(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    assert c.resolve(resume=transcript(tmp_path, [MODEL_COMMAND, turn("claude-opus-5")]))["model"] == "claude-opus-5"
+
+
+def test_a_missing_or_linked_transcript_is_unknown(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(resume=tmp_path / "gone.jsonl")
+    assert r["resolved"] is False and "resume_transcript_model_undecidable" in r["issues"]
+    real = transcript(tmp_path, [turn("claude-opus-5")], name="real.jsonl")
+    link = tmp_path / "link.jsonl"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    assert "resume_transcript_model_undecidable" in c.resolve(resume=link)["issues"]
+
+
+def test_only_the_tail_is_read_and_a_cut_first_line_is_dropped(tmp_path, monkeypatch):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    last = json.dumps(turn("claude-opus-5")) + "\n"
+    path = transcript(tmp_path, [turn("claude-haiku-4-5")] * 50 + [turn("claude-opus-5")])
+    monkeypatch.setattr(eff_module, "TRANSCRIPT_TAIL_BYTES", len(last) + 7)   # cuts into the line before
+    assert c.resolve(resume=path)["model"] == "claude-opus-5"
+    monkeypatch.setattr(eff_module, "TRANSCRIPT_TAIL_BYTES", len(last) - 3)   # the last turn itself is cut
+    assert "resume_transcript_model_undecidable" in c.resolve(resume=path)["issues"]
+
+
+def test_the_transcript_path_follows_the_launcher_rule(tmp_path):
+    from tools.lane_effective_model import SourceError, claude_transcript_path
+    path = claude_transcript_path(tmp_path, Path("C:/Python/wt-a_b"), THREAD)
+    assert path == tmp_path / "projects" / "C--Python-wt-a-b" / f"{THREAD}.jsonl"
+    for bad in ("../x", THREAD.upper(), THREAD + ".jsonl", "", None):
+        with pytest.raises(SourceError):
+            claude_transcript_path(tmp_path, Path("C:/wt"), bad)
+
+
+def test_the_cli_refuses_a_resume_without_a_worktree(capsys):
+    assert main(["--lane", "claude-rco-1", "--cli", "claude", "--claude-resume-thread", THREAD]) == 2
+
+
+@pytest.mark.parametrize("spelling", ["unset", "native", ""])
+def test_the_launchers_empty_spelling_is_not_a_claude_model(tmp_path, spelling):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(argv_model=spelling, argv_effort=spelling)
+    assert (r["model"], r["model_source"], r["effort_source"]) == ("claude-sonnet-5", "user", "user")
+
+
+
+def test_a_last_turn_without_a_model_does_not_fall_back_to_an_older_turn(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    for last in (turn(None), turn(5), turn("  ")):
+        r = c.resolve(resume=transcript(tmp_path, [turn("claude-opus-5"), last]))
+        assert (r["model"], r["resolved"]) == (None, False), last
+
+
+def test_a_cut_first_line_is_never_trusted_even_when_it_parses(tmp_path, monkeypatch):
+    # The tail's first line may start mid-line. A cut inside the leading blanks of an assistant
+    # line still parses as that turn; it must be dropped, not read.
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    padded = " " * 40 + json.dumps(turn("claude-haiku-4-5"))
+    user = json.dumps({"type": "user", "message": {"content": "hi"}})
+    path = transcript(tmp_path, [padded, user])
+    monkeypatch.setattr(eff_module, "TRANSCRIPT_TAIL_BYTES", len(user) + 1 + len(padded) + 1 - 10)
+    r = c.resolve(resume=path)
+    assert (r["model"], r["resolved"]) == (None, False)
+    assert "resume_transcript_model_undecidable" in r["issues"]
+
+
+# ---------------------------------------------------------------- availableModels (claude-rco-1 review of #1745)
+
+@pytest.mark.parametrize("allowed", [["opus"], ["claude-sonnet-5"], []])
+def test_an_available_models_list_in_any_file_fails_closed(tmp_path, allowed):
+    # model-config "Restrict model selection": a blocked `model` setting "is replaced ... and the
+    # session starts on the default model"; the list's matching rules are not modelled here.
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "availableModels": allowed})
+    r = c.resolve()
+    assert r["resolved"] is False and "available_models_in_user" in r["issues"]
+
+
+def test_an_available_models_list_in_a_project_file_fails_closed(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
+    js(c.worktree / ".claude" / "settings.json", {"availableModels": ["opus"]})
+    assert "available_models_in_project" in c.resolve()["issues"]
+
+
+
+# ---------------------------------------------------------------- third-party providers (claude-rco-1 NB-a on #1745)
+
+@pytest.mark.parametrize("key", ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                                 "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                                 "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "ANTHROPIC_BASE_URL"])
+def test_a_third_party_provider_or_gateway_fails_closed(tmp_path, key):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high"})
+    r = c.resolve(env={key: "1"})
+    assert r["resolved"] is False and f"third_party_provider:{key}" in r["issues"]
+    assert c.resolve(env={key: ""})["resolved"] is True                      # empty is unset
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "high", "env": {key: "1"}})
+    assert f"env_block_sets_{key}_in_user" in c.resolve()["issues"]
+
 
 # ---------------------------------------------------------------- config directories (codex-tools-1 B1 on #1744)
 
@@ -733,20 +1032,171 @@ def test_a_settings_env_block_that_moves_the_config_dir_fails_closed(tmp_path):
     assert r["resolved"] is False and "env_block_sets_CLAUDE_CONFIG_DIR_in_user" in r["issues"]
 
 
-# ---------------------------------------------------------------- availableModels (claude-rco-1 review of #1745)
 
-@pytest.mark.parametrize("allowed", [["opus"], ["claude-sonnet-5"], []])
-def test_an_available_models_list_in_any_file_fails_closed(tmp_path, allowed):
-    # model-config "Restrict model selection": a blocked `model` setting "is replaced ... and the
-    # session starts on the default model"; the list's matching rules are not modelled here.
+# ---------------------------------------------------------------- /model as a system record (rco-2)
+
+_MODEL_CMD = '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>'
+_TURN = {'type': 'assistant', 'isSidechain': False,
+         'message': {'role': 'assistant', 'model': 'claude-sonnet-5', 'content': [{'type': 'text', 'text': 'ok'}]}}
+
+
+def _transcript(tmp_path, *records):
+    path = tmp_path / '00000000-0000-0000-0000-000000000000.jsonl'
+    path.write_text(''.join(json.dumps(r) + '\n' for r in records), encoding='utf-8')
+    return path
+
+
+def test_a_system_local_command_model_after_the_last_turn_fails_closed(tmp_path):
+    # The shape the CLI writes (seen in real transcripts): type system, subtype local_command, top-level content.
+    from tools.lane_effective_model import SourceError, transcript_model
+    path = _transcript(tmp_path, _TURN, {'type': 'system', 'subtype': 'local_command', 'content': _MODEL_CMD})
+    with pytest.raises(SourceError, match='/model after the last turn'):
+        transcript_model(path)
+
+
+def test_another_system_command_after_the_last_turn_does_not_hide_the_model(tmp_path):
+    from tools.lane_effective_model import transcript_model
+    other = _MODEL_CMD.replace('/model', '/help').replace('>model<', '>help<')
+    path = _transcript(tmp_path, _TURN, {'type': 'system', 'subtype': 'local_command', 'content': other})
+    assert transcript_model(path) == 'claude-sonnet-5'
+
+
+def test_a_system_model_command_before_the_last_turn_is_superseded_by_that_turn(tmp_path):
+    from tools.lane_effective_model import transcript_model
+    path = _transcript(tmp_path, {'type': 'system', 'subtype': 'local_command', 'content': _MODEL_CMD}, _TURN)
+    assert transcript_model(path) == 'claude-sonnet-5'
+
+
+@pytest.mark.parametrize("kind", ["attachment", "queue-operation", None])
+def test_a_model_command_in_any_non_assistant_record_fails_closed(tmp_path, kind):
+    from tools.lane_effective_model import SourceError, transcript_model
+    path = _transcript(tmp_path, _TURN, {'type': kind, 'content': _MODEL_CMD})
+    with pytest.raises(SourceError, match='/model after the last turn'):
+        transcript_model(path)
+
+
+@pytest.mark.parametrize("content", [[{'type': 'text', 'text': _MODEL_CMD}], _MODEL_CMD])
+def test_an_assistant_turn_that_quotes_the_marker_is_still_a_turn(tmp_path, content):
+    # An assistant turn is never a /model command, even with the marker in its (list or string) content.
+    from tools.lane_effective_model import transcript_model
+    quoting = {'type': 'assistant', 'isSidechain': False, 'content': _MODEL_CMD,
+               'message': {'model': 'claude-opus-5', 'content': content}}
+    assert transcript_model(_transcript(tmp_path, _TURN, quoting)) == 'claude-opus-5'
+
+
+
+# ---------------------------------------------------------------- Grok third-family review of #1745 (verified)
+
+@pytest.mark.parametrize("cap_key", ["claude-opus-5-5[1m]", "claude-opus-5-5-20260101", "opus", " "])
+def test_a_cap_under_a_key_that_may_name_the_model_counts_even_below_the_deciding_file(tmp_path, cap_key):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "availableModels": allowed})
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})          # decides the effort
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {cap_key: {"maxEffortLevel": "low"}}})
     r = c.resolve()
-    assert r["resolved"] is False and "available_models_in_user" in r["issues"]
+    assert r["resolved"] is False and "effort_cap_in_user" in r["issues"]
 
 
-def test_an_available_models_list_in_a_project_file_fails_closed(tmp_path):
+def test_a_cap_for_another_model_still_does_not_count(tmp_path):
     c = Claude(tmp_path)
-    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
-    js(c.worktree / ".claude" / "settings.json", {"availableModels": ["opus"]})
-    assert "available_models_in_project" in c.resolve()["issues"]
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-sonnet-5": {"maxEffortLevel": "low"}}})
+    assert c.resolve()["resolved"] is True
+
+
+def test_a_malformed_model_settings_below_the_deciding_file_is_a_possible_cap(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "high"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": ["x"]})
+    assert "effort_cap_in_user" in c.resolve()["issues"]
+
+
+@pytest.mark.parametrize("key", ["model", "effortLevel"])
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_model_or_effort_is_not_unset(tmp_path, key, blank):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "low"})
+    js(c.worktree / ".claude" / "settings.json", {key: blank})
+    r = c.resolve()
+    assert r["resolved"] is False and f"{key}_blank_in_project" in r["issues"]
+
+
+@pytest.mark.parametrize("where", ["message", "top"])
+def test_a_model_command_in_block_list_content_fails_closed(tmp_path, where):
+    from tools.lane_effective_model import SourceError, transcript_model
+    blocks = [{"type": "text", "text": "<command-name>/model</command-name>"}]
+    record = {"type": "user", "message": {"content": blocks}} if where == "message" else {"type": "system", "content": blocks}
+    with pytest.raises(SourceError, match="/model after the last turn"):
+        transcript_model(transcript(tmp_path, [turn("claude-opus-5"), record]))
+
+
+def test_block_list_content_without_the_marker_is_harmless(tmp_path):
+    from tools.lane_effective_model import transcript_model
+    record = {"type": "user", "message": {"content": [{"type": "text", "text": "hello"}, {"type": "image"}]}}
+    assert transcript_model(transcript(tmp_path, [turn("claude-opus-5"), record])) == "claude-opus-5"
+
+
+
+@pytest.mark.parametrize("extra,issue", [
+    ('model_provider = "ollama"\n', "codex_provider_override:model_provider"),
+    ('openai_base_url = "http://127.0.0.1:9/v1"\n', "codex_provider_override:openai_base_url"),
+    ('[model_providers.openai]\nbase_url = "http://127.0.0.1:9/v1"\n', "codex_provider_override:model_providers"),
+])
+def test_a_codex_provider_override_fails_closed(tmp_path, extra, issue):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n' + extra)
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg)
+    assert r["resolved"] is False and issue in r["issues"]
+
+
+def test_the_default_openai_provider_is_fine(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\nmodel_provider = "openai"\n')
+    assert resolve_codex(argv_model="native", argv_effort="native", config=cfg)["resolved"] is True
+
+
+def test_an_openai_base_url_env_fails_closed_and_blank_is_unset(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg, env={"OPENAI_BASE_URL": "http://x"})
+    assert r["resolved"] is False and "codex_provider_override:OPENAI_BASE_URL" in r["issues"]
+    assert resolve_codex(argv_model="native", argv_effort="native", config=cfg, env={"OPENAI_BASE_URL": " "})["resolved"]
+
+
+def test_a_project_config_with_a_provider_is_unverified(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+    worktree = tmp_path / "wt"
+    toml(worktree / ".codex" / "config.toml", 'model_provider = "ollama"\n')
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg, worktree=worktree)
+    assert "project_config_precedence_unverified" in r["issues"]
+
+
+def test_deep_toml_nesting_is_a_clean_refusal(tmp_path):
+    cfg = toml(tmp_path / "config.toml", "a = " + "[" * 3000 + "]" * 3000 + "\n")
+    r = resolve_codex(argv_model="gpt-6-sol", argv_effort="high", config=cfg)
+    assert r["resolved"] is False and "user_config_unreadable" in r["issues"]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("claude-opus-5-5[bogus]", (None, "model_suffix_unknown:[bogus]")),
+    ("claude-opus-5-5[]", (None, "model_suffix_unknown:[]")),
+    ("[1m]", (None, "model_missing")),
+    ("claude-opus-5-5[1M]", ("claude-opus-5-5", None)),
+])
+def test_only_the_documented_context_suffix_is_stripped(value, expected):
+    assert normalize_claude_model(value) == expected
+
+
+
+@pytest.mark.parametrize("entry_key", ["claude-opus-5-5", "claude-opus-5-5[1m]", "opus"])
+@pytest.mark.parametrize("bad", ["low", 3, None, ["low"]])
+def test_a_malformed_entry_that_may_be_the_models_counts_below_the_deciding_file(tmp_path, entry_key, bad):
+    # codex-tools-1 B4 on #1745: a non-object entry for (or maybe for) this model is an undecidable cap.
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "xhigh"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {entry_key: bad}})
+    r = c.resolve()
+    assert r["resolved"] is False and "effort_cap_in_user" in r["issues"]
+
+
+def test_a_malformed_entry_for_another_model_is_harmless(tmp_path):
+    c = Claude(tmp_path)
+    js(c.worktree / ".claude" / "settings.json", {"effortLevel": "xhigh"})
+    js(c.user, {"model": "claude-opus-5-5", "modelSettings": {"claude-sonnet-5": "low"}})
+    assert c.resolve()["resolved"] is True

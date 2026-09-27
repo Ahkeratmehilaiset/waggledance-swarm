@@ -8,20 +8,20 @@
     bridge-branch-switch-during-active-claim-2026-05-09 (filed
     2026-05-09T11:30Z, hardened per operator spec 2026-05-09T~12:10Z).
 
-    The bridge runs as multiple agents sharing a single worktree at
-    C:\Python\project2-master. Active claims protect file PATHS, but
-    a `git switch / checkout / merge / rebase / pull` changes the
-    branch context for every active claim's working tree at once.
+    A `git switch / checkout / merge / rebase / pull` changes branch
+    context for every active claim in the SAME Git worktree. Claims in a
+    separately verified Git worktree are independent and must not serialize
+    branch movement here.
     That can cause:
       - wrong-branch commits
       - wrong test context
       - stale --match-head-commit assumptions
       - untracked-file drift across claims
 
-    This wrapper enforces the rule: branch-moving git operations
-    are only allowed when EITHER no active claim exists OR all
-    active claims belong to the same agent AND the cwd matches the
-    claim's recorded cwd.
+    This wrapper fails closed unless every non-privileged write claim is
+    either in a verified different Git worktree, or belongs to this agent
+    with an exactly matching cwd. Read-only claims never block. Missing,
+    non-Git, or filesystem-alias claim paths are unverifiable and block.
 
     Wrapped git verbs:
       switch | checkout | merge | rebase | pull
@@ -32,8 +32,8 @@
 
     Exit codes:
       0 = git command ran (output passed through)
-      2 = blocked: another agent holds an active claim, OR your
-          own claim was created from a different cwd
+      2 = blocked: a write claim shares this worktree, its worktree cannot
+          be verified, OR your own claim was created from a different cwd
       3 = malformed invocation (no git args)
 
 .PARAMETER Agent
@@ -51,7 +51,7 @@
 
 .EXAMPLE
     .\.agent-bridge\bin\Invoke-BridgeGit.ps1 -Agent claude -- switch main
-    # Guarded: blocks if any other-agent active claim exists.
+    # Guarded: blocks on other-agent writes in this or an unverifiable worktree.
 
 .EXAMPLE
     .\.agent-bridge\bin\Invoke-BridgeGit.ps1 -Agent claude -- checkout -b new-branch
@@ -118,6 +118,127 @@ function Get-ActiveClaims {
     }
 }
 
+function Get-NormalizedLiteralDirectoryPath {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try {
+        $resolved = Resolve-Path -LiteralPath $Path -ErrorAction Stop
+        if ([string]$resolved.Provider.Name -cne 'FileSystem') { return $null }
+        $full = [System.IO.Path]::GetFullPath([string]$resolved.ProviderPath)
+        $root = [System.IO.Path]::GetPathRoot($full)
+        if ($full.Length -gt $root.Length) {
+            $full = $full.TrimEnd([char[]]@(
+                [System.IO.Path]::DirectorySeparatorChar,
+                [System.IO.Path]::AltDirectorySeparatorChar
+            ))
+        }
+        return $full
+    } catch {
+        return $null
+    }
+}
+
+function Test-PathContainsReparsePoint {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        while ($null -ne $item) {
+            if (
+                ($item.Attributes -band
+                    [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                return $true
+            }
+            $item = $item.Parent
+        }
+        return $false
+    } catch {
+        # An unreadable component cannot prove filesystem identity.
+        return $true
+    }
+}
+
+function Get-VerifiedGitWorktreeContext {
+    param([Parameter(Mandatory)] [string] $Cwd)
+
+    $normalizedCwd = Get-NormalizedLiteralDirectoryPath -Path $Cwd
+    if (
+        -not $normalizedCwd -or
+        (Test-PathContainsReparsePoint -Path $normalizedCwd)
+    ) {
+        return $null
+    }
+
+    try {
+        $previousEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $gitOutput = @(
+                & git -C $normalizedCwd rev-parse --show-toplevel 2>$null
+            )
+            $gitExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+    } catch {
+        return $null
+    }
+    if ($gitExit -ne 0 -or $gitOutput.Count -ne 1) { return $null }
+
+    $worktreeRoot = Get-NormalizedLiteralDirectoryPath `
+        -Path ([string]$gitOutput[0])
+    if (
+        -not $worktreeRoot -or
+        (Test-PathContainsReparsePoint -Path $worktreeRoot)
+    ) {
+        return $null
+    }
+    $worktreePrefix = $worktreeRoot
+    if (
+        -not $worktreePrefix.EndsWith(
+            [string][System.IO.Path]::DirectorySeparatorChar
+        ) -and
+        -not $worktreePrefix.EndsWith(
+            [string][System.IO.Path]::AltDirectorySeparatorChar
+        )
+    ) {
+        $worktreePrefix += [System.IO.Path]::DirectorySeparatorChar
+    }
+    if (
+        -not [string]::Equals(
+            $normalizedCwd,
+            $worktreeRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -and
+        -not $normalizedCwd.StartsWith(
+            $worktreePrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        # Git canonicalizes SUBST paths to their backing worktree. Requiring
+        # cwd to be inside the returned root rejects that filesystem alias.
+        return $null
+    }
+    return [pscustomobject]@{
+        cwd           = $normalizedCwd
+        worktree_root = $worktreeRoot
+    }
+}
+
+function Test-BridgePathEqual {
+    param(
+        [Parameter(Mandatory)] [string] $Left,
+        [Parameter(Mandatory)] [string] $Right
+    )
+    return [string]::Equals(
+        $Left,
+        $Right,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+}
+
 function Format-ClaimLine {
     param([Parameter(Mandatory)] [object] $Claim)
     $branch = ''
@@ -171,26 +292,49 @@ if (-not $isBranchMoving) {
 # ── Branch-moving path: enforce the guard ─────────────────────────
 $claims = @(Get-ActiveClaims)
 $currentCwd = (Get-Location).Path
+$currentContext = Get-VerifiedGitWorktreeContext -Cwd $currentCwd
+if ($null -eq $currentContext) {
+    Write-Error -Message (
+        'BLOCKED: branch-moving git refused because the current cwd is not ' +
+        'a verifiable, non-aliased Git worktree.'
+    ) -Category PermissionDenied -ErrorAction Continue
+    exit 2
+}
 
-
-# Spec invariant: allow only when (no claims) OR (all claims belong
-# to this agent AND cwd matches each claim's recorded cwd).
+# Only writes in this worktree can be affected by this branch movement.
+# Missing/unresolvable/aliased claim cwd values cannot prove disjointness and
+# therefore remain blockers. Read-only claims never own branch state.
 $blocking = @()
 foreach ($claim in $claims) {
     $claimAgent = [string]$claim.agent
+    if ($claimAgent -in @('operator','system')) { continue }
+    $claimMode = if ($claim.PSObject.Properties['mode']) {
+        [string]$claim.mode
+    } else { '' }
+    if ($claimMode -ceq 'read-only') { continue }
+
     $claimCwd = if ($claim.PSObject.Properties['cwd']) {
         [string]$claim.cwd
     } else { '' }
-
-    if ($claimAgent -ne $Agent) {
-        # Different agent's claim - always blocks (except for
-        # privileged operator/system claims).
-        if ($claimAgent -in @('operator','system')) { continue }
+    $claimContext = Get-VerifiedGitWorktreeContext -Cwd $claimCwd
+    if ($null -eq $claimContext) {
         $blocking += $claim
         continue
     }
-    # Same-agent claim: must also have matching cwd.
-    if ($claimCwd -and $claimCwd -ne $currentCwd) {
+    if (-not (Test-BridgePathEqual `
+        -Left $currentContext.worktree_root `
+        -Right $claimContext.worktree_root)) {
+        continue
+    }
+
+    if ($claimAgent -ne $Agent) {
+        $blocking += $claim
+        continue
+    }
+    # Same-agent writes in this worktree still require the exact claim cwd.
+    if (-not (Test-BridgePathEqual `
+        -Left $currentContext.cwd `
+        -Right $claimContext.cwd)) {
         $blocking += $claim
     }
 }
@@ -202,7 +346,7 @@ if ($blocking.Count -eq 0) {
 }
 
 # ── Blocked: surface the conflict ─────────────────────────────────
-$blockedMsg = "BLOCKED: branch-moving git $verb refused - $($blocking.Count) active claim(s) make this unsafe under the shared-worktree rule (BRIDGE_PROTOCOL rule 2)."
+$blockedMsg = "BLOCKED: branch-moving git $verb refused - $($blocking.Count) active write claim(s) share this worktree or have unverifiable cwd identity (BRIDGE_PROTOCOL rule 2)."
 Write-Error -Message $blockedMsg -Category PermissionDenied -ErrorAction Continue
 foreach ($claim in $blocking) {
     Write-Error -Message (Format-ClaimLine -Claim $claim) `

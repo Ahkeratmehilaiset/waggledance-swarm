@@ -188,7 +188,7 @@ function Test-BridgeRequestStillOpen {
     foreach ($answer in $requestIndex.by_task[[string]$Request.task_id]) {
         $closure = $answer.agent -ceq $Request.agent -and (Test-BridgeRequesterClosureEvent $answer)
         if (($closure -or (Test-BridgeAnswerEvent $answer)) -and
-            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous)) {
+            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$Request] -ReplyPosition $requestIndex.positions[$answer])) {
             return $false
         }
     }

@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from waggledance.core.bridge_event_schema import AGENT_ID_PATTERN
 from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+from waggledance.core.bridge_request_contract import terminal_status_negated
 from waggledance.core.work_queue import TASK_ID_PATTERN, resolve_bridge_root
 from tools.bridge_next_action import (
     _event_agent,
@@ -353,6 +354,7 @@ def _reduce_event_requests(
 
     open_by_key: dict[tuple[str, str, str, str], dict[str, str]] = {}
     seen_direct_keys: set[tuple[str, str, str, str]] = set()
+    seen_canonical_rows: set[str] = set()
     for event in events:
         canonical_schema = _event_schema(event) == CANONICAL_RCO_SCHEMA
         direct_schema = _is_direct_rco_request_candidate(event)
@@ -382,6 +384,14 @@ def _reduce_event_requests(
         if not isinstance(required_response_payload, Mapping):
             required_response_payload = {}
         request_targets = _request_targets(event) if opens_in_reducer else []
+        if request_targets and canonical_contract_valid:
+            # Identical replay rows keep the original append position. A new
+            # timestamp/content is a new revision, not an idempotent replay.
+            row = json.dumps({k: v for k, v in event.items() if not k.startswith("_")},
+                             sort_keys=True, separators=(",", ":"))
+            if row in seen_canonical_rows:
+                continue
+            seen_canonical_rows.add(row)
         for kind, target_agent in request_targets:
             if not task_id:
                 continue
@@ -1034,6 +1044,12 @@ def _closes_request(request: Mapping[str, str], event: Mapping[str, Any]) -> boo
             return False
     elif event["_ts"] <= _parse_utc(request["opened_at_utc"]):
         return False
+    elif request.get("opened_line_no") and event.get("_line_no") is not None:
+        try:
+            if int(event["_line_no"]) <= int(request["opened_line_no"]):
+                return False
+        except (TypeError, ValueError):
+            return False
     target_event_agent = (
         _literal_event_agent(event) if canonical_schema else _event_agent(event)
     )
@@ -1077,10 +1093,10 @@ def _is_requester_closure_event(event: Mapping[str, Any]) -> bool:
         return False
     stems = (
         REQUESTER_MESSAGE_TERMINAL_STATUS_STEMS
-        if event_type == "message"
+        if event_type in {"message", "wake_request"}
         else REQUESTER_TERMINAL_STATUS_STEMS
     )
-    if event_type not in {"message", "done", "release", "decision"}:
+    if event_type not in {"message", "wake_request", "done", "release", "decision"}:
         return False
     normalized_status = status
     status_tokens = _identity_tokens(normalized_status)
@@ -1101,6 +1117,8 @@ def _is_legacy_target_answer(
 ) -> bool:
     event_type = _event_type(event)
     status = _event_status(event)
+    if event_type == "done" and terminal_status_negated(status):
+        return False
     if event_type == "message" and (
         _identity_tokens(status) & NONTERMINAL_STATUS_TOKENS
     ):

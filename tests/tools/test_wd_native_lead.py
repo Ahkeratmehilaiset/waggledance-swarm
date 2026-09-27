@@ -70,7 +70,7 @@ function Assert-WdLaneLaunchAvailable {{
   if($AllowUnpinnedParser){{throw 'Live native launch must require the pinned parser'}}
   $script:checks++
 }}
-$cliName='codex.cmd'; $model='gpt-6-astra'; $effort='xhigh'; $worktree='C:\\Python\\project2'; $Agent='codex-lead-1'
+$cliName='codex.cmd'; $model='gpt-6-astra'; $effort='xhigh'; $autoCompactTokens=$null; $worktree='C:\\Python\\project2'; $Agent='codex-lead-1'
 $startupPrompt='FIRST visual'; $continuationPrompt='Existing context'; $targetImagePath='exact.png'
 {source[start:end]}
 @{{arguments=$launchArguments;checks=$script:checks}} | ConvertTo-Json

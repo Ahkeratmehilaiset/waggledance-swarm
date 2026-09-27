@@ -75,7 +75,7 @@ $PSScriptRoot={q(tmp_path)}
 $laneTrustedDrive={q(tmp_path)}
 $deploymentAnchor=[pscustomobject]@{{files=[pscustomobject]@{{'wd-claude-event-driven-settings.json'='{pin}'}}}}
 $claudeResume=[pscustomobject]@{{thread_id='{CURRENT}';initial_context_delivered=$true}}
-$cliName='claude.cmd'; $Agent='claude-rco-1'; $model='sonnet'; $effort='max'
+$cliName='claude.cmd'; $Agent='claude-rco-1'; $model='sonnet'; $effort='max'; $autoCompactTokens=$null
 $startupPrompt='Read image first'; $continuationPrompt='Resume authorized work'
 {source[start:end]}
 ConvertTo-Json -InputObject $launchArguments

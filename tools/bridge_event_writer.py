@@ -1461,6 +1461,8 @@ class WindowsAppendV1Backend:
     WAIT_ABANDONED = 0x00000080
     WAIT_TIMEOUT = 0x00000102
     WAIT_FAILED = 0xFFFFFFFF
+    MUTEX_MODIFY_STATE = 0x00000001
+    SYNCHRONIZE = 0x00100000
 
     def __init__(self) -> None:
         self._supported = os.name == "nt"
@@ -1517,8 +1519,13 @@ class WindowsAppendV1Backend:
             ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION),
         ]
         kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexExW.argtypes = [
+            wintypes.LPVOID,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        kernel32.CreateMutexExW.restype = wintypes.HANDLE
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
@@ -1659,9 +1666,11 @@ class WindowsAppendV1Backend:
 
     def acquire_mutex(self, name: str, timeout_ms: int) -> _WindowsMutex:
         self.ensure_supported()
-        handle = self._kernel32.CreateMutexW(None, False, name)
+        handle = self._kernel32.CreateMutexExW(
+            None, name, 0, self.SYNCHRONIZE | self.MUTEX_MODIFY_STATE
+        )
         if not handle:
-            self._raise_last_error("CreateMutexW", None)
+            self._raise_last_error("CreateMutexExW", None)
         result = int(self._kernel32.WaitForSingleObject(handle, timeout_ms))
         if result == self.WAIT_OBJECT_0:
             return _WindowsMutex(self, handle, acquired=True, abandoned=False)

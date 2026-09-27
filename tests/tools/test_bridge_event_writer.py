@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import uuid
 
 import pytest
 
@@ -389,6 +390,104 @@ class _WalObservationBackend(_PortableTestBackend):
             assert pending[0].read_bytes() == _event_bytes()
             self.saw_durable_pending_before_wait = True
         return super().acquire_mutex(name, timeout_ms)
+
+
+@pytest.mark.parametrize("wait_result, acquired, abandoned", [
+    (WindowsAppendV1Backend.WAIT_OBJECT_0, True, False),
+    (WindowsAppendV1Backend.WAIT_ABANDONED, True, True),
+    (WindowsAppendV1Backend.WAIT_TIMEOUT, False, False),
+])
+def test_windows_mutex_requests_only_wait_and_release_rights(
+    wait_result: int, acquired: bool, abandoned: bool,
+) -> None:
+    class Kernel:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        def CreateMutexExW(self, attributes, name, flags, access):
+            self.calls.append(("create", attributes, name, flags, access))
+            return 123
+
+        def WaitForSingleObject(self, handle, timeout):
+            self.calls.append(("wait", handle, timeout))
+            return wait_result
+
+        def CloseHandle(self, handle):
+            self.calls.append(("close", handle))
+            return True
+
+    backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
+    backend._supported = True
+    backend._kernel32 = Kernel()
+    mutex = backend.acquire_mutex(r"Global\WaggleDanceBridgeMutexUnitUnique", 1234)
+    assert (mutex.acquired, mutex.abandoned) == (acquired, abandoned)
+    mutex.close()
+    assert backend._kernel32.calls == [
+        ("create", None, r"Global\WaggleDanceBridgeMutexUnitUnique", 0, 0x00100001),
+        ("wait", 123, 1234),
+        ("close", 123),
+    ]
+
+
+@pytest.mark.parametrize("wait_result", [WindowsAppendV1Backend.WAIT_FAILED, 0x12345678])
+def test_windows_mutex_closes_handle_on_wait_error(wait_result: int) -> None:
+    class Kernel:
+        def __init__(self) -> None:
+            self.closed: list[int] = []
+
+        def CreateMutexExW(self, attributes, name, flags, access):
+            return 456
+
+        def WaitForSingleObject(self, handle, timeout):
+            return wait_result
+
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+            return True
+
+    backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
+    backend._supported = True
+    backend._kernel32 = Kernel()
+    with pytest.raises(OSError):
+        backend.acquire_mutex("unique-test-mutex", 0)
+    assert backend._kernel32.closed == [456]
+
+
+def test_windows_mutex_creation_error_does_not_wait_or_close(monkeypatch) -> None:
+    class Kernel:
+        def CreateMutexExW(self, attributes, name, flags, access):
+            return 0
+
+        def WaitForSingleObject(self, handle, timeout):
+            pytest.fail("failed creation must not wait")
+
+        def CloseHandle(self, handle):
+            pytest.fail("failed creation has no handle to close")
+
+    backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
+    backend._supported = True
+    backend._kernel32 = Kernel()
+    monkeypatch.setattr(backend, "_raise_last_error", lambda operation, path: (_ for _ in ()).throw(OSError(operation)))
+    with pytest.raises(OSError, match="CreateMutexExW"):
+        backend.acquire_mutex("unique-test-mutex", 0)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires real Win32 named mutexes")
+def test_windows_mutex_reopens_existing_unique_name() -> None:
+    backend = WindowsAppendV1Backend()
+    name = rf"Local\WaggleDanceBridgeMutexTest-{uuid.uuid4().hex}"
+    first = backend.acquire_mutex(name, 0)
+    try:
+        assert first.acquired and not first.abandoned
+        second = backend.acquire_mutex(name, 0)
+        try:
+            assert second.acquired and not second.abandoned
+        finally:
+            second.release()
+            second.close()
+    finally:
+        first.release()
+        first.close()
 
 
 class _AcceptedPublishObservationBackend(_PortableTestBackend):

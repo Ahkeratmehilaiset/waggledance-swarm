@@ -80,3 +80,27 @@ def test_matching_identity_and_legacy_nonce_remain_supported(tmp_path, shell):
                   "-ReplyToEventJson", json.dumps(request), "-PayloadJson", '{"nonce":"n1"}')
     assert reply.returncode == 0, reply.stderr
     assert len(rows(tmp_path).splitlines()) == 2
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("field", ["request_id", "request_digest", "expected_responders"])
+def test_generated_binding_cannot_conflict_with_payload(tmp_path, shell, field):
+    # A recorded target makes expected_responders an actual generated field.
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "last_peer.json").write_text(json.dumps({
+        "agent": "peer", "agent_uuid": "11111111-2222-3333-4444-555555555555",
+        "session_id": "current", "run_id": "run"}))
+    result = write(shell, tmp_path, "-Type", "message", "-Status", "request", "-To", "peer",
+                   "-RequestId", "generated-request", "-PayloadJson", json.dumps({field: "different"}))
+    assert result.returncode != 0, result.stdout
+    assert "payload contract field" in result.stderr
+    assert not rows(tmp_path)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_observational_identity_is_allowed_under_result(tmp_path, shell):
+    result = write(shell, tmp_path, "-Type", "status", "-Status", "evidence",
+                   "-PayloadJson", '{"result":{"session_id":"a-measured-peer-session"}}')
+    assert result.returncode == 0, result.stderr
+    assert len(rows(tmp_path).splitlines()) == 1

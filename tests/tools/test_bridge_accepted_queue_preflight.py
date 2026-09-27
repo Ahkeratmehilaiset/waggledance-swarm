@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -34,6 +35,28 @@ FAILURE_STATUSES = {
 WINDOWS_NATIVE_DRAIN_AVAILABLE = os.name == "nt" and bool(
     shutil.which("powershell.exe") or shutil.which("pwsh")
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_preflight_kernel_names(tmp_path, monkeypatch):
+    """Even mocked receipts take real locks on Windows: isolate every test."""
+    code = tmp_path / "fixture-bin"
+    shutil.copytree(accepted_queue_preflight.DEFAULT_DRAIN_SCRIPT.parent, code)
+    prefix = "Local\\WdPreflightTest-" + uuid.uuid4().hex + "-"
+    for path in code.glob("*.ps1"):
+        source = path.read_text(encoding="utf-8-sig")
+        if "Global\\WaggleDanceBridge" in source:
+            path.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    for name, suffix in (("QUEUE_PUBLICATION_MUTEX_NAME", "AcceptedQueuePublicationV1"),
+                         ("APPEND_MUTEX_NAME", "AppendV1")):
+        monkeypatch.setattr(accepted_queue_preflight, name, prefix + suffix)
+    drain = code / "Drain-AcceptedBridgeQueue.ps1"
+    monkeypatch.setattr(accepted_queue_preflight, "DEFAULT_DRAIN_SCRIPT", drain)
+    monkeypatch.setitem(check_accepted_queue_complete.__kwdefaults__, "drain_script", drain)
+    for name in list(os.environ):
+        if name.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_")):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path / "unused-runtime"))
 
 
 @pytest.fixture

@@ -6,6 +6,10 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import json
+from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 import uuid
@@ -17,6 +21,22 @@ import tools.bridge_named_mutex as named_mutex
 
 LOGON = "S-1-5-5-0-367215"
 EXPECTED = f"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120001;;;{LOGON})"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process token policy parity")
+@pytest.mark.parametrize("shell", list(dict.fromkeys(filter(None, [shutil.which("powershell.exe"), shutil.which("pwsh")]))))
+def test_powershell_and_python_creation_policy_identical(shell):
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    named_mutex._configure(kernel, advapi)
+    expected = named_mutex._creation_sddl(kernel, advapi)
+    helper = str(Path(__file__).resolve().parents[2] / ".agent-bridge/bin/BridgeNamedMutex.ps1").replace("'", "''")
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+        f"$ErrorActionPreference='Stop'; . '{helper}'; Initialize-BridgeNamedMutexType; "
+        "[WaggleDance.BridgeNamedMutexV1]::GetCreationSddl()|ConvertTo-Json -Compress"],
+        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
 
 
 @pytest.mark.parametrize("groups", [

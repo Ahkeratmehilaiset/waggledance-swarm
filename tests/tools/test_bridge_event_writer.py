@@ -1110,6 +1110,7 @@ def test_acceptance_unknown_markerless_pending_never_auto_replays(tmp_path: Path
                 in script_text
             )
         (isolated_bin / script_name).write_text(script_text, encoding="utf-8")
+    shutil.copy2(source_bin / "BridgeNamedMutex.ps1", isolated_bin)
     drain = isolated_bin / "Drain-AcceptedBridgeQueue.ps1"
     completed = subprocess.run(
         [
@@ -1320,14 +1321,23 @@ def test_windows_python_and_powershell_writers_handoff_on_same_contract(
     if shell is None:
         pytest.skip("PowerShell is unavailable")
     root = tmp_path / "bridge"
+    prefix = "Local\\WdHandoffTest-" + uuid.uuid4().hex + "-"
+    monkeypatch.setattr(bridge_writer, "APPEND_MUTEX_NAME", prefix + "AppendV1")
+    monkeypatch.setattr(bridge_writer, "QUEUE_PUBLICATION_MUTEX_NAME", prefix + "AcceptedQueuePublicationV1")
     write_bridge_event(
         bridge_root=root,
         event=_event(1),
         write_sidecars=False,
         backend=WindowsAppendV1Backend(),
     )
-    script = Path(__file__).resolve().parents[2] / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
-    env = os.environ.copy()
+    code = tmp_path / "fixture-bin"
+    shutil.copytree(Path(__file__).resolve().parents[2] / ".agent-bridge/bin", code)
+    for path in code.glob("*.ps1"):
+        source = path.read_text(encoding="utf-8-sig")
+        if "Global\\WaggleDanceBridge" in source:
+            path.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    script = code / "Write-AgentEvent.ps1"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))}
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)
     env["AGENT_BRIDGE_TEST_FAIL_ON_FULL_VALIDATION"] = "1"
     completed = subprocess.run(
@@ -1421,8 +1431,11 @@ def test_windows_writer_queues_without_mutating_hardlinked_canonical(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows kernel32 concurrency probe")
-def test_windows_backend_serializes_two_python_writers(tmp_path: Path) -> None:
+def test_windows_backend_serializes_two_python_writers(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "bridge"
+    prefix = "Local\\WdConcurrentWriterTest-" + uuid.uuid4().hex + "-"
+    monkeypatch.setattr(bridge_writer, "APPEND_MUTEX_NAME", prefix + "AppendV1")
+    monkeypatch.setattr(bridge_writer, "QUEUE_PUBLICATION_MUTEX_NAME", prefix + "AcceptedQueuePublicationV1")
 
     def emit(index: int) -> None:
         write_bridge_event(

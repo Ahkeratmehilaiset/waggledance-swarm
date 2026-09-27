@@ -448,6 +448,12 @@ def test_windows_mutex_closes_handle_on_wait_error(wait_result: int) -> None:
     backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
     backend._supported = True
     backend._kernel32 = Kernel()
+
+    def raise_error(operation, path):
+        # The backend is a fake on Linux, where ctypes has no Win32 error API.
+        raise OSError(5, operation)
+
+    backend._raise_last_error = raise_error
     with pytest.raises(OSError):
         backend.acquire_mutex("unique-test-mutex", 0)
     assert backend._kernel32.closed == [456]

@@ -197,11 +197,13 @@ function Read-BridgeContinuityEventObjects {
             if (-not $eventTaskId -or -not $taskIds.Contains($eventTaskId)) {
                 continue
             }
+            [void]$selectedIndexes.Add($i)
             [void]$items.Add($event)
         }
     }
 
-    return @($items | Sort-Object ts_utc)
+    # Preserve canonical append order; timestamps are not log positions.
+    return @($selectedIndexes | Sort-Object | ForEach-Object { $allEvents[$_] })
 }
 
 function Send-ReceivedAck {
@@ -363,8 +365,7 @@ if ($Agent -and -not $NoContinuity) {
                     (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent) -and
                     [string]$_.agent -ne $Agent -and
                     [string]$_.task_id
-                } |
-                Sort-Object ts_utc
+                }
         )
 
         if ($requests.Count -eq 0) {
@@ -383,11 +384,11 @@ if ($Agent -and -not $NoContinuity) {
                 $requestForTask = $latestByTask[$eventTaskId]
                 $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $requestForTask
                 foreach ($event in $requestIndex.by_task[[string]$requestForTask.task_id]) {
-                if ((Test-BridgeAnswerEvent -Event $event) -and (Test-BridgeReplyBinding $requestForTask $event $Agent -AmbiguousLegacy $ambiguous)) {
+                if ((Test-BridgeAnswerEvent -Event $event) -and (Test-BridgeReplyBinding $requestForTask $event $Agent -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$requestForTask] -ReplyPosition $requestIndex.positions[$event])) {
                     $replyByTask[$eventTaskId] = $event
                     continue
                 }
-                if ((Test-BridgeRequesterClosureEvent -Event $event) -and (Test-BridgeReplyBinding $requestForTask $event $Agent -RequesterClosure $true -AmbiguousLegacy $ambiguous)) {
+                if ((Test-BridgeRequesterClosureEvent -Event $event) -and (Test-BridgeReplyBinding $requestForTask $event $Agent -RequesterClosure $true -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$requestForTask] -ReplyPosition $requestIndex.positions[$event])) {
                     $closureByTask[$eventTaskId] = $event
                 }
                 }
@@ -498,18 +499,18 @@ if ($Agent -and -not $NoContinuity) {
                     $requestForKey = $reqInfoForKey.event
                     $targetForKey = [string]$reqInfoForKey.target
                     $ambiguous = Test-BridgeAmbiguousLegacy $requestIndex $requestForKey
-                    if ((Test-BridgeAnswerEvent -Event $event) -and (Test-BridgeReplyBinding $requestForKey $event $targetForKey -AmbiguousLegacy $ambiguous)) {
+                    if ((Test-BridgeAnswerEvent -Event $event) -and (Test-BridgeReplyBinding $requestForKey $event $targetForKey -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$requestForKey] -ReplyPosition $requestIndex.positions[$event])) {
                         $sentReplyByKey[$sentKey] = $event
                         continue
                     }
-                    if ((Test-BridgeRequesterClosureEvent -Event $event) -and (Test-BridgeReplyBinding $requestForKey $event $targetForKey -RequesterClosure $true -AmbiguousLegacy $ambiguous)) {
+                    if ((Test-BridgeRequesterClosureEvent -Event $event) -and (Test-BridgeReplyBinding $requestForKey $event $targetForKey -RequesterClosure $true -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$requestForKey] -ReplyPosition $requestIndex.positions[$event])) {
                         $sentClosureByKey[$sentKey] = $event
                         continue
                     }
                     if ([string]$event.agent -eq $targetForKey -and
                         [string]$event.type -eq 'message' -and
                         [string]$event.status -eq 'received' -and
-                        (Test-BridgeReplyBinding $requestForKey $event $targetForKey -AmbiguousLegacy $ambiguous)) {
+                        (Test-BridgeReplyBinding $requestForKey $event $targetForKey -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$requestForKey] -ReplyPosition $requestIndex.positions[$event])) {
                         $sentReceivedByKey[$sentKey] = $event
                     }
                 }
@@ -577,6 +578,7 @@ if ($ShowLiveness -and -not $NoContinuity) {
         $wakeRequests = New-Object System.Collections.Generic.List[object]
         $opens = New-Object System.Collections.Generic.List[object]
         $allLines = @(Read-BridgeEventObjects -Path $eventsPath -MaxLines 0)
+        $livenessIndex = New-BridgeRequestIndex $allLines
         foreach ($e in $allLines) {
             [void]$allLivenessEvents.Add($e)
             if ($e.type -eq 'liveness' -or $e.type -eq 'heartbeat') {
@@ -598,7 +600,7 @@ if ($ShowLiveness -and -not $NoContinuity) {
                 $pendingTargets = @()
                 foreach ($recipient in @(Get-BridgeEventTargets $wake)) {
                     $matched = @($allLivenessEvents | Where-Object {
-                        (Test-BridgeAnswerEvent $_) -and (Test-BridgeReplyBinding $wake $_ $recipient)
+                        (Test-BridgeAnswerEvent $_) -and (Test-BridgeReplyBinding $wake $_ $recipient -RequestPosition $livenessIndex.positions[$wake] -ReplyPosition $livenessIndex.positions[$_])
                     })
                     if (-not $matched.Count) { $pendingTargets += $recipient }
                 }

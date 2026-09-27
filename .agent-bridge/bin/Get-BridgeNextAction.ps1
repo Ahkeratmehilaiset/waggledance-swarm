@@ -167,8 +167,7 @@ $requestsForAgent = @(
             (Test-BridgeRequestLikeEvent -Event $_) -and
             -not (Test-BridgeFollowNudgeRequest -Event $_) -and
             (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent)
-        } |
-        Sort-Object ts_utc
+        }
 )
 
 $freshRequestsForAgent = New-Object System.Collections.Generic.List[object]
@@ -205,6 +204,11 @@ foreach ($req in $freshRequestsForAgent) {
             (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
             $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
+    } elseif ($freshByKey.ContainsKey($key) -and
+        [string]$freshByKey[$key].ts_utc -ceq [string]$req.ts_utc -and
+        (Get-BridgeRequestContent $freshByKey[$key]) -ceq (Get-BridgeRequestContent $req)) {
+        # An identical replay does not reset the request's append position.
+        continue
     } else { $freshByKey[$key] = $req }
 }
 $openEventCount = 0

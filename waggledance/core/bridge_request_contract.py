@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
 from typing import Any, Mapping
 
 _CONFLICT = object()
@@ -23,7 +24,7 @@ def field(event: Mapping[str, Any], key: str) -> Any:
 
 def timestamp(value: Any) -> datetime | None:
     try:
-        result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        result = datetime.fromisoformat(str(value).replace("Z", "+00:00").replace("z", "+00:00"))
         return result if result.tzinfo is not None else None
     except (ValueError, TypeError):
         return None
@@ -35,10 +36,36 @@ def request_is_bound(request: Mapping[str, Any]) -> bool:
     ))
 
 
+def reply_follows_request(
+    request: Mapping[str, Any], reply: Mapping[str, Any], *,
+    request_position: int | None = None, reply_position: int | None = None,
+) -> bool:
+    """Require strict UTC time and, when available, canonical append order.
+
+    Positions are supplied by the reader, never trusted event payload fields.
+    A caller without a log can check time only; log consumers must supply both.
+    """
+    if request_position is not None or reply_position is not None:
+        if (type(request_position) is not int or type(reply_position) is not int
+                or request_position < 0 or reply_position <= request_position):
+            return False
+    sent, answered = timestamp(request.get("ts_utc")), timestamp(reply.get("ts_utc"))
+    return sent is not None and answered is not None and answered > sent
+
+
+def terminal_status_negated(status: str) -> bool:
+    return bool(set(re.split(r"[^a-z0-9]+", status.lower())) & {
+        "not", "no", "undone", "incomplete", "unfinished", "unresolved",
+        "unverified", "unmerged", "failed", "pending", "queued", "running",
+        "processing",
+    })
+
+
 def reply_matches_request(
     request: Mapping[str, Any], reply: Mapping[str, Any], target: str,
     *, requester_closure: bool = False, ambiguous_legacy: bool = False,
     require_explicit_correlation: bool = False,
+    request_position: int | None = None, reply_position: int | None = None,
 ) -> bool:
     """Check correlation only; callers must also require a substantive closure."""
     if request.get("request_binding_conflict"):
@@ -48,8 +75,9 @@ def reply_matches_request(
         return False
     if reply.get("task_id", "") != request.get("task_id", ""):
         return False
-    sent, answered = timestamp(request.get("ts_utc")), timestamp(reply.get("ts_utc"))
-    if sent is None or answered is None or answered <= sent:
+    sent = timestamp(request.get("ts_utc"))
+    if not reply_follows_request(request, reply, request_position=request_position,
+                                 reply_position=reply_position):
         return False
     recipients = {s.strip() for s in str(reply.get("to", "")).split(",") if s.strip()}
     recipient = target if requester_closure else requester

@@ -63,6 +63,19 @@ def _now() -> datetime:
     return datetime(2026, 6, 13, 12, 20, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("consumer", ["report", "notify"])
+def test_identical_retry_after_answer_does_not_reopen(consumer):
+    from tools.notify_unanswered_peer_messages import _open_requests_for_agent
+    from tools.report_unanswered_bridge_requests import _open_requests_by_target
+
+    request = _request()
+    events = [request, _answer(), dict(request)]
+    if consumer == "report":
+        assert not _open_requests_by_target(events=events, agent_filter=set())
+    else:
+        assert not _open_requests_for_agent(agent="claude-rco-1", events=events)
+
+
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
     events_path = path / "events.jsonl"
     events_path.write_text(

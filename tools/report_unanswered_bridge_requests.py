@@ -269,6 +269,7 @@ def _open_requests_by_target(
     known_agents = _known_bridge_agents(events)
     versions: dict[tuple[str, str], set[str]] = {}
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    seen_requests: set[str] = set()
     for index, event in enumerate(events):
         _close_answered_requests(
             open_by_key, event, event_index=index, known_agents=known_agents,
@@ -277,6 +278,13 @@ def _open_requests_by_target(
             continue
         if request_is_bound(event):
             continue  # Bound requests use the router's exact completion contract below.
+        replay_key = json.dumps(
+            {key: value for key, value in event.items() if not key.startswith("_")},
+            sort_keys=True, default=str,
+        )
+        if replay_key in seen_requests:
+            continue
+        seen_requests.add(replay_key)
         requester = _event_agent(event)
         versions.setdefault((requester, _task_id(event)), set()).add(_event_ts(event))
         for target in _event_recipients(event):

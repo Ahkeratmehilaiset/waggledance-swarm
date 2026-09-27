@@ -225,6 +225,18 @@ def _open_requests_for_agent(
         and _addressed_to(event, agent)
         and _task_id(event)
     ]
+    # Retransmission retains the original canonical position, even after an answer.
+    unique_requests = []
+    seen_requests: set[str] = set()
+    for position, request in requests:
+        replay_key = json.dumps(
+            {key: value for key, value in request.items() if not key.startswith("_")},
+            sort_keys=True, default=str,
+        )
+        if replay_key not in seen_requests:
+            seen_requests.add(replay_key)
+            unique_requests.append((position, request))
+    requests = unique_requests
     versions: dict[tuple[str, str], set[str]] = {}
     for _, request in requests:
         key = (_event_agent(request), _task_id(request))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -32,10 +33,11 @@ class Claude:
         self.managed = tmp_path / "managed-settings.json"
         self.worktree.mkdir(parents=True)
 
-    def resolve(self, *, argv_model="native", argv_effort="native", env=None, cli=False):
+    def resolve(self, *, argv_model="native", argv_effort="native", env=None, cli=False, registry=None):
         return resolve_claude(argv_model=argv_model, argv_effort=argv_effort, env=env or {},
                               user_settings=self.user, worktree=self.worktree,
-                              cli_settings=self.cli if cli else None, managed_settings=self.managed)
+                              cli_settings=self.cli if cli else None, managed_settings=self.managed,
+                              managed_registry=registry or (lambda: []))
 
 
 # ---------------------------------------------------------------- Claude
@@ -294,3 +296,82 @@ def test_cli_planted_fault_luna_low_is_flagged(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert code == 3 and report["classification"]["verdict"] != "allowed"
     assert (report["model"], report["effort"], report["model_source"]) == ("gpt-6-luna", "low", "user_config")
+
+
+
+# ---------------------------------------------------------------- managed settings in the registry (rco-2)
+
+@pytest.mark.parametrize("hits", [["HKLM"], ["HKCU"], ["HKLM:unreadable"]])
+def test_registry_managed_settings_fail_closed(tmp_path, hits):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    r = c.resolve(registry=lambda: hits)
+    assert r["resolved"] is False and "managed_settings_present" in r["issues"]
+    assert {"layer": "managed_registry", "path": hits[0], "state": "present"} in r["sources"]
+
+
+def test_no_registry_policy_still_resolves(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+    assert c.resolve(registry=lambda: [])["resolved"] is True
+
+
+def test_an_unreadable_registry_is_not_no_policy(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-opus-5-5", "effortLevel": "high"})
+
+    def boom():
+        raise PermissionError("denied")
+    r = c.resolve(registry=boom)
+    assert r["resolved"] is False and "managed_settings_present" in r["issues"]
+
+
+@pytest.fixture
+def temp_policy_key():
+    """A throwaway HKCU key standing in for the policy key; the real policy key is never touched."""
+    if os.name != "nt":
+        pytest.skip("Windows registry")
+    import uuid
+    import winreg
+    path = rf"Software\WaggleDanceTest\{uuid.uuid4().hex}"
+    winreg.CreateKey(winreg.HKEY_CURRENT_USER, path)
+    yield path
+    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+
+
+def test_the_real_registry_reader_finds_a_settings_value(temp_policy_key):
+    import winreg
+    from tools.lane_effective_model import managed_registry_settings
+    keys = (("HKCU", temp_policy_key),)
+    assert managed_registry_settings(keys) == []                         # key exists, no Settings value
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, temp_policy_key, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "Settings", 0, winreg.REG_SZ, '{"model": "claude-sonnet-5"}')
+    assert managed_registry_settings(keys) == ["HKCU"]
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, temp_policy_key, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "Settings", 0, winreg.REG_SZ, "   ")         # blank is not a policy
+    assert managed_registry_settings(keys) == []
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, temp_policy_key, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.DeleteValue(key, "Settings")
+
+
+def test_a_missing_policy_key_is_no_policy():
+    from tools.lane_effective_model import managed_registry_settings
+    assert managed_registry_settings((("HKCU", r"Software\WaggleDanceTest\does-not-exist-7f3a"),)) == []
+
+
+def test_off_windows_the_registry_is_not_consulted(monkeypatch):
+    from tools.lane_effective_model import managed_registry_settings
+    monkeypatch.setattr(eff_module.sys, "platform", "linux")
+    assert managed_registry_settings() == []
+
+
+def test_a_policy_key_that_cannot_be_read_counts_as_managed(monkeypatch):
+    if os.name != "nt":
+        pytest.skip("Windows registry")
+    import winreg
+    from tools.lane_effective_model import managed_registry_settings
+
+    def denied(*args, **kwargs):
+        raise PermissionError("access denied")
+    monkeypatch.setattr(winreg, "OpenKey", denied)
+    assert managed_registry_settings((("HKLM", r"SOFTWARE\Policies\ClaudeCode"),)) == ["HKLM:unreadable"]

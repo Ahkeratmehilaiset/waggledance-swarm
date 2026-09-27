@@ -38,8 +38,12 @@ when it sets a value, the result is unknown.
 Fail closed
 -----------
 A value from a built-in default, an unresolved alias (``opus``, ``sonnet``,
-``default`` ...), an unreadable or ambiguous source, or a managed-settings file
-yields ``None``. ``classify`` then gives ``unknown``, never a guess.
+``default`` ...), an unreadable or ambiguous source, or managed settings yields
+``None``. ``classify`` then gives ``unknown``, never a guess. Managed settings are
+detected in both documented Windows forms: the ``managed-settings.json`` file
+and a ``Settings`` registry value under ``SOFTWARE/Policies/ClaudeCode`` in HKLM
+(Group Policy or MDM) or HKCU. A registry key that exists but cannot be read
+counts as managed too (claude-rco-2 review of #1744).
 """
 from __future__ import annotations
 
@@ -50,7 +54,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -66,6 +70,9 @@ EXIT_ALLOWED, EXIT_ERROR, EXIT_ATTENTION = 0, 2, 3
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
 # Documented Windows location of Claude Code managed settings.
 DEFAULT_CLAUDE_MANAGED = Path(r"C:\Program Files\ClaudeCode\managed-settings.json")
+# Documented registry delivery of the same managed settings (value "Settings").
+MANAGED_REGISTRY_KEYS = (("HKLM", r"SOFTWARE\Policies\ClaudeCode"), ("HKCU", r"SOFTWARE\Policies\ClaudeCode"))
+MANAGED_REGISTRY_VALUE = "Settings"
 
 
 class SourceError(ValueError):
@@ -126,6 +133,32 @@ def _text(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def managed_registry_settings(keys: tuple[tuple[str, str], ...] = MANAGED_REGISTRY_KEYS) -> list[str]:
+    """Hives whose Claude Code policy key carries managed settings.
+
+    Returns ``[]`` off Windows or when no key exists. ``"HKLM"`` or ``"HKCU"``
+    marks a present, non-empty ``Settings`` value; ``"<hive>:unreadable"`` marks
+    a key or value that exists but cannot be read. Both count as managed.
+    """
+    if sys.platform != "win32":
+        return []
+    import winreg
+    hives = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
+    found: list[str] = []
+    for hive_name, path in keys:
+        try:
+            with winreg.OpenKey(hives[hive_name], path) as key:
+                value, _ = winreg.QueryValueEx(key, MANAGED_REGISTRY_VALUE)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            found.append(f"{hive_name}:unreadable")
+            continue
+        if value not in (None, "") and not (isinstance(value, str) and not value.strip()):
+            found.append(hive_name)
+    return found
+
+
 def normalize_claude_model(value: Any) -> tuple[str | None, str | None]:
     """(model id, issue): strip a context suffix; aliases are unresolved, never guessed."""
     text = _text(value)
@@ -147,7 +180,8 @@ def _result(provider: str, model: str | None, effort: str | None, model_source: 
 
 def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapping[str, str],
                    user_settings: Path, worktree: Path | None, cli_settings: Path | None = None,
-                   managed_settings: Path = DEFAULT_CLAUDE_MANAGED) -> dict:
+                   managed_settings: Path = DEFAULT_CLAUDE_MANAGED,
+                   managed_registry: Callable[[], list[str]] = managed_registry_settings) -> dict:
     """The model and effort a Claude Code launch will start with, and where each comes from."""
     issues: list[str] = []
     sources: list[dict] = []
@@ -170,7 +204,13 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
             continue
         sources.append({"layer": name, "path": str(path), "state": "read"})
         layers.append((name, value))
-    if any(name == "managed" for name, _ in layers):
+    try:
+        registry_hits = list(managed_registry())
+    except Exception as exc:  # noqa: BLE001 - a policy store we cannot read is not "no policy"
+        registry_hits = [f"registry:unreadable:{exc.__class__.__name__}"]
+    for hit in registry_hits:
+        sources.append({"layer": "managed_registry", "path": hit, "state": "present"})
+    if any(name == "managed" for name, _ in layers) or registry_hits:
         # Managed settings can pin or cap model and effort; we do not model them - fail closed.
         issues.append("managed_settings_present")
 

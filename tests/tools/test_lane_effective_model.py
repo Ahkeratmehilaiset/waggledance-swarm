@@ -731,3 +731,22 @@ def test_a_settings_env_block_that_moves_the_config_dir_fails_closed(tmp_path):
     js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "env": {"CLAUDE_CONFIG_DIR": str(tmp_path / "x")}})
     r = c.resolve()
     assert r["resolved"] is False and "env_block_sets_CLAUDE_CONFIG_DIR_in_user" in r["issues"]
+
+
+# ---------------------------------------------------------------- availableModels (claude-rco-1 review of #1745)
+
+@pytest.mark.parametrize("allowed", [["opus"], ["claude-sonnet-5"], []])
+def test_an_available_models_list_in_any_file_fails_closed(tmp_path, allowed):
+    # model-config "Restrict model selection": a blocked `model` setting "is replaced ... and the
+    # session starts on the default model"; the list's matching rules are not modelled here.
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "availableModels": allowed})
+    r = c.resolve()
+    assert r["resolved"] is False and "available_models_in_user" in r["issues"]
+
+
+def test_an_available_models_list_in_a_project_file_fails_closed(tmp_path):
+    c = Claude(tmp_path)
+    js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh"})
+    js(c.worktree / ".claude" / "settings.json", {"availableModels": ["opus"]})
+    assert "available_models_in_project" in c.resolve()["issues"]

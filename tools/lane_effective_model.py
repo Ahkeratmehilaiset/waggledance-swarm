@@ -357,6 +357,11 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
                 issues.append(f"{key}_not_a_string_in_{name}")
         if "ultracode" in value and not isinstance(value["ultracode"], bool):
             issues.append(f"ultracode_not_a_boolean_in_{name}")
+        if "availableModels" in value:
+            # "Any file" scope. A blocked model setting (or restored resume model) is replaced by
+            # the default model at startup (model-config.md "Restrict model selection"); its
+            # alias, prefix and substitution matching is not modelled here - fail closed.
+            issues.append(f"available_models_in_{name}")
 
     # ---- model
     model, model_source = None, "builtin_default"

@@ -36,9 +36,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -55,10 +56,12 @@ TOP_KEYS = frozenset({"schema", "updated_at", "benchmark", "coding_benchmark", "
 BENCHMARK_KEYS = frozenset({"name", "version", "quality_metric", "cost_metric", "fetched_at", "sources"})
 CODING_KEYS = frozenset({"name", "effort", "fetched_at", "sources"})
 MODEL_KEYS = frozenset({"provider", "model", "coding_agent_index", "efforts"})
+# Optional per-model label of the benchmark variant the scores come from, e.g. "with_fallback" when the
+# Artificial Analysis release page labels the effort rows that way (codex-tools-1 N2 on #1743).
+OPTIONAL_MODEL_KEYS = frozenset({"benchmark_variant"})
 EFFORT_KEYS = frozenset({"intelligence_index", "usd_per_task"})
 DEFAULT_REGISTRY = Path(__file__).resolve().parents[1] / "configs" / "model_registry.json"
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
-DEFAULT_CODEX_CACHE = Path.home() / ".codex" / "models_cache.json"
 
 
 class RegistryError(ValueError):
@@ -111,11 +114,12 @@ def _score(value: Any, label: str, upper: float) -> float:
     return float(value)
 
 
-def _exact_keys(value: Any, keys: frozenset, label: str) -> dict:
+def _exact_keys(value: Any, keys: frozenset, label: str, optional: frozenset = frozenset()) -> dict:
     if not isinstance(value, dict):
         raise RegistryError(f"{label} must be an object")
-    if set(value) != keys:
-        raise RegistryError(f"{label} keys must be exactly {sorted(keys)}")
+    if not keys <= set(value) <= keys | optional:
+        raise RegistryError(f"{label} keys must be exactly {sorted(keys)}"
+                            + (f", optionally with {sorted(optional)}" if optional else ""))
     return value
 
 
@@ -143,7 +147,9 @@ def validate_registry(registry: Any) -> dict:
     if not isinstance(models, dict) or not models:
         raise RegistryError("models must be a non-empty object")
     for key, entry in models.items():
-        _exact_keys(entry, MODEL_KEYS, f"models.{key}")
+        _exact_keys(entry, MODEL_KEYS, f"models.{key}", OPTIONAL_MODEL_KEYS)
+        if "benchmark_variant" in entry:
+            _text(entry["benchmark_variant"], f"models.{key}.benchmark_variant")
         if entry["provider"] not in PROVIDERS:
             raise RegistryError(f"models.{key}.provider must be one of {PROVIDERS}")
         _text(entry["model"], f"models.{key}.model")
@@ -169,10 +175,23 @@ def load_registry(path: str | Path = DEFAULT_REGISTRY) -> tuple[dict, str]:
     return validate_registry(registry), hashlib.sha256(data).hexdigest()
 
 
-def codex_cli_models(path: str | Path = DEFAULT_CODEX_CACHE) -> dict[str, list[str]] | None:
+def default_codex_cache(env: Mapping[str, str] | None = None) -> Path:
+    """``$CODEX_HOME/models_cache.json``, as the Codex CLI and start-wd-agent read it; else ``~/.codex``.
+
+    Resolved at call time: a path frozen at import would ignore a CODEX_HOME set later
+    (codex-tools-1 N1 on #1743).
+    """
+    env = os.environ if env is None else env
+    home = env.get("CODEX_HOME")
+    base = Path(os.path.abspath(home.strip())) if isinstance(home, str) and home.strip() else Path.home() / ".codex"
+    return base / "models_cache.json"
+
+
+def codex_cli_models(path: str | Path | None = None) -> dict[str, list[str]] | None:
     """Model slug -> supported efforts from the Codex CLI's own cache; None when unknown."""
     try:
-        cache, _ = _read_json(Path(path), MAX_CACHE_BYTES, "codex models cache")
+        cache, _ = _read_json(Path(path) if path is not None else default_codex_cache(), MAX_CACHE_BYTES,
+                              "codex models cache")
     except RegistryError:
         return None
     models = cache.get("models") if isinstance(cache, dict) else None
@@ -195,7 +214,8 @@ def codex_cli_models(path: str | Path = DEFAULT_CODEX_CACHE) -> dict[str, list[s
 def rows(registry: dict) -> list[dict]:
     return [{"provider": entry["provider"], "model": entry["model"], "effort": effort,
              "quality": float(row["intelligence_index"]), "cost": float(row["usd_per_task"]),
-             "coding_agent_index": entry["coding_agent_index"]}
+             "coding_agent_index": entry["coding_agent_index"],
+             "benchmark_variant": entry.get("benchmark_variant")}
             for entry in registry["models"].values() for effort, row in entry["efforts"].items()]
 
 
@@ -225,7 +245,10 @@ def _brief(row: dict | None) -> dict | None:
         return None
     # The coding-agent score travels with every suggestion: the quality index is a
     # general score, and a coding lane must see when a cheaper model codes worse.
-    return {key: row[key] for key in ("provider", "model", "effort", "quality", "cost", "coding_agent_index")}
+    # The benchmark variant travels too, so a "with_fallback" score is never read as a fixed model.
+    brief = {key: row[key] for key in ("provider", "model", "effort", "quality", "cost", "coding_agent_index")}
+    brief["benchmark_variant"] = row.get("benchmark_variant")
+    return brief
 
 
 def value_for(current: dict, table: list[dict]) -> dict:
@@ -345,6 +368,8 @@ def report(registry: dict, registry_sha256: str, catalog: dict, catalog_sha256: 
             "catalog_diff": catalog_diff(registry, catalog, codex_models=codex_models),
             "codex_cli_models": "unknown" if codex_models is None else sorted(codex_models),
             "limitations": ["public_benchmark_not_our_workload", "claude_cli_availability_unverified",
+                            "dominance_and_value_are_benchmark_only",
+                            "benchmark_variant_labels_are_per_model_see_rows",
                             "decisions_need_qualification_measured_cost_and_a_signed_catalog"]}
 
 
@@ -352,7 +377,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--registry", default=str(DEFAULT_REGISTRY))
     parser.add_argument("--catalog", default=str(DEFAULT_CATALOG))
-    parser.add_argument("--codex-models-cache", default=str(DEFAULT_CODEX_CACHE))
+    parser.add_argument("--codex-models-cache", default=None,
+                        help="default: $CODEX_HOME/models_cache.json, else ~/.codex/models_cache.json")
     parser.add_argument("--current-profiles", default="{}",
                         help='JSON object lane -> "model:effort", e.g. {"codex-lead-1": "gpt-6-sol:high"}')
     args = parser.parse_args(argv)

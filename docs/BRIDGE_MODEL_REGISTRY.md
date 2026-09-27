@@ -18,8 +18,15 @@ still goes through the signed catalog (BRIDGE_LANE_PROFILES.md) and the pacer
   (`low` / `medium` / `high` / `xhigh` / `max`), each with `intelligence_index` and
   `usd_per_task`. `coding_agent_index` holds the published Coding Agent Index at max
   effort, or `null`.
+- **Benchmark variant.** An optional `benchmark_variant` labels the variant the scores come
+  from. Artificial Analysis labels the Claude Opus 5.5 and Fable 5.1 effort rows "with
+  fallback", so those two models carry `benchmark_variant: "with_fallback"`. The label
+  travels with every row, frontier entry and suggestion in the report, so a fallback score
+  is never read as the measured behaviour of one fixed CLI model (codex-tools-1 N2 on #1743).
+  Dominance and value are benchmark-only, and the report's `limitations` says so.
 - **Strict validation.** The file is refused if it has:
-  - an extra or missing key at any level, a duplicate key, or a non-finite number;
+  - an extra or missing key at any level, a duplicate key, or a non-finite number
+    (`benchmark_variant` is the only optional key, and it must be a non-empty string);
   - a boolean used as a number, a negative value or one out of range;
   - an unknown provider (`codex`, `claude` and `grok` are known) or an unknown effort;
   - a key that does not match its provider and model;
@@ -59,7 +66,11 @@ python tools/wd_model_registry.py --current-profiles "{\"claude-rco-1\": \"claud
   - `dominated`: catalog profiles that another row beats, with the best replacement;
   - `unrated`: catalog profiles with no registry row.
 - **CLI availability.** Codex rows are checked against the Codex CLI's own
-  `~/.codex/models_cache.json` (model slug and supported efforts). Claude publishes no
+  `$CODEX_HOME/models_cache.json` (model slug and supported efforts), resolved when the
+  report runs. The default is `~/.codex`, and a blank `CODEX_HOME` means the default. An
+  explicit `--codex-models-cache` path wins. Earlier the default was fixed to `~/.codex` at
+  import, so a moved Codex home could mark a model unavailable from the wrong cache
+  (codex-tools-1 N1 on #1743). Claude publishes no
   local model list, so Claude rows are `cli_available: null`, unverified until a real
   turn observes the model.
 

@@ -33,6 +33,7 @@
       "provider": "claude",
       "model": "claude-fable-5-1",
       "coding_agent_index": 62.2,
+      "benchmark_variant": "with_fallback",
       "efforts": {
         "low": {
           "intelligence_index": 47,
@@ -60,6 +61,7 @@
       "provider": "claude",
       "model": "claude-opus-5-5",
       "coding_agent_index": null,
+      "benchmark_variant": "with_fallback",
       "efforts": {
         "low": {
           "intelligence_index": 42,

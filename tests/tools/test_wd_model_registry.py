@@ -306,3 +306,86 @@ def test_a_symlinked_registry_is_refused(tmp_path):
         pytest.skip("symlinks unavailable")
     with pytest.raises(RegistryError, match="symlink or reparse point"):
         load_registry(link)
+
+
+
+# ---------------------------------------------------------------- CODEX_HOME (codex-tools-1 N1 on #1743)
+
+def _two_homes(tmp_path, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / ".codex").mkdir(parents=True)
+    (tmp_path / "codexhome").mkdir()
+    cache(tmp_path / "home" / ".codex", [{"slug": "gpt-6-sol", "supported_reasoning_levels": [{"effort": "low"}]}])
+    cache(tmp_path / "codexhome", [{"slug": "gpt-6-sol", "supported_reasoning_levels": [{"effort": "high"}]}])
+
+
+def test_the_default_cache_follows_codex_home_at_call_time(tmp_path, monkeypatch):
+    from tools.wd_model_registry import default_codex_cache
+    _two_homes(tmp_path, monkeypatch)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    assert default_codex_cache() == tmp_path / "home" / ".codex" / "models_cache.json"
+    assert codex_cli_models() == {"gpt-6-sol": ["low"]}
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codexhome"))       # set after import: still followed
+    assert default_codex_cache() == tmp_path / "codexhome" / "models_cache.json"
+    assert codex_cli_models() == {"gpt-6-sol": ["high"]}
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_a_blank_codex_home_means_the_default(tmp_path, monkeypatch, value):
+    from tools.wd_model_registry import default_codex_cache
+    _two_homes(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", value)
+    assert default_codex_cache() == tmp_path / "home" / ".codex" / "models_cache.json"
+
+
+def test_the_cli_reads_codex_home_and_an_explicit_cache_overrides_it(tmp_path, monkeypatch, capsys):
+    _two_homes(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codexhome"))
+    current = json.dumps({"codex-lead-1": "gpt-6-sol:high"})
+    assert main(["--current-profiles", current]) == 0
+    lead = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["current"]
+    assert lead["cli_available"] is True                                  # the CODEX_HOME cache has high
+    explicit = str(tmp_path / "home" / ".codex" / "models_cache.json")
+    assert main(["--current-profiles", current, "--codex-models-cache", explicit]) == 0
+    lead = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["current"]
+    assert lead["cli_available"] is False                                 # the explicit cache has only low
+
+
+# ---------------------------------------------------------------- benchmark variant provenance (codex-tools-1 N2)
+
+def test_fallback_variant_scores_are_labelled_in_the_registry():
+    for key in ("claude/claude-opus-5-5", "claude/claude-fable-5-1"):
+        assert REGISTRY["models"][key]["benchmark_variant"] == "with_fallback"
+    labelled = {(r["model"], r["benchmark_variant"]) for r in rows(REGISTRY) if r["benchmark_variant"]}
+    assert labelled == {("claude-opus-5-5", "with_fallback"), ("claude-fable-5-1", "with_fallback")}
+
+
+def test_the_variant_travels_with_every_suggestion():
+    result = report(REGISTRY, REGISTRY_SHA, CATALOG, CATALOG_SHA, {"claude-rco-1": "claude-sonnet-5:xhigh"})
+    claude_front = result["frontier"]["claude"]
+    assert all("benchmark_variant" in row for row in claude_front)
+    assert any(row["benchmark_variant"] == "with_fallback" for row in claude_front)
+    replacement = result["lanes"]["claude-rco-1"]
+    assert "dominance_and_value_are_benchmark_only" in result["limitations"]
+    assert "benchmark_variant_labels_are_per_model_see_rows" in result["limitations"]
+    assert replacement["dominated"] is True
+
+
+@pytest.mark.parametrize("bad", [5, "", "   ", None, ["with_fallback"]])
+def test_a_malformed_benchmark_variant_is_refused(bad):
+    broken = copy.deepcopy(REGISTRY)
+    broken["models"]["claude/claude-opus-5-5"]["benchmark_variant"] = bad
+    with pytest.raises(RegistryError, match="benchmark_variant"):
+        validate_registry(broken)
+
+
+def test_only_the_benchmark_variant_is_optional():
+    broken = copy.deepcopy(REGISTRY)
+    broken["models"]["claude/claude-opus-5-5"]["notes"] = "x"
+    with pytest.raises(RegistryError, match="keys must be exactly"):
+        validate_registry(broken)
+    missing = copy.deepcopy(REGISTRY)
+    del missing["models"]["claude/claude-opus-5-5"]["coding_agent_index"]
+    with pytest.raises(RegistryError, match="keys must be exactly"):
+        validate_registry(missing)

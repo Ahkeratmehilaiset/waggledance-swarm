@@ -1036,12 +1036,13 @@ def _bridge_named_mutex_lease(
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.argtypes = [
+    kernel32.CreateMutexExW.argtypes = [
         wintypes.LPVOID,
-        wintypes.BOOL,
         wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
     ]
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexExW.restype = wintypes.HANDLE
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
@@ -1049,10 +1050,11 @@ def _bridge_named_mutex_lease(
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    handle = kernel32.CreateMutexW(
+    handle = kernel32.CreateMutexExW(
         None,
-        False,
         name,
+        0,
+        0x00100001,  # SYNCHRONIZE | MUTEX_MODIFY_STATE
     )
     if not handle:
         code = ctypes.get_last_error()

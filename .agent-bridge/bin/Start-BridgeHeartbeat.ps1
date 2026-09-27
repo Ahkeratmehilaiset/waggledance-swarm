@@ -40,6 +40,11 @@ Set-StrictMode -Version Latest
 # Every lease writer goes through it, so there is a single CAS to review.
 . (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
 
+# A session bound to one agent label may act only as that agent; the
+# reserved operator/system labels need a session bound to them.
+. (Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1')
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 if ($env:WAGGLE_BRIDGE_HEARTBEAT_ENABLED -eq '0') {
     Write-Output "Start-BridgeHeartbeat: disabled via WAGGLE_BRIDGE_HEARTBEAT_ENABLED=0; exiting."
     return

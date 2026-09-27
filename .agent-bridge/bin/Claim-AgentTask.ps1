@@ -22,6 +22,11 @@ Set-StrictMode -Version Latest
 # Every lease writer goes through it, so there is a single CAS to review.
 . (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
 
+# A session bound to one agent label may act only as that agent; the
+# reserved operator/system labels need a session bound to them.
+. (Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1')
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 # R13 (Codex scout 2026-05-09): honor AGENT_BRIDGE_RUNTIME_ROOT so
 # per-agent worktrees can share one runtime state directory. Codex
 # blocker 2026-05-09T13:11Z: if the env var is SET, USE IT - do not
@@ -88,7 +93,7 @@ if ($Mode -eq 'write' -and @($WriteScope).Count -eq 0) {
 
 $safeTask = ConvertTo-SafeName $TaskId
 if (-not $safeTask) { throw 'TaskId does not produce a safe claim filename' }
-$claimPath = Join-Path $claimsDir ($safeTask + '.json')
+$ownerIdentity = Get-BridgeOwnerIdentity
 
 # R15 follow-up (Codex review 2026-05-09): claim acquisition is the
 # path that most needs stale-lease continuity. Status/read helpers
@@ -105,6 +110,7 @@ if (Test-Path -LiteralPath $sweepScript -PathType Leaf) {
 
 $activeClaims = @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
 $resources = @(Resolve-BridgeResourceScopes -Scopes $WriteScope -Worktree (Get-Location).Path -BridgeRoot $bridgeRoot)
+$existingClaimPath = ''
 foreach ($file in $activeClaims) {
     try {
         $existing = Get-Content -Raw -Path $file.FullName -Encoding UTF8 | ConvertFrom-Json
@@ -115,9 +121,21 @@ foreach ($file in $activeClaims) {
         if (-not $Force) {
             Stop-BridgeClaim -Message ("task already claimed by {0}: {1}" -f $existing.agent, $file.FullName) -Code 2
         }
-        if ([string]$existing.agent -ne $Agent -and $Agent -notin @('operator','system')) {
+        # B7: the agent label is not authority, and there is no takeover of
+        # a live owner - not by the same label, not by operator or system.
+        # -Force only lets the OWNING session refresh its own claim (or an
+        # identity-less caller refresh its own owner_identity=none claim).
+        # A claim held by another session frees only through its owner's
+        # release or the stale sweep.
+        if ([string]$existing.agent -cne $Agent) {
             Stop-BridgeClaim -Message ("cannot force-update claim owned by {0}: {1}" -f $existing.agent, $file.FullName) -Code 3
         }
+        if ([string]$existing.task_id -cne $TaskId -or
+            -not ((Test-BridgeClaimOwner -Claim $existing -Identity $ownerIdentity) -or
+                  (Test-BridgeIdentitylessClaimPair -Claim $existing -Identity $ownerIdentity))) {
+            Stop-BridgeClaim -Message ("cannot force-update a claim held by another session of {0}: {1}" -f $existing.agent, $file.FullName) -Code 3
+        }
+        $existingClaimPath = $file.FullName
         continue
     }
     if ($Mode -eq 'write' -and [string]$existing.mode -eq 'write') {
@@ -128,6 +146,16 @@ foreach ($file in $activeClaims) {
         }
     }
 }
+
+# A refresh rewrites exactly the file that holds this task's claim; a new
+# claim goes to a name no other task's claim occupies. The sanitized name
+# is lossy, so it is never assumed to belong to this task.
+$claimPath = if ($existingClaimPath) {
+    $existingClaimPath
+} else {
+    New-BridgeClaimPath -ClaimsDir $claimsDir -TaskId $TaskId
+}
+if (-not $claimPath) { throw 'TaskId does not produce a safe claim filename' }
 
 if (-not $RunId) {
     $RunId = if ($env:AGENT_BRIDGE_RUN_ID) { [string]$env:AGENT_BRIDGE_RUN_ID } else { '' }
@@ -211,10 +239,21 @@ $claim = [ordered]@{
 # recorded for humans and are deliberately not authority. A session with
 # no identity still gets a claim - it simply cannot be kept alive by a
 # heartbeat, and ages out normally.
-$ownerIdentity = Get-BridgeOwnerIdentity
 if ($null -ne $ownerIdentity) {
     $claim['owner_session_id'] = [string]$ownerIdentity.owner_session_id
     $claim['owner_token_sha256'] = [string]$ownerIdentity.owner_token_sha256
+    # When the process owner context (AgentBridgeSessionIdentity.ps1)
+    # describes this same owner, record its pid and process start too, so
+    # Test-AgentBridgeClaimOwner and Test-BridgeClaimOwner agree on the
+    # claim. Informational only: authority stays session plus token hash.
+    try {
+        $ownerContext = Get-AgentBridgeClaimOwnerContext
+        if ([string]$ownerContext.session_id -ceq [string]$ownerIdentity.owner_session_id -and
+            [string]$ownerContext.token_sha256 -ceq [string]$ownerIdentity.owner_token_sha256) {
+            $claim['owner_pid'] = [int]$ownerContext.owner_pid
+            $claim['owner_process_start_utc'] = [string]$ownerContext.owner_process_start_utc
+        }
+    } catch { }
 } else {
     # Marks a B7-era claim made without an identity, so Release can tell
     # it apart from a pre-B7 claim and let an identity-less caller release
@@ -227,42 +266,61 @@ if (@($Capabilities).Count -gt 0) { $claim['capabilities'] = @($Capabilities) }
 $json = ($claim | ConvertTo-Json -Depth 8)
 
 $encoding = New-Object System.Text.UTF8Encoding($false)
-try {
-    $fs = New-Object System.IO.FileStream($claimPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+if (-not $existingClaimPath) {
+    # A new claim is only ever created. Losing a race to another creator
+    # is a refusal, never an overwrite of whatever now holds the name.
     try {
-        $bytes = $encoding.GetBytes($json)
-        $fs.Write($bytes, 0, $bytes.Length)
-    } finally {
-        $fs.Dispose()
-    }
-} catch {
-    if (-not $Force) {
-        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
-    }
-    # Internal review fix R7 (2026-05-09): the -Force fallback used
-    # Set-Content, which is non-atomic; a concurrent reader could
-    # observe a partially-written claim and treat it as malformed.
-    # Write to a temp sibling and Replace() so readers always see the
-    # old or the new claim, never a torn write.
-    $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
-    [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
-    $backupClaim = $null
-    try {
-        if (Test-Path -LiteralPath $claimPath) {
-            $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
-            [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
-            try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
-        } else {
-            [System.IO.File]::Move($tmpClaim, $claimPath)
+        $fs = New-Object System.IO.FileStream($claimPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        try {
+            $bytes = $encoding.GetBytes($json)
+            $fs.Write($bytes, 0, $bytes.Length)
+        } finally {
+            $fs.Dispose()
         }
     } catch {
+        Stop-BridgeClaim -Message ("could not create claim, likely already exists: {0}" -f $claimPath) -Code 2
+    }
+} else {
+    # A refresh by the owning session is a compare-and-swap under the same
+    # per-claim lock the keepalive, release and sweep hold: re-read the
+    # file under the lock and replace it only if it still holds this task,
+    # this agent and this owner. A claim archived meanwhile is never
+    # recreated (Replace requires the destination to exist).
+    $refreshLock = Enter-BridgeClaimLock -ClaimPath $claimPath
+    if ($null -eq $refreshLock) {
+        Stop-BridgeClaim -Message ("could not lock claim for refresh: {0}" -f $claimPath) -Code 4
+    }
+    try {
+        $current = $null
         try {
-            if ($backupClaim -and (Test-Path -LiteralPath $backupClaim)) {
-                Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-        try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
-        throw
+            $current = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 |
+                ConvertFrom-Json -ErrorAction Stop
+        } catch { $current = $null }
+        if ($null -eq $current -or
+            -not $current.PSObject.Properties['task_id'] -or
+            [string]$current.task_id -cne $TaskId -or
+            -not $current.PSObject.Properties['agent'] -or
+            [string]$current.agent -cne $Agent -or
+            -not ((Test-BridgeClaimOwner -Claim $current -Identity $ownerIdentity) -or
+                  (Test-BridgeIdentitylessClaimPair -Claim $current -Identity $ownerIdentity))) {
+            Stop-BridgeClaim -Message ("claim changed before refresh: {0}" -f $claimPath) -Code 3
+        }
+        # Internal review fix R7 (2026-05-09): write to a temp sibling and
+        # Replace() so readers always see the old or the new claim, never a
+        # torn write.
+        $tmpClaim = "$claimPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
+        $backupClaim = "$claimPath.bak.$PID.$([guid]::NewGuid().ToString('N'))"
+        [System.IO.File]::WriteAllText($tmpClaim, $json, $encoding)
+        try {
+            [System.IO.File]::Replace($tmpClaim, $claimPath, $backupClaim)
+        } catch [System.IO.FileNotFoundException] {
+            Stop-BridgeClaim -Message ("claim disappeared before refresh: {0}" -f $claimPath) -Code 2
+        } finally {
+            try { Remove-Item -LiteralPath $tmpClaim -Force -ErrorAction SilentlyContinue } catch {}
+            try { Remove-Item -LiteralPath $backupClaim -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    } finally {
+        Exit-BridgeClaimLock -Lock $refreshLock
     }
 }
 

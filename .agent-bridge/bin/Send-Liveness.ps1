@@ -61,6 +61,11 @@ Set-StrictMode -Version Latest
 # Every lease writer goes through it, so there is a single CAS to review.
 . (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
 
+# A session bound to one agent label may act only as that agent; the
+# reserved operator/system labels need a session bound to them.
+. (Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1')
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 $writeEventScript = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
 
 $type = 'liveness'

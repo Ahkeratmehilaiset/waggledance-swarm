@@ -21,6 +21,11 @@ Set-StrictMode -Version Latest
 # Every lease writer goes through it, so there is a single CAS to review.
 . (Join-Path $PSScriptRoot 'ClaimLeaseHeartbeat.ps1')
 
+# A session bound to one agent label may act only as that agent; the
+# reserved operator/system labels need a session bound to them.
+. (Join-Path $PSScriptRoot 'AgentBridgeSessionIdentity.ps1')
+Assert-AgentBridgeSessionIdentity -RequestedAgent $Agent
+
 # R13: honor AGENT_BRIDGE_RUNTIME_ROOT. If env var is SET, USE IT
 # (create root if missing, fail loud on malformed path). Codex
 # blocker 2026-05-09T13:11Z: silent fallback when env points to a
@@ -45,8 +50,10 @@ function ConvertTo-SafeName {
 }
 
 $safeTask = ConvertTo-SafeName $TaskId
-$claimPath = Join-Path $claimsDir ($safeTask + '.json')
-if (-not (Test-Path -LiteralPath $claimPath)) {
+# The claim whose task_id is exactly $TaskId, wherever it lives: never the
+# file that merely shares its sanitized name.
+$claimPath = Find-BridgeClaimFile -ClaimsDir $claimsDir -TaskId $TaskId
+if (-not $claimPath) {
     Write-Error ("no active claim found for task: {0}" -f $TaskId)
     exit 2
 }
@@ -64,7 +71,11 @@ if (-not (Test-Path -LiteralPath $claimPath -PathType Leaf)) {
     Write-Error ("claim disappeared before release: {0}" -f $TaskId)
     exit 2
 }
-$claim = Get-Content -Raw -Path $claimPath -Encoding UTF8 | ConvertFrom-Json
+$claim = Get-Content -Raw -LiteralPath $claimPath -Encoding UTF8 | ConvertFrom-Json
+if (-not $claim.PSObject.Properties['task_id'] -or [string]$claim.task_id -cne $TaskId) {
+    Write-Error ("claim for task {0} changed before release" -f $TaskId)
+    exit 2
+}
 if ([string]$claim.agent -ne $Agent) {
     Write-Error ("claim belongs to {0}, not {1}" -f $claim.agent, $Agent)
     exit 3
@@ -88,11 +99,8 @@ if ($claimHasOwner) {
             "mismatch); only the owning session can release it")
         exit 5
     }
-} elseif (
-    $claim.PSObject.Properties['owner_identity'] -and
-    [string]$claim.owner_identity -ceq 'none' -and
-    $null -eq (Get-BridgeOwnerIdentity -SessionId $RunId)
-) {
+} elseif (Test-BridgeIdentitylessClaimPair -Claim $claim `
+        -Identity (Get-BridgeOwnerIdentity -SessionId $RunId)) {
     # A claim made without an identity, released by a caller that also
     # has none: the agent label is the only authority either side has,
     # exactly as before B7. A caller WITH an identity still has to adopt
@@ -113,7 +121,14 @@ $claim | Add-Member -NotePropertyName release_status -NotePropertyValue $Status 
 $claim | Add-Member -NotePropertyName release_message -NotePropertyValue $Message -Force
 
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-$donePath = Join-Path $doneDir ($safeTask + '.' + $stamp + '.' + $Status + '.json')
+# Named after the claim's own file, which is unique per claim; the
+# sanitized task id is not ('a/b' and 'a_b' collide), and two releases in
+# the same second must not collide either.
+$doneBase = [System.IO.Path]::GetFileNameWithoutExtension($claimPath)
+$donePath = Join-Path $doneDir ($doneBase + '.' + $stamp + '.' + $Status + '.json')
+if (Test-Path -LiteralPath $donePath) {
+    $donePath = Join-Path $doneDir ($doneBase + '.' + $stamp + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.' + $Status + '.json')
+}
 
 # Internal review fix R9 (2026-05-09): the previous "Set-Content done +
 # Remove-Item claim" had a race window where a concurrent reader could

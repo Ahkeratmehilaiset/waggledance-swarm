@@ -56,6 +56,15 @@ DEFAULT_DONE_DIR = DEFAULT_BRIDGE_ROOT / "work_queue" / "done"
 DEFAULT_LEASE_SECONDS = 900
 DEFAULT_STALE_MAX_SECONDS = 12 * 60 * 60  # 12h matches bridge-event waiver window
 BRIDGE_ROOT_ENV_NAMES = ("AGENT_BRIDGE_RUNTIME_ROOT", "AGENT_BRIDGE_ROOT")
+OWNER_SESSION_ENV = "AGENT_BRIDGE_OWNER_SESSION_ID"
+RUN_ID_ENV = "AGENT_BRIDGE_RUN_ID"
+OWNER_TOKEN_ENV = "AGENT_BRIDGE_OWNER_TOKEN"
+BOUND_AGENT_ENV = "AGENT_BRIDGE_AGENT"
+# Marker Claim-AgentTask.ps1 writes on a claim made without an identity.
+OWNER_IDENTITY_NONE = "none"
+# Session heartbeat TTLs, as in ClaimLeaseHeartbeat.ps1.
+SESSION_HEARTBEAT_TTL_DEFAULT = 180
+SESSION_HEARTBEAT_TTL_MAX = 900
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{1,120}$")
@@ -84,6 +93,22 @@ class Claim:
     agent_uuid: str = ""
     capabilities: tuple[str, ...] = field(default_factory=tuple)
     cwd: str = ""
+    owner_session_id: str = ""
+    owner_token_sha256: str = ""
+    owner_identity: str = ""
+
+
+@dataclass(frozen=True)
+class OwnerIdentity:
+    """The session identity a B7 claim is bound to.
+
+    Same contract as ``Get-BridgeOwnerIdentity`` in
+    ``.agent-bridge/bin/ClaimLeaseHeartbeat.ps1``: the owner session id and
+    the SHA-256 of the per-session owner token, never the token itself.
+    """
+
+    owner_session_id: str
+    owner_token_sha256: str
 
 
 @dataclass(frozen=True)
@@ -126,6 +151,87 @@ def resolve_bridge_root(bridge_root: Path | None = None) -> Path:
     return DEFAULT_BRIDGE_ROOT
 
 
+def current_owner_identity(
+    environ: dict[str, str] | None = None,
+) -> OwnerIdentity | None:
+    """Resolve this process's B7 owner identity, or None.
+
+    Mirrors ``Get-BridgeOwnerIdentity``: the owner session id wins over the
+    run id, and when both are set but disagree there is no identity at all.
+    None means "cannot act on an owned claim"; callers must not invent a
+    weaker identity.
+    """
+    env = os.environ if environ is None else environ
+    owner_session = env.get(OWNER_SESSION_ENV, "")
+    run_session = env.get(RUN_ID_ENV, "")
+    if owner_session and run_session and owner_session != run_session:
+        session = ""
+    else:
+        session = owner_session or run_session
+    token = env.get(OWNER_TOKEN_ENV, "")
+    if not session or not token:
+        return None
+    return OwnerIdentity(
+        owner_session_id=session,
+        owner_token_sha256=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+    )
+
+
+def _assert_session_agent(agent: str, environ: dict[str, str] | None = None) -> None:
+    """Refuse to act under a label this session is not bound to.
+
+    Mirrors ``Assert-AgentBridgeSessionIdentity`` (AgentBridgeSessionIdentity.ps1)
+    for the public entry points: a session bound through AGENT_BRIDGE_AGENT
+    acts only as that agent, ``system`` has no public authority, and the
+    reserved ``operator``/``system`` labels are refused to an unbound caller.
+    """
+    env = os.environ if environ is None else environ
+    bound = env.get(BOUND_AGENT_ENV, "")
+    if not bound:
+        if agent in PRIVILEGED_AGENTS:
+            raise WorkQueueError(
+                f"identity_mismatch: reserved agent {agent!r} is refused "
+                "without a bound session for it"
+            )
+        return
+    if not AGENT_ID_PATTERN.fullmatch(bound):
+        raise WorkQueueError(f"identity_mismatch: {BOUND_AGENT_ENV} is malformed")
+    if agent == "system":
+        raise WorkQueueError("identity_mismatch: system agent has no public bridge authority")
+    if bound != agent:
+        raise WorkQueueError(
+            f"identity_mismatch: session agent {bound!r} cannot act as {agent!r}"
+        )
+
+
+def _claim_is_owned(claim: Claim) -> bool:
+    return bool(claim.owner_session_id and claim.owner_token_sha256)
+
+
+def _identity_owns(claim: Claim, identity: OwnerIdentity | None) -> bool:
+    """The identity half of the B7 compare-and-swap (``Test-BridgeClaimOwner``)."""
+    if identity is None or not _claim_is_owned(claim):
+        return False
+    return (
+        claim.owner_session_id == identity.owner_session_id
+        and claim.owner_token_sha256 == identity.owner_token_sha256
+    )
+
+
+def _identityless_pair(claim: Claim, identity: OwnerIdentity | None) -> bool:
+    """A claim made without an identity, handled by a caller with none.
+
+    The agent label is the only authority either side has, exactly as
+    before B7. Any other unowned claim is a pre-B7 claim and is never
+    adopted implicitly.
+    """
+    return (
+        identity is None
+        and not _claim_is_owned(claim)
+        and claim.owner_identity == OWNER_IDENTITY_NONE
+    )
+
+
 def claim_task(
     *,
     agent: str,
@@ -161,14 +267,17 @@ def claim_task(
     if lease_seconds <= 0:
         raise WorkQueueError("lease_seconds must be positive")
 
+    _assert_session_agent(agent)
+    identity = current_owner_identity()
+
     bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = _claim_path_for_task(claims_dir, task_id)
 
     existing: Claim | None = None
-    if claim_path.exists():
-        existing = _read_claim_file(claim_path)
+    found = _find_claim(claims_dir, task_id)
+    if found is not None:
+        claim_path, existing = found
         if existing.agent != agent and not force:
             raise WorkQueueError(
                 f"task {task_id} already claimed by {existing.agent}"
@@ -177,6 +286,17 @@ def claim_task(
             raise WorkQueueError(
                 f"force claim across agents refused: existing={existing.agent}"
             )
+        # B7: the label is not authority. Only the owning session refreshes
+        # its claim; there is no takeover of a live owner, with or without
+        # force. A claim held by another session frees only through its
+        # owner's release or the stale sweep.
+        if not (_identity_owns(existing, identity) or _identityless_pair(existing, identity)):
+            raise WorkQueueError(
+                f"claim refused: task {task_id} is held by another session of "
+                f"{existing.agent}; only the owning session can refresh it"
+            )
+    else:
+        claim_path = _new_claim_path(claims_dir, task_id)
     if mode == "write":
         conflicts = [
             claim
@@ -208,6 +328,9 @@ def claim_task(
         lease_seconds=int(lease_seconds),
         claim_lease_expires_utc=lease_expires,
         cwd=str(Path.cwd()),
+        owner_session_id=identity.owner_session_id if identity else "",
+        owner_token_sha256=identity.owner_token_sha256 if identity else "",
+        owner_identity="" if identity else OWNER_IDENTITY_NONE,
     )
     _write_claim_file(claim_path, claim, create_new=existing is None)
     return claim
@@ -221,25 +344,47 @@ def release_task(
     release_message: str = "",
     bridge_root: Path | None = None,
     now_utc: datetime | None = None,
+    allow_legacy_unowned_claim: bool = False,
 ) -> ReleaseRecord:
-    """Release a previously claimed task and archive the record under done/."""
+    """Release a previously claimed task and archive the record under done/.
+
+    B7 parity with ``Release-AgentTask.ps1``: an owned claim is released
+    only by its owning session; a claim marked ``owner_identity=none`` by an
+    identity-less caller; any other unowned (pre-B7) claim only with
+    ``allow_legacy_unowned_claim=True``. An owned claim is never released
+    by anyone else, whatever the flag.
+    """
     _validate_agent(agent)
     _validate_task_id(task_id)
     if not release_status or not release_status.strip():
         raise WorkQueueError("release_status required")
+    _assert_session_agent(agent)
+    identity = current_owner_identity()
 
     bridge = resolve_bridge_root(bridge_root)
     claims_dir = bridge / "work_queue" / "claims"
     done_dir = bridge / "work_queue" / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = _claim_path_for_task(claims_dir, task_id)
-    if not claim_path.exists():
+    found = _find_claim(claims_dir, task_id)
+    if found is None:
         raise WorkQueueError(f"no active claim for task {task_id}")
 
-    existing = _read_claim_file(claim_path)
+    claim_path, existing = found
     if existing.agent != agent:
         raise WorkQueueError(
             f"release rejected: claim held by {existing.agent}, not {agent}"
+        )
+    if _claim_is_owned(existing):
+        if not _identity_owns(existing, identity):
+            raise WorkQueueError(
+                "release rejected: claim is owned by another session "
+                "(owner_session_id/owner_token mismatch); only the owning "
+                "session can release it"
+            )
+    elif not _identityless_pair(existing, identity) and not allow_legacy_unowned_claim:
+        raise WorkQueueError(
+            "release rejected: claim carries no owner identity (pre-B7 claim); "
+            "adopt it explicitly with allow_legacy_unowned_claim"
         )
 
     released_at = _iso(now_utc or datetime.now(timezone.utc))
@@ -266,18 +411,32 @@ def heartbeat(
     now_utc: datetime | None = None,
     lease_seconds: int | None = None,
 ) -> Claim:
-    """Refresh the lease on an existing claim."""
+    """Refresh the lease on an existing claim.
+
+    B7 parity with ``Update-BridgeClaimLease``: only the owning session
+    extends a lease. A claim without an owner identity is never extended; it
+    ages out normally. Every other field of the claim file, including the
+    owner fields and anything only the PowerShell writer records, is kept.
+    """
     _validate_agent(agent)
     _validate_task_id(task_id)
+    _assert_session_agent(agent)
+    identity = current_owner_identity()
     bridge = resolve_bridge_root(bridge_root)
-    claim_path = _claim_path_for_task(bridge / "work_queue" / "claims", task_id)
-    if not claim_path.exists():
+    found = _find_claim(bridge / "work_queue" / "claims", task_id)
+    if found is None:
         raise WorkQueueError(f"no active claim for task {task_id}")
 
-    existing = _read_claim_file(claim_path)
+    claim_path, existing = found
     if existing.agent != agent:
         raise WorkQueueError(
             f"heartbeat rejected: claim held by {existing.agent}, not {agent}"
+        )
+    if not _identity_owns(existing, identity):
+        raise WorkQueueError(
+            "heartbeat rejected: only the owning session extends a lease "
+            "(owner_session_id/owner_token mismatch, or a claim without an "
+            "owner identity, which ages out)"
         )
 
     timestamp = _iso(now_utc or datetime.now(timezone.utc))
@@ -287,39 +446,25 @@ def heartbeat(
     lease_expires = _iso(
         _parse_utc(timestamp) + timedelta(seconds=refreshed_lease_seconds)
     )
-    refreshed = Claim(
-        agent=existing.agent,
-        task_id=existing.task_id,
-        summary=existing.summary,
-        mode=existing.mode,
-        write_scope=existing.write_scope,
-        run_id=existing.run_id,
-        claimed_at_utc=existing.claimed_at_utc,
-        last_heartbeat_utc=timestamp,
-        lease_seconds=refreshed_lease_seconds,
-        claim_lease_expires_utc=lease_expires,
-        role=existing.role,
-        agent_uuid=existing.agent_uuid,
-        capabilities=existing.capabilities,
-        cwd=existing.cwd,
-    )
-    _write_claim_file(claim_path, refreshed)
+    raw = _read_claim_object(claim_path)
+    raw["last_heartbeat_utc"] = timestamp
+    raw["lease_seconds"] = refreshed_lease_seconds
+    raw["claim_lease_expires_utc"] = lease_expires
+    refreshed = _claim_from_object(raw)
+    if (refreshed.task_id != task_id or not _identity_owns(refreshed, identity)):
+        # Re-checked on the content actually being rewritten: the file may
+        # have been replaced by a successor claim since the lookup.
+        raise WorkQueueError(
+            f"heartbeat rejected: claim for task {task_id} changed during the update"
+        )
+    _write_json_file(claim_path, raw)
     return refreshed
 
 
 def list_claims(bridge_root: Path | None = None) -> list[Claim]:
     """Return all active claims in the work-queue."""
     bridge = resolve_bridge_root(bridge_root)
-    claims_dir = bridge / "work_queue" / "claims"
-    if not claims_dir.exists():
-        return []
-    claims: list[Claim] = []
-    for path in sorted(claims_dir.glob("*.json")):
-        try:
-            claims.append(_read_claim_file(path))
-        except WorkQueueError:
-            continue
-    return claims
+    return [claim for _, claim in _list_claim_entries(bridge / "work_queue" / "claims")]
 
 
 def detect_stale_claims(
@@ -366,6 +511,12 @@ def archive_stale_claims(
       lease age, and ``released_at_utc`` set to ``now_utc``.
     * With ``apply=False`` (the default) no files are moved or written;
       the returned ``ArchivedClaim`` records describe the planned action.
+    * B7: a claim bound to an owner session (``owner_session_id`` plus
+      ``owner_token_sha256``) is swept only when its own lease has expired
+      AND its owner's session heartbeat is provably not live, as in
+      ``Invoke-StaleClaimSweep.ps1``. A heartbeat artifact that exists but
+      cannot be read or validated counts as "cannot prove the owner is
+      gone", and the claim is kept.
 
     The primitive intentionally does not emit bridge events; the CLI
     wrapper in ``tools/work_queue_sweep_stale.py`` is responsible for
@@ -381,9 +532,12 @@ def archive_stale_claims(
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
 
     done_dir = bridge / "work_queue" / "done"
+    claims_dir = bridge / "work_queue" / "claims"
     archived: list[ArchivedClaim] = []
-    for claim in list_claims(bridge_root=bridge):
+    for claim_file, claim in _list_claim_entries(claims_dir):
         if claim.agent in PRIVILEGED_AGENTS:
+            continue
+        if _claim_is_owned(claim) and not _owned_claim_sweepable(bridge, claim, now):
             continue
         candidates: list[str] = []
         if claim.last_heartbeat_utc:
@@ -437,11 +591,20 @@ def archive_stale_claims(
                 payload["agent_uuid"] = claim.agent_uuid
             if claim.capabilities:
                 payload["capabilities"] = list(claim.capabilities)
+            if claim.owner_session_id:
+                payload["owner_session_id"] = claim.owner_session_id
+            if claim.owner_token_sha256:
+                payload["owner_token_sha256"] = claim.owner_token_sha256
+            # Remove exactly the file this decision was made on, and only if
+            # it still holds the same claim: a successor claim written since
+            # the listing is never deleted.
+            try:
+                current = _read_claim_file(claim_file)
+            except WorkQueueError:
+                continue
+            if current != claim:
+                continue
             _write_json_file(archive_path, payload, create_new=True)
-            claim_file = _claim_path_for_task(
-                bridge / "work_queue" / "claims",
-                claim.task_id,
-            )
             try:
                 claim_file.unlink()
             except FileNotFoundError:
@@ -510,20 +673,123 @@ def _safe_name(value: str) -> str:
     return f"{safe}-{digest}"
 
 
-def _claim_path_for_task(claims_dir: Path, task_id: str) -> Path:
-    preferred = claims_dir / f"{_safe_name(task_id)}.json"
-    if preferred.exists():
-        return preferred
+def _list_claim_entries(claims_dir: Path) -> list[tuple[Path, Claim]]:
     if not claims_dir.exists():
-        return preferred
+        return []
+    entries: list[tuple[Path, Claim]] = []
     for path in sorted(claims_dir.glob("*.json")):
         try:
-            claim = _read_claim_file(path)
+            entries.append((path, _read_claim_file(path)))
         except WorkQueueError:
             continue
+    return entries
+
+
+def _find_claim(claims_dir: Path, task_id: str) -> tuple[Path, Claim] | None:
+    """The active claim whose task_id is EXACTLY ``task_id``, or None.
+
+    A file name is never trusted: the PowerShell writer names files by a
+    lossy sanitization (``a/b`` and ``a_b`` both give ``a_b.json``), so the
+    preferred name can hold a different task's claim.
+    """
+    preferred = claims_dir / f"{_safe_name(task_id)}.json"
+    if preferred.exists():
+        try:
+            claim = _read_claim_file(preferred)
+        except WorkQueueError:
+            claim = None
+        if claim is not None and claim.task_id == task_id:
+            return preferred, claim
+    for path, claim in _list_claim_entries(claims_dir):
         if claim.task_id == task_id:
-            return path
-    return preferred
+            return path, claim
+    return None
+
+
+def _new_claim_path(claims_dir: Path, task_id: str) -> Path:
+    """A file name for a new claim that no other task's claim occupies."""
+    preferred = claims_dir / f"{_safe_name(task_id)}.json"
+    if not preferred.exists():
+        return preferred
+    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:12]
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", task_id).strip("_") or "claim"
+    return claims_dir / f"{base}-{digest}.json"
+
+
+def _claim_path_for_task(claims_dir: Path, task_id: str) -> Path:
+    found = _find_claim(claims_dir, task_id)
+    if found is not None:
+        return found[0]
+    return _new_claim_path(claims_dir, task_id)
+
+
+def _session_heartbeat_path(bridge: Path, session_id: str, token_sha256: str) -> Path | None:
+    """``Get-BridgeSessionHeartbeatPath``: keyed by session AND token hash."""
+    if not session_id or not token_sha256:
+        return None
+    digest = hashlib.sha256(f"{session_id}\n{token_sha256}".encode("utf-8")).hexdigest()
+    return bridge / "work_queue" / "heartbeats" / f"{digest}.json"
+
+
+def _session_heartbeat_state(bridge: Path, claim: Claim, now: datetime) -> str:
+    """'live', 'dead' or 'unknown' for the session that owns ``claim``.
+
+    Same rules as ``Test-BridgeSessionHeartbeatLive``, except that an
+    artifact which exists but cannot be read or validated is 'unknown'
+    rather than 'dead': this sweeper keeps a claim it cannot prove
+    abandoned.
+    """
+    path = _session_heartbeat_path(bridge, claim.owner_session_id, claim.owner_token_sha256)
+    if path is None or not path.exists():
+        return "dead"
+    try:
+        beat = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown"
+    if not isinstance(beat, dict):
+        return "unknown"
+    if any(field_name not in beat for field_name in ("owner_session_id", "owner_token_sha256", "last_beat_utc")):
+        return "unknown"
+    if (str(beat["owner_session_id"]) != claim.owner_session_id
+            or str(beat["owner_token_sha256"]) != claim.owner_token_sha256):
+        return "unknown"
+    ttl = SESSION_HEARTBEAT_TTL_DEFAULT
+    try:
+        parsed_ttl = int(str(beat.get("ttl_seconds", "")))
+    except ValueError:
+        parsed_ttl = 0
+    if parsed_ttl > 0:
+        ttl = parsed_ttl
+    ttl = min(ttl, SESSION_HEARTBEAT_TTL_MAX)
+    try:
+        beat_utc = _parse_utc(str(beat["last_beat_utc"]))
+    except (ValueError, TypeError):
+        return "unknown"
+    # A future-dated beat never keeps a claim alive (clock skew is not a
+    # way to pin a claim open), as in PowerShell.
+    if beat_utc > now + timedelta(seconds=60):
+        return "dead"
+    return "live" if (now - beat_utc).total_seconds() <= ttl else "dead"
+
+
+def _owned_claim_sweepable(bridge: Path, claim: Claim, now: datetime) -> bool:
+    """An owner-bound claim is sweepable only when its lease expired AND its
+    owner's session heartbeat is provably not live."""
+    try:
+        base = _parse_utc(claim.last_heartbeat_utc or claim.claimed_at_utc)
+    except (ValueError, TypeError):
+        return False
+    expires = base + timedelta(seconds=max(int(claim.lease_seconds), 1))
+    if claim.claim_lease_expires_utc:
+        try:
+            recorded = _parse_utc(claim.claim_lease_expires_utc)
+        except (ValueError, TypeError):
+            return False
+        if recorded > expires:
+            expires = recorded
+    if now < expires:
+        return False
+    return _session_heartbeat_state(bridge, claim, now) == "dead"
 
 
 def _normalize_scope_entry(scope: str) -> str:
@@ -554,13 +820,21 @@ def _scope_entries_overlap(left: str, right: str) -> bool:
     return left.startswith(right + "/") or right.startswith(left + "/")
 
 
-def _read_claim_file(path: Path) -> Claim:
+def _read_claim_object(path: Path) -> dict[str, object]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WorkQueueError(f"unreadable claim file: {path}") from exc
     if not isinstance(data, dict):
         raise WorkQueueError(f"claim file must be JSON object: {path}")
+    return data
+
+
+def _read_claim_file(path: Path) -> Claim:
+    return _claim_from_object(_read_claim_object(path))
+
+
+def _claim_from_object(data: dict[str, object]) -> Claim:
     return Claim(
         agent=str(data.get("agent", "")),
         task_id=str(data.get("task_id", "")),
@@ -576,6 +850,9 @@ def _read_claim_file(path: Path) -> Claim:
         agent_uuid=str(data.get("agent_uuid", "")),
         capabilities=tuple(str(s) for s in data.get("capabilities", []) if s),
         cwd=str(data.get("cwd", "")),
+        owner_session_id=str(data.get("owner_session_id", "") or ""),
+        owner_token_sha256=str(data.get("owner_token_sha256", "") or ""),
+        owner_identity=str(data.get("owner_identity", "") or ""),
     )
 
 
@@ -599,6 +876,11 @@ def _write_claim_file(path: Path, claim: Claim, *, create_new: bool = False) -> 
         payload["agent_uuid"] = claim.agent_uuid
     if claim.capabilities:
         payload["capabilities"] = list(claim.capabilities)
+    if claim.owner_session_id and claim.owner_token_sha256:
+        payload["owner_session_id"] = claim.owner_session_id
+        payload["owner_token_sha256"] = claim.owner_token_sha256
+    elif claim.owner_identity:
+        payload["owner_identity"] = claim.owner_identity
     _write_json_file(path, payload, create_new=create_new)
 
 

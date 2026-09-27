@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import uuid
 
 import pytest
 
@@ -13,11 +14,24 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="canonical writer append
 
 
 def write(shell, runtime, *args):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_BRIDGE_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))}
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
+    # Runtime directories do not isolate machine-wide mutex names. Rewrite only
+    # fixture copies: production code must have no environment bypass for locks.
+    code = runtime / "fixture-code" / ".agent-bridge" / "bin"
+    if not code.exists():
+        shutil.copytree(ROOT / ".agent-bridge/bin", code)
+        configs = code.parent.parent / "configs"
+        configs.mkdir()
+        shutil.copy2(ROOT / "configs/bridge_identity_registry.json", configs)
+        prefix = "Local\\WdWriterGuardTest-" + uuid.uuid4().hex + "-"
+        for script in code.glob("*.ps1"):
+            source = script.read_text(encoding="utf-8-sig")
+            if "Global\\WaggleDanceBridge" in source:
+                script.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
     return subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-File",
-         str(ROOT / ".agent-bridge/bin/Write-AgentEvent.ps1"),
+         str(code / "Write-AgentEvent.ps1"),
          "-Agent", "operator", "-TaskId", "fixture/contract-guards",
          "-SessionId", "current-session", "-RunId", "current-run", *args],
         env=env, capture_output=True, text=True, timeout=40,

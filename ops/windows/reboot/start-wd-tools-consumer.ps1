@@ -968,6 +968,8 @@ function Assert-ToolsBootstrapIntegrity {
     }
     foreach ($requiredLeaf in @(
             'AgentBridgeSessionIdentity.ps1',
+        'ClaimLeaseHeartbeat.ps1',
+        'BridgeNamedMutex.ps1',
             'BridgeIncrementalReader.ps1',
             'BridgeLogReader.ps1',
             'Drain-AcceptedBridgeQueue.ps1',

@@ -580,6 +580,7 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 # Replies consume the full request, never the lossy next-action summary.
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+. (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
 
 function Assert-WriterContractEnvelope {
     param([Parameter(Mandatory)] $Event)
@@ -861,7 +862,7 @@ function New-BridgeV1Mutex {
     if ($forcedFailure -in @('All', $Purpose)) {
         throw "simulated bridge $Purpose mutex construction failure"
     }
-    return New-Object System.Threading.Mutex($false, $Name)
+    return New-BridgeNamedMutex -Name $Name
 }
 
 function Open-BridgeAcceptedQueueDirectoryLease {

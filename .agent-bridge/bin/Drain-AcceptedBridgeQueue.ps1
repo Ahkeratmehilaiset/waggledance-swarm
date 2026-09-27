@@ -545,10 +545,8 @@ $publicationDirtyAbandoned = $false
 try {
     if (-not $DryRun) {
         try {
-            $publicationMutex = New-Object System.Threading.Mutex(
-                $false,
-                'Global\WaggleDanceBridgeAcceptedQueuePublicationV1'
-            )
+            . (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
+            $publicationMutex = New-BridgeNamedMutex -Name 'Global\WaggleDanceBridgeAcceptedQueuePublicationV1'
             try { $publicationAcquired = $publicationMutex.WaitOne(10000) }
             catch [System.Threading.AbandonedMutexException] {
                 $publicationAcquired = $true
@@ -641,10 +639,8 @@ if ($pendingExists) {
     $pendingAppendDirty = $false
     if ($pendingFiles.Count -gt 0) {
         try {
-            $pendingAppendMutex = New-Object System.Threading.Mutex(
-                $false,
-                'Global\WaggleDanceBridgeAppendV1'
-            )
+            . (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
+            $pendingAppendMutex = New-BridgeNamedMutex -Name 'Global\WaggleDanceBridgeAppendV1'
             try { $pendingAppendAcquired = $pendingAppendMutex.WaitOne(0) }
             catch [System.Threading.AbandonedMutexException] {
                 $pendingAppendAcquired = $true

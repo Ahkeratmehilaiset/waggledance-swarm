@@ -34,6 +34,39 @@ Machine-wide Windows mutex interoperability must be measured with actual command
 tokens, not inferred from parent process names. Expired probes prove nothing
 about cross-integrity access. No live lock ACL change is part of preparation.
 
+### Same-logon mutex policy and activation gates
+
+New bridge mutexes use explicit creation security, not a shell's default DACL:
+`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;<current-enabled-logon-SID>)`.
+There is no creator-user full-control ACE. Operational handles request only
+`SYNCHRONIZE | MUTEX_MODIFY_STATE` (`0x00100001`). Derive exactly one enabled,
+non-deny-only logon SID from the actual process token; missing or ambiguous
+identity fails closed. Never rewrite an existing object's ACL, adopt it by
+deletion, broaden access to another logon, or fall back to default security.
+Existing-shape diagnostics use a separate read-only handle where permitted;
+unreadable security is **unverified**, not a match. Do not recursively write a
+bridge event while diagnosing a bridge lock: preserve the caller's warning log.
+
+Before activation **and after reboot**, enumerate actual creator/opener tokens:
+all lanes, supervisor-started Tools consumers, watchers, drain and heartbeat
+jobs. Record PID/start time and logon SID. Require one shared logon session;
+report any mismatch and stop. Scheduled tasks or services may use another logon
+even under the same user; today's matching process list proves nothing about
+the next boot. Low-integrity behavior needs measured evidence, not inference
+from a parent CLI. No privilege elevation or principal changes are authorized.
+
+After old-generation creators and handle holders have quiesced, positively
+verify each production bridge lock's new creation and expected ACL, or inspect
+its existing ACL. A wrong or unreadable shape blocks rollout verification.
+Process absence alone is insufficient: the old object survives until its last
+handle closes. Never stop both RCO lanes together to accomplish this check.
+If safe sequencing cannot satisfy the check, stop and report rather than force.
+
+This policy covers bridge publication, append and spool-replay locks. It does
+not claim to fix the fleet reboot-control or supervisor reconcile mutexes,
+which retain their existing creation policy. Cross-logon access and the known
+Python per-claim locking race (#1567) remain explicit limitations.
+
 ## What the single approval must bind
 
 The final direct operator instruction must include the complete head and tree,

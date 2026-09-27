@@ -80,6 +80,9 @@ function ConvertTo-SmokeUtc {
 $tempRoot = Join-Path $env:TEMP `
     "bridge-r15-stale-lease-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
 $savedEnv = $env:AGENT_BRIDGE_RUNTIME_ROOT
+# A lane shell carries its own owner context; the smoke sets identities itself.
+$savedOwnerSession = $env:AGENT_BRIDGE_OWNER_SESSION_ID
+Remove-Item Env:AGENT_BRIDGE_OWNER_SESSION_ID -ErrorAction SilentlyContinue
 
 try {
     Write-Host 'Bridge stale-lease smoke test' -ForegroundColor Cyan
@@ -91,6 +94,11 @@ try {
     $claimsDir = Join-Path $tempRoot 'work_queue\claims'
     $doneDir = Join-Path $tempRoot 'work_queue\done'
     $eventsPath = Join-Path $tempRoot 'shared\events.jsonl'
+    # The smoke is its own session. Only an owned claim can be kept alive,
+    # so section 3 used to pass only when the caller's shell happened to
+    # carry a session identity.
+    $env:AGENT_BRIDGE_RUN_ID = 'r15-smoke-session'
+    $env:AGENT_BRIDGE_OWNER_TOKEN = 'r15-smoke-token'
 
     # ── 1: Create stale claim and verify sweep archives it ─────
     Write-Host '1. Stale claim auto-release:'
@@ -360,7 +368,8 @@ try {
     $stalebeatObj.last_heartbeat_utc = (Get-Date).AddSeconds(-600).ToUniversalTime().ToString('o')
     $stalebeatObj.claim_lease_expires_utc = (Get-Date).AddSeconds(-540).ToUniversalTime().ToString('o')
     ($stalebeatObj | ConvertTo-Json -Depth 8) | Set-Content -Path $stalebeatPath -Encoding UTF8
-    $beatPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'b7-live-session'
+    $beatPath = Get-BridgeSessionHeartbeatPath -Root $tempRoot -SessionId 'b7-live-session' `
+        -TokenSha256 ([string]$liveIdentity.owner_token_sha256)
     $stalePayload = [ordered]@{
         agent              = 'codex'
         owner_session_id   = 'b7-live-session'
@@ -460,6 +469,9 @@ try {
 
 } finally {
     $env:AGENT_BRIDGE_RUNTIME_ROOT = $savedEnv
+    if ($null -ne $savedOwnerSession) {
+        $env:AGENT_BRIDGE_OWNER_SESSION_ID = $savedOwnerSession
+    }
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force `
             -ErrorAction SilentlyContinue

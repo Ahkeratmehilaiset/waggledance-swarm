@@ -43,7 +43,13 @@ def test_payload_cannot_poison_writer_identity(tmp_path, shell, key):
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("kind,status", [("status", "ready_for_fresh_restart"),
     ("intent", "ready"), ("wake_request", "request"),
-    ("message", "received"), ("message", "seen"), ("message", "acknowledged")])
+    ("message", "received"), ("message", "seen"), ("message", "acknowledged")]
+    + [("message", status) for status in (
+        "queued", "queued_for_processing", "queue_accepted", "accepted",
+        "accepted_for_processing", "pending", "started", "in_progress",
+        "processing", "running", "request", "requested", "open", "proposal",
+        "waiting_for_result",
+    )])
 def test_bound_nonanswer_is_refused_before_append(tmp_path, shell, kind, status):
     created = write(shell, tmp_path, "-Type", "message", "-Status", "request",
                     "-To", "operator", "-RequestId", "fixture-guard-request")

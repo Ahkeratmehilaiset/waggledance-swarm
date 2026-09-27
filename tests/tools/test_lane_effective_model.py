@@ -203,7 +203,7 @@ def test_codex_top_level_config_decides(tmp_path):
 def test_codex_argv_beats_the_config(tmp_path):
     cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n')
     r = resolve_codex(argv_model="gpt-6-sol", argv_effort="high", config=cfg)
-    assert (r["model"], r["effort"], r["model_source"]) == ("gpt-6-sol", "high", "argv")
+    assert (r["model"], r["effort"], r["model_source"], r["effort_source"]) == ("gpt-6-sol", "high", "argv", "argv")
 
 
 @pytest.mark.parametrize("legacy,keys", [
@@ -482,12 +482,6 @@ def test_codex_a_non_string_value_does_not_fall_through(tmp_path, key):
     text = 'model = 5\nmodel_reasoning_effort = "low"\n' if key == "model" else 'model = "gpt-6-sol"\nmodel_reasoning_effort = [1]\n'
     r = resolve_codex(argv_model="native", argv_effort="native", config=toml(tmp_path / "config.toml", text))
     assert r["resolved"] is False and f"{key}_not_a_string_in_user_config" in r["issues"]
-
-
-def test_codex_argv_beats_the_config(tmp_path):
-    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n')
-    r = resolve_codex(argv_model="gpt-6-sol", argv_effort="high", config=cfg)
-    assert (r["model"], r["effort"], r["model_source"], r["effort_source"]) == ("gpt-6-sol", "high", "argv", "argv")
 
 
 # ---------------------------------------------------------------- documented effort order (rco-1 N3/N4)

@@ -105,14 +105,26 @@ class BridgeEvent(BaseModel):
     @classmethod
     def _payload_cannot_override_envelope(cls, value: Any) -> Any:
         # Check raw presence before model defaults can manufacture an envelope.
-        if not isinstance(value, Mapping) or not isinstance(value.get("payload"), Mapping):
+        if not isinstance(value, Mapping):
             return value
-        for key in (
+        contract_keys = (
             "agent", "agent_uuid", "session_id", "run_id", "task_id",
             "request_id", "request_digest", "expected_responders",
             "in_reply_to_request_id", "in_reply_to_request_digest",
             "in_reply_to_requester",
-        ):
+        )
+        payload = value.get("payload")
+        # PowerShell's property lookup ignores case. Refuse alternate spellings
+        # (including duplicate envelope keys) instead of letting readers disagree.
+        for fields in (value, payload):
+            if not isinstance(fields, Mapping):
+                continue
+            for key in fields:
+                if isinstance(key, str) and key.casefold() in contract_keys and key not in contract_keys:
+                    raise ValueError(f"contract field {key} requires canonical lower-case spelling")
+        if not isinstance(payload, Mapping):
+            return value
+        for key in contract_keys:
             if key not in value["payload"]:
                 continue
             if key not in value:

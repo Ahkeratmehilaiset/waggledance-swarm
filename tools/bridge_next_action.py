@@ -1503,6 +1503,10 @@ def _is_ack_or_infrastructure(event: Mapping[str, Any]) -> bool:
 def _is_answer_like(event: Mapping[str, Any]) -> bool:
     if _is_ack_or_infrastructure(event):
         return False
+    if _event_type(event) == "message" and _is_interim_bound_status(
+        _event_status(event)
+    ):
+        return False
     if _event_type(event) == "done":
         return not _is_request_like(event)
     if _is_explicit_requester_closure(event):
@@ -1517,7 +1521,7 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
 
 def _is_interim_bound_status(status: str) -> bool:
     return status in {
-        "queued", "queued_for_processing", "queue_accepted",
+        "queued", "queued_for_processing", "queue_accepted", "accepted",
         "accepted_for_processing", "pending", "started", "in_progress",
         "processing", "running", "request", "requested", "open",
         "proposal", "waiting_for_result",

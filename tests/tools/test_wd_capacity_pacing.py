@@ -341,3 +341,18 @@ def test_a_corrupted_page_is_a_clean_refusal(tmp_path, capsys):
     store.write_bytes(bytes(data))
     assert main(["--store", str(store)]) == 2
     assert json.loads(capsys.readouterr().out)["execution_allowed"] is False
+
+
+
+@pytest.mark.parametrize("values", [(20, 80, 21), (20, 30, 25, 40), (10, 9, 50)])
+def test_a_counter_that_falls_anywhere_has_no_rate(values):
+    # Lead review of #1741: first and last alone must not decide; any dip means rate_unknown.
+    hours = len(values) - 1
+    rows = [sample("codex", "primary", v, hours_ago=hours - i, reset_in_hours=100) for i, v in enumerate(values)]
+    window = pace_windows(rows, now=NOW)["codex/codex/primary"]
+    assert (window["verdict"], window["reason"], window["rate_percent_per_hour"]) == ("unknown", "rate_unknown", None)
+
+
+def test_a_flat_then_rising_counter_still_has_a_rate():
+    rows = [sample("codex", "primary", v, hours_ago=3 - i, reset_in_hours=100) for i, v in enumerate((20, 20, 21, 23))]
+    assert pace_windows(rows, now=NOW)["codex/codex/primary"]["rate_percent_per_hour"] == 1.0

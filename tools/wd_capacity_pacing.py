@@ -164,7 +164,12 @@ def pace_windows(samples: list[dict], *, now: datetime) -> dict:
             continue
         first, last = current[0], current[-1]
         span = (last["observed_at"] - first["observed_at"]).total_seconds()
-        if span < MIN_RATE_SPAN_SECONDS or last["used_percent"] < first["used_percent"]:
+        # Lead review of #1741: EVERY consecutive pair must be non-decreasing inside one
+        # window instance. A dip anywhere (20 -> 80 -> 21) means the counter is not a
+        # usage counter we can trust, so there is no rate - never a first/last average.
+        falls = any(later["used_percent"] < earlier["used_percent"]
+                    for earlier, later in zip(current, current[1:]))
+        if span < MIN_RATE_SPAN_SECONDS or falls:
             entry["reason"] = "rate_unknown"
             continue
         rate = (last["used_percent"] - first["used_percent"]) / (span / 3600)

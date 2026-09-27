@@ -251,7 +251,10 @@ def transcript_model(path: Path) -> str:
             raise SourceError(f"{path.name}: unreadable line before the last turn") from None
         if not isinstance(record, dict):
             raise SourceError(f"{path.name}: a line that is not an object")
-        if record.get("type") == "user" and _is_model_command(record):
+        # The CLI records /model as a user record or as a system/local_command record with the
+        # command at the top level (claude-rco-2 B3 on #1745); any non-assistant record with the
+        # marker after the last turn is undecidable.
+        if record.get("type") != "assistant" and _is_model_command(record):
             raise SourceError(f"{path.name}: /model after the last turn")
         if record.get("type") != "assistant" or record.get("isSidechain") is True:
             continue

@@ -1030,3 +1030,55 @@ def test_a_settings_env_block_that_moves_the_config_dir_fails_closed(tmp_path):
     js(c.user, {"model": "claude-sonnet-5", "effortLevel": "xhigh", "env": {"CLAUDE_CONFIG_DIR": str(tmp_path / "x")}})
     r = c.resolve()
     assert r["resolved"] is False and "env_block_sets_CLAUDE_CONFIG_DIR_in_user" in r["issues"]
+
+
+
+# ---------------------------------------------------------------- /model as a system record (rco-2)
+
+_MODEL_CMD = '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>'
+_TURN = {'type': 'assistant', 'isSidechain': False,
+         'message': {'role': 'assistant', 'model': 'claude-sonnet-5', 'content': [{'type': 'text', 'text': 'ok'}]}}
+
+
+def _transcript(tmp_path, *records):
+    path = tmp_path / '00000000-0000-0000-0000-000000000000.jsonl'
+    path.write_text(''.join(json.dumps(r) + '\n' for r in records), encoding='utf-8')
+    return path
+
+
+def test_a_system_local_command_model_after_the_last_turn_fails_closed(tmp_path):
+    # The shape the CLI writes (seen in real transcripts): type system, subtype local_command, top-level content.
+    from tools.lane_effective_model import SourceError, transcript_model
+    path = _transcript(tmp_path, _TURN, {'type': 'system', 'subtype': 'local_command', 'content': _MODEL_CMD})
+    with pytest.raises(SourceError, match='/model after the last turn'):
+        transcript_model(path)
+
+
+def test_another_system_command_after_the_last_turn_does_not_hide_the_model(tmp_path):
+    from tools.lane_effective_model import transcript_model
+    other = _MODEL_CMD.replace('/model', '/help').replace('>model<', '>help<')
+    path = _transcript(tmp_path, _TURN, {'type': 'system', 'subtype': 'local_command', 'content': other})
+    assert transcript_model(path) == 'claude-sonnet-5'
+
+
+def test_a_system_model_command_before_the_last_turn_is_superseded_by_that_turn(tmp_path):
+    from tools.lane_effective_model import transcript_model
+    path = _transcript(tmp_path, {'type': 'system', 'subtype': 'local_command', 'content': _MODEL_CMD}, _TURN)
+    assert transcript_model(path) == 'claude-sonnet-5'
+
+
+@pytest.mark.parametrize("kind", ["attachment", "queue-operation", None])
+def test_a_model_command_in_any_non_assistant_record_fails_closed(tmp_path, kind):
+    from tools.lane_effective_model import SourceError, transcript_model
+    path = _transcript(tmp_path, _TURN, {'type': kind, 'content': _MODEL_CMD})
+    with pytest.raises(SourceError, match='/model after the last turn'):
+        transcript_model(path)
+
+
+@pytest.mark.parametrize("content", [[{'type': 'text', 'text': _MODEL_CMD}], _MODEL_CMD])
+def test_an_assistant_turn_that_quotes_the_marker_is_still_a_turn(tmp_path, content):
+    # An assistant turn is never a /model command, even with the marker in its (list or string) content.
+    from tools.lane_effective_model import transcript_model
+    quoting = {'type': 'assistant', 'isSidechain': False, 'content': _MODEL_CMD,
+               'message': {'model': 'claude-opus-5', 'content': content}}
+    assert transcript_model(_transcript(tmp_path, _TURN, quoting)) == 'claude-opus-5'

@@ -1,0 +1,276 @@
+{
+  "schema": "wd.model-registry.v1",
+  "updated_at": "2026-09-27",
+  "benchmark": {
+    "name": "Artificial Analysis Intelligence Index",
+    "version": "v4.3.2",
+    "quality_metric": "intelligence_index",
+    "cost_metric": "usd_per_index_task_at_api_prices",
+    "fetched_at": "2026-09-27",
+    "sources": [
+      "https://artificialanalysis.ai/models/releases/gpt-6-astra",
+      "https://artificialanalysis.ai/models/releases/gpt-6-sol",
+      "https://artificialanalysis.ai/models/releases/gpt-6-luna",
+      "https://artificialanalysis.ai/models/releases/gpt-5-6-sol",
+      "https://artificialanalysis.ai/models/releases/gpt-5-6-terra",
+      "https://artificialanalysis.ai/models/releases/gpt-5-6-luna",
+      "https://artificialanalysis.ai/models/releases/claude-opus-5-5",
+      "https://artificialanalysis.ai/models/releases/claude-fable-5-1",
+      "https://artificialanalysis.ai/models/releases/claude-sonnet-5"
+    ]
+  },
+  "coding_benchmark": {
+    "name": "Artificial Analysis Coding Agent Index",
+    "effort": "max",
+    "fetched_at": "2026-09-27",
+    "sources": [
+      "https://benchlm.ai/benchmarks/aacodingagents",
+      "https://artificialanalysis.ai/agents/coding-agents"
+    ]
+  },
+  "models": {
+    "claude/claude-fable-5-1": {
+      "provider": "claude",
+      "model": "claude-fable-5-1",
+      "coding_agent_index": 62.2,
+      "efforts": {
+        "low": {
+          "intelligence_index": 47,
+          "usd_per_task": 2.37
+        },
+        "medium": {
+          "intelligence_index": 49,
+          "usd_per_task": 2.98
+        },
+        "high": {
+          "intelligence_index": 51,
+          "usd_per_task": 3.91
+        },
+        "xhigh": {
+          "intelligence_index": 53,
+          "usd_per_task": 5.98
+        },
+        "max": {
+          "intelligence_index": 53,
+          "usd_per_task": 7.63
+        }
+      }
+    },
+    "claude/claude-opus-5-5": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "coding_agent_index": null,
+      "efforts": {
+        "low": {
+          "intelligence_index": 42,
+          "usd_per_task": 0.55
+        },
+        "medium": {
+          "intelligence_index": 51,
+          "usd_per_task": 1.34
+        },
+        "high": {
+          "intelligence_index": 54,
+          "usd_per_task": 1.82
+        },
+        "xhigh": {
+          "intelligence_index": 56,
+          "usd_per_task": 3.46
+        },
+        "max": {
+          "intelligence_index": 58,
+          "usd_per_task": 5.98
+        }
+      }
+    },
+    "claude/claude-sonnet-5": {
+      "provider": "claude",
+      "model": "claude-sonnet-5",
+      "coding_agent_index": null,
+      "efforts": {
+        "low": {
+          "intelligence_index": 24,
+          "usd_per_task": 0.51
+        },
+        "medium": {
+          "intelligence_index": 28,
+          "usd_per_task": 1.0
+        },
+        "high": {
+          "intelligence_index": 32,
+          "usd_per_task": 1.79
+        },
+        "xhigh": {
+          "intelligence_index": 34,
+          "usd_per_task": 2.87
+        },
+        "max": {
+          "intelligence_index": 38,
+          "usd_per_task": 5.09
+        }
+      }
+    },
+    "codex/gpt-5.6-luna": {
+      "provider": "codex",
+      "model": "gpt-5.6-luna",
+      "coding_agent_index": 43.2,
+      "efforts": {
+        "low": {
+          "intelligence_index": 21,
+          "usd_per_task": 0.01
+        },
+        "medium": {
+          "intelligence_index": 25,
+          "usd_per_task": 0.02
+        },
+        "high": {
+          "intelligence_index": 32,
+          "usd_per_task": 0.04
+        },
+        "xhigh": {
+          "intelligence_index": 35,
+          "usd_per_task": 0.09
+        },
+        "max": {
+          "intelligence_index": 37,
+          "usd_per_task": 0.18
+        }
+      }
+    },
+    "codex/gpt-5.6-sol": {
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "coding_agent_index": 54.6,
+      "efforts": {
+        "low": {
+          "intelligence_index": 33,
+          "usd_per_task": 0.26
+        },
+        "medium": {
+          "intelligence_index": 39,
+          "usd_per_task": 0.5
+        },
+        "high": {
+          "intelligence_index": 42,
+          "usd_per_task": 0.81
+        },
+        "xhigh": {
+          "intelligence_index": 44,
+          "usd_per_task": 1.18
+        },
+        "max": {
+          "intelligence_index": 47,
+          "usd_per_task": 1.99
+        }
+      }
+    },
+    "codex/gpt-5.6-terra": {
+      "provider": "codex",
+      "model": "gpt-5.6-terra",
+      "coding_agent_index": null,
+      "efforts": {
+        "low": {
+          "intelligence_index": 27,
+          "usd_per_task": 0.14
+        },
+        "medium": {
+          "intelligence_index": 30,
+          "usd_per_task": 0.18
+        },
+        "high": {
+          "intelligence_index": 34,
+          "usd_per_task": 0.34
+        },
+        "xhigh": {
+          "intelligence_index": 38,
+          "usd_per_task": 0.63
+        },
+        "max": {
+          "intelligence_index": 42,
+          "usd_per_task": 1.4
+        }
+      }
+    },
+    "codex/gpt-6-astra": {
+      "provider": "codex",
+      "model": "gpt-6-astra",
+      "coding_agent_index": 61.6,
+      "efforts": {
+        "low": {
+          "intelligence_index": 46,
+          "usd_per_task": 0.82
+        },
+        "medium": {
+          "intelligence_index": 50,
+          "usd_per_task": 1.54
+        },
+        "high": {
+          "intelligence_index": 51,
+          "usd_per_task": 1.73
+        },
+        "xhigh": {
+          "intelligence_index": 52,
+          "usd_per_task": 2.31
+        },
+        "max": {
+          "intelligence_index": 53,
+          "usd_per_task": 3.26
+        }
+      }
+    },
+    "codex/gpt-6-luna": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "coding_agent_index": 41.1,
+      "efforts": {
+        "low": {
+          "intelligence_index": 21,
+          "usd_per_task": 0.0045
+        },
+        "medium": {
+          "intelligence_index": 29,
+          "usd_per_task": 0.02
+        },
+        "high": {
+          "intelligence_index": 32,
+          "usd_per_task": 0.03
+        },
+        "xhigh": {
+          "intelligence_index": 34,
+          "usd_per_task": 0.04
+        },
+        "max": {
+          "intelligence_index": 37,
+          "usd_per_task": 0.07
+        }
+      }
+    },
+    "codex/gpt-6-sol": {
+      "provider": "codex",
+      "model": "gpt-6-sol",
+      "coding_agent_index": 56.7,
+      "efforts": {
+        "low": {
+          "intelligence_index": 34,
+          "usd_per_task": 0.13
+        },
+        "medium": {
+          "intelligence_index": 40,
+          "usd_per_task": 0.25
+        },
+        "high": {
+          "intelligence_index": 43,
+          "usd_per_task": 0.37
+        },
+        "xhigh": {
+          "intelligence_index": 44,
+          "usd_per_task": 0.53
+        },
+        "max": {
+          "intelligence_index": 48,
+          "usd_per_task": 1.06
+        }
+      }
+    }
+  }
+}

@@ -555,7 +555,7 @@ function Assert-WriterContractEnvelope {
         $direct = $Event.PSObject.Properties[$key]
         if (($null -ne $direct -and
                 (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) -or
-            ($null -eq $direct -and $key -cin @('agent','agent_uuid','session_id','run_id','task_id'))) {
+            ($null -eq $direct)) {
             throw "Conflicting payload contract field '$key'; put observational data under payload.result or a descriptive non-contract name"
         }
     }

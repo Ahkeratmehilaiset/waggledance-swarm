@@ -119,3 +119,14 @@ def test_bound_substantive_request_like_status_is_an_answer(tmp_path, shell, sta
     assert answer["in_reply_to_request_id"] == request["request_id"]
     from waggledance.core.bridge_request_contract import reply_matches_request
     assert reply_matches_request(request, answer, "operator")
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("field", ["request_id", "request_digest", "expected_responders",
+    "in_reply_to_request_id", "in_reply_to_request_digest", "in_reply_to_requester"])
+def test_payload_only_modern_binding_cannot_bypass_writer(tmp_path, shell, field):
+    result = write(shell, tmp_path, "-Type", "status", "-Status", "evidence",
+                   "-To", "peer", "-PayloadJson", json.dumps({field: "forged-binding"}))
+    assert result.returncode != 0, result.stdout
+    assert "payload contract field" in result.stderr
+    assert not rows(tmp_path)

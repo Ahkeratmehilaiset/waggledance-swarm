@@ -13,19 +13,20 @@ SHELLS = list(dict.fromkeys(filter(None, [shutil.which("powershell.exe"), shutil
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows kernel mutex policy")
 
 
-def run(shell, body):
+def run(shell, body, *, include_stderr=False):
     helper = str(ROOT / ".agent-bridge/bin/BridgeNamedMutex.ps1").replace("'", "''")
     result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
         "$ErrorActionPreference='Stop'; . '" + helper + "'; Initialize-BridgeNamedMutexType; " + body],
         capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stdout + result.stderr
-    return json.loads(result.stdout)
+    parsed = json.loads(result.stdout)
+    return (parsed, result.stderr) if include_stderr else parsed
 
 
 @pytest.mark.parametrize("shell", SHELLS)
 def test_creation_sddl_has_no_user_full_control(shell):
     actual = run(shell, "[WaggleDance.BridgeNamedMutexV1]::BuildSddl('S-1-5-21-1-2-3-1001', [string[]]@('S-1-5-5-10-20')) | ConvertTo-Json -Compress")
-    assert actual == "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;S-1-5-5-10-20)"
+    assert actual == "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120001;;;S-1-5-5-10-20)"
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -60,22 +61,22 @@ def test_real_new_and_existing_unique_mutex(shell):
 
 @pytest.mark.parametrize("shell", SHELLS)
 def test_foreign_shape_visible_and_not_rewritten(shell):
-    result = run(shell, r"""
+    result, stderr = run(shell, r"""
         $name='Local\WdForeignMutexTest-'+[guid]::NewGuid().ToString('N')
         $foreign=New-Object System.Threading.Mutex($false,$name)
         try {
             $sddl=[WaggleDance.BridgeNamedMutexV1]::GetCreationSddl()
             $before=[WaggleDance.BridgeNamedMutexV1]::InspectDacl($name,$sddl)
-            $warnings=@(); $m=New-BridgeNamedMutex -Name $name -WarningVariable warnings -WarningAction SilentlyContinue
+            $m=New-BridgeNamedMutex -Name $name
             try {
                 $after=[WaggleDance.BridgeNamedMutexV1]::InspectDacl($name,$sddl)
-                @{before=$before; after=$after; warnings=@($warnings|ForEach-Object {$_.ToString()})}|ConvertTo-Json -Compress
+                @{before=$before; after=$after}|ConvertTo-Json -Compress
             } finally {$m.Dispose()}
         } finally {$foreign.Dispose()}
-    """)
+    """, include_stderr=True)
     assert result["before"].startswith("bridge_mutex_acl_mismatch:")
     assert result["after"] == result["before"]
-    assert len(result["warnings"]) == 1
+    assert "bridge_mutex_acl_mismatch:" in stderr
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -106,3 +107,28 @@ def test_timeout_then_abandoned_mutex_semantics(shell):
         if holder.poll() is None:
             holder.kill()
         holder.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_writer_diagnostic_keeps_stdout_json_only(tmp_path, shell):
+    code = tmp_path / "fixture" / ".agent-bridge/bin"
+    shutil.copytree(ROOT / ".agent-bridge/bin", code)
+    prefix = "Local\\WdWriterDiagnosticTest-" + uuid.uuid4().hex + "-"
+    for path in code.glob("*.ps1"):
+        source = path.read_text(encoding="utf-8-sig")
+        if "Global\\WaggleDanceBridge" in source:
+            path.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    script = str(code / "Write-AgentEvent.ps1").replace("'", "''")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(tmp_path / "runtime")
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", f"""
+        $ErrorActionPreference='Stop'
+        $foreign=New-Object System.Threading.Mutex($false,'{prefix}AcceptedQueuePublicationV1')
+        try {{ & '{script}' -Agent operator -Type status -TaskId fixture/diagnostic -Status info -Message fixture -ReceiptJson }}
+        finally {{ $foreign.Dispose() }}
+    """], env=env, capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr
+    event = json.loads(result.stdout)
+    assert event["task_id"] == "fixture/diagnostic"
+    assert event["_bridge_delivery"]["canonical_durable"] is True
+    assert "bridge_mutex_acl_mismatch:" in result.stderr

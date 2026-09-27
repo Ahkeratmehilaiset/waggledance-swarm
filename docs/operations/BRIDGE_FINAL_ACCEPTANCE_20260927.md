@@ -37,15 +37,17 @@ about cross-integrity access. No live lock ACL change is part of preparation.
 ### Same-logon mutex policy and activation gates
 
 New bridge mutexes use explicit creation security, not a shell's default DACL:
-`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;<current-enabled-logon-SID>)`.
+`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120001;;;<current-enabled-logon-SID>)`.
 There is no creator-user full-control ACE. Operational handles request only
 `SYNCHRONIZE | MUTEX_MODIFY_STATE` (`0x00100001`). Derive exactly one enabled,
 non-deny-only logon SID from the actual process token; missing or ambiguous
 identity fails closed. Never rewrite an existing object's ACL, adopt it by
 deletion, broaden access to another logon, or fall back to default security.
 Existing-shape diagnostics use a separate read-only handle where permitted;
-unreadable security is **unverified**, not a match. Do not recursively write a
-bridge event while diagnosing a bridge lock: preserve the caller's warning log.
+unreadable security is **unverified**, not a match. The extra `READ_CONTROL` in
+the creation ACE allows same-logon, non-owner inspection without any ACL edit
+right. Do not recursively write a bridge event while diagnosing a bridge lock:
+preserve stderr diagnostics and keep stdout JSON-only.
 
 Before activation **and after reboot**, enumerate actual creator/opener tokens:
 all lanes, supervisor-started Tools consumers, watchers, drain and heartbeat

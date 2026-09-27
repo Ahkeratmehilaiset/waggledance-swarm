@@ -118,7 +118,8 @@ namespace WaggleDance {
             if (enabledLogonSids == null || enabledLogonSids.Length != 1 ||
                 enabledLogonSids[0] == null || !Regex.IsMatch(enabledLogonSids[0], @"\AS-1-5-5-\d+-\d+\z"))
                 throw new InvalidOperationException("Exactly one enabled token logon SID is required");
-            return "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100001;;;" + enabledLogonSids[0] + ")";
+            // READ_CONTROL permits non-owner same-logon diagnostics, never edits.
+            return "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00120001;;;" + enabledLogonSids[0] + ")";
         }
         public static string GetCreationSddl() {
             IntPtr token;
@@ -205,7 +206,9 @@ function New-BridgeNamedMutex {
             if ($diagnostic) {
                 # Do not emit a bridge event here: that would recursively acquire
                 # these same locks. The caller's warning/log channel is evidence.
-                Write-Warning ("{0}: {1}" -f $Name, $diagnostic)
+                # Write-Warning contaminates stdout under -File/-Command and
+                # breaks callers expecting a single JSON document.
+                [Console]::Error.WriteLine(("{0}: {1}" -f $Name, $diagnostic))
             }
         }
         return $mutex

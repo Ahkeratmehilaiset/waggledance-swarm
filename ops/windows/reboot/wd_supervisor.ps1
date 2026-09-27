@@ -1918,10 +1918,16 @@ function Test-ToolsReadinessTargetsProcess {
         }
         $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
             ConvertFrom-Json -ErrorAction Stop
-        return (
-            [int]$record.pid -eq [int]$Process.ProcessId -and
-            [string]$record.generation -ceq $Generation
-        )
+        # A PID alone can be reused: the record must also name this process's
+        # start time, with the same 2 s tolerance as Test-ToolsReadinessOwnerGone.
+        # A missing or unreadable time on either side throws and proves nothing.
+        if ([int]$record.pid -ne [int]$Process.ProcessId -or
+            [string]$record.generation -cne $Generation) {
+            return $false
+        }
+        $recordedStart = ConvertTo-SupervisorUtc $record.process_start_utc
+        $processStart = ConvertTo-SupervisorUtc $Process.CreationDate
+        return [Math]::Abs(($processStart - $recordedStart).TotalSeconds) -le 2
     }
     catch {
         return $false
@@ -3610,7 +3616,8 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         }
     )
     # The ready case: one readable, exact native-terminal wrapper whose readiness
-    # is bound to its own PID, start time and generation. That wrapper acquired
+    # is bound to its own PID, start time and generation, with no legacy
+    # consumer and no opaque host named by that record. That wrapper acquired
     # the lifetime lock before writing readiness and holds it until it exits,
     # so an unseen duplicate fails at the lock before native launch. Nothing is
     # launched, stopped or replaced in this state; opaque ownership stays
@@ -3622,7 +3629,8 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         $readyWrapperProcesses.Count -eq 1 -and
         $exactWrapperProcesses.Count -eq 1 -and
         $wrapperProcesses.Count -eq 1 -and
-        $legacyConsumers.Count -eq 0
+        $legacyConsumers.Count -eq 0 -and
+        $opaqueReadinessTargets.Count -eq 0
     )
     $opaqueHostsBlock = $opaqueToolsHosts.Count -gt 0 -and -not $healthyNativeWrapper -and -not (
         $toolsConversationSurface -ceq 'native_terminal' -and

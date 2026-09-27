@@ -398,7 +398,7 @@ class _WalObservationBackend(_PortableTestBackend):
     (WindowsAppendV1Backend.WAIT_TIMEOUT, False, False),
 ])
 def test_windows_mutex_requests_only_wait_and_release_rights(
-    wait_result: int, acquired: bool, abandoned: bool,
+    wait_result: int, acquired: bool, abandoned: bool, monkeypatch,
 ) -> None:
     class Kernel:
         def __init__(self) -> None:
@@ -419,6 +419,10 @@ def test_windows_mutex_requests_only_wait_and_release_rights(
     backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
     backend._supported = True
     backend._kernel32 = Kernel()
+    monkeypatch.setattr(
+        bridge_writer, "create_bridge_named_mutex",
+        lambda name, *, kernel32: kernel32.CreateMutexExW(None, name, 0, 0x00100001),
+    )
     mutex = backend.acquire_mutex(r"Global\WaggleDanceBridgeMutexUnitUnique", 1234)
     assert (mutex.acquired, mutex.abandoned) == (acquired, abandoned)
     mutex.close()
@@ -430,7 +434,7 @@ def test_windows_mutex_requests_only_wait_and_release_rights(
 
 
 @pytest.mark.parametrize("wait_result", [WindowsAppendV1Backend.WAIT_FAILED, 0x12345678])
-def test_windows_mutex_closes_handle_on_wait_error(wait_result: int) -> None:
+def test_windows_mutex_closes_handle_on_wait_error(wait_result: int, monkeypatch) -> None:
     class Kernel:
         def __init__(self) -> None:
             self.closed: list[int] = []
@@ -448,6 +452,10 @@ def test_windows_mutex_closes_handle_on_wait_error(wait_result: int) -> None:
     backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
     backend._supported = True
     backend._kernel32 = Kernel()
+    monkeypatch.setattr(
+        bridge_writer, "create_bridge_named_mutex",
+        lambda name, *, kernel32: kernel32.CreateMutexExW(None, name, 0, 0x00100001),
+    )
 
     def raise_error(operation, path):
         # The backend is a fake on Linux, where ctypes has no Win32 error API.
@@ -473,7 +481,10 @@ def test_windows_mutex_creation_error_does_not_wait_or_close(monkeypatch) -> Non
     backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
     backend._supported = True
     backend._kernel32 = Kernel()
-    monkeypatch.setattr(backend, "_raise_last_error", lambda operation, path: (_ for _ in ()).throw(OSError(operation)))
+    def denied(name, *, kernel32):
+        assert kernel32.CreateMutexExW(None, name, 0, 0x00100001) == 0
+        raise OSError("CreateMutexExW")
+    monkeypatch.setattr(bridge_writer, "create_bridge_named_mutex", denied)
     with pytest.raises(OSError, match="CreateMutexExW"):
         backend.acquire_mutex("unique-test-mutex", 0)
 

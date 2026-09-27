@@ -31,6 +31,7 @@ import uuid
 import warnings
 
 from waggledance.core.bridge_event_schema import validate_event
+from tools.bridge_named_mutex import create_bridge_named_mutex
 
 
 APPEND_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
@@ -1666,11 +1667,7 @@ class WindowsAppendV1Backend:
 
     def acquire_mutex(self, name: str, timeout_ms: int) -> _WindowsMutex:
         self.ensure_supported()
-        handle = self._kernel32.CreateMutexExW(
-            None, name, 0, self.SYNCHRONIZE | self.MUTEX_MODIFY_STATE
-        )
-        if not handle:
-            self._raise_last_error("CreateMutexExW", None)
+        handle = create_bridge_named_mutex(name, kernel32=self._kernel32)
         result = int(self._kernel32.WaitForSingleObject(handle, timeout_ms))
         if result == self.WAIT_OBJECT_0:
             return _WindowsMutex(self, handle, acquired=True, abandoned=False)

@@ -47,6 +47,12 @@ def fake_named_mutex_kernel(monkeypatch):
     monkeypatch.setattr(accepted_queue_preflight, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+    def create(name, *, kernel32):
+        handle = kernel32.CreateMutexExW(None, name, 0, 0x00100001)
+        if not handle:
+            raise OSError(5, "CreateMutexExW failed")
+        return handle
+    monkeypatch.setattr(accepted_queue_preflight, "create_bridge_named_mutex", create)
     return kernel
 
 

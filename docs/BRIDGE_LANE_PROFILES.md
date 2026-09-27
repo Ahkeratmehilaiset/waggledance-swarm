@@ -359,6 +359,39 @@ Instead it journals both epochs:
 ancestor is a symlink or junction. A junctioned `lane_profiles` directory cannot
 redirect reads or writes outside the runtime root.
 
+## Launcher shadow read (PR-4)
+
+`start-wd-agent.ps1` and `start-wd-tools-consumer.ps1` read the lane's D2 record just
+before they build argv. They cover every launch path: managed, interactive, native
+Lead and the supervisor-owned Tools consumer. The read runs
+`tools/lane_profile_launch_probe.py` through the pinned bridge package
+(`Invoke-WdBridgePythonTool`). The probe and its import closure (catalog,
+record, advisor) and `configs/lane_profile_catalog.json` are packaged, so the
+deployment manifest pins them.
+
+**It is a read, never a switch:**
+- The launcher keeps its own model, effort and argv. The probe's output is written
+  to the host log and never read back into a variable the launch uses.
+- Every entry says `launch: native_argv_unchanged`. A future `apply` decision (a signed
+  `auto` catalog) is logged as `apply_suppressed: true`.
+- Any failure launches native exactly as before: an unusable catalog or record, a
+  raising decision, a log that cannot be written, or a missing packaged tool. The
+  launcher prints one `unavailable` line.
+- A source-tree rehearsal or `-DryRun` / `-ValidateOnly` run skips the read.
+
+**Shadow evidence.** Each launch appends one `wd.lane-profile-launch-shadow.v1` line to
+`<runtime_root>/lane_profiles/launch-shadow.jsonl`. The line records lane, launcher,
+argv model and effort, mode, decision action, `would_apply`, fallback event and
+catalog SHA-256. The log refuses a symlinked or junctioned ancestor, stops growing at
+4 MiB (`log_full`), and never blocks a launch. These lines are the launch-side input
+for the catalog's shadow exit criterion.
+
+**Not in this PR:**
+- Applying a record's profile, and writing the launched facts back into the record,
+  come only with approve/auto, which is a separately signed step.
+- There is no supervisor trigger for a Lead self-transition (spec v3 B9).
+- There are no production executor ports.
+
 ## Governance
 
 The catalog, its floors and any change to `fleet.mode` are (a)-class, needing an

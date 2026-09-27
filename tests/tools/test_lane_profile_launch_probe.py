@@ -272,3 +272,22 @@ if (Get-Variable -Name seen -Scope Global -ErrorAction SilentlyContinue) {{ $see
         assert seen[0] == "tools/lane_profile_launch_probe.py"
         assert seen[seen.index("--argv-model") + 1] == "unset"  # never an empty native argument
         assert seen[seen.index("--launcher") + 1] == launcher
+
+
+def test_a_log_exactly_at_the_bound_is_full(tmp_path, monkeypatch):
+    path = tmp_path / "lane_profiles" / "launch-shadow.jsonl"
+    path.parent.mkdir()
+    path.write_bytes(b"x" * 10)
+    monkeypatch.setattr(probe_module, "MAX_LOG_BYTES", 10)
+    assert append_entry(tmp_path, run_probe(tmp_path)) == "log_full"
+    assert path.read_bytes() == b"x" * 10
+
+
+@pytest.mark.parametrize("script,guard", [
+    ("start-wd-agent.ps1", "if (-not $sourceTreeMode -and -not $DryRun) {\n  Invoke-WdLaneProfileShadowRead"),
+    ("start-wd-tools-consumer.ps1",
+     "if ($null -ne $bridgeCodeContext -and -not $ValidateOnly) {\n    Invoke-WdLaneProfileShadowRead"),
+])
+def test_rehearsal_and_validation_runs_skip_the_read(script, guard):
+    source = (REBOOT / script).read_text(encoding="utf-8")
+    assert source.count(guard) == 1

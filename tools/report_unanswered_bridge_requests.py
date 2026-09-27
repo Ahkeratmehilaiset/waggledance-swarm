@@ -22,7 +22,6 @@ if str(ROOT) not in sys.path:
 
 from tools.bridge_next_action import (  # noqa: E402
     BridgeNextActionError,
-    CLOSED_REQUEST_STATUSES,
     PRIVATE_MARKERS,
     _event_agent,
     _event_recipients,
@@ -30,6 +29,7 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_ts,
     _event_type,
     _is_answer_like,
+    _is_explicit_requester_closure,
     _is_request_like,
     _latest_event_time,
     _parse_utc,
@@ -39,7 +39,9 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
 )
 from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
-from waggledance.core.bridge_request_contract import request_is_bound, request_key, reply_matches_request  # noqa: E402
+from waggledance.core.bridge_request_contract import (  # noqa: E402
+    reply_follows_request, reply_matches_request, request_is_bound, request_key,
+)
 
 
 DEFAULT_EVENTS_PATH = Path(".agent-bridge") / "shared" / "events.jsonl"
@@ -267,24 +269,10 @@ def _open_requests_by_target(
     known_agents = _known_bridge_agents(events)
     versions: dict[tuple[str, str], set[str]] = {}
     open_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    closed_merge_task_keys: set[str] = set()
-    closed_prs: set[str] = set()
     for index, event in enumerate(events):
-        _close_answered_requests(open_by_key, event, known_agents=known_agents)
-        if _is_terminal_closure_event(event):
-            if _event_status(event).endswith("merge_receipt"):
-                closed_merge_task_keys.add(
-                    _task_key(
-                        _task_id(event),
-                        known_agents=known_agents,
-                        requester=_event_agent(event),
-                    )
-                )
-            closed_pr = _payload_scalar(event, "pr") or _payload_scalar(
-                event, "pr_number"
-            )
-            if closed_pr:
-                closed_prs.add(closed_pr)
+        _close_answered_requests(
+            open_by_key, event, event_index=index, known_agents=known_agents,
+        )
         if not _is_request_like(event):
             continue
         if request_is_bound(event):
@@ -305,10 +293,6 @@ def _open_requests_by_target(
             payload_pr = _payload_scalar(event, "pr") or _payload_scalar(
                 event, "pr_number"
             )
-            if task_key in closed_merge_task_keys or (
-                payload_pr and payload_pr in closed_prs
-            ):
-                continue
             key = (target, task_key)
             previous = open_by_key.get(key)
             open_by_key[key] = {
@@ -356,33 +340,40 @@ def _close_answered_requests(
     open_by_key: dict[tuple[str, str], dict[str, Any]],
     event: Mapping[str, Any],
     *,
+    event_index: int,
     known_agents: Sequence[str],
 ) -> None:
-    if not _is_answer_like(event) and not _is_terminal_closure_event(event):
-        return
     event_agent = _event_agent(event)
     event_task_key = _task_key(
         _task_id(event),
         known_agents=known_agents,
         requester=event_agent,
     )
-    event_ts = _event_ts(event)
     for key, state in list(open_by_key.items()):
         target, state_task_key = key
         requester = str(state["requester"])
+        requester_closure = event_agent == requester
+        if requester_closure:
+            if not _is_explicit_requester_closure(event):
+                continue
+        elif event_agent != target or not _is_answer_like(event):
+            continue
         same_task = state_task_key == event_task_key
         same_pr = _same_payload_pr(event, state)
         if not same_task and not same_pr:
             continue
-        if event_ts <= str(state["ts_utc"]):
+        if not reply_follows_request(
+            state["request_event"], event,
+            request_position=state["event_index"], reply_position=event_index,
+        ):
             continue
         if state.get("ambiguous_legacy") and not reply_matches_request(
             state["request_event"], event, target,
-            requester_closure=event_agent == requester, ambiguous_legacy=True,
+            requester_closure=requester_closure, ambiguous_legacy=True,
+            request_position=state["event_index"], reply_position=event_index,
         ):
             continue
-        if event_agent in {target, requester} or _is_terminal_closure_event(event):
-            del open_by_key[key]
+        del open_by_key[key]
 
 
 def _known_bridge_agents(events: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -424,15 +415,6 @@ def _same_payload_pr(event: Mapping[str, Any], state: Mapping[str, Any]) -> bool
     event_pr = _payload_scalar(event, "pr") or _payload_scalar(event, "pr_number")
     state_pr = str(state.get("payload_pr") or "").strip()
     return bool(event_pr and state_pr and event_pr == state_pr)
-
-
-def _is_terminal_closure_event(event: Mapping[str, Any]) -> bool:
-    status = _event_status(event)
-    return (
-        _event_type(event) == "done"
-        or status in CLOSED_REQUEST_STATUSES
-        or status.endswith("merge_receipt")
-    )
 
 
 def _request_row(

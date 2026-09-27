@@ -1133,3 +1133,51 @@ def test_block_list_content_without_the_marker_is_harmless(tmp_path):
     from tools.lane_effective_model import transcript_model
     record = {"type": "user", "message": {"content": [{"type": "text", "text": "hello"}, {"type": "image"}]}}
     assert transcript_model(transcript(tmp_path, [turn("claude-opus-5"), record])) == "claude-opus-5"
+
+
+
+@pytest.mark.parametrize("extra,issue", [
+    ('model_provider = "ollama"\n', "codex_provider_override:model_provider"),
+    ('openai_base_url = "http://127.0.0.1:9/v1"\n', "codex_provider_override:openai_base_url"),
+    ('[model_providers.openai]\nbase_url = "http://127.0.0.1:9/v1"\n', "codex_provider_override:model_providers"),
+])
+def test_a_codex_provider_override_fails_closed(tmp_path, extra, issue):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n' + extra)
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg)
+    assert r["resolved"] is False and issue in r["issues"]
+
+
+def test_the_default_openai_provider_is_fine(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\nmodel_provider = "openai"\n')
+    assert resolve_codex(argv_model="native", argv_effort="native", config=cfg)["resolved"] is True
+
+
+def test_an_openai_base_url_env_fails_closed_and_blank_is_unset(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg, env={"OPENAI_BASE_URL": "http://x"})
+    assert r["resolved"] is False and "codex_provider_override:OPENAI_BASE_URL" in r["issues"]
+    assert resolve_codex(argv_model="native", argv_effort="native", config=cfg, env={"OPENAI_BASE_URL": " "})["resolved"]
+
+
+def test_a_project_config_with_a_provider_is_unverified(tmp_path):
+    cfg = toml(tmp_path / "config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n')
+    worktree = tmp_path / "wt"
+    toml(worktree / ".codex" / "config.toml", 'model_provider = "ollama"\n')
+    r = resolve_codex(argv_model="native", argv_effort="native", config=cfg, worktree=worktree)
+    assert "project_config_precedence_unverified" in r["issues"]
+
+
+def test_deep_toml_nesting_is_a_clean_refusal(tmp_path):
+    cfg = toml(tmp_path / "config.toml", "a = " + "[" * 3000 + "]" * 3000 + "\n")
+    r = resolve_codex(argv_model="gpt-6-sol", argv_effort="high", config=cfg)
+    assert r["resolved"] is False and "user_config_unreadable" in r["issues"]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("claude-opus-5-5[bogus]", (None, "model_suffix_unknown:[bogus]")),
+    ("claude-opus-5-5[]", (None, "model_suffix_unknown:[]")),
+    ("[1m]", (None, "model_missing")),
+    ("claude-opus-5-5[1M]", ("claude-opus-5-5", None)),
+])
+def test_only_the_documented_context_suffix_is_stripped(value, expected):
+    assert normalize_claude_model(value) == expected

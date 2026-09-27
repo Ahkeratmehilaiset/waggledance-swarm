@@ -125,7 +125,7 @@ def preflight(catalog_path: str | Path, lane: str, cli: str, argv_model: str, ar
                 managed_settings=Path(claude_managed_settings) if claude_managed_settings else DEFAULT_CLAUDE_MANAGED,
                 resume_transcript=resume)
         elif cli == "codex":
-            resolved = resolve_codex(argv_model=argv_model, argv_effort=argv_effort, worktree=tree,
+            resolved = resolve_codex(argv_model=argv_model, argv_effort=argv_effort, worktree=tree, env=environment,
                                      config=Path(codex_config) if codex_config else codex_home(environment) / "config.toml")
         else:
             result["reasons"] = ["cli_unknown"]

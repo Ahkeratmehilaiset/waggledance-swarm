@@ -93,6 +93,7 @@ MAX_SOURCE_BYTES = 1024 * 1024
 # empty native argument), so it means "nothing on argv", exactly like "native".
 NATIVE = ("", "native", "unset", None)
 CLAUDE_ALIASES = frozenset({"opus", "sonnet", "haiku", "fable", "default", "opusplan", "best", "latest"})
+KNOWN_MODEL_SUFFIXES = frozenset({"[1m]"})
 _SUFFIX = re.compile(r"\[[^\]]*\]$")
 EXIT_ALLOWED, EXIT_ERROR, EXIT_ATTENTION = 0, 2, 3
 DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "configs" / "lane_profile_catalog.json"
@@ -201,7 +202,7 @@ def _toml(path: Path) -> dict | None:
         return None
     try:
         return tomllib.loads(data.decode("utf-8-sig"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, RecursionError) as exc:
         raise SourceError(f"{path.name}: not TOML ({exc.__class__.__name__})") from None
 
 
@@ -307,7 +308,13 @@ def normalize_claude_model(value: Any) -> tuple[str | None, str | None]:
     text = _text(value)
     if text is None:
         return None, "model_missing"
+    suffix = _SUFFIX.search(text)
+    if suffix is not None and suffix.group(0).lower() not in KNOWN_MODEL_SUFFIXES:
+        # Only "[1m]" is documented (Grok third-family review of #1745); never guess another away.
+        return None, f"model_suffix_unknown:{suffix.group(0)}"
     base = _SUFFIX.sub("", text)
+    if not base.strip():
+        return None, "model_missing"
     if base.lower() in CLAUDE_ALIASES:
         return None, f"model_alias_unresolved:{base}"
     return base, None
@@ -604,8 +611,15 @@ def resolve_claude(*, argv_model: str | None, argv_effort: str | None, env: Mapp
     return _result("claude", model_id, effort, model_source, effort_source, issues, sources)
 
 
+# A provider override sends the same model name to another provider or endpoint (OpenAI Codex docs,
+# config-advanced: model_provider, [model_providers.<id>], openai_base_url). The fleet uses the built-in
+# openai provider; anything else fails closed (Grok third-family review of #1745).
+CODEX_PROVIDER_KEYS = ("model_provider", "model_providers", "openai_base_url")
+CODEX_PROVIDER_ENV = ("OPENAI_BASE_URL",)
+
+
 def resolve_codex(*, argv_model: str | None, argv_effort: str | None, config: Path,
-                  worktree: Path | None = None) -> dict:
+                  worktree: Path | None = None, env: Mapping[str, str] | None = None) -> dict:
     """The model and effort a Codex CLI launch will start with, and where each comes from."""
     issues: list[str] = []
     sources: list[dict] = []
@@ -623,6 +637,12 @@ def resolve_codex(*, argv_model: str | None, argv_effort: str | None, config: Pa
             # config.toml, and the top-level profile = "profile-name" selector is no longer
             # supported." What the CLI does with them is not verified - fail closed.
             issues.append(f"codex_legacy_profile_unsupported:{key}")
+    for key in CODEX_PROVIDER_KEYS:
+        if key in cfg and not (key == "model_provider" and cfg[key] == "openai"):
+            issues.append(f"codex_provider_override:{key}")
+    for key in CODEX_PROVIDER_ENV:
+        if _text((env or {}).get(key)):
+            issues.append(f"codex_provider_override:{key}")
     if worktree is not None:
         project = worktree / ".codex" / "config.toml"
         try:
@@ -633,7 +653,8 @@ def resolve_codex(*, argv_model: str | None, argv_effort: str | None, config: Pa
             sources.append({"layer": "project_config", "path": str(project), "state": "unreadable", "detail": str(exc)})
         if project_cfg is not None:
             sources.append({"layer": "project_config", "path": str(project), "state": "read"})
-            if any(key in project_cfg for key in ("model", "model_reasoning_effort", "profile", "profiles")):
+            if any(key in project_cfg for key in ("model", "model_reasoning_effort", "profile", "profiles",
+                                                  *CODEX_PROVIDER_KEYS)):
                 issues.append("project_config_precedence_unverified")
 
     for key in ("model", "model_reasoning_effort"):
@@ -719,7 +740,7 @@ def main(argv: list[str] | None = None) -> int:
                                   managed_settings=Path(args.claude_managed_settings), resume_transcript=resume)
     else:
         resolved = resolve_codex(argv_model=args.argv_model, argv_effort=args.argv_effort,
-                                 config=Path(args.codex_config), worktree=worktree)
+                                 config=Path(args.codex_config), worktree=worktree, env=os.environ)
     verdict = classify(catalog, args.lane, resolved)
     print(json.dumps(dict(resolved, lane=args.lane, catalog_sha256=digest, classification=verdict),
                      indent=2, sort_keys=True))

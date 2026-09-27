@@ -218,6 +218,14 @@ def test_catalog_diff_on_the_shipped_catalog():
     assert diff["unrated"] == []
 
 
+def test_propose_add_is_bounded_to_the_frontier_never_a_dominated_row():
+    diff = catalog_diff(REGISTRY, CATALOG)
+    front_keys = {(r["model"], r["effort"]) for rows_ in frontier(rows(REGISTRY)).values() for r in rows_}
+    added = [(item["model"], item["effort"]) for item in diff["propose_add"]]
+    assert added and len(added) == len(set(added))                 # no duplicates
+    assert all(key in front_keys for key in added)                 # never a dominated model
+
+
 def test_a_catalog_profile_without_a_registry_row_is_unrated():
     registry = mutate(lambda r: r["models"].pop("codex/gpt-5.6-terra"))
     assert catalog_diff(registry, CATALOG)["unrated"] == ["codex-gpt-5.6-terra-medium"]

@@ -24,6 +24,10 @@ still goes through the signed catalog (BRIDGE_LANE_PROFILES.md) and the pacer
   - an unknown provider (`codex`, `claude` and `grok` are known) or an unknown effort;
   - a key that does not match its provider and model;
   - a non-https source, or a file over 256 KiB, a symlink or a reparse point.
+- **Path checks.** Only the registry file itself is checked for a symlink or reparse point, not its
+  ancestors. The registry lives at a fixed, git-tracked path (`configs/`), not in a per-lane runtime
+  directory, and any redirected file would still have to pass the same strict validation
+  (claude-rco-2 review of #1743).
 - **Updating.** New models and fresh numbers arrive as a PR, normally from the
   post-boot orientation analysis (plan v2, PR-14). They are data, not authority.
 

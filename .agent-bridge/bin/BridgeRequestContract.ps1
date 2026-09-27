@@ -64,7 +64,11 @@ function New-BridgeRequestIndex {
     param([object[]]$Events)
     $byTask = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
     $versions = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    $positions = [System.Collections.Generic.Dictionary[object,int]]::new()
+    $position = 0
     foreach ($event in $Events) {
+        $positions[$event] = $position
+        $position++
         $task = [string]$event.task_id
         if (-not $byTask.ContainsKey($task)) { $byTask[$task] = New-Object System.Collections.Generic.List[object] }
         [void]$byTask[$task].Add($event)
@@ -75,7 +79,7 @@ function New-BridgeRequestIndex {
             if ($null -ne $time) { [void]$versions[$key].Add($time.ToString('o')) }
         }
     }
-    return [pscustomobject]@{by_task=$byTask;versions=$versions}
+    return [pscustomobject]@{by_task=$byTask;versions=$versions;positions=$positions}
 }
 
 function Test-BridgeAmbiguousLegacy {
@@ -102,7 +106,10 @@ function Test-BridgeBoundRequest {
 
 function Test-BridgeReplyBinding {
     param($Request, $Reply, [string]$Target, [bool]$RequesterClosure=$false, [bool]$AmbiguousLegacy=$false,
-        [bool]$RequireExplicitCorrelation=$false)
+        [bool]$RequireExplicitCorrelation=$false, [int]$RequestPosition=-1, [int]$ReplyPosition=-1)
+    if ($RequestPosition -ge 0 -or $ReplyPosition -ge 0) {
+        if ($RequestPosition -lt 0 -or $ReplyPosition -le $RequestPosition) { return $false }
+    }
     # Enforce at the shared boundary, including reader/receipt callers: a later
     # same-task terminal event is not evidence that a control was processed.
     $controlType = ([string](Get-BridgeContractField $Request 'type')).Trim().ToLowerInvariant()

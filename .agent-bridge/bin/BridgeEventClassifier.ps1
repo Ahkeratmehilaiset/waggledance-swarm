@@ -112,8 +112,9 @@ function Test-BridgeRequesterClosureEvent {
 
     $status = [string]$Event.status
     $type = [string]$Event.type
-    if ($type -eq 'message') {
-        return @('closed','superseded','cancelled','canceled') -contains $status -or
+    if ($type -in @('message','wake_request')) {
+        return @('closed','superseded','cancelled','canceled','withdrawn') -contains $status -or
+            $status.StartsWith('withdrawn_', [System.StringComparison]::OrdinalIgnoreCase) -or
             $status.StartsWith('closed_', [System.StringComparison]::OrdinalIgnoreCase) -or
             $status.StartsWith('superseded_', [System.StringComparison]::OrdinalIgnoreCase) -or
             $status.StartsWith('cancelled_', [System.StringComparison]::OrdinalIgnoreCase) -or
@@ -188,6 +189,7 @@ function Test-BridgeAnswerEvent {
     $type = [string]$Event.type
     $status = [string]$Event.status
 
+    if ($type -eq 'done' -and $status -match '(^|[^a-z0-9])(not|no|undone|incomplete|unfinished|unresolved|unverified|unmerged|failed|pending|queued|running|processing)([^a-z0-9]|$)') { return $false }
     if ($type -eq 'message') {
         if (Test-BridgeInterimMessageStatus -Status $status) { return $false }
         if (Test-BridgeMessageAnswerStatus -Status $status) { return $true }

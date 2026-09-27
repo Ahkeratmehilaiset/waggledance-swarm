@@ -28,6 +28,7 @@ from waggledance.core.bridge_event_schema import KNOWN_ACK_STATUSES  # noqa: E40
 from waggledance.core.bridge_workflow import worker_class  # noqa: E402
 from waggledance.core.bridge_request_contract import (  # noqa: E402
     field as correlation_field, reply_matches_request, request_is_bound, request_key, request_content,
+    reply_follows_request, terminal_status_negated,
 )
 from waggledance.core.bridge_identity_registry import (  # noqa: E402
     load_bridge_identity_registry,
@@ -956,6 +957,8 @@ def _build_request_closure_index(
     """Return latest answer-like event timestamps by task and closing agent."""
     closure_index: dict[str, Any] = {
         "_answers": {}, "_bound_messages": {}, "_versions": {},
+        "_positions": {id(event): position for position, event in enumerate(events)},
+        "_closure_events": {},
     }
     for event in events:
         if _is_request_like(event):
@@ -980,6 +983,10 @@ def _build_request_closure_index(
         if pr_closure_key:
             closure_keys.add(pr_closure_key)
         for closure_key in closure_keys:
+            closers = closure_index["_closure_events"].setdefault(closure_key, {})
+            closers.setdefault(event_agent, []).append(event)
+            if _is_explicit_requester_closure(event):
+                closers.setdefault(_requester_terminal_agent_key(event_agent), []).append(event)
             task_closures = closure_index.setdefault(closure_key, {})
             if event_ts > task_closures.get(event_agent, ""):
                 task_closures[event_agent] = event_ts
@@ -998,6 +1005,11 @@ def _request_closed_by_index(
 ) -> bool:
     task_id = _task_id(request)
     request_ts = _event_ts(request)
+    positions = closure_index.get("_positions", {})
+
+    def follows(answer):
+        return reply_follows_request(request, answer,
+            request_position=positions.get(id(request)), reply_position=positions.get(id(answer)))
     ambiguous = len(closure_index.get("_versions", {}).get(
         (_event_agent(request), task_id), ())) > 1
     control = _is_control_signal(request)
@@ -1017,7 +1029,7 @@ def _request_closed_by_index(
             )
             for answers in answer_groups
             for answer in answers
-            if not _is_interim_bound_status(_event_status(answer))
+            if follows(answer) and not _is_interim_bound_status(_event_status(answer))
         )
     closure_keys = []
     if task_id:
@@ -1031,25 +1043,25 @@ def _request_closed_by_index(
         )
     pr_closure_key = _pr_closure_key_for_event(request)
     if pr_closure_key and not task_id:
-        task_closures = closure_index.get(pr_closure_key, {})
+        task_closures = closure_index.get("_closure_events", {}).get(pr_closure_key, {})
         if task_closures:
             target_agent = agent.lower()
-            if task_closures.get(target_agent, "") > request_ts:
+            if any(follows(answer) for answer in task_closures.get(target_agent, ())):
                 return True
             requester_terminal_agent = _requester_terminal_agent_key(
                 _event_agent(request)
             )
-            if task_closures.get(requester_terminal_agent, "") > request_ts:
+            if any(follows(answer) for answer in task_closures.get(requester_terminal_agent, ())):
                 return True
     for closure_key in closure_keys:
-        task_closures = closure_index.get(closure_key, {})
+        task_closures = closure_index.get("_closure_events", {}).get(closure_key, {})
         if not task_closures:
             continue
         for closing_agent in {
             agent.lower(),
             _requester_terminal_agent_key(_event_agent(request)),
         }:
-            if task_closures.get(closing_agent, "") > request_ts:
+            if any(follows(answer) for answer in task_closures.get(closing_agent, ())):
                 return True
     return False
 
@@ -1094,10 +1106,10 @@ def _is_explicit_requester_closure(event: Mapping[str, Any]) -> bool:
         return False
     event_type = _event_type(event)
     status = _event_status(event)
-    if event_type not in {"message", "done", "decision", "release"}:
+    if event_type not in {"message", "wake_request", "done", "decision", "release"}:
         return False
-    terminal_statuses = {"closed", "superseded", "cancelled", "canceled"}
-    if event_type != "message":
+    terminal_statuses = {"closed", "superseded", "cancelled", "canceled", "withdrawn"}
+    if event_type not in {"message", "wake_request"}:
         terminal_statuses.update(
             {
                 "done", "merged", "abandoned", "completed", "approved",
@@ -1508,7 +1520,7 @@ def _is_answer_like(event: Mapping[str, Any]) -> bool:
     ):
         return False
     if _event_type(event) == "done":
-        return not _is_request_like(event)
+        return not terminal_status_negated(_event_status(event)) and not _is_request_like(event)
     if _is_explicit_requester_closure(event):
         return True
     status = _event_status(event)

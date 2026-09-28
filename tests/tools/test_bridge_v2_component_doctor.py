@@ -6,7 +6,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -434,7 +433,7 @@ def test_junctioned_npm_package_chain_is_not_native_provenance(tmp_path):
     created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
                               str(junction), str(outside)], capture_output=True)
     if created.returncode:
-        pytest.skip("junction creation unavailable in this test environment")
+        pytest.fail("junction creation failed: " + created.stderr.decode("utf-8", errors="replace"))
     data = manifest("claude")
     data["components"][0]["resolution"] = {
         "kind": "npm_native", "package": "@anthropic-ai/claude-code",
@@ -630,20 +629,66 @@ def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def actual_linked_worktree(tmp_path):
-    source = Path(doctor.__file__).resolve().parents[1]
-    audit_ancestors = [path for path in tmp_path.parents if path.name == ".codex-audit"]
-    base = audit_ancestors[-1] if os.name == "nt" and audit_ancestors else tmp_path
-    linked = base / f"doctor-linked-{uuid.uuid4().hex[:8]}"
-    subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
-                    "worktree", "add", "--detach", str(linked), "HEAD"],
-                   check=True, capture_output=True)
+def isolated_git_repo():
+    code_root = Path(doctor.__file__).resolve().parents[1]
+    repo_audit = code_root / ".codex-audit"
+    created_repo_audit = not repo_audit.exists()
+    repo_audit.mkdir(mode=0o700, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="doctor-git-", dir=repo_audit) as scratch:
+            repo = Path(scratch) / "repo"
+            (repo / "tools").mkdir(parents=True)
+            (repo / "tools" / "bridge_v2_component_doctor.py").write_text("# fixture\n")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-c", f"safe.directory={repo}", "-C", str(repo),
+                            "add", "tools/bridge_v2_component_doctor.py"],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-c", f"safe.directory={repo}",
+                            "-c", "user.name=Doctor Fixture",
+                            "-c", "user.email=doctor-fixture@example.invalid", "-C", str(repo),
+                            "commit", "-q", "-m", "doctor fixture"],
+                           check=True, capture_output=True)
+            assert doctor._code_layout(repo) == "development"
+            yield repo
+    finally:
+        if created_repo_audit:
+            _remove_created_repo_audit_if_empty(repo_audit)
+
+
+@contextmanager
+def _isolated_worktree(source, linked, relative=False):
+    command = ["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true",
+               "-C", str(source), "worktree", "add"]
+    if relative:
+        command.append("--relative-paths")
+    created = subprocess.run(command + ["--detach", str(linked), "HEAD"], capture_output=True)
+    if created.returncode:
+        detail = created.stderr.decode("utf-8", errors="replace")
+        if relative and "relative-paths" in detail and \
+                ("unknown option" in detail or "unknown switch" in detail):
+            pytest.skip("git worktree --relative-paths unsupported: " + detail)
+        pytest.fail("isolated git worktree add failed: " + detail)
     try:
         yield linked
     finally:
-        subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
-                        "worktree", "remove", "--force", str(linked)],
-                       check=True, capture_output=True)
+        removed = subprocess.run(["git", "-c", f"safe.directory={source}",
+                                  "-c", "core.longpaths=true", "-C", str(source),
+                                  "worktree", "remove", "--force", str(linked)],
+                                 capture_output=True)
+        subprocess.run(["git", "-c", f"safe.directory={source}", "-C", str(source),
+                        "worktree", "prune"], check=True, capture_output=True)
+        inventory = subprocess.run(["git", "-c", f"safe.directory={source}",
+                                    "-C", str(source), "worktree", "list", "--porcelain"],
+                                   check=True, capture_output=True).stdout.decode("utf-8")
+        assert inventory.count("worktree ") == 1 and "prunable" not in inventory
+        assert removed.returncode == 0, removed.stderr.decode("utf-8", errors="replace")
+
+
+@pytest.fixture
+def actual_linked_worktree(isolated_git_repo):
+    with _isolated_worktree(isolated_git_repo, isolated_git_repo.parent / "linked") as linked:
+        yield linked
 
 
 def test_actual_linked_worktree_uses_its_repo_audit(
@@ -661,18 +706,9 @@ def test_actual_linked_worktree_uses_its_repo_audit(
     assert output.startswith("Python ")
 
 
-def test_relative_linked_worktree_backlink_uses_gitdir(tmp_path):
-    source = Path(doctor.__file__).resolve().parents[1]
-    audit_ancestors = [path for path in tmp_path.parents if path.name == ".codex-audit"]
-    base = audit_ancestors[-1] if os.name == "nt" and audit_ancestors else tmp_path
-    linked = base / f"relative-linked-{uuid.uuid4().hex[:8]}"
-    command = ["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true",
-               "-C", str(source), "worktree", "add", "--relative-paths", "--detach",
-               str(linked), "HEAD"]
-    created = subprocess.run(command, capture_output=True)
-    if created.returncode:
-        pytest.skip("git worktree --relative-paths unavailable")
-    try:
+def test_relative_linked_worktree_backlink_uses_gitdir(isolated_git_repo):
+    with _isolated_worktree(isolated_git_repo, isolated_git_repo.parent / "relative-linked",
+                            relative=True) as linked:
         marker = linked / ".git"
         assert marker.is_file()
         pointer = marker.read_text(encoding="utf-8").split(": ", 1)[1].strip()
@@ -689,10 +725,16 @@ def test_relative_linked_worktree_backlink_uses_gitdir(tmp_path):
         finally:
             backlink_file.write_bytes(original_backlink)
         assert doctor._code_layout(linked) == "development"
-    finally:
-        subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
-                        "worktree", "remove", "--force", str(linked)],
-                       check=True, capture_output=True)
+
+
+def test_isolated_worktree_registry_cleans_after_deliberate_failure(isolated_git_repo):
+    with pytest.raises(RuntimeError, match="deliberate body failure"):
+        with _isolated_worktree(isolated_git_repo, isolated_git_repo.parent / "failure-linked"):
+            raise RuntimeError("deliberate body failure")
+    inventory = subprocess.run(["git", "-c", f"safe.directory={isolated_git_repo}",
+                                "-C", str(isolated_git_repo), "worktree", "list", "--porcelain"],
+                               check=True, capture_output=True).stdout.decode("utf-8")
+    assert inventory.count("worktree ") == 1 and "prunable" not in inventory
 
 
 def test_linked_worktree_malformed_backlink_fails_closed(actual_linked_worktree):
@@ -730,7 +772,7 @@ def test_linked_gitdir_pointer_prefix_and_alias_are_guarded(
         created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
                                   str(alias), str(gitdir)], capture_output=True)
         if created.returncode:
-            pytest.skip("junction creation unavailable")
+            pytest.fail("junction creation failed: " + created.stderr.decode("utf-8", errors="replace"))
     else:
         alias.symlink_to(gitdir, target_is_directory=True)
     try:
@@ -755,7 +797,7 @@ def test_linked_worktree_alias_gitdir_fails_closed(actual_linked_worktree, tmp_p
         created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
                                   str(alias), str(common)], capture_output=True)
         if created.returncode:
-            pytest.skip("junction creation unavailable")
+            pytest.fail("junction creation failed: " + created.stderr.decode("utf-8", errors="replace"))
     else:
         alias.symlink_to(common, target_is_directory=True)
     try:
@@ -869,7 +911,7 @@ def test_git_marker_directory_alias_is_rejected(small_git_repo):
             created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
                                       str(marker), str(real)], capture_output=True)
             if created.returncode:
-                pytest.skip("junction creation unavailable")
+                pytest.fail("junction creation failed: " + created.stderr.decode("utf-8", errors="replace"))
         else:
             marker.symlink_to(real, target_is_directory=True)
         try:
@@ -894,7 +936,7 @@ def test_git_metadata_alias_is_rejected(small_git_repo):
         created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
                                   str(alias), str(gitdir)], capture_output=True)
         if created.returncode:
-            pytest.skip("junction creation unavailable")
+            pytest.fail("junction creation failed: " + created.stderr.decode("utf-8", errors="replace"))
     else:
         alias.symlink_to(gitdir, target_is_directory=True)
     try:
@@ -916,7 +958,7 @@ def test_dangling_git_marker_is_unknown_not_installed(tmp_path, small_git_repo):
         created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
                                   str(marker), str(missing)], capture_output=True)
         if created.returncode:
-            pytest.skip("dangling junction creation unavailable")
+            pytest.fail("dangling junction creation failed: " + created.stderr.decode("utf-8", errors="replace"))
     else:
         marker.symlink_to(missing, target_is_directory=True)
     try:

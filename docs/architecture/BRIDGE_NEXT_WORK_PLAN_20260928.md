@@ -134,12 +134,12 @@ Evidence labels:
   discoverability.
 - SUSPECTED: a per-lane wrapper misattributes execution evidence. The Lead
   path is fine today, but the `start-wd-tools-consumer` branch is unverified.
-- READ (code, 2026-09-28): `Write-AgentEvent.ps1` never calls
-  `Assert-AgentBridgeSessionIdentity`, so any caller can write an event as
-  `agent=operator` or `system`; the reserved-label refusal exists only in the
-  claim, release, heartbeat and session scripts. The earlier SUSPECTED
-  wording (lines 437-499) was wrong about the location. See
-  `BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md` §1 C1.
+- READ (code, corrected after Lead's review): `Write-AgentEvent.ps1` checks
+  `agent_uuid` against the identity registry and profile (:549-550), but lacks
+  the reserved-label and session-origin enforcement of
+  `Assert-AgentBridgeSessionIdentity`. SUSPECTED, not reproduced: an unbound
+  `agent=operator` event may pass when the registry or profile lacks an
+  entry. See `BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md` §1 C1.
 - MEASURED: a scheduled task's time limit does not reach a
   `wd_silent_launch` child.
 

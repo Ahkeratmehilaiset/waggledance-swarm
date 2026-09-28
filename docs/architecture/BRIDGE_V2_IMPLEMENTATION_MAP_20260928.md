@@ -12,6 +12,9 @@ Sources:
 - fable-5's own verification of the facts in §1.
 
 `file:line` references are to `main` c5f7c933 and move with later commits.
+They are regenerated from that exact commit before any slice starts; READ
+facts about the code are kept apart from runtime outcomes, which need a
+reproduction.
 Labels: **READ** = confirmed by reading the code; **UNVERIFIED** = not
 checked, listed in §9.
 
@@ -21,8 +24,8 @@ These change the plan's §1 statements and some slice sizes.
 
 | # | Fact (READ) | Where | Effect on the plan |
 |---|---|---|---|
-| C1 | The PowerShell writer never checks the caller's identity, so any caller can write an event as `agent=operator` or `system`. The reserved-label refusal exists only in `Assert-AgentBridgeSessionIdentity`, which the claim, release, heartbeat, liveness and session scripts call, but `Write-AgentEvent.ps1` does not. The stale sweep deliberately writes as `system`. | `AgentBridgeSessionIdentity.ps1:47,68-72`; `Write-AgentEvent.ps1` (no call); `Invoke-StaleClaimSweep.ps1:276` | The plan's SUSPECTED item is now code-confirmed. F23 becomes a fix slice (writer identity check with an internal-caller path for the sweep), not a reproduction. The invariant "an agent-composed operator event is never authority" stays load-bearing. |
-| C2 | There is no `WorkQueueV1` mutex and no `work_queue_busy` anywhere. The Python work queue takes no lock: `heartbeat` and `release_task` are unlocked, and `_write_json_file` uses `os.replace`, which can recreate a claim archived meanwhile. The PowerShell claim scope-conflict scan is also unlocked. | `waggledance/core/work_queue.py:339-403,406-461,900`; `Claim-AgentTask.ps1:111-148` | F8 is a new lock plus a CAS rewrite, larger than "wire the #1751 helper". |
+| C1 | *(corrected after Lead's review)* The PowerShell writer does check identity: `agent_uuid` is checked against the identity registry and the agent profile (`Assert-AgentUuidMatchesIdentityRegistry` :508 and `Assert-AgentUuidMatchesProfile` :476, both called at :549-550). What it lacks is the **reserved-label and session-origin** enforcement that `Assert-AgentBridgeSessionIdentity` (:47, refusal at :68-72) gives the claim, release, heartbeat, liveness and session scripts. Whether an unbound `agent=operator` event succeeds therefore depends on the registry and profile checks, and has not been reproduced. The stale sweep writes as `system` (`Invoke-StaleClaimSweep.ps1:276`). | `Write-AgentEvent.ps1:476,508,549-550`; `AgentBridgeSessionIdentity.ps1:47,68-72` | F23 first reproduces, in isolation, both writers with the registry and profile present, missing and mismatched; then it fixes only what reproduces. |
+| C2 | There is no `WorkQueueV1` mutex and no `work_queue_busy` anywhere. The Python work queue takes no lock: `heartbeat` and `release_task` are unlocked, and `_write_json_file` (:900) finishes with `tmp.replace(path)` (:920), which by reading could recreate a claim archived meanwhile; that runtime outcome is **not yet reproduced**. The PowerShell claim scope-conflict scan is also unlocked. | `waggledance/core/work_queue.py:339-403,406-461,900,920`; `Claim-AgentTask.ps1:111-148` | F8 is a new lock plus a CAS rewrite, larger than "wire the #1751 helper"; the race is reproduced before a fix is claimed. |
 | C3 | The git guard takes the verb from `$GitArgs[0]` and parses no leading option. `GIT_CONFIG_*` is not checked. `-Force` trusts a self-asserted `operator`/`system` label. There are no tests under `tests/**`; the only coverage is a smoke script outside CI. | `Invoke-BridgeGit.ps1:88-108,305-307,382` | F9 also covers `-Force` identity and adds the first pytest suite. |
 | C4 | `Assert-AgentBridgeClaimOwner` is defined but never called. | `AgentBridgeSessionIdentity.ps1:215` | F10 wires it into claim force, release and heartbeat. |
 | C5 | Role prompts live outside the repo (`C:\Python\wd-agent-prompts\*.md`, from `wd-fleet.json` `lanes[].prompt`) and are not hashed; the launcher only checks that they are non-empty. | `start-wd-agent.ps1:2000,2225,2473` | F2 must bring the role contract into the repo and the bundle manifest. |
@@ -109,10 +112,17 @@ Notation:
     signed parameters (plan §4) and the policy bits.
   - `tools/bridge_v2_activation.py`: loader and validator, and the
     `feature_enabled(name)` function that every new component calls.
-  - The environment kill switch `WAGGLE_BRIDGE_V2_ENABLED=0` overrides
-    everything.
-  - Runtime stage state lives in `<runtime>/bridge_v2/stage_state.json`,
-    written only by the executor.
+  - The reviewed activation policy is immutable once signed. On top of it, a
+    **durable, versioned revocation and freeze state** under the runtime
+    root is checked at every dispatch and before every side effect. A
+    changed environment variable does not reach processes that are already
+    running, so `WAGGLE_BRIDGE_V2_ENABLED=0` is only an additional local
+    deny, never the fleet-wide switch.
+  - A missing, corrupt or stale policy or revocation state means disabled.
+    Dependencies between optional bits are validated.
+  - Runtime stage state (`<runtime>/bridge_v2/stage_state.json`) records
+    progress only; it can never grant a flag the signed policy does not
+    grant.
   - Default: every flag off.
 - **Interface contract F15/F16/F17** (new doc; L+F):
   `docs/architecture/BRIDGE_V2_SWITCH_INTERFACE_CONTRACT.md`. It defines the
@@ -129,7 +139,7 @@ Notation:
 | F2 | L | **new** `.agent-bridge/contracts/role-contract.v1.md` (moves the role prompt content into the repo); **mod** `start-wd-agent.ps1` (:2000, :2225, :2473: verify the contract SHA-256 from the bundle manifest), `start-wd-tools-consumer.ps1`, `Deploy-WdRebootBundle.ps1` (required-file list :748-793); **new** `tools/lint_role_contracts.py` (CI lint). Canary one lane; the previous hash stays valid. |
 | F3 | T | **mod** `configs/model_registry.json` → schema `wd.model-registry.v2` (pools, `limit_id`, tier, context, quality per class, `source_measured_at`, Grok and Haiku rows); **mod** `tools/wd_model_registry.py` (:58-62 key sets, `validate_registry` :132); **mod** `bridge_capacity_collector.py` (`account_pool` from validated provenance, replacing the `None` at :300/:313; unknown stays unknown); **mod** `wd_profile_cost_meter.py` (stored daily points per Mtok; schema-failing rows counted as unknown residual). |
 | F4 | T | **mod** `tools/wd_grok_helper.py` (`consult` :113: `--output-format json`, keep stderr at :192, record model, effort, tokens and error class); **new** ledger `C:\Python\grok-scout-reports\ledger.jsonl` schema `wd.grok-ledger.v1`, including calibration runs. |
-| F5 | T | **new** `tools/bridge_lock_participants.py` (reads the mutex ACL through `bridge_named_mutex.py` and lists logon and integrity of the lanes; HOLD when there is more than one). |
+| F5 | T | **new** `tools/bridge_lock_participants.py`. It enumerates participant processes (logon, integrity) and keeps them apart from *proven* mutex handle holders: reading the ACL and the lane tokens does not establish every creator or opener. Missing coverage stays unknown; more than one logon or integrity level means HOLD. |
 | F6 | T | **new** `tools/bridge_v2_dashboard.py` (read-only: pools, lanes, intents, stages). |
 | F21 | F writes, T runs | **new** `tools/wd_profile_qualification.py` + `tests/fixtures/qualification/` (synthetic and replayed tasks per class, adversarial holdouts); receipts `wd.profile-receipt.v1` bound to code SHA, profile, provider version and freshness; isolated worktrees, no production writes. |
 | F25 | T | **mod** `Get-WdCapacityStatus.ps1` (:38, :147: every pool with age and source); boot brief line in `start-wd-agent.ps1`; **mod** `bridge_capacity_advisor.py` for a peer-pool view. |
@@ -144,13 +154,13 @@ Notation:
 
 | F | Owner | Code change |
 |---|---|---|
-| F8 | F | **new** mutex `Global\WaggleDanceBridgeWorkQueueV1` created through `bridge_named_mutex.create_bridge_named_mutex` :230 (Python) and the PowerShell equivalent; **mod** `waggledance/core/work_queue.py` (lock around claim, release :339, heartbeat :406 and the sweep :493-621; replace the `os.replace` at :900 with a compare-and-swap that refuses to recreate archived claims; outbox record in the same critical section); **mod** `Claim-AgentTask.ps1` (:111-148 scan under the lock), `Release-AgentTask.ps1`; **new** `.agent-bridge/bin/Publish-BridgeOutbox.ps1`. |
+| F8 | F | **new** work-queue mutex whose name is derived from the normalized canonical runtime-root identity (never one global constant shared by production and tests), created through `bridge_named_mutex.create_bridge_named_mutex` :230 (Python) and the PowerShell equivalent. A mutex plus two file writes is not crash-atomic, so the slice specifies the WAL and outbox recovery for every crash cut point, idempotent event publication, and no rollback to unsafe older writers while mixed generations run; **mod** `waggledance/core/work_queue.py` (lock around claim, release :339, heartbeat :406 and the sweep :493-621; replace the `os.replace` at :900 with a compare-and-swap that refuses to recreate archived claims; outbox record in the same critical section); **mod** `Claim-AgentTask.ps1` (:111-148 scan under the lock), `Release-AgentTask.ps1`; **new** `.agent-bridge/bin/Publish-BridgeOutbox.ps1`. |
 | F9 | F | **mod** `Invoke-BridgeGit.ps1` (:88-108, :305-307: parse leading options; `-C` guarded against its target; `-c` allowlist; refuse `--git-dir`, `--work-tree`, `--namespace` and the `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_NAMESPACE` variables on branch moves; `-Force` at :382 calls `Assert-AgentBridgeSessionIdentity`); **new** `tests/tools/test_invoke_bridge_git.py` (first pytest suite, with success twins). |
 | F10 | F | **mod** `ClaimLeaseHeartbeat.ps1` (`Update-BridgeClaimLease` :313: follow the long-lived worker, per-task retirement, progress proof → `wedged`); **mod** `Start-BridgeHeartbeat.ps1`; wire `Assert-AgentBridgeClaimOwner` (:215) into force, release and heartbeat. |
 | F11 | F | **new** `.agent-bridge/bin/Reply-ToRequest.ps1` (fetches the request by id through `BridgeReplyIndex.ps1:82`, then calls `Write-BridgeTaskReply.ps1`); requester supersede = a new id plus a non-coalesced cancel. |
 | F12 | F | **mod** `Write-AgentEvent.ps1` (extend the 40-hex head check at :421-470 to `build_consensus_pass` and the other commit statuses); **mod** `bridge_event_schema.py` for parity. |
 | F22 | F | **mod** `BridgeResourceScope.ps1` (:24-33: `-Explain`, examples in the error text); **mod** `Claim-AgentTask.ps1` help. |
-| F23 | T reproduces, F fixes | **mod** `Write-AgentEvent.ps1` and `tools/bridge_event_writer.py`: reserved labels `operator`/`system` require a verified bound or internal caller (C1), with an explicit internal path for `Invoke-StaleClaimSweep.ps1:276`; the wrapper-attribution suspicion is reproduced in isolation first. |
+| F23 | T reproduces, F fixes | First reproduce, isolated from production, both writers with the registry and profile present, missing and mismatched (C1), and the wrapper-attribution suspicion. Then **mod** `Write-AgentEvent.ps1` and `tools/bridge_event_writer.py` so reserved labels need session-origin enforcement. The sweep's internal path is never a caller-supplied `-Internal` switch or a `system` label: it is limited to bounded event kinds and fields, from a trusted entrypoint with session provenance. The shared-account trust limits stay disclosed. |
 
 ### Stage 4: explicit launch
 
@@ -175,14 +185,23 @@ Notation:
 ### Stage 6: release tooling
 
 - **F28 Release worktree helper + bundle rollback** (new; owner L;
-  `ops/**`, so (a)-class).
+  `ops/**`, so (a)-class; part of the reviewed v2 package only).
   - **New** `ops/windows/reboot/New-WdReleaseWorktree.ps1`: creates the
-    persistent release worktree on a named branch `release/bridge-<sha8>`,
-    pushed, with its upstream set. This fixes the #1751 stop: the installer
-    refuses a detached HEAD at `Deploy-WdRebootBundle.ps1:597-617`.
-  - **New** `ops/windows/reboot/Restore-WdRebootBundle.ps1`: reinstalls a
-    previous bundle from `C:\Python\wd-reboot-bundles\<sha>` with the same
-    manifest and integrity checks, cold-switch style.
+    persistent release worktree on a named, pushed branch with its upstream
+    set, as the installer requires (`Deploy-WdRebootBundle.ps1:597-617`).
+  - **New** `ops/windows/reboot/Restore-WdRebootBundle.ps1`:
+    - It fences the affected writers first. It then validates the backward
+      compatibility of the persisted state, the outstanding intents and the
+      manifest provenance before it reinstalls a previous bundle from
+      `C:\Python\wd-reboot-bundles\<sha>`, cold-switch style.
+    - It never restores old runtime data and never overwrites new WIP.
+      Mixed old and new lanes keep matching pins. Both RCOs stay available.
+      The old bundle and the explicit merge-driver HOLD are preserved.
+    - A failed rollback is a HOLD, never a loop.
+  - **#1751 does not depend on F28.** Its installer stop was a caller setup
+    error; a named branch with an upstream at the same commit is enough once
+    the operator continues. No unsigned v2 tooling is slipped into the
+    current deployment.
 
 **Packaging:** every new Python tool that lanes run at runtime is added to
 `ops/windows/reboot/bridge-code-files.json` (entrypoints plus hashes); new
@@ -194,21 +213,28 @@ small to medium. The large ones are F7, F8, F16, F17 and F27.
 
 ## 5. Build order
 
-1. #1751 rollout finished (F28's worktree helper can be built first and used
-   for it).
+1. #1751 rollout finished, on its own signed path (a named branch with an
+   upstream at c5f7c933 after the operator continues; no v2 tooling).
 2. F0 + the interface contract, reviewed.
 3. File-disjoint slices, in parallel within a stage, in stage order 1 → 5,
    then F28. Each slice goes on its own branch, gets an isolated test run
    (scrubbed identity, temp runtime root, isolated kernel names), is
    reviewed as it lands, and is composed into one integration branch
    `codex-lead-1/bridge-v2-integration`.
-4. Freeze the integration head. Then run everything at that head:
-   - CI 6/6 on Linux;
+4. Freeze the integration head. Then the **complete exact-head gate set**,
+   with nothing reduced:
+   - CI 6/6 on Linux at the exact head;
    - the fable-5 Windows matrix in PowerShell 5.1 and 7 (every consumer
      suite found by `git grep`, not from memory);
-   - Grok as an advisory, pre-RCO review;
-   - dual `RCO_PASS` at the exact head;
-   - Lead's `build_consensus_pass`.
+   - Grok as an advisory, pre-RCO review (never a gate);
+   - `build_consensus_pass` from **both Lead and Tools**;
+   - `RCO_PASS` from **both** independent RCOs at the exact head;
+   - the veto check (`tools/check_bridge_changes_requested.py`) and the
+     RCO pass check (`tools/check_rco_pass_present.py`);
+   - the canonical consensus verifier (`verify_bridge_consensus` in
+     `tools/idle_consensus_auto_merge.py:1285`);
+   - the retained unresolved-event checks (accepted-queue preflight,
+     `tools/bridge_accepted_queue_preflight.py:141`).
 
 ## 6. One signature: what it binds
 
@@ -253,20 +279,21 @@ and time), binds:
 
 | Step | Command or check | Stop condition |
 |---|---|---|
-| 1. Pre-merge recheck | Head, tree and base equal the signed values; both gate tools pass at that head; CI green | any mismatch |
+| 1. Pre-merge recheck | Head, tree and base equal the signed values; the complete §5 gate set passes at that head | any mismatch or failure |
 | 2. Merge | `gh pr merge <N> --squash --match-head-commit <signed head>` | the command refuses |
 | 3. Verify merge | The merge commit's tree equals the signed tree, and its parent equals the signed base | a mismatch means HOLD, and no tag |
 | 4. Main CI | Both workflows succeed on the merge commit | any failure means HOLD |
-| 5. Tag + notes | Lightweight tag at the merge commit; the notes file hash equals the signed hash | mismatch |
-| 6. Release worktree | `New-WdReleaseWorktree.ps1` creates the named branch, pushed, with its upstream | the helper refuses |
-| 7. Bundle | `Deploy-WdRebootBundle.ps1 -DryRun`, then `-StageOnly`; full recursive verification (:900-965) | any refusal |
+| 5. Release worktree | `New-WdReleaseWorktree.ps1` creates the named branch, pushed, with its upstream | the helper refuses |
+| 6. Stage | Under Windows PowerShell 5.1: `Deploy-WdRebootBundle.ps1 -StageOnly -DryRun`, then `-StageOnly`; full recursive verification (:900-965); compare the staged file set and hashes with the reviewed candidate | any refusal or difference |
+| 7. Tag + GitHub release | Only after step 6: the tag at the merge commit, a GitHub release targeting that commit, notes whose SHA-256 equals the signed hash; no Docker or stable-image workflow dispatch | mismatch |
 | 8. Cold switch | Disable `WD-Supervisor`, wait for its invocation to exit, install without `-StageOnly`, verify `WD_REBOOT_INTEGRITY_CURRENT`, re-enable | a verification failure means the automatic restore, then HOLD |
-| 9. Lane rollover | RCO1, RCO2, Tools, Lead, Fable last; never both RCOs together; each on the new generation and verified by the launch probe | a lane fails to come back: stop the rollover, previous bundle for that lane |
+| 9. Lane rollover | RCO1, RCO2, Tools, Lead, Fable last; never both RCOs together. Readiness per lane is more than the launch probe: token, logon, integrity and ACL gates; the `WD-AgentValue-Weekly` repin; the scheduled supervisor's result; transcript growth; and a bound bridge round trip | a lane fails readiness: stop the rollover; that lane keeps matching old pins |
 | 10. Staged activation | Flip F0 flags stage by stage (1 → 5), each with its canary order and coverage predicate, within 14 days of the absolute timestamp | a stop condition means that stage's flags go off automatically |
 | 11. Steady state | A stage that met its predicate stays on, under freeze, the kill switch and stop conditions | a regression means flag-off; a bundle fault means `Restore-WdRebootBundle.ps1` |
 
 **Rollback layers, fastest first:**
-1. The kill switch `WAGGLE_BRIDGE_V2_ENABLED=0`.
+1. The durable revocation and freeze state (F0), checked before every side
+   effect; the environment variable is only an extra local deny.
 2. Per-feature F0 flags off.
 3. Reinstall the previous bundle with `Restore-WdRebootBundle.ps1`.
 4. A source revert, as a new reviewed PR.
@@ -279,14 +306,33 @@ and time), binds:
 - The Stage-2 cutover.
 - Branch-protection settings on `main`; there are none today.
 
-## 9. Open facts (UNVERIFIED)
+## 9. Open facts (UNVERIFIED unless stated)
 
 - Which checks branch protection requires, if any.
 - Where earlier bridge release notes live; no tooling creates the `bridge-*`
   tags.
-- The active bundle today (runtime `WD_REBOOT_STATE_CURRENT.json` was not
-  read).
+- The active bundle, per Lead: the known deployment is still d26357e1.
+  #1751 (main c5f7c933) has both main CI runs green, but the installer
+  DryRun refused the detached HEAD, and no tag, release or activation has
+  happened. The #1751 release notes are identified in its signed packet.
 - Whether the cause-B latch fix for Rule 9b has landed; it is not needed
   here.
 - Whether the Claude capacity hooks are applied in every lane worktree.
 - The exact out-of-repo role prompt contents that F2 moves into the repo.
+
+## 10. Review record
+
+- **Lead, 05:32:49Z, on head 0be9caef: `modified`, design review only.**
+  - All objections and proposals are adopted above:
+    - the complete exact-head gate set, including Tools'
+      `build_consensus_pass`;
+    - #1751 independent of F28;
+    - C1 corrected, with exact references and reproduction first;
+    - a durable revocation state rather than an environment kill switch;
+    - a runtime-root-scoped mutex, and crash cut points for the outbox;
+    - no self-granted flags;
+    - a strengthened staging, release, readiness and rollback runbook;
+    - F5 participants kept apart from proven handle holders;
+    - the current deployment facts.
+  - It is not source approval, new authority, or verification of every
+    citation.

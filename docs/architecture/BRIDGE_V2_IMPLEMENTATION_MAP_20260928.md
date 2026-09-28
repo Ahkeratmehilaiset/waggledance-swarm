@@ -142,6 +142,7 @@ Notation:
 | F5 | T | **new** `tools/bridge_lock_participants.py`. It enumerates participant processes (logon, integrity) and keeps them apart from *proven* mutex handle holders: reading the ACL and the lane tokens does not establish every creator or opener. Missing coverage stays unknown; more than one logon or integrity level means HOLD. |
 | F6 | T | **new** `tools/bridge_v2_dashboard.py` (read-only: pools, lanes, intents, stages). |
 | F21 | F writes, T runs | **new** `tools/wd_profile_qualification.py` + `tests/fixtures/qualification/` (synthetic and replayed tasks per class, adversarial holdouts); receipts `wd.profile-receipt.v1` bound to code SHA, profile, provider version and freshness; isolated worktrees, no production writes. |
+| F30 | L implements, F tests | **mod** `ops/windows/reboot/start-wd-tools-consumer.ps1` (`Invoke-WdNativeToolsWakeStep` :503; replace the fixed messages at :542-564 with a header plus one validated line per binding, read from the `wd.bridge-wake-observation.v1` snapshot already parsed at :575-586, moved before the send); **mod** `.agent-bridge/bin/BridgeTelemetry.ps1` (`Write-BridgeWakeObservation` :28: add task id, event type/status, `ts_utc`, the canonical event SHA-256 and the wake class to each binding; classify by type and status only); **mod** `Watch-Bridge.ps1` (informational events go to a digest, not a wake); **new** `.agent-bridge/bin/Get-BridgeEvent.ps1` (exact fetch by request id plus the expected hash); **mod** the F2 role contract (takes the standing rules now in the wake text); **mod** `tests/tools/test_wd_native_tools_wake.py` (:75 asserts `TRUNCATED ROUTING SUMMARY`) and `tests/tools/test_wd_lead_reply_delivery.py` (:38, :41, :140), plus every consumer that `git grep` finds for the wake strings. Depends on F1, F2 and F7. |
 | F29 | T implements, F tests | **new** `configs/bridge_components.json` (`wd.bridge-components.v1`); **new** `tools/wd_bridge_doctor.py` + `.agent-bridge/bin/Test-WdBridgeComponents.ps1` (one manifest, two front ends); **new** `ops/windows/reboot/Initialize-WdBridge.ps1` (first-run local config from templates, never overwriting); **mod** `Start-AgentBridgeSession.ps1`, `start-wd-agent.ps1`, `Deploy-WdRebootBundle.ps1` (call the doctor in preflight); replace hard-coded machine paths in new code with config values (existing examples: `wd_grok_helper.py:17` `STATE_ROOT`, the installer's `$BundleStore` default at `Deploy-WdRebootBundle.ps1:17-28`, the writer's hard-coded fleet targets at `Write-AgentEvent.ps1:668`). |
 | F25 | T | **mod** `Get-WdCapacityStatus.ps1` (:38, :147: every pool with age and source); boot brief line in `start-wd-agent.ps1`; **mod** `bridge_capacity_advisor.py` for a peer-pool view. |
 
@@ -209,7 +210,7 @@ Notation:
 PowerShell files go under `.agent-bridge/bin/`, which the installer already
 copies whole.
 
-**Size:** 30 slices (F0-F29 minus F14, plus the contract doc). Most are
+**Size:** 31 slices (F0-F30 minus F14, plus the contract doc). Most are
 small to medium. The large ones are F7, F8, F16, F17 and F27.
 
 ## 5. Build order

@@ -129,8 +129,12 @@ a commit-provenance contract: each producing lane records every pushed SHA,
 parent/base and exact file inventory in a session-bound hardened bridge event.
 Map every candidate commit to verified provenance; missing, conflicting or
 RCO-origin provenance fails exclusion. Pre-hardening events are observed audit
-evidence, not retrospectively claimed cryptographic authentication. The final
-provenance gate requires the chosen authority boundary and F23 origin checks.
+evidence, not retrospectively claimed cryptographic authentication. W4 uses
+complete, non-conflicting, non-RCO-origin session-bound provenance from the
+currently deployed writer, explicitly labelled observed in the signed packet.
+The same-user forgery residual is disclosed, not erased by candidate code.
+Hardened provenance with the chosen authority boundary and F23 applies only
+after installation; it cannot be required retroactively for pre-install commits.
 Findings go back to the physical-file owner. A change invalidates affected
 reviews, and final integration approval names the final full head.
 
@@ -211,6 +215,8 @@ Integrity-sensitive F5 participants, F8/8a locks/mutex ACLs, F10 leases, F13
 launcher, F28 installer and F29 doctor require integrity-agnostic contracts and
 actual Medium/High test coverage, or the security choice first. Pure F2/F3/F4/F6/
 F9/F11/F12/F15/F19/F21/F22/F23/F24/F26/F30 work does not acquire live authority.
+F7 backlog and F30 consumer wiring are non-privileged but production-path work;
+their eventual activation still requires signed canaries and rollback evidence.
 
 ## 5. Full feature coverage and falsifiable acceptance
 
@@ -418,6 +424,18 @@ the present shared-account deployment enforces them:
    lands only in quarantine, never valid new evidence. This routing fence is not
    hostile same-user containment; that depends on the chosen security boundary.
    The attestation gateway writes the new root with validated current protocol.
+   Quarantine NEVER silently hides a veto, finding, HOLD, cancel or freeze:
+   control-class rows become blocking alerts, refusing merge and promotion until
+   reconciled, and cannot clear any earlier restriction. Unknown classification
+   also blocks; stale/unbound approval rows cannot grant anything. Lead owns
+   quarantine reconciliation/root cutover; Fable supplies the classifier API.
+   Prove a direct old-bundle post-cutoff veto blocks promotion and merge.
+   The gate-input root migration is an explicitly named governance item in the
+   packet: this package's pre-install merge uses the existing canonical root;
+   post-install gate invocations use the new root plus validated pre-cutoff
+   history and blocking quarantined controls, with exact input paths recorded.
+   Test actual deployed pinned gate invocations against those inputs; a new
+   candidate runner cannot silently substitute a different verdict dataset.
    Evidence append is not a grant
    to mutate queue/claims. Test old-client/new-reader and new-client/old-reader
    event interoperability, rejection of other write classes, and durable HOLD/

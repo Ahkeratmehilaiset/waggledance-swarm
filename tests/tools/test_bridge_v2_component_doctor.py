@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import json
 import os
@@ -569,6 +570,16 @@ def test_probe_rejects_code_root_without_creating_audit(tmp_path, monkeypatch):
     assert not audit.exists()
 
 
+def _remove_created_repo_audit_if_empty(path):
+    try:
+        path.rmdir()
+    except OSError as exc:
+        # Another run may still own a child, or may already have removed the base.
+        if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT) and \
+                getattr(exc, "winerror", None) != 145:
+            raise
+
+
 def test_real_development_worktree_allows_repo_local_audit():
     code_root = Path(doctor.__file__).resolve().parents[1]
     assert doctor._code_layout(code_root) == "development"
@@ -585,7 +596,23 @@ def test_real_development_worktree_allows_repo_local_audit():
             assert output.startswith("Python ")
     finally:
         if created_repo_audit:
-            repo_audit.rmdir()
+            _remove_created_repo_audit_if_empty(repo_audit)
+
+
+def test_repo_audit_cleanup_preserves_foreign_content_and_primary_failure(tmp_path):
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    foreign = audit / "another-run"
+    foreign.mkdir()
+    with pytest.raises(AssertionError, match="primary failure"):
+        try:
+            raise AssertionError("primary failure")
+        finally:
+            _remove_created_repo_audit_if_empty(audit)
+    assert foreign.is_dir()
+    foreign.rmdir()
+    _remove_created_repo_audit_if_empty(audit)
+    assert not audit.exists()
 
 
 def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):
@@ -634,6 +661,40 @@ def test_actual_linked_worktree_uses_its_repo_audit(
     assert output.startswith("Python ")
 
 
+def test_relative_linked_worktree_backlink_uses_gitdir(tmp_path):
+    source = Path(doctor.__file__).resolve().parents[1]
+    audit_ancestors = [path for path in tmp_path.parents if path.name == ".codex-audit"]
+    base = audit_ancestors[-1] if os.name == "nt" and audit_ancestors else tmp_path
+    linked = base / f"relative-linked-{uuid.uuid4().hex[:8]}"
+    command = ["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true",
+               "-C", str(source), "worktree", "add", "--relative-paths", "--detach",
+               str(linked), "HEAD"]
+    created = subprocess.run(command, capture_output=True)
+    if created.returncode:
+        pytest.skip("git worktree --relative-paths unavailable")
+    try:
+        marker = linked / ".git"
+        assert marker.is_file()
+        pointer = marker.read_text(encoding="utf-8").split(": ", 1)[1].strip()
+        assert not Path(pointer).is_absolute()
+        gitdir = (linked / pointer).resolve()
+        backlink_file = gitdir / "gitdir"
+        original_backlink = backlink_file.read_bytes()
+        backlink = original_backlink.decode("utf-8").strip()
+        assert not Path(backlink).is_absolute()
+        assert doctor._code_layout(linked) == "development"
+        try:
+            backlink_file.write_text("../wrong/.git\n", encoding="utf-8")
+            assert doctor._code_layout(linked) == "unknown"
+        finally:
+            backlink_file.write_bytes(original_backlink)
+        assert doctor._code_layout(linked) == "development"
+    finally:
+        subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
+                        "worktree", "remove", "--force", str(linked)],
+                       check=True, capture_output=True)
+
+
 def test_linked_worktree_malformed_backlink_fails_closed(actual_linked_worktree):
     marker = actual_linked_worktree / ".git"
     gitdir = Path(marker.read_text(encoding="utf-8").split(": ", 1)[1].strip())
@@ -644,6 +705,42 @@ def test_linked_worktree_malformed_backlink_fails_closed(actual_linked_worktree)
         assert doctor._code_layout(actual_linked_worktree) == "unknown"
     finally:
         backlink.write_bytes(original)
+
+
+def test_linked_gitdir_pointer_prefix_and_alias_are_guarded(
+        actual_linked_worktree, tmp_path, monkeypatch):
+    marker = actual_linked_worktree / ".git"
+    original = marker.read_bytes()
+    gitdir = Path(original.decode("utf-8").split(": ", 1)[1].strip())
+    assert doctor._code_layout(actual_linked_worktree) == "development"
+    original_read = doctor._read_bounded_metadata
+
+    def pointer_bytes(data):
+        return lambda path, maximum: (data if path == marker else
+                                      original_read(path, maximum))
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(doctor, "_read_bounded_metadata",
+                       pointer_bytes(original.replace(b"gitdir: ", b"gitdir:\t", 1)))
+        assert doctor._code_layout(actual_linked_worktree) == "unknown"
+    assert doctor._code_layout(actual_linked_worktree) == "development"
+    alias = tmp_path / "gitdir-alias"
+    if os.name == "nt":
+        cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+        created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                                  str(alias), str(gitdir)], capture_output=True)
+        if created.returncode:
+            pytest.skip("junction creation unavailable")
+    else:
+        alias.symlink_to(gitdir, target_is_directory=True)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(doctor, "_read_bounded_metadata",
+                           pointer_bytes(f"gitdir: {alias}\n".encode("utf-8")))
+            assert doctor._code_layout(actual_linked_worktree) == "unknown"
+    finally:
+        alias.rmdir() if os.name == "nt" else alias.unlink()
+    assert doctor._code_layout(actual_linked_worktree) == "development"
 
 
 def test_linked_worktree_alias_gitdir_fails_closed(actual_linked_worktree, tmp_path):
@@ -703,6 +800,125 @@ def test_git_index_unsupported_format_fails_closed(tmp_path, monkeypatch):
     other = index[:-20].replace(target, b"tools/bridge_v2_component_doctor.xy", 1)
     decoy = other + b"TREE" + len(target).to_bytes(4, "big") + target
     assert doctor._index_tracks_doctor(decoy + hashlib.sha1(decoy).digest()) is False
+
+
+def test_git_index_checksum_exact_end_and_v2_flags_are_guarded():
+    source = Path(doctor.__file__).resolve().parents[1]
+    marker = source / ".git"
+    gitdir = (Path(marker.read_text(encoding="utf-8").split(": ", 1)[1].strip())
+              if marker.is_file() else marker)
+    index = (gitdir / "index").read_bytes()
+    assert doctor._index_tracks_doctor(index) is True
+    bad_sha = index[:-1] + bytes([index[-1] ^ 1])
+    assert doctor._index_tracks_doctor(bad_sha) is False
+    trailing_body = index[:-20] + b"extra"
+    assert doctor._index_tracks_doctor(
+        trailing_body + hashlib.sha1(trailing_body).digest()) is False
+    v2_extended = bytearray(index)
+    v2_extended[4:8] = (2).to_bytes(4, "big")
+    v2_extended[72] |= 0x40  # first entry's extended-flag bit
+    v2_extended[-20:] = hashlib.sha1(v2_extended[:-20]).digest()
+    assert doctor._index_tracks_doctor(bytes(v2_extended)) is False
+
+
+@pytest.fixture
+def small_git_repo(tmp_path):
+    root = tmp_path / "dev"
+    (root / "tools").mkdir(parents=True)
+    (root / "tools" / "bridge_v2_component_doctor.py").write_text("# fixture\n")
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-c", f"safe.directory={root}", "-C", str(root),
+                    "add", "tools/bridge_v2_component_doctor.py"],
+                   check=True, capture_output=True)
+    assert doctor._code_layout(root) == "development"
+    return root
+
+
+def test_git_layout_head_core_and_objects_have_success_twins(small_git_repo):
+    root = small_git_repo
+    gitdir = root / ".git"
+    for name, malformed in (("HEAD", b"not-a-ref\n"),
+                            ("config", b"[not-core]\nvalue = true\n")):
+        target = gitdir / name
+        original = target.read_bytes()
+        try:
+            target.write_bytes(malformed)
+            assert doctor._code_layout(root) == "unknown"
+        finally:
+            target.write_bytes(original)
+        assert doctor._code_layout(root) == "development"
+    objects = gitdir / "objects"
+    held = gitdir / "objects-held"
+    objects.rename(held)
+    try:
+        assert doctor._code_layout(root) == "unknown"
+    finally:
+        held.rename(objects)
+    assert doctor._code_layout(root) == "development"
+
+
+def test_git_marker_directory_alias_is_rejected(small_git_repo):
+    root = small_git_repo
+    marker = root / ".git"
+    real = root / "git-real"
+    marker.rename(real)
+    try:
+        if os.name == "nt":
+            cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+            created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                                      str(marker), str(real)], capture_output=True)
+            if created.returncode:
+                pytest.skip("junction creation unavailable")
+        else:
+            marker.symlink_to(real, target_is_directory=True)
+        try:
+            assert doctor._code_layout(root) == "unknown"
+        finally:
+            marker.rmdir() if os.name == "nt" else marker.unlink()
+    finally:
+        real.rename(marker)
+    assert doctor._code_layout(root) == "development"
+
+
+def test_git_metadata_alias_is_rejected(small_git_repo):
+    root = small_git_repo
+    gitdir = root / ".git"
+    assert doctor._read_bounded_metadata(gitdir / "HEAD", 256)
+    alias = root / "git-alias"
+    if os.name == "nt":
+        cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+        created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                                  str(alias), str(gitdir)], capture_output=True)
+        if created.returncode:
+            pytest.skip("junction creation unavailable")
+    else:
+        alias.symlink_to(gitdir, target_is_directory=True)
+    try:
+        with pytest.raises(OSError):
+            doctor._read_bounded_metadata(alias / "HEAD", 256)
+    finally:
+        alias.rmdir() if os.name == "nt" else alias.unlink()
+    assert doctor._read_bounded_metadata(gitdir / "HEAD", 256)
+
+
+def test_dangling_git_marker_is_unknown_not_installed(tmp_path, small_git_repo):
+    root = tmp_path / "dangling"
+    root.mkdir()
+    assert doctor._code_layout(root) == "installed"
+    try:
+        (root / ".git").symlink_to(root / "missing-git", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlink creation unavailable")
+    assert doctor._code_layout(root) == "unknown"
+    assert doctor._code_layout(small_git_repo) == "development"
+
+
+def test_posix_path_preserves_leading_and_trailing_spaces(small_git_repo):
+    directory = str(small_git_repo)
+    assert list(doctor._path_directories(directory, platform_name="posix")) == [Path(directory)]
+    assert list(doctor._path_directories(" " + directory, platform_name="posix")) == []
+    trailing = list(doctor._path_directories(directory + " ", platform_name="posix"))
+    assert len(trailing) == 1 and str(trailing[0]).endswith(" ")
 
 
 def test_git_metadata_reads_are_bounded(tmp_path):
@@ -773,6 +989,21 @@ def test_invalid_git_marker_does_not_grant_development_audit(
     assert doctor._code_layout(unknown) == "unknown"
     assert _run_bounded([sys.executable, "--version"], 2,
                         runtime_audit_root=audit) == (None, "probe_scope_error")
+    external = tmp_path / "external-audit"
+    external.mkdir()
+    assert _run_bounded([sys.executable, "--version"], 2,
+                        runtime_audit_root=external) == (None, "probe_scope_error")
+    assert list(external.iterdir()) == []
+
+
+def test_runtime_audit_help_distinguishes_installed_development_and_unknown(capsys):
+    with pytest.raises(SystemExit) as result:
+        main(["--help"])
+    assert result.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "external for installed" in help_text
+    assert "under .codex-audit for development" in help_text
+    assert "unknown layouts refused" in help_text
 
 
 def test_probe_cleanup_failure_is_separate_from_probe_result(monkeypatch):

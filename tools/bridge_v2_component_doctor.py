@@ -512,7 +512,9 @@ def _git_metadata_dirs(code_root, marker):
     if not gitdir.is_dir():
         raise OSError("unsafe linked Git directory")
     backlink = _read_bounded_metadata(gitdir / "gitdir", 4096).decode("utf-8").strip()
-    if _path_chain_has_alias(Path(backlink)) or Path(backlink).resolve() != marker.resolve():
+    backlink_path = Path(backlink)
+    raw_backlink = backlink_path if backlink_path.is_absolute() else gitdir / backlink_path
+    if _path_chain_has_alias(raw_backlink) or raw_backlink.resolve() != marker.resolve():
         raise OSError("linked worktree backlink mismatch")
     common_name = _read_bounded_metadata(gitdir / "commondir", 4096).decode("utf-8").strip()
     raw_common = gitdir / common_name
@@ -861,7 +863,8 @@ def main(argv=None):
     parser.add_argument("--feature", action="append", dest="features")
     parser.add_argument("--path", dest="search_path", help="Explicit executable search PATH")
     parser.add_argument("--runtime-audit-root", type=Path,
-                        help="Existing private writable directory outside the code root for probe scratch")
+                        help="Existing private writable probe scratch directory: external for installed "
+                             "copies; external or under .codex-audit for development; unknown layouts refused")
     parser.add_argument("--timeout-seconds", type=float,
                         help="Bounded timeout override for every version probe (0.1..10)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable report")

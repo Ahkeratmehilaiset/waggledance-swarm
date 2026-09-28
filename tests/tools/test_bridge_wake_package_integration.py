@@ -1,4 +1,4 @@
-"""Package closure for the classifier's unconditional wake-module import."""
+"""Reject packages missing wake, request, result or reply-reader libraries."""
 import json
 import re
 import os
@@ -11,11 +11,19 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = "BridgeWakeClass.ps1"
 RELATIVE = rf"tools-bootstrap\.agent-bridge\bin\{MODULE}"
+LIBRARIES = (
+    "BridgeRequestContract.ps1",
+    "BridgeTaskResult.ps1",
+    "BridgeTelemetry.ps1",
+    "BridgeReplyIndex.ps1",
+    "BridgeResourceScope.ps1",
+    "BridgeRoster.ps1",
+)
 
 
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
-@pytest.mark.parametrize("missing", [None, "BridgeEventClassifier.ps1", MODULE])
-def test_deploy_required_gate_rejects_missing_classifier_modules(shell, missing):
+@pytest.mark.parametrize("missing", [None, "BridgeEventClassifier.ps1", MODULE, *LIBRARIES])
+def test_deploy_required_gate_rejects_missing_bridge_libraries(shell, missing):
     executable = shutil.which(shell)
     if executable is None:
         pytest.skip(f"{shell} unavailable")
@@ -27,6 +35,7 @@ def test_deploy_required_gate_rejects_missing_classifier_modules(shell, missing)
         "tools-bootstrap/.agent-bridge/bin/BridgeEventClassifier.ps1",
         f"tools-bootstrap/.agent-bridge/bin/{MODULE}",
     }
+    files.update(f"tools-bootstrap/.agent-bridge/bin/{name}" for name in LIBRARIES)
     if missing:
         files.remove(f"tools-bootstrap/.agent-bridge/bin/{missing}")
     entries = ";".join(f"'{name}'='hash'" for name in sorted(files))

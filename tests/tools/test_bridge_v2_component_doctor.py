@@ -284,6 +284,16 @@ def test_posix_path_quotes_are_literal_not_shell_syntax(tmp_path):
         assert list(doctor._path_directories(quoted, platform_name="nt")) == [tmp_path]
 
 
+def test_posix_path_preserves_literal_apostrophe_in_absolute_directory(tmp_path):
+    literal = tmp_path / "it's-literal"
+    literal.mkdir()
+    executable = literal / "python"
+    executable.write_bytes(b"fixture")
+    executable.chmod(0o755)
+    assert list(doctor._path_directories(str(literal), platform_name="posix")) == [literal]
+    assert doctor._safe_executable("python", str(literal), platform_name="posix") == str(executable)
+
+
 def test_scope_close_permission_error_is_classified_not_manifest_error():
     def denied():
         raise PermissionError("controlled POSIX killpg denial")
@@ -561,6 +571,20 @@ def test_real_development_worktree_allows_repo_local_audit(tmp_path):
     code_root = Path(doctor.__file__).resolve().parents[1]
     assert doctor._code_layout(code_root) == "development"
     assert tmp_path.is_relative_to(code_root / ".codex-audit")
+    output, reason = _run_bounded([sys.executable, "--version"], 2,
+                                  runtime_audit_root=tmp_path)
+    assert reason is None
+    assert output.startswith("Python ")
+
+
+def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):
+    code_root = Path(doctor.__file__).resolve().parents[1]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("ambient command executed during layout recognition")
+
+    monkeypatch.setattr(doctor.subprocess, "run", forbidden)
+    assert doctor._code_layout(code_root) == "development"
     output, reason = _run_bounded([sys.executable, "--version"], 2,
                                   runtime_audit_root=tmp_path)
     assert reason is None

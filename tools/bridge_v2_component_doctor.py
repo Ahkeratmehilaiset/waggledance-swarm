@@ -209,22 +209,23 @@ def validate_manifest(data):
 def _path_directories(search_path, platform_name=None):
     platform_name = platform_name or os.name
     for part in search_path.split(os.pathsep):
-        part = part.strip()
-        # Windows PATH entries may be quoted; POSIX PATH quotes are literal.
-        if (platform_name == "nt" and len(part) >= 2 and
-                part[0] == part[-1] and part[0] in ('"', "'")):
-            part = part[1:-1]
-        if not part or '"' in part or "'" in part:
+        if platform_name == "nt":
+            part = part.strip()
+            if len(part) >= 2 and part[0] == part[-1] and part[0] in ('"', "'"):
+                part = part[1:-1]
+        # POSIX PATH bytes are literal, including spaces and quote characters.
+        if not part or (platform_name == "nt" and '"' in part):
             continue
         directory = Path(part)
         if directory.is_absolute():
             yield directory
 
 
-def _safe_executable(name, search_path):
+def _safe_executable(name, search_path, platform_name=None):
     """Search absolute PATH entries only; never use cwd or Windows batch files."""
-    for directory in _path_directories(search_path):
-        candidates = [directory / (name + ".exe")] if os.name == "nt" else [directory / name]
+    platform_name = platform_name or os.name
+    for directory in _path_directories(search_path, platform_name=platform_name):
+        candidates = [directory / (name + ".exe")] if platform_name == "nt" else [directory / name]
         for candidate in candidates:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
@@ -450,24 +451,33 @@ def _windows_resume_scoped_process(process):
 
 
 def _code_layout(code_root):
-    """Recognize a real persistent development worktree; never trust a label."""
+    """Read Git metadata only; never run ambient Git or waive ownership checks.
+
+    This recognizes a local development layout for scratch placement, not a
+    security attestation of repository contents or a provider trust anchor.
+    """
     marker = code_root / ".git"
     if not marker.exists():
         return "installed"
     if os.name == "nt" and code_root.drive.upper() != "C:":
         return "unknown"
     try:
-        top = subprocess.run(
-            ["git", "-c", f"safe.directory={code_root}", "-C", str(code_root),
-             "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-            timeout=2, check=True).stdout.strip()
-        tracked = subprocess.run(
-            ["git", "-c", f"safe.directory={code_root}", "-C", str(code_root),
-             "ls-files", "--error-unmatch", "tools/bridge_v2_component_doctor.py"],
-            capture_output=True, timeout=2, check=True)
-        if Path(top).resolve() == code_root and tracked.returncode == 0:
+        if not marker.is_dir() or _path_chain_has_alias(marker):
+            return "unknown"
+        head = (marker / "HEAD").read_text(encoding="ascii").strip()
+        config = (marker / "config").read_text(encoding="utf-8")
+        index_path = marker / "index"
+        if index_path.stat().st_size > 32 * 1024 * 1024:
+            return "unknown"
+        index = index_path.read_bytes()
+        if ((head.startswith("ref: refs/heads/") or
+             re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head)) and
+                "[core]" in config and (marker / "objects").is_dir() and
+                index[:4] == b"DIRC" and
+                int.from_bytes(index[4:8], "big") in (2, 3, 4) and
+                b"tools/bridge_v2_component_doctor.py\x00" in index):
             return "development"
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, UnicodeError, ValueError):
         pass
     return "unknown"
 

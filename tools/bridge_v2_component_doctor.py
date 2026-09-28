@@ -206,10 +206,13 @@ def validate_manifest(data):
     return data
 
 
-def _path_directories(search_path):
+def _path_directories(search_path, platform_name=None):
+    platform_name = platform_name or os.name
     for part in search_path.split(os.pathsep):
         part = part.strip()
-        if len(part) >= 2 and part[0] == part[-1] and part[0] in ('"', "'"):
+        # Windows PATH entries may be quoted; POSIX PATH quotes are literal.
+        if (platform_name == "nt" and len(part) >= 2 and
+                part[0] == part[-1] and part[0] in ('"', "'")):
             part = part[1:-1]
         if not part or '"' in part or "'" in part:
             continue
@@ -446,6 +449,29 @@ def _windows_resume_scoped_process(process):
         raise OSError(status, "NtResumeProcess failed")
 
 
+def _code_layout(code_root):
+    """Recognize a real persistent development worktree; never trust a label."""
+    marker = code_root / ".git"
+    if not marker.exists():
+        return "installed"
+    if os.name == "nt" and code_root.drive.upper() != "C:":
+        return "unknown"
+    try:
+        top = subprocess.run(
+            ["git", "-c", f"safe.directory={code_root}", "-C", str(code_root),
+             "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+            timeout=2, check=True).stdout.strip()
+        tracked = subprocess.run(
+            ["git", "-c", f"safe.directory={code_root}", "-C", str(code_root),
+             "ls-files", "--error-unmatch", "tools/bridge_v2_component_doctor.py"],
+            capture_output=True, timeout=2, check=True)
+        if Path(top).resolve() == code_root and tracked.returncode == 0:
+            return "development"
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return "unknown"
+
+
 def _run_bounded(argv, timeout, search_path=None, runtime_audit_root=None):
     """Run in an explicit writable runtime audit root, never the code root."""
     location = (runtime_audit_root if runtime_audit_root is not None else
@@ -454,8 +480,16 @@ def _run_bounded(argv, timeout, search_path=None, runtime_audit_root=None):
         return None, "probe_scope_error"
     audit = Path(location)
     code_root = Path(__file__).resolve().parent.parent
-    if (not audit.is_absolute() or _path_chain_has_alias(audit) or
-            audit.resolve().is_relative_to(code_root)):
+    layout = _code_layout(code_root)
+    if not audit.is_absolute() or _path_chain_has_alias(audit) or layout == "unknown":
+        return None, "probe_scope_error"
+    resolved_audit = audit.resolve()
+    if resolved_audit.is_relative_to(code_root):
+        development_audit = code_root / ".codex-audit"
+        if (layout != "development" or
+                not resolved_audit.is_relative_to(development_audit)):
+            return None, "probe_scope_error"
+    if audit == code_root:
         return None, "probe_scope_error"
     try:
         mode = audit.stat()

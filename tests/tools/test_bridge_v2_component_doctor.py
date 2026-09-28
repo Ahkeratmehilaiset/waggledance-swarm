@@ -277,6 +277,13 @@ def test_quoted_absolute_path_entry_is_used_without_cwd_fallback(tmp_path):
     assert result["components"][0]["selected_path"] == str(executable)
 
 
+def test_posix_path_quotes_are_literal_not_shell_syntax(tmp_path):
+    quoted = f"'{tmp_path}'"
+    assert list(doctor._path_directories(quoted, platform_name="posix")) == []
+    if os.name == "nt":
+        assert list(doctor._path_directories(quoted, platform_name="nt")) == [tmp_path]
+
+
 def test_scope_close_permission_error_is_classified_not_manifest_error():
     def denied():
         raise PermissionError("controlled POSIX killpg denial")
@@ -550,6 +557,51 @@ def test_probe_rejects_code_root_without_creating_audit(tmp_path, monkeypatch):
     assert not audit.exists()
 
 
+def test_real_development_worktree_allows_repo_local_audit(tmp_path):
+    code_root = Path(doctor.__file__).resolve().parents[1]
+    assert doctor._code_layout(code_root) == "development"
+    assert tmp_path.is_relative_to(code_root / ".codex-audit")
+    output, reason = _run_bounded([sys.executable, "--version"], 2,
+                                  runtime_audit_root=tmp_path)
+    assert reason is None
+    assert output.startswith("Python ")
+
+
+def test_installed_copy_never_writes_code_even_with_external_fallback(
+        tmp_path, monkeypatch):
+    installed = tmp_path / "installed"
+    (installed / "tools").mkdir(parents=True)
+    inside = installed / ".codex-audit"
+    inside.mkdir()
+    outside = tmp_path / "outside-audit"
+    outside.mkdir()
+    monkeypatch.setattr(doctor, "__file__", str(installed / "tools" /
+                                                "bridge_v2_component_doctor.py"))
+    assert doctor._code_layout(installed) == "installed"
+    monkeypatch.setenv("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT", str(outside))
+    assert _run_bounded([sys.executable, "--version"], 2,
+                        runtime_audit_root=inside) == (None, "probe_scope_error")
+    assert list(inside.iterdir()) == []
+    output, reason = _run_bounded([sys.executable, "--version"], 2)
+    assert reason is None
+    assert output.startswith("Python ")
+    assert list(inside.iterdir()) == []
+
+
+def test_invalid_git_marker_does_not_grant_development_audit(
+        tmp_path, monkeypatch):
+    unknown = tmp_path / "unknown"
+    (unknown / "tools").mkdir(parents=True)
+    (unknown / ".git").mkdir()
+    audit = unknown / ".codex-audit"
+    audit.mkdir()
+    monkeypatch.setattr(doctor, "__file__", str(unknown / "tools" /
+                                                "bridge_v2_component_doctor.py"))
+    assert doctor._code_layout(unknown) == "unknown"
+    assert _run_bounded([sys.executable, "--version"], 2,
+                        runtime_audit_root=audit) == (None, "probe_scope_error")
+
+
 def test_probe_cleanup_failure_is_separate_from_probe_result(monkeypatch):
     def denied(_):
         raise PermissionError("controlled cleanup failure")
@@ -625,6 +677,55 @@ def test_approved_native_package_version_mismatch_stays_unknown(tmp_path, monkey
     assert item["reason"] == "package_version_mismatch"
     assert item["trust"] == "unknown"
     assert item["provenance"]["verified"] is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows npm native anchor")
+@pytest.mark.parametrize("case,expected_reason", [
+    ("lock_failure", "binary_lock_error"),
+    ("too_large", "binary_too_large"),
+    ("correct_anchor", None),
+])
+def test_approved_native_full_inspection_lock_outcomes(
+        tmp_path, monkeypatch, case, expected_reason):
+    data = manifest("claude")
+    data["components"][0]["min_version"] = "2.1.0"
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": None,
+    }
+    (tmp_path / "claude.cmd").write_text("@echo off\nexit /b 99\n", encoding="utf-8")
+    package = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({
+        "name": "@anthropic-ai/claude-code", "version": "2.1.283",
+        "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    binary = package / "bin" / "claude.exe"
+    binary.write_bytes(b"test-only approved fixture")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    monkeypatch.setattr(doctor, "APPROVED_NATIVE_PINS", {"claude": digest})
+
+    @contextmanager
+    def locked(_):
+        if case == "lock_failure":
+            raise PermissionError("controlled lock failure")
+        yield None if case == "too_large" else digest
+
+    monkeypatch.setattr(doctor, "_locked_windows_binary_digest", locked)
+    launches = []
+
+    def launch(*args, **kwargs):
+        launches.append(args)
+        return "2.1.283\n", None
+
+    monkeypatch.setattr(doctor, "_run_bounded", launch)
+    item = inspect_components(data, lane="tools", features=["bridge_core"],
+                              search_path=str(tmp_path), platform="windows")["components"][0]
+    assert item["reason"] == expected_reason
+    assert item["status"] == ("ok" if case == "correct_anchor" else "unknown")
+    assert item["trust"] == ("approved" if case == "correct_anchor" else "unknown")
+    assert item["provenance"]["verified"] is (case == "correct_anchor")
+    assert len(launches) == (1 if case == "correct_anchor" else 0)
 
 
 def test_timeout_does_not_leave_grandchild_or_pipe_open(tmp_path):

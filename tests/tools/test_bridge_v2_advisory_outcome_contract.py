@@ -474,3 +474,39 @@ def test_suggestion_units_and_disposition_splits_reconcile():
     }
     assert sum(joined["correctness_counts"].values()) == joined["completed_suggestion_count"]
     assert sum(joined["noncompleted_correctness_counts"].values()) == joined["noncompleted_suggestion_count"]
+
+
+def test_all_noncompleted_statuses_and_distinct_count_units():
+    completed = attempt()
+    noncompleted = [
+        attempt(attempt_id=f"attempt-{status}", attempt_status=status,
+                suggestion_ids=[f"suggestion-{status}"])
+        for status in ("failed", "timeout", "skipped", "unknown")
+    ]
+    joined = join_outcomes([completed, *noncompleted], [outcome(completed)])
+    assert joined["denominator_attempts"] == 5
+    assert joined["suggestion_count"] == 6
+    assert joined["suggestion_count"] != joined["denominator_attempts"]
+    assert joined["completed_suggestion_count"] == 2
+    assert joined["noncompleted_suggestion_count"] == 4
+    assert joined["completed_disposition_counts"] == {
+        "used": 1, "rejected": 0, "unused": 0, "unknown": 1
+    }
+    assert joined["noncompleted_disposition_counts"] == {
+        "used": 0, "rejected": 0, "unused": 0, "unknown": 4
+    }
+    assert sum(joined["disposition_counts"].values()) == joined["suggestion_count"]
+    assert sum(joined["correctness_counts"].values()) == joined["completed_suggestion_count"]
+    assert sum(joined["noncompleted_correctness_counts"].values()) == joined["noncompleted_suggestion_count"]
+
+
+def test_outcomes_list_subclass_refused_before_overridden_methods():
+    class HostileList(list):
+        def __len__(self):
+            raise AssertionError("overridden len must not run")
+
+        def __iter__(self):
+            raise AssertionError("overridden iter must not run")
+
+    with pytest.raises(ContractError, match="invalid_outcomes"):
+        join_outcomes([attempt()], HostileList([outcome()]))

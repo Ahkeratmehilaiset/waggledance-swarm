@@ -1,5 +1,6 @@
 """Content integrity is not an operator signature or deployment permission."""
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -100,6 +101,45 @@ def test_json_parser_rejects_ambiguous_input(data):
         parse_manifest(data)
 
 
+def test_noncanonical_manifest_bytes_refused(root):
+    manifest = build_manifest(root, ["a.txt"])
+    for value in [canonical_bytes(manifest) + b"\n", json.dumps(manifest, indent=2).encode()]:
+        with pytest.raises(ManifestError, match="noncanonical_manifest_bytes"):
+            parse_manifest(value)
+
+
+def test_large_integer_has_stable_refusal():
+    with pytest.raises(ManifestError):
+        parse_manifest(b'{"size":' + b'9' * 5000 + b'}')
+
+
+@pytest.mark.parametrize("private", [".git", ".codex-audit"])
+def test_existing_private_file_refused_before_open(root, monkeypatch, private):
+    (root / private).mkdir()
+    (root / private / "secret").write_bytes(b"not a real secret")
+
+    def forbidden_open(*args, **kwargs):
+        raise AssertionError("private path reached open")
+
+    monkeypatch.setattr(Path, "open", forbidden_open)
+    with pytest.raises(ManifestError, match="^invalid_path$"):
+        build_manifest(root, [f"{private}/secret"])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction fixture")
+@pytest.mark.parametrize("as_root", [False, True])
+def test_windows_junctions_refused(root, as_root):
+    import _winapi
+    junction = root / "junction"
+    _winapi.CreateJunction(str(root / "nested"), str(junction))
+    if as_root:
+        with pytest.raises(ManifestError, match="unsafe_root"):
+            build_manifest(junction, ["b.txt"])
+    else:
+        with pytest.raises(ManifestError, match="linked_artifact"):
+            build_manifest(root, ["junction/b.txt"])
+
+
 def test_symlink_file_and_parent_refused(root, tmp_path):
     target = root / "alias"
     try:
@@ -188,6 +228,8 @@ def test_cli_real_files_and_nonzero_on_corruption(root):
     command = [sys.executable, str(script), "verify", "--root", str(root), "--manifest", str(manifest_path)]
     result = subprocess.run(command, capture_output=True, check=True)
     assert json.loads(result.stdout)["verified"] is True
+    assert json.loads(result.stdout)["manifest_sha256"] == hashlib.sha256(built.stdout).hexdigest()
+    assert built.stdout == canonical_bytes(parse_manifest(built.stdout))
     (root / "a.txt").write_bytes(b"corrupted")
     result = subprocess.run(command, capture_output=True)
     assert result.returncode == 2

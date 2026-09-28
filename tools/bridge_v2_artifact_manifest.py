@@ -170,11 +170,18 @@ def _constant(value: str) -> None:
 
 
 def parse_manifest(data: bytes) -> dict[str, Any]:
+    """Accept exactly canonical UTF-8 bytes, without BOM/newline/trailing space.
+
+    Thus SHA256(file bytes) is exactly the manifest_sha256 the CLI reports.
+    """
     if not isinstance(data, bytes) or len(data) > MAX_MANIFEST_BYTES:
         raise ManifestError("invalid_manifest_bytes")
     try:
-        return _validate(json.loads(data.decode("utf-8"), object_pairs_hook=_pairs,
-                                    parse_constant=_constant))
+        parsed = _validate(json.loads(data.decode("utf-8"), object_pairs_hook=_pairs,
+                                       parse_constant=_constant))
+        if data != canonical_bytes(parsed):
+            raise ManifestError("noncanonical_manifest_bytes")
+        return parsed
     except ManifestError:
         raise
     except (UnicodeError, ValueError, RecursionError) as exc:
@@ -209,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
             output = json.dumps({"verified": True, "scope": "listed_content_only",
                                  "manifest_sha256": hashlib.sha256(canonical_bytes(verified)).hexdigest()},
                                 sort_keys=True).encode("utf-8")
-        sys.stdout.buffer.write(output + b"\n")
+        # Build bytes are the exact canonical manifest; no invisible newline.
+        sys.stdout.buffer.write(output if args.command == "build" else output + b"\n")
         return 0
     except (ManifestError, OSError) as exc:
         reason = str(exc) if isinstance(exc, ManifestError) else "manifest_io_error"

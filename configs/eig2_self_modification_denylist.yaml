@@ -49,6 +49,7 @@ categories:
       (e.g., ADR 020 for the polymorphic-reply fix).
     paths:
       - ".agent-bridge/bin/BridgeEventClassifier.ps1"
+      - ".agent-bridge/bin/BridgeWakeClass.ps1"
       - ".agent-bridge/bin/Read-AgentBridge.ps1"
       - ".agent-bridge/bin/Get-AgentBridgeStatus.ps1"
       - ".agent-bridge/bin/Get-BridgeNextAction.ps1"

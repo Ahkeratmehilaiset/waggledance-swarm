@@ -3132,6 +3132,7 @@ else {
         $watcherLogReaderRelative,
         'tools-bootstrap\.agent-bridge\bin\BridgeTelemetry.ps1',
         'tools-bootstrap\.agent-bridge\bin\BridgeEventClassifier.ps1',
+        'tools-bootstrap\.agent-bridge\bin\BridgeWakeClass.ps1',
         'tools-bootstrap\.agent-bridge\bin\BridgeRequestContract.ps1'
     )
     if (

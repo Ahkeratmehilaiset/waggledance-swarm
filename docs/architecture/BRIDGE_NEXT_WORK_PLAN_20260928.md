@@ -26,6 +26,24 @@ requirements table below restates them in English):
 | R4 | Routine work never uses the most expensive model; planning and brainstorming may use a strong one | §1, §5 |
 | R5 | The unfinished bridge items are designed to completion, showing how they fit today's code | §6 |
 
+A follow-up the same day, also verbatim:
+
+> Niin tai tässä kokonaisuudessa täytyy olla toiminnallisuus, että esim fabel
+> tai lead voi vaihtaa mitä tahansa mallia tai mallin efforttia perustuen
+> pyyntöön, omaan arvioon tai mittaukseen. Eli parven päämiehillä on
+> mahdollsuus autonomisesti säätää toimintaa ja heillä pitää olla tiedossa
+> jokaisen olemassa olevan mallin äly kustannus ja jos omaa tilaa ei pysty
+> muuttamaan sen muutostyön voi pyytää toiselta mallilta. Ja sitten perustyö
+> pitää pystyä arvioida mihin malli kannattaa siinä muuttaa että toiminta on
+> kustannustehokasta, mutta parhaalla mahdollisella alustuksella
+
+| # | Requirement | Where in this plan |
+|---|---|---|
+| R6 | The swarm's principals (for example fable-5 or Lead) can autonomously switch any model or effort, based on a request, their own assessment or a measurement | §3.5 |
+| R7 | The principals know every existing model's intelligence and cost | §3.7 |
+| R8 | A lane that cannot change its own state can ask another model to make the change | §3.6 |
+| R9 | Routine work is routed to the most cost-effective model, but prepared with the best possible initialization | §5.4 |
+
 This plan continues the dynamic model system plan v4 and the lane-profile
 switching spec v3. Both still live only in fable-5's `.codex-audit/`; their
 build order is folded into §7 so nothing is duplicated.
@@ -202,11 +220,113 @@ projection would pass 95 %. It then records why.
 |---|---|---|
 | Operator's own terminal (`wd-model ...`) | everything in 3.2, including `--force-budget` | direct operator action |
 | Operator typing in a lane's own interactive session (e.g. "vaihda fable suunnittelumalliin 2 tunniksi") | `set` / `reset` / `freeze` within the approved catalog, no `--force-budget` | session-observed direct operator input, the same standard as the #1751 signature. The lane runs `wd-model` and quotes the operator's words in the event. |
-| Any agent on its own initiative | only a `profile_request` to the loop (demand ≥ 2, one named task); never a direct switch | agents do not grant themselves capacity |
+| A principal (fable-5, codex-lead-1) on a request, its own assessment or a measurement | switch any lane, including itself, to any model and effort inside the operator-signed envelope, under the guardrails in §3.5 | operator directive R6 |
+| Any other lane | a `profile_request` to a principal or the loop (for itself, one named task, with a reason) | only principals switch |
 | A relayed "the operator said..." from another agent | nothing | a peer relay is not operator authority |
 
 Raising a ceiling, approving a new profile or changing the fleet mode are not
 part of `wd-model`. Those stay catalog signatures.
+
+### 3.5 Autonomous adjustment by the principals (R6)
+
+**Who.** The signed catalog lists `principals: [codex-lead-1, fable-5]`. Only
+these lanes switch other lanes, or themselves, without a per-switch operator
+action.
+
+**What.** Any model and effort inside the **envelope**. The envelope is the set
+of registry models and efforts the operator enabled with one catalog
+signature.
+- Proposed first envelope: every model and effort in the registry today, plus
+  Haiku 4.5 and Grok 4.7.
+- Excluded from the envelope: fast and priority tiers, and anything billed to
+  pay-per-use credits (for example Fable on Pro, or Claude Fast mode). Those
+  are real money.
+- New models enter the envelope only through discovery, qualification (PR-16)
+  and the operator's signature (plan v4 §6).
+
+**Triggers.** Every switch names exactly one:
+- `request`: a bridge `profile_request` event, or the operator;
+- `assessment`: the principal's own judgement, with the task class, the
+  expected benefit and the time cap written down;
+- `measurement`: a pacer or demand-sensor verdict (PR-5, PR-11).
+
+**Guardrails.** The actuator enforces these mechanically; a principal cannot
+waive them:
+1. **Budget.** The plan v4 check applies: the projection must stay at or under
+   70 % for a steady switch, 90 % for a burst and 95 % for a sprint. The
+   premium tier is only ever a time-capped burst. Without a measured cost, a
+   switch may lower but never raise.
+2. **Rate.**
+   - Dwell of 30 min per lane.
+   - At most 4 switches per lane per hour.
+   - One change per pool per tick.
+   - Hysteresis for raises.
+   - A revert skips all of these.
+3. **Reviewer independence.**
+   - RCOs choose their own effort within their allowed range.
+   - A principal cannot lower an RCO below the reviewer default.
+   - A principal cannot change the profile of an RCO that is reviewing the
+     principal's own PR.
+4. **Operator precedence.**
+   - An operator override pins a lane (§3.3), and `wd-model freeze` stops
+     every principal.
+   - Between the two principals, a switch made by one holds for its dwell. The
+     other principal may change it within that time only in `conserve`, and
+     every contested switch goes into the operator digest.
+5. **Evidence.**
+   - Every switch is a `decision/profile_switch` event with the actor, trigger,
+     inputs, from and to profile, and time cap.
+   - It is verified by D3 on the next turn and reverted on failure or expiry.
+
+**Still not allowed:** changing the envelope or a ceiling, approving a model,
+buying credits, enabling fast mode, changing the fleet mode, or lifting a
+freeze. Those remain the operator's.
+
+### 3.6 When a lane cannot switch itself (R8)
+
+Some switches cannot be made from inside the lane:
+- a Codex lane cannot relaunch its own process;
+- no lane can verify its own relaunch;
+- the in-session switch (PR-12) may not be qualified for a CLI version.
+
+**Design**
+1. The lane (or a principal acting for it) posts a `profile_change_request`
+   with lane, target profile, trigger and reason. The lane then writes its
+   checkpoint at a safe boundary.
+2. **One actuator executes it.** This is the relaunch executor (PR-3) with
+   production ports, run by the supervisor outside every lane. It checks the
+   guardrails in §3.5 and applies:
+   - the in-session switch where it is qualified;
+   - otherwise an explicit relaunch that resumes the conversation.
+3. **Buddy fallback.** If the actuator is unavailable, the other principal runs
+   the same executor for that lane: Lead switches fable-5, fable-5 switches
+   Lead. It uses the same checks and the same events. A lane never kills a
+   peer's process outside the executor.
+4. **Verification.** Someone other than the switched lane verifies the result
+   by D3 and posts it: the actuator, or the other principal. The requester
+   gets a bound reply.
+
+Lead's self-transition (spec v3 B9, which has no trigger today) becomes this
+path: Lead requests, the actuator applies, and fable-5 verifies.
+
+### 3.7 What the principals know about every model (R7)
+
+`wd-model models [--json]` is the principals' decision table. It is also
+injected, compacted, into every principal's boot brief. It has one row per
+model and effort:
+
+| Column | Source |
+|---|---|
+| provider, family, tier, pool / `limit_id` | registry v2 (§2.1) |
+| intelligence and coding index | registry (benchmark, with version) |
+| measured quality per task class | PR-16 qualification suite and the §5.4 routing ledger |
+| relative cost (measured points per Mtok) and price ratio | PR-13 cost meter, stored daily |
+| pool state now (used, reset, forecast, mode) | observer + pacer |
+| available in the CLI now; in the envelope | CLI model caches, signed catalog |
+| value = quality per cost for each task class | derived; the ranking the principals use |
+
+Unknown values are shown as unknown, never guessed. A decision that depends on
+an unknown value may lower but never raise.
 
 ## 4. Grok for every lane (R3)
 
@@ -299,6 +419,47 @@ pass the budget check.
    - a lane's profile follows its demand;
    - `planning` is a time-capped burst;
    - after the burst the lane returns to its default.
+
+### 5.4 Brief-then-delegate: cheap execution, best initialization (R9)
+
+Most routine and implementation work does not need the strongest model to
+*execute*. It needs the strongest model to *set it up*. The pattern has five
+steps.
+
+1. **Brief (strong model, the principal).**
+   - Write a task brief: goal, exact files and line references, relevant
+     invariants and rules, known pitfalls, acceptance tests, the definition of
+     done, and what the executor must not touch.
+   - The strong model gathers the context. This is the "best possible
+     initialization", and it is where the quality comes from.
+2. **Route.**
+   - Pick the cheapest model and effort whose measured success rate for this
+     task class is at least the threshold. Proposed thresholds: 90 % for
+     routine, 95 % for implementation.
+   - Expected cost is `cost(model) x expected attempts`.
+   - Until there are measurements, use the §5.1 defaults.
+3. **Execute (cheap model)** in an isolated worktree or subagent, with only
+   the brief as context. The executor has no bridge authority: no claims, no
+   decisions, no merges.
+4. **Verify (strong model or tests).** Run the acceptance tests and review the
+   diff. Verifying is much cheaper than doing the work.
+5. **Escalate on failure.**
+   - Move up one tier (economy, then standard, then strong), adding the failure
+     notes to the brief.
+   - After two escalations, the principal does the task itself.
+
+**Measurement closes the loop.**
+- Every delegated task appends one row to a routing ledger: task class, model,
+  effort, brief size, attempts, success, tokens and cost.
+- The ledger updates the success rates that step 2 uses.
+- The weekly digest shows cost per task class before and after.
+
+This is how the routing becomes measured rather than guessed.
+
+**Unchanged by this pattern:**
+- (a)-class code still gets the full exact-head dual-RCO review, whichever
+  model wrote it.
+- Review, planning and incident work stay on strong profiles.
 
 ### 5.3 A rule conflict to resolve first
 
@@ -461,7 +622,10 @@ Every (a)-class step needs an operator signature.
 | 7 | PR-8 catalog signature (profiles `approved`) | operator | 5 |
 | 8 | PR-9 explicit per-lane launch + preflight enforce | (a) | 7 |
 | 9 | §3 `wd-model` status (read-only) + override records + relaunch apply | (a) | 8 |
+| 9a | §3.7 `wd-model models` decision table (read-only) | (b) | 5 |
+| 9b | §3.5 principal authority + §3.6 actuator with production ports and buddy fallback; envelope signature | (a) + operator | 8, 9 |
 | 10 | §5 task classes + per-task delegation in lane prompts; Rule 8 amendment | (a) + operator | 5 |
+| 10a | §5.4 brief-then-delegate harness + routing ledger | (b), then (a) when wired into lanes | 10 |
 | 11 | §4.1-4.3 `grok_consult` request kind + broker + paced budget (PR-15b) | (a) | 6 |
 | 12 | PR-12 in-session switch; `wd-model` uses it instead of a relaunch | (a) | 8 |
 | 13 | PR-11 demand sensor + decision policy (shadow) | (b) | 5, 10 |
@@ -480,11 +644,15 @@ saving arrives already at step 10.
 - **Grok is never a gate.**
 - **Nothing automatic buys credits** or enables fast/priority tiers
   (Fast mode is real money).
-- **The loop, a lane and `wd-model` cannot:** approve a profile, raise a
-  ceiling or change the fleet mode.
-- **Only the listed channels switch.** An override is the operator's own
-  terminal or the operator's direct input in a lane window. A peer relay or an
-  agent-composed `operator` event is never authority.
+- **The loop, the principals and `wd-model` cannot:** change the envelope,
+  approve a profile, raise a ceiling, change the fleet mode or lift a freeze.
+- **Only the listed channels switch.**
+  - The operator, from their own terminal or by direct input in a lane window.
+  - The two principals, inside the envelope and under the §3.5 guardrails.
+  - A peer relay or an agent-composed `operator` event is never operator
+    authority.
+- **No lane lowers its own reviewer**, and no principal lowers an RCO that is
+  reviewing that principal's work.
 - **Every switch is verified** by the next turn's transcript/rollout and
   recorded as a bridge event with its inputs.
 - **Kernel-name and runtime-root isolation** in every test of bridge code.

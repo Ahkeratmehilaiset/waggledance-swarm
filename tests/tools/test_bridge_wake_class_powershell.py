@@ -319,6 +319,77 @@ DEPTH_CASES = [
 ]
 
 
+# PowerShell member access on an IDictionary returns an ENTRY named like the
+# property ($d.Keys, $d.Count) instead of the property, so key names that are
+# significant to the PS adapter must not change classification anywhere.
+ADAPTER_NAMES = ['Keys', 'Count', 'Values', 'Item', 'PSBase', 'PSObject', 'PSTypeNames',
+                 'Contains', 'Add', 'get_Keys', 'get_Count', 'GetEnumerator', 'Length', 'keys']
+_ADAPTER_VALUES = [[], 'agent', 0, {}, 'claude-rco-2', ['notification'], None]
+_ADAPTER_BASES = {
+    'control': {'agent': 'codex-lead-1', 'to': 'claude-rco-2', 'type': 'decision', 'status': 'veto', 'task_id': 't'},
+    'hinted': {'agent': 'codex-lead-1', 'to': 'claude-rco-2', 'type': 'message', 'status': 'info',
+               'payload': {'notification': 'informational'}},
+    'ack': {'agent': 'codex-lead-1', 'to': 'claude-rco-2', 'type': 'message', 'status': 'received',
+            'payload': {'request_type': 'x'}},
+    'liveness': {'agent': 'codex-lead-1', 'to': 'claude-rco-2', 'type': 'heartbeat', 'status': 'alive',
+                 'payload': {'head': 'abc'}},
+    'self': {'agent': 'claude-rco-2', 'to': 'claude-rco-2', 'type': 'decision', 'status': 'veto'},
+}
+
+
+def _adapter_cases():
+    cases = []
+    for base_name, base in _ADAPTER_BASES.items():
+        for name in ADAPTER_NAMES:
+            for vi, value in enumerate(_ADAPTER_VALUES):
+                top = dict(base)
+                top[name] = value
+                cases.append((f'adapter_top_{base_name}_{name}_{vi}', 'claude-rco-2', json.dumps(top)))
+            payload = dict(base)
+            payload['payload'] = dict(base.get('payload', {}), **{name: []})
+            cases.append((f'adapter_payload_{base_name}_{name}', 'claude-rco-2', json.dumps(payload)))
+            nested = dict(base)
+            nested['payload'] = dict(base.get('payload', {}), result={name: 0, 'status': 'veto'})
+            cases.append((f'adapter_nested_{base_name}_{name}', 'claude-rco-2', json.dumps(nested)))
+            to_dict = dict(base, to={name: 0, 'claude-rco-2': 1})
+            cases.append((f'adapter_to_dict_{base_name}_{name}', 'claude-rco-2', json.dumps(to_dict)))
+            responders = dict(base, expected_responders=[{name: 'claude-rco-2'}])
+            cases.append((f'adapter_responders_{base_name}_{name}', 'claude-rco-2', json.dumps(responders)))
+    # claude-rco-2 review 2edb7ca4 repro rows, verbatim shapes.
+    cases += [
+        ('rco2_keys_empty_list_on_veto', 'claude-rco-2',
+         '{"agent":"codex-lead-1","to":"claude-rco-2","type":"decision","status":"veto","task_id":"t","Keys":[]}'),
+        ('rco2_keys_agent_on_veto', 'claude-rco-2',
+         '{"agent":"codex-lead-1","to":"claude-rco-2","type":"decision","status":"veto","task_id":"t","Keys":"agent"}'),
+        ('rco2_count_in_to_dict', 'claude-rco-2',
+         '{"agent":"codex-lead-1","to":{"Count":0,"claude-rco-2":1},"type":"decision","status":"veto"}'),
+        ('rco2_payload_variant_with_keys', 'claude-rco-2',
+         '{"agent":"codex-lead-1","to":"claude-rco-2","type":"message","status":"info","payload":{"notification":"informational"},"Payload":{},"Keys":["agent","to","type","status","payload"]}'),
+        ('rco2_ack_payload_keys_hides_result', 'claude-rco-2',
+         '{"agent":"codex-lead-1","to":"claude-rco-2","type":"message","status":"received","payload":{"Keys":[],"result":{"status":"veto"}}}'),
+        ('rco2_hinted_payload_keys_hides_binding', 'claude-rco-2',
+         '{"agent":"codex-lead-1","to":"claude-rco-2","type":"message","status":"info","payload":{"notification":"informational","in_reply_to_request_id":"r-1","Keys":["notification"]}}'),
+    ]
+    return cases
+
+
+ADAPTER_CASES = _adapter_cases()
+
+
+def test_adapter_cases_are_distinct_and_reach_every_decision():
+    names = [n for n, _, _ in RAW_CASES + DEPTH_CASES + ADAPTER_CASES]
+    assert len(names) == len(set(names))
+    reasons = {oracle(x, t)['reason'] for _, t, x in ADAPTER_CASES}
+    assert {'control_type', 'ack', 'liveness', 'informational_hint', 'ambiguous_target',
+            'noise_payload_not_recognized', 'payload_binding_field', 'case_variant_key'} <= reasons
+    assert sum(1 for _, t, x in ADAPTER_CASES if not oracle(x, t)['wakes']) >= 100
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS)
+def test_powershell_adapter_key_names_match_python(ps, tmp_path):
+    assert_parity(ps, ADAPTER_CASES, tmp_path, 'adapter')
+
+
 def test_raw_cases_are_distinct_and_cover_both_outcomes():
     names = [n for n, _, _ in RAW_CASES + DEPTH_CASES]
     assert len(names) == len(set(names))
@@ -370,7 +441,7 @@ def _fuzz_value(rng, depth=0):
     if roll < 0.8:
         return [_fuzz_value(rng, depth + 1) for _ in range(rng.randrange(0, 3))]
     keys = rng.sample(['notification', 'request_id', 'Request_Id', 'result', 'head',
-                       'request_type', 'fable-5', 'x'], rng.randrange(0, 3))
+                       'request_type', 'fable-5', 'x'] + rng.sample(ADAPTER_NAMES, 2), rng.randrange(0, 3))
     return {k: (rng.choice(['informational', 'x', '']) if k == 'notification' else _fuzz_value(rng, depth + 1))
             for k in keys}
 
@@ -421,6 +492,8 @@ def fuzz_cases(seed, count):
                 base[_fuzz_case_key(rng, key)] = _fuzz_value(rng)
         if rng.random() < 0.3:
             base['to'] = rng.choice(_TARGETS + ['fable-5,claude-rco-1', ' fable-5'])
+        if rng.random() < 0.2:  # PowerShell-adapter-significant key at the top level
+            base[rng.choice(ADAPTER_NAMES)] = _fuzz_value(rng)
         cases.append((f'fuzz-{seed}-{i}', target, _fuzz_text(rng, base)))
     return cases
 
@@ -429,6 +502,8 @@ def test_fuzz_corpus_spans_the_contract():
     reasons = {oracle(x, t)['reason'] for _, t, x in fuzz_cases(20260928, 1200)}
     assert len(reasons) >= 20, reasons
     assert {'malformed_event', 'case_variant_key', 'informational_hint', 'ack', 'liveness'} <= reasons
+    texts = [x for _, _, x in fuzz_cases(20260928, 1200)]
+    assert sum(1 for x in texts if any('"' + n + '"' in x for n in ADAPTER_NAMES)) >= 200
     silent = sum(1 for _, t, x in fuzz_cases(20260928, 1200) if not oracle(x, t)['wakes'])
     assert silent >= 200, silent
 
@@ -656,6 +731,26 @@ def test_port_source_is_pure():
     assert all(line.startswith('function ') or line == '}' for line in top), top
 
 
+SHADOWABLE_MEMBER = re.compile(r'\.(Keys|Values|Count|Item)\b(?!\s*\()')
+LIST_COUNT_OK = {'$stack', '$addressLike'}
+
+
+def test_no_shadowable_dictionary_member_access():
+    """Property access such as $d.Keys/$d.Count is shadowed by an entry of that name."""
+    source = WAKE_PS.read_text(encoding='utf-8')
+    code = re.sub(r'<#.*?#>', '', source, flags=re.S)
+    bad = []
+    for number, line in enumerate(code.splitlines(), 1):
+        if line.lstrip().startswith('#'):
+            continue
+        for m in SHADOWABLE_MEMBER.finditer(line):
+            owner = re.search(r'(\$[A-Za-z_][A-Za-z0-9_]*)$', line[:m.start()])
+            if m.group(1) == 'Count' and owner and owner.group(1) in LIST_COUNT_OK:
+                continue
+            bad.append((number, line.strip()))
+    assert not bad, bad
+
+
 def test_classifier_delegation_is_the_only_classifier_change():
     text = CLASSIFIER_PS.read_text(encoding='utf-8')
     loads = re.findall(r"^\. \(Join-Path \$PSScriptRoot '([^']+)'\)", text, flags=re.M)
@@ -748,6 +843,13 @@ PS_MUTANTS = [
     ('render_no_escape_control', "elseif ($code -lt 32) { [void]$sb.Append('\\u').Append($code.ToString('x4')) }", ''),
     ('render_newline_raw', "elseif ($code -eq 10) { [void]$sb.Append('\\n') }", ''),
     ('render_float_threshold', 'if ($decpt -le -4 -or $decpt -gt 16) {', 'if ($decpt -le -5 -or $decpt -gt 16) {'),
+    # PowerShell adapter shadowing: each dictionary read reverted to a property.
+    ('shadow_render_keys', 'foreach ($k in $Value.get_Keys())', 'foreach ($k in $Value.Keys)'),
+    ('shadow_variant_keys', 'foreach ($k in $Obj.get_Keys())', 'foreach ($k in $Obj.Keys)'),
+    ('shadow_empty_dict_count', 'if ($V -is $dictType) { return $V.get_Count() -eq 0 }', 'if ($V -is $dictType) { return $V.Count -eq 0 }'),
+    ('shadow_noise_payload_keys', 'foreach ($k in $p.get_Keys())', 'foreach ($k in $p.Keys)'),
+    ('shadow_event_keys', 'foreach ($k in $Event.get_Keys())', 'foreach ($k in $Event.Keys)'),
+    ('shadow_binding_payload_keys', 'foreach ($k in $payload.get_Keys())', 'foreach ($k in $payload.Keys)'),
 ]
 # Deliberately not mutated here: the separators (', ' and ': '), culture
 # lowercasing of A-Z and the sign of -0.0 are equivalent for classification
@@ -782,7 +884,7 @@ def test_every_ps_mutant_is_caught(tmp_path):
     caught mutant is cheap; a survivor runs every case.
     """
     ps = LANE_TEST_SHELLS[0]
-    cases = RAW_CASES + DEPTH_CASES + [
+    cases = RAW_CASES + DEPTH_CASES + ADAPTER_CASES + [
         (v['id'], v['target_agent'], json.dumps(v['event'])) for v in VECTORS]
     source = WAKE_PS.read_text(encoding='utf-8')
     variants = tmp_path / 'variants'

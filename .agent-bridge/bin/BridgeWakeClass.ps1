@@ -264,7 +264,7 @@ function ConvertTo-BridgeWakePythonJson {
         return $out
     }
     if ($Value -is [System.Collections.Specialized.OrderedDictionary]) {
-        $items = foreach ($k in $Value.Keys) {
+        $items = foreach ($k in $Value.get_Keys()) {
             (ConvertTo-BridgeWakePythonJson -Value ([string]$k) -Depth ($Depth + 1)) + ': ' +
                 (ConvertTo-BridgeWakePythonJson -Value $Value[$k] -Depth ($Depth + 1))
         }
@@ -365,7 +365,7 @@ function Get-BridgeWakeClassFromDecoded {
     }
     $hasVariant = {
         param($Obj, [string] $Name)
-        foreach ($k in $Obj.Keys) {
+        foreach ($k in $Obj.get_Keys()) {
             if (-not [string]::Equals([string]$k, $Name) -and [string]::Equals((ConvertTo-BridgeWakeAsciiLower ([string]$k)), $Name)) { return $true }
         }
         return $false
@@ -374,8 +374,8 @@ function Get-BridgeWakeClassFromDecoded {
         param($V)
         if ($null -eq $V) { return $true }
         if ($V -is [string]) { return $V.Length -eq 0 }
-        if ($V -is $dictType) { return $V.Count -eq 0 }
-        if ($V -is $listType) { return $V.Count -eq 0 }
+        if ($V -is $dictType) { return $V.get_Count() -eq 0 }
+        if ($V -is $listType) { return $V.get_Count() -eq 0 }
         return $false
     }
     $idState = {
@@ -395,7 +395,7 @@ function Get-BridgeWakeClassFromDecoded {
         $p = $Event['payload']
         if ($null -eq $p) { return $true }
         if ($p -isnot $dictType) { return $false }
-        foreach ($k in $p.Keys) {
+        foreach ($k in $p.get_Keys()) {
             if (-not $Allowed.Contains([string]$k) -or $p[$k] -isnot [string]) { return $false }
         }
         if (-not $p.Contains('notification')) { return $true }
@@ -420,7 +420,7 @@ function Get-BridgeWakeClassFromDecoded {
     }
 
     $addressLike = New-Object System.Collections.Generic.List[object]
-    foreach ($k in $Event.Keys) {
+    foreach ($k in $Event.get_Keys()) {
         $lk = ConvertTo-BridgeWakeAsciiLower ([string]$k)
         if (([string]::Equals($lk, 'to') -or [string]::Equals($lk, 'expected_responders')) -and -not (& $isEmptyValue $Event[$k])) {
             $addressLike.Add($Event[$k])
@@ -509,7 +509,7 @@ function Get-BridgeWakeClassFromDecoded {
         return & $result 'ambiguous' 'unhinted_notice' $ctl
     }
     if ($payload -isnot $dictType) { return & $result 'ambiguous' 'malformed_payload' $ctl }
-    foreach ($k in $payload.Keys) {
+    foreach ($k in $payload.get_Keys()) {
         $v = $payload[$k]
         if ($bindingKeySet.Contains((ConvertTo-BridgeWakeAsciiLower ([string]$k))) -and
             $null -ne $v -and -not (($v -is [string]) -and $v.Length -eq 0)) {

@@ -33,19 +33,26 @@ Committed state is a snapshot: every accepted record (including its nested
 binding and evidence list) is rebuilt from its canonical bytes, so a caller
 that mutates the objects it passed cannot change committed state or digests.
 
-File layer (single writer): journal paths that are, or are reached through, a
-symlink/junction/reparse point, hardlinked files (st_nlink > 1) and non-regular
-files are refused. ``repair`` copies the torn tail to a content-addressed
+File layer: every mutation (``append_file``, ``repair_file``) runs under an
+exclusive OS lock on the sibling ``<journal>.lock`` for its whole
+read/fold/check/write/fsync or read/validate/copy/truncate sequence; there is
+no unlocked path and no fallback when the lock cannot be taken (see
+``WRITER_SERIALIZATION``). Journal paths that are, or are reached through, a
+symlink/junction/reparse point, 8.3/short or otherwise non-canonical aliases,
+hardlinked files (st_nlink > 1), non-regular files and reserved names
+(``*.lock``, ``*.torn-<sha256>``) are refused. ``repair`` copies the torn tail to a content-addressed
 sibling ``<journal>.torn-<sha256>`` (O_EXCL, fsync). It reads the file once
 under its open handle, validates exactly that buffer, and requires the file to
-still hold exactly those bytes before the copy and again before truncating. There is no OS lock: a writer that
-changes the file after the last check and before the append/truncate syscall
-is NOT detected (see ``SINGLE_WRITER_RACES``); writer fencing is the caller's.
+still hold exactly those bytes before the copy and again before truncating.
+The lock serializes writers that use this module; it is not ACL protection
+and does not stop a process that writes the file without it.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import errno
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -54,6 +61,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 from types import MappingProxyType
 from typing import Any
 
@@ -521,22 +529,70 @@ def intent_record(operation_id: str, binding: dict[str, Any], recorded_at_utc: s
 
 # --- file journal -----------------------------------------------------------------------
 
-SINGLE_WRITER_RACES = (
-    "append: another writer can extend or replace the file after the fstat size check and before "
-    "the O_APPEND write; the check narrows the window, it does not close it (no OS lock)",
-    "repair: another writer can change the file after the final under-handle re-read (which must "
-    "equal the validated buffer) and before truncate; the recovery copy still holds the tail that was "
-    "read and committed_sha256 is always the hash of the validated prefix",
-    "path: a directory component can be swapped for an alias after the lstat walk and before open; "
-    "the post-open fstat identity check catches a swapped final file, not every swapped parent",
-    "two repairs of the same torn tail agree on the content-addressed recovery name and reuse it",
-)
+LOCK_SUFFIX = ".lock"
+DEFAULT_LOCK_TIMEOUT = 10.0
+MAX_LOCK_TIMEOUT = 60.0
+_RESERVED_NAME = re.compile(r".*(\.lock|\.torn-[0-9a-f]{64})", re.IGNORECASE)
+
+WRITER_SERIALIZATION = MappingProxyType({
+    "scope": ("append_file and repair_file hold an exclusive OS lock on <journal>.lock for the whole "
+              "read/fold/check/write/fsync and read/validate/copy/truncate sequence; no unlocked path, "
+              "no fallback: an untakeable lock is journal_lock_unavailable, a held one journal_locked "
+              "after the timeout, and neither mutates the journal"),
+    "primitive": "Windows: msvcrt byte-range lock on byte 0 of the lock file; POSIX: flock(LOCK_EX)",
+    "crash": "the OS releases the lock when the holder dies; a record cut by the crash is a torn tail",
+    "residual": (
+        "writers that bypass this module (raw writes, editors, other tools) take no lock; the size and "
+        "byte checks catch most such changes but not one landing after the final check",
+        "read_journal/fold take no lock: a concurrent reader can see a torn tail (reported, never folded)",
+        "advisory for the journal itself and not ACL protection: a hostile same-user process is not stopped",
+        "a writer at another integrity level, or under a DACL that denies opening the lock file, fails "
+        "closed (journal_lock_unavailable); sharing a journal across integrity levels is unsupported",
+        "network and remote filesystems: lock semantics are neither relied on nor tested",
+        "POSIX: a lock file unlinked by a non-module actor while held lets a new holder create a fresh one; "
+        "the holder re-verifies its lock file identity once after acquiring, not continuously",
+    ),
+})
 
 _REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
 
 
 def _is_alias(st: os.stat_result) -> bool:
     return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
+if os.name == "nt":
+    import msvcrt
+
+    def _os_try_lock(fd: int) -> bool:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EDEADLK):
+                return False
+            raise
+        return True
+
+    def _os_unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    try:
+        import fcntl
+    except ImportError:  # no primitive: every mutation fails closed
+        _os_try_lock = None
+        _os_unlock = None
+    else:
+        def _os_try_lock(fd: int) -> bool:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            return True
+
+        def _os_unlock(fd: int) -> None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _refuse_live_path(path: Path) -> None:
@@ -563,6 +619,12 @@ def _refuse_unsafe_path(path: Path) -> os.stat_result | None:
             raise ContractError("path_alias_refused") from None
         if _is_alias(st):
             raise ContractError("path_alias_refused")
+    # Path identity: the canonical form must be the path itself (short 8.3 names, subst or
+    # other aliases resolve elsewhere and would key a different lock file). Case is folded,
+    # so case variants on a case-insensitive volume name, and lock, the same file.
+    probe = absolute if os.path.lexists(absolute) else absolute.parent
+    if os.path.normcase(os.path.realpath(probe)) != os.path.normcase(str(probe)):
+        raise ContractError("path_alias_refused")
     try:
         st = os.lstat(absolute)
     except FileNotFoundError:
@@ -625,12 +687,80 @@ def loads_record(text: str) -> Any:
 
 
 def read_journal_checked(path: Path) -> tuple[Journal, int, int]:
-    """read_journal after the live-path and alias refusals."""
+    """read_journal after the reserved-name, live-path and alias refusals (takes no lock)."""
+    _refuse_reserved_name(path)
     _refuse_unsafe_path(path)
     return read_journal(path)
 
 
-def append_file(path: Path, raw: Any) -> tuple[str, Journal]:
+def _refuse_reserved_name(path: Path) -> None:
+    if _RESERVED_NAME.fullmatch(Path(path).name):
+        raise ContractError("reserved_journal_name")
+
+
+def lock_path(path: Path) -> Path:
+    absolute = Path(os.path.abspath(path))
+    return absolute.with_name(absolute.name + LOCK_SUFFIX)
+
+
+def _lock_timeout(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= MAX_LOCK_TIMEOUT:
+        raise ContractError("invalid_lock_timeout")
+    return float(value)
+
+
+@contextmanager
+def journal_writer_lock(path: Path, timeout: float = DEFAULT_LOCK_TIMEOUT):
+    """Hold the exclusive writer lock of ``path`` (keyed on its canonical sibling lock file)."""
+    timeout = _lock_timeout(timeout)
+    _refuse_reserved_name(path)
+    _refuse_unsafe_path(path)
+    if _os_try_lock is None:
+        raise ContractError("journal_lock_unavailable")
+    target = lock_path(path)
+    _refuse_unsafe_path(target)
+    try:
+        fd = os.open(target, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError:
+        raise ContractError("journal_lock_unavailable") from None
+    try:
+        _refuse_unsafe_file(os.fstat(fd))
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                acquired = _os_try_lock(fd)
+            except OSError:
+                raise ContractError("journal_lock_unavailable") from None
+            if acquired:
+                break
+            if time.monotonic() >= deadline:
+                raise ContractError("journal_locked")
+            time.sleep(0.01)
+        try:
+            try:
+                current = os.lstat(target)
+            except OSError:
+                current = None
+            if current is None or not _same_file(os.fstat(fd), current):
+                raise ContractError("journal_lock_unavailable")  # lock file replaced while waiting
+            yield
+        finally:
+            try:
+                _os_unlock(fd)
+            except OSError:
+                pass  # closing the descriptor releases it as well
+    finally:
+        os.close(fd)
+
+
+def append_file(path: Path, raw: Any, *, lock_timeout: float = DEFAULT_LOCK_TIMEOUT) -> tuple[str, Journal]:
+    """Append one record under the exclusive writer lock (see _append_locked)."""
+    with journal_writer_lock(path, lock_timeout):
+        return _append_locked(path, raw)
+
+
+def _append_locked(path: Path, raw: Any) -> tuple[str, Journal]:
     """Validate against the committed journal, then append one canonical line.
 
     Refuses while a torn tail exists (repair first) and if the file changed
@@ -702,7 +832,13 @@ def _require_unchanged(handle: Any, data: bytes) -> None:
         raise ContractError("concurrent_modification")
 
 
-def repair_file(path: Path) -> dict[str, Any]:
+def repair_file(path: Path, *, lock_timeout: float = DEFAULT_LOCK_TIMEOUT) -> dict[str, Any]:
+    """Repair a torn tail under the exclusive writer lock (see _repair_locked)."""
+    with journal_writer_lock(path, lock_timeout):
+        return _repair_locked(path)
+
+
+def _repair_locked(path: Path) -> dict[str, Any]:
     """Move an uncommitted torn tail to a recovery file, then drop it from the journal.
 
     The committed prefix must fold cleanly. Under the open handle the file must
@@ -751,7 +887,8 @@ def api_contract() -> dict[str, Any]:
                             for k, v in HARD_BOUNDARIES.items()},
         "commit_rule": "a record is committed only by its terminating newline; torn tails are never folded",
         "repair_rule": "the torn tail is kept in <journal>.torn-<sha256> before truncation",
-        "single_writer_races": list(SINGLE_WRITER_RACES),
+        "writer_serialization": {k: (list(v) if isinstance(v, tuple) else v)
+                                 for k, v in WRITER_SERIALIZATION.items()},
         "expiry_rule": ("attempted after expires_at is refused; a later continued record is kept as evidence "
                         "(continued_after_expiry) and is never success; nothing here authorizes continuation"),
     }
@@ -760,12 +897,15 @@ def api_contract() -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("fold", "repair"):
-        p = sub.add_parser(name)
-        p.add_argument("--journal", required=True, type=Path)
+    p = sub.add_parser("fold")
+    p.add_argument("--journal", required=True, type=Path)
+    p = sub.add_parser("repair")
+    p.add_argument("--journal", required=True, type=Path)
+    p.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT)
     p = sub.add_parser("append")
     p.add_argument("--journal", required=True, type=Path)
     p.add_argument("--record-file", required=True, type=Path)
+    p.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT)
     sub.add_parser("contract")
     args = parser.parse_args(argv)
     try:
@@ -775,10 +915,10 @@ def main(argv: list[str] | None = None) -> int:
             journal, _, torn = read_journal_checked(args.journal)
             out = dict(journal.fold(), torn_tail_bytes=torn)
         elif args.command == "repair":
-            out = repair_file(args.journal)
+            out = repair_file(args.journal, lock_timeout=args.lock_timeout)
         else:
             raw = loads_record(args.record_file.read_text(encoding="utf-8"))
-            result, journal = append_file(args.journal, raw)
+            result, journal = append_file(args.journal, raw, lock_timeout=args.lock_timeout)
             out = dict(journal.fold(), result=result)
     except ContractError as exc:
         print(json.dumps({"error": exc.code}, sort_keys=True))

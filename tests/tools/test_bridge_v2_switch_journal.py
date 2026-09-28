@@ -11,6 +11,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -964,6 +965,295 @@ def test_live_bridge_paths_are_refused(tmp_path):
             call()
         assert exc.value.code == "live_runtime_path_refused"
     assert not live.exists()
+
+
+# --- exclusive writer: real separate processes ---------------------------------------------------
+
+CHILD = r"""
+import json, pathlib, sys, time
+sys.path.insert(0, @ROOT@)
+import tools.bridge_v2_switch_journal as sj
+
+mode, journal, arg, ready, pause = sys.argv[1:6]
+journal, pause = pathlib.Path(journal), float(pause)
+
+
+def mark():
+    pathlib.Path(ready).write_text("1")
+
+
+out = {}
+try:
+    if mode == "append":
+        # Widen the check-to-write window: pause after each file check, before the write.
+        real = sj._refuse_unsafe_file
+
+        def slow(st):
+            real(st)
+            mark()
+            time.sleep(pause)
+        sj._refuse_unsafe_file = slow
+        out["result"] = sj.append_file(journal, json.loads(pathlib.Path(arg).read_text()))[0]
+    elif mode == "append_many":
+        records = json.loads(pathlib.Path(arg).read_text())
+        mark()
+        out["result"] = [sj.append_file(journal, record)[0] for record in records]
+    elif mode == "repair":
+        # Pause between repair's final check and its truncate.
+        real, calls = sj._require_unchanged, [0]
+
+        def slow(handle, data):
+            real(handle, data)
+            calls[0] += 1
+            if calls[0] == 2:
+                mark()
+                time.sleep(pause)
+        sj._require_unchanged = slow
+        out["result"] = sj.repair_file(journal)["removed_torn_bytes"]
+    elif mode == "hold":
+        with sj.journal_writer_lock(journal):
+            if arg == "torn":
+                with open(journal, "ab") as handle:
+                    handle.write(b'{"schema":"wd.bridge-v2-switch-')
+            mark()
+            time.sleep(pause)
+        out["result"] = "released"
+except sj.ContractError as exc:
+    out["error"] = exc.code
+print(json.dumps(out))
+"""
+
+
+_LIVE_CHILDREN: list = []
+
+
+@pytest.fixture(autouse=True)
+def _kill_leftover_children():
+    yield
+    while _LIVE_CHILDREN:  # a failed assertion must not leave a lock holder running
+        proc = _LIVE_CHILDREN.pop()
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate(timeout=30)
+
+
+def _child(tmp_path, mode, journal, arg="-", pause=0.0, name="ready"):
+    script = tmp_path / "child.py"
+    if not script.exists():
+        script.write_text(CHILD.replace("@ROOT@", repr(str(ROOT))), encoding="utf-8")
+    ready = tmp_path / f"{name}.flag"
+    proc = subprocess.Popen([sys.executable, "-B", str(script), mode, str(journal), str(arg), str(ready),
+                             str(pause)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    _LIVE_CHILDREN.append(proc)
+    return proc, ready
+
+
+def _wait_ready(proc, ready, timeout=20.0):
+    deadline = time.monotonic() + timeout
+    while not ready.exists():
+        if proc.poll() is not None or time.monotonic() > deadline:
+            out, err = proc.communicate(timeout=10)
+            pytest.fail(f"child not ready: rc={proc.returncode} out={out!r} err={err[-800:]!r}")
+        time.sleep(0.02)
+
+
+def _outcome(proc, timeout=60):
+    out, err = proc.communicate(timeout=timeout)
+    assert proc.returncode == 0, err[-800:]
+    return json.loads(out.strip().splitlines()[-1])
+
+
+def _journal_with(tmp_path, count, name="mp.jsonl"):
+    records = _full_sequence()
+    path = tmp_path / name
+    for record in records[:count]:
+        sj.append_file(path, record)
+    return path, records
+
+
+def test_two_processes_appending_the_same_seq_never_brick_the_journal(tmp_path):
+    path, records = _journal_with(tmp_path, 2)
+    variant_a = tmp_path / "a.json"
+    variant_b = tmp_path / "b.json"
+    variant_a.write_text(json.dumps(records[2]), encoding="utf-8")
+    variant_b.write_text(json.dumps(dict(records[2], recorded_at_utc=utc(3))), encoding="utf-8")
+    a, _ = _child(tmp_path, "append", path, variant_a, pause=1.0, name="a")
+    b, _ = _child(tmp_path, "append", path, variant_b, pause=1.0, name="b")
+    outcomes = [_outcome(a), _outcome(b)]
+    journal, committed, torn = sj.read_journal(path)  # never bricked
+    assert torn == 0 and journal.operation("op-1")["last_seq"] == 3
+    assert sorted(o.get("result", o.get("error")) for o in outcomes) == ["appended", "conflicting_replay"]
+
+
+def test_append_waits_for_a_repair_in_progress_instead_of_racing_it(tmp_path):
+    path, records, tail = _torn_journal(tmp_path)
+    repairer, ready = _child(tmp_path, "repair", path, pause=1.5)
+    _wait_ready(repairer, ready)  # repair has passed its final check and holds the file
+    assert sj.append_file(path, records[3])[0] == "appended"  # waits, then appends after the repair
+    assert _outcome(repairer) == {"result": len(tail)}
+    journal, _, torn = sj.read_journal(path)
+    assert torn == 0 and journal.operation("op-1")["last_seq"] == 4
+
+
+def test_lock_timeout_mutates_nothing_and_a_killed_holder_releases(tmp_path):
+    path, records = _journal_with(tmp_path, 3)
+    holder, ready = _child(tmp_path, "hold", path, pause=60)
+    _wait_ready(holder, ready)
+    before = path.read_bytes()
+    for call in (lambda: sj.append_file(path, records[3], lock_timeout=0.3),
+                 lambda: sj.repair_file(path, lock_timeout=0.3)):
+        started = time.monotonic()
+        with pytest.raises(ContractError) as exc:
+            call()
+        assert exc.value.code == "journal_locked" and time.monotonic() - started < 5
+    assert path.read_bytes() == before and _recovery_files(path) == []
+    holder.kill()
+    holder.communicate(timeout=30)
+    assert sj.append_file(path, records[3], lock_timeout=10)[0] == "appended"  # the OS released the lock
+
+
+def test_writer_killed_mid_record_leaves_only_a_torn_tail(tmp_path):
+    path, records = _journal_with(tmp_path, 3)
+    holder, ready = _child(tmp_path, "hold", path, arg="torn", pause=60)
+    _wait_ready(holder, ready)
+    holder.kill()
+    holder.communicate(timeout=30)
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(path, records[3])
+    assert exc.value.code == "torn_tail_requires_repair"
+    assert sj.repair_file(path)["removed_torn_bytes"] > 0
+    assert sj.append_file(path, records[3])[0] == "appended"
+    assert sj.read_journal(path)[0].operation("op-1")["last_seq"] == 4
+
+
+def test_concurrent_writers_of_different_operations_all_succeed(tmp_path):
+    path = tmp_path / "twin.jsonl"
+    files = []
+    for side in ("a", "b"):
+        chain = []
+        for n in range(4):
+            r = Run(op=f"op-{side}{n}")
+            chain.append(r.journal._ops[r.op].records[0])
+            for phase in ("attempted", "applied", "verified", "continued"):
+                chain.append(r.step(phase))
+        f = tmp_path / f"chain-{side}.json"
+        f.write_text(json.dumps(chain), encoding="utf-8")
+        files.append((f, len(chain)))
+    procs = [_child(tmp_path, "append_many", path, f, name=f"many{i}")[0] for i, (f, _) in enumerate(files)]
+    outcomes = [_outcome(proc) for proc in procs]
+    assert all(o.get("result") == ["appended"] * n for o, (_, n) in zip(outcomes, files))
+    journal, _, torn = sj.read_journal(path)
+    assert torn == 0 and journal.record_count == 40
+    assert all(op["success"] for op in journal.fold()["operations"])
+
+
+def test_lock_file_aliases_and_reserved_journal_names_are_refused(tmp_path):
+    path, records = _journal_with(tmp_path, 3, name="alias.jsonl")
+    lock = sj.lock_path(path)
+    assert lock.name == "alias.jsonl.lock" and lock.parent == path.parent
+    size = path.stat().st_size
+    lock.unlink(missing_ok=True)
+    lock.mkdir()
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(path, records[3])
+    assert exc.value.code == "path_alias_refused"
+    lock.rmdir()
+    twin = tmp_path / "twin.lock"
+    twin.write_bytes(b"")
+    os.link(twin, lock)
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "path_alias_refused"
+    assert path.stat().st_size == size
+    for name in ("x.jsonl.lock", "x.jsonl.torn-" + "a" * 64):
+        with pytest.raises(ContractError) as exc:
+            sj.append_file(tmp_path / name, records[0])
+        assert exc.value.code == "reserved_journal_name"
+        assert not (tmp_path / name).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive names and 8.3 aliases are Windows semantics")
+def test_windows_name_variants_share_one_lock_or_are_refused(tmp_path):
+    path, records = _journal_with(tmp_path, 3, name="Journal-Long-Name.jsonl")
+    holder, ready = _child(tmp_path, "hold", path, pause=60)
+    _wait_ready(holder, ready)
+    try:
+        with pytest.raises(ContractError) as exc:
+            sj.append_file(tmp_path / "journal-long-name.JSONL", records[3], lock_timeout=0.3)
+        assert exc.value.code == "journal_locked"  # same file, same lock
+    finally:
+        holder.kill()
+        holder.communicate(timeout=30)
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, 1024) or Path(buf.value).name == path.name:
+        pytest.skip("no 8.3 short name on this volume")
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(Path(buf.value), records[3])
+    assert exc.value.code == "path_alias_refused"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="an open lock file cannot be unlinked on Windows")
+def test_lock_file_replaced_while_waiting_is_not_trusted(tmp_path):
+    import threading
+    path, records = _journal_with(tmp_path, 3)
+    size = path.stat().st_size
+    outcome = {}
+    with sj.journal_writer_lock(path):
+        def waiter():
+            try:
+                sj.append_file(path, records[3], lock_timeout=10)
+                outcome["result"] = "appended"
+            except ContractError as exc:
+                outcome["error"] = exc.code
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(0.3)  # the waiter holds its own descriptor of the original lock file
+        lock = sj.lock_path(path)
+        lock.unlink()
+        lock.write_bytes(b"")  # a new lock file a third writer could lock independently
+    thread.join(20)
+    assert outcome == {"error": "journal_lock_unavailable"}
+    assert path.stat().st_size == size
+
+
+def test_lock_file_aliased_between_check_and_open_is_refused(tmp_path, monkeypatch):
+    path, records = _journal_with(tmp_path, 3)
+    size = path.stat().st_size
+    real = sj._refuse_unsafe_path
+
+    def check_then_alias(target):
+        result = real(target)
+        if str(target).endswith(".lock"):
+            os.link(target, tmp_path / "lock-twin")  # nlink becomes 2 after the lstat check
+        return result
+    monkeypatch.setattr(sj, "_refuse_unsafe_path", check_then_alias)
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(path, records[3])
+    assert exc.value.code == "path_alias_refused"
+    assert path.stat().st_size == size
+
+
+def test_lock_unavailable_fails_closed_without_fallback(tmp_path, monkeypatch):
+    path, records = _journal_with(tmp_path, 3)
+    size = path.stat().st_size
+    real_open = os.open
+
+    def denied(target, *args, **kw):
+        if str(target).endswith(".lock"):
+            raise PermissionError(13, "denied")  # e.g. a lock file created at another integrity level
+        return real_open(target, *args, **kw)
+    monkeypatch.setattr(sj.os, "open", denied)
+    for call in (lambda: sj.append_file(path, records[3]), lambda: sj.repair_file(path)):
+        with pytest.raises(ContractError) as exc:
+            call()
+        assert exc.value.code == "journal_lock_unavailable"
+    monkeypatch.undo()
+    monkeypatch.setattr(sj, "_os_try_lock", None)
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(path, records[3])
+    assert exc.value.code == "journal_lock_unavailable"
+    assert path.stat().st_size == size
 
 
 def _cli(*args):

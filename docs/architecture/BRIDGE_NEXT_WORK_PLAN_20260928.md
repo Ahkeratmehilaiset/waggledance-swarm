@@ -1,6 +1,7 @@
 # Bridge v2 package plan (after #1751)
 
-Status: **proposal for review, after brainstorm round 2 of 3.**
+Status: **joint design proposal of fable-5 and Lead, confirmed after
+brainstorm round 3 (Lead, 04:44:02Z, reviewed head ecb3a643).**
 - Nothing here is implemented, authorized or activated.
 - No runtime path described here exists unless it is labelled MEASURED.
 - It grants no authority and changes no gate.
@@ -274,6 +275,13 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
   digest or responder binding.
 - Every transition is durably recorded under the intent's idempotency key.
 
+**Mandatory details for the F15/F16/F17 interface contract** (Lead, round 3):
+- An in-session switch never runs the relaunch-only stop and `FENCED` steps.
+- `FENCED` covers every old claim-writing holder: child processes and
+  heartbeat jobs, not only the parent PID.
+- A partially completed claim migration is recoverable, and it is recovered
+  before the lane makes any new task mutation.
+
 ### 2.6 Grok for every lane (R3)
 
 - **Request kind.** Any lane may post `grok_consult` with: purpose (review,
@@ -382,7 +390,7 @@ boundary; merging alone never mutates production.
 | F4 | 1 | Grok measurement and ledger | T | every call in the window is in the ledger | unclassified error means cooldown | deploy | helper pin |
 | F5 | 1 | Lock-participant evidence | T | runs before activation and after reboot | more than one logon or integrity means HOLD | gate for Stage 5 | n/a |
 | F6 | 1 | Read-only dashboard | T | matches canonical revisions on a replay | unknown shown as unknown | deploy | n/a |
-| F21 | 1 | Minimal qualification | F writes, T runs, RCOs evaluate | per profile: task-class coverage, repeats, sample size and uncertainty, provider, version and effort, provenance, freshness; adversarial holdout cases | no receipt means out of the envelope | before the catalog signature | n/a |
+| F21 | 1 | Minimal qualification | F writes, T runs, RCOs evaluate | per profile: task-class coverage, repeats, sample size and uncertainty, provider, version and effort, provenance, freshness; adversarial holdout cases. Receipts are bound to the exact code, profile, provider version and freshness, and never claim universal intelligence or uninterrupted availability | no receipt means out of the envelope | before the catalog signature | n/a |
 | F7 | 2 | One outstanding wake per lane | L | Lead's audit acceptance list on an isolated runtime, plus backlog migration | uncertain means reconcile, never resubmit blindly | canary: Tools only with verified ownership and no critical work; then Lead; then one Claude lane; then the rest one at a time | flag back to relay |
 | F8 | 3 | Work-queue serialization (replaces #1567) | F | cross-runtime race harness: one winner, no resurrection | busy means refuse | deploy | revert |
 | F9 | 3 | Git-guard option parsing | F | probe matrix with success twins | unknown option means refuse | deploy | revert |
@@ -427,8 +435,13 @@ on a partial signature.
 - stop conditions;
 - rollback;
 - a maximum authorization of 14 days, counted from the defined activation
-  authorization time and never reset by a restart. On expiry the stage is off
-  and needs reapproval.
+  authorization time and never reset by a restart. On expiry:
+  - a stage that was never activated stays off;
+  - an enabled automation stops accepting new intents, and its in-flight work
+    either settles safely or holds;
+  - expiry and freeze never blindly kill lanes or undo durable completed
+    effects;
+  - reapproval is needed.
 
 Freeze and the kill switch take precedence over every stage.
 
@@ -505,4 +518,20 @@ were accepted with these conditions:
 The suspected items are labelled as such, and the closures need a diff
 mapping.
 
-**Round 3:** pending.
+**Round 3** (fable-5 04:42:51Z; Lead 04:44:02Z). **Confirmed** ecb3a643 as the
+joint DESIGN proposal, with no objections. It is not implementation approval,
+an RCO_PASS, build consensus, a signature, production authority, or
+verification of every measured claim. Lead's three details were added: the
+contract details in §2.5, the expiry semantics in §4, and the receipt binding
+in F21.
+
+Joint recommendation (Lead, verbatim):
+
+> Suosittelemme yhtä tarkasti rajattua Bridge v2 -hyväksyntäpakettia: ensin1751
+> valmiiksi, sitten herätteiden hallinta ja näkyvyys, jono- ja turvakorjaukset
+> sekä mitattuun kustannus- ja laatutietoon perustuva mallinvaihto; yksi
+> allekirjoitus on tavoite, käyttöönotto tapahtuu tarkistetuissa vaiheissa
+> ilman porttien ohituksia.
+
+Implementation specifications, test evidence and the frozen signature packet
+remain separate gates.

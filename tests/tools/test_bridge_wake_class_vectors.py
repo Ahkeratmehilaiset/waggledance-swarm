@@ -478,7 +478,26 @@ MUTANTS = [
     ('mention_plain_substring',
      "return re.search(pattern, _ascii_lower(text)) is not None",
      'return _ascii_lower(target) in _ascii_lower(text)'),
-] + [(f'root_dropped_{root}', f"'{root}',", '') for root in wc.CONTROL_ROOTS]
+    ('expected_responders_not_envelope',
+     "'in_reply_to_request_id', 'expected_responders')", "'in_reply_to_request_id')"),
+    ('payload_binding_truthy',
+     "v is not None and v != '' for k, v in payload.items()",
+     'bool(v) for k, v in payload.items()'),
+    ('id_falsy_is_absent', "if value is _MISSING or value is None or value == '':",
+     'if value is _MISSING or not value:'),
+    ('noise_payload_null_rejected',
+     "    if payload is _MISSING or payload is None:\n        return True\n",
+     "    if payload is _MISSING:\n        return True\n"),
+    ('ack_payload_allows_result', "'request_status', 'notification'})",
+     "'request_status', 'notification', 'result'})"),
+    ('liveness_payload_allows_status',
+     "LIVENESS_PAYLOAD_KEYS = frozenset({'head', 'notification'})",
+     "LIVENESS_PAYLOAD_KEYS = frozenset({'head', 'notification', 'status'})"),
+] + [(f'allowlist_widened_{status}',
+      "'progress', 'progress_summary', 'in_progress', 'planning',",
+      f"'progress', 'progress_summary', 'in_progress', 'planning', '{status}',")
+     for status in ('approved', 'review_requested', 'ci_green', 'verification_passed',
+                    'promotion_notice', 'coordination')] + [(f'root_dropped_{root}', f"'{root}',", '') for root in wc.CONTROL_ROOTS]
 
 
 @pytest.mark.parametrize('name,old,new', MUTANTS, ids=[m[0] for m in MUTANTS])

@@ -8901,6 +8901,1243 @@
     }
    },
    "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it."
+  },
+  {
+   "id": "expected_responders_case_variant_key",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "payload": {
+     "notification": "informational"
+    },
+    "Expected_Responders": {
+     "fable-5": {}
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A case-variant expected_responders key next to an exact to drains; legacy suppresses this benign hinted row."
+  },
+  {
+   "id": "expected_responders_upper_variant_key",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "payload": {
+     "notification": "informational"
+    },
+    "expected_responders": {
+     "fable-5": {}
+    },
+    "EXPECTED_RESPONDERS": {}
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": "parse_error",
+    "monitor": "parse_error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "parse_error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "parse_error",
+     "contract": true
+    }
+   },
+   "note": "A case-variant expected_responders duplicate drains; legacy suppresses this benign hinted row."
+  },
+  {
+   "id": "payload_request_id_zero",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "request_id": 0
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_result_zero",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": 0
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_request_id_false",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "request_id": false
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_result_false",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": false
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_request_id_empty_object",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "request_id": {}
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_result_empty_object",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": {}
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_request_id_empty_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "request_id": []
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_result_empty_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": []
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_request_id_space",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "request_id": " "
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_result_space",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": " "
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent payload binding; this literal counts, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "payload_result_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": null
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "payload_result_empty_string",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": ""
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "envelope_request_id_zero",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": 0
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_reply_id_zero",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": 0
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_request_id_false",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": false
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_reply_id_false",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": false
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_request_id_empty_object",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": {}
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_reply_id_empty_object",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": {}
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_request_id_empty_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": []
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_reply_id_empty_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": []
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_request_id_space",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": " "
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_reply_id_space",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": " "
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Only null and the empty string are an absent envelope id; this literal is malformed, so the row drains. Legacy suppresses it."
+  },
+  {
+   "id": "envelope_request_id_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": null
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "envelope_reply_id_empty_string",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": ""
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "ack_payload_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": null
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "liveness_payload_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": null
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "liveness",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "ack_payload_result_string",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "result": "ok"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An ACK carrying a result drains; legacy drops it."
+  },
+  {
+   "id": "liveness_payload_status_string",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "status": "ok"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A liveness row with an unlisted payload key drains; legacy drops it."
+  },
+  {
+   "id": "hinted_frequent_status_approved",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "approved",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A frequent hinted status outside the closed benign list wakes; legacy suppresses it."
+  },
+  {
+   "id": "hinted_frequent_status_review_requested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "review_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "A frequent hinted status outside the closed benign list wakes; legacy suppresses it."
+  },
+  {
+   "id": "hinted_frequent_status_ci_green",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "ci_green",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A frequent hinted status outside the closed benign list wakes; legacy suppresses it."
+  },
+  {
+   "id": "hinted_frequent_status_verification_passed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "verification_passed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A frequent hinted status outside the closed benign list wakes; legacy suppresses it."
+  },
+  {
+   "id": "hinted_frequent_status_promotion_notice",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "promotion_notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A frequent hinted status outside the closed benign list wakes; legacy suppresses it."
+  },
+  {
+   "id": "hinted_frequent_status_coordination",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "coordination",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A frequent hinted status outside the closed benign list wakes; legacy suppresses it."
   }
  ]
 }

@@ -6,7 +6,8 @@ RCO1 review f8fc8be4 and RCO2 review ec47a651 rejected (its token denylist let
 the hint silence camelCase, concatenated, unlisted and legacy request-like
 statuses, and noise rows could carry results). Revision 3 adds the boundary,
 per-root and punctuation-adjacent target hardening from RCO1 de8f1f2f and
-RCO2 ec47a651 N1/N3-N6.
+RCO2 ec47a651 N1/N3-N6, and the literal falsy-value, `expected_responders`
+key-casing and null noise-payload pins from RCO2 fc43943d N1.
 Pure contract, reference implementation and golden vectors only. Nothing here
 is wired into Watch-Bridge, Monitor-AgentBridge, the reboot status tool or any
 runtime path; the PowerShell port and consumer/ops wiring are later reviewed
@@ -74,10 +75,10 @@ construction. A consumer that routes by class must still send a
 * Notice types: `message`, `status`, `intent` (exact spelling).
 * Control types: `decision`, `finding`, `blocked`, `rco_review`, `test`,
   `done`, `release`, `wake_request`.
-* Liveness types: `heartbeat`, `liveness`; their payload may be absent or an
+* Liveness types: `heartbeat`, `liveness`; their payload may be absent, `null` or an
   object whose keys are only `head` and `notification`, with string values.
 * ACK: type `message` with status `received`, `seen` or `acknowledged`
-  (exact); payload absent or an object whose keys are only `request_ts_utc`,
+  (exact); payload absent, `null` or an object whose keys are only `request_ts_utc`,
   `request_agent`, `request_type`, `request_status` and `notification`, with
   string values. This is the deployed Read-AgentBridge received-ACK writer
   shape, measured on the canonical log on 2026-09-28.
@@ -110,8 +111,10 @@ construction. A consumer that routes by class must still send a
   effort and is **not** what makes suppression safe; the allowlist is.
 * Ids: a well-formed id matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,255}` with no
   trailing newline (at most 256 characters). A missing key, `null` or `""`
-  means absent; any other value is malformed. The same holds for binding keys
-  inside a payload (an empty `request_id` there is absent).
+  means absent; any other value is malformed, including `0`, `false`, `" "`,
+  `{}` and `[]`. Binding keys inside a payload follow the same absent rule:
+  only `null` and `""` are absent, so `0`, `false`, `" "`, `{}` and `[]`
+  count as present (never a truthiness test).
 * Type and status must be non-empty ASCII strings of at most 256 characters
   (256 is accepted, 257 is `oversized_field`; both pinned).
 
@@ -164,9 +167,9 @@ Steps run in order; the first match decides. Reason codes are exact.
 14. Any other non-notice type → `ambiguous` / `unknown_type`.
 15. Control root in the status → `control` / `control_status`.
 16. Payload missing or `null` → `ambiguous` / `unhinted_notice`; not an object
-    → `ambiguous` / `malformed_payload`; a non-empty `request_id`,
-    `in_reply_to_request_id`, `result` or `result_contract` (any key case)
-    inside the payload → `ambiguous` / `payload_binding_field`; a case-variant
+    → `ambiguous` / `malformed_payload`; a present (not `null`, not `""`)
+    `request_id`, `in_reply_to_request_id`, `result` or `result_contract`
+    (any key case) inside the payload → `ambiguous` / `payload_binding_field`; a case-variant
     `notification` key or any value other than the exact string
     `informational` → `ambiguous` / `notification_variant`; no `notification`
     → `ambiguous` / `unhinted_notice`.
@@ -247,6 +250,14 @@ them as vectors.) The difference classes are:
 * The legacy harness measures the extracted filter functions and only the
   agent-inbox Monitor configuration (`-TargetedOnly -IncludeWakeRequests`),
   not the main loops.
+* Over-wake cost: RCO2 fc43943d replayed 3357 addressed (row, target) pairs
+  from 2026-09-18..28 against revision 2 and the legacy Monitor filter:
+  legacy woke 2992, the contract 3143, and 0 legacy-woken pairs were
+  silenced. The +151 is one historical sample, not a forecast and not the
+  fleet's paid cost. Frequent hinted statuses (`coordination`,
+  `verification_passed`, `ci_green`, promotion notices, ...) stay off the
+  benign allowlist; frequency alone never justifies widening it (vectors pin
+  them as `unlisted_status`).
 * Input domain: a JSON-decoded value. A non-JSON Python value (for example a
   set in `to`) raises `TypeError`; it cannot come from a decoded row.
 * v1 freezes only on acceptance (both RCO reviews). After that, any change to

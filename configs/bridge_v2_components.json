@@ -1,0 +1,54 @@
+{
+  "schema": "wd.bridge-components.v1",
+  "components": [
+    {
+      "id": "python313", "kind": "cli", "probe": "python",
+      "platforms": ["windows"], "features": ["bridge_core"],
+      "required_for": [{"feature": "bridge_core", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "3.13.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://www.python.org/downloads/", "package_id": "Python.Python.3.13"}
+    },
+    {
+      "id": "git", "kind": "cli", "probe": "git",
+      "platforms": ["windows"], "features": ["bridge_core"],
+      "required_for": [{"feature": "bridge_core", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "2.0.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://git-scm.com/downloads", "package_id": "Git.Git"}
+    },
+    {
+      "id": "windows_powershell", "kind": "cli", "probe": "powershell",
+      "platforms": ["windows"], "features": ["bridge_core"],
+      "required_for": [{"feature": "bridge_core", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "5.1.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://learn.microsoft.com/powershell/scripting/install/installing-windows-powershell", "package_id": null}
+    },
+    {
+      "id": "powershell7", "kind": "cli", "probe": "pwsh",
+      "platforms": ["windows"], "features": ["powershell7"],
+      "required_for": [{"feature": "powershell7", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "7.0.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell", "package_id": "Microsoft.PowerShell"}
+    },
+    {
+      "id": "github_cli", "kind": "cli", "probe": "gh",
+      "platforms": ["windows"], "features": ["github_cli"],
+      "required_for": [{"feature": "github_cli", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "2.0.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://cli.github.com/", "package_id": "GitHub.cli"}
+    },
+    {
+      "id": "claude_code", "kind": "cli", "probe": "claude",
+      "platforms": ["windows"], "features": ["provider_claude"],
+      "required_for": [{"feature": "provider_claude", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "1.0.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://github.com/anthropics/claude-code", "package_id": "@anthropic-ai/claude-code"}
+    },
+    {
+      "id": "codex_cli", "kind": "cli", "probe": "codex",
+      "platforms": ["windows"], "features": ["provider_codex"],
+      "required_for": [{"feature": "provider_codex", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "min_version": "0.1.0", "timeout_seconds": 3,
+      "install": {"source_url": "https://developers.openai.com/codex/cli", "package_id": "@openai/codex"}
+    }
+  ]
+}

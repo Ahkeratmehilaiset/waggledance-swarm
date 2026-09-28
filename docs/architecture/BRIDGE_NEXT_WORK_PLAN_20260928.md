@@ -484,6 +484,26 @@ relaunch.
   - The result is a reply bound to the request id and the prompt digest.
   - A missing error class is `unknown`, never success; the helper's stderr
     is kept in the ledger.
+- **Read-only repository mode for reviews** (operator 2026-09-28: "joo
+  lisää suunnitelmaan ja tee koeajo"). The installed `grok` CLI (0.2.14) *is*
+  Grok Build, SpaceXAI's coding-agent harness. Today every call disables its
+  tools (`--tools ""`, `--deny *`, one turn). For `grok_consult` with purpose
+  `review`, the broker may instead run a bounded read-only agent:
+  - on a `git archive` snapshot of the exact reviewed head (no `.git`, no
+    secrets, no runtime data), in a throwaway directory;
+  - built-in tools limited to `read_file`, `grep` and `list_dir`. As a
+    second fence, `run_terminal_command`, `search_replace`, write tools,
+    `web_search` and `spawn_subagent` are denied, and `--disable-web-search`,
+    `--no-subagents`, `--no-memory` and `--permission-mode plan` are set;
+  - a bounded number of turns (signed; the trial uses 20) at effort `high`;
+  - every tool call recorded from the session log, and the run refused as
+    evidence if any tool outside the allowlist appears;
+  - Grok CLI also reads Claude Code settings files for permission rules, so
+    the snapshot directory must not inherit a permissive project settings
+    file.
+  It stays advisory, is never a gate, and has no bridge identity. The trial
+  results (tokens, turns, tool calls, and the share of findings that are
+  real) decide whether it becomes the default review mode; see §7.
 - **Unavailable.** A limit, auth, timeout or budget failure gives a reply of
   `skipped` with the reason class. The requester carries on. **Grok is never a
   gate.**
@@ -879,7 +899,7 @@ boundary; merging alone never mutates production.
 | F18 | 5 | `wd-model` | F | end-to-end on the canary; enqueue only, no apply path | refusal prints the reason | with F16 | its own flag, independent of F16 |
 | F19 | 5 | Task classes + brief-then-delegate + plan-then-execute + ledger | F | ledger shows cost per class; quality holds on F21 tasks; on the canary, a burst ends when its plan is committed, and the return profile equals the forecast's choice | no measurement means signed defaults only; a burst with no recorded plan ends at its cap | shadow ledger first | prompt table off |
 | F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the F2 bootstrap contract references the one source of the rule text | previous contract hash and rule text together |
-| F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
+| F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; read-only review mode: an out-of-allowlist tool call in the session log fails the run, and the snapshot holds no `.git`, secrets or runtime data; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each operational-wait cause clears and work resumes with no operator action, while each safety HOLD stays blocked until its condition changes; replay: routing weights converge to the best measured route per class, a stop signal quarantines a failing profile within one tick, exploration stays within its budget, a candidate joins only through the admission policy with an independent quorum; adversarial: poisoned and replayed evidence, correlated lanes, self-grading, model-version drift and oscillation; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
 | F27 | 5 | Stand-in incarnation (§2.12) | L (with F16/F17) | fault injection on the canary: kill mid-step; a limit error mid-step; a stale, misbound or transient limit reading; PID reuse, a recycled child PID, a dead parent with a live child, unrelated descendants; partial WIP write, bad diff, untracked file; a crash just before and just after an external success and before its receipt; freeze during recovery; a partially applied CAS; two simultaneous stand-ins; hand-back failure. Records the observed recovery time and data-loss window | ambiguous identity, an incomplete fence, an unknown external outcome or no eligible profile means a safety HOLD; an unresponsive live owner is never taken over; a quota reading is never kill authority | with F16 and F17 | stand-ins off; the lane waits for its own pool |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |

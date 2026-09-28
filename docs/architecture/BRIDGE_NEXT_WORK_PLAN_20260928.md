@@ -37,6 +37,10 @@ incorporated (§7).
 > brain stormiin tulee ottaa mukaan myös muut keskeneräiset stepit mitä esim
 > lead ja sinä löysitte bridgeen liittyen ja samaan toteutus kokonaisuuteen
 
+> voisitko tuonne brainstormeihin ja sprint planeihin toteuttaa säännön että
+> sen koostaa aina se tehokkaista malleita jolla on sen parven paras mitattu
+> älykkyys ulkopuolisten raporttejen mukaan
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -49,6 +53,7 @@ incorporated (§7).
 | R8 | A lane that cannot change its own state asks another to do it | §2.4, §2.5 |
 | R9 | Routine work goes to the most cost-effective model, prepared with the best initialization | §2.7 |
 | R10 | Everything at once: every open bridge item Lead and fable-5 found, with the fewest signatures and steps | §3, §4 |
+| R11 | Brainstorms and sprint plans are always composed by the swarm's model with the best externally measured intelligence | §2.10 |
 
 ## 1. Current state
 
@@ -362,6 +367,54 @@ signature; it is part of the §4 packet.
 | Claim UX | A discoverable claim schema, a preflight (`-Explain`) and examples. There is no permissive fallback. |
 | Suspected items | Reproduce the wrapper-attribution issue and the reserved-operator refusal in isolation, with the registry and profile both present and missing, and in both writers. Fix only what reproduces. Never probe the live bridge with a spoof. |
 
+### 2.10 The composer rule for brainstorms and sprint plans (R11)
+
+**Rule.** The final synthesis of every brainstorm and every sprint plan is
+written by the **composer**: the available model and effort with the highest
+external intelligence index in the registry. Other lanes and models contribute
+inputs, objections and rounds; the composer writes the document of record.
+
+**Source of the ranking**
+- The registry's recorded external index (today the Artificial Analysis
+  Intelligence Index, v4.3.2 in `configs/model_registry.json`, updated
+  2026-09-27), with its version, provenance and freshness. It is refreshed
+  by the registry refresh (F3), never by hand in a session.
+- Only profiles in the signed envelope count (F21 receipt, known quota cost).
+- **Ties** (equal index, or overlapping uncertainty where the source gives
+  it): the higher coding index wins, then the lower quota cost.
+- A stale index (older than the registry's freshness bound) or a missing one
+  means the rule reports `composer_unknown` and the principal names its
+  choice and reason in the document. There is no silent guess.
+- Today (MEASURED from the registry): `claude-opus-5-5` at `max` effort, index
+  58; then `claude-opus-5-5` `xhigh` 56; `claude-fable-5-1` `max` and
+  `gpt-6-astra` `max` 53.
+
+**How the composer runs**
+- A principal whose own profile is the composer writes the synthesis itself.
+- Otherwise it composes through a subagent or a headless call on the composer
+  profile (brief-then-delegate in reverse: the inputs are the brief), or asks
+  the executor for a `planning` burst switch (§2.4, §2.7).
+- Grok composes only if it ranks top AND the call goes through `grok_consult`
+  with the hourly guard; it is never switched to automatically (§2.6).
+
+**When the composer is unavailable** (quota exhausted, pool in conserve, or
+provider down)
+- Wait up to a stated deadline, then use the next-highest available profile.
+- The document records `composer_fallback` with the reason, and the profile
+  that composed it.
+- The budget and premium-burst caps still apply. The rule never bypasses a
+  budget or the hourly Grok guard.
+
+**What the rule is and is not**
+- It chooses who *writes* the synthesis. It is not an approval, a review
+  or a gate; RCO review and the signature rules are unchanged.
+- It reconciles Lead's round-1 point that a benchmark is only task-specific
+  evidence: the external index is used for this one role, with provenance,
+  because the operator directed it. It does not rank models for other task
+  classes; those still use F21 measurements.
+- Every brainstorm and sprint-plan document records its composer profile,
+  the index value and version used, and any fallback.
+
 ## 3. Acceptance table
 
 **Owners:** L = Lead, T = Tools, F = fable-5. These are planning proposals,
@@ -405,6 +458,7 @@ boundary; merging alone never mutates production.
 | F17 | 5 | Continuity state machine (§2.5) | F | a relaunch mid-task keeps its claims per path; requests are reissued, never transferred; a forged handover is rejected | no record means no successor | with F16 | revert |
 | F18 | 5 | `wd-model` | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
 | F19 | 5 | Task classes + brief-then-delegate + ledger | F | ledger shows cost per class; quality holds on F21 tasks | no measurement means signed defaults only | shadow ledger first | prompt table off |
+| F24 | 5 | Composer rule (§2.10) | F | the chosen composer equals the registry top on fixtures (ties, stale, missing, unavailable); every brainstorm and sprint-plan document records its composer | unknown or stale index means `composer_unknown`, recorded; unavailable means a recorded `composer_fallback` | with F19; the rule text also goes into the F2 bootstrap contract | prompt rule off |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded | unavailable means `skipped` | with Stage 5 | flag off |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
@@ -426,6 +480,7 @@ on a partial signature.
   - the signed catalog (profiles with F21 receipts, the principals, the
     envelope);
   - the Grok routing policy;
+  - the composer rule (§2.10);
   - the activation plan.
 
 **The activation plan lists for every stage:**
@@ -487,6 +542,8 @@ stays under Rules 9a and 9b. This packet does not change them.
   mutated.
 - Every switch is an event with its inputs, verified by D3, with a rollback.
 - Exact-head dual-RCO review for (a)-class work. Grok review is advisory.
+- Brainstorm and sprint-plan syntheses are written by the composer (§2.10),
+  and each records its composer profile, index version and any fallback.
 
 ## 7. Brainstorm record
 
@@ -535,3 +592,9 @@ Joint recommendation (Lead, verbatim):
 
 Implementation specifications, test evidence and the frozen signature packet
 remain separate gates.
+
+**Addendum after round 3** (fable-5, 2026-09-28). The operator's fifth
+directive (R11) added the composer rule (§2.10, F24). It was composed by
+fable-5 on `claude-opus-5-5`, the current registry top, and sent to Lead for
+confirmation or objection; it is not yet part of the confirmed joint
+proposal until Lead answers.

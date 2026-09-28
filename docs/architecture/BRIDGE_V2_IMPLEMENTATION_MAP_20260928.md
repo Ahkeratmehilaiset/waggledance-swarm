@@ -29,7 +29,7 @@ These change the plan's §1 statements and some slice sizes.
 | C3 | The git guard takes the verb from `$GitArgs[0]` and parses no leading option. `GIT_CONFIG_*` is not checked. `-Force` trusts a self-asserted `operator`/`system` label. There are no tests under `tests/**`; the only coverage is a smoke script outside CI. | `Invoke-BridgeGit.ps1:88-108,305-307,382` | F9 also covers `-Force` identity and adds the first pytest suite. |
 | C4 | `Assert-AgentBridgeClaimOwner` is defined but never called. | `AgentBridgeSessionIdentity.ps1:215` | F10 wires it into claim force, release and heartbeat. |
 | C5 | Role prompts live outside the repo (`C:\Python\wd-agent-prompts\*.md`, from `wd-fleet.json` `lanes[].prompt`) and are not hashed; the launcher only checks that they are non-empty. | `start-wd-agent.ps1:2000,2225,2473` | F2 must bring the role contract into the repo and the bundle manifest. |
-| C6 | The supervisor never starts or stops interactive lanes (`start-wd-all.ps1 -Auto` does). A new bundle does not restart live lanes; the rollover order is manual. | `wd_supervisor.ps1:1-17`; `start-wd-all.ps1:3396-3403` | F16/F27 need a lane start/stop port that does not exist today; the §7 rollout keeps the manual order. |
+| C6 | The supervisor never starts or stops interactive lanes (`start-wd-all.ps1 -Auto` does). A new bundle does not restart live lanes; the rollover order is manual. | `wd_supervisor.ps1:1-17`; `start-wd-all.ps1:3779` (the launch; :3396-3403 only prints the plan) | F16/F27 need a lane start/stop port that does not exist today; the §7 rollout keeps the manual order. |
 | C7 | The model registry has no Grok row and no pool fields, and its validator forbids pool keys. | `configs/model_registry.json`; `wd_model_registry.py:58-62` | F3 is a schema bump to `wd.model-registry.v2`. |
 | C8 | No cryptographic operator signature exists. The operator signature is a bound instruction text (`wd.operator-signed-merge.v1` audit). | `docs/operations/BRIDGE_FINAL_ACCEPTANCE_20260927.md:72-94` | §6 uses that form. |
 | C9 | There is no bundle-rollback tool. The installer restores its backup only when an exception is thrown, and that restore is not crash-atomic. | `Deploy-WdRebootBundle.ps1:1151-1181` | New slice F28 (§5). |
@@ -127,16 +127,23 @@ Notation:
 - **Interface contract F15/F16/F17** (new doc; L+F):
   `docs/architecture/BRIDGE_V2_SWITCH_INTERFACE_CONTRACT.md`. It defines the
   intent schema `wd.switch-intent.v1`, the journal states and the port
-  signatures, and maps the executor's existing journal phases (`planned` →
-  REQUESTED, `quiesced` → QUIESCED, `checkpointed`, `apply_pending` →
-  FENCED/APPLIED, `verified` → VERIFIED, `resumed` → CONTINUED).
+  signatures, and maps **every** existing executor journal phase and
+  transition reason (`planned` → REQUESTED, `quiesced` → QUIESCED,
+  `checkpointed`, `apply_pending` → FENCED/APPLIED, `verified` → VERIFIED,
+  `resume_pending` → VERIFIED awaiting continuity, `resumed` → CONTINUED,
+  `cancelled_before_apply` → a terminal cancel). Two cases need care:
+  - a failed resume is left at `resume_pending` (`wd_lane_relaunch_executor.py:564-572`)
+    and must never be read as CONTINUED;
+  - a rollback also lands in `verified` with the reason
+    `rolled_back_to_previous` (:559), so VERIFIED is derived from the phase
+    **and** the reason, and a rollback never counts as a successful switch.
 
 ### Stage 1: measurement, contracts, visibility
 
 | F | Owner | Code change |
 |---|---|---|
 | F1 | L | **mod** `BridgeTelemetry.ps1` (`Write-BridgeWakeObservation` :28: add reason, watermark and latency); **new** `tools/bridge_wake_telemetry.py` (read-only report: no-op ratio, latency). |
-| F2 | L | **new** `.agent-bridge/contracts/role-contract.v1.md` (moves the role prompt content into the repo); **mod** `start-wd-agent.ps1` (:2000, :2225, :2473: verify the contract SHA-256 from the bundle manifest), `start-wd-tools-consumer.ps1`, `Deploy-WdRebootBundle.ps1` (required-file list :748-793); **new** `tools/lint_role_contracts.py` (CI lint). Canary one lane; the previous hash stays valid. |
+| F2 | L | **new** `.agent-bridge/contracts/role-contract.v1.md` (moves the role prompt content into the repo); **mod** `start-wd-agent.ps1` (:2000, :2225, :2473: verify the contract SHA-256 from the bundle manifest), `start-wd-tools-consumer.ps1`, `Deploy-WdRebootBundle.ps1` (three places, not one: the `git archive` pathspec at :635-640 must include `.agent-bridge/contracts`, the non-recursive bin copy at :675-678 must copy it, and only then the required-file list :748-793; a required name that never entered `$sourceHashes` throws at :790-791. The same applies to every new bundle file of F0, F3 and F29); **new** `tools/lint_role_contracts.py` (CI lint). Canary one lane; the previous hash stays valid. |
 | F3 | T | **mod** `configs/model_registry.json` → schema `wd.model-registry.v2` (pools, `limit_id`, tier, context, quality per class, `source_measured_at`, and Grok and Haiku rows; the Grok 4.7 row with its high and xhigh values is specified in plan §2.1); **mod** `tools/wd_model_registry.py` (:58-62 key sets, `validate_registry` :132); **mod** `bridge_capacity_collector.py` (`account_pool` from validated provenance, replacing the `None` at :300/:313; unknown stays unknown); **mod** `wd_profile_cost_meter.py` (stored daily points per Mtok; schema-failing rows counted as unknown residual). |
 | F4 | T | **mod** `tools/wd_grok_helper.py` (`consult` :113: `--output-format json`, keep stderr at :192, record model, effort, tokens and error class); **new** ledger `C:\Python\grok-scout-reports\ledger.jsonl` schema `wd.grok-ledger.v1`, including calibration runs. |
 | F5 | T | **new** `tools/bridge_lock_participants.py`. It enumerates participant processes (logon, integrity) and keeps them apart from *proven* mutex handle holders: reading the ACL and the lane tokens does not establish every creator or opener. Missing coverage stays unknown; more than one logon or integrity level means HOLD. |
@@ -156,26 +163,26 @@ Notation:
 
 | F | Owner | Code change |
 |---|---|---|
-| F8 | F | **new** work-queue mutex whose name is derived from the normalized canonical runtime-root identity (never one global constant shared by production and tests), created through `bridge_named_mutex.create_bridge_named_mutex` :230 (Python) and the PowerShell equivalent. A mutex plus two file writes is not crash-atomic, so the slice specifies the WAL and outbox recovery for every crash cut point, idempotent event publication, and no rollback to unsafe older writers while mixed generations run; **mod** `waggledance/core/work_queue.py` (lock around claim, release :339, heartbeat :406 and the sweep :493-621; replace the final `tmp.replace(path)` of `_write_json_file` (:900, the replace at :920) with a compare-and-swap that refuses to recreate archived claims; outbox record in the same critical section); **mod** `Claim-AgentTask.ps1` (:111-148 scan under the lock), `Release-AgentTask.ps1`; **new** `.agent-bridge/bin/Publish-BridgeOutbox.ps1`. |
+| F8 | F | **new** work-queue mutex whose name is derived from the normalized canonical runtime-root identity (never one global constant shared by production and tests), created through `bridge_named_mutex.create_bridge_named_mutex` :230 (Python) and the PowerShell equivalent. A mutex plus two file writes is not crash-atomic, so the slice specifies the WAL and outbox recovery for every crash cut point, idempotent event publication, and no rollback to unsafe older writers while mixed generations run; **mod** `waggledance/core/work_queue.py` (lock around claim, release :339, heartbeat :406 and the sweep :493-621; replace the final `tmp.replace(path)` of `_write_json_file` (:900, the replace at :920) with a compare-and-swap that refuses to recreate archived claims; outbox record in the same critical section); **mod** `Claim-AgentTask.ps1` (:111-148 scan **and** the `CreateNew` create at :269-276 under the lock), `Release-AgentTask.ps1`. An existing per-claim lock is live: `Enter-BridgeClaimLock` (`ClaimLeaseHeartbeat.ps1:229`, a sibling `<claim>.lock` opened with `FileShare.None`), held by the sweep (`Invoke-StaleClaimSweep.ps1:133`), the heartbeat (`ClaimLeaseHeartbeat.ps1:337`, :431, :504), release (`Release-AgentTask.ps1:64`) and claim refresh (`Claim-AgentTask.ps1:289`). The Python work queue never takes it. The slice defines one lock order (the runtime-root mutex first, then the per-claim lock), and Python takes the same `<claim>.lock` with share mode none, so a Python `tmp.replace` cannot recreate a claim that a PowerShell writer archived; **new** `.agent-bridge/bin/Publish-BridgeOutbox.ps1`. |
 | F9 | F | **mod** `Invoke-BridgeGit.ps1` (:88-108, :305-307: parse leading options; `-C` guarded against its target; `-c` allowlist; refuse `--git-dir`, `--work-tree`, `--namespace` and the `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_NAMESPACE` variables on branch moves; `-Force` at :382 calls `Assert-AgentBridgeSessionIdentity`); **new** `tests/tools/test_invoke_bridge_git.py` (first pytest suite, with success twins). |
-| F10 | F | **mod** `ClaimLeaseHeartbeat.ps1` (`Update-BridgeClaimLease` :313: follow the long-lived worker, per-task retirement, progress proof → `wedged`); **mod** `Start-BridgeHeartbeat.ps1`; wire `Assert-AgentBridgeClaimOwner` (:215) into force, release and heartbeat. |
+| F10 | F | **mod** `ClaimLeaseHeartbeat.ps1` (`Update-BridgeClaimLease` :313: follow the long-lived worker, per-task retirement, progress proof → `wedged`); **mod** `Start-BridgeHeartbeat.ps1`; wire an owner check into force, release and heartbeat. **Not `Assert-AgentBridgeClaimOwner` as it is:** its test (`Test-AgentBridgeClaimOwner`, `AgentBridgeSessionIdentity.ps1:190-212`) requires `owner_pid` and `owner_process_start_utc`, which Python claims never write (`work_queue.py:879-881`) and the PowerShell writer records only when available (`Claim-AgentTask.ps1:245-248`, informational). The live authority is session plus token hash (`ClaimLeaseHeartbeat.ps1:300-310`). The slice aligns the two tests on that authority (the pid fields stay informational), with tests on Python-written and PowerShell-written claims. |
 | F11 | F | **new** `.agent-bridge/bin/Reply-ToRequest.ps1` (fetches the request by id through `BridgeReplyIndex.ps1:82`, then calls `Write-BridgeTaskReply.ps1`); requester supersede = a new id plus a non-coalesced cancel. |
 | F12 | F | **mod** `Write-AgentEvent.ps1` (extend the 40-hex head check at :421-470 to `build_consensus_pass` and the other commit statuses); **mod** `bridge_event_schema.py` for parity. |
 | F22 | F | **mod** `BridgeResourceScope.ps1` (:24-33: `-Explain`, examples in the error text); **mod** `Claim-AgentTask.ps1` help. |
-| F23 | T reproduces, F fixes | First reproduce, isolated from production, both writers with the registry and profile present, missing and mismatched (C1), and the wrapper-attribution suspicion. Then **mod** `Write-AgentEvent.ps1` and `tools/bridge_event_writer.py` so reserved labels need session-origin enforcement. The sweep's internal path is never a caller-supplied `-Internal` switch or a `system` label: it is limited to bounded event kinds and fields, from a trusted entrypoint with session provenance. The shared-account trust limits stay disclosed. |
+| F23 | T reproduces, F fixes | First reproduce, isolated from production, both writers with the registry and profile present, missing and mismatched (C1), and the wrapper-attribution suspicion. Then **mod** `Write-AgentEvent.ps1` and `tools/bridge_event_writer.py` so reserved labels need session-origin enforcement. The sweep's internal path is never a caller-supplied `-Internal` switch or a `system` label: it is limited to bounded event kinds and fields, from a trusted entrypoint with session provenance. Every current reserved-label caller is enumerated and migrated in the same slice: the stale sweep (`Invoke-StaleClaimSweep.ps1:276-277`, `-Agent system`) and the responsiveness probe (`ops/windows/reboot/Test-WdBridgeResponsiveness.ps1:107-108`, `-Agent operator -Role operator` with a probe id as its session). The sweep catches a writer failure and continues (:285-287), so enforcement alone would make its release events vanish while the archive still happens: the sweep must fail visibly, or write through the outbox (F8). The shared-account trust limits stay disclosed. |
 
 ### Stage 4: explicit launch
 
 | F | Owner | Code change |
 |---|---|---|
-| F13 | L | **mod** `wd-fleet.json` (replace `native` at the five lines in §2 with explicit catalog profiles); **mod** `start-wd-agent.ps1:1304-1392` and `start-wd-tools-consumer.ps1:355` (preflight `alert_only` → `enforce`: refuse a mismatch; rollback to the previous qualified profile or the signed safe default); signed catalog (`operator_signature` replaces `UNSIGNED-DEFAULT`). |
+| F13 | L | **mod** `wd-fleet.json` (replace `native` at the five lines in §2 with explicit catalog profiles); **mod** `start-wd-agent.ps1:1304-1392` and `start-wd-tools-consumer.ps1:355` (preflight `alert_only` → `enforce`: refuse a mismatch; rollback to the previous qualified profile or the signed safe default); signed catalog (`operator_signature` replaces `UNSIGNED-DEFAULT`); **mod** `start-wd-agent.ps1` to normalize `PSModulePath` for Windows PowerShell at the top, as `start-wd-all.ps1:59-72` does. Today it has no such step but calls `Get-FileHash` at :1426 and eleven more places, so a direct launch from a pwsh 7 parent fails (the #1751 RCO1 relaunch, 06:46Z), with a PS5-under-pwsh7 regression test. |
 
 ### Stage 5: policy, actuation, continuity, learning
 
 | F | Owner | Code change |
 |---|---|---|
 | F15 | F | **new** `tools/wd_switch_policy.py` (pure; uses `wd_capacity_pacing.pace_windows`/`recommend`, `wd_lane_profile_planner.plan_lane`, `lane_profile_catalog.classify_transition`; every §2.2 guardrail, atomic pool admission, deterministic contest rule, member precedence). |
-| F16 | L | **new** `tools/wd_lane_relaunch_ports_windows.py` (production `Ports` for `wd_lane_relaunch_executor.py:73-92`: `take_claim`/`release_claim` → Claim/Release scripts; `stop` → `Stop-VerifiedProcessTree` (`wd_supervisor.ps1:2334`) under a job object; `launch` → `start-wd-agent.ps1`; `emit` → `Write-AgentEvent.ps1`; `verify_catalog_signature` → the packet hash); **new** `ops/windows/reboot/Invoke-WdSwitchExecutor.ps1` (serialized, supervisor-run, intent queue `<runtime>/bridge_v2/intents/`); **mod** the executor mode gate :430-444 to read F0. |
+| F16 | L | **new** `tools/wd_lane_relaunch_ports_windows.py` (production `Ports` for `wd_lane_relaunch_executor.py:73-92`: `take_claim`/`release_claim` → Claim/Release scripts; `stop` → a **new adapter** around `Stop-VerifiedProcessTree` (`wd_supervisor.ps1:2334`) under a job object. The adapter is needed because that function takes a root process, the initial tree and a Tools conflict path, and it throws Tools replacement conflicts (`Throw-ToolsReplacementConflict`, :2369 and later) instead of returning the `bool` that `Ports.stop` (`wd_lane_relaunch_executor.py:86`) requires. The executor calls `stop` without a catch (:516), so the adapter maps every throw to `False` with the reason recorded. The PID and start-time identity check compares values from **one source** (CIM against CIM): the #1751 rollout stopped at 06:33Z on a sub-microsecond CIM versus `Get-Process` difference; `launch` → `start-wd-agent.ps1`; `emit` → `Write-AgentEvent.ps1`; `verify_catalog_signature` → the packet hash); **new** `ops/windows/reboot/Invoke-WdSwitchExecutor.ps1` (serialized, supervisor-run, intent queue `<runtime>/bridge_v2/intents/`); **mod** the executor mode gate :430-444 to read F0. |
 | F17 | F | **mod** `wd_lane_relaunch_executor.py` journal (two machines; `identity_changed` notices; fenced CAS through the F8 lock); **mod** `AgentBridgeSessionIdentity.ps1` (identity re-presentation only for a qualified resume). |
 | F18 | F | **new** `ops/windows/reboot/wd-model.ps1` + `wd-malli.cmd` (status, models, set, reset, freeze; enqueue only; one tier table from the catalog; printed default expiry). |
 | F19 | F | **mod** `tools/bridge_work_ledger.py` (routing ledger: class, profile, attempts, success, tokens, pool cost); **new** `tools/wd_task_router.py` (classes incl. `planning_synthesis`; expected-cost routing; plan-then-execute return at a safe boundary); **mod** `CLAUDE.md` Rule 8 (amendment; (a)-class). |
@@ -288,8 +295,8 @@ and time), binds:
 | 5. Release worktree | `New-WdReleaseWorktree.ps1` creates the named branch, pushed, with its upstream | the helper refuses |
 | 6. Stage | Under Windows PowerShell 5.1: `Deploy-WdRebootBundle.ps1 -StageOnly -DryRun`, then `-StageOnly`; full recursive verification (:900-965); compare the staged file set and hashes with the reviewed candidate | any refusal or difference |
 | 7. Tag + GitHub release | Only after step 6: the tag at the merge commit, a GitHub release targeting that commit, notes whose SHA-256 equals the signed hash; no Docker or stable-image workflow dispatch | mismatch |
-| 8. Cold switch | Disable `WD-Supervisor`, wait for its invocation to exit, install without `-StageOnly`, verify `WD_REBOOT_INTEGRITY_CURRENT`, re-enable | a verification failure means the automatic restore, then HOLD |
-| 9. Lane rollover | RCO1, RCO2, Tools, Lead, Fable last; never both RCOs together. Readiness per lane is more than the launch probe: token, logon, integrity and ACL gates; the `WD-AgentValue-Weekly` repin; the scheduled supervisor's result; transcript growth; and a bound bridge round trip | a lane fails readiness: stop the rollover; that lane keeps matching old pins |
+| 8. Cold switch | Disable `WD-Supervisor`, wait for its invocation to exit, install without `-StageOnly`, verify `WD_REBOOT_INTEGRITY_CURRENT`, re-enable | a failure inside the installer rolls back the machine transaction files (wrappers, data files and the `WD_REBOOT_*_CURRENT` pointers, `Deploy-WdRebootBundle.ps1:1019-1030`, :1150-1180); the commit-addressed store directory stays and is inert. A failure of the post-install verification has **no** automatic restore until F28's `Restore-WdRebootBundle.ps1`; until then, reinstall the previous signed bundle explicitly, then HOLD |
+| 9. Lane rollover | RCO1, RCO2, Tools, Lead, Fable last; never both RCOs together. Readiness per lane is more than the launch probe: token, logon, integrity and ACL gates; the `WD-AgentValue-Weekly` repin; the scheduled supervisor's result; transcript growth; and a bound bridge round trip | a lane fails readiness: stop the rollover; that lane keeps matching old pins. Until the F13 fix lands, every direct `start-wd-agent.ps1` launch gets a child-only standard Windows PowerShell `PSModulePath` |
 | 10. Staged activation | Flip F0 flags stage by stage (1 → 5), each with its canary order and coverage predicate, within 14 days of the absolute timestamp | a stop condition means that stage's flags go off automatically |
 | 11. Steady state | A stage that met its predicate stays on, under freeze, the kill switch and stop conditions | a regression means flag-off; a bundle fault means `Restore-WdRebootBundle.ps1` |
 
@@ -338,3 +345,26 @@ and time), binds:
     - the current deployment facts.
   - It is not source approval, new authority, or verification of every
     citation.
+- **Grok read-only repository review (advisory), 2026-09-28, on head
+  249e84c4.**
+  - grok-4.7 at effort high, 40 turns, tools `read_file`, `grep` and
+    `list_dir` only, on a `git archive` snapshot. It took 528 s, with a peak
+    context of 154k tokens. The session log shows 99+ tool calls, all
+    allowlisted and none denied.
+  - It checked 74 citations and found 72 correct. It reported 9 items;
+    fable-5 verified each against the code. 7 were real as stated. 2 were
+    partly right: the stale sweep was already named in F23, and the
+    installer does roll back the integrity pointers.
+  - Adopted: the C6 launch line; three installer places for F2; the
+    existing per-claim lock in F8; the owner-check mismatch in F10; the
+    stop-port adapter in F16; the full phase and reason map, including
+    `resume_pending`, `cancelled_before_apply`, and a rollback landing in
+    `verified`, which fable-5 found while verifying; the reserved-label
+    callers in F23; and the restore wording in step 8.
+  - A first attempt at 8ea1e5c8 produced nothing: `--deny WebSearch` in Grok
+    0.2.14 also blocks `read_file` and `list_dir` (bisected by probe), and
+    20 turns ran out.
+- **#1751 rollout observations folded in (fable-5, read-only):**
+  - the missing `PSModulePath` normalization in `start-wd-agent.ps1` (F13,
+    step 9);
+  - the same-source PID and start-time comparison (F16).

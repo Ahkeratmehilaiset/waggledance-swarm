@@ -514,9 +514,19 @@ relaunch.
   - Grok CLI also reads Claude Code settings files for permission rules, so
     the snapshot directory must not inherit a permissive project settings
     file.
-  It stays advisory, is never a gate, and has no bridge identity. The trial
-  results (tokens, turns, tool calls, and the share of findings that are
-  real) decide whether it becomes the default review mode; see §7.
+  - never `--deny WebSearch`: in Grok 0.2.14 that rule also blocks
+    `read_file` and `list_dir`. The web stays off through the tool
+    allowlist and `--disable-web-search`;
+  - the prompt tells Grok to stop using tools at about 75 % of the turn
+    budget and write its findings.
+  It stays advisory, is never a gate, and has no bridge identity.
+  **Trial result, 2026-09-28** (map §10):
+  - 40 turns, 528 s, 154k peak context, all tool calls allowlisted;
+  - 74 citations checked, 72 correct;
+  - 9 items, 7 real as stated and 2 partly right;
+  - 6 of them were design flaws that no reviewer had found.
+  This supports read-only mode as the default for `grok_consult` reviews,
+  still advisory and pre-RCO.
 - **Unavailable.** A limit, auth, timeout or budget failure gives a reply of
   `skipped` with the reason class. The requester carries on. **Grok is never a
   gate.**

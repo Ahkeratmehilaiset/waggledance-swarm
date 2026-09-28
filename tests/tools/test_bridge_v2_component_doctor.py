@@ -647,8 +647,11 @@ def _fixture_git_env(repo):
 def _fixture_git_command(repo, *args):
     hooks = repo.parent / "empty-hooks"
     hooks.mkdir(exist_ok=True)
+    template = repo.parent / "empty-template"
+    template.mkdir(exist_ok=True)
     return ["git", "-c", f"safe.directory={repo}",
             "-c", f"core.hooksPath={hooks}", "-c", "commit.gpgsign=false",
+            "-c", f"init.templateDir={template}",
             *args]
 
 
@@ -664,10 +667,7 @@ def _isolated_git_repo():
             (repo / "tools").mkdir(parents=True)
             (repo / "tools" / "bridge_v2_component_doctor.py").write_text("# fixture\n")
             env = _fixture_git_env(repo)
-            template = repo.parent / "empty-template"
-            template.mkdir()
-            subprocess.run(_fixture_git_command(repo, "-c", f"init.templateDir={template}",
-                                                "init", "-q", str(repo)), check=True,
+            subprocess.run(_fixture_git_command(repo, "init", "-q", str(repo)), check=True,
                            capture_output=True, env=env)
             subprocess.run(_fixture_git_command(repo, "-C", str(repo), "add",
                                                 "tools/bridge_v2_component_doctor.py"),
@@ -781,39 +781,89 @@ def test_isolated_worktree_registry_cleans_after_deliberate_failure(isolated_git
     assert inventory.count("worktree ") == 1 and "prunable" not in inventory
 
 
-def test_isolated_git_fixture_ignores_hostile_git_environment_and_config(monkeypatch):
+def test_isolated_git_fixture_suppresses_live_global_hook_and_signing(monkeypatch):
     repo_audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
     repo_audit.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="doctor-hostile-", dir=repo_audit) as scratch:
         scratch = Path(scratch)
-        decoy = scratch / "decoy"
-        decoy.mkdir()
-        subprocess.run(_fixture_git_command(decoy, "init", "-q", str(decoy)),
-                       check=True, capture_output=True, env=_fixture_git_env(decoy))
-        before = sorted(str(path.relative_to(decoy)) for path in decoy.rglob("*"))
+        control = scratch / "control"
+        control.mkdir()
+        clean_env = _fixture_git_env(control)
+        subprocess.run(_fixture_git_command(control, "init", "-q", str(control)),
+                       check=True, capture_output=True, env=clean_env)
+        (control / "sentinel.txt").write_text("control\n")
+        subprocess.run(_fixture_git_command(control, "-C", str(control), "add",
+                                            "sentinel.txt"), check=True,
+                       capture_output=True, env=clean_env)
         hooks = scratch / "hostile-hooks"
         hooks.mkdir()
         marker = scratch / "hook-ran"
-        (hooks / "pre-commit").write_text(
-            "#!/bin/sh\nprintf touched > '" + marker.as_posix() + "'\nexit 99\n")
-        (hooks / "post-checkout").write_text(
-            "#!/bin/sh\nprintf touched > '" + marker.as_posix() + "'\nexit 99\n")
+        shell_marker = ("/" + marker.drive[0].lower() + marker.as_posix()[2:]
+                        if os.name == "nt" else marker.as_posix())
+        hook = hooks / "post-commit"
+        hook.write_text("#!/bin/sh\nprintf touched > '" + shell_marker + "'\n")
+        hook.chmod(0o755)
         global_config = scratch / "hostile-global-config"
-        global_config.write_text("[core]\n\thooksPath = " + hooks.as_posix() +
-                                 "\n[commit]\n\tgpgsign = true\n" +
-                                 "[init]\n\ttemplateDir = " + hooks.as_posix() + "\n")
-        monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
-        monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
-        monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+        global_config.write_text("[core]\n\thooksPath = " + hooks.as_posix() + "\n")
+        hostile_env = dict(clean_env, GIT_CONFIG_GLOBAL=str(global_config))
+        subprocess.run(["git", "-c", f"safe.directory={control}",
+                        "-c", "user.name=Control", "-c", "user.email=control@example.invalid",
+                        "-C", str(control), "commit", "-q", "-m", "live hook control"],
+                       check=True, capture_output=True, env=hostile_env)
+        assert marker.read_text() == "touched"
+        marker.unlink()
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
         monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(global_config))
         monkeypatch.setenv("GIT_TEMPLATE_DIR", str(hooks))
         with _isolated_git_repo() as source:
             with _isolated_worktree(source, source.parent / "hostile-linked"):
                 pass
-            assert not (source / ".git" / "hooks" / "pre-commit").exists()
+            assert not (source / ".git" / "hooks" / "post-commit").exists()
         assert not marker.exists()
-        assert before == sorted(str(path.relative_to(decoy)) for path in decoy.rglob("*"))
+        global_config.write_text("[commit]\n\tgpgsign = true\n[gpg]\n"
+                                 "\tprogram = nonexistent-doctor-gpg\n")
+        with _isolated_git_repo() as source:
+            assert doctor._code_layout(source) == "development"
+
+
+def test_small_git_repo_cannot_mutate_committed_victim(monkeypatch):
+    repo_audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
+    repo_audit.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="doctor-victim-", dir=repo_audit) as scratch:
+        scratch = Path(scratch)
+        victim = scratch / "victim"
+        victim.mkdir()
+        env = _fixture_git_env(victim)
+        subprocess.run(_fixture_git_command(victim, "init", "-q", str(victim)),
+                       check=True, capture_output=True, env=env)
+        (victim / "sentinel.txt").write_text("committed victim sentinel\n")
+        subprocess.run(_fixture_git_command(victim, "-C", str(victim), "add",
+                                            "sentinel.txt"), check=True,
+                       capture_output=True, env=env)
+        subprocess.run(_fixture_git_command(victim, "-c", "user.name=Victim",
+                                            "-c", "user.email=victim@example.invalid",
+                                            "-C", str(victim), "commit", "-q", "-m",
+                                            "victim sentinel"), check=True,
+                       capture_output=True, env=env)
+
+        def snapshot():
+            head = subprocess.run(_fixture_git_command(victim, "-C", str(victim),
+                                                      "rev-parse", "HEAD"),
+                                  check=True, capture_output=True, env=env).stdout
+            tree = subprocess.run(_fixture_git_command(victim, "-C", str(victim),
+                                                      "ls-tree", "-r", "HEAD"),
+                                  check=True, capture_output=True, env=env).stdout
+            return (head, tree, hashlib.sha256((victim / ".git" / "index").read_bytes()).digest(),
+                    hashlib.sha256((victim / ".git" / "config").read_bytes()).digest(),
+                    (victim / "sentinel.txt").read_bytes())
+
+        before = snapshot()
+        monkeypatch.setenv("GIT_DIR", str(victim / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(victim))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(victim / ".git" / "index"))
+        root = small_git_repo.__wrapped__(scratch / "fixture")
+        assert doctor._code_layout(root) == "development"
+        assert snapshot() == before
 
 
 def test_isolated_worktree_reports_body_and_cleanup_failures(isolated_git_repo,
@@ -934,6 +984,33 @@ def test_linked_worktree_core_fsmonitor_is_never_executed(
         assert doctor._code_layout(actual_linked_worktree) == "development"
 
 
+def test_linked_worktree_backlink_alias_fails_closed(actual_linked_worktree, tmp_path):
+    linked = actual_linked_worktree
+    marker = linked / ".git"
+    gitdir = Path(marker.read_text(encoding="utf-8").split(": ", 1)[1].strip())
+    backlink = gitdir / "gitdir"
+    original = backlink.read_bytes()
+    assert doctor._code_layout(linked) == "development"
+    alias = tmp_path / "linked-alias"
+    if os.name == "nt":
+        cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+        created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                                  str(alias), str(linked)], capture_output=True)
+        if created.returncode:
+            pytest.fail("junction creation failed: " + created.stderr.decode(
+                "utf-8", errors="replace"))
+    else:
+        alias.symlink_to(linked, target_is_directory=True)
+    try:
+        backlink.write_text(f"{alias / '.git'}\n", encoding="utf-8")
+        assert (alias / ".git").resolve() == marker.resolve()
+        assert doctor._code_layout(linked) == "unknown"
+    finally:
+        backlink.write_bytes(original)
+        alias.rmdir() if os.name == "nt" else alias.unlink()
+    assert doctor._code_layout(linked) == "development"
+
+
 def test_git_index_unsupported_format_fails_closed(tmp_path, monkeypatch):
     source = Path(doctor.__file__).resolve().parents[1]
     marker = source / ".git"
@@ -972,15 +1049,29 @@ def test_git_index_checksum_exact_end_and_v2_flags_are_guarded():
     assert doctor._index_tracks_doctor(bytes(v2_extended)) is False
 
 
+def test_git_index_extension_size_must_end_exactly(small_git_repo):
+    index = (small_git_repo / ".git" / "index").read_bytes()
+    assert doctor._index_tracks_doctor(index) is True
+    body = index[:-20]
+    valid_extension = body + b"TREE" + (0).to_bytes(4, "big")
+    assert doctor._index_tracks_doctor(
+        valid_extension + hashlib.sha1(valid_extension).digest()) is True
+    oversized_extension = body + b"TREE" + (1).to_bytes(4, "big")
+    assert doctor._index_tracks_doctor(
+        oversized_extension + hashlib.sha1(oversized_extension).digest()) is False
+
+
 @pytest.fixture
 def small_git_repo(tmp_path):
     root = tmp_path / "dev"
     (root / "tools").mkdir(parents=True)
     (root / "tools" / "bridge_v2_component_doctor.py").write_text("# fixture\n")
-    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
-    subprocess.run(["git", "-c", f"safe.directory={root}", "-C", str(root),
-                    "add", "tools/bridge_v2_component_doctor.py"],
-                   check=True, capture_output=True)
+    env = _fixture_git_env(root)
+    subprocess.run(_fixture_git_command(root, "init", "-q", str(root)),
+                   check=True, capture_output=True, env=env)
+    subprocess.run(_fixture_git_command(root, "-C", str(root), "add",
+                                        "tools/bridge_v2_component_doctor.py"),
+                   check=True, capture_output=True, env=env)
     assert doctor._code_layout(root) == "development"
     return root
 

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import pytest
+
 from waggledance.core.hex_topology.canary_mirror import (
     build_canary_route_comparison,
 )
@@ -29,6 +31,20 @@ from waggledance.core.hex_topology.subdivision_runtime_executor_admission import
     build_subdivision_runtime_executor_admission,
 )
 from waggledance.core.magma.canonical import sha256_digest
+
+
+_MALFORMED_METADATA_CLAIMS = (
+    ("operator_approval", 1),
+    ("live_runtime_execution_authorized", "true"),
+    ("live_runtime_commit_authorized", 0),
+    ("runtime_authority_granted", None),
+    ("runtime_topology_mutation_applied", []),
+    ("routing_influence_applied", {}),
+    ("transport_performed", "false"),
+    ("claim_safe_upgrade", 1.0),
+    ("runtime_commit_performed", "yes"),
+    ("runtime_executor_invoked", [False]),
+)
 
 
 def _topology() -> dict:
@@ -123,6 +139,24 @@ def _execution_request() -> dict:
             "runtime_executor_invoked": False,
         },
     )
+
+
+def _rebind_request_metadata(request: dict, metadata: dict) -> dict:
+    rebound = {
+        **request,
+        "request_metadata": metadata,
+        "request_metadata_digest": sha256_digest(metadata),
+    }
+    core = {
+        key: value for key, value in rebound.items()
+        if key not in (
+            "execution_request_digest",
+            "runtime_application",
+            "request_metadata",
+        )
+    }
+    rebound["execution_request_digest"] = sha256_digest(core)
+    return rebound
 
 
 def test_executor_admission_blocks_live_runtime_until_operator_cutover():
@@ -249,3 +283,45 @@ def test_executor_admission_does_not_accept_cutover_authorization():
     assert admission["cutover_authorization"] is not None
     assert admission["ready_for_runtime_executor_admission"] is False
     assert admission["runtime_commit_performed"] is False
+
+
+@pytest.mark.parametrize(("field", "malformed_value"), _MALFORMED_METADATA_CLAIMS)
+def test_executor_admission_rejects_digest_valid_malformed_metadata_claims(
+    field: str,
+    malformed_value: object,
+):
+    request = _execution_request()
+    metadata = {
+        **request["request_metadata"],
+        field: malformed_value,
+    }
+    request = _rebind_request_metadata(request, metadata)
+
+    admission = build_subdivision_runtime_executor_admission(
+        execution_request=request,
+    )
+
+    assert admission["ok"] is False
+    assert admission["guardrails"]["execution_request_digest_rederives"] is True
+    assert admission["guardrails"]["request_metadata_digest_rederives"] is True
+    assert "request_metadata_no_runtime_claim" in admission["blockers"]
+    if field == "operator_approval":
+        assert "request_metadata_no_operator_approval" in admission["blockers"]
+    assert admission["runtime_executor_invoked"] is False
+
+
+def test_executor_admission_accepts_explicit_literal_false_metadata_claims():
+    request = _execution_request()
+    metadata = {
+        **request["request_metadata"],
+        **{field: False for field, _ in _MALFORMED_METADATA_CLAIMS},
+    }
+    request = _rebind_request_metadata(request, metadata)
+
+    admission = build_subdivision_runtime_executor_admission(
+        execution_request=request,
+    )
+
+    assert admission["ok"] is True
+    assert admission["blockers"] == []
+    assert admission["guardrails"]["request_metadata_no_runtime_claim"] is True

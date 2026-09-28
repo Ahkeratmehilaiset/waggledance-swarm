@@ -44,6 +44,11 @@ incorporated (§7).
 > Ei ole mitään tunniin kiintiörajaa jos minä kysyn ja jatkossa parven täytyy
 > tietää toistensa kiintiö
 
+> Eli tämän kokonaisuuden tarkoitus on se ettei parvi ajaudu kiintiö
+> limitteihin ja se voidaan ennakoida siten että jokaisella parvewn jäsenellä
+> on oikeus säätää toistensa mallia ja efforttia ennakoivana kunnossa pitona
+> ettei toiminta lakka
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -58,6 +63,7 @@ incorporated (§7).
 | R10 | Everything at once: every open bridge item Lead and fable-5 found, with the fewest signatures and steps | §3, §4 |
 | R11 | Brainstorms and sprint plans are always composed by the swarm's model with the best externally measured intelligence | §2.10 |
 | R12 | No hourly Grok limit applies when the operator asks; every lane knows every other lane's quota | §2.1, §2.6 |
+| R13 | **The purpose of the whole package:** the swarm never runs into quota limits. Limits are forecast, and every swarm member may adjust any other member's model and effort as predictive maintenance, so that work never stops | §2.2 |
 
 ## 1. Current state
 
@@ -153,10 +159,10 @@ operator's readings of the account page).
 - Reading another lane's quota grants no authority over it; switching stays
   with the executor (§2.4).
 
-### 2.2 Who may switch, and within what (R1, R6)
+### 2.2 Who may switch, and within what (R1, R6, R13)
 
 **The envelope.** The operator-signed set of profiles that automatic or
-principal switching may use.
+member switching may use.
 - A profile enters only with an F21 receipt that covers both quality and
   quota cost.
 - A profile whose cost cannot be measured stays out. A smaller, measured
@@ -168,8 +174,8 @@ principal switching may use.
 |---|---|
 | Operator's own terminal (`wd-model`) | `set`/`reset` within the envelope with expiry; `freeze`/`unfreeze` |
 | Operator's direct words in a lane's own window (session-observed; the originating session and the literal instruction are recorded; never claimed as cryptographic authentication) | `set`/`reset` within the envelope with expiry; `freeze`. `unfreeze` only from the operator's own terminal or direct input |
-| Principals (`codex-lead-1`, `fable-5`), triggered by a request, a written assessment or a measurement | submit a bounded **switch intent** for any lane, including themselves, to the executor (§2.4) |
-| Any other lane | a `profile_request` to a principal |
+| Every swarm member (`codex-lead-1`, `codex-tools-1`, `fable-5`, `claude-rco-1`, `claude-rco-2`), triggered by a request, a written assessment, a measurement or a quota forecast (R13) | submit a bounded **switch intent** for any lane, including itself, to the executor (§2.4) |
+| Principals (`codex-lead-1`, `fable-5`) | the same, plus precedence over other members' intents and first handling of contested switches |
 | A peer relay of "the operator said", an environment identity, or an agent-composed `operator` event | nothing |
 
 **Mechanical guardrails** (enforced in the executor, not by goodwill):
@@ -187,18 +193,49 @@ principal switching may use.
 4. **Reviewer independence.**
    - RCOs choose their effort within their range.
    - Nobody lowers an RCO below the reviewer default.
-   - A principal never changes an RCO that is reviewing that principal's
-     work.
+   - No member changes an RCO that is reviewing that member's work. This
+     keeps an author from weakening its own reviewer.
+   - For quota reasons an RCO may be moved to another pool or family at
+     equal or higher reviewer quality, never lowered.
 5. **Precedence.**
-   - The operator comes first: freeze, then an override, then the principals.
-   - A principal's switch holds for its dwell against the other principal,
-     except in `conserve`.
-   - Contested switches go to the operator digest.
+   - The operator comes first: freeze, then an override, then the
+     principals, then the other members.
+   - A switch holds for its dwell against an equal-or-lower-precedence
+     member, except in `conserve`.
+   - Contested switches go to a principal, and between principals to the
+     operator digest.
 6. **No budget bypass exists** in this package.
 
 **Not allowed for anyone but the operator's signature:** changing the
 envelope or a ceiling, approving a profile, buying credits, enabling fast
 mode, changing the fleet mode.
+
+**Predictive maintenance: never run into a limit (R13).** This is the goal
+the rest of the package serves.
+- **Forecast.** From the shared quota view (§2.1, F3 meter), each pool gets a
+  forecast of use until its reset. A pool whose forecast crosses its trip
+  line before the reset is *at risk*, early enough to act (the lead time is
+  a signed parameter).
+- **Who acts.** Any member that sees an at-risk pool submits intents for the
+  lanes on that pool, its own or others'. The executor deduplicates intents
+  per pool and tick, so several members seeing the same risk cause one
+  action.
+- **Order of measures**, cheapest to the work first:
+  1. route delegated and routine work to a pool with headroom (§2.7);
+  2. lower the effort of non-reviewing lanes on the at-risk pool;
+  3. move lanes to a qualified profile on another pool or family;
+  4. lower the tier of non-reviewing lanes, within task-class floors;
+  5. only as the last step, defer non-urgent work; review and incident work
+     keep running.
+- **Restore.** When the forecast recovers, the same members raise the lanes
+  back (a revert skips the rate limits).
+- **Limits of the rule.** Every intent passes the guardrails above: unknown
+  quota means HOLD, not a guess; reviewer floors hold; there is no purchase
+  or budget bypass. A member that cannot act (for example because the
+  executor is down) posts the at-risk forecast to the principals and the
+  operator.
+- **Measure of success:** no pool reaches its limit while a qualified
+  alternative existed, and no lane stops for quota reasons.
 
 ### 2.3 The operator command `wd-model` (alias `wd-malli`) (R1)
 
@@ -233,8 +270,8 @@ switch. It is the PR-3 executor with production ports.
 - preconditions: checkpoint written, safe boundary, idle.
 
 **Rules**
-- Principals only submit intents; neither may bypass the executor.
-- **Buddy fallback.** If the executor is unavailable, the other principal may
+- Members only submit intents; no member may bypass the executor.
+- **Buddy fallback.** If the executor is unavailable, a principal may
   invoke the **same** executor, and only after its exclusive ownership is
   proven. There is never a second execution path.
 - **Unknown means HOLD.** An unknown owner, logon or integrity (F5 evidence)
@@ -502,7 +539,7 @@ boundary; merging alone never mutates production.
 | F22 | 3 | Claim schema discoverability | F | examples and `-Explain` cover every resource kind | unknown kind means refuse (unchanged) | deploy | revert |
 | F23 | 3 | Isolated reproduction of the suspected items | T | reproduction or a documented non-repro | n/a | n/a | n/a |
 | F13 | 4 | Explicit per-lane launch + preflight enforce | L | preflight equals D3 on every lane | mismatch means refuse | per-lane canary | previous qualified explicit profile and verified generation, else HOLD |
-| F15 | 5 | Switching policy (pure) | F | property tests of every §2.2 guardrail; shadow coverage of every enabled pool and actuator path, plus negative cases: stale or missing quota, boundary caps, conflicting principals, frozen override, reviewer protection, clock and expiry, crash and replay | unknown means HOLD | shadow until coverage holds | flag off |
+| F15 | 5 | Switching policy (pure) | F | property tests of every §2.2 guardrail; shadow coverage of every enabled pool and actuator path, plus negative cases: stale or missing quota, boundary caps, conflicting members and principals, duplicate at-risk intents, an author targeting its own reviewer, frozen override, reviewer protection, clock and expiry, crash and replay. A replay of 7 days of real pool data shows that the forecast would have acted before every limit hit where a qualified alternative existed (R13) | unknown means HOLD | shadow until coverage holds | flag off |
 | F16 | 5 | Serialized executor (§2.4) | L | crash at each phase recovers without a double side effect; F5 green | ambiguous means HOLD, never kill | canary fable-5 (Lead observes, both RCOs available), then Tools and Lead, then each RCO when not reviewing affected work | flag off |
 | F17 | 5 | Continuity state machine (§2.5) | F | a relaunch mid-task keeps its claims per path; requests are reissued, never transferred; a forged handover is rejected | no record means no successor | with F16 | revert |
 | F18 | 5 | `wd-model` | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
@@ -527,7 +564,8 @@ on a partial signature.
 - head, tree, base, tag and release-notes SHA256;
 - the SHA256 of:
   - the `CLAUDE.md` Rule 8 amendment;
-  - the signed catalog (profiles with F21 receipts, the principals, the
+  - the signed catalog (profiles with F21 receipts, the members and
+    principals with their rights, the forecast lead time, the
     envelope);
   - the Grok routing policy;
   - the composer rule (§2.10);
@@ -597,7 +635,9 @@ pass. Discussion and isolated tests need no extra approval.
   pool still applies.
 - Every lane can see every pool's quota state; seeing grants no authority.
 - The executor is the only actuator, and a frozen request binding is never
-  mutated.
+  mutated. Every member may submit intents; none may act directly.
+- The purpose is predictive: no pool reaches its limit while a qualified
+  alternative exists, and no lane stops for quota reasons (R13).
 - Every switch is an event with its inputs, verified by D3, with a rollback.
 - Exact-head dual-RCO review for (a)-class work. Grok review is advisory.
 - Brainstorm and sprint-plan syntheses are written by the composer (§2.10),
@@ -667,3 +707,11 @@ evidence, the same admission controls for delegated composition, an
 artifact-only composer, and measurements ordered before the catalog
 signature with thresholds fixed in advance. All were adopted in §2.10, F24
 and §4.
+
+**Seventh directive (R13).** The operator then stated the purpose of the whole
+package: no quota limit is ever hit, by forecasting, and every swarm member
+may adjust any other member's model and effort as predictive maintenance.
+§2.2 was widened from two principals to every member, through the same
+executor and guardrails; the reviewer-independence rule was kept and
+generalized to every member. This change comes after Lead's final review
+and still needs Lead's confirmation.

@@ -706,61 +706,87 @@ stop condition trips.
 
 §2.5 covers *planned* switches, which quiesce at a safe boundary and write a
 checkpoint first. This section covers the unplanned case: the working model
-crashes, hangs up, or hits its usage limit mid-task, with no safe boundary
-and no fresh checkpoint, and possibly with its own pool unusable until the
-reset.
+crashes, or hits its usage limit mid-task, with no safe boundary and no fresh
+checkpoint, and possibly with its own pool unusable until the reset. All of it
+is **proposed new authority** (§4); nothing here is authorized now.
 
-**Continuous checkpoints** (so there is always something to continue from):
-- the step journal of the plan-then-execute cycle (§2.7): one committed step
-  at a time, with its status;
-- a periodic work-in-progress record for the current step: a WIP commit or a
-  saved diff on the task branch, the last test result, and a short "next
-  action" note. It is written at a signed interval and at every tool-call
-  batch that changes files.
+**Checkpoints.** There is always something to continue from, but work done
+between two checkpoints can be lost; the plan measures that window and never
+promises zero loss.
+- The step journal of the plan-then-execute cycle (§2.7): one committed step
+  at a time, with its status.
+- A WIP checkpoint for the current step, written atomically at a signed
+  interval and whenever a tool batch changes files. It records the base and
+  head, the inventory of dirty tracked and untracked files, the hash of the
+  WIP artifact (commit or saved diff), the head the tests last ran on, and
+  the task revision. Secrets are excluded. A WIP commit is never called green.
+- An **operation journal** for every action with an effect outside the
+  worktree (push, merge, bridge message, deployment and similar): an intent
+  with an idempotency key, then `attempted`, `applied`, `verified` or
+  `unknown`.
 
-**Detection.** The supervisor (not a peer) classifies the lane as down:
-- *crashed*: the process is gone, verified by PID and start time;
-- *limit-exhausted*: the CLI reports a classified limit error (the §2.6
-  error classes, stderr kept), or the pool reading shows it exhausted;
-- *unresponsive*: alive but with no progress proof past a signed bound
+**Detection.** The supervisor (not a peer) classifies the lane:
+- *crashed*: the parent process is gone, verified by PID and start time;
+- *limit-exhausted*: a **fresh** classified CLI limit error, correlated with
+  the exact active task and turn and with a validated pool binding. An
+  exhausted-pool reading alone only stops new admissions to that pool; it
+  never stops a running process;
+- *unresponsive*: alive with no progress proof past a signed bound
   (`wedged`, §2.9).
 
-**Incarnation.** For *crashed* and *limit-exhausted*, the executor starts a
-**stand-in** automatically:
-1. **Profile.** The best eligible profile for the task's class on a pool
-   with headroom, from another pool or family if the lane's own pool is
-   exhausted (§2.2 eligibility, atomic pool admission). A change of family
-   means another CLI, so it is always the identity-changing path of §2.5.
-2. **Fence.** A crashed owner is verified gone. A limit-exhausted owner is
-   still alive, so the executor stops its whole process tree first, as in
-   `FENCED`. An *unresponsive* live owner is not taken over automatically
-   (B7 stays deferred, §5): it stays a safety HOLD, and other file-disjoint
-   work continues.
-3. **Claims.** The dead owner's claims move to the stand-in's owner token by
-   the fenced CAS of §2.5, checked deterministically.
-4. **Context.** The stand-in boots with the same role contract (F2), the
-   task's plan and step journal, the WIP record and the branch. It first
-   verifies the WIP state (the tests of the last finished step pass, the
-   diff applies) and continues from the next unfinished step. If the WIP
-   state cannot be verified, it restarts the current step from the last
-   committed checkpoint and records that.
-5. **Requests.** Requests bound to the old identity are never transferred:
-   the executor posts `identity_changed` and the requesters reissue (§2.5).
-6. **Authority.** A stand-in inherits no RCO vote, veto clearance, signature
-   or privilege. If an RCO lane goes down mid-review, its stand-in starts the
-   review afresh at the exact head; the other RCO's decisions are unaffected.
+**Fencing, always complete.** A parent that is gone does not prove its child
+tools and heartbeat writers are gone. Before any claim moves, for both crash
+and limit failure, the single executor fences every writer. It checks exact
+PID, start time, token, generation and owned descendants, and handles dead
+parents with live children, recycled PIDs and unrelated descendants.
+- For a live limit-exhausted owner, a cooperative checkpoint-and-stop with a
+  bounded grace period comes first.
+- A forced stop is allowed only with verified identity AND proof that it is
+  safe: no active external write that cannot be classified or safely settled.
+  Otherwise it is a safety HOLD. A quota reading is never kill authority, and
+  freeze and HOLD take precedence.
+- An *unresponsive* live owner is not taken over (B7 stays deferred, §5). It
+  stays a safety HOLD, and only file-disjoint work continues.
+
+**Incarnation.** After a complete fence, the executor starts a **stand-in**:
+1. **Profile.** The best eligible profile for the task's class on a pool with
+   headroom, possibly another family (§2.2 eligibility, atomic pool
+   admission). A change of family is always the identity-changing path of
+   §2.5. Task context is portable; the conversation is not.
+2. **Readiness before writes.** For a new family, the stand-in's CLI
+   capability, tools, data-egress policy, role bootstrap (F2) and request
+   rebinding are verified before it may write. Until then it may only prepare
+   read-only context. It never answers under the old bindings.
+3. **Claims** move to the stand-in's token by the fenced CAS of §2.5, checked
+   deterministically.
+4. **Reconcile before continuing.** The stand-in reconciles the durable
+   filesystem state and the external receipts against the operation journal.
+   An unknown outcome of a non-idempotent action stays a safety HOLD. There
+   is no exactly-once promise without an idempotency contract on the
+   receiving system.
+5. **WIP.** The existing WIP is preserved immutably. If the stand-in validates
+   it, it continues from the next unfinished step. If not, it quarantines a
+   copy and resumes in a new, scoped, persistent worktree from the last
+   verified checkpoint. It never resets or overwrites the old dirty tree, and
+   never overwrites unrelated user or peer edits.
+6. **Requests** bound to the old identity are never transferred: the executor
+   posts `identity_changed` and the requesters reissue (§2.5).
+7. **Authority.** A stand-in inherits no RCO vote, veto clearance, signature
+   or privilege. Vetoes and findings from the old identity stay in force
+   until the authorized process resolves them; a fresh review is not a
+   clearance. Scheduling keeps both RCOs from being unavailable at the same
+   time.
 
 **Handing back.** When the original lane's pool recovers, the stand-in
 finishes its current step and hands the task back at that step boundary, by
-the same checkpoint and fenced-CAS path; or it keeps the task if the
-forecast (R13) says so.
+the same checkpoint, fence and CAS path; or it keeps the task if the forecast
+(R13) says so.
 
-**Limits.** Stand-in starts are finite per task (a retry and time budget and
-a circuit breaker). Ambiguous identity, a failed fence or no eligible profile
-with headroom is a safety HOLD. The stand-in is an operational measure,
-never a way around a claim, a veto or a gate. Starting stand-ins
-automatically is part of the proposed every-member and automatic-operation
-authority in §4.
+**Limits.** The retry budget and circuit breaker are per task and shared
+across stand-ins, so a change of identity never resets them. Ambiguous
+identity, an incomplete fence, an unknown external outcome, or no eligible
+profile with headroom is a safety HOLD. A stand-in is never a way around a
+claim, a veto or a gate.
 
 ## 3. Acceptance table
 
@@ -808,7 +834,7 @@ boundary; merging alone never mutates production.
 | F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the F2 bootstrap contract references the one source of the rule text | previous contract hash and rule text together |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each operational-wait cause clears and work resumes with no operator action, while each safety HOLD stays blocked until its condition changes; replay: routing weights converge to the best measured route per class, a stop signal quarantines a failing profile within one tick, exploration stays within its budget, a candidate joins only through the admission policy with an independent quorum; adversarial: poisoned and replayed evidence, correlated lanes, self-grading, model-version drift and oscillation; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
-| F27 | 5 | Stand-in incarnation (§2.12) | L (with F16/F17) | fault injection on the canary: kill the process mid-step, and force a limit error mid-step. The stand-in starts on another eligible pool, takes the claims by fenced CAS, verifies the WIP state and continues from the next unfinished step with no lost or duplicated step; an RCO stand-in re-reviews from scratch; requests are reissued, not transferred; hand-back at a step boundary | ambiguous identity, a failed fence or no eligible profile means a safety HOLD; an unresponsive live owner is never taken over | with F16 and F17 | stand-ins off; the lane waits for its own pool |
+| F27 | 5 | Stand-in incarnation (§2.12) | L (with F16/F17) | fault injection on the canary: kill mid-step; a limit error mid-step; a stale, misbound or transient limit reading; PID reuse, a recycled child PID, a dead parent with a live child, unrelated descendants; partial WIP write, bad diff, untracked file; a crash just before and just after an external success and before its receipt; freeze during recovery; a partially applied CAS; two simultaneous stand-ins; hand-back failure. Records the observed recovery time and data-loss window | ambiguous identity, an incomplete fence, an unknown external outcome or no eligible profile means a safety HOLD; an unresponsive live owner is never taken over; a quota reading is never kill authority | with F16 and F17 | stand-ins off; the lane waits for its own pool |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
@@ -1077,5 +1103,16 @@ checkpoints (step journal and WIP record), supervisor-side detection, an
 automatic stand-in on another eligible pool through the identity-changing
 path, claims by fenced CAS, continuation from the next unfinished step,
 no inherited authority, and hand-back at a step boundary. An unresponsive
-live owner is still not taken over (B7 stays deferred). This needs Lead's
-review.
+live owner is still not taken over (B7 stays deferred).
+
+**Lead on R16** (05:17:15Z, head 84d0037e): `modified`, reviewing the R16 diff
+only. All adopted in §2.12 and F27. Verified identity alone is not authority
+to kill a live worker, so a forced stop also needs proof of safety, a
+cooperative stop comes first, and a quota reading is never kill authority.
+Every writer is fenced, including after a crash. A fresh limit error must be
+correlated with the task and pool. An operation journal and a reconcile step
+cover external effects, with no exactly-once promise. WIP is preserved
+immutably and quarantined rather than reset. A new family must be verified
+ready before it writes. Old vetoes stay in force. The retry budget is shared
+across stand-ins, and more fault-injection cases were added. The
+data-loss window between checkpoints is measured and not denied.

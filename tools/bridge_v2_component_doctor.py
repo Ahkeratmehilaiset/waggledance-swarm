@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
@@ -229,6 +231,53 @@ def _sha256_bounded(path, maximum=512 * 1024 * 1024):
     return digest.hexdigest()
 
 
+@contextmanager
+def _locked_windows_binary_digest(path, maximum=512 * 1024 * 1024):
+    """Hash a Windows file while denying writers and deletion through launch."""
+    if os.name != "nt":
+        raise OSError("Windows executable binding is unavailable")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # FILE_SHARE_READ alone denies write/delete opens and a rename of this file.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 0x1, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateFileW read lock failed")
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except OSError:
+        kernel.CloseHandle(handle)
+        raise
+    with os.fdopen(fd, "rb") as stream:
+        if os.fstat(stream.fileno()).st_size > maximum:
+            yield None
+            return
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+        yield digest.hexdigest()
+
+
+def _run_verified_npm_native(argv, timeout, search_path, path, trusted_sha256):
+    try:
+        with _locked_windows_binary_digest(path) as digest:
+            if digest is None:
+                return None, "binary_too_large"
+            if digest.lower() != trusted_sha256.lower():
+                return None, "binary_changed_before_execution"
+            return _run_bounded(argv, timeout, search_path)
+    except OSError:
+        return None, "binary_lock_error"
+
+
 def _resolve_npm_native(probe, resolution, search_path):
     """Locate an allowlisted npm native payload; never execute its shell shims."""
     package = resolution["package"]
@@ -236,8 +285,10 @@ def _resolve_npm_native(probe, resolution, search_path):
         directory = Path(part)
         if not part or not directory.is_absolute():
             continue
-        if not any((directory / (probe + suffix)).is_file()
-                   for suffix in (".cmd", ".ps1", "")):
+        shim = next((directory / (probe + suffix)
+                     for suffix in (".cmd", ".ps1", "")
+                     if (directory / (probe + suffix)).is_file()), None)
+        if shim is None:
             continue
         package_root = directory.joinpath("node_modules", *package.split("/"))
         metadata_path = package_root / "package.json"
@@ -245,17 +296,17 @@ def _resolve_npm_native(probe, resolution, search_path):
             with metadata_path.open("rb") as stream:
                 metadata_bytes = stream.read(65537)
             if len(metadata_bytes) > 65536:
-                return None, None, "package_metadata_too_large"
+                return None, None, "package_metadata_too_large", str(shim)
             metadata = json.loads(metadata_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs)
         except (OSError, UnicodeError, json.JSONDecodeError, DoctorError):
-            return None, None, "package_metadata_invalid"
+            return None, None, "package_metadata_invalid", str(shim)
         if not isinstance(metadata, dict) or metadata.get("name") != package:
-            return None, None, "package_identity_mismatch"
+            return None, None, "package_identity_mismatch", str(shim)
         package_version = metadata.get("version")
         if not isinstance(package_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", package_version):
-            return None, None, "package_version_invalid"
+            return None, None, "package_version_invalid", str(shim)
         if not isinstance(metadata.get("bin"), dict) or metadata["bin"].get(probe) != resolution["bin"]:
-            return None, None, "package_bin_mismatch"
+            return None, None, "package_bin_mismatch", str(shim)
         for relpath in resolution["native_relpaths"]:
             candidate = package_root.joinpath(*relpath.split("/"))
             try:
@@ -268,9 +319,9 @@ def _resolve_npm_native(probe, resolution, search_path):
             try:
                 digest = _sha256_bounded(candidate_resolved)
             except OSError:
-                return None, None, "binary_hash_error"
+                return None, None, "binary_hash_error", str(shim)
             if digest is None:
-                return None, None, "binary_too_large"
+                return None, None, "binary_too_large", str(shim)
             provenance = {
                 "method": "npm_native", "package": package,
                 "package_version": package_version,
@@ -279,9 +330,9 @@ def _resolve_npm_native(probe, resolution, search_path):
                 "binary_path": str(candidate_resolved), "sha256": digest,
                 "verified": digest.lower() == (resolution["trusted_sha256"] or "").lower(),
             }
-            return str(candidate_resolved), provenance, None
-        return None, None, "native_binary_missing"
-    return None, None, "npm_package_not_found"
+            return str(candidate_resolved), provenance, None, str(candidate_resolved)
+        return None, None, "native_binary_missing", str(shim)
+    return None, None, "npm_package_not_found", None
 
 
 def _windows_kill_on_close_job(process):
@@ -352,9 +403,38 @@ def _windows_resume_scoped_process(process):
 
 
 def _run_bounded(argv, timeout, search_path=None):
+    """Run in a disposable, private audit directory, never the caller cwd."""
+    audit = Path(__file__).resolve().parent.parent / ".codex-audit"
+    try:
+        audit.mkdir(exist_ok=True)
+        if audit.is_symlink() or (hasattr(audit, "is_junction") and audit.is_junction()):
+            return None, "probe_scope_error"
+        with tempfile.TemporaryDirectory(prefix="bridge-doctor-probe-", dir=audit) as scratch:
+            root = Path(scratch)
+            if root.resolve().parent != audit.resolve():
+                return None, "probe_scope_error"
+            paths = {name: root / name for name in (
+                "cwd", "home", "appdata", "localappdata", "xdg-config", "xdg-data",
+                "xdg-state", "xdg-cache", "tmp")}
+            for path in paths.values():
+                path.mkdir()
+            return _run_bounded_scoped(argv, timeout, search_path, paths)
+    except OSError:
+        return None, "probe_scope_error"
+
+
+def _run_bounded_scoped(argv, timeout, search_path, paths):
     # Version checks need no account tokens, home directory, or interactive stdin.
     child_env = {"PATH": search_path if search_path is not None else os.environ.get("PATH", ""),
-                 "NO_COLOR": "1", "CI": "1"}
+                 "NO_COLOR": "1", "CI": "1", "HOME": str(paths["home"]),
+                 "USERPROFILE": str(paths["home"]), "APPDATA": str(paths["appdata"]),
+                 "LOCALAPPDATA": str(paths["localappdata"]),
+                 "XDG_CONFIG_HOME": str(paths["xdg-config"]),
+                 "XDG_DATA_HOME": str(paths["xdg-data"]),
+                 "XDG_STATE_HOME": str(paths["xdg-state"]),
+                 "XDG_CACHE_HOME": str(paths["xdg-cache"]),
+                 "TMP": str(paths["tmp"]), "TEMP": str(paths["tmp"]),
+                 "TMPDIR": str(paths["tmp"])}
     if os.name == "nt":
         for key in ("SystemRoot", "WINDIR"):
             if key in os.environ:
@@ -364,7 +444,8 @@ def _run_bounded(argv, timeout, search_path=None):
     try:
         process = subprocess.Popen(argv, shell=False, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                                   env=child_env, start_new_session=os.name != "nt",
+                                   env=child_env, cwd=paths["cwd"],
+                                   start_new_session=os.name != "nt",
                                    creationflags=0x00000004 if os.name == "nt" else 0)
     except OSError:
         return None, "probe_error"
@@ -473,7 +554,8 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
         entry = {
             "id": component["id"], "kind": component["kind"], "required": required,
             "features": selected, "status": "unknown", "reason": None,
-            "found": None, "version": None, "min_version": component["min_version"],
+            "found": None, "version": None, "selected_path": None,
+            "min_version": component["min_version"],
             "auth": "unknown", "quota": "unknown", "turn_readiness": "unknown",
             "install": component["install"],
         }
@@ -486,8 +568,9 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
             probe = component["probe"]
             executable = PROBES[probe][0]
             if probe in NPM_NATIVE and platform == "windows":
-                resolved, provenance, resolution_reason = _resolve_npm_native(
+                resolved, provenance, resolution_reason, selected_path = _resolve_npm_native(
                     probe, component["resolution"], search_path)
+                entry["selected_path"] = selected_path
                 if provenance is not None:
                     entry["provenance"] = provenance
                     entry["found"] = True
@@ -503,6 +586,7 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                     direct = _safe_executable(executable, search_path)
                     if direct:
                         entry.update(found=True, reason="unverified_direct_binary")
+                        entry["selected_path"] = direct
                         try:
                             direct_hash = _sha256_bounded(Path(direct))
                         except OSError:
@@ -519,12 +603,21 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                     entry.update(status="missing", reason="executable_not_found", found=False)
                 else:
                     entry["found"] = True
+                    entry["selected_path"] = resolved
             if resolved is not None and entry["reason"] is None:
                 entry["found"] = True
                 argv = (probe_command(probe) if probe_command else
                         [resolved, *PROBES[probe][1:]])
-                output, reason = _run_bounded(
-                    argv, timeout_seconds or component["timeout_seconds"], search_path)
+                if entry.get("provenance") and entry["provenance"]["verified"]:
+                    output, reason = _run_verified_npm_native(
+                        argv, timeout_seconds or component["timeout_seconds"], search_path,
+                        resolved, component["resolution"]["trusted_sha256"])
+                    if reason in {"binary_changed_before_execution", "binary_lock_error",
+                                  "binary_too_large"}:
+                        entry["provenance"]["verified"] = False
+                else:
+                    output, reason = _run_bounded(
+                        argv, timeout_seconds or component["timeout_seconds"], search_path)
                 if reason:
                     entry["reason"] = reason
                 else:

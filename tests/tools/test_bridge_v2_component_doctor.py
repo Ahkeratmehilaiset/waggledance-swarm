@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -6,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+import tools.bridge_v2_component_doctor as doctor
 
 from tools.bridge_v2_component_doctor import (
     DoctorError, _parse_probe_version, _run_bounded, _version, inspect_components, main,
@@ -252,6 +254,90 @@ def test_npm_native_package_detected_but_unpinned_not_executed(tmp_path):
     assert mismatch["exit_code"] == 2
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows executable handle binding")
+def test_npm_native_swap_after_initial_hash_never_executes(tmp_path, monkeypatch):
+    data = manifest("claude")
+    data["components"][0]["install"]["package_id"] = "@anthropic-ai/claude-code"
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": hashlib.sha256(b"original executable bytes").hexdigest(),
+    }
+    (tmp_path / "claude.cmd").write_text("@echo off\n", encoding="utf-8")
+    package = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(
+        json.dumps({"name": "@anthropic-ai/claude-code", "version": "2.1.283",
+                    "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    executable = package / "bin" / "claude.exe"
+    executable.write_bytes(b"original executable bytes")
+    replacement = package / "bin" / "replacement.exe"
+    replacement.write_bytes(b"swapped executable bytes")
+    original_hash = doctor._sha256_bounded
+
+    def swap_after_hash(path, *args, **kwargs):
+        digest = original_hash(path, *args, **kwargs)
+        replacement.replace(executable)
+        return digest
+
+    monkeypatch.setattr(doctor, "_sha256_bounded", swap_after_hash)
+    monkeypatch.setattr(doctor, "_run_bounded", lambda *args, **kwargs:
+                        pytest.fail("swapped binary reached process launch"))
+    result = inspect_components(data, lane="tools", features=["bridge_core"],
+                                search_path=str(tmp_path), platform="windows")
+    item = result["components"][0]
+    assert item["status"] == "unknown"
+    assert item["reason"] == "binary_changed_before_execution"
+    assert item["provenance"]["verified"] is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file share and CreateProcess semantics")
+def test_verified_binary_handle_denies_replace_and_allows_createprocess(tmp_path):
+    sample = tmp_path / "sample.exe"
+    replacement = tmp_path / "replacement.exe"
+    sample.write_bytes(b"original")
+    replacement.write_bytes(b"replacement")
+    with doctor._locked_windows_binary_digest(sample) as digest:
+        assert digest == hashlib.sha256(b"original").hexdigest()
+        with pytest.raises(OSError):
+            replacement.replace(sample)
+    with doctor._locked_windows_binary_digest(Path(sys.executable)) as digest:
+        assert len(digest) == 64
+        output, reason = _run_bounded([sys.executable, "--version"], 2)
+    assert reason is None
+    assert output.startswith("Python ")
+
+
+def test_malformed_first_npm_shim_fails_closed_and_reports_selected_path(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "claude.cmd").write_text("@echo off\n", encoding="utf-8")
+    (second / "claude.cmd").write_text("@echo off\n", encoding="utf-8")
+    package = second / "node_modules" / "@anthropic-ai" / "claude-code"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({
+        "name": "@anthropic-ai/claude-code", "version": "2.1.283",
+        "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    (package / "bin" / "claude.exe").write_bytes(b"second candidate")
+    data = manifest("claude")
+    data["components"][0]["install"]["package_id"] = "@anthropic-ai/claude-code"
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": None,
+    }
+    result = inspect_components(data, lane="tools", features=["bridge_core"],
+                                search_path=os.pathsep.join((str(first), str(second))),
+                                platform="windows", probe_command=lambda _:
+                                pytest.fail("later shim must not be executed"))
+    item = result["components"][0]
+    assert item["status"] == "unknown"
+    assert item["reason"] == "package_metadata_invalid"
+    assert item["selected_path"] == str(first / "claude.cmd")
+
+
 @pytest.mark.parametrize("probe,output,expected", [
     ("python", "banner 99.9.9\nPython 3.13.7\n", "3.13.7"),
     ("git", "git version 2.54.0.windows.1\n", "2.54.0"),
@@ -313,6 +399,39 @@ def test_probe_child_has_devnull_stdin_and_no_credentials(monkeypatch):
     assert reason is None
     assert "stdin=''" in output
     assert "secret=None" in output
+
+
+@pytest.mark.parametrize("ending,timeout,expected", [
+    ("print('done')", 2, None),
+    ("raise SystemExit(7)", 2, "nonzero_exit"),
+    ("import time; time.sleep(2)", 0.2, "timeout"),
+])
+def test_probe_side_effects_stay_in_private_scratch(
+        tmp_path, monkeypatch, ending, timeout, expected):
+    monkeypatch.chdir(tmp_path)
+    audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
+    before = set(audit.glob("bridge-doctor-probe-*"))
+    code = (
+        "import os,pathlib; "
+        "pathlib.Path('.local/state/gh').mkdir(parents=True); "
+        "pathlib.Path('.local/state/gh/device-id').write_text('scratch'); "
+        "home=pathlib.Path(os.environ['HOME']); "
+        "profile=pathlib.Path(os.environ['USERPROFILE']); "
+        "assert home == profile; "
+        f"assert pathlib.Path.cwd() != pathlib.Path({str(tmp_path)!r}); "
+        "assert all(pathlib.Path(os.environ[key]).is_relative_to(home.parent) "
+        "for key in ('APPDATA','LOCALAPPDATA','XDG_CONFIG_HOME','XDG_DATA_HOME',"
+        "'XDG_STATE_HOME','XDG_CACHE_HOME','TEMP','TMP')); "
+        + ending
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "not-for-probe")
+    output, reason = _run_bounded([sys.executable, "-c", code], timeout)
+    assert reason == expected
+    if expected is None:
+        assert output.strip() == "done"
+    assert not (tmp_path / ".local").exists()
+    assert not (tmp_path / "side-effect.txt").exists()
+    assert set(audit.glob("bridge-doctor-probe-*")) == before
 
 
 def test_timeout_does_not_leave_grandchild_or_pipe_open(tmp_path):

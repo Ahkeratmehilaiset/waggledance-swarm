@@ -7,10 +7,14 @@ skips. Digests are equality bindings, never proof of source authenticity.
 Reported evaluator independence is not authenticated here. Set digests bind
 only the supplied validated unique rows, not completeness or provenance.
 Numeric values retain their JSON spelling: 5 and 5.0 conflict on replay.
+Inputs require exact plain JSON-shaped dict/list/str builtins, not subclasses
+with overridden reads or comparisons.
 The local task-ID evidence domain is max 160 characters and differs from
 other bridge validators; it is not an authoritative shared task contract.
 ``correctness_counts`` covers completed attempts only; non-completed claims
-are reported separately and never qualify success. No matched or paired
+are reported separately and never qualify success. ``disposition_counts``
+and ``suggestion_count`` count suggestions, not attempts; per-completion
+splits expose their units. No matched or paired
 held-out comparison protocol, preregistered policy, or independent
 scoring verifier is available in this W0 module; incremental benefit remains
 unknown and no output grants learning, qualification, spend, or dispatch.
@@ -18,7 +22,6 @@ unknown and no output grants learning, qualification, spend, or dispatch.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -71,24 +74,24 @@ class ContractError(ValueError):
         super().__init__(code)
 
 
-def _object(value: Any, fields: frozenset[str]) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or any(not isinstance(k, str) for k in value):
+def _object(value: Any, fields: frozenset[str]) -> dict[str, Any]:
+    if type(value) is not dict or any(type(k) is not str for k in value):
         raise ContractError("invalid_object")
     if fields - value.keys():
         raise ContractError("missing_field")
     if value.keys() - fields:
         raise ContractError("unknown_field")
-    return value
+    return dict(value)
 
 
 def _id(value: Any) -> str:
-    if not isinstance(value, str) or not _ID.fullmatch(value):
+    if type(value) is not str or not _ID.fullmatch(value):
         raise ContractError("invalid_identifier")
     return value
 
 
 def _task_id(value: Any) -> str:
-    if (not isinstance(value, str) or not _TASK_ID.fullmatch(value)
+    if (type(value) is not str or not _TASK_ID.fullmatch(value)
             or any(segment in ("", ".", "..") for segment in value.split("/"))):
         raise ContractError("invalid_task_id")
     return value
@@ -97,13 +100,13 @@ def _task_id(value: Any) -> str:
 def _digest(value: Any, *, nullable: bool = False) -> str | None:
     if value is None and nullable:
         return None
-    if not isinstance(value, str) or not _DIGEST.fullmatch(value):
+    if type(value) is not str or not _DIGEST.fullmatch(value):
         raise ContractError("invalid_digest")
     return value
 
 
 def _utc(value: Any) -> datetime:
-    if not isinstance(value, str) or not _UTC.fullmatch(value):
+    if type(value) is not str or not _UTC.fullmatch(value):
         raise ContractError("invalid_utc")
     try:
         return datetime.fromisoformat(value[:-1] + "+00:00").astimezone(timezone.utc)
@@ -127,9 +130,9 @@ def _number(value: Any, maximum: int) -> int | float | None:
 
 
 def _refs(value: Any) -> list[str]:
-    if not isinstance(value, list) or len(value) > MAX_PROVENANCE_REFS:
+    if type(value) is not list or len(value) > MAX_PROVENANCE_REFS:
         raise ContractError("invalid_provenance")
-    if any(not isinstance(item, str) or not _DIGEST.fullmatch(item) for item in value):
+    if any(type(item) is not str or not _DIGEST.fullmatch(item) for item in value):
         raise ContractError("invalid_provenance")
     if len(value) != len(set(value)):
         raise ContractError("invalid_provenance")
@@ -152,10 +155,10 @@ def _set_digest(kind: str, row_digests: list[str]) -> str:
                               "row_digests": sorted(row_digests)})
 
 
-def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
+def parse_attempt(raw: dict[str, Any]) -> dict[str, Any]:
     """Validate one consultation attempt without inventing missing metrics."""
     row = _object(raw, _ATTEMPT_FIELDS)
-    if row["schema"] != ATTEMPT_SCHEMA:
+    if type(row["schema"]) is not str or row["schema"] != ATTEMPT_SCHEMA:
         raise ContractError("invalid_schema")
     result = dict(row)
     for key in ("attempt_id", "request_id", "task_class",
@@ -165,10 +168,10 @@ def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
     result["task_id"] = _task_id(row["task_id"])
     for key in ("prompt_digest", "artifact_digest"):
         result[key] = _digest(row[key])
-    if row["attempt_status"] not in _STATUSES:
+    if type(row["attempt_status"]) is not str or row["attempt_status"] not in _STATUSES:
         raise ContractError("invalid_status")
     suggestions = row["suggestion_ids"]
-    if not isinstance(suggestions, list) or len(suggestions) > MAX_SUGGESTIONS:
+    if type(suggestions) is not list or len(suggestions) > MAX_SUGGESTIONS:
         raise ContractError("invalid_suggestions")
     result["suggestion_ids"] = [_id(item) for item in suggestions]
     if len(result["suggestion_ids"]) != len(set(result["suggestion_ids"])):
@@ -186,10 +189,10 @@ def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def parse_outcome(raw: Mapping[str, Any]) -> dict[str, Any]:
+def parse_outcome(raw: dict[str, Any]) -> dict[str, Any]:
     """Validate a reported suggestion outcome, not its source authenticity."""
     row = _object(raw, _OUTCOME_FIELDS)
-    if row["schema"] != OUTCOME_SCHEMA:
+    if type(row["schema"]) is not str or row["schema"] != OUTCOME_SCHEMA:
         raise ContractError("invalid_schema")
     result = dict(row)
     for key in ("outcome_id", "attempt_id", "request_id",
@@ -201,9 +204,9 @@ def parse_outcome(raw: Mapping[str, Any]) -> dict[str, Any]:
         result[key] = _digest(row[key])
     result["observed_profile"] = (None if row["observed_profile"] is None
                                   else _id(row["observed_profile"]))
-    if row["disposition"] not in _DISPOSITIONS:
+    if type(row["disposition"]) is not str or row["disposition"] not in _DISPOSITIONS:
         raise ContractError("invalid_disposition")
-    if row["correctness"] not in _CORRECTNESS:
+    if type(row["correctness"]) is not str or row["correctness"] not in _CORRECTNESS:
         raise ContractError("invalid_correctness")
     result["evaluator_id"] = (None if row["evaluator_id"] is None
                               else _id(row["evaluator_id"]))
@@ -217,17 +220,17 @@ def parse_outcome(raw: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def join_outcomes(attempts: list[Mapping[str, Any]],
-                  outcomes: list[Mapping[str, Any]]) -> dict[str, Any]:
+def join_outcomes(attempts: list[dict[str, Any]],
+                  outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     """Idempotently join records while refusing conflicting or foreign claims.
 
     The denominator includes every distinct attempt, even failed/skipped and
     those with no outcome. No baseline/held-out comparison protocol is defined
     here, so all incremental benefit and learning authority are refused.
     """
-    if not isinstance(attempts, list) or len(attempts) > MAX_ATTEMPTS:
+    if type(attempts) is not list or len(attempts) > MAX_ATTEMPTS:
         raise ContractError("invalid_attempts")
-    if not isinstance(outcomes, list) or len(outcomes) > MAX_OUTCOMES:
+    if type(outcomes) is not list or len(outcomes) > MAX_OUTCOMES:
         raise ContractError("invalid_outcomes")
     by_attempt: dict[str, tuple[dict[str, Any], str]] = {}
     attempt_casefold_ids: dict[str, str] = {}
@@ -282,6 +285,8 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
         by_suggestion[key] = (row, digest)
     status_counts = {status: 0 for status in _STATUSES}
     disposition_counts = {disposition: 0 for disposition in _DISPOSITIONS}
+    completed_disposition_counts = {disposition: 0 for disposition in _DISPOSITIONS}
+    noncompleted_disposition_counts = {disposition: 0 for disposition in _DISPOSITIONS}
     correctness_counts = {correctness: 0 for correctness in _CORRECTNESS}
     noncompleted_correctness_counts = {correctness: 0 for correctness in _CORRECTNESS}
     joined = []
@@ -316,6 +321,10 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
                     "changed_artifact_digest": outcome["changed_artifact_digest"],
                 }
             disposition_counts[suggestion["disposition"]] += 1
+            target_disposition_counts = (completed_disposition_counts
+                                         if row["attempt_status"] == "completed"
+                                         else noncompleted_disposition_counts)
+            target_disposition_counts[suggestion["disposition"]] += 1
             target_counts = (correctness_counts if row["attempt_status"] == "completed"
                              else noncompleted_correctness_counts)
             target_counts[suggestion["correctness"]] += 1
@@ -330,6 +339,11 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
         "independence_verified": False,
         "attempt_status_counts": status_counts,
         "disposition_counts": disposition_counts,
+        "completed_disposition_counts": completed_disposition_counts,
+        "noncompleted_disposition_counts": noncompleted_disposition_counts,
+        "suggestion_count": sum(disposition_counts.values()),
+        "completed_suggestion_count": sum(completed_disposition_counts.values()),
+        "noncompleted_suggestion_count": sum(noncompleted_disposition_counts.values()),
         "correctness_counts": correctness_counts,
         "noncompleted_correctness_counts": noncompleted_correctness_counts,
         "attempts": joined,

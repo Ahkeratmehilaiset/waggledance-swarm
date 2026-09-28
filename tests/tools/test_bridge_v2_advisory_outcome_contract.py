@@ -364,3 +364,113 @@ def test_failed_attempt_correctness_is_separate_from_completed_counts():
         "correct": 1, "incorrect": 0, "unknown": 0
     }
     assert joined["learning_update_allowed"] is False
+
+
+def test_only_exact_plain_json_containers_and_strings_are_accepted():
+    class Flip(dict):
+        def __getitem__(self, key):
+            if key == "schema":
+                return "wd.bridge-v2-advisory-attempt.v1"
+            if key == "attempt_status":
+                return "completed"
+            return super().__getitem__(key)
+
+    class FoldFlip(str):
+        def casefold(self):
+            return "unrelated"
+
+    with pytest.raises(ContractError, match="invalid_object"):
+        parse_attempt(Flip(attempt(schema="wd.evil.v9", attempt_status="BOGUS")))
+    with pytest.raises(ContractError, match="invalid_object"):
+        parse_outcome(Flip(outcome(disposition="weaponized")))
+    for field, value in (("schema", FoldFlip("wd.bridge-v2-advisory-attempt.v1")),
+                         ("attempt_status", FoldFlip("completed")),
+                         ("task_id", FoldFlip("task-1")),
+                         ("requester_agent", FoldFlip("requesting-lead")),
+                         ("advisor_profile", FoldFlip("grok-advisor")),
+                         ("observed_at_utc", FoldFlip("2026-09-28T12:00:00Z"))):
+        with pytest.raises(ContractError):
+            parse_attempt(attempt(**{field: value}))
+    for field, value in (("schema", FoldFlip("wd.bridge-v2-advisory-outcome.v1")),
+                         ("disposition", FoldFlip("used")),
+                         ("correctness", FoldFlip("correct")),
+                         ("evaluator_id", FoldFlip("independent-rco")),
+                         ("judged_at_utc", FoldFlip("2026-09-28T12:01:00Z"))):
+        with pytest.raises(ContractError):
+            parse_outcome(outcome(**{field: value}))
+    with pytest.raises(ContractError, match="invalid_suggestions"):
+        parse_attempt(attempt(suggestion_ids=type("Sublist", (list,), {})(["suggestion-1"])))
+    with pytest.raises(ContractError, match="invalid_provenance"):
+        parse_attempt(attempt(provenance_refs=type("Sublist", (list,), {})([DIGEST_C])))
+    with pytest.raises(ContractError, match="invalid_attempts"):
+        join_outcomes(type("Sublist", (list,), {})([attempt()]), [])
+
+
+def test_every_string_value_and_key_requires_exact_str():
+    class Substr(str):
+        pass
+
+    for factory, parser in ((attempt, parse_attempt), (outcome, parse_outcome)):
+        base = factory()
+        for field, value in base.items():
+            if type(value) is str:
+                with pytest.raises(ContractError):
+                    parser({**base, field: Substr(value)})
+            elif type(value) is list and value and type(value[0]) is str:
+                with pytest.raises(ContractError):
+                    parser({**base, field: [Substr(value[0]), *value[1:]]})
+        one_key = next(iter(base))
+        bad_key = {Substr(one_key) if key == one_key else key: value
+                   for key, value in base.items()}
+        with pytest.raises(ContractError, match="invalid_object"):
+            parser(bad_key)
+
+
+@pytest.mark.parametrize("field", ["requester_agent", "consumer_agent"])
+def test_invalid_actor_ids_refused_by_both_parsers(field):
+    with pytest.raises(ContractError, match="invalid_identifier"):
+        parse_attempt(attempt(**{field: ["invalid"]}))
+    with pytest.raises(ContractError, match="invalid_identifier"):
+        parse_outcome(outcome(**{field: ["invalid"]}))
+
+
+def test_set_digest_golden_literal_and_empty_domain_separation():
+    a = attempt()
+    o = outcome(a)
+    joined = join_outcomes([a], [o])
+    assert joined["attempt_set_digest"] == "d85aeff5798a7458db9bcb215b4fa5fb6e66b1f88c7ef9a2b4860f683d30d129"
+    assert joined["outcome_set_digest"] == "95c7bc7dc14452d1835dda7dee438ee4aebd7317f635f89185903d8241512fbd"
+    empty = join_outcomes([], [])
+    assert empty["attempt_set_digest"] != empty["outcome_set_digest"]
+
+
+def test_missing_outcome_explicitly_has_unverified_independence():
+    missing = join_outcomes([attempt()], [])["attempts"][0]["suggestions"]
+    assert all(row["independence_verified"] is False for row in missing)
+
+
+def test_suggestion_units_and_disposition_splits_reconcile():
+    completed = attempt()
+    failed = attempt(attempt_id="failed-1", attempt_status="failed",
+                     suggestion_ids=["failed-suggestion"])
+    skipped = attempt(attempt_id="skipped-1", attempt_status="skipped",
+                      suggestion_ids=[])
+    noncompleted = outcome(failed, outcome_id="failed-outcome",
+                           suggestion_id="failed-suggestion", disposition="rejected",
+                           correctness="correct")
+    joined = join_outcomes([completed, failed, skipped], [outcome(completed), noncompleted])
+    assert joined["denominator_attempts"] == 3
+    assert joined["completed_suggestion_count"] == 2
+    assert joined["noncompleted_suggestion_count"] == 1
+    assert joined["suggestion_count"] == 3
+    assert joined["completed_disposition_counts"] == {
+        "used": 1, "rejected": 0, "unused": 0, "unknown": 1
+    }
+    assert joined["noncompleted_disposition_counts"] == {
+        "used": 0, "rejected": 1, "unused": 0, "unknown": 0
+    }
+    assert joined["disposition_counts"] == {
+        "used": 1, "rejected": 1, "unused": 0, "unknown": 1
+    }
+    assert sum(joined["correctness_counts"].values()) == joined["completed_suggestion_count"]
+    assert sum(joined["noncompleted_correctness_counts"].values()) == joined["noncompleted_suggestion_count"]

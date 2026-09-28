@@ -1,52 +1,68 @@
 {
   "schema": "wd.bridge-components.v1",
+  "supported_platforms": ["windows"],
+  "profiles": {
+    "codex-lead-1": {"lane": "codex-lead-1", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "lead": {"lane": "codex-lead-1", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "codex-tools-1": {"lane": "codex-tools-1", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "tools": {"lane": "codex-tools-1", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "fable-5": {"lane": "fable-5", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "fable": {"lane": "fable-5", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "claude-rco-1": {"lane": "claude-rco-1", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "rco1": {"lane": "claude-rco-1", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "claude-rco-2": {"lane": "claude-rco-2", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "rco2": {"lane": "claude-rco-2", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "test": {"lane": "test", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "tester": {"lane": "test", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]},
+    "ci": {"lane": "test", "features": ["bridge_core", "powershell7", "github_cli", "provider_claude", "provider_codex"]}
+  },
   "components": [
     {
       "id": "python313", "kind": "cli", "probe": "python",
       "platforms": ["windows"], "features": ["bridge_core"],
-      "required_for": [{"feature": "bridge_core", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "bridge_core", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "3.13.0", "timeout_seconds": 3,
       "install": {"source_url": "https://www.python.org/downloads/", "package_id": "Python.Python.3.13"}
     },
     {
       "id": "git", "kind": "cli", "probe": "git",
       "platforms": ["windows"], "features": ["bridge_core"],
-      "required_for": [{"feature": "bridge_core", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "bridge_core", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "2.0.0", "timeout_seconds": 3,
       "install": {"source_url": "https://git-scm.com/downloads", "package_id": "Git.Git"}
     },
     {
       "id": "windows_powershell", "kind": "cli", "probe": "powershell",
       "platforms": ["windows"], "features": ["bridge_core"],
-      "required_for": [{"feature": "bridge_core", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "bridge_core", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "5.1.0", "timeout_seconds": 3,
       "install": {"source_url": "https://learn.microsoft.com/powershell/scripting/install/installing-windows-powershell", "package_id": null}
     },
     {
       "id": "powershell7", "kind": "cli", "probe": "pwsh",
       "platforms": ["windows"], "features": ["powershell7"],
-      "required_for": [{"feature": "powershell7", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "powershell7", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "7.0.0", "timeout_seconds": 3,
       "install": {"source_url": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell", "package_id": "Microsoft.PowerShell"}
     },
     {
       "id": "github_cli", "kind": "cli", "probe": "gh",
       "platforms": ["windows"], "features": ["github_cli"],
-      "required_for": [{"feature": "github_cli", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "github_cli", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "2.0.0", "timeout_seconds": 3,
       "install": {"source_url": "https://cli.github.com/", "package_id": "GitHub.cli"}
     },
     {
       "id": "claude_code", "kind": "cli", "probe": "claude",
       "platforms": ["windows"], "features": ["provider_claude"],
-      "required_for": [{"feature": "provider_claude", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "provider_claude", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "1.0.0", "timeout_seconds": 3,
       "install": {"source_url": "https://github.com/anthropics/claude-code", "package_id": "@anthropic-ai/claude-code"}
     },
     {
       "id": "codex_cli", "kind": "cli", "probe": "codex",
       "platforms": ["windows"], "features": ["provider_codex"],
-      "required_for": [{"feature": "provider_codex", "lanes": ["lead", "tools", "fable"], "platforms": ["windows"]}],
+      "required_for": [{"feature": "provider_codex", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "0.1.0", "timeout_seconds": 3,
       "install": {"source_url": "https://developers.openai.com/codex/cli", "package_id": "@openai/codex"}
     }

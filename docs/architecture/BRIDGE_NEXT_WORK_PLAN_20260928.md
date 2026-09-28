@@ -53,6 +53,12 @@ incorporated (§7).
 > kun seikkaperäinen suunitelma on valmis palaudutaan tilanteen vaatimaan
 > käyttörajat ylläpitävään malliin ja toteutetaan
 
+> eli kaikki tämä pitää pystyä tapahtumaan automaattisesti ilman operaattorin
+> väliintuloa -parvi pysyy toiminta kykyisenä, ajantasalla haastavissa
+> tilanteissa, se voi myös oppia
+
+> se voi myös oppia kuten waggle dance
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -69,6 +75,7 @@ incorporated (§7).
 | R12 | No hourly Grok limit applies when the operator asks; every lane knows every other lane's quota | §2.1, §2.6 |
 | R13 | **The purpose of the whole package:** the swarm never runs into quota limits. Limits are forecast, and every swarm member may adjust any other member's model and effort as predictive maintenance, so that work never stops | §2.2 |
 | R14 | Plan, then execute: detailed sprint plans are made on a strong model; when the plan is done, the lane returns to the quota-preserving model the situation calls for, and the plan is implemented on that | §2.7 |
+| R15 | All of this happens automatically, without operator intervention: the swarm stays operational and up to date in hard situations, and it learns, like the waggle dance | §2.11 |
 
 ## 1. Current state
 
@@ -143,13 +150,21 @@ Evidence labels:
 
 API price is not quota cost and is not used as one.
 
-**`wd-model models [--json]`** gives one row per model and effort with:
+**What counts as known** (Grok, final round). A cost, quota or quality value
+is known only with validated provenance, a TTL, and a production (not shadow)
+source. A value past its TTL, a shadow output, or a `None` pool is unknown.
+An external score's freshness is the source's own measurement date, never the
+time the registry was written.
+
+**`wd-model models [--json]`** gives one row per catalog model and effort,
+Grok and Haiku included, with:
 - those fields;
 - pool state (used, reset, forecast);
 - CLI availability;
-- membership of the signed envelope.
+- membership of the signed envelope, as a column (a model outside the
+  envelope still has its row).
 
-Unknown values are shown as unknown. This table is the principals' decision
+Unknown values are shown as unknown cells. This table is the principals' decision
 input, and a compact copy goes into their boot brief.
 
 **Shared quota visibility (R12).** Every lane, not only the principals, can
@@ -168,10 +183,14 @@ operator's readings of the account page).
 
 **The envelope.** The operator-signed set of profiles that automatic or
 member switching may use.
-- A profile enters only with an F21 receipt that covers both quality and
-  quota cost.
+- A profile enters **automatically** when its F21 receipts (quality and
+  quota cost) meet the signed admission thresholds (§2.11). The operator
+  signs the thresholds and ceilings once, not each profile (R15).
 - A profile whose cost cannot be measured stays out. A smaller, measured
   envelope is preferred to invented values.
+- Profiles not yet in the envelope are used only by the qualification
+  harness, under the signed measurement budget (§2.11), never for real
+  work.
 - Fast, priority and pay-per-use credit tiers are never in it.
 - Grok is outside automatic model switching, because its pool cannot be read.
 
@@ -193,10 +212,16 @@ member switching may use.
    - Dwell of 30 min per lane.
    - At most 4 switches per lane per hour.
    - One change per pool per tick.
-   - Hysteresis for raises.
-   - A revert skips all of these.
+   - Hysteresis for raises. The tick length and hysteresis margin are signed
+     parameters.
+   - The executor classifies intents itself and ignores caller labels: a
+     *revert* is an intent whose target is the lane's last verified
+     in-envelope profile; *conserve* applies only when the projection has
+     crossed a trip line. A revert skips the dwell only; it still counts
+     toward the hourly cap and the pool tick.
 4. **Reviewer independence.**
-   - RCOs choose their effort within their range.
+   - An RCO sets its own effort by an effort-only intent within its signed
+     range.
    - Nobody lowers an RCO below the reviewer default.
    - No member changes an RCO that is reviewing that member's work. This
      keeps an author from weakening its own reviewer.
@@ -207,13 +232,18 @@ member switching may use.
      principals, then the other members.
    - A switch holds for its dwell against an equal-or-lower-precedence
      member, except in `conserve`.
-   - Contested switches go to a principal, and between principals to the
-     operator digest.
+   - A contest is resolved deterministically, with no operator step (R15):
+     the incumbent profile stays and the competing intent is not applied; a
+     higher-precedence member may replace it after the dwell. The operator
+     digest reports contests but never has to act.
 6. **No budget bypass exists** in this package.
 
 **Not allowed for anyone but the operator's signature:** changing the
-envelope or a ceiling, approving a profile, buying credits, enabling fast
-mode, changing the fleet mode.
+envelope rules or a ceiling, approving a profile outside the signed
+admission thresholds, buying credits, enabling fast
+mode, changing the fleet mode, changing the admission thresholds, the
+measurement budget or the learning bounds (§2.11). The operator may still
+drop an RCO below its floor from the operator's own terminal, with an expiry.
 
 **Predictive maintenance: never run into a limit (R13).** This is the goal
 the rest of the package serves.
@@ -237,8 +267,8 @@ the rest of the package serves.
 - **Limits of the rule.** Every intent passes the guardrails above: unknown
   quota means HOLD, not a guess; reviewer floors hold; there is no purchase
   or budget bypass. A member that cannot act (for example because the
-  executor is down) posts the at-risk forecast to the principals and the
-  operator.
+  executor is down) posts the at-risk forecast to the principals; the
+  operator is informed, never required.
 - **Measure of success:** no pool reaches its limit while a qualified
   alternative existed, and no lane stops for quota reasons.
 
@@ -260,6 +290,13 @@ remembered:
 - `strong` / `vahva`
 - `planning` / `suunnittelu`, a burst capped at 2 h
 
+- One shared tier table (class, maximum duration, trip-line behaviour) serves
+  `wd-model`, the executor and §2.2; `premium` is in it as a burst-only tier.
+- A `set` without `--for` uses the signed default expiry, which is printed.
+  A duration above the tier's cap is refused, not clamped.
+- `wd-model` only enqueues intents to the executor (§2.4); it has no apply
+  path of its own. `unfreeze` is refused when the caller is a lane process.
+
 A refusal always prints the reason: the pool forecast, the envelope, the
 freeze or the dwell.
 
@@ -272,7 +309,11 @@ switch. It is the PR-3 executor with production ports.
 - an idempotency key;
 - lane, target profile, trigger and actor;
 - the expected generation, PID and start time, and token identity;
-- preconditions: checkpoint written, safe boundary, idle.
+- preconditions: for a relaunch, checkpoint written, safe boundary and
+  idle; for an in-session switch, a safe boundary only. A bounded wait, then
+  HOLD with a visible reason and an automatic retry (§2.11). A generation,
+  PID or start-time mismatch means the intent is not applied, and nothing is
+  killed.
 
 **Rules**
 - Members only submit intents; no member may bypass the executor.
@@ -301,7 +342,7 @@ A lane has three identity layers. A switch may change some of them:
 | Path | Conversation | Bridge identity | Process | Continuity action |
 |---|---|---|---|---|
 | In-session switch (PR-12) | same | same | same | none; D3 verifies |
-| Qualified resume relaunch | same | same (re-presented by the executor from the durable intent, only where the resume contract is qualified for that CLI version) | new | old process fenced first; claims and requests continue unchanged |
+| Qualified resume relaunch | same | same (re-presented by the executor from the durable intent, only where the resume contract is qualified for that CLI version; an unqualified resume is never attempted, and the identity-changing path is used instead) | new | old process fenced first; claims and requests continue unchanged |
 | Identity-changing relaunch | same or new | new | new | claims by fenced CAS; requests are reissued by their requesters, never transferred |
 
 The fenced CAS works like this:
@@ -309,15 +350,22 @@ The fenced CAS works like this:
 - The old owner is verified gone by PID and start time.
 - The executor moves the lane's own claims to the new owner token by a
   scoped CAS.
-- The other principal verifies the move independently.
+- The executor checks the result deterministically (the claim state equals
+  the intended CAS result). The other principal's independent check is an
+  audit on top, not the acceptance.
 
 **States:**
 
 ```
-REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
-    any failure -> HOLD -> rollback to the previous qualified explicit
-                   profile and verified generation, or HOLD for Lead/operator
+relaunch:    REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
+in-session:  REQUESTED -> APPLIED -> VERIFIED -> CONTINUED
+any failure -> HOLD -> rollback: the previous profile if it is still in the
+               envelope with a verified generation, else the lane's signed
+               safe default profile; never `native`
 ```
+
+If even the rollback cannot start, the lane stays in HOLD and the executor
+retries with backoff automatically; the principals are notified (R15).
 
 - `QUIESCED`: checkpoint written, at a safe boundary.
 - `FENCED`: the old process is stopped, and that is verified.
@@ -359,7 +407,15 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
     `operator_requested` with the literal instruction, and it still counts
     in the ledger and the weekly-pool forecast. The exemption never buys
     top-ups or bypasses a weekly-pool limit error.
-  - The result is a bound reply to the requester.
+  - **Admission** among waiting requests: lane-class priority from a signed
+    table, then age; a self-raised priority is ignored. Effort and timeout
+    come from a signed cap table. A request not admitted gets an immediate
+    `rate_limited` skip.
+  - Composer syntheses (§2.10) may use at most a signed share of the hourly
+    admissions, so the other lanes keep their R3 access.
+  - The result is a reply bound to the request id and the prompt digest.
+  - A missing error class is `unknown`, never success; the helper's stderr
+    is kept in the ledger.
 - **Unavailable.** A limit, auth, timeout or budget failure gives a reply of
   `skipped` with the reason class. The requester carries on. **Grok is never a
   gate.**
@@ -380,18 +436,22 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
 | `routine` (bookkeeping, replies, polling, parsing, mechanical edits) | economy: Haiku or Sonnet via subagent; Codex Luna |
 | `implementation` | standard |
 | `review` (RCO) | strong, never below the reviewer default |
-| `planning` (design, brainstorm, research, arbitration) | strong; premium only as a budget-checked burst; Grok via `grok_consult` as the third family |
+| `planning_synthesis` (the document of record of a brainstorm or sprint plan) | the composer (§2.10) |
+| `planning` (design, research, arbitration, brainstorm rounds) | strong, ranked by expected cost; premium only as a budget-checked burst; Grok via `grok_consult` as the third family |
 | `incident` | burst rules |
 
 **Brief-then-delegate:**
 1. The strong model writes the brief: goal, files and lines, rules and
    invariants, pitfalls, acceptance tests, the definition of done, and what
    not to touch. That is the best initialization.
-2. The route is the cheapest known qualified profile whose measured success
-   rate for the class meets the threshold.
+2. The route is the profile with the lowest *expected* pool cost (pool cost
+   × expected attempts), pools in `conserve` excluded, whose receipt is
+   fresh and meets the signed minimum sample, maximum uncertainty and
+   success threshold. A stale receipt counts as none.
 3. A cheap executor, with no bridge authority, works in an isolated worktree
    or subagent.
-4. The strong model, or the tests, verifies the result.
+4. Both the tests and the strong model's check against the brief verify
+   the result.
 5. On failure, escalate one tier at a time; after two escalations the
    principal does the task itself.
 
@@ -415,6 +475,11 @@ A routing ledger (class, profile, attempts, success, tokens, pool cost) feeds
 the success rates. With no measurement, the default table above applies, and
 only with signed profiles. (a)-class code still gets exact-head dual-RCO
 review, whoever wrote it.
+- If two members assign different classes to one task, the higher class wins
+  deterministically (review > incident > planning_synthesis > planning >
+  implementation > routine).
+- If the task-class table is switched off, the pre-amendment Rule 8 text
+  applies, so rollback always has a default.
 
 **A rule conflict to resolve.** `CLAUDE.md` Rule 8 makes the strongest model
 the default for every session and every subagent that is not explicitly fixed.
@@ -427,22 +492,28 @@ signature; it is part of the §4 packet.
 - **One outstanding wake per lane.**
   - A durable watermark plus a dirty flag, and a typed notification with a
     pinned drain helper.
-  - Late replies, cancellations and vetoes are never coalesced.
-  - Only notifications are coalesced, never canonical events.
+  - Late replies, cancellations and vetoes are never coalesced: they
+    preempt, and are delivered apart from the coalesced notification slot.
+  - Only notifications are coalesced, never canonical events. The drain's
+    authority is the watermark over the canonical log, not the notification
+    payload.
+  - A supersede creates a new request id and a non-coalesced cancel of the
+    old one; the frozen binding is never edited.
   - No-op drains are invisible to the operator.
 - **When delivery is uncertain:** reconcile with bounded, idempotent
   recovery, never a blind resubmit. There is a backlog migration, and a
   rollback to the relay.
 - **One versioned bootstrap and role contract,** its hash verified at session
-  start. The old layers become historical, and CI lints the active prompt set.
+  start. It is canaried on one lane first, and the previous hash stays valid
+  for sessions that have not yet moved to the new one. The old layers become historical, and CI lints the active prompt set.
 
 ### 2.9 Queue and guard correctness
 
 | Item | Design |
 |---|---|
-| Scope race | `WorkQueueV1` created through the #1751 same-logon mutex helpers. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Bridge events are written after the lock is released. |
-| Git guard | Parse leading options. `-C` is guarded against its target. `--git-dir`, `--work-tree`, `--namespace` and `-c core.*`/`include.*` are refused on branch moves, as are `GIT_CONFIG_*`. Unknown options fail closed. |
-| Lease | The heartbeat follows the long-lived worker. The old owner is fenced when stale. Leases retire per task, so a live process never renews a finished task forever. The claim cwd is normalized to an absolute path. |
+| Scope race | `WorkQueueV1` created through the #1751 same-logon mutex helpers. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Each mutation writes an idempotency key and an outbox record in the same critical section; bridge events are published from the outbox after the lock is released, so a crash between the two loses no event, and a replay of a bound key returns the original result. |
+| Git guard | Parse leading options. `-C` is guarded against its target. `--git-dir`, `--work-tree` and `--namespace` are refused on branch moves. Only an allowlist of safe `-c` keys passes on a branch move; every other `-c`, and the `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE` and `GIT_NAMESPACE` environment variables, are refused. Unknown options fail closed. |
+| Lease | The heartbeat follows the long-lived worker. The old owner is fenced when stale. Leases retire per task, so a live process never renews a finished task forever. The claim cwd is normalized to an absolute path. The heartbeat proves only that the process lives: a claim with no progress proof beyond a signed bound is marked `wedged`, visibly, and the queue routes other work around it (R15). Automatic takeover of a wedged *live* owner stays deferred (B7, §5). |
 | Reply UX | A pinned `Reply-ToRequest -RequestId` fetches and binds the request itself; the requester can supersede its own request. |
 | Head check | The writer rejects a non-40-hex head on statuses that require a commit (for example `rco_pass`, `build_consensus_pass`), not on every decision. |
 | Claim UX | A discoverable claim schema, a preflight (`-Explain`) and examples. There is no permissive fallback. |
@@ -461,7 +532,9 @@ if all of these hold:
   evidence;
 - the budget projection allows it (the §2.2 trip lines and premium-burst
   cap);
-- it is available now (pool not exhausted or in `conserve`, provider up);
+- it is available now (pool known, not exhausted or in `conserve`,
+  provider up); a missing or stale quota makes it ineligible, never a
+  fallback;
 - its effort is allowed for the `planning` class.
 
 **Step 2: ranking** among eligible profiles only.
@@ -472,8 +545,16 @@ if all of these hold:
 - The ranking reads one **frozen registry snapshot**, recorded by digest per
   synthesis, so a registry refresh cannot change the winner mid-task. The
   registry is refreshed only by F3, never by hand in a session.
-- **Ties** (equal index, or overlapping uncertainty where the source gives
-  it): the higher coding index wins, then the lower quota cost.
+- **Ties:** scores within a signed epsilon, or with overlapping uncertainty
+  where the source gives it, are ties, so a sub-point bump cannot force a
+  costlier effort. Ties go to the higher coding index, then the lower quota
+  cost, then the signed profile id, which makes the order total. Missing tie
+  data never picks a winner; the next key decides.
+- **Staying up to date (R15).** A registry refresh that changes the winner
+  applies automatically to the next synthesis, but only if the new score
+  carries the source's own measurement date and stays within a signed
+  plausibility bound against the previous version; otherwise the result is
+  `composer_unknown` until the next refresh.
 - The registry values are a local snapshot of an external source, not an
   independent verification by the swarm.
 - In today's snapshot the top entries are `claude-opus-5-5` `max` (58),
@@ -490,8 +571,9 @@ if all of these hold:
 **When the top profile is unavailable**
 - Wait up to a stated deadline with a bounded retry count, with no costly
   polling loop; a freeze stops the wait.
-- Then use the next eligible profile in the ranking, and record
-  `composer_fallback` with the reason.
+- Then use the next eligible profile in the ranking, within the strong
+  tiers, and record `composer_fallback` with the reason. The wait is a signed
+  duration and never holds the executor lease.
 - A fallback never bypasses any step-1 condition.
 
 **How the composer runs**
@@ -522,6 +604,62 @@ if all of these hold:
   because the operator directed it. Other task classes still rank by F21
   measurements.
 
+### 2.11 Automatic operation and learning, like the waggle dance (R15)
+
+**Automatic by default.** After the one signature (§4), every mechanism in
+this package runs without operator intervention. The operator can always
+freeze, override, or read the digest, but is never a required step.
+- **Every HOLD has an automatic exit:** a retry on the next tick when its
+  cause clears, a deterministic tie-break, a rollback to a signed safe
+  default, or a route around the blocked item. A HOLD that persists past a
+  signed bound is escalated to the principals and shown in the digest; it
+  never silently stops other work.
+- **The swarm stays operational:** one lane's failure never stops the rest.
+  Wedged claims are routed around (§2.9), Grok is `skipped` when unavailable
+  (§2.6), the supervisor restarts a dead executor (§2.4), and quota risks are
+  handled before they bite (§2.2, R13).
+
+**Staying up to date.**
+- F3 refreshes the registry automatically from its external sources, using
+  each source's own measurement date.
+- A new model or version in the registry becomes a **scout candidate**. The
+  qualification harness (F21) measures it automatically under the signed
+  measurement budget. When its receipts meet the signed admission thresholds,
+  it joins the envelope automatically, within the signed ceilings (no fast,
+  priority or credit tiers; tier caps hold).
+- Receipts expire, and are re-measured automatically when a provider version
+  changes.
+
+**Learning, like the waggle dance.** A honeybee scout that finds a good food
+source dances to tell the others its direction and quality; more foragers
+follow a better source; a stop signal warns off a bad one; and old
+information fades. The swarm does the same with models and routes:
+- **Scouts.** A small signed share of routine and implementation work (the
+  exploration budget) goes to candidate profiles, to discover better or
+  cheaper routes.
+- **The dance.** Every finished task publishes an outcome record to the
+  shared routing ledger: class, profile, success, attempts, pool cost and the
+  verifying tests. That record is the dance: the quality and cost of one
+  "food source" (a profile for a task class).
+- **Recruitment.** Routing weights rise with successful outcomes from
+  independent lanes and fall with failures. Weights decay over time, so old
+  news fades.
+- **Stop signal.** A failure, a limit hit or a quality regression publishes a
+  stop signal that lowers that profile's weight for the class at once, until
+  new successes restore it.
+- **Quorum.** A routing change that affects many lanes, and every automatic
+  envelope admission, needs outcomes from at least a signed number of
+  independent lanes, like the quorum bees use to choose a new nest site.
+- **Forecast learning.** Each at-risk forecast (R13) is compared with the
+  actual pool use afterwards; the error recalibrates burn rates and lead
+  times.
+
+**Bounds of learning.** Learning moves only routing weights, forecast
+parameters and envelope admission, and only within the signed thresholds,
+ceilings and budgets. It never changes gates, reviewer floors, budget
+ceilings, signatures or these rules. Every learned change is an event with
+its evidence, and is rolled back automatically if a stop condition trips.
+
 ## 3. Acceptance table
 
 **Owners:** L = Lead, T = Tools, F = fable-5. These are planning proposals,
@@ -545,33 +683,34 @@ boundary; merging alone never mutates production.
 | # | Stage | Feature | Owner | Evidence to accept | Fail-closed | Activation | Rollback |
 |---|---|---|---|---|---|---|---|
 | F1 | 1 | Wake telemetry (watermarks, reasons, no-op ratio, latency) | L | isolated trace reproduces the numbers | unknown shown as unknown | deploy (read-only) | remove the reader |
-| F2 | 1 | One versioned bootstrap contract + prompt lint | L | fresh and resumed sessions report the same hash | wrong or missing hash means fail closed | deploy | previous contract |
-| F3 | 1 | Registry v2 + stored pool cost + collector provenance | T | meter matches operator pool readings on 7 days of data, within a stated tolerance | unknown stays unknown | deploy | data revert |
+| F2 | 1 | One versioned bootstrap contract + prompt lint | L | fresh and resumed sessions report the same hash; a mid-task session survives the change | wrong or missing hash means fail closed | canary one lane, previous hash valid until each session moves | previous contract hash and text together |
+| F3 | 1 | Registry v2 + stored pool cost + collector provenance | T | meter matches operator pool readings on 7 days of data, within a tolerance frozen in the packet before the run; rows failing the schema are counted as an unknown residual, never dropped | unknown stays unknown | deploy | data revert |
 | F4 | 1 | Grok measurement and ledger | T | every call in the window is in the ledger | unclassified error means cooldown | deploy | helper pin |
 | F5 | 1 | Lock-participant evidence | T | runs before activation and after reboot | more than one logon or integrity means HOLD | gate for Stage 5 | n/a |
 | F6 | 1 | Read-only dashboard | T | matches canonical revisions on a replay | unknown shown as unknown | deploy | n/a |
 | F21 | 1 | Minimal qualification | F writes, T runs, RCOs evaluate | per profile: task-class coverage, repeats, sample size and uncertainty, provider, version and effort, provenance, freshness; adversarial holdout cases. Receipts are bound to the exact code, profile, provider version and freshness, and never claim universal intelligence or uninterrupted availability | no receipt means out of the envelope | before the catalog signature | n/a |
-| F7 | 2 | One outstanding wake per lane | L | Lead's audit acceptance list on an isolated runtime, plus backlog migration | uncertain means reconcile, never resubmit blindly | canary: Tools only with verified ownership and no critical work; then Lead; then one Claude lane; then the rest one at a time | flag back to relay |
-| F8 | 3 | Work-queue serialization (replaces #1567) | F | cross-runtime race harness: one winner, no resurrection | busy means refuse | deploy | revert |
-| F9 | 3 | Git-guard option parsing | F | probe matrix with success twins | unknown option means refuse | deploy | revert |
+| F7 | 2 | One outstanding wake per lane | L | Lead's audit acceptance list on an isolated runtime, plus a backlog migration round trip that stays readable after a rollback to the relay | uncertain means reconcile, never resubmit blindly | canary: Tools only with verified ownership and no critical work; then Lead; then one Claude lane; then the rest one at a time | flag back to relay |
+| F8 | 3 | Work-queue serialization + outbox (replaces #1567) | F | cross-runtime race harness: one winner, no resurrection; a kill between mutation and publish loses no event; killing the lock holder unblocks waiters with no unlocked mutation; an unbound replay case | busy means refuse | deploy | revert |
+| F9 | 3 | Git-guard option parsing | F | probe matrix with success twins, including non-allowlisted `-c` keys and the `GIT_DIR`, `GIT_WORK_TREE` and `GIT_NAMESPACE` variables | unknown option means refuse | deploy | revert |
 | F10 | 3 | Worker-bound lease, fencing, retirement, absolute cwd | F | a long task keeps its claim; a killed owner loses it; a finished task retires | unknown owner means no renewal | deploy | revert |
 | F11 | 3 | `Reply-ToRequest` + requester supersede | F | binding equals `-ReplyToEventJson` on the corpus | ambiguous id means refuse | deploy | revert |
 | F12 | 3 | Commit-status head validation | F | negative tests | reject | deploy | revert |
 | F22 | 3 | Claim schema discoverability | F | examples and `-Explain` cover every resource kind | unknown kind means refuse (unchanged) | deploy | revert |
-| F23 | 3 | Isolated reproduction of the suspected items | T | reproduction or a documented non-repro | n/a | n/a | n/a |
+| F23 | 3 | Isolated reproduction of the suspected items | T | reproduction or a documented non-repro | a non-repro stays open until the packet accepts it explicitly | n/a | n/a |
 | F13 | 4 | Explicit per-lane launch + preflight enforce | L | preflight equals D3 on every lane | mismatch means refuse | per-lane canary | previous qualified explicit profile and verified generation, else HOLD |
 | F15 | 5 | Switching policy (pure) | F | property tests of every §2.2 guardrail; shadow coverage of every enabled pool and actuator path, plus negative cases: stale or missing quota, boundary caps, conflicting members and principals, duplicate at-risk intents, an author targeting its own reviewer, frozen override, reviewer protection, clock and expiry, crash and replay. A replay of 7 days of real pool data shows that the forecast would have acted before every limit hit where a qualified alternative existed (R13) | unknown means HOLD | shadow until coverage holds | flag off |
 | F16 | 5 | Serialized executor (§2.4) | L | crash at each phase recovers without a double side effect; F5 green | ambiguous means HOLD, never kill | canary fable-5 (Lead observes, both RCOs available), then Tools and Lead, then each RCO when not reviewing affected work | flag off |
 | F17 | 5 | Continuity state machine (§2.5) | F | a relaunch mid-task keeps its claims per path; requests are reissued, never transferred; a forged handover is rejected | no record means no successor | with F16 | revert |
-| F18 | 5 | `wd-model` | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
+| F18 | 5 | `wd-model` | F | end-to-end on the canary; enqueue only, no apply path | refusal prints the reason | with F16 | its own flag, independent of F16 |
 | F19 | 5 | Task classes + brief-then-delegate + plan-then-execute + ledger | F | ledger shows cost per class; quality holds on F21 tasks; on the canary, a burst ends when its plan is committed, and the return profile equals the forecast's choice | no measurement means signed defaults only; a burst with no recorded plan ends at its cap | shadow ledger first | prompt table off |
-| F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the rule text also goes into the F2 bootstrap contract | prompt rule off |
+| F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the F2 bootstrap contract references the one source of the rule text | previous contract hash and rule text together |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
+| F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each HOLD cause clears and work resumes with no operator action; replay: routing weights converge to the best measured route per class, a stop signal suppresses a failing profile within one tick, exploration stays within its budget, a scout candidate joins the envelope only after quorum and thresholds; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
 - #1567, superseded by F8;
-- #1638, perhaps superseded by F7;
+- #1638, superseded by F7 only if the diff-and-test map shows it;
 - #1656, folded into F3 or closed;
 - the #1751 slices, after main CI.
 
@@ -582,7 +721,14 @@ satisfying every gate; if the packet is incomplete, the work does not proceed
 on a partial signature.
 
 **The packet binds:**
-- head, tree, base, tag and release-notes SHA256;
+- head, tree, base, tag and release-notes SHA256. The RCO passes, the
+  signature and the activation all name the same head and tree, and
+  activation refuses any other (a squash merge is checked by tree);
+- an absolute expiry timestamp, not a restatable "authorization time";
+- F21 receipts regenerated at the frozen head;
+- the signed parameters: trip lines, tick, hysteresis, forecast lead time,
+  admission thresholds, measurement and exploration budgets, quorum size,
+  learning bounds, Grok admission table and composer share;
 - the SHA256 of:
   - the `CLAUDE.md` Rule 8 amendment;
   - the signed catalog (profiles with F21 receipts, the members and
@@ -598,8 +744,11 @@ on a partial signature.
 - the canary order;
 - stop conditions;
 - rollback;
-- a maximum authorization of 14 days, counted from the defined activation
-  authorization time and never reset by a restart. On expiry:
+- a maximum of 14 days, from the packet's absolute timestamp and never
+  reset by a restart, for the stage to meet its coverage predicate. A stage
+  that met its predicate stays on without renewal (R15), under the freeze,
+  the kill switch and its automatic stop conditions. On expiry before the
+  predicate is met:
   - a stage that was never activated stays off;
   - an enabled automation stops accepting new intents, and its in-flight work
     either settles safely or holds;
@@ -608,6 +757,11 @@ on a partial signature.
   - reapproval is needed.
 
 Freeze and the kill switch take precedence over every stage.
+
+**Optional bits.** The packet lists the policy features (the Rule 8
+amendment, F19, F24 and the §2.11 learning) as separate bits, so the operator
+could sign the queue and guard fixes without the policy changes. The
+proposal is all bits on, in one signature.
 
 **Explicitly excluded:** Stage-2 cutover, Rule 9b activation, approval
 carry-forward, any budget bypass, and fast or credit tiers. Merge authority
@@ -630,7 +784,8 @@ pass. Discussion and isolated tests need no extra approval.
 ## 5. Deferred and known limitations (stated openly, not "all solved")
 
 - **B7 break-glass** for a hung live owner. The continuity work covers the
-  relaunch case only.
+  relaunch case, and §2.9 now detects a wedged claim and routes around it;
+  automatic takeover of a live owner stays deferred.
 - **S10:** an identical unbound replay can reopen a request.
 - **PS/Python payload casing parity.** Current binding semantics are kept.
 - **Approval carry-forward** for content-identical rebases.
@@ -655,6 +810,10 @@ pass. Discussion and isolated tests need no extra approval.
   is operator-requested Grok calls from the hourly guard (§2.6); the weekly
   pool still applies.
 - Every lane can see every pool's quota state; seeing grants no authority.
+- After the one signature everything runs without operator intervention;
+  every HOLD has an automatic exit (R15).
+- Learning moves only weights, forecasts and envelope admission, within
+  signed bounds; it never changes gates, floors, ceilings or signatures.
 - The executor is the only actuator, and a frozen request binding is never
   mutated. Every member may submit intents; none may act directly.
 - The purpose is predictive: no pool reaches its limit while a qualified
@@ -741,3 +900,36 @@ and still needs Lead's confirmation.
 then the lane returns to the quota-preserving model and implements. Added as
 the plan-then-execute cycle in §2.7 and F19: the burst ends when the plan is
 committed, and the return profile comes from the quota forecast.
+
+**Ninth and tenth directives (R15).** Everything runs automatically without
+operator intervention, stays operational and up to date, and learns like the
+waggle dance. Added as §2.11 and F26; contests, HOLDs and rollbacks now have
+deterministic automatic exits; profiles join the envelope automatically under
+signed thresholds (the operator signs the rules once, not each profile); a
+stage that met its predicate no longer expires. These change Lead's round-3
+expiry detail and the per-profile signature, so they need Lead's confirmation.
+
+**Final Grok review** (grok-4.7 xhigh, two parts of about 15-19 KB, on head
+a5425f12; 24 proposals, all checked against the plan text). Adopted: known
+values need provenance, TTL and a production source; every catalog model has a
+row; executor-side revert and conserve classification; RCO effort-only
+intents; a measurement budget for unmeasured profiles; one tier table and a
+printed default expiry; `wd-model` enqueues only; in-session switches need
+only a safe boundary; a deterministic CAS check; two state machines and no
+rollback onto `native`; broker admission, composer share, bound replies and
+kept stderr; `planning_synthesis` split from `planning`; expected-cost
+routing with signed thresholds; both tests and brief checks; class conflict
+resolution; a Rule 8 default; wake preemption and supersede-with-cancel; the
+contract canary; the outbox; the git `-c` allowlist and the three GIT_*
+variables; wedge detection; composer ties, epsilon and plausibility bound;
+bound SHA and tree, absolute expiry, receipts at the frozen head; frozen
+tolerances, unknown residual, a flag for `wd-model` and open non-repros.
+Adapted to R15 instead of taken as proposed: reapproval on a composer winner
+change (a plausibility bound instead), an operator-signed fence for a wedged
+owner (detection and routing around instead; takeover stays deferred), an
+HOLD for an unqualified resume (the identity-changing path instead),
+rejecting a missing `--for` (a printed default expiry instead), a composer
+that never uses a session switch (R14 needs the burst; the wait never holds
+the lease), and default-off policy bits (offered as optional, proposal all
+on). Kept from Lead's design rather than Grok's: the buddy fallback runs the
+same executor under the same lock, rather than the supervisor alone.

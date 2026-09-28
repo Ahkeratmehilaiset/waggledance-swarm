@@ -28,7 +28,7 @@ REQUIRED_WORKFLOW_JOBS = {
         "test (3.13)",
         "security-scan",
     ),
-    "Tests": ("unified",),
+    "Tests": ("unified", "release-evidence-runtime-windows"),
 }
 
 

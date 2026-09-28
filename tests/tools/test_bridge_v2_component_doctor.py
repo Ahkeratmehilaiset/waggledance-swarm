@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -568,14 +569,23 @@ def test_probe_rejects_code_root_without_creating_audit(tmp_path, monkeypatch):
     assert not audit.exists()
 
 
-def test_real_development_worktree_allows_repo_local_audit(tmp_path):
+def test_real_development_worktree_allows_repo_local_audit():
     code_root = Path(doctor.__file__).resolve().parents[1]
     assert doctor._code_layout(code_root) == "development"
-    assert tmp_path.is_relative_to(code_root / ".codex-audit")
-    output, reason = _run_bounded([sys.executable, "--version"], 2,
-                                  runtime_audit_root=tmp_path)
-    assert reason is None
-    assert output.startswith("Python ")
+    repo_audit = code_root / ".codex-audit"
+    created_repo_audit = not repo_audit.exists()
+    repo_audit.mkdir(mode=0o700, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="doctor-audit-", dir=repo_audit) as audit:
+            audit_path = Path(audit)
+            assert audit_path.is_relative_to(repo_audit)
+            output, reason = _run_bounded([sys.executable, "--version"], 2,
+                                          runtime_audit_root=audit_path)
+            assert reason is None
+            assert output.startswith("Python ")
+    finally:
+        if created_repo_audit:
+            repo_audit.rmdir()
 
 
 def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):

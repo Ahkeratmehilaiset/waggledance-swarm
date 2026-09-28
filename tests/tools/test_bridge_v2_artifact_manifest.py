@@ -108,6 +108,28 @@ def test_noncanonical_manifest_bytes_refused(root):
             parse_manifest(value)
 
 
+def test_parser_rejects_case_aliases_without_filesystem_fallback(root):
+    manifest = build_manifest(root, ["a.txt"])
+    upper = dict(manifest["artifacts"][0], path="A.txt")
+    manifest["artifacts"].insert(0, upper)
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(ManifestError, match="^duplicate_path$"):
+        parse_manifest(raw)
+
+
+def test_parser_rejects_wrong_byte_domain_without_content_comparison(root):
+    manifest = build_manifest(root, ["a.txt"])
+    manifest["byte_domain"] = "git-blobs"
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    with pytest.raises(ManifestError, match="^invalid_manifest$"):
+        parse_manifest(raw)
+
+
+def test_surrogate_refused_by_path_contract_before_filesystem(root):
+    with pytest.raises(ManifestError, match="^invalid_path$"):
+        build_manifest(root, ["\ud800"])
+
+
 def test_large_integer_has_stable_refusal():
     with pytest.raises(ManifestError):
         parse_manifest(b'{"size":' + b'9' * 5000 + b'}')

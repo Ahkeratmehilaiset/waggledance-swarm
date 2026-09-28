@@ -49,7 +49,11 @@ An unsigned component branch can be composed into the non-production
 integration branch; it is **not merged separately to main**. Current manual
 exact-head operator-signed merge gates remain unchanged.
 
-This request authorizes preparation of this plan. It is not an exact-artifact
+The operator's subsequent clarification requests actual working code, including
+re-incarnation, learning, scheduling and autonomous model/effort/soft-budget
+adjustment, not a plan-only or shadow-only deliverable. File-disjoint development
+and tests may proceed within resolved contracts; unresolved security decisions
+block privileged work, not unrelated non-privileged implementation. This is not an exact-artifact
 release signature. The future one signature explicitly authorizes the whole
 reviewed code/policy scope and its bounded post-signature canaries and rollback.
 No component-level approval dialogs are part of normal execution.
@@ -89,6 +93,14 @@ mattered. Report current health separately from historical qualification.
 No promise of never reaching a provider limit or uninterrupted future turns.
 Report observed intervals, recovery time and lost-work bounds only.
 
+Re-incarnation means restoring a validated durable task/checkpoint/journal into
+a new measured incarnation, fencing the old owner, and reconciling each external
+effect before retry. It does not mean transferring hidden model state or blindly
+replaying a conversation. Learning may change scheduling, qualified profiles,
+effort and soft reservations only inside the signed hard envelope. It cannot
+raise provider quotas, spending/egress ceilings, reviewer floors or its own
+authority, remove a HOLD, or reduce qualification thresholds to manufacture success.
+
 ## 3. Ownership and independent testing
 
 | Lane | Production coding responsibility | Independent responsibility |
@@ -100,8 +112,11 @@ Report observed intervals, recovery time and lost-work bounds only.
 | RCO2 | No normal feature implementation | Independent adversarial, crash/replay/migration/rollback/interop tests and exact-head verdict |
 
 Coders write unit tests with their code. RCOs independently design and run
-acceptance/fault tests; they may own separate acceptance-test files, not the
-production code they approve. Neither RCO relies on the other's verdict.
+acceptance/fault tests on separate evidence branches/artifacts, not in the
+candidate tree they approve. The evidence manifest binds their suites by digest
+and the packet runner executes those exact suites. Neither RCO authors any
+candidate commit or relies on the other's verdict; audit the entire commit range
+and co-authorship, not just the integration PR opener.
 Findings go back to the physical-file owner. A change invalidates affected
 reviews, and final integration approval names the final full head.
 
@@ -115,13 +130,19 @@ reviews, and final integration approval names the final full head.
 - **Tools:** model/component registries, meter/collector/attribution/advisor,
   `wd_grok_helper.py`, broker/doctor/dashboard/qualification runners and
   `waggledance/core/bridge_workflow.py`. Fable proposes qualification semantics;
-  Tools owns the harness implementation and shared advisory reader.
+  Tools owns the harness implementation and shared advisory reader, plus the
+  F24 pure composer implementation with Fable supplying semantic review.
 - **Fable:** `work_queue.py`, claim/lease/session/writer/schema/git-guard files,
-  `BridgeEventClassifier.ps1`, policy/router/composer/learning, profile catalog,
-  relaunch executor state machine, `bridge_work_ledger.py`, Rule 8 text.
+  `BridgeEventClassifier.ps1`, policy/router/learning, profile catalog,
+  relaunch executor state machine, `bridge_work_ledger.py`, proposed Rule 8 text.
   `Start-AgentBridgeSession.ps1` is Fable-owned; Tools supplies the doctor API.
-- Each test file has its own named owner. Integration acceptance suites use
-  disjoint RCO1/RCO2 directories. No "both own this file" assignments.
+- Fable exports a versioned `Get-BridgeWakeClass` API with W0 golden cross-language
+  vectors. Lead consumes it for F30 and owns the Watch/Monitor/ops status consumers;
+  Lead does not edit the classifier. Include `Get-WdSwarmParallelStatus.ps1` in
+  consumer acceptance and reconcile #1754 first.
+- Each test file has its own named owner. Independent integration acceptance
+  suites use disjoint RCO1/RCO2 evidence branches outside the candidate tree.
+  No "both own this file" assignments.
 - The F18 PowerShell UI and F29 bootstrap/PS front ends follow physical owner
   Lead, although policy/doctor logic comes from Fable/Tools. This split avoids
   parallel edits to the same launch and operational files.
@@ -141,7 +162,7 @@ Waves are engineering dependencies, not separate releases or signatures.
 |---|---|---|---|---|---|
 | W0 contracts | F0 policy/receipt + release schema | Quota, advisory and component schemas; baseline capture | Switch/journal and queue transaction contracts | Threat model / independent fault matrix | Contracts and ownership reconciled; thresholds preregistered |
 | W1 foundations | F1/F2/F5 hooks; early F28 real file transaction and rollback | F3/F4/F5/F6/F25/F29; real provider/provenance discovery | F8a/F8/F9/F10/F11/F12/F22/F23 | Cross-runtime locks and forged identities / crash cuts and missing dependencies | Foundation APIs, recovery and packaging tested, not mocked at integration boundary |
-| W2 wake + explicit launch | F7/F30/F13 and F29 launch wiring | Qualification/meter datasets, Grok broker F20 | F15/F18/F19/F24 pure policy + bounded surplus | Injection/digest/authority / backlog/clock/launch host matrix | Positive and negative wake/launch paths pass |
+| W2 wake + explicit launch | F7/F30/F13 and F29 launch wiring | Qualification/meter datasets, Grok broker F20, F24 composer | F15/F18/F19 pure policy + bounded surplus | Injection/digest/authority / backlog/clock/launch host matrix | Positive and negative wake/launch paths pass |
 | W3 actuation + learning | F16/F27 production ports + supervisor; finish F28 | F20 real broker, advisory outcome joins; read-only dashboard | F17/F26; queue migration/continuation integration | Freeze/owner fencing / crashes/partial CAS/stand-in + hand-back | Real isolated end-to-end adapter path and recovery pass |
 | W4 compose + qualify | Single integration PR, deterministic staging/restore rehearsal | Full matrix runners and evidence manifest | Policy and contract reconciliation, qualification outcomes | Independently test complete exact head | All pre-signature gates green, no unresolved mandatory evidence |
 | W5 signed rollout | Execute only the signed rollout transaction | Observe pool/receipt/dashboard reconciliation | Observe policy/continuation correctness | Verify each live stage, preserve independence | All required capabilities live_verified; publish final release |
@@ -155,11 +176,17 @@ F19/F20/F24/F26 feed a common quota reservation API, not independent budgets.
 F23 origin enforcement and the protected authority channel in section 8.1
 are hard prerequisites of every new privileged actuator, not late hardening.
 
-Collect the required seven-day quota/reset history in parallel with code.
+Collect disjoint calibration and held-out quota/reset history in parallel with
+code: each window covers at least seven days and one weekly reset, requiring
+at least fourteen days of eligible history before W4, not seven days total.
 Elapsed development time cannot substitute for data. If usable existing
 history has proper provenance it can qualify; otherwise the calendar wait is
 a real dependency. Use one installed observer, not one collector per agent.
 No busy model polling while a dataset or long test is running.
+W0 also measures the build's per-pool bindings/capacity before freezing assignment
+concurrency. Unknown shared-pool identity stays unknown; do not assume Fable and
+both RCOs have independent capacity. Stagger their heavy tests/reviews and move
+file-disjoint pure implementation to Tools where measured capacity warrants it.
 
 ## 5. Full feature coverage and falsifiable acceptance
 
@@ -193,13 +220,13 @@ reviewer and a live activation/rollback receipt where applicable.
 | F21 | Tools, semantics Fable | Qualification harness and frozen receipts | A21: isolated held-out task classes, independent scoring, exact profile/version/effort, sample uncertainty and measured pool cost; expired/unqualified profile inadmissible |
 | F22 | Fable | Claim schema discovery/preflight/help | A22: every supported resource kind has executable success+failure example; help does not widen accepted scope |
 | F23 | Tools repro, Fable fix | Reserved-label/session-origin + wrapper-attribution closure | A23: both writers, registry/profile present/missing/mismatch; trusted internal callers migrated with visible outbox failure; non-repro needs independent corpus evidence, not silence |
-| F24 | Fable | Eligible-first composer using comparable frozen evidence | A24: stale/incomparable/no eligible/top unavailable/tie/budget race; provisional output labelled; delegated composition cannot bypass admission |
+| F24 | Tools, semantics Fable | Eligible-first composer using comparable frozen evidence | A24: stale/incomparable/no eligible/top unavailable/tie/budget race; provisional output labelled; delegated composition cannot bypass admission |
 | F25 | Tools | Per-pool quota visibility for all lanes | A25: age/source/account/pool and four provider states shown independently; urgency cannot override unknown-pool admission |
 | F26 | Fable | Bounded learning, quarantine, admission and forecast updates | A26: independent deduplicated outcomes; negative/poisoned/replayed/self-graded cases; caps immutable; shadow-to-live demonstrated, not left shadow-only |
 | F27 | Lead + Fable API | Crash/limit stand-in, WIP preservation, operation reconciliation and hand-back | A27: dead parent/live child/PID reuse/limit misbinding/unknown external write/partial WIP; one successor after complete fence; unknown effect HOLD; no inherited votes |
 | F28 | Lead | Release worktree, crash-safe install and compatible bundle rollback | A28: interrupted pointer/file transaction recovers; state-version mismatch refuses unsafe old writers; never restore stale runtime data or erase WIP |
-| F29 | Tools + Lead hooks | Usable component doctor/bootstrap/init with pinned sources | A29: clean clone/isolated user, each missing dependency including own runtime; feature/lane requiredness, no unattended install/elevation; deferred receipt publishes once |
-| F30 | Lead | Short typed wake, exact canonical fetch, durable bounded digest | A30: replies/late corrections/veto/HOLD/cancel without ID/mislabelled informational/injection/hash mismatch/overflow; real same-conversation delivery and corrected consumer tests |
+| F29 | Tools + Lead hooks | Usable component doctor/bootstrap/init with pinned sources | A29: clean clone with scrubbed environment and PATH sandbox, each missing dependency including own runtime; feature/lane requiredness, no unattended install/elevation; deferred receipt publishes once |
+| F30 | Lead consumers, Fable classifier API | Short typed wake, exact canonical fetch, durable bounded digest | A30: replies/late corrections/veto/HOLD/cancel without ID/mislabelled informational/injection/hash mismatch/overflow; real same-conversation delivery and Watch/Monitor/ops consumer tests |
 
 F14 is a numbering gap, not a hidden feature. F8a is an internal milestone of
 F8, **not a separate main PR/signature** for this package.
@@ -332,9 +359,9 @@ findings; tests never become a producer's substitute for independent review.
 Both RCOs review each safety-critical slice during development, then both
 review the complete frozen composition (not only a delta). Keep slice commits
 and byte-identity/diff maps as review aids; they do not carry old approvals
-forward. If an RCO authors an acceptance test committed into the candidate,
-the other RCO reviews that test and the authorship is recorded. The author
-cannot supply the sole independent acceptance evidence for that test's claim.
+forward. RCO-owned suites remain outside the candidate commit range and are
+digest-bound release evidence. An RCO-authored candidate commit fails the author
+exclusion check; a second RCO reviewing it does not restore two independent votes.
 
 ### 8.1 Security and lifecycle decisions from independent RCO review
 
@@ -352,14 +379,21 @@ the present shared-account deployment enforces them:
    pre-F8 mutation-capable participant, including scheduled jobs and children.
    Cold-quiesce writers globally; roll sessions one at a time with mutation
    held until compatibility and complete fencing are demonstrated. RCOs can
-   remain available read-only. Unknown writers mean HOLD. Test actual old+new
+   remain available read-only for queue/claim mutations. During the mixed window,
+   old sessions may append only validated review/verdict/control attestations
+   through a pinned compatibility gateway using the current writer protocol;
+   direct old writer entrypoints remain fenced. Evidence append is not a grant
+   to mutate queue/claims. Test old-client/new-reader and new-client/old-reader
+   event interoperability, rejection of other write classes, and durable HOLD/
+   veto visibility before promotion. If the gateway is not proven, HOLD rather
+   than silently accepting an old writer. Unknown writers mean HOLD. Test actual old+new
    binaries together, not two new mocks. Python uses Windows `CreateFileW`
    share mode zero for the same sibling lock as PowerShell `FileShare.None`;
    ordinary Python `open()` is not sufficient lock parity.
 3. **Freeze cannot be lane-writable authority.** A lane may request a monotonic
    freeze, never grant/unfreeze itself by editing JSON. The new implementation
    must separate privileged grant/revocation state from the shared runtime
-   directory. Select a dedicated Windows authority-guardian service identity,
+   directory. Proposed secure target: a dedicated Windows authority-guardian service identity,
    with an ACL-protected monotonic revision store not writable by any lane
    token; the operator-control endpoint is distinct from the lane intent
    endpoint. Existing same-account scripts alone cannot satisfy this boundary.
@@ -372,7 +406,19 @@ the present shared-account deployment enforces them:
    of this component, but does not remove OS setup/elevation requirements.
    Prove a lane can neither edit grant state nor use the operator endpoint;
    detached/scheduler-spawned lane children must not bypass it. A compromised
-   administrator remains outside the threat boundary. Document residual
+   administrator remains outside the target threat boundary. This is NOT a
+   boundary while lanes themselves hold administrator tokens: Fable measured
+   its own High-integrity elevated token on 2026-09-28; other lanes still need
+   measurement. W0 must obtain an explicit security choice before provisioning:
+   recommended target is non-elevated/standard-user lanes plus a separate service
+   identity and operator authentication that lane tokens cannot exercise. Verify
+   required tools still work and run negative tests from actual lane tokens.
+   A same-user endpoint or editable signature log is not operator authentication.
+   Keeping elevated lanes permits only accurately labelled tamper-evidence and
+   mistake prevention, not this security boundary; accepting that weaker threat
+   model requires an explicit operator decision, not an agent assumption.
+   No agents create accounts, credentials or elevation to resolve this choice.
+   Document residual
    shared-account impersonation risk explicitly; do not market UUID checks as
    cryptographic authentication. The guardian design/ACL proof is a W0 security
    decision gate before any privileged implementation is called ready.
@@ -442,6 +488,17 @@ the present shared-account deployment enforces them:
     a forgotten signing conversation. Contract-hash failure stops the affected
     lane and the rollout, not a blind fleet-wide stop; prove usable rollback.
 
+13. **Named governance change.** The final packet must enumerate the `CLAUDE.md`
+    Rule 8 amendment with exact before/after text and its digest. Automatic
+    routine model selection is not silently compatible with today's strongest-
+    model default. Until the amendment is signed, merged and deployed, existing
+    Rule 8 and `fallback_events` logging apply to every actual non-default probe.
+    Test agreement of deployed Rule 8, F2 role contract and F15/F19 policy.
+
+The A29 clean-clone/PATH sandbox is reproducibility isolation, not a hostile-user
+security boundary. A separate Windows account is not implicitly provisioned;
+the security target above has explicit operator-managed prerequisites.
+
 Pre-signature evidence is isolated real adapters/provider probes within existing
 authority, full matrices and rehearsals. Post-signature evidence is actual
 production canary/continuation/stage attestation. The feature ledger has separate
@@ -509,7 +566,10 @@ approve itself. Mechanically require separate `check_rco_pass_present` checks
 for `claude-rco-1` and `claude-rco-2` (with actual PR author exclusion), plus all
 peer veto checks, Lead/Tools consensus and accepted-queue checks. An aggregate
 "any recognized RCO" check is insufficient for this package. Record resolved
-helper paths and raw verdicts. Current gate deficiencies are not fixed by prose:
+helper paths and raw verdicts. Also execute the default two-identity invocation
+to preserve its cross-RCO veto scan and `check_bridge_changes_requested` with
+`--from-agent` set to the actual merging agent. Audit all candidate authors.
+Current gate deficiencies are not fixed by prose:
 additional package checks can only tighten, never replace or weaken, those gates.
 
 The signature is one approval of all listed scope, including denylisted files;
@@ -524,8 +584,16 @@ retest the whole packet, then request one replacement package signature if
 needed. "One signature" cannot honestly authorize unknown later code. No
 re-signatures for unchanged subcomponents or normal preauthorized stage
 progress; failures HOLD/rollback instead of asking for piecemeal exceptions.
+A post-signature code defect requires full composed dual-RCO review and the full
+matrices on a replacement packet, not only a delta check. Default live failure
+response is admission-off with the fixed substrate retained, not hot patching.
 
 ## 10. One rollout transaction, completion only after live evidence
+
+Functional activation phases A1-A5 mean measurement/contracts, queue safety,
+wake/drain, explicit launch, and policy/actuation/continuity/learning respectively.
+They are NOT the Rule-10 Stage-2 cutover, do not collect `HUMAN_APPROVAL`, and
+grant no Rule-10 authority. "Stage-only" below means bundle staging only.
 
 1. **Before signature:** reproducible candidate bundle in isolation; every
    packaged entrypoint/import/hook/schema/contract included; install, cold boot,
@@ -551,7 +619,7 @@ progress; failures HOLD/rollback instead of asking for piecemeal exceptions.
    Never both RCOs down together. Do not repeat the historical transcript
    archive permission; fresh-start/archive needs its own stated necessity and
    scope. Normal qualified continuation is the planned path.
-5. **Activate dependency stages:** measurement/doctor/contracts, queue safety,
+5. **Activate dependency phases A1-A5:** measurement/doctor/contracts, queue safety,
    wake/drain, explicit launch, then policy/actuation/continuity/learning.
    Wake canary: Tools (verified ownership), Lead, one Claude lane, remaining
    lanes individually. Switch/stand-in canary: Fable with Lead observing and
@@ -578,6 +646,24 @@ queue/WAL state back to unsafe old writers; refuse incompatible rollback and
 HOLD with preserved data. Never overwrite WIP, replay unknown external effects
 or automatically unfreeze an operator HOLD. If qualification expires unfinished,
 stop new intents and safely settle/HOLD; no timer-reset renewal by reboot.
+The at-most-fourteen-day post-signature qualification interval must contain a
+weekly reset for forecast-learning validation. Preregister F26's minimum count
+of independent deduplicated outcomes, review quorum, and one bounded update
+actually applied or rolled back. Name a bounded real canary task batch in advance
+if organic outcomes are insufficient. Expiry means HOLD, never lowered quorum,
+sample size or renewed clocks. Pre-signature fourteen-day data and this live
+qualification window are different intervals.
+
+### Deployed-defect repair policy: no implicit exception
+
+Fable recommends permitting separately gated repairs for reproduced deployed
+defects that add no new authority or v2 capability (for example #1754 and F8a).
+This would depart from the requested single-package delivery and is an operator
+choice, not granted here. Until explicitly chosen, neither repair receives new
+merge/deploy authority from this document; inspect actual main state before
+composition and import any already authorized repair once. Do not treat #1754
+as an automatic exception while forbidding F8a. Known deployed risks remain
+visible during the data collection interval.
 
 ## 11. Handoff and plan-review checklist
 

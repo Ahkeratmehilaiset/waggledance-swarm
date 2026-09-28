@@ -178,6 +178,50 @@ Grok and Haiku included, with:
 Unknown values are shown as unknown cells. This table is the principals' decision
 input, and a compact copy goes into their boot brief.
 
+**The Grok row (proposed for F3).** Today's registry has no Grok entry. F3
+adds it from the same external source and index version as the other rows:
+
+```json
+"grok-4.7": {
+  "provider": "grok",
+  "model": "grok-4.7",
+  "coding_agent_index": 56,
+  "efforts": {
+    "high":  { "intelligence_index": 46, "usd_per_task": 2.73 },
+    "xhigh": { "intelligence_index": 46, "usd_per_task": 3.74 }
+  },
+  "source": "Artificial Analysis Intelligence Index v4.3.2",
+  "source_measured_at": "2026-09-21",
+  "source_urls": [
+    "https://artificialanalysis.ai/models/grok-4-7",
+    "https://artificialanalysis.ai/models/grok-4-7-high",
+    "https://artificialanalysis.ai/articles/benchmarking-grok-4-7"
+  ],
+  "pool": "grok-weekly-shared",
+  "pool_state": "unknown"
+}
+```
+
+Provenance and caveats (fable-5, 2026-09-28):
+- The index values were checked against the raw page data: xhigh 46.45,
+  high 46.33. The cost per task comes from the page summary and was not
+  checked against the raw data. The coding agent index (56) was measured at
+  xhigh *with the Grok Build harness*, not in our headless, tool-less use.
+- **xhigh gives no index gain over high but costs about 37 % more per task,
+  and it uses about 81k output tokens per task** (article). Grok's default
+  effort should therefore be `high`, which `wd_grok_helper.py` already
+  hard-codes. Calibration and review runs should use `high` as well, unless
+  a measured reason says otherwise.
+- `source`, `source_measured_at`, `source_urls`, `pool` and `pool_state` are
+  registry v2 fields (F3); the v1 validator (`wd_model_registry.py:58-62`)
+  would refuse them.
+- The pool is Grok's weekly pool shared by every Grok product. It cannot be
+  read headless, so its state stays `unknown` until F4 calibrates it.
+- **Placement:** Grok's index of 46 is below every lane's current model
+  (Lead's astra medium is 50, and Opus 5.5 is 51 to 58). Its value is that
+  it is a third model family (§2.6), not raw intelligence, so it is never
+  the composer while those models are eligible (§2.10).
+
 **Shared quota visibility (R12).** Every lane, not only the principals, can
 read every pool's state: each Claude and Codex pool, and Grok's weekly pool
 as far as it is measurable (F4 ledger tokens, calibrated against the

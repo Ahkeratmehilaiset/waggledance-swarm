@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import time
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.bridge_v2_component_doctor import (
-    DoctorError, _parse_probe_version, _run_bounded, inspect_components, main,
+    DoctorError, _parse_probe_version, _run_bounded, _version, inspect_components, main,
     validate_manifest,
 )
 
@@ -260,9 +261,48 @@ def test_npm_native_package_detected_but_unpinned_not_executed(tmp_path):
     ("codex", "codex-cli 0.158.0-alpha.1\n", None),
     ("git", "banner 99.9.9 only\n", None),
     ("python", "Python 99.9.9\nPython 3.13.7\n", None),
+    ("pwsh", "7.6\n", "7.6"),
+    ("pwsh", "7.6.6\n", "7.6.6"),
+    ("powershell", "5.1.26100.7309\n", "5.1.26100.7309"),
+    ("pwsh", "7.7.0-preview.1\n", None),
 ])
 def test_probe_specific_version_anchors_and_prerelease(probe, output, expected):
     assert _parse_probe_version(probe, output) == expected
+
+
+def test_numeric_version_boundaries_preserve_patch_and_revision():
+    assert _version("7.6", "version") == (7, 6, 0, 0)
+    assert _version("7.6.6", "version") == (7, 6, 6, 0)
+    assert _version("5.1.26100.7309", "version") == (5, 1, 26100, 7309)
+    assert _version("7.6.5", "version") < _version("7.6.6", "minimum")
+    assert _version("5.1.26100.7308", "version") < _version("5.1.26100.7309", "minimum")
+    assert _version("7.6", "version") == _version("7.6.0", "minimum")
+
+
+@pytest.mark.parametrize("probe,output,minimum,status", [
+    ("pwsh", "7.6", "7.6.0", "ok"),
+    ("pwsh", "7.6", "7.6.1", "wrong_version"),
+    ("pwsh", "7.6.5", "7.6.6", "wrong_version"),
+    ("pwsh", "7.6.6", "7.6.6", "ok"),
+    ("powershell", "5.1.26100.7308", "5.1.26100.7309", "wrong_version"),
+    ("powershell", "5.1.26100.7309", "5.1.26100.7309", "ok"),
+    ("pwsh", "7.7.0-preview.1", "7.6.0", "unknown"),
+])
+def test_power_shell_probe_minimum_uses_full_numeric_version(
+        tmp_path, probe, output, minimum, status):
+    executable = tmp_path / (probe + (".exe" if os.name == "nt" else ""))
+    executable.write_bytes(b"placeholder; the injected command is the real child")
+    executable.chmod(0o755)
+    data = manifest(probe)
+    data["components"][0]["min_version"] = minimum
+    result = inspect_components(
+        data, lane="tools", features=["bridge_core"], search_path=str(tmp_path),
+        platform="windows", probe_command=lambda _: [sys.executable, "-c", f"print({output!r})"],
+    )
+    item = result["components"][0]
+    assert item["status"] == status
+    assert item["version"] == (None if status == "unknown" else output)
+    assert result["exit_code"] == (0 if status == "ok" else 2)
 
 
 def test_probe_child_has_devnull_stdin_and_no_credentials(monkeypatch):

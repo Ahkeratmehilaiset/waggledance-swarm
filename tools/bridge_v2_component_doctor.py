@@ -36,8 +36,8 @@ VERSION_TEXT = r"(\d{1,4}\.\d{1,4}\.\d{1,4})"
 PROBE_VERSION_LINES = {
     "python": re.compile(r"^Python " + VERSION_TEXT + r"$"),
     "git": re.compile(r"^git version " + VERSION_TEXT + r"(?:\.windows\.\d+)?$"),
-    "powershell": re.compile(r"^(\d{1,4}\.\d{1,4})(?:\.\d{1,5}){0,2}$"),
-    "pwsh": re.compile(r"^(\d{1,4}\.\d{1,4})(?:\.\d{1,5}){0,2}$"),
+    "powershell": re.compile(r"^(\d{1,5}(?:\.\d{1,5}){1,3})$"),
+    "pwsh": re.compile(r"^(\d{1,5}(?:\.\d{1,5}){1,3})$"),
     "gh": re.compile(r"^gh version " + VERSION_TEXT + r"(?: \([^\r\n]*\))?$"),
     "claude": re.compile(r"^" + VERSION_TEXT + r"(?: \(Claude Code\))?$"),
     "codex": re.compile(r"^codex(?:-cli)? " + VERSION_TEXT + r"$"),
@@ -85,9 +85,10 @@ def _ids(values, location, allowed=None):
 
 
 def _version(value, location):
-    if not isinstance(value, str) or not re.fullmatch(r"\d{1,4}\.\d{1,4}\.\d{1,4}", value):
-        raise DoctorError(f"{location} must be a three-part numeric version")
-    return tuple(int(part) for part in value.split("."))
+    if not isinstance(value, str) or not re.fullmatch(r"\d{1,5}(?:\.\d{1,5}){1,3}", value):
+        raise DoctorError(f"{location} must be a two-to-four-part numeric version")
+    parts = tuple(int(part) for part in value.split("."))
+    return parts + (0,) * (4 - len(parts))
 
 
 def validate_manifest(data):
@@ -214,11 +215,7 @@ def _parse_probe_version(probe, output):
     for line in output.splitlines():
         match = pattern.fullmatch(line.strip())
         if match:
-            value = match.group(1)
-            if probe in {"powershell", "pwsh"}:
-                parts = value.split(".")
-                value = ".".join((parts + ["0", "0"])[:3])
-            versions.append(value)
+            versions.append(match.group(1))
     return versions[0] if len(versions) == 1 else None
 
 

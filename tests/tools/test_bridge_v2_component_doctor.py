@@ -184,9 +184,10 @@ def test_oversized_real_subprocess_output_is_unknown():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows executable semantics")
 def test_windows_explicit_path_ignores_cwd_and_batch(tmp_path, monkeypatch):
-    import shutil
     monkeypatch.chdir(tmp_path)
-    shutil.copy2(sys.executable, tmp_path / "python.exe")
+    # A same-named cwd decoy must not be resolved, regardless of where Python
+    # itself is installed (sys.executable may be an unreadable WindowsApps alias).
+    (tmp_path / "python.exe").write_bytes(b"inert cwd decoy; never execute")
     empty = tmp_path / "empty"
     empty.mkdir()
     result = inspect_components(manifest(), lane="tools", features=["bridge_core"],

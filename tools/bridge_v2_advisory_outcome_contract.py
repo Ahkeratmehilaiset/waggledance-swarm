@@ -31,6 +31,7 @@ MAX_PROVENANCE_REFS = 32
 MAX_COST_UNITS = 10**15
 MAX_LATENCY_MS = 10**9
 _ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}")
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z")
 _ATTEMPT_FIELDS = frozenset({
@@ -74,6 +75,13 @@ def _object(value: Any, fields: frozenset[str]) -> Mapping[str, Any]:
 def _id(value: Any) -> str:
     if not isinstance(value, str) or not _ID.fullmatch(value):
         raise ContractError("invalid_identifier")
+    return value
+
+
+def _task_id(value: Any) -> str:
+    if (not isinstance(value, str) or not _TASK_ID.fullmatch(value)
+            or ".." in value or "//" in value or value.endswith("/")):
+        raise ContractError("invalid_task_id")
     return value
 
 
@@ -134,9 +142,10 @@ def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
     if row["schema"] != ATTEMPT_SCHEMA:
         raise ContractError("invalid_schema")
     result = dict(row)
-    for key in ("attempt_id", "request_id", "task_id", "task_class",
+    for key in ("attempt_id", "request_id", "task_class",
                 "artifact_version", "advisor_profile"):
         result[key] = _id(row[key])
+    result["task_id"] = _task_id(row["task_id"])
     for key in ("prompt_digest", "artifact_digest"):
         result[key] = _digest(row[key])
     if row["attempt_status"] not in _STATUSES:
@@ -164,9 +173,10 @@ def parse_outcome(raw: Mapping[str, Any]) -> dict[str, Any]:
     if row["schema"] != OUTCOME_SCHEMA:
         raise ContractError("invalid_schema")
     result = dict(row)
-    for key in ("outcome_id", "attempt_id", "request_id", "task_id",
+    for key in ("outcome_id", "attempt_id", "request_id",
                 "task_class", "artifact_version", "suggestion_id"):
         result[key] = _id(row[key])
+    result["task_id"] = _task_id(row["task_id"])
     for key in ("prompt_digest", "artifact_digest"):
         result[key] = _digest(row[key])
     result["observed_profile"] = (None if row["observed_profile"] is None

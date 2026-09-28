@@ -248,3 +248,38 @@ def test_input_records_are_not_mutated():
     before = deepcopy((a, o))
     join_outcomes([a], [o])
     assert (a, o) == before
+
+
+def test_real_bridge_task_id_parses_and_joins_without_normalization():
+    task_id = "codex-lead-1/bridge-v2-w0-advisory-outcome-contract-20260928"
+    a = attempt(task_id=task_id)
+    o = outcome(a)
+    assert parse_attempt(a)["task_id"] == task_id
+    assert parse_outcome(o)["task_id"] == task_id
+    joined = join_outcomes([a], [o])
+    assert joined["attempts"][0]["task_id"] == task_id
+    assert joined["attempts"][0]["suggestions"][0]["disposition"] == "used"
+
+
+def test_task_binding_is_case_and_byte_exact():
+    a = attempt(task_id="Lead/Task.One")
+    fails("foreign_binding", [a], [outcome(a, task_id="lead/Task.One")])
+    fails("foreign_binding", [a], [outcome(a, task_id="Lead/Task-One")])
+
+
+def test_task_id_accepts_safe_160_character_boundary():
+    task_id = "a/" + "x" * 158
+    assert len(task_id) == 160
+    a = attempt(task_id=task_id)
+    assert join_outcomes([a], [outcome(a)])["attempt_count"] == 1
+
+
+@pytest.mark.parametrize("task_id", [
+    "a/" + "x" * 159, "a//b", "a/../b", "/a", "a/", "a\\b", "a:b",
+    "a/\nb", "a/\x00b", "a/ b", "..", ".a",
+])
+def test_malformed_or_overlong_task_ids_are_rejected(task_id):
+    with pytest.raises(ContractError, match="invalid_task_id"):
+        parse_attempt(attempt(task_id=task_id))
+    with pytest.raises(ContractError, match="invalid_task_id"):
+        parse_outcome(outcome(task_id=task_id))

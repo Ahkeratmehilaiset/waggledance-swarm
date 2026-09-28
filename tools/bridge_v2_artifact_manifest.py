@@ -5,6 +5,10 @@
 This is the CONTENT layer, not a signature verifier or an activation gate.
 The caller must bind its digest into an independently authorized envelope and
 prove inventory completeness. Extra unlisted files are deliberately not covered.
+The byte domain is materialized release artifacts, not Git blobs or normalized
+text. Build after packaging; transfer the exact bytes to every verifier. A new
+checkout with autocrlf conversion is NOT the same artifact. The separate packaging
+layer must bind these bytes to the reviewed source and prove reproducibility.
 Use a quiesced source: stat checks detect ordinary concurrent edits, but this
 module is not a security boundary against a hostile same-user filesystem writer.
 No filesystem writes, directory discovery, installation, or authority grants.
@@ -36,7 +40,8 @@ class ManifestError(ValueError):
 def _path(value: Any) -> str:
     if not isinstance(value, str) or not value or len(value) > 1024:
         raise ManifestError("invalid_path")
-    if "\\" in value or ":" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if ("\\" in value or ":" in value
+            or any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value)):
         raise ManifestError("invalid_path")
     for part in value.split("/"):
         if (not part or part in {".", ".."} or part.endswith((".", " "))
@@ -79,6 +84,10 @@ def _row(root: Path, relative: str) -> dict[str, Any]:
     target = root
     parts = relative.split("/")
     for index, part in enumerate(parts):
+        # Exact on-disk spelling, not merely case-insensitive/8.3 resolution.
+        with os.scandir(target) as entries:
+            if not any(entry.name == part for entry in entries):
+                raise ManifestError("noncanonical_disk_path")
         target = target / part
         info = target.lstat()
         if _is_link(info):
@@ -87,23 +96,25 @@ def _row(root: Path, relative: str) -> dict[str, Any]:
             raise ManifestError("invalid_parent")
     if not stat.S_ISREG(info.st_mode):
         raise ManifestError("not_regular_file")
+    if info.st_nlink != 1:
+        raise ManifestError("hardlinked_artifact")
     before = _identity(info)
     digest = hashlib.sha256()
     count = 0
     with target.open("rb") as stream:
         opened = os.fstat(stream.fileno())
-        if _identity(opened) != before:
+        if _identity(opened) != before or opened.st_nlink != 1:
             raise ManifestError("concurrent_change")
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
             count += len(block)
         finished = os.fstat(stream.fileno())
         if (_identity(finished) != before
-                or finished.st_ctime_ns != opened.st_ctime_ns):
+                or finished.st_ctime_ns != opened.st_ctime_ns or finished.st_nlink != 1):
             raise ManifestError("concurrent_change")
     after = target.lstat()
     if (_is_link(after) or _identity(after) != before or count != info.st_size
-            or after.st_ctime_ns != info.st_ctime_ns):
+            or after.st_ctime_ns != info.st_ctime_ns or after.st_nlink != 1):
         raise ManifestError("concurrent_change")
     return {"path": relative, "size": count, "sha256": digest.hexdigest()}
 
@@ -116,12 +127,12 @@ def build_manifest(root: Path, paths: list[str]) -> dict[str, Any]:
         rows = [_row(resolved, path) for path in inventory]
     except OSError as exc:
         raise ManifestError("artifact_io_error") from exc
-    return {"schema": SCHEMA, "artifacts": rows}
+    return {"schema": SCHEMA, "byte_domain": "materialized-artifacts", "artifacts": rows}
 
 
 def _validate(manifest: Any) -> dict[str, Any]:
-    if (not isinstance(manifest, dict) or set(manifest) != {"schema", "artifacts"}
-            or manifest["schema"] != SCHEMA):
+    if (not isinstance(manifest, dict) or set(manifest) != {"schema", "byte_domain", "artifacts"}
+            or manifest["schema"] != SCHEMA or manifest["byte_domain"] != "materialized-artifacts"):
         raise ManifestError("invalid_manifest")
     rows = manifest["artifacts"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_ARTIFACTS:
@@ -164,7 +175,9 @@ def parse_manifest(data: bytes) -> dict[str, Any]:
     try:
         return _validate(json.loads(data.decode("utf-8"), object_pairs_hook=_pairs,
                                     parse_constant=_constant))
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+    except ManifestError:
+        raise
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise ManifestError("invalid_json") from exc
 
 

@@ -1,6 +1,7 @@
 """Content integrity is not an operator signature or deployment permission."""
 import copy
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ def test_build_verify_and_order_independence(root):
 @pytest.mark.parametrize("path", [
     "", "../escape", "/absolute", "C:/absolute", "a\\b", "a//b", "./a.txt",
     "a/../a.txt", "a.txt:stream", "a.txt.", "a.txt ", "CON", "nul.txt",
-    "nested/COM1.txt", ".git/config", ".codex-audit/secret", "a\x00b",
+    "nested/COM1.txt", ".git/config", ".codex-audit/secret", "a\x00b", "\ud800",
 ])
 def test_reject_nonportable_or_private_paths_before_read(root, path):
     with pytest.raises(ManifestError):
@@ -119,6 +120,44 @@ def test_unlisted_files_not_claimed_as_verified(root):
     assert len(manifest["artifacts"]) == 1
 
 
+@pytest.mark.parametrize("path", ["A.txt", "NESTED/b.txt", "nested/B.txt"])
+def test_exact_disk_spelling_required_even_on_case_insensitive_fs(root, path):
+    with pytest.raises(ManifestError):
+        build_manifest(root, [path])
+
+
+def test_hardlinked_artifact_refused(root):
+    os.link(root / "a.txt", root / "hard.txt")
+    with pytest.raises(ManifestError, match="hardlinked_artifact"):
+        build_manifest(root, ["hard.txt"])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows short names only")
+def test_windows_83_alias_rejected(root):
+    import ctypes
+    path = root / "longfilename_abcdef.txt"
+    path.write_bytes(b"alias test")
+    buffer = ctypes.create_unicode_buffer(32768)
+    get_short = ctypes.windll.kernel32.GetShortPathNameW
+    get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    get_short.restype = ctypes.c_uint32
+    assert 0 < get_short(str(path), buffer, len(buffer)) < len(buffer)
+    short_name = Path(buffer.value).name
+    if short_name == path.name:
+        pytest.skip("8.3 name generation disabled on fixture volume")
+    with pytest.raises(ManifestError, match="noncanonical_disk_path"):
+        build_manifest(root, [short_name, path.name])
+
+
+def test_materialized_byte_domain_never_normalizes_line_endings(root):
+    (root / "a.txt").write_bytes(b"one\ntwo\n")
+    manifest = build_manifest(root, ["a.txt"])
+    assert manifest["byte_domain"] == "materialized-artifacts"
+    (root / "a.txt").write_bytes(b"one\r\ntwo\r\n")
+    with pytest.raises(ManifestError, match="content_mismatch"):
+        verify_manifest(root, manifest)
+
+
 @pytest.mark.parametrize("changed", [False, True])
 def test_ctime_compared_within_api_not_across_windows_stat_apis(root, monkeypatch, changed):
     original = subject.os.fstat
@@ -128,7 +167,7 @@ def test_ctime_compared_within_api_not_across_windows_stat_apis(root, monkeypatc
         value = original(fd)
         calls.append(fd)
         result = {k: getattr(value, k) for k in
-                  ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")}
+                  ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")}
         result["st_ctime_ns"] = 100 + (len(calls) if changed else 0)
         return SimpleNamespace(**result)
 

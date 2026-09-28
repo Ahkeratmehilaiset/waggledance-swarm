@@ -1,10 +1,13 @@
 # Bridge wake-class contract v1 (`wd.wake-class.v1`)
 
-Status: W0 building block (Bridge v2 single-release plan). Pure contract,
-reference implementation and golden vectors only. Nothing here is wired into
-Watch-Bridge, Monitor-AgentBridge, the reboot status tool or any runtime path;
-F30 consumer wiring and the PowerShell `Get-BridgeWakeClass` port are separate,
-later, reviewed steps.
+Status: W0 building block (Bridge v2 single-release plan), **pre-acceptance
+candidate**. Revision 2 replaces candidate `bbc54f90`, which RCO1 review
+f8fc8be4 rejected (its token denylist let the hint silence camelCase,
+concatenated and unlisted control words, and noise rows could carry results).
+Pure contract, reference implementation and golden vectors only. Nothing here
+is wired into Watch-Bridge, Monitor-AgentBridge, the reboot status tool or any
+runtime path; the PowerShell port and consumer/ops wiring are later reviewed
+implementation slices of the one composed Bridge v2 package.
 
 | Artifact | Path |
 | --- | --- |
@@ -22,10 +25,12 @@ no veto and is never an input to a merge, RCO or promotion gate. A consumer
 that wakes still reads the canonical log and applies the request contract and
 the gates.
 
-Design rule: every exit that does **not** wake is exact and demonstrably
-non-actionable. Anything malformed, conflicting, unknown or spelled in a
-variant way is `ambiguous` and **wakes** (ambiguity drains). A control signal
-can never be suppressed by a sender hint.
+Design rule: **suppression is allowlist-only.** A row is silenced by exactly
+three narrow, exact shapes (section 5, steps 8, 9 and 17). Every other row
+wakes; anything malformed, conflicting, unknown or merely unlisted is
+`ambiguous` (ambiguity drains). A sender hint can never silence a control
+signal, because no control word is on the benign list and control recognition
+runs before the hint is consulted.
 
 ## 2. Input and output
 
@@ -42,12 +47,12 @@ Output:
 ```
 
 `wakes` is `false` exactly for the classes `notice`, `noise` and
-`not_addressed`. `control_signal` is `true` when the event's type is a control
-type or its status is a string carrying a control token (section 4). It is
-computed for every object event; the `noise` and `notice` exits never carry
-one by construction (a malformed, non-string status yields `ambiguous`, not a
-control signal). It lets a consumer that routes by class keep a veto that
-arrived inside a reply or request.
+`not_addressed`. `control_signal` is `true` when the type is a control type or
+the status is a string that contains a control root (section 4). It is
+computed for every object event, is a label that may over-wake, and never
+decides suppression. The `noise` and `notice` exits never carry it by
+construction. A consumer that routes by class must still send a
+`request`/`bound_reply` row with `control_signal` true to its control handling.
 
 ## 3. Classes
 
@@ -55,30 +60,46 @@ arrived inside a reply or request.
 | --- | --- | --- |
 | `request` | yes | Carries a well-formed top-level `request_id`. |
 | `bound_reply` | yes | Carries a well-formed top-level `in_reply_to_request_id`. This is a **claimed** binding only; it is not validated here. |
-| `control` | yes | A control type, or a notice type whose status has a control token. |
-| `notice` | no | `message`/`status`/`intent` with the exact hint `payload.notification == "informational"` and no control token. |
-| `noise` | no | Exact liveness rows and exact ACK rows. |
+| `control` | yes | A control type, or a notice type whose status contains a control root. |
+| `notice` | no | `message`/`status`/`intent`, exact hint, status on the closed benign list. |
+| `noise` | no | Liveness and received-ACK rows in their exact deployed shape. |
 | `not_addressed` | no | Self-emitted, untargeted, or targeted at someone else. |
-| `ambiguous` | yes | Everything else: malformed, conflicting, unknown or variant. |
+| `ambiguous` | yes | Everything else: malformed, conflicting, unknown, variant or unlisted. |
 
 ## 4. Vocabularies
 
 * Notice types: `message`, `status`, `intent` (exact spelling).
 * Control types: `decision`, `finding`, `blocked`, `rco_review`, `test`,
   `done`, `release`, `wake_request`.
-* Liveness types: `heartbeat`, `liveness`. ACK statuses: `received`, `seen`,
-  `acknowledged` (exact spelling).
-* Control tokens: the status is ASCII-lowercased and split on every
-  non-alphanumeric character. A token is a control token when the token, or
-  the token without a leading `un`, **starts with** one of these roots:
-  `hold`, `held`, `veto`, `block`, `cancel`, `supersed`, `withdr`, `retract`,
-  `revok`, `revoc`, `reject`, `refus`, `deny`, `denied`, `nack`, `fail`,
-  `clos`, `stop`, `halt`, `abort`, `freez`, `frozen`, `quarantin`,
-  `rollback`, `revert`. The adjacent token pair `changes` `requested` (any
-  separator) is also a control signal. Prefix matching over-wakes on purpose
-  (for example `failover`): a spurious wake costs one turn, a missed veto
-  costs safety. Every token of the legacy `Test-BridgeInformationalNoticeSuppressible`
-  list is a control token here (pinned by a test).
+* Liveness types: `heartbeat`, `liveness`; their payload may be absent or an
+  object whose keys are only `head` and `notification`, with string values.
+* ACK: type `message` with status `received`, `seen` or `acknowledged`
+  (exact); payload absent or an object whose keys are only `request_ts_utc`,
+  `request_agent`, `request_type`, `request_status` and `notification`, with
+  string values. This is the deployed Read-AgentBridge received-ACK writer
+  shape, measured on the canonical log on 2026-09-28.
+* In any noise payload, `notification` must be exactly `informational`.
+* **Benign notice statuses (closed allowlist, exact, case-sensitive):**
+  `informational`, `info`, `notice`, `evidence`, `evidence_update`,
+  `progress`, `progress_summary`, `in_progress`, `planning`. They were chosen
+  narrowly from statuses measured under the hint; presence under the hint does
+  not make a status benign, so result or promotion words (`approved`,
+  `verified`, `answered`, `completed_*`, `published`, `review_findings`, ...)
+  are deliberately absent. Adding a status is a contract change.
+* Control roots: the status is ASCII-lowercased and every non-alphanumeric
+  character removed; it contains a control root when any of these is a
+  substring: `hold`, `held`, `veto`, `block`, `cancel`, `supersed`, `withdr`,
+  `retract`, `revok`, `revoc`, `reject`, `refus`, `deny`, `denied`, `nack`,
+  `fail`, `clos`, `stop`, `halt`, `abort`, `freez`, `frozen`, `quarantin`,
+  `rollback`, `revert`, `changesrequested`, `paus`, `suspend`, `kill`,
+  `incident`, `emergenc`, `escalat`, `error`, `timeout`, `expir`, `wedg`,
+  `unsafe`, `invalid`, `conflict`, `regress`, `broke`, `critical`,
+  `disapprov`, `nogo`, `embargo`, `lock`, `donot`, `notapprov`, `notpass`,
+  `notmerg`, `notready`, `wait`. Substring matching catches camelCase and
+  concatenations (`mergeHold`, `rcoveto`, `onhold`) and over-wakes on purpose
+  (`threshold`). No benign status contains a control root (pinned by a test).
+  The root list is best effort and is **not** what makes suppression safe;
+  the allowlist is.
 * Ids: a well-formed id matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,255}`. A missing
   key, `null` or `""` means absent; any other value is malformed.
 * Type and status must be non-empty ASCII strings of at most 256 characters.
@@ -90,16 +111,18 @@ Steps run in order; the first match decides. Reason codes are exact.
 1. Event is not a JSON object → `ambiguous` / `malformed_event`.
 2. `agent` equals `target_agent` exactly and no case-variant `agent` key exists
    → `not_addressed` / `self_emission`.
-3. Addressing. Collect every non-empty value of a key spelled `to` in any case.
-   None → `not_addressed` / `no_target`. The event is addressed only when the
-   exact key `to` is the only such key, is a string, and one of its
+3. Addressing. `to` is the routing source. Collect every non-empty value of a
+   key spelled `to` or `expected_responders` in any case. None →
+   `not_addressed` / `no_target`. The event is addressed only when the exact
+   key `to` is the only `to`-like key, is a string, and one of its
    comma-separated, whitespace-trimmed entries equals `target_agent` exactly.
-   Otherwise, if any such value mentions the target loosely (case-insensitive,
-   any separator, or inside a non-string value) → `ambiguous` /
-   `ambiguous_target`; else → `not_addressed` / `not_targeted`. There is no
-   broadcast target in v1.
+   Otherwise, if any collected value mentions the target loosely
+   (case-insensitive, any separator, inside a non-string value, or as an
+   `expected_responders` key) → `ambiguous` / `ambiguous_target`; else →
+   `not_addressed` / `not_targeted`.
 4. Any case-variant spelling of `agent`, `to`, `type`, `status`, `payload`,
-   `request_id` or `in_reply_to_request_id` → `ambiguous` / `case_variant_key`.
+   `request_id`, `in_reply_to_request_id` or `expected_responders` →
+   `ambiguous` / `case_variant_key`.
 5. Sender missing, non-string or blank → `ambiguous` / `missing_sender`;
    sender equal to the target only after trimming or case-folding →
    `ambiguous` / `sender_case_variant`.
@@ -108,23 +131,29 @@ Steps run in order; the first match decides. Reason codes are exact.
 7. Type or status missing, non-string or empty → `ambiguous` /
    `malformed_type_or_status`; non-ASCII → `non_ascii_field`; longer than 256
    characters → `oversized_field` (all `ambiguous`).
-8. Liveness type: with a control token or any id → `ambiguous` /
-   `conflicting_noise_signal`; else `noise` / `liveness`.
-9. ACK status: on a non-notice type or with a `request_id` → `ambiguous` /
-   `conflicting_noise_signal`; else `noise` / `ack` (a bound ACK is noise).
+8. Liveness type: with a control root or any id → `ambiguous` /
+   `conflicting_noise_signal`; payload outside the liveness shape →
+   `ambiguous` / `noise_payload_not_recognized`; else `noise` / `liveness`.
+9. ACK status: on any type other than `message`, or with a `request_id` →
+   `ambiguous` / `conflicting_noise_signal`; payload outside the ACK shape
+   (for example a `result`) → `ambiguous` / `noise_payload_not_recognized`;
+   else `noise` / `ack`. A bound receipt (`in_reply_to_request_id` with the
+   receipt shape) is noise; a bound row carrying a result is not.
 10. Both ids well-formed → `ambiguous` / `conflicting_request_and_reply`.
 11. `in_reply_to_request_id` → `bound_reply` / `claimed_reply`.
 12. `request_id` → `request` / `request_id`.
 13. Control type → `control` / `control_type`.
 14. Any other non-notice type → `ambiguous` / `unknown_type`.
-15. Control token in the status → `control` / `control_status`.
+15. Control root in the status → `control` / `control_status`.
 16. Payload missing or `null` → `ambiguous` / `unhinted_notice`; not an object
-    → `ambiguous` / `malformed_payload`; a non-empty `request_id` or
-    `in_reply_to_request_id` (any key case) inside the payload → `ambiguous` /
-    `payload_binding_field`; a case-variant `notification` key or any value
-    other than the exact string `informational` → `ambiguous` /
-    `notification_variant`; no `notification` → `ambiguous` /
-    `unhinted_notice`; otherwise `notice` / `informational_hint`.
+    → `ambiguous` / `malformed_payload`; a non-empty `request_id`,
+    `in_reply_to_request_id`, `result` or `result_contract` (any key case)
+    inside the payload → `ambiguous` / `payload_binding_field`; a case-variant
+    `notification` key or any value other than the exact string
+    `informational` → `ambiguous` / `notification_variant`; no `notification`
+    → `ambiguous` / `unhinted_notice`.
+17. Status not on the benign allowlist → `ambiguous` / `unlisted_status`;
+    otherwise `notice` / `informational_hint`.
 
 ## 6. Differences from the deployed PowerShell consumers
 
@@ -134,20 +163,29 @@ today: Watch-Bridge `Test-IsTargeted` and the agent-inbox Monitor
 scripts, run in Windows PowerShell 5.1 and PowerShell 7, which agree on every
 vector). A vector whose legacy outcome differs from the contract's wake
 decision carries `legacy_difference` with both values and a note; the tests
-check that the declared set is exactly the measured one. The contract is not
-weakened to force parity. At v1 there are 43 differences, all in the
-direction legacy-drops / contract-wakes:
+check that the declared set is exactly the measured set. The contract is not
+weakened to force parity.
 
-* Conflicting noise: a liveness row with a control status or an id, an ACK
-  status on a `decision`/`finding`/`wake_request` row, and an ACK carrying a
-  new `request_id` are all dropped by legacy.
-* Control words missing from the legacy exact-token list under the
-  informational hint: plurals (`merge_holds`), `unblocked`, `frozen_*`,
-  `quarantined_*`, `merge_refused`, the hyphen spelling `changes-requested`,
-  and the deliberate over-wake `failover_*`.
+Every declared difference is legacy-drops / contract-wakes, and a separate
+test runs a corpus of more than 1,500 sampled rows through both deployed
+consumers in both shells: no row that a consumer wakes on today is silenced by
+the contract. (Candidate `bbc54f90` violated this for legacy request-like
+statuses such as `review_requested` or `open` under the hint; revision 2 pins
+them as vectors.) The difference classes are:
+
+* Conflicting noise: a liveness row with a control status, an id or a
+  non-liveness payload; an ACK status on a non-`message` type, with a new
+  `request_id`, or with a result or other non-receipt payload.
+* Control words the legacy exact-token list misses under the hint: camelCase
+  and concatenations, plurals, `unblocked`, `frozen_*`, `quarantined_*`,
+  `paused`, `incident`, `timeout`, `do_not_merge`, `not_approved`, the hyphen
+  spelling `changes-requested`, and the deliberate over-wakes.
+* Unlisted statuses under the hint (`review_findings`, `review_note`,
+  `handoff_published`, unknown future statuses).
 * Targets with the wrong separator (`fable-5;x`, `fable-5 x`) are dropped by
-  both consumers; a JSON array `to` is dropped by Monitor only.
-* Sender spelled like the target in another case is treated by legacy as
+  both consumers; a JSON array `to` is dropped by Monitor only; a target named
+  only in `expected_responders` is dropped by both.
+* A sender spelled like the target in another case is treated by legacy as
   self-emission. A missing or empty sender is dropped by Monitor but not by
   Watch.
 * PowerShell property lookup is case-insensitive, so legacy honours a
@@ -155,28 +193,34 @@ direction legacy-drops / contract-wakes:
   truthy.
 * Null, empty, integer, non-ASCII (including a Cyrillic `veto` homoglyph) and
   oversized statuses under the hint are suppressed by legacy.
-* A binding field only inside the payload of a hinted notice is suppressed by
-  legacy.
+* A binding or result field inside the payload of a hinted notice is
+  suppressed by legacy.
 * Non-object rows and rows with case-variant duplicate keys cannot be
   classified by legacy (`error` / `parse_error` in the vectors).
 
-Legacy wakes in some cases where the contract also wakes but for a different
-reason (for example `to: "FABLE-5"` matches case-insensitively in legacy and is
-`ambiguous_target` here); those are not differences.
-
 ## 7. Limits
 
-* Free text (`message`) is not a control channel and is never parsed. A HOLD
-  written only in prose inside a hinted notice is not detected; vetoes and
-  HOLDs must be typed events (`finding`, `decision`, ...) or carry a control
-  status. The veto gates read the log independently of wakes.
-* `self_emission` trusts the `agent` field, as legacy does. Same-user
-  forgery of `agent` can hide a row from its forged author's inbox only; it
-  cannot hide it from the gates or from its real recipients.
+* `to` is the routing source. A typed control (`finding`, `decision`,
+  `blocked`, ...) with no `to` and no `expected_responders` wakes nobody
+  (`not_addressed` / `no_target`, `control_signal` true). There is no
+  broadcast target (`*`, `all`, role names) in v1, matching legacy. Vetoes
+  still bind through the gates, which scan the canonical log independently of
+  wakes; a writer that wants a lane woken must address it.
+* Free text (`message`) and free payload fields are not parsed. A HOLD written
+  only in prose or as a payload flag inside a hinted notice with a benign
+  status is not detected; vetoes and HOLDs must be typed events or carry a
+  control status.
+* `self_emission` trusts the `agent` field, as legacy does. A same-user
+  forgery that sets `agent` to the recipient's own name **hides the wake from
+  that recipient**. It does not hide the row from the gates or from other
+  recipients, but the recipient's lane will not be woken. Sender integrity is
+  a separate, mandatory integration (session-bound writer origin, plan F23);
+  wake classification does not provide it.
 * Duplicate-row suppression (Monitor's seen-set) is a later, separate stage
   and out of scope.
 * `ops/windows/reboot/Get-WdSwarmParallelStatus.ps1` also consumes
-  `Test-BridgeWakeEligible`; its projection is not measured by these vectors.
-* v1 is frozen. Any change to vocabularies, precedence or outputs is
-  `wd.wake-class.v2` with its own vectors; v1 vectors stay as a regression
-  record.
+  `Test-BridgeWakeEligible`; its projection is not measured by these vectors
+  and stays explicitly unmeasured until it is.
+* v1 freezes only on acceptance (both RCO reviews). After that, any change to
+  vocabularies, precedence or outputs is `wd.wake-class.v2` with its own
+  vectors; v1 vectors stay as a regression record.

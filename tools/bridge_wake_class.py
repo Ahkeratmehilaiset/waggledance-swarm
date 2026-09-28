@@ -7,9 +7,13 @@ classify(event, target_agent) decides whether one decoded bridge event should
 wake target_agent's inbox. It is routing only: waking grants no authority,
 validates no binding and accepts no result. A ``bound_reply`` class means the
 event *claims* ``in_reply_to_request_id``; the binding still has to be
-validated by the request contract. Every exit that does not wake is exact and
-demonstrably non-actionable; anything malformed, conflicting or unknown is
-``ambiguous`` and wakes (ambiguity drains, control is never suppressed).
+validated by the request contract.
+
+Suppression is allowlist-only. A row is silenced solely by three narrow,
+exact shapes: liveness in its deployed shape, a received-ACK in its deployed
+shape, and a hinted notice whose status is on a closed benign list. Every
+other row wakes: anything malformed, conflicting, unknown or merely unlisted
+is ``ambiguous`` (ambiguity drains, control is never suppressed).
 
 The module is deliberately stdlib-only and free of I/O so that it can serve as
 the executable form of the contract for any consumer or port.
@@ -35,36 +39,56 @@ REASONS = (
     'missing_sender', 'sender_case_variant',
     'malformed_request_id',
     'malformed_type_or_status', 'non_ascii_field', 'oversized_field',
-    'conflicting_noise_signal', 'liveness', 'ack',
+    'conflicting_noise_signal', 'noise_payload_not_recognized', 'liveness', 'ack',
     'conflicting_request_and_reply', 'claimed_reply', 'request_id',
     'control_type', 'unknown_type', 'control_status',
     'unhinted_notice', 'malformed_payload', 'payload_binding_field',
-    'notification_variant',
+    'notification_variant', 'unlisted_status',
     'informational_hint',
 )
 
 ENVELOPE_KEYS = ('agent', 'to', 'type', 'status', 'payload', 'request_id',
-                 'in_reply_to_request_id')
+                 'in_reply_to_request_id', 'expected_responders')
+ADDRESS_KEYS = frozenset({'to', 'expected_responders'})
 NOTICE_TYPES = frozenset({'message', 'status', 'intent'})
 CONTROL_TYPES = frozenset({'decision', 'finding', 'blocked', 'rco_review',
                            'test', 'done', 'release', 'wake_request'})
 LIVENESS_TYPES = frozenset({'heartbeat', 'liveness'})
+ACK_TYPE = 'message'
 ACK_STATUSES = frozenset({'received', 'seen', 'acknowledged'})
 INFORMATIONAL = 'informational'
-PAYLOAD_BINDING_KEYS = frozenset({'request_id', 'in_reply_to_request_id'})
+# Deployed payload shapes that noise rows may carry (measured on the canonical
+# log 2026-09-28: the Read-AgentBridge received-ACK writer, liveness rows).
+ACK_PAYLOAD_KEYS = frozenset({'request_ts_utc', 'request_agent', 'request_type',
+                              'request_status', 'notification'})
+LIVENESS_PAYLOAD_KEYS = frozenset({'head', 'notification'})
+# A payload key that carries a binding or a result never rides a notice.
+PAYLOAD_BINDING_KEYS = frozenset({'request_id', 'in_reply_to_request_id',
+                                  'result', 'result_contract'})
+# Closed allowlist: the ONLY statuses a hinted notice may be silenced with.
+# Exact, case-sensitive. Anything else under the hint wakes as unlisted_status.
+BENIGN_NOTICE_STATUSES = frozenset({
+    'informational', 'info', 'notice', 'evidence', 'evidence_update',
+    'progress', 'progress_summary', 'in_progress', 'planning',
+})
 
-# A status token is a control token when it (or the token without a leading
-# "un") starts with one of these roots. Prefix matching over-wakes on purpose
-# (e.g. "failover"): a spurious wake costs a turn, a missed veto costs safety.
+# Control recognition labels a waking row as control and sets control_signal.
+# It never decides suppression (the allowlist does), so it may over-wake:
+# a root matches anywhere in the status with all separators removed, which
+# catches camelCase and concatenated spellings (mergeHold, rcoveto, onhold).
 CONTROL_ROOTS = (
     'hold', 'held', 'veto', 'block', 'cancel', 'supersed', 'withdr',
     'retract', 'revok', 'revoc', 'reject', 'refus', 'deny', 'denied', 'nack',
     'fail', 'clos', 'stop', 'halt', 'abort', 'freez', 'frozen', 'quarantin',
-    'rollback', 'revert',
+    'rollback', 'revert', 'changesrequested', 'paus', 'suspend', 'kill',
+    'incident', 'emergenc', 'escalat', 'error', 'timeout', 'expir', 'wedg',
+    'unsafe', 'invalid', 'conflict', 'regress', 'broke', 'critical',
+    'disapprov', 'nogo', 'embargo', 'lock', 'donot', 'notapprov', 'notpass',
+    'notmerg', 'notready', 'wait',
 )
 MAX_FIELD_CHARS = 256
 _ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z')
-_TOKEN_SPLIT = re.compile(r'[^a-z0-9]+')
+_NON_ALNUM = re.compile(r'[^a-z0-9]+')
 _LOOSE_SPLIT = re.compile(r'[^a-z0-9._-]+')
 _AGENT_RE = re.compile(r'[a-z0-9][a-z0-9._-]{0,127}\Z')
 _MISSING = object()
@@ -81,23 +105,13 @@ def _field(obj: dict, name: str) -> tuple[Any, bool]:
     return obj.get(name, _MISSING), variant
 
 
-def status_tokens(status: str) -> list[str]:
-    return [t for t in _TOKEN_SPLIT.split(_ascii_lower(status)) if t]
-
-
 def has_control_token(status: str) -> bool:
-    tokens = status_tokens(status)
-    if 'changes_requested' in '_'.join(tokens):
-        return True
-    for token in tokens:
-        stems = (token, token[2:]) if token.startswith('un') else (token,)
-        if any(stem.startswith(root) for stem in stems for root in CONTROL_ROOTS):
-            return True
-    return False
+    joined = _NON_ALNUM.sub('', _ascii_lower(status))
+    return any(root in joined for root in CONTROL_ROOTS)
 
 
 def _mentions(value: Any, target: str) -> bool:
-    """Loose, case-insensitive search for target inside any to-like value."""
+    """Loose, case-insensitive search for target inside any address value."""
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return _ascii_lower(target) in _LOOSE_SPLIT.split(_ascii_lower(text))
 
@@ -108,6 +122,18 @@ def _id_state(value: Any) -> str:
     if isinstance(value, str) and _ID_RE.match(value):
         return 'valid'
     return 'malformed'
+
+
+def _noise_payload_ok(event: dict, allowed: frozenset) -> bool:
+    payload = event.get('payload', _MISSING)
+    if payload is _MISSING or payload is None:
+        return True
+    if not isinstance(payload, dict):
+        return False
+    for key, value in payload.items():
+        if key not in allowed or not isinstance(value, str):
+            return False
+    return payload.get('notification', INFORMATIONAL) == INFORMATIONAL
 
 
 def _result(cls: str, reason: str, control_signal: bool = False) -> dict:
@@ -134,16 +160,16 @@ def classify(event: Any, target_agent: str) -> dict:
     if agent == target_agent and not agent_variant:
         return _result('not_addressed', 'self_emission', ctl)
 
-    to_like = [v for k, v in event.items()
-               if isinstance(k, str) and _ascii_lower(k) == 'to'
-               and v is not None and v != '']
-    if not to_like:
+    address_like = [v for k, v in event.items()
+                    if isinstance(k, str) and _ascii_lower(k) in ADDRESS_KEYS
+                    and v is not None and v != '' and v != {} and v != []]
+    if not address_like:
         return _result('not_addressed', 'no_target', ctl)
     to, to_variant = _field(event, 'to')
     exact = (not to_variant and isinstance(to, str) and
              target_agent in [t.strip() for t in to.split(',') if t.strip()])
     if not exact:
-        if any(_mentions(v, target_agent) for v in to_like):
+        if any(_mentions(v, target_agent) for v in address_like):
             return _result('ambiguous', 'ambiguous_target', ctl)
         return _result('not_addressed', 'not_targeted', ctl)
 
@@ -171,10 +197,14 @@ def classify(event: Any, target_agent: str) -> dict:
     if etype in LIVENESS_TYPES:
         if control_status or rid != 'absent' or irr != 'absent':
             return _result('ambiguous', 'conflicting_noise_signal', ctl)
+        if not _noise_payload_ok(event, LIVENESS_PAYLOAD_KEYS):
+            return _result('ambiguous', 'noise_payload_not_recognized', ctl)
         return _result('noise', 'liveness')
     if status in ACK_STATUSES:
-        if etype not in NOTICE_TYPES or rid != 'absent':
+        if etype != ACK_TYPE or rid != 'absent':
             return _result('ambiguous', 'conflicting_noise_signal', ctl)
+        if not _noise_payload_ok(event, ACK_PAYLOAD_KEYS):
+            return _result('ambiguous', 'noise_payload_not_recognized', ctl)
         return _result('noise', 'ack')
 
     if irr == 'valid' and rid == 'valid':
@@ -205,4 +235,6 @@ def classify(event: Any, target_agent: str) -> dict:
         return _result('ambiguous', 'notification_variant', ctl)
     if notification is _MISSING:
         return _result('ambiguous', 'unhinted_notice', ctl)
+    if status not in BENIGN_NOTICE_STATUSES:
+        return _result('ambiguous', 'unlisted_status', ctl)
     return _result('notice', 'informational_hint')

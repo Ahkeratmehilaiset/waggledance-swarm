@@ -695,15 +695,26 @@
     }
    },
    "expected": {
-    "class": "notice",
-    "reason": "informational_hint",
-    "wakes": false,
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
     "control_signal": false
    },
    "legacy": {
     "watch": false,
     "monitor": false
-   }
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Review findings can carry a veto; the status is not on the closed benign list, so it wakes even under the hint."
   },
   {
    "id": "pr1754_quiet_message_evidence_update",
@@ -1363,15 +1374,26 @@
     "message": ""
    },
    "expected": {
-    "class": "noise",
-    "reason": "ack",
-    "wakes": false,
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
     "control_signal": false
    },
    "legacy": {
     "watch": false,
     "monitor": false
-   }
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Only the deployed ACK shape (type message) is noise; any other type with an ACK status drains."
   },
   {
    "id": "liveness_type_case_variant",
@@ -1449,15 +1471,26 @@
     }
    },
    "expected": {
-    "class": "notice",
-    "reason": "informational_hint",
-    "wakes": false,
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
     "control_signal": false
    },
    "legacy": {
     "watch": false,
     "monitor": false
-   }
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Not the exact ACK spelling and not on the closed benign list: wakes."
   },
   {
    "id": "liveness_informational",
@@ -3882,6 +3915,2759 @@
     "watch": true,
     "monitor": true
    }
+  },
+  {
+   "id": "rco1_00_mergehold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "mergeHold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_01_mergeblocked",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "MergeBlocked",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_02_rcoveto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "rcoVeto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_03_changesrequested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "changesRequested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_04_changesrequested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "ChangesRequested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_05_onhold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "onhold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_06_mergehold_active",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "mergehold_active",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_07_prehold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "prehold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_08_autofail",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "autofail",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_09_nogo",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "nogo",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_10_no_go",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "no_go",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_11_nogo",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "noGo",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_12_paused",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "paused",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_13_suspended",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "suspended",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_14_kill",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "kill",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_15_killed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "killed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_16_kill_switch",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "kill_switch",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_17_incident",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "incident",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_18_emergency",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "emergency",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_19_escalated",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "escalated",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_20_error",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "error",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_21_timeout",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "timeout",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_22_expired",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "expired",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_23_wedged",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "wedged",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_24_unsafe",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "unsafe",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_25_invalid",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "invalid",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_26_conflict",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "conflict",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_27_regression",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "regression",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_28_broken",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "broken",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_29_critical",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "critical",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_30_do_not_merge",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "do_not_merge",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_31_not_approved",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "not_approved",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_32_disapproved",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "disapproved",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_33_nogo_merge",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "nogo_merge",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_34_wait",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "wait",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_35_embargo",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "embargo",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_36_lockdown",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "lockdown",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "rco1_37_locked",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "locked",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "RCO1 W1/W2 spelling (independently derived): a control word the hint must never silence; legacy suppresses it."
+  },
+  {
+   "id": "measured_info",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "measured_informational",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "informational",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "measured_evidence",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "evidence",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "measured_progress_summary",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "progress_summary",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "measured_in_progress",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "in_progress",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "measured_requests_superseded",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "requests_superseded",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "measured_rollout_stopped",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "rollout_stopped",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Measured under the hint on the canonical log; legacy tokenises \"stopped\", which is not in its list."
+  },
+  {
+   "id": "measured_test_failure",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "test_failure",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "measured_handoff_published",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "handoff_published",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Measured under the hint, but a publication can be actionable; not on the closed benign list."
+  },
+  {
+   "id": "measured_review_note",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "review_note",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Measured under the hint; presence under the hint does not make a status benign."
+  },
+  {
+   "id": "measured_verification_passed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "verification_passed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Result/promotion-like status: never silenced by the hint."
+  },
+  {
+   "id": "measured_ready_for_operator_signature",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "ready_for_operator_signature",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Promotion-like status: never silenced by the hint."
+  },
+  {
+   "id": "future_unknown_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "zq_future_status_42",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An unknown future status wakes: suppression is allowlist-only."
+  },
+  {
+   "id": "future_unknown_status_intent",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "intent",
+    "status": "recalibrate_quota",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An unknown future status wakes: suppression is allowlist-only."
+  },
+  {
+   "id": "hint_status_case_variant_info",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "INFO",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "The benign list is exact and case-sensitive."
+  },
+  {
+   "id": "benign_status_capitalised_progress",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "Progress",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Not the exact benign spelling: the allowlist is case-sensitive, so it wakes."
+  },
+  {
+   "id": "legacy_request_status_message_request",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "request",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_message_review_requested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "review_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_message_rco_requested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "rco_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_status_open",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "open",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_intent_proposal",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "intent",
+    "status": "proposal",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_message_ownership_proposal_v2",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "ownership_proposal_v2",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_message_fix_pushed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "fix-pushed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_message_ready_for_implementation",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "ready_for_implementation",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_message_handoff_ready",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "handoff_ready",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "legacy_request_status_status_ready",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "ready",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "Legacy treats this status as request-like and wakes; candidate bbc54f90 wrongly silenced it."
+  },
+  {
+   "id": "ack_bound_with_result",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "acknowledged",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "result": {
+      "status": "changes_requested"
+     }
+    },
+    "in_reply_to_request_id": "r-20"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A bound ACK carrying a result is not a receipt: legacy suppresses it, the contract drains."
+  },
+  {
+   "id": "ack_extra_payload_key",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "request_ts_utc": "utc:x",
+     "note": "x"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "ACK payload outside the deployed writer schema drains."
+  },
+  {
+   "id": "ack_payload_string",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": "done"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Non-object ACK payload drains."
+  },
+  {
+   "id": "ack_payload_hint_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "Informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "ACK with a non-exact hint value drains."
+  },
+  {
+   "id": "ack_payload_non_string_value",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "request_status": 7
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "ACK payload values are strings in the deployed schema."
+  },
+  {
+   "id": "liveness_head_payload",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "active",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "head": "abc123"
+    }
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "liveness",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "liveness_result_payload",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "liveness",
+    "status": "active",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "result": "veto"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Liveness carrying a result drains."
+  },
+  {
+   "id": "liveness_flag_payload",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "veto": true
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Liveness carrying extra fields drains."
+  },
+  {
+   "id": "expected_responder_without_to",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "",
+    "type": "wake_request",
+    "status": "review_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-21",
+    "expected_responders": {
+     "fable-5": {
+      "agent_uuid": "u-1",
+      "session_id": "s-1",
+      "run_id": "r-1"
+     }
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "The request names the target only in expected_responders: legacy drops it, the contract drains."
+  },
+  {
+   "id": "expected_responder_conflicting_to",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-1",
+    "type": "wake_request",
+    "status": "review_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-22",
+    "expected_responders": {
+     "fable-5": {
+      "agent_uuid": "u-1",
+      "session_id": "s-1",
+      "run_id": "r-1"
+     }
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "to and expected_responders disagree: legacy drops it for the expected responder, the contract drains."
+  },
+  {
+   "id": "expected_responder_matching_to",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "wake_request",
+    "status": "review_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-23",
+    "expected_responders": {
+     "fable-5": {
+      "agent_uuid": "u-1",
+      "session_id": "s-1",
+      "run_id": "r-1"
+     }
+    }
+   },
+   "expected": {
+    "class": "request",
+    "reason": "request_id",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "expected_responders_other_only",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-1",
+    "type": "wake_request",
+    "status": "review_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-24",
+    "expected_responders": {
+     "claude-rco-1": {
+      "agent_uuid": "u-1",
+      "session_id": "s-1",
+      "run_id": "r-1"
+     }
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "expected_responders_empty_no_to",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "expected_responders": {}
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "no_target",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "untargeted_typed_finding",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "type": "finding",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "no_target",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "notice_payload_result",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result": {
+      "status": "changes_requested"
+     }
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A result inside a hinted notice payload is misplaced; legacy suppresses it, the contract drains."
+  },
+  {
+   "id": "notice_payload_free_flags",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "veto": true,
+     "hold": true
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "note": "Documented limit: free payload fields and free text are not parsed; a HOLD must be typed or carry a control status."
   }
  ]
 }

@@ -173,11 +173,13 @@ def _combinations():
              'liveness', 'wake_request', 'Message', 'custom_kind', None, 7]
     statuses = ['notice', 'progress', 'received', 'acknowledged', 'veto', 'merge_hold',
                 'Review_FAILED', 'unblocked', 'answered', 'alive', '', None,
-                'vеto', 'x' * 300, ['veto']]
+                'vеto', 'x' * 300, ['veto'], 'review_requested', 'mergeHold']
     payloads = [None, {'notification': 'informational'},
                 {'notification': 'Informational'}, {'Notification': 'informational'},
                 {'notification': ['informational']}, 'informational',
-                {'notification': 'informational', 'request_id': 'r-9'}]
+                {'notification': 'informational', 'request_id': 'r-9'},
+                {'notification': 'informational', 'result': {'status': 'veto'}},
+                {'request_ts_utc': 'utc:x', 'request_agent': 'a'}]
     ids = [{}, {'request_id': 'r-1'}, {'in_reply_to_request_id': 'r-2'},
            {'request_id': 7}, {'in_reply_to_request_id': ' '}, {'request_id': ''}]
     targets = ['fable-5', 'FABLE-5', 'fable-5;x', ['fable-5'], 'other', None]
@@ -194,7 +196,20 @@ def _combinations():
         yield event
 
 
-def test_non_waking_exits_never_hide_control_or_binding():
+# Oracles owned by this test, independent of the classifier's own predicates.
+BENIGN_ORACLE = {'informational', 'info', 'notice', 'evidence', 'evidence_update',
+                 'progress', 'progress_summary', 'in_progress', 'planning'}
+ACK_PAYLOAD_ORACLE = {'request_ts_utc', 'request_agent', 'request_type',
+                      'request_status', 'notification'}
+LIVENESS_PAYLOAD_ORACLE = {'head', 'notification'}
+
+
+def _payload_keys(event):
+    payload = event.get('payload')
+    return set(payload) if isinstance(payload, dict) else set()
+
+
+def test_non_waking_exits_are_exactly_the_three_narrow_shapes():
     seen = 0
     for event in _combinations():
         result = wc.classify(event, 'fable-5')
@@ -204,14 +219,84 @@ def test_non_waking_exits_never_hide_control_or_binding():
         if result['class'] == 'not_addressed':
             assert result['reason'] in ('self_emission', 'no_target', 'not_targeted')
             continue
-        if not result['wakes']:
-            assert result['control_signal'] is False, event
-            status, etype = event.get('status'), event.get('type')
-            assert isinstance(status, str) and status.isascii(), event
-            assert event.get('request_id') in (None, ''), event
-            assert result['class'] == 'noise' or event.get('in_reply_to_request_id') in (None, ''), event
-            assert etype in wc.NOTICE_TYPES | wc.LIVENESS_TYPES, event
-    assert seen > 50000
+        if result['wakes']:
+            continue
+        assert result['control_signal'] is False, event
+        status, etype = event.get('status'), event.get('type')
+        assert event.get('request_id') in (None, ''), event
+        if result['class'] == 'notice':
+            assert etype in ('message', 'status', 'intent'), event
+            assert status in BENIGN_ORACLE, event
+            assert event['payload'].get('notification') == 'informational', event
+            assert not _payload_keys(event) & {'request_id', 'in_reply_to_request_id',
+                                                'result', 'result_contract'}, event
+            assert event.get('in_reply_to_request_id') in (None, ''), event
+        elif result['reason'] == 'ack':
+            assert etype == 'message' and status in ('received', 'seen', 'acknowledged'), event
+            assert _payload_keys(event) <= ACK_PAYLOAD_ORACLE, event
+        else:
+            assert result['reason'] == 'liveness', event
+            assert etype in ('heartbeat', 'liveness'), event
+            assert _payload_keys(event) <= LIVENESS_PAYLOAD_ORACLE, event
+    assert seen > 100000
+
+
+def test_benign_allowlist_is_closed_and_pinned():
+    assert set(wc.BENIGN_NOTICE_STATUSES) == BENIGN_ORACLE
+    assert set(wc.ACK_PAYLOAD_KEYS) == ACK_PAYLOAD_ORACLE
+    assert set(wc.LIVENESS_PAYLOAD_KEYS) == LIVENESS_PAYLOAD_ORACLE
+    # No benign status may contain a control root (otherwise the allowlist
+    # and control recognition would disagree about it).
+    assert [s for s in BENIGN_ORACLE if wc.has_control_token(s)] == []
+
+
+# Independently derived vocabulary (RCO1 review f8fc8be4 W1/W2, Lead's measured
+# hinted statuses, result/promotion words) plus unknown future statuses. The
+# oracle is only "must wake": it does not consult has_control_token.
+MUST_WAKE_UNDER_HINT = [
+    'mergeHold', 'MergeBlocked', 'rcoVeto', 'changesRequested', 'ChangesRequested',
+    'onhold', 'mergehold_active', 'prehold', 'autofail', 'nogo', 'no_go', 'noGo',
+    'paused', 'suspended', 'kill', 'killed', 'kill_switch', 'incident', 'emergency',
+    'escalated', 'error', 'timeout', 'expired', 'wedged', 'unsafe', 'invalid',
+    'conflict', 'regression', 'broken', 'critical', 'do_not_merge', 'not_approved',
+    'disapproved', 'nogo_merge', 'wait', 'embargo', 'lockdown', 'locked',
+    'requests_superseded', 'rollout_stopped', 'test_failure', 'handoff_published',
+    'review_note', 'review_findings', 'verification_passed', 'ci_green', 'approved',
+    'verified', 'answered', 'completed', 'completed_rollout', 'merged', 'published',
+    'ready_for_operator_signature', 'signed_merge_window', 'request', 'review_requested',
+    'open', 'proposal', 'fix-pushed', 'ready', 'Info', 'INFO', 'Progress', 'info ',
+    ' progress', 'progress\n', 'zq_future_status_42', 'recalibrate_quota', 'x', '0',
+]
+
+
+@pytest.mark.parametrize('event_type', ['message', 'status', 'intent'])
+def test_independent_vocabulary_always_wakes_under_the_hint(event_type):
+    silenced = []
+    for status in MUST_WAKE_UNDER_HINT:
+        event = {'agent': 'codex-lead-1', 'to': 'fable-5', 'type': event_type,
+                 'status': status, 'task_id': 'x',
+                 'payload': {'notification': 'informational'}}
+        if not wc.classify(event, 'fable-5')['wakes']:
+            silenced.append(status)
+    assert silenced == []
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_contract_never_silences_a_row_legacy_consumers_wake(ps, tmp_path):
+    corpus = [{'id': f'c{i}', 'target_agent': 'fable-5', 'event': event}
+              for i, event in enumerate(_combinations()) if i % 97 == 0]
+    corpus += [{'id': f'h{i}', 'target_agent': 'fable-5',
+                'event': {'agent': 'codex-lead-1', 'to': 'fable-5', 'type': t,
+                          'status': s, 'task_id': 'x',
+                          'payload': {'notification': 'informational'}}}
+               for i, (t, s) in enumerate(itertools.product(
+                   ['message', 'status', 'intent'], MUST_WAKE_UNDER_HINT + sorted(BENIGN_ORACLE)))]
+    measured = legacy_projection(ps, corpus, tmp_path)
+    silenced = [c['id'] for c in corpus
+                if True in measured[c['id']].values()
+                and not wc.classify(c['event'], 'fable-5')['wakes']]
+    assert len(corpus) > 1500
+    assert silenced == []
 
 
 @pytest.mark.parametrize('bad', ['', 'FABLE-5', ' fable-5', None, 5, 'a' * 200])
@@ -240,6 +325,8 @@ def test_contract_doc_names_every_class_reason_and_the_contract_id():
         assert f'`{code}`' in doc, code
     for root in wc.CONTROL_ROOTS:
         assert f'`{root}`' in doc, root
+    for status in wc.BENIGN_NOTICE_STATUSES:
+        assert f'`{status}`' in doc, status
 
 
 # (name, exact source fragment, replacement): each removes or loosens a guard.
@@ -253,9 +340,9 @@ MUTANTS = [
     ('to_entries_not_trimmed',
      "target_agent in [t.strip() for t in to.split(',') if t.strip()])",
      "target_agent in to.split(','))"),
-    ('to_empty_values_kept', "and v is not None and v != '']", ']'),
+    ('to_empty_values_kept', "and v is not None and v != '' and v != {} and v != []]", ']'),
     ('loose_mention_dropped',
-     'if any(_mentions(v, target_agent) for v in to_like):', 'if False:'),
+     'if any(_mentions(v, target_agent) for v in address_like):', 'if False:'),
     ('case_variant_keys_ignored',
      'if any(_field(event, key)[1] for key in ENVELOPE_KEYS):', 'if False:'),
     ('missing_sender_ignored',
@@ -277,10 +364,24 @@ MUTANTS = [
      "if control_status or rid != 'absent' or irr != 'absent':", 'if False:'),
     ('liveness_ids_ignored',
      "if control_status or rid != 'absent' or irr != 'absent':", 'if control_status:'),
-    ('ack_on_any_type', "if etype not in NOTICE_TYPES or rid != 'absent':",
-     "if rid != 'absent':"),
-    ('ack_with_request_id', "if etype not in NOTICE_TYPES or rid != 'absent':",
-     'if etype not in NOTICE_TYPES:'),
+    ('ack_on_any_notice_type', "if etype != ACK_TYPE or rid != 'absent':",
+     "if etype not in NOTICE_TYPES or rid != 'absent':"),
+    ('ack_with_request_id', "if etype != ACK_TYPE or rid != 'absent':",
+     'if etype != ACK_TYPE:'),
+    ('ack_payload_unchecked', 'if not _noise_payload_ok(event, ACK_PAYLOAD_KEYS):',
+     'if False:'),
+    ('liveness_payload_unchecked',
+     'if not _noise_payload_ok(event, LIVENESS_PAYLOAD_KEYS):', 'if False:'),
+    ('noise_payload_values_unchecked',
+     'if key not in allowed or not isinstance(value, str):', 'if key not in allowed:'),
+    ('noise_payload_hint_value_unchecked',
+     "return payload.get('notification', INFORMATIONAL) == INFORMATIONAL", 'return True'),
+    ('noise_payload_type_unchecked',
+     "    if not isinstance(payload, dict):\n        return False\n",
+     "    if not isinstance(payload, dict):\n        return True\n"),
+    ('expected_responders_ignored',
+     "ADDRESS_KEYS = frozenset({'to', 'expected_responders'})",
+     "ADDRESS_KEYS = frozenset({'to'})"),
     ('request_and_reply_conflict_ignored',
      "if irr == 'valid' and rid == 'valid':", 'if False:'),
     ('control_type_unrecognized', 'if etype in CONTROL_TYPES:', 'if False:'),
@@ -288,14 +389,29 @@ MUTANTS = [
     ('control_status_suppressible',
      "if control_status:\n        return _result('control', 'control_status', ctl)",
      "if False:\n        return _result('control', 'control_status', ctl)"),
-    ('un_prefix_not_stripped',
-     "stems = (token, token[2:]) if token.startswith('un') else (token,)",
-     'stems = (token,)'),
-    ('changes_requested_pair_dropped',
-     "if 'changes_requested' in '_'.join(tokens):", 'if False:'),
-    ('roots_matched_exactly', 'stem.startswith(root)', 'stem == root'),
-    ('payload_missing_unchecked', 'if payload is _MISSING or payload is None:',
-     'if payload is None:'),
+    ('roots_matched_as_prefix', 'return any(root in joined for root in CONTROL_ROOTS)',
+     'return any(joined.startswith(root) for root in CONTROL_ROOTS)'),
+    ('roots_matched_per_token',
+     "joined = _NON_ALNUM.sub('', _ascii_lower(status))",
+     "joined = ' '.join(_NON_ALNUM.split(_ascii_lower(status)))\n"
+     "    return any(t.startswith(r) for t in joined.split() for r in CONTROL_ROOTS)"),
+    ('allowlist_dropped',
+     "if status not in BENIGN_NOTICE_STATUSES:\n"
+     "        return _result('ambiguous', 'unlisted_status', ctl)",
+     "if False:\n        return _result('ambiguous', 'unlisted_status', ctl)"),
+    ('allowlist_case_insensitive',
+     "if status not in BENIGN_NOTICE_STATUSES:\n"
+     "        return _result('ambiguous', 'unlisted_status', ctl)",
+     "if _ascii_lower(status) not in BENIGN_NOTICE_STATUSES:\n"
+     "        return _result('ambiguous', 'unlisted_status', ctl)"),
+    ('payload_result_keys_dropped',
+     "PAYLOAD_BINDING_KEYS = frozenset({'request_id', 'in_reply_to_request_id',\n"
+     "                                  'result', 'result_contract'})",
+     "PAYLOAD_BINDING_KEYS = frozenset({'request_id', 'in_reply_to_request_id'})"),
+    ('payload_missing_unchecked',
+     "if payload is _MISSING or payload is None:\n"
+     "        return _result('ambiguous', 'unhinted_notice', ctl)",
+     "if payload is None:\n        return _result('ambiguous', 'unhinted_notice', ctl)"),
     ('malformed_payload_suppressed',
      "return _result('ambiguous', 'malformed_payload', ctl)",
      "return _result('notice', 'informational_hint')"),

@@ -1,0 +1,3887 @@
+{
+ "contract": "wd.wake-class.v1",
+ "vectors": [
+  {
+   "id": "pr1754_decision_changes_requested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "changes_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_decision_hold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "hold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_decision_veto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_decision_approval",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "build_consensus_pass",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_finding_any_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "finding",
+    "status": "review_findings",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_blocked_custom_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "blocked",
+    "status": "merge_blocked_operator_or_driver",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_rco_review",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "rco_review",
+    "status": "changes_requested_minor",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_cancelled",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "cancelled",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_superseded",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "superseded",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_withdrawn_prefix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "withdrawn_by_requester",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_hold_token",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "merge_hold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_veto_token",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "veto_posted",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_changes_requested_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "changes_requested_minor",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_rco_fail",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "rco_fail",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_review_failed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "review_failed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_failure_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "ci_failure_on_head",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_mixed_case",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "Review_FAILED",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_message_hyphen_separator",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "merge-hold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_status_block_token",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "merge_blocked_on_ci",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_intent_stop_token",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "intent",
+    "status": "stop_work",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_wake_request_unbound",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "wake_request",
+    "status": "implementation_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_done_closure",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "done",
+    "status": "done",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_unknown_type",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "ownership_transfer",
+    "status": "noted",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_bound_reply",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-1"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_new_request",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-2"
+   },
+   "expected": {
+    "class": "request",
+    "reason": "request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "pr1754_quiet_message_notice",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_message_review_findings",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "review_findings",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_message_evidence_update",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "evidence_update",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_status_progress",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "progress",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_intent_notice",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "intent",
+    "status": "planning",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_ack_received",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_ack_bound",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "acknowledged",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-3"
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_heartbeat",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "liveness",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "pr1754_quiet_liveness",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "liveness",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "liveness",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "event_driven_heartbeat",
+   "target_agent": "claude-rco-2",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "operator",
+    "to": "claude-rco-2",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "liveness",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "event_driven_ack",
+   "target_agent": "claude-rco-2",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "operator",
+    "to": "claude-rco-2",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "event_driven_informational",
+   "target_agent": "claude-rco-2",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "operator",
+    "to": "claude-rco-2",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "event_driven_request",
+   "target_agent": "claude-rco-2",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "operator",
+    "to": "claude-rco-2",
+    "type": "message",
+    "status": "request",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "request_id": "r1"
+   },
+   "expected": {
+    "class": "request",
+    "reason": "request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "event_driven_late_reply",
+   "target_agent": "claude-rco-2",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "operator",
+    "to": "claude-rco-2",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r1"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "live_ack_writer_shape",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "request_ts_utc": "utc:x",
+     "request_agent": "codex-lead-1",
+     "request_type": "wake_request",
+     "request_status": "review_requested"
+    },
+    "in_reply_to_request_id": "r-4"
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "note": "Shape written by Read-AgentBridge received-ACK writer (type message, status received, bound when the request had request_id)."
+  },
+  {
+   "id": "conflict_heartbeat_veto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A liveness type carrying a control status is conflicting; legacy drops it as liveness, the contract drains it."
+  },
+  {
+   "id": "conflict_liveness_hold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "liveness",
+    "status": "merge_hold",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Liveness type with a HOLD status: conflicting, drains."
+  },
+  {
+   "id": "conflict_heartbeat_bound",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-5"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Liveness row claiming a reply binding: conflicting, drains."
+  },
+  {
+   "id": "conflict_heartbeat_request",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "request_id": "r-6"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Liveness row opening a request: conflicting, drains."
+  },
+  {
+   "id": "conflict_decision_ack_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "ACK status on a control type: legacy suppresses every ACK status regardless of type; the contract treats only message/status/intent ACKs as noise."
+  },
+  {
+   "id": "conflict_finding_ack_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "finding",
+    "status": "acknowledged",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "ACK status on a finding (a veto type): conflicting, drains."
+  },
+  {
+   "id": "conflict_wake_request_ack_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "wake_request",
+    "status": "seen",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "ACK status on a wake_request: conflicting, drains."
+  },
+  {
+   "id": "conflict_ack_with_request_id",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "request_id": "r-7"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_noise_signal",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An ACK never carries a new request_id; legacy suppresses, the contract drains."
+  },
+  {
+   "id": "ack_bound_informational",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-8"
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "ack_status_type",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "seen",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "ack",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "liveness_type_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "Heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Type spelling differs from the liveness vocabulary; the contract never guesses noise."
+  },
+  {
+   "id": "ack_status_case_variant_unhinted",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "Received",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unhinted_notice",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Status spelling differs from the ACK vocabulary; without a hint the notice drains. Monitor matches ACK statuses case-insensitively."
+  },
+  {
+   "id": "ack_status_case_variant_informational",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "RECEIVED",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "liveness_informational",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "liveness",
+    "status": "active",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "noise",
+    "reason": "liveness",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "control_upper_hold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "HOLD",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "control_status_mixed_veto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "Merge_Veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "control_plural_holds",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "merge_holds",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Plural control word: legacy exact-token list misses \"holds\"; contract roots are prefix matches."
+  },
+  {
+   "id": "control_unblocked",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "unblocked",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Lifting a block is a state change; \"un\" is stripped before root matching."
+  },
+  {
+   "id": "control_frozen",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "frozen_for_cutover",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Freeze is a control word in the v2 plan (veto/HOLD/cancel/freeze); legacy has no freeze token."
+  },
+  {
+   "id": "control_changes_requested_hyphen",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "changes-requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Legacy only recognises the underscore spelling of changes_requested."
+  },
+  {
+   "id": "control_rejected",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "rejected_by_rco",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "control_intent_halt",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "intent",
+    "status": "halt",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "control_refused",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "merge_refused",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Refusal is a control word missing from the legacy list."
+  },
+  {
+   "id": "control_overwake_failover",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "failover_drill",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Deliberate over-wake: prefix roots treat \"failover\" as control. A spurious wake costs a turn; a missed veto costs safety."
+  },
+  {
+   "id": "control_long_status_within_cap",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_a_veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "control_quarantined",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "status",
+    "status": "quarantined_control_row",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Quarantine is a control word (v2 plan V1: quarantined controls block)."
+  },
+  {
+   "id": "id_request_integer",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": 123
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_request_whitespace",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "   "
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_request_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": [
+     "r1"
+    ]
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_reply_object",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": {}
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_reply_newline",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-1\nx"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_request_oversized",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_reply_empty_is_absent",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": ""
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "id_request_null_is_absent",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": null
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "id_request_and_reply",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-10",
+    "in_reply_to_request_id": "r-11"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "conflicting_request_and_reply",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_reply_with_veto_status",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-12"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "A reply that also vetoes: class bound_reply (claimed, unvalidated), control_signal true so routing by class cannot lose the veto."
+  },
+  {
+   "id": "id_reply_decision_changes_requested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "changes_requested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "r-13"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_request_decision",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "hold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-14"
+   },
+   "expected": {
+    "class": "request",
+    "reason": "request_id",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "id_payload_only_binding",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "in_reply_to_request_id": "r-15"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A binding field inside the payload of an informational notice: legacy suppresses it, the contract drains it."
+  },
+  {
+   "id": "to_list_with_space",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5, claude-rco-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_padded",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": " fable-5 ",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_duplicate",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5,fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "FABLE-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_semicolon_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5;claude-rco-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Wrong separator: legacy splits only on commas and silently drops this veto."
+  },
+  {
+   "id": "to_space_list",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5 claude-rco-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Wrong separator: legacy splits only on commas and silently drops this veto."
+  },
+  {
+   "id": "to_json_array",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": [
+     "fable-5",
+     "claude-rco-1"
+    ],
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Non-string target list: Watch splits the array elements, Monitor stringifies it with spaces and drops it."
+  },
+  {
+   "id": "to_other_agent",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_prefix_collision",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-50",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_broadcast_star",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "*",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_missing",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "no_target",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_empty",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "no_target",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": null,
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "no_target",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_key_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "To": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_key_case_duplicate_elsewhere",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "claude-rco-1",
+    "TO": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": "parse_error",
+    "monitor": "parse_error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "parse_error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "parse_error",
+     "contract": true
+    }
+   },
+   "note": "Case-variant duplicate keys: PowerShell ConvertFrom-Json cannot load the row, so legacy never classifies it."
+  },
+  {
+   "id": "to_key_case_duplicate_self",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "TO": "claude-rco-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": "parse_error",
+    "monitor": "parse_error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "parse_error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "parse_error",
+     "contract": true
+    }
+   },
+   "note": "Case-variant duplicate keys: PowerShell ConvertFrom-Json cannot load the row, so legacy never classifies it."
+  },
+  {
+   "id": "sender_self",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "fable-5",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "self_emission",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "sender_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "FABLE-5",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "sender_case_variant",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Sender spelling differs from the target only by case: legacy treats it as self-emission and drops it."
+  },
+  {
+   "id": "sender_padded_self",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": " fable-5",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "sender_case_variant",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "sender_missing",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "missing_sender",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "No sender: Monitor drops the row, Watch wakes; the contract drains."
+  },
+  {
+   "id": "sender_empty",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "missing_sender",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Empty sender: Monitor drops the row, Watch wakes; the contract drains."
+  },
+  {
+   "id": "sender_integer",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": 42,
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "missing_sender",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "sender_self_with_key_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "fable-5",
+    "Agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": "parse_error",
+    "monitor": "parse_error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "parse_error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "parse_error",
+     "contract": true
+    }
+   },
+   "note": "Case-variant duplicate keys: PowerShell ConvertFrom-Json cannot load the row, so legacy never classifies it."
+  },
+  {
+   "id": "key_type_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "Type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "key_payload_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "Payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "PowerShell property lookup is case-insensitive, so legacy honours a \"Payload\" hint; the contract only honours exact envelope keys."
+  },
+  {
+   "id": "key_status_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "Status": "notice",
+    "task_id": "wake-class-v1",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "PowerShell property lookup is case-insensitive, so legacy reads \"Status\"; the contract only honours exact envelope keys."
+  },
+  {
+   "id": "key_status_case_duplicate",
+   "target_agent": "fable-5",
+   "event": {
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "STATUS": "veto",
+    "task_id": "wake-class-v1",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "case_variant_key",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": "parse_error",
+    "monitor": "parse_error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "parse_error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "parse_error",
+     "contract": true
+    }
+   },
+   "note": "A second, case-variant status carries a veto; PowerShell cannot load the row, a case-sensitive reader would see only \"notice\". The contract drains."
+  },
+  {
+   "id": "hint_key_case_duplicate",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "Notification": "action_required"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "notification_variant",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": "parse_error",
+    "monitor": "parse_error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "parse_error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "parse_error",
+     "contract": true
+    }
+   },
+   "note": "A case-variant duplicate hint key contradicts the exact hint; PowerShell cannot load the row. The contract drains."
+  },
+  {
+   "id": "hint_value_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "Informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "notification_variant",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "hint_key_case_variant",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "Notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "notification_variant",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Legacy reads a case-variant \"Notification\" key; the contract treats it as a variant and drains."
+  },
+  {
+   "id": "hint_list_value",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": [
+      "informational"
+     ]
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "notification_variant",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "PowerShell -ceq on an array filters it and is truthy, so legacy suppresses; the contract requires the exact string."
+  },
+  {
+   "id": "hint_payload_string",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": "informational"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_payload",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "hint_payload_empty_object",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "progress",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {}
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unhinted_notice",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "hint_missing",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "progress",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unhinted_notice",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "hint_null_value",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": null
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "notification_variant",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "unbound_answer_unhinted",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unhinted_notice",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "status_missing",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_type_or_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "status_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": null,
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_type_or_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A null status stringifies to empty in PowerShell, so legacy suppresses the hinted row."
+  },
+  {
+   "id": "status_empty",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_type_or_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An empty status carries no information; legacy suppresses the hinted row, the contract drains."
+  },
+  {
+   "id": "status_integer",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": 5,
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_type_or_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A non-string status; legacy stringifies and suppresses, the contract drains."
+  },
+  {
+   "id": "status_list_veto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": [
+     "veto"
+    ],
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_type_or_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   },
+   "note": "control_signal is computed only from well-formed string fields; the malformed row still drains."
+  },
+  {
+   "id": "type_null",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": null,
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_type_or_status",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "status_non_ascii",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "v\u00e9to",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "non_ascii_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Non-ASCII status: legacy tokenises \"v\"+\"to\" and suppresses; the contract drains instead of guessing."
+  },
+  {
+   "id": "status_homoglyph_veto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "v\u0435to",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "non_ascii_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Cyrillic \"e\" homoglyph of veto: legacy suppresses it as a notice; the contract drains."
+  },
+  {
+   "id": "type_homoglyph_message",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "m\u0435ssage",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "non_ascii_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "status_oversized",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "oversized_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Status beyond the 256-character cap: legacy suppresses, the contract drains."
+  },
+  {
+   "id": "event_null",
+   "target_agent": "fable-5",
+   "event": null,
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_event",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": "error",
+    "monitor": "error"
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": "error",
+     "contract": true
+    }
+   },
+   "note": "A non-object row cannot be classified by legacy consumers."
+  },
+  {
+   "id": "event_list",
+   "target_agent": "fable-5",
+   "event": [
+    "veto"
+   ],
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_event",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A non-object row cannot be classified by legacy consumers."
+  },
+  {
+   "id": "event_string",
+   "target_agent": "fable-5",
+   "event": "veto",
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_event",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A non-object row cannot be classified by legacy consumers."
+  },
+  {
+   "id": "event_number",
+   "target_agent": "fable-5",
+   "event": 42,
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_event",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": "error",
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": "error",
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A non-object row cannot be classified by legacy consumers."
+  },
+  {
+   "id": "type_claim_addressed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "claim",
+    "status": "active",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "type_handoff_informational",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "handoff",
+    "status": "handoff",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "type_consumer_tick",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "consumer_tick",
+    "status": "ok",
+    "task_id": "wake-class-v1",
+    "message": ""
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "type_release",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "release",
+    "status": "released",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "type_test",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "test",
+    "status": "passed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "type_upper_message",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "MESSAGE",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  }
+ ]
+}

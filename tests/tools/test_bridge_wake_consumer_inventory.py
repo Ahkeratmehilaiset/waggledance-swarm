@@ -90,9 +90,12 @@ def read_source(path: Path) -> str:
     raw = path.read_bytes()
     encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
     try:
-        return raw.decode(encoding, errors="strict")
+        text = raw.decode(encoding, errors="strict")
     except UnicodeDecodeError as exc:
         raise AssertionError(f"Cannot inventory source encoding: {path}") from exc
+    if "\x00" in text:
+        raise AssertionError(f"Cannot inventory NUL-containing source: {path}")
+    return text
 
 
 def repository_sources() -> dict[str, str]:
@@ -195,6 +198,21 @@ def test_unreadable_sources_fail_closed_with_path(tmp_path):
         read_source(path)
     with pytest.raises(AssertionError, match="ops/bad.py"):
         discover({"ops/bad.py": "def broken("})
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32", "utf-32-be"])
+def test_nul_encoded_sources_cannot_silently_hide_calls(tmp_path, encoding):
+    path = tmp_path / "hidden-caller.ps1"
+    path.write_bytes("Test-BridgeWakeEligible $e".encode(encoding))
+    with pytest.raises(AssertionError, match="hidden-caller.ps1"):
+        read_source(path)
+
+
+def test_utf8_with_literal_nul_is_rejected(tmp_path):
+    path = tmp_path / "nul.ps1"
+    path.write_bytes(b"Test-Bridge\x00WakeEligible $e")
+    with pytest.raises(AssertionError, match="nul.ps1"):
+        read_source(path)
 
 
 def test_module_self_reference_is_not_external_consumer():

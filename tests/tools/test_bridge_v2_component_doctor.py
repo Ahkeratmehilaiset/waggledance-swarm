@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,13 @@ from tools.bridge_v2_component_doctor import (
     DoctorError, _parse_probe_version, _run_bounded, _version, inspect_components, main,
     validate_manifest,
 )
+
+
+@pytest.fixture(autouse=True)
+def private_runtime_audit_root(tmp_path, monkeypatch):
+    audit = tmp_path / "runtime-audit"
+    audit.mkdir(mode=0o700)
+    monkeypatch.setenv("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT", str(audit))
 
 
 def manifest(probe="python", required=True):
@@ -494,7 +502,7 @@ def test_probe_child_has_devnull_stdin_and_no_credentials(monkeypatch):
 def test_probe_side_effects_stay_in_private_scratch(
         tmp_path, monkeypatch, ending, timeout, expected):
     monkeypatch.chdir(tmp_path)
-    audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
+    audit = Path(os.environ["WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT"])
     before = set(audit.glob("bridge-doctor-probe-*"))
     code = (
         "import os,pathlib; "
@@ -517,6 +525,106 @@ def test_probe_side_effects_stay_in_private_scratch(
     assert not (tmp_path / ".local").exists()
     assert not (tmp_path / "side-effect.txt").exists()
     assert set(audit.glob("bridge-doctor-probe-*")) == before
+
+
+def test_probe_requires_explicit_nonalias_runtime_audit_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT")
+    assert _run_bounded([sys.executable, "--version"], 1) == (None, "probe_scope_error")
+    relative = Path("relative-audit")
+    monkeypatch.setenv("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT", str(relative))
+    assert _run_bounded([sys.executable, "--version"], 1) == (None, "probe_scope_error")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return
+    monkeypatch.setenv("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT", str(alias))
+    assert _run_bounded([sys.executable, "--version"], 1) == (None, "probe_scope_error")
+
+
+def test_probe_rejects_code_root_without_creating_audit(tmp_path, monkeypatch):
+    code_root = Path(doctor.__file__).resolve().parents[1]
+    audit = code_root / ".codex-audit" / "should-not-create-runtime-root"
+    monkeypatch.setenv("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT", str(audit))
+    assert _run_bounded([sys.executable, "--version"], 1) == (None, "probe_scope_error")
+    assert not audit.exists()
+
+
+def test_probe_cleanup_failure_is_separate_from_probe_result(monkeypatch):
+    def denied(_):
+        raise PermissionError("controlled cleanup failure")
+
+    monkeypatch.setattr(doctor.shutil, "rmtree", denied)
+    output, reason = _run_bounded([sys.executable, "--version"], 2)
+    assert output is None
+    assert reason == "probe_cleanup_error"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows npm native anchor")
+def test_approved_native_failure_downgrades_top_level_trust(tmp_path, monkeypatch):
+    data = manifest("claude")
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": None,
+    }
+    (tmp_path / "claude.cmd").write_text("@echo off\nexit /b 99\n", encoding="utf-8")
+    package = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({
+        "name": "@anthropic-ai/claude-code", "version": "2.1.283",
+        "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    binary = package / "bin" / "claude.exe"
+    binary.write_bytes(b"test-only approved fixture")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    monkeypatch.setattr(doctor, "APPROVED_NATIVE_PINS", {"claude": digest})
+
+    @contextmanager
+    def changed_before_locked_launch(_):
+        yield "0" * 64
+
+    monkeypatch.setattr(doctor, "_locked_windows_binary_digest", changed_before_locked_launch)
+    monkeypatch.setattr(doctor, "_run_bounded", lambda *args, **kwargs:
+                        pytest.fail("changed native binary was executed"))
+    item = inspect_components(data, lane="tools", features=["bridge_core"],
+                              search_path=str(tmp_path), platform="windows")["components"][0]
+    assert item["status"] == "unknown"
+    assert item["reason"] == "binary_changed_before_execution"
+    assert item["provenance"]["verified"] is False
+    assert item["trust"] == "unknown"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows npm native anchor")
+def test_approved_native_package_version_mismatch_stays_unknown(tmp_path, monkeypatch):
+    data = manifest("claude")
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": None,
+    }
+    (tmp_path / "claude.cmd").write_text("@echo off\nexit /b 99\n", encoding="utf-8")
+    package = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({
+        "name": "@anthropic-ai/claude-code", "version": "2.1.283",
+        "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    binary = package / "bin" / "claude.exe"
+    binary.write_bytes(b"test-only approved fixture")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    monkeypatch.setattr(doctor, "APPROVED_NATIVE_PINS", {"claude": digest})
+
+    @contextmanager
+    def same_locked_binary(_):
+        yield digest
+
+    monkeypatch.setattr(doctor, "_locked_windows_binary_digest", same_locked_binary)
+    monkeypatch.setattr(doctor, "_run_bounded", lambda *args, **kwargs: ("2.1.284\n", None))
+    item = inspect_components(data, lane="tools", features=["bridge_core"],
+                              search_path=str(tmp_path), platform="windows")["components"][0]
+    assert item["status"] == "unknown"
+    assert item["reason"] == "package_version_mismatch"
+    assert item["trust"] == "unknown"
+    assert item["provenance"]["verified"] is False
 
 
 def test_timeout_does_not_leave_grandchild_or_pipe_open(tmp_path):

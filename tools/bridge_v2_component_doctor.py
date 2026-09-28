@@ -1,4 +1,10 @@
-"""Read-only Bridge v2 component doctor. No installation or auth probes."""
+"""Read-only Bridge v2 component doctor. No installation or auth probes.
+
+Probe scoping is not a security sandbox: it supplies a private disposable cwd
+and environment, but an executable can still access files allowed by its OS
+identity. A version response attests neither an executable's DLL dependencies
+nor account authentication, quota, or readiness.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -277,14 +284,15 @@ def _locked_windows_binary_digest(path, maximum=512 * 1024 * 1024):
         yield digest.hexdigest()
 
 
-def _run_verified_npm_native(argv, timeout, search_path, path, trusted_sha256):
+def _run_verified_npm_native(argv, timeout, search_path, path, trusted_sha256,
+                             runtime_audit_root=None):
     try:
         with _locked_windows_binary_digest(path) as digest:
             if digest is None:
                 return None, "binary_too_large"
             if digest.lower() != trusted_sha256.lower():
                 return None, "binary_changed_before_execution"
-            return _run_bounded(argv, timeout, search_path)
+            return _run_bounded(argv, timeout, search_path, runtime_audit_root)
     except OSError:
         return None, "binary_lock_error"
 
@@ -438,25 +446,46 @@ def _windows_resume_scoped_process(process):
         raise OSError(status, "NtResumeProcess failed")
 
 
-def _run_bounded(argv, timeout, search_path=None):
-    """Run in a disposable, private audit directory, never the caller cwd."""
-    audit = Path(__file__).resolve().parent.parent / ".codex-audit"
+def _run_bounded(argv, timeout, search_path=None, runtime_audit_root=None):
+    """Run in an explicit writable runtime audit root, never the code root."""
+    location = (runtime_audit_root if runtime_audit_root is not None else
+                os.environ.get("WD_BRIDGE_DOCTOR_RUNTIME_AUDIT_ROOT"))
+    if not location:
+        return None, "probe_scope_error"
+    audit = Path(location)
+    code_root = Path(__file__).resolve().parent.parent
+    if (not audit.is_absolute() or _path_chain_has_alias(audit) or
+            audit.resolve().is_relative_to(code_root)):
+        return None, "probe_scope_error"
     try:
-        audit.mkdir(exist_ok=True)
-        if audit.is_symlink() or (hasattr(audit, "is_junction") and audit.is_junction()):
+        mode = audit.stat()
+        if not audit.is_dir() or (os.name != "nt" and mode.st_uid != os.getuid()):
             return None, "probe_scope_error"
-        with tempfile.TemporaryDirectory(prefix="bridge-doctor-probe-", dir=audit) as scratch:
-            root = Path(scratch)
-            if root.resolve().parent != audit.resolve():
-                return None, "probe_scope_error"
+        if os.name != "nt" and mode.st_mode & 0o077:
+            return None, "probe_scope_error"
+        root = Path(tempfile.mkdtemp(prefix="bridge-doctor-probe-", dir=audit))
+    except OSError:
+        return None, "probe_scope_error"
+    result = (None, "probe_scope_error")
+    try:
+        if root.resolve().parent == audit.resolve() and not _path_chain_has_alias(root):
             paths = {name: root / name for name in (
                 "cwd", "home", "appdata", "localappdata", "xdg-config", "xdg-data",
                 "xdg-state", "xdg-cache", "tmp")}
             for path in paths.values():
                 path.mkdir()
-            return _run_bounded_scoped(argv, timeout, search_path, paths)
+            result = _run_bounded_scoped(argv, timeout, search_path, paths)
     except OSError:
-        return None, "probe_scope_error"
+        result = (None, "probe_scope_error")
+    finally:
+        try:
+            if root.resolve().parent != audit.resolve() or _path_chain_has_alias(root):
+                result = (None, "probe_cleanup_error")
+            else:
+                shutil.rmtree(root)
+        except OSError:
+            result = (None, "probe_cleanup_error")
+    return result
 
 
 def _close_probe_scope(close_scope):
@@ -569,7 +598,8 @@ def _platform():
 
 
 def inspect_components(data, *, lane, features, search_path=None, platform=None,
-                       timeout_seconds=None, probe_command=None):
+                       timeout_seconds=None, probe_command=None,
+                       runtime_audit_root=None):
     """Run only allowlisted version probes. probe_command is a test seam, not manifest data."""
     validate_manifest(data)
     platform = platform or _platform()
@@ -666,13 +696,16 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                 if entry.get("provenance") and entry["provenance"]["verified"]:
                     output, reason = _run_verified_npm_native(
                         argv, timeout_seconds or component["timeout_seconds"], search_path,
-                        resolved, APPROVED_NATIVE_PINS[probe])
+                        resolved, APPROVED_NATIVE_PINS[probe], runtime_audit_root)
                     if reason in {"binary_changed_before_execution", "binary_lock_error",
                                   "binary_too_large"}:
                         entry["provenance"]["verified"] = False
+                        entry["provenance"]["trust"] = "unknown"
+                        entry["trust"] = "unknown"
                 else:
                     output, reason = _run_bounded(
-                        argv, timeout_seconds or component["timeout_seconds"], search_path)
+                        argv, timeout_seconds or component["timeout_seconds"], search_path,
+                        runtime_audit_root)
                 if reason:
                     entry["reason"] = reason
                 else:
@@ -685,6 +718,9 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                         if (entry.get("provenance") and
                                 parsed_version != entry["provenance"]["package_version"]):
                             entry["reason"] = "package_version_mismatch"
+                            entry["provenance"]["verified"] = False
+                            entry["provenance"]["trust"] = "unknown"
+                            entry["trust"] = "unknown"
                         elif found_version < _version(component["min_version"], "min_version"):
                             entry.update(status="wrong_version", reason="below_min_version")
                         else:
@@ -712,6 +748,8 @@ def main(argv=None):
     parser.add_argument("--lane", default="tools")
     parser.add_argument("--feature", action="append", dest="features")
     parser.add_argument("--path", dest="search_path", help="Explicit executable search PATH")
+    parser.add_argument("--runtime-audit-root", type=Path,
+                        help="Existing private writable directory outside the code root for probe scratch")
     parser.add_argument("--timeout-seconds", type=float,
                         help="Bounded timeout override for every version probe (0.1..10)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable report")
@@ -720,7 +758,8 @@ def main(argv=None):
         data = json.loads(args.manifest.read_text(encoding="utf-8"), object_pairs_hook=_unique_pairs)
         result = inspect_components(data, lane=args.lane, features=args.features or ["bridge_core"],
                                     search_path=args.search_path,
-                                    timeout_seconds=args.timeout_seconds)
+                                    timeout_seconds=args.timeout_seconds,
+                                    runtime_audit_root=args.runtime_audit_root)
     except (OSError, UnicodeError, json.JSONDecodeError, DoctorError) as exc:
         result = {"schema": REPORT_SCHEMA, "overall": "invalid_manifest", "error": str(exc),
                   "exit_code": 3}

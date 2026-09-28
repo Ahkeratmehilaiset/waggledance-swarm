@@ -244,6 +244,21 @@ def test_attempts_are_bounded_and_exhaustion_is_explicit():
     r.refuse("operation_terminal", "attempted", "retry")
 
 
+def test_continued_after_expiry_is_evidence_not_success():
+    r = Run(expires_at_utc=utc(100))
+    for phase in ("attempted", "applied", "verified"):
+        r.step(phase)
+    r.step("continued", dt=200)  # recorded after expires_at: the effect already happened
+    s = r.state()
+    assert s["state"] == "continued" and s["continued"] and s["terminal"]
+    assert s["continued_after_expiry"] and not s["success"]
+    assert not r.journal.fold()["authority_granted"]
+    on_time = Run(expires_at_utc=utc(100))
+    for phase in ("attempted", "applied", "verified", "continued"):
+        on_time.step(phase)
+    assert on_time.state()["success"] and not on_time.state()["continued_after_expiry"]
+
+
 def test_expired_intent_cannot_be_attempted_and_expiry_needs_the_deadline():
     r = Run(expires_at_utc=utc(100))
     r.refuse("not_expired", "expired", "deadline_passed", evidence=False, dt=50)
@@ -521,7 +536,8 @@ def test_exhaustive_reachable_graph_upholds_the_safety_invariants():
         seen.add(key)
         s = run.state()
         # Invariants on every reachable state.
-        assert s["success"] == (s["state"] == "continued")
+        assert s["success"] == (s["state"] == "continued" and not s["continued_after_expiry"])
+        assert not (s["success"] and s["continued_after_expiry"])
         assert not (s["success"] and s["rolled_back"])
         assert not (s["success"] and s["revocation_observed"])
         assert s["attempts"] <= sj.HARD_BOUNDARIES["max_attempts"]
@@ -709,20 +725,74 @@ def test_repair_preserves_the_torn_tail_in_a_recovery_file(tmp_path):
     assert sj.append_file(path, records[3])[0] == "appended"
 
 
-def test_repair_refuses_when_the_journal_changes_before_truncation(tmp_path, monkeypatch):
+def _recovery_files(path):
+    return sorted(p.name for p in path.parent.iterdir() if p.name.startswith(path.name + ".torn-"))
+
+
+def _rewrite_committed_same_length(path):
+    """Change one committed byte without changing the length (lane codex-lead-1 -> codex-lead-9)."""
+    data = path.read_bytes()
+    i = data.index(b"codex-lead-1") + len(b"codex-lead-")
+    with open(path, "r+b") as handle:
+        handle.seek(i)
+        handle.write(b"9")
+    assert len(path.read_bytes()) == len(data)
+
+
+def test_repair_refuses_when_the_journal_grows_after_validation(tmp_path, monkeypatch):
+    path, _, tail = _torn_journal(tmp_path)
+    real = sj._fold_bytes
+
+    def racing(data):
+        result = real(data)
+        with open(path, "ab") as handle:  # another writer extends the tail meanwhile
+            handle.write(b"more")
+        return result
+    monkeypatch.setattr(sj, "_fold_bytes", racing)
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "concurrent_modification"
+    assert path.read_bytes().endswith(tail + b"more")  # nothing truncated
+    assert _recovery_files(path) == []                 # refused before the recovery copy
+
+
+def test_repair_refuses_a_same_length_committed_rewrite_after_validation(tmp_path, monkeypatch):
+    path, _, tail = _torn_journal(tmp_path)
+    real = sj._fold_bytes
+
+    def racing(data):
+        result = real(data)
+        _rewrite_committed_same_length(path)
+        return result
+    monkeypatch.setattr(sj, "_fold_bytes", racing)
+    size = path.stat().st_size
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "concurrent_modification"
+    assert path.stat().st_size == size and path.read_bytes().endswith(tail)
+    assert _recovery_files(path) == []
+
+
+def test_repair_never_certifies_bytes_it_did_not_validate(tmp_path, monkeypatch):
+    """RCO interleave at a913043c: rewrite the committed prefix right after read_journal."""
     path, _, tail = _torn_journal(tmp_path)
     real = sj.read_journal
 
     def racing(p):
         result = real(p)
-        with open(p, "ab") as handle:  # another writer extends the tail meanwhile
-            handle.write(b"more")
+        _rewrite_committed_same_length(Path(p))
         return result
     monkeypatch.setattr(sj, "read_journal", racing)
-    with pytest.raises(ContractError) as exc:
-        sj.repair_file(path)
-    assert exc.value.code == "concurrent_modification"
-    assert path.read_bytes().endswith(tail + b"more")  # nothing truncated
+    try:
+        result = sj.repair_file(path)
+    except ContractError as exc:
+        assert exc.value.code == "concurrent_modification"
+        assert path.read_bytes().endswith(tail)
+        return
+    monkeypatch.undo()
+    kept = path.read_bytes()
+    assert result["committed_sha256"] == hashlib.sha256(kept).hexdigest()
+    sj.read_journal(path)  # what repair certified still folds
 
 
 def test_repair_refuses_a_change_after_the_recovery_copy(tmp_path, monkeypatch):
@@ -740,6 +810,51 @@ def test_repair_refuses_a_change_after_the_recovery_copy(tmp_path, monkeypatch):
     assert exc.value.code == "concurrent_modification"
     assert path.read_bytes().endswith(tail[:-1] + b"X")  # nothing truncated
     assert sj.recovery_path(path, tail).read_bytes() == tail
+
+
+@pytest.mark.parametrize("occupant", ["directory", "junction"])
+def test_repair_refuses_a_directory_or_junction_at_the_recovery_name(tmp_path, occupant):
+    path, _, tail = _torn_journal(tmp_path)
+    name = sj.recovery_path(path, tail)
+    if occupant == "directory":
+        name.mkdir()
+    else:
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        _make_dir_alias(other, name)
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "recovery_conflict"
+    assert path.read_bytes().endswith(tail)
+
+
+def test_repair_refuses_a_hardlinked_recovery_name_even_with_identical_bytes(tmp_path):
+    path, _, tail = _torn_journal(tmp_path)
+    twin = tmp_path / "twin"
+    twin.write_bytes(tail)
+    os.link(twin, sj.recovery_path(path, tail))  # same bytes, but writable through another name
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "recovery_conflict"
+    assert path.read_bytes().endswith(tail)
+
+
+def test_repair_maps_an_unreadable_recovery_occupant_to_conflict(tmp_path, monkeypatch):
+    path, _, tail = _torn_journal(tmp_path)
+    name = sj.recovery_path(path, tail)
+    name.write_bytes(tail)
+    real = Path.read_bytes
+
+    def unreadable(self):
+        if self == name:
+            raise PermissionError(13, "denied")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "recovery_conflict"
+    monkeypatch.undo()
+    assert path.read_bytes().endswith(tail)
 
 
 def test_repair_refuses_an_occupied_recovery_name_with_other_content(tmp_path):
@@ -822,6 +937,23 @@ def test_non_regular_journal_is_refused(tmp_path):
     with pytest.raises(ContractError) as exc:
         sj.append_file(tmp_path, _full_sequence()[0])
     assert exc.value.code == "path_alias_refused"
+
+
+@pytest.mark.parametrize("text", [
+    '{"operation_id":"op-1","operation_id":"op-7x"}',
+    '{"binding":{"lane":"a","lane":"b"}}',
+])
+def test_record_json_with_duplicate_keys_is_refused(tmp_path, text):
+    with pytest.raises(ContractError) as exc:
+        sj.loads_record(text)
+    assert exc.value.code == "duplicate_key"
+    record = tmp_path / "dup.json"
+    good = json.dumps(_full_sequence()[0], sort_keys=True)
+    record.write_text(good[:-1] + ',"operation_id":"op-7x"}', encoding="utf-8")
+    journal = tmp_path / "dup.jsonl"
+    out = _cli("append", "--journal", str(journal), "--record-file", str(record))
+    assert out.returncode == 2 and json.loads(out.stdout) == {"error": "duplicate_key"}
+    assert not journal.exists()
 
 
 def test_live_bridge_paths_are_refused(tmp_path):

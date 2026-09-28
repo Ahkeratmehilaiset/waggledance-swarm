@@ -14,6 +14,9 @@ Semantics this module enforces, independent of any caller:
 
 * attempted, applied, verified and continued are distinct phases;
 * ``rollback_verified`` is a rolled-back outcome, never a successful switch;
+* a ``continued`` record after the intent expiry is accepted as evidence of an
+  effect that already happened (``continued`` / ``continued_after_expiry``),
+  never as success; the journal never authorizes continuation;
 * ``resume_pending`` is not continued;
 * an unknown external effect must HOLD, and a HOLD leaves only through a
   ``reconciled`` record with evidence; no retry while the effect is unknown;
@@ -33,8 +36,9 @@ that mutates the objects it passed cannot change committed state or digests.
 File layer (single writer): journal paths that are, or are reached through, a
 symlink/junction/reparse point, hardlinked files (st_nlink > 1) and non-regular
 files are refused. ``repair`` copies the torn tail to a content-addressed
-sibling ``<journal>.torn-<sha256>`` (O_EXCL, fsync) and re-checks the file
-under its open handle before truncating. There is no OS lock: a writer that
+sibling ``<journal>.torn-<sha256>`` (O_EXCL, fsync). It reads the file once
+under its open handle, validates exactly that buffer, and requires the file to
+still hold exactly those bytes before the copy and again before truncating. There is no OS lock: a writer that
 changes the file after the last check and before the append/truncate syscall
 is NOT detected (see ``SINGLE_WRITER_RACES``); writer fencing is the caller's.
 """
@@ -295,6 +299,7 @@ class _Operation:
         self.ever_applied = False
         self.ever_verified = False
         self.ever_unknown = False
+        self.continued_after_expiry = False
 
     def allowed(self) -> list[str]:
         if self.state in TERMINAL:
@@ -389,6 +394,9 @@ class _Operation:
             self.ever_verified = True
         elif phase in ("effect_unknown", "rollback_effect_unknown"):
             self.ever_unknown = True
+        elif phase == "continued" and _utc(record["recorded_at_utc"]) > self.expires_at:
+            # Evidence of an effect that already happened; not a successful switch.
+            self.continued_after_expiry = True
         if phase == "hold":
             self.held_track = "forward" if previous == "effect_unknown" else "rollback"
             self.state = "hold"
@@ -426,7 +434,8 @@ class _Operation:
             "resume_pending": state == "resume_pending",
             "rolled_back": rolled,
             "rollback_verified": state == "rollback_verified",
-            "success": state == "continued",
+            "continued_after_expiry": self.continued_after_expiry,
+            "success": state == "continued" and not self.continued_after_expiry,
             "hold_required": state in ("effect_unknown", "rollback_effect_unknown", "hold"),
             "unknown_effect_seen": self.ever_unknown,
             "revocation_observed": self.revocation_seen > self.binding["revocation_version"],
@@ -515,8 +524,9 @@ def intent_record(operation_id: str, binding: dict[str, Any], recorded_at_utc: s
 SINGLE_WRITER_RACES = (
     "append: another writer can extend or replace the file after the fstat size check and before "
     "the O_APPEND write; the check narrows the window, it does not close it (no OS lock)",
-    "repair: another writer can change the file after the final under-handle re-read and before "
-    "truncate; the recovery copy still holds the tail that was read",
+    "repair: another writer can change the file after the final under-handle re-read (which must "
+    "equal the validated buffer) and before truncate; the recovery copy still holds the tail that was "
+    "read and committed_sha256 is always the hash of the validated prefix",
     "path: a directory component can be swapped for an alias after the lstat walk and before open; "
     "the post-open fstat identity check catches a swapped final file, not every swapped parent",
     "two repairs of the same torn tail agree on the content-addressed recovery name and reuse it",
@@ -576,12 +586,18 @@ def read_journal(path: Path) -> tuple[Journal, int, int]:
     A record is committed only by its terminating newline; a torn tail is
     never folded. Every committed line must be a canonical record.
     """
-    data = path.read_bytes() if path.exists() else b""
+    return _fold_bytes(path.read_bytes() if path.exists() else b"")
+
+
+def _fold_bytes(data: bytes) -> tuple[Journal, int, int]:
+    """Validate and fold exactly ``data``; see read_journal."""
     committed = data.rfind(b"\n") + 1
     journal = Journal()
     for line in data[:committed].split(b"\n")[:-1]:
         try:
-            raw = json.loads(line.decode("utf-8"), parse_constant=_reject_constant)
+            raw = loads_record(line.decode("utf-8"))
+        except ContractError:  # a duplicate key cannot be a canonical line
+            raise ContractError("noncanonical_journal_line") from None
         except (UnicodeDecodeError, ValueError):
             raise ContractError("invalid_journal_line") from None
         if canonical_bytes(raw) != line:
@@ -592,6 +608,20 @@ def read_journal(path: Path) -> tuple[Journal, int, int]:
 
 def _reject_constant(_: str) -> Any:
     raise ValueError("non-finite number")
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ContractError("duplicate_key")
+        out[key] = value
+    return out
+
+
+def loads_record(text: str) -> Any:
+    """Parse record JSON refusing duplicate keys (at any depth) and non-finite numbers."""
+    return json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_no_duplicate_keys)
 
 
 def read_journal_checked(path: Path) -> tuple[Journal, int, int]:
@@ -639,22 +669,37 @@ def recovery_path(path: Path, tail: bytes) -> Path:
 
 
 def _keep_recovery_copy(target: Path, tail: bytes) -> None:
+    """Create the recovery copy, or accept an identical existing one; any other occupant conflicts."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(target, flags, 0o600)
-    except FileExistsError:
-        st = os.lstat(target)
-        if _is_alias(st) or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-            raise ContractError("recovery_conflict") from None
-        if target.read_bytes() != tail:
+    except OSError:
+        # Occupied (file, directory, junction, symlink) or not creatable: only an identical
+        # plain single-link file is accepted.
+        try:
+            st = os.lstat(target)
+            if _is_alias(st) or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise ContractError("recovery_conflict")
+            if target.read_bytes() != tail:
+                raise ContractError("recovery_conflict")
+        except OSError:
             raise ContractError("recovery_conflict") from None
         return
     try:
         if os.write(fd, tail) != len(tail):
             raise ContractError("short_write")
         os.fsync(fd)
+    except OSError:
+        raise ContractError("recovery_write_failed") from None
     finally:
         os.close(fd)
+
+
+def _require_unchanged(handle: Any, data: bytes) -> None:
+    """The open journal must still hold exactly the validated bytes."""
+    handle.seek(0)
+    if os.fstat(handle.fileno()).st_size != len(data) or handle.read() != data:
+        raise ContractError("concurrent_modification")
 
 
 def repair_file(path: Path) -> dict[str, Any]:
@@ -667,23 +712,21 @@ def repair_file(path: Path) -> dict[str, Any]:
     before = _refuse_unsafe_path(path)
     if before is None:
         raise ContractError("no_torn_tail")
-    _, committed, torn = read_journal(path)
-    if not torn:
-        raise ContractError("no_torn_tail")
-    with open(path, "r+b") as handle:
+    with open(path, "r+b", buffering=0) as handle:
         opened = os.fstat(handle.fileno())
         _refuse_unsafe_file(opened)
         if not _same_file(opened, before):
             raise ContractError("concurrent_modification")
-        data = handle.read()
-        if len(data) != committed + torn or data.rfind(b"\n") + 1 != committed:
-            raise ContractError("concurrent_modification")
+        # One read; the bytes validated are the bytes kept, hashed and truncated around.
+        data = handle.readall()
+        _, committed, torn = _fold_bytes(data)
+        if not torn:
+            raise ContractError("no_torn_tail")
+        _require_unchanged(handle, data)
         tail = data[committed:]
         target = recovery_path(path, tail)
         _keep_recovery_copy(target, tail)
-        handle.seek(0)
-        if os.fstat(handle.fileno()).st_size != len(data) or handle.read() != data:
-            raise ContractError("concurrent_modification")
+        _require_unchanged(handle, data)
         handle.truncate(committed)
         handle.flush()
         os.fsync(handle.fileno())
@@ -709,6 +752,8 @@ def api_contract() -> dict[str, Any]:
         "commit_rule": "a record is committed only by its terminating newline; torn tails are never folded",
         "repair_rule": "the torn tail is kept in <journal>.torn-<sha256> before truncation",
         "single_writer_races": list(SINGLE_WRITER_RACES),
+        "expiry_rule": ("attempted after expires_at is refused; a later continued record is kept as evidence "
+                        "(continued_after_expiry) and is never success; nothing here authorizes continuation"),
     }
 
 
@@ -732,7 +777,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "repair":
             out = repair_file(args.journal)
         else:
-            raw = json.loads(args.record_file.read_text(encoding="utf-8"), parse_constant=_reject_constant)
+            raw = loads_record(args.record_file.read_text(encoding="utf-8"))
             result, journal = append_file(args.journal, raw)
             out = dict(journal.fold(), result=result)
     except ContractError as exc:

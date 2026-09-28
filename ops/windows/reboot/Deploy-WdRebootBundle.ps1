@@ -772,6 +772,8 @@ foreach ($required in @(
         'WD_SWARM_TARGET_STATE_V1.md',
         'WaggleDanceSwarmAi.png',
         'tools-bootstrap/.agent-bridge/bin/AgentBridgeSessionIdentity.ps1',
+        'tools-bootstrap/.agent-bridge/bin/BridgeEventClassifier.ps1',
+        'tools-bootstrap/.agent-bridge/bin/BridgeWakeClass.ps1',
             'tools-bootstrap/.agent-bridge/bin/ClaimLeaseHeartbeat.ps1',
             'tools-bootstrap/.agent-bridge/bin/BridgeNamedMutex.ps1',
         'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1',

@@ -54,8 +54,23 @@ try {
     $na = & $nextAction -Agent codex -Json | ConvertFrom-Json
     Add-Check 'next action = answer_incoming' ([string]$na.action -eq 'answer_incoming') ([string]$na.summary)
 
-    Write-Host '5. next-action helper recommends read-only work under foreign write claim:'
+    # Requests carry request_id/request_digest, and only a reply bound with
+    # in_reply_to_request_id closes one (docs/BRIDGE_REQUEST_CONTRACT.md).
+    Write-Host '5. an unbound answer does not close a request_id-bound request:'
     & $writeEvent -Agent codex -To claude -Type message -Status answered -TaskId 'r23-1-smoke-incoming' -Message 'answered' | Out-Null
+    $naUnbound = & $nextAction -Agent codex -Json | ConvertFrom-Json
+    Add-Check 'unbound answer leaves request open' ([string]$naUnbound.action -eq 'answer_incoming') ([string]$naUnbound.summary)
+
+    Write-Host '6. next-action helper recommends read-only work under foreign write claim:'
+    $jsonArguments = @{ ErrorAction = 'Stop' }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArguments.DateKind = 'String' }
+    $eventsPath = Join-Path (Join-Path $tempRoot 'shared') 'events.jsonl'
+    $requestLines = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 | Where-Object { $_.Trim() } | Where-Object {
+        $candidate = $_ | ConvertFrom-Json @jsonArguments
+        $candidate.agent -ceq 'claude' -and $candidate.type -ceq 'handoff' -and $candidate.task_id -ceq 'r23-1-smoke-incoming'
+    })
+    if ($requestLines.Count -ne 1) { throw "expected exactly one smoke handoff request, found $($requestLines.Count)" }
+    & $writeEvent -Agent codex -To claude -Type message -Status answered -TaskId 'r23-1-smoke-incoming' -Message 'answered' -ReplyToEventJson $requestLines[0] | Out-Null
     & $claimTask -Agent claude -TaskId 'r23-1-foreign-write' -Summary 'foreign write' -Mode write -WriteScope 'waggledance/core' | Out-Null
     $na2 = & $nextAction -Agent codex -Json | ConvertFrom-Json
     Add-Check 'next action = parallel_read_only' ([string]$na2.action -eq 'parallel_read_only') ([string]$na2.summary)

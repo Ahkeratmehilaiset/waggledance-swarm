@@ -101,10 +101,14 @@ function Read-BridgeEventObjects {
     } else {
         @(Get-Content -Path $Path -Tail $MaxLines -Encoding UTF8)
     }
+    $jsonArguments = @{ ErrorAction = 'Stop' }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $jsonArguments.DateKind = 'String'
+    }
     foreach ($line in $lines) {
         if (-not $line) { continue }
         try {
-            $obj = $line | ConvertFrom-Json -ErrorAction Stop
+            $obj = $line | ConvertFrom-Json @jsonArguments
             # Shape guard: a transient partial read of the shared log can
             # yield bare null / scalar / array lines. NOTE: `-is
             # [pscustomobject]` is NOT a valid shape test here - PowerShell
@@ -167,8 +171,7 @@ $requestsForAgent = @(
             (Test-BridgeRequestLikeEvent -Event $_) -and
             -not (Test-BridgeFollowNudgeRequest -Event $_) -and
             (Test-BridgeAddressedTo -Event $_ -TargetAgent $Agent)
-        } |
-        Sort-Object ts_utc
+        }
 )
 
 $freshRequestsForAgent = New-Object System.Collections.Generic.List[object]
@@ -188,7 +191,7 @@ function Test-BridgeRequestStillOpen {
     foreach ($answer in $requestIndex.by_task[[string]$Request.task_id]) {
         $closure = $answer.agent -ceq $Request.agent -and (Test-BridgeRequesterClosureEvent $answer)
         if (($closure -or (Test-BridgeAnswerEvent $answer)) -and
-            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous)) {
+            (Test-BridgeReplyBinding -Request $Request -Reply $answer -Target $Agent -RequesterClosure $closure -AmbiguousLegacy $ambiguous -RequestPosition $requestIndex.positions[$Request] -ReplyPosition $requestIndex.positions[$answer])) {
             return $false
         }
     }
@@ -205,6 +208,11 @@ foreach ($req in $freshRequestsForAgent) {
             (Get-BridgeContractField $freshByKey[$key] 'request_digest') -cne (Get-BridgeContractField $req 'request_digest')) {
             $freshByKey[$key] | Add-Member -Force NoteProperty request_binding_conflict $true
         }
+    } elseif ($freshByKey.ContainsKey($key) -and
+        [string]$freshByKey[$key].ts_utc -ceq [string]$req.ts_utc -and
+        (Get-BridgeRequestContent $freshByKey[$key]) -ceq (Get-BridgeRequestContent $req)) {
+        # An identical replay does not reset the request's append position.
+        continue
     } else { $freshByKey[$key] = $req }
 }
 $openEventCount = 0
@@ -272,6 +280,10 @@ if ($ownClaims.Count -gt 0) {
     $safeMode = 'write-or-read-only'
 }
 
+$knownRequestAges = @($openRequests | ForEach-Object {
+    $stamp = ConvertTo-BridgeContractTime $_.ts_utc
+    if ($null -ne $stamp) { [math]::Max(0, ($nowUtc - $stamp).TotalSeconds) }
+})
 $result = [pscustomobject]@{
     agent = $Agent
     worker_class = Get-BridgeWorkerClass $Agent
@@ -283,8 +295,8 @@ $result = [pscustomobject]@{
     open_incoming_count = $openRequests.Count
     open_incoming_event_count = $openEventCount
     open_incoming_task_count = @($openRequests | Select-Object -ExpandProperty task_id -Unique).Count
-    oldest_open_request_age_seconds = if ($openRequests.Count) {
-        @($openRequests | ForEach-Object { [math]::Max(0, ($nowUtc - (ConvertTo-BridgeContractTime $_.ts_utc)).TotalSeconds) } | Measure-Object -Maximum)[0].Maximum
+    oldest_open_request_age_seconds = if ($openRequests.Count -and $knownRequestAges.Count -eq $openRequests.Count) {
+        ($knownRequestAges | Measure-Object -Maximum).Maximum
     } else { $null }
     stale_incoming_count = @($staleOpenRequests | Select-Object -ExpandProperty task_id -Unique).Count
     stale_incoming_request_count = $staleOpenRequests.Count

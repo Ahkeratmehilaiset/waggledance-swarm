@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import uuid
 
 import pytest
 
@@ -64,16 +65,25 @@ def _run_bridge_script(
     script_name: str,
     *args: str,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    for name in (
-        "AGENT_BRIDGE_AGENT_UUID",
-        "AGENT_BRIDGE_CAPABILITIES",
-        "AGENT_BRIDGE_ROLE",
-        "AGENT_BRIDGE_RUN_ID",
-        "AGENT_BRIDGE_SESSION_ID",
-    ):
-        env.pop(name, None)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))
+           or k.startswith("AGENT_BRIDGE_TEST_")}
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime_root)
+    # An isolated event directory alone still shares production kernel mutexes.
+    # Change literals only in a fixture copy, never a runtime-configurable bypass.
+    suffix = hashlib.sha256(str(runtime_root).encode()).hexdigest()[:16]
+    fixture_root = runtime_root.parent / ("writer-fixture-" + suffix)
+    code = fixture_root / ".agent-bridge/bin"
+    if not code.exists():
+        shutil.copytree(root / ".agent-bridge/bin", code)
+        configs = fixture_root / "configs"
+        configs.mkdir()
+        shutil.copy2(root / "configs/bridge_identity_registry.json", configs)
+        prefix = "Local\\WdWriterFixture-" + uuid.uuid4().hex + "-"
+        for script in code.glob("*.ps1"):
+            source = script.read_text(encoding="utf-8-sig")
+            if "Global\\WaggleDanceBridge" in source:
+                script.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
     return subprocess.run(
         [
             _powershell(),
@@ -81,7 +91,7 @@ def _run_bridge_script(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            str(root / ".agent-bridge" / "bin" / script_name),
+            str(code / script_name),
             *args,
         ],
         cwd=root,
@@ -883,6 +893,92 @@ def test_grok_response_requires_freshness_payload_before_runtime_write(
 
     assert completed.returncode != 0
     assert "grok freshness proof required" in completed.stderr
+    assert not runtime_root.exists()
+
+
+@WINDOWS_APPEND_V1
+def test_powershell_writer_accepts_new_coordination_types(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    triage = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "triage_disposition",
+        "-TaskId",
+        "triage-smoke",
+        "-Status",
+        "recorded",
+        "-PayloadJson",
+        json.dumps(
+            {
+                "disposition": "ack_dispatch",
+                "target_event_id": "event:1",
+            }
+        ),
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+    tick = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "consumer_tick",
+        "-Status",
+        "started",
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+
+    assert triage.returncode == 0, triage.stderr
+    assert tick.returncode == 0, tick.stderr
+    rows = [
+        json.loads(line)
+        for line in (runtime_root / "shared" / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["type"] for row in rows] == [
+        "triage_disposition",
+        "consumer_tick",
+    ]
+
+
+def test_powershell_writer_rejects_invalid_triage_before_runtime_write(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    runtime_root = tmp_path / "bridge-runtime"
+
+    completed = _run_writer(
+        root,
+        runtime_root,
+        "-Agent",
+        "codex-lead-1",
+        "-Type",
+        "triage_disposition",
+        "-TaskId",
+        "triage-smoke",
+        "-Status",
+        "acknowledged",
+        "-PayloadJson",
+        json.dumps(
+            {
+                "disposition": "ack_dispatch",
+                "target_event_id": "event:1",
+            }
+        ),
+        "-AgentUuid",
+        CODEX_LEAD_UUID,
+    )
+
+    assert completed.returncode != 0
+    assert "triage_disposition" in completed.stderr
     assert not runtime_root.exists()
 
 

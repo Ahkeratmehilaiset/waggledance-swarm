@@ -156,7 +156,8 @@ function New-BridgeV1Mutex {
     if ($forcedFailure -in @('All', $Purpose)) {
         throw "simulated bridge $Purpose mutex construction failure"
     }
-    return New-Object System.Threading.Mutex($false, $Name)
+    . (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
+    return New-BridgeNamedMutex -Name $Name
 }
 
 function Close-BridgeQueuePublicationFence {

@@ -55,7 +55,7 @@ function Test-BridgeInfrastructureEvent {
     # so it must reach the request-like classifier instead of being dropped here.
     # It is kept out of the answer/closure path separately (see Test-BridgeAnswerEvent),
     # matching the Python REQUEST_TYPES parity merged in #1101.
-    return @('heartbeat','liveness') -contains [string]$Event.type
+    return @('heartbeat','liveness','consumer_tick') -contains [string]$Event.type
 }
 
 function Test-BridgeMessageAnswerStatus {
@@ -66,6 +66,20 @@ function Test-BridgeMessageAnswerStatus {
         'answered',
         'answered_plus_reminder',
         'answered_after_recovery'
+    ) -contains $Status
+}
+
+function Test-BridgeInterimMessageStatus {
+    param([AllowEmptyString()] [string] $Status)
+    Set-StrictMode -Version Latest
+
+    # Queue admission and progress receipts are not task completion. Keep
+    # unknown custom result statuses eligible for exact-bound closure.
+    return @(
+        'queued','queued_for_processing','queue_accepted',
+        'accepted','accepted_for_processing','pending','started',
+        'in_progress','processing','running','request','requested',
+        'open','proposal','waiting_for_result'
     ) -contains $Status
 }
 
@@ -98,8 +112,9 @@ function Test-BridgeRequesterClosureEvent {
 
     $status = [string]$Event.status
     $type = [string]$Event.type
-    if ($type -eq 'message') {
-        return @('closed','superseded','cancelled','canceled') -contains $status -or
+    if ($type -in @('message','wake_request')) {
+        return @('closed','superseded','cancelled','canceled','withdrawn') -contains $status -or
+            $status.StartsWith('withdrawn_', [System.StringComparison]::OrdinalIgnoreCase) -or
             $status.StartsWith('closed_', [System.StringComparison]::OrdinalIgnoreCase) -or
             $status.StartsWith('superseded_', [System.StringComparison]::OrdinalIgnoreCase) -or
             $status.StartsWith('cancelled_', [System.StringComparison]::OrdinalIgnoreCase) -or
@@ -174,7 +189,9 @@ function Test-BridgeAnswerEvent {
     $type = [string]$Event.type
     $status = [string]$Event.status
 
+    if ($type -eq 'done' -and $status -match '(^|[^a-z0-9])(not|no|undone|incomplete|unfinished|unresolved|unverified|unmerged|failed|pending|queued|running|processing)([^a-z0-9]|$)') { return $false }
     if ($type -eq 'message') {
+        if (Test-BridgeInterimMessageStatus -Status $status) { return $false }
         if (Test-BridgeMessageAnswerStatus -Status $status) { return $true }
         if (Test-BridgeRequestLikeEvent -Event $Event) { return $false }
         return $true
@@ -182,7 +199,7 @@ function Test-BridgeAnswerEvent {
 
     # `wake_request` is request-like, never a closure/answer: a nudge must not
     # mark another agent's open request as answered.
-    if (@('status','intent','wake_request') -contains $type) { return $false }
+    if (@('status','intent','wake_request','triage_disposition') -contains $type) { return $false }
     return $true
 }
 

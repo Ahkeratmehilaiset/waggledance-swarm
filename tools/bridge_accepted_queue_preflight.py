@@ -20,6 +20,8 @@ import subprocess
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping
 
+from tools.bridge_named_mutex import create_bridge_named_mutex
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DRAIN_SCRIPT = ROOT / ".agent-bridge" / "bin" / "Drain-AcceptedBridgeQueue.ps1"
@@ -1036,12 +1038,6 @@ def _bridge_named_mutex_lease(
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.argtypes = [
-        wintypes.LPVOID,
-        wintypes.BOOL,
-        wintypes.LPCWSTR,
-    ]
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
@@ -1049,14 +1045,10 @@ def _bridge_named_mutex_lease(
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    handle = kernel32.CreateMutexW(
-        None,
-        False,
-        name,
-    )
-    if not handle:
-        code = ctypes.get_last_error()
-        raise OSError(code, f"{label} mutex creation failed")
+    try:
+        handle = create_bridge_named_mutex(name, kernel32=kernel32)
+    except OSError as exc:
+        raise OSError(exc.errno, f"{label} mutex creation failed: {exc.strerror}") from exc
     acquired = False
     try:
         wait = int(kernel32.WaitForSingleObject(handle, 5_000))

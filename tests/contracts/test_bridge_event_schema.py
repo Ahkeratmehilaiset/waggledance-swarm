@@ -12,6 +12,7 @@ import pytest
 from waggledance.core.bridge_event_schema import (
     BRIDGE_EVENT_SCHEMA_VERSION,
     BridgeEvent,
+    KNOWN_EVENT_TYPES,
     validate_event,
     validate_event_file,
     validate_event_line,
@@ -53,6 +54,51 @@ def test_valid_write_agent_event_shape_validates() -> None:
         "tests/v3_13_0/test_sqlite_read_transport.py",
     ]
     assert model.model_extra == {"extra_future_field": "allowed"}
+
+
+@pytest.mark.parametrize("alias", ["Payload", "STATUS", "Type", "TO", "Message", "Task_ID", "REQUEST_ID", "In_Reply_To_Request_Id"])
+def test_case_variant_envelope_keys_are_rejected(alias: str) -> None:
+    event = _good_event()
+    event[alias] = {"in_reply_to_request_id": "req-1"} if alias == "Payload" else "shadow"
+    with pytest.raises(Exception, match="canonical|duplicate"):
+        validate_event(event)
+
+
+@pytest.mark.parametrize("alias", ["In_Reply_To_Request_Id", "Request_ID", "STATUS", "Type", "Payload"])
+def test_case_variant_payload_keys_are_rejected_without_banning_result_data(alias: str) -> None:
+    event = _good_event(payload={alias: "shadow", "result": {"Unknown": 1, "unknown": 2}})
+    with pytest.raises(Exception, match="canonical|duplicate"):
+        validate_event(event)
+    accepted = validate_event(_good_event(payload={"result": {"Unknown": 1, "unknown": 2}}))
+    assert accepted.payload["result"] == {"Unknown": 1, "unknown": 2}
+
+
+@pytest.mark.parametrize("raw_keys", [
+    '"payload":{},"Payload":{"in_reply_to_request_id":"req-1"}',
+    '"payload":{},"payload":{"in_reply_to_request_id":"req-1"}',
+    '"status":"ready","STATUS":"answered"',
+])
+def test_json_line_rejects_duplicate_envelope_keys(raw_keys: str) -> None:
+    event = _good_event()
+    event.pop("payload", None)
+    event.pop("status", None)
+    line = json.dumps(event)[:-1] + "," + raw_keys + "}"
+    with pytest.raises(ValueError, match="duplicate|canonical"):
+        validate_event_line(line)
+
+
+@pytest.mark.parametrize("data_key", ["result", "payload"])
+def test_result_keys_are_not_treated_as_bridge_envelope_aliases(data_key: str) -> None:
+    event = _good_event(payload={data_key: {"Status": "detail", "status": "separate detail"}})
+    assert validate_event_line(json.dumps(event)).payload[data_key] == event["payload"][data_key]
+
+
+def test_json_line_rejects_duplicate_immediate_payload_keys() -> None:
+    event = _good_event()
+    event.pop("payload")
+    line = json.dumps(event)[:-1] + ',"payload":{"result":{},"Result":{"shadow":true}}}'
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_event_line(line)
 
 
 def test_comma_separated_targets_are_validated_per_agent() -> None:
@@ -205,9 +251,87 @@ def test_wake_request_requires_explicit_target() -> None:
         validate_event(_good_event(type="wake_request", to=""))
 
 
+def test_new_coordination_types_are_known_and_validated() -> None:
+    assert {"triage_disposition", "consumer_tick"} <= KNOWN_EVENT_TYPES
+    tick = validate_event(
+        _good_event(type="consumer_tick", status="started", task_id="")
+    )
+    assert tick.type == "consumer_tick"
+
+    disposition = validate_event(
+        _good_event(
+            type="triage_disposition",
+            status="recorded",
+            payload={
+                "disposition": "ack_dispatch",
+                "target_event_id": "sha256:" + "a" * 64,
+            },
+        )
+    )
+    assert disposition.payload["disposition"] == "ack_dispatch"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "acknowledged"},
+        {"payload": {}},
+        {"payload": {"disposition": "ack_dispatch", "target_event_id": ""}},
+        {
+            "payload": {
+                "disposition": "defer",
+                "target_event_id": "event:1",
+                "reason": "",
+                "next_condition": "after CI",
+            }
+        },
+        {
+            "payload": {
+                "disposition": "defer",
+                "target_event_id": "event:1",
+                "reason": "waiting",
+                "next_condition": "",
+            }
+        },
+        {
+            "payload": {
+                "disposition": "resolved",
+                "target_event_id": "event:1",
+            }
+        },
+    ],
+)
+def test_triage_disposition_contract_fails_closed(overrides: dict) -> None:
+    event = _good_event(
+        type="triage_disposition",
+        status="recorded",
+        payload={
+            "disposition": "ack_dispatch",
+            "target_event_id": "event:1",
+        },
+    )
+    event.update(overrides)
+    with pytest.raises(Exception, match="triage_disposition"):
+        validate_event(event)
+
+
 def test_claim_like_events_require_task_id() -> None:
     with pytest.raises(Exception, match="claim requires task_id"):
         validate_event(_good_event(type="claim", task_id="", to=""))
+
+
+@pytest.mark.parametrize("disposition", [[], {}, ["defer"], {"value": "defer"}])
+def test_unhashable_triage_disposition_is_reported_not_crashed(tmp_path, disposition):
+    event = _good_event(type="triage_disposition", status="recorded", payload={
+        "disposition": disposition, "target_event_id": "event:1",
+    })
+    path = tmp_path / "events.jsonl"
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    result = validate_event_file(path)
+    assert result.checked == 1
+    assert result.invalid == 1
+    assert result.valid == 0
+    assert "payload.disposition" in result.issues[0].error
 
 
 def test_payload_parse_error_objects_remain_valid() -> None:

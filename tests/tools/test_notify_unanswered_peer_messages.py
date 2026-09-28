@@ -5,12 +5,79 @@ from pathlib import Path
 
 from tools.notify_unanswered_peer_messages import (
     PeerNotificationError,
+    _open_requests_for_agent,
     main,
     surface_unanswered_peer_messages,
 )
 
 
 NOW = "2026-05-21T18:30:00Z"
+
+
+def _closure_events(*, reply_agent: str = "claude", reply_type: str = "done",
+                    reply_status: str = "done", reply_ts: str = "2026-05-21T18:16:04Z",
+                    reply_first: bool = False) -> list[dict[str, str]]:
+    request = {
+        "ts_utc": "2026-05-21T18:13:42Z", "agent": "codex", "to": "claude",
+        "type": "wake_request", "task_id": "closure-case", "status": "rco_requested",
+        "message": "Please review",
+    }
+    reply = {
+        "ts_utc": reply_ts, "agent": reply_agent, "to": "codex",
+        "type": reply_type, "task_id": "closure-case", "status": reply_status,
+        "message": "Reply",
+    }
+    return [reply, request] if reply_first else [request, reply]
+
+
+def test_third_party_terminal_event_does_not_close_request() -> None:
+    for event_type, status in (("done", "done"), ("decision", "blocked")):
+        events = _closure_events(reply_agent="operator", reply_type=event_type,
+                                 reply_status=status)
+        assert len(_open_requests_for_agent(agent="claude", events=events)) == 1
+
+
+def test_answer_requires_later_utc_and_append_order() -> None:
+    for events in (
+        _closure_events(reply_ts="2026-05-21T21:13:41+03:00"),
+        _closure_events(reply_ts="2026-05-21T18:13:42Z"),
+        _closure_events(reply_first=True),
+    ):
+        assert len(_open_requests_for_agent(agent="claude", events=events)) == 1
+
+
+def test_requester_explicit_message_and_wake_withdrawal_close_request() -> None:
+    for event_type, status in (("message", "closed"), ("wake_request", "withdrawn")):
+        events = _closure_events(reply_agent="codex", reply_type=event_type,
+                                 reply_status=status)
+        assert _open_requests_for_agent(agent="claude", events=events) == []
+
+
+def test_queue_ack_and_done_negation_do_not_close_request() -> None:
+    for event_type, status in (("message", "queue_accepted"), ("done", "not_done")):
+        events = _closure_events(reply_type=event_type, reply_status=status)
+        assert len(_open_requests_for_agent(agent="claude", events=events)) == 1
+
+
+def test_bound_reply_requires_exact_request_id_and_digest() -> None:
+    request, reply = _closure_events(reply_type="message", reply_status="custom_result")
+    request["request_id"] = "request-current"
+    request["request_digest"] = "digest-current"
+    reply["in_reply_to_request_id"] = "request-other"
+    reply["in_reply_to_request_digest"] = "digest-current"
+    reply["in_reply_to_requester"] = {"agent": "codex"}
+    assert len(_open_requests_for_agent(agent="claude", events=[request, reply])) == 1
+    reply["in_reply_to_request_id"] = "request-current"
+    assert _open_requests_for_agent(agent="claude", events=[request, reply]) == []
+
+
+def test_ambiguous_legacy_reply_requires_explicit_correlation() -> None:
+    first, reply = _closure_events()
+    second = dict(first, ts_utc="2026-05-21T18:14:42Z")
+    events = [first, second, reply]
+    assert len(_open_requests_for_agent(agent="claude", events=events)) == 2
+    reply["request_ts_utc"] = second["ts_utc"]
+    assert _open_requests_for_agent(agent="claude", events=events) == [first]
 
 
 def test_dry_run_surfaces_unanswered_status_query_without_writing(
@@ -97,7 +164,7 @@ def test_answered_request_does_not_create_marker(tmp_path: Path) -> None:
                 "to": "codex",
                 "type": "message",
                 "task_id": "status-query",
-                "status": "late_status_response",
+                "status": "answered",
                 "message": "answer",
             },
         ],
@@ -162,7 +229,7 @@ def test_originator_done_closes_obsolete_rco_request(tmp_path: Path) -> None:
                 "to": "claude,operator",
                 "type": "done",
                 "task_id": "pr537-review",
-                "status": "postmerge_validated",
+                "status": "closed",
                 "message": "PR #537 merged and validated",
             },
         ],

@@ -169,6 +169,56 @@ def test_emit_bridge_event_invokes_writer_with_authoritative_payload(tmp_path: P
     assert payload["head"] == HEAD
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_emit_uses_pinned_code_and_selected_runtime(tmp_path, monkeypatch, explicit):
+    import tools.pr_bridge_wake as wake
+
+    pinned = tmp_path / "pinned-bin"
+    pinned.mkdir()
+    (pinned / "Write-AgentEvent.ps1").write_text("# fixture", encoding="utf-8")
+    inherited = tmp_path / "inherited-runtime"
+    selected = tmp_path / "explicit-runtime" if explicit else inherited
+    monkeypatch.setenv("WD_BRIDGE_BIN", str(pinned))
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(inherited))
+    event = build_pr_review_wake_event(pr_number=1505, agent="codex-lead-1",
+        task_id="lead/root", to="claude-rco-1", runner=_runner(_payload()))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({**event, "_bridge_delivery": {
+            "schema": "waggledance.bridge.delivery-receipt.v1", "accepted": True,
+            "delivery_status": "canonical", "canonical_durable": True,
+            "retained_wal_path": None, "retained_wal_sha256": None}}))
+
+    monkeypatch.setattr(wake.subprocess, "run", run)
+    emit_bridge_event(event, bridge_root=selected if explicit else None)
+    command, kwargs = calls[0]
+    assert Path(command[command.index("-File") + 1]) == pinned / "Write-AgentEvent.ps1"
+    assert Path(kwargs["env"]["AGENT_BRIDGE_RUNTIME_ROOT"]) == selected
+
+
+def test_emit_missing_pin_never_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setenv("WD_BRIDGE_BIN", str(tmp_path / "absent-pin"))
+    writer = tmp_path / "runtime/bin/Write-AgentEvent.ps1"
+    writer.parent.mkdir(parents=True)
+    writer.write_text("# legacy", encoding="utf-8")
+    with pytest.raises(PrBridgeWakeError) as exc:
+        emit_bridge_event({}, bridge_root=writer.parent.parent, runner=lambda _: pytest.fail("must not invoke"))
+    assert exc.value.report["decision"] == "missing_writer"
+
+
+def test_default_emit_without_code_pin_refuses_legacy_runtime_writer(tmp_path, monkeypatch):
+    monkeypatch.delenv("WD_BRIDGE_BIN", raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))
+    writer = tmp_path / "bin/Write-AgentEvent.ps1"
+    writer.parent.mkdir()
+    writer.write_text("# legacy", encoding="utf-8")
+    with pytest.raises(PrBridgeWakeError) as exc:
+        emit_bridge_event({}, runner=lambda _: pytest.fail("must not invoke"))
+    assert exc.value.report["decision"] == "missing_code_pin"
+
+
 def test_emit_bridge_event_reports_queued_receipt_without_claiming_canonical(
     tmp_path: Path,
 ) -> None:

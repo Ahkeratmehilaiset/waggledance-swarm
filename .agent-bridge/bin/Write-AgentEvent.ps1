@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidateScript({ $_ -cmatch '^[a-z][a-z0-9_-]{1,32}$' })] [string] $Agent,
-    [Parameter(Mandatory)] [ValidateSet('status','intent','claim','release','message','finding','decision','test','blocked','handoff','done','heartbeat','wake_request','liveness')] [string] $Type,
+    [Parameter(Mandatory)] [ValidateSet('status','intent','claim','release','message','finding','decision','test','blocked','handoff','done','heartbeat','wake_request','liveness','triage_disposition','consumer_tick')] [string] $Type,
     [string] $TaskId = '',
     [string] $Status = '',
     [string] $Message = '',
@@ -142,7 +142,9 @@ foreach ($capability in @($Capabilities)) {
 }
 Assert-BridgeAgentTargets -Targets $To
 
-$taskIdRequiredTypes = @('claim', 'release', 'done', 'handoff', 'blocked')
+$taskIdRequiredTypes = @(
+    'claim', 'release', 'done', 'handoff', 'blocked', 'triage_disposition'
+)
 $ackStatuses = @('acknowledged', 'received', 'seen')
 $grokReviewAgents = @('grok-1', 'grok-scout-1')
 $grokReviewStatuses = @('grok_response')
@@ -324,6 +326,42 @@ function Test-BridgeObjectHasField {
     return ($null -ne $Object.PSObject.Properties[$Name])
 }
 
+function Assert-TriageDispositionPayload {
+    param([AllowNull()] $Payload)
+    if ($Type -ne 'triage_disposition') {
+        return
+    }
+    if ($Status -cne 'recorded') {
+        throw "triage_disposition status must be recorded"
+    }
+    if (-not (Test-BridgeObject -Value $Payload)) {
+        throw "triage_disposition payload must be an object"
+    }
+    $disposition = Get-BridgeObjectField -Object $Payload -Name 'disposition'
+    if (-not ($disposition -is [string]) -or
+        @('ack_dispatch', 'defer') -cnotcontains [string]$disposition) {
+        throw "triage_disposition payload.disposition must be ack_dispatch or defer"
+    }
+    $targetEventId = Get-BridgeObjectField -Object $Payload -Name 'target_event_id'
+    if (-not ($targetEventId -is [string]) -or
+        [string]::IsNullOrWhiteSpace([string]$targetEventId) -or
+        ([string]$targetEventId).Contains("`r") -or
+        ([string]$targetEventId).Contains("`n")) {
+        throw "triage_disposition payload.target_event_id must be non-empty single-line text"
+    }
+    if ([string]$disposition -ceq 'defer') {
+        foreach ($fieldName in @('reason', 'next_condition')) {
+            $value = Get-BridgeObjectField -Object $Payload -Name $fieldName
+            if (-not ($value -is [string]) -or
+                [string]::IsNullOrWhiteSpace([string]$value) -or
+                ([string]$value).Contains("`r") -or
+                ([string]$value).Contains("`n")) {
+                throw "triage_disposition payload.$fieldName must be non-empty single-line text for defer"
+            }
+        }
+    }
+}
+
 function Assert-GrokFreshnessPayload {
     param([AllowNull()] $Payload)
     if (-not (
@@ -431,6 +469,7 @@ function Assert-RcoPassTaskBinding {
     }
 }
 
+Assert-TriageDispositionPayload -Payload $payload
 Assert-GrokFreshnessPayload -Payload $payload
 Assert-RcoPassTaskBinding -Payload $payload
 
@@ -541,6 +580,27 @@ if (@($Capabilities).Count -gt 0) { $event['capabilities'] = @($Capabilities) }
 # Replies consume the full request, never the lossy next-action summary.
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
+. (Join-Path $PSScriptRoot 'BridgeNamedMutex.ps1')
+
+function Assert-WriterContractEnvelope {
+    param([Parameter(Mandatory)] $Event)
+    # Get-BridgeContractField deliberately fails closed on conflicting copies.
+    # Do not publish such a copy into last_<agent>, where it would poison the
+    # expected responder identity of every subsequent request to that lane.
+    foreach ($key in @('agent','agent_uuid','session_id','run_id','task_id',
+            'request_id','request_digest','expected_responders',
+            'in_reply_to_request_id','in_reply_to_request_digest','in_reply_to_requester')) {
+        $nested = $Event.payload.PSObject.Properties[$key]
+        if ($null -eq $nested) { continue }
+        $direct = $Event.PSObject.Properties[$key]
+        if (($null -ne $direct -and
+                (ConvertTo-BridgeContractJson $direct.Value) -cne (ConvertTo-BridgeContractJson $nested.Value)) -or
+            ($null -eq $direct)) {
+            throw "Conflicting payload contract field '$key'; put observational data under payload.result or a descriptive non-contract name"
+        }
+    }
+}
+Assert-WriterContractEnvelope ([pscustomobject]$event)
 $bindingWarnings = @()
 if ($ReplyToEventJson) {
     if ($RequestId) { throw 'A reply cannot also declare a new RequestId' }
@@ -552,6 +612,11 @@ if ($ReplyToEventJson) {
         throw 'Reply task, sender or recipient does not match the full request'
     }
     $event['in_reply_to_request_id'] = $replyId
+    # Classify the bound event: e.g. message/blocked is request-like without
+    # this field, but is a substantive response when replying to a request.
+    if (-not (Test-BridgeAnswerEvent ([pscustomobject]$event))) {
+        throw 'ReplyToEventJson requires a substantive answer type/status, not an ACK or status notice'
+    }
     $context = [ordered]@{}
     foreach ($key in @('agent','agent_uuid','session_id','run_id')) {
         $value = Get-BridgeContractField $replyTo $key
@@ -591,6 +656,9 @@ if ($ReplyToEventJson) {
             $identity = [ordered]@{}
             foreach ($key in @('agent_uuid','session_id','run_id')) {
                 $value = Get-BridgeContractField $seen $key
+                if ($null -ne $value -and $value -isnot [string]) {
+                    throw "Cannot freeze conflicting responder identity for '$target' ($key); obtain a clean current identity event before issuing a new request"
+                }
                 if ($value) { $identity[$key] = $value }
             }
             if ([string]$seen.agent -ceq $target -and $identity.Count -eq 3) { $identities[$target] = [pscustomobject]$identity }
@@ -610,6 +678,7 @@ if ($ReplyToEventJson) {
     try { $event['request_digest'] = [BitConverter]::ToString($hasher.ComputeHash($identityBytes)).Replace('-','').ToLowerInvariant() }
     finally { $hasher.Dispose() }
 }
+Assert-WriterContractEnvelope ([pscustomobject]$event)
 
 function Get-BridgeTargetKey {
     param([AllowNull()] [string] $Targets)
@@ -793,7 +862,7 @@ function New-BridgeV1Mutex {
     if ($forcedFailure -in @('All', $Purpose)) {
         throw "simulated bridge $Purpose mutex construction failure"
     }
-    return New-Object System.Threading.Mutex($false, $Name)
+    return New-BridgeNamedMutex -Name $Name
 }
 
 function Open-BridgeAcceptedQueueDirectoryLease {

@@ -30,6 +30,9 @@ from typing import Any, Literal, Mapping, Protocol
 import uuid
 import warnings
 
+from waggledance.core.bridge_event_schema import validate_event
+from tools.bridge_named_mutex import create_bridge_named_mutex
+
 
 APPEND_MUTEX_NAME = r"Global\WaggleDanceBridgeAppendV1"
 APPEND_MUTEX_TIMEOUT_MS = 10_000
@@ -57,6 +60,8 @@ V1_EVENT_TYPES = frozenset(
         "heartbeat",
         "wake_request",
         "liveness",
+        "triage_disposition",
+        "consumer_tick",
     }
 )
 V1_AGENT_RE = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
@@ -528,6 +533,12 @@ def _event_row_bytes(event: Mapping[str, Any]) -> bytes:
             f"bridge event cannot be serialized as a JSON object: {exc}"
         ) from exc
     validate_v1_replayer_event(event_object)
+    try:
+        validate_event(event_object)
+    except Exception as exc:  # noqa: BLE001 - normalize every schema refusal
+        raise BridgeEventWriteError(
+            f"bridge event schema validation failed: {exc}"
+        ) from exc
     try:
         text = json.dumps(
             event_object,
@@ -1451,6 +1462,8 @@ class WindowsAppendV1Backend:
     WAIT_ABANDONED = 0x00000080
     WAIT_TIMEOUT = 0x00000102
     WAIT_FAILED = 0xFFFFFFFF
+    MUTEX_MODIFY_STATE = 0x00000001
+    SYNCHRONIZE = 0x00100000
 
     def __init__(self) -> None:
         self._supported = os.name == "nt"
@@ -1507,8 +1520,13 @@ class WindowsAppendV1Backend:
             ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION),
         ]
         kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexExW.argtypes = [
+            wintypes.LPVOID,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        kernel32.CreateMutexExW.restype = wintypes.HANDLE
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
@@ -1649,9 +1667,7 @@ class WindowsAppendV1Backend:
 
     def acquire_mutex(self, name: str, timeout_ms: int) -> _WindowsMutex:
         self.ensure_supported()
-        handle = self._kernel32.CreateMutexW(None, False, name)
-        if not handle:
-            self._raise_last_error("CreateMutexW", None)
+        handle = create_bridge_named_mutex(name, kernel32=self._kernel32)
         result = int(self._kernel32.WaitForSingleObject(handle, timeout_ms))
         if result == self.WAIT_OBJECT_0:
             return _WindowsMutex(self, handle, acquired=True, abandoned=False)

@@ -1918,10 +1918,16 @@ function Test-ToolsReadinessTargetsProcess {
         }
         $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
             ConvertFrom-Json -ErrorAction Stop
-        return (
-            [int]$record.pid -eq [int]$Process.ProcessId -and
-            [string]$record.generation -ceq $Generation
-        )
+        # A PID alone can be reused: the record must also name this process's
+        # start time, with the same 2 s tolerance as Test-ToolsReadinessOwnerGone.
+        # A missing or unreadable time on either side throws and proves nothing.
+        if ([int]$record.pid -ne [int]$Process.ProcessId -or
+            [string]$record.generation -cne $Generation) {
+            return $false
+        }
+        $recordedStart = ConvertTo-SupervisorUtc $record.process_start_utc
+        $processStart = ConvertTo-SupervisorUtc $Process.CreationDate
+        return [Math]::Abs(($processStart - $recordedStart).TotalSeconds) -le 2
     }
     catch {
         return $false
@@ -3597,9 +3603,10 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
 
     # Elevated shells are unreadable from this Limited task, so on an operator
     # desktop that runs elevated terminals several opaque hosts are normal. An
-    # opaque host still blocks, except in two provable cases: the readiness
+    # opaque host still blocks, except in three provable cases: the readiness
     # record names exactly one of them (the wrapper is alive but unreadable),
-    # or the recorded wrapper is gone and nothing readable claims the role. A
+    # the recorded wrapper is gone and nothing readable claims the role, or one
+    # readable native-terminal wrapper is ready and holds the role (below). A
     # duplicate that is still starting unseen is refused before native launch
     # by the wrapper's .wd-turn-codex-tools-1.lock and cold-start owner pointer.
     $opaqueReadinessTargets = @(
@@ -3608,7 +3615,24 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
                 -Generation $toolsGeneration -ReadinessPath $readinessPath
         }
     )
-    $opaqueHostsBlock = $opaqueToolsHosts.Count -gt 0 -and -not (
+    # The ready case: one readable, exact native-terminal wrapper whose readiness
+    # is bound to its own PID, start time and generation, with no legacy
+    # consumer and no opaque host named by that record. That wrapper acquired
+    # the lifetime lock before writing readiness and holds it until it exits,
+    # so an unseen duplicate fails at the lock before native launch. Nothing is
+    # launched, stopped or replaced in this state; opaque ownership stays
+    # unverified and is reported, not treated as a conflict. Without this, the
+    # elevated -Auto restore, which is itself opaque here, can never pass its
+    # scheduled-path health proof.
+    $healthyNativeWrapper = (
+        $toolsConversationSurface -ceq 'native_terminal' -and
+        $readyWrapperProcesses.Count -eq 1 -and
+        $exactWrapperProcesses.Count -eq 1 -and
+        $wrapperProcesses.Count -eq 1 -and
+        $legacyConsumers.Count -eq 0 -and
+        $opaqueReadinessTargets.Count -eq 0
+    )
+    $opaqueHostsBlock = $opaqueToolsHosts.Count -gt 0 -and -not $healthyNativeWrapper -and -not (
         $toolsConversationSurface -ceq 'native_terminal' -and
         $opaqueReadinessTargets.Count -eq 0 -and
         $wrapperProcesses.Count -eq 0 -and $legacyConsumers.Count -eq 0 -and
@@ -3616,7 +3640,11 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
             -ReadinessPath $readinessPath)
     )
     if ($opaqueToolsHosts.Count -gt 0 -and -not $opaqueHostsBlock) {
-        $actions.Add("IGNORED $($opaqueToolsHosts.Count) unreadable host(s) for consumer-loop:${toolsAgent}: recorded wrapper is gone")
+        if ($healthyNativeWrapper) {
+            $actions.Add("UNVERIFIED $($opaqueToolsHosts.Count) unreadable host(s) beside ready consumer-loop:${toolsAgent} pid=$([int]$readyWrapperProcesses[0].ProcessId); no process changes")
+        } else {
+            $actions.Add("IGNORED $($opaqueToolsHosts.Count) unreadable host(s) for consumer-loop:${toolsAgent}: recorded wrapper is gone")
+        }
     }
 
     if ($opaqueHostsBlock) {

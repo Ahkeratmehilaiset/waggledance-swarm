@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import uuid
 
 import pytest
 
@@ -22,11 +23,29 @@ from tools.bridge_event_writer import (
     QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS,
     CHECKPOINT_SUFFIX,
     BridgeEventWriteError,
+    V1_EVENT_TYPES,
     WindowsAppendV1Backend,
     _PortableTestBackend,
     _checkpoint_bytes,
     write_bridge_event,
 )
+from waggledance.core.bridge_event_schema import KNOWN_EVENT_TYPES, validate_event
+
+_PRODUCTION_APPEND_MUTEX_NAME = APPEND_MUTEX_NAME
+_PRODUCTION_QUEUE_MUTEX_NAME = QUEUE_PUBLICATION_MUTEX_NAME
+
+
+@pytest.fixture(autouse=True)
+def _isolate_all_writer_mutex_names(monkeypatch):
+    """Even early junction-rejection paths acquire native publication locks."""
+    prefix = "Local\\WdWriterTest-" + uuid.uuid4().hex + "-"
+    for symbol, suffix in (
+        ("APPEND_MUTEX_NAME", "AppendV1"),
+        ("QUEUE_PUBLICATION_MUTEX_NAME", "AcceptedQueuePublicationV1"),
+    ):
+        monkeypatch.setattr(bridge_writer, symbol, prefix + suffix)
+        # Fake backend assertions must observe the same per-test names.
+        monkeypatch.setitem(globals(), symbol, prefix + suffix)
 
 
 def _event(index: int = 1, *, agent: str = "codex") -> dict[str, object]:
@@ -50,6 +69,49 @@ def _event(index: int = 1, *, agent: str = "codex") -> dict[str, object]:
 
 def _canonical(root: Path) -> Path:
     return root / "shared" / "events.jsonl"
+
+
+MODERN_ENVELOPE = {
+    "agent": "codex", "agent_uuid": "11111111-2222-3333-4444-555555555555",
+    "session_id": "current", "run_id": "current", "task_id": "fixture/task",
+    "request_id": "request-1", "request_digest": "a" * 64,
+    "expected_responders": {"claude": {"session_id": "peer"}},
+    "in_reply_to_request_id": "request-0", "in_reply_to_request_digest": "b" * 64,
+    "in_reply_to_requester": {"agent": "claude", "session_id": "peer"},
+}
+
+
+@pytest.mark.parametrize("key", MODERN_ENVELOPE)
+@pytest.mark.parametrize("payload_only", [False, True])
+def test_python_writer_rejects_modern_envelope_poisoning(key, payload_only):
+    event = {**_event(), **MODERN_ENVELOPE}
+    event["payload"] = {key: event[key] if payload_only else "different"}
+    if payload_only:
+        del event[key]
+    with pytest.raises(ValueError, match="payload contract field"):
+        validate_event(event)
+    # Replay admission may reject missing mandatory fields even earlier.
+    with pytest.raises(BridgeEventWriteError):
+        bridge_writer._event_row_bytes(event)
+
+
+@pytest.mark.parametrize("key", MODERN_ENVELOPE)
+def test_python_writer_accepts_matching_envelope_copy_and_nested_observation(key):
+    event = {**_event(), **MODERN_ENVELOPE}
+    event["payload"] = {key: event[key], "result": {"session_id": "observed-peer"}, "nonce": "legacy-nonce"}
+    assert json.loads(bridge_writer._event_row_bytes(event))["payload"] == event["payload"]
+
+
+@pytest.mark.parametrize("key", MODERN_ENVELOPE)
+@pytest.mark.parametrize("location", ["payload", "envelope"])
+@pytest.mark.parametrize("matching", [False, True])
+def test_python_writer_rejects_case_variant_contract_keys(key, location, matching):
+    event = {**_event(), **MODERN_ENVELOPE}
+    event["payload"] = {}
+    destination = event["payload"] if location == "payload" else event
+    destination[key.upper()] = event[key] if matching else "poisoned"
+    with pytest.raises(BridgeEventWriteError):
+        bridge_writer._event_row_bytes(event)
 
 
 def _rows(path: Path) -> list[dict[str, object]]:
@@ -266,6 +328,58 @@ def test_invalid_replayer_shape_refuses_before_root_or_wal_creation(
     assert not _canonical(root).exists()
 
 
+def test_writer_and_schema_event_type_sets_are_in_exact_parity() -> None:
+    assert V1_EVENT_TYPES == KNOWN_EVENT_TYPES
+
+
+def test_python_writer_runs_full_schema_before_wal_creation(tmp_path: Path) -> None:
+    root = tmp_path / "bridge-never-created"
+    event = _event()
+    event.update(
+        agent="grok-scout-1",
+        type="message",
+        status="grok_response",
+        to="codex-lead-1",
+        payload={},
+    )
+
+    with pytest.raises(BridgeEventWriteError, match="grok freshness proof"):
+        write_bridge_event(
+            bridge_root=root,
+            event=event,
+            backend=_PortableTestBackend(),
+        )
+
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("event_type", ["triage_disposition", "consumer_tick"])
+def test_python_writer_accepts_new_validated_types(
+    tmp_path: Path,
+    event_type: str,
+) -> None:
+    root = tmp_path / "bridge"
+    event = _event()
+    event["type"] = event_type
+    if event_type == "triage_disposition":
+        event["status"] = "recorded"
+        event["payload"] = {
+            "disposition": "ack_dispatch",
+            "target_event_id": "event:1",
+        }
+    else:
+        event["status"] = "started"
+
+    result = write_bridge_event(
+        bridge_root=root,
+        event=event,
+        backend=_PortableTestBackend(),
+    )
+
+    assert result.canonical_durable is True
+    assert _rows(_canonical(root))[0]["type"] == event_type
+
+
 @pytest.mark.skipif(os.name == "nt", reason="production backend is supported on Windows")
 def test_production_backend_fails_closed_off_windows_before_creation(
     tmp_path: Path,
@@ -292,6 +406,121 @@ class _WalObservationBackend(_PortableTestBackend):
             assert pending[0].read_bytes() == _event_bytes()
             self.saw_durable_pending_before_wait = True
         return super().acquire_mutex(name, timeout_ms)
+
+
+@pytest.mark.parametrize("wait_result, acquired, abandoned", [
+    (WindowsAppendV1Backend.WAIT_OBJECT_0, True, False),
+    (WindowsAppendV1Backend.WAIT_ABANDONED, True, True),
+    (WindowsAppendV1Backend.WAIT_TIMEOUT, False, False),
+])
+def test_windows_mutex_requests_only_wait_and_release_rights(
+    wait_result: int, acquired: bool, abandoned: bool, monkeypatch,
+) -> None:
+    class Kernel:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        def CreateMutexExW(self, attributes, name, flags, access):
+            self.calls.append(("create", attributes, name, flags, access))
+            return 123
+
+        def WaitForSingleObject(self, handle, timeout):
+            self.calls.append(("wait", handle, timeout))
+            return wait_result
+
+        def CloseHandle(self, handle):
+            self.calls.append(("close", handle))
+            return True
+
+    backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
+    backend._supported = True
+    backend._kernel32 = Kernel()
+    monkeypatch.setattr(
+        bridge_writer, "create_bridge_named_mutex",
+        lambda name, *, kernel32: kernel32.CreateMutexExW(None, name, 0, 0x00100001),
+    )
+    mutex = backend.acquire_mutex(r"Global\WaggleDanceBridgeMutexUnitUnique", 1234)
+    assert (mutex.acquired, mutex.abandoned) == (acquired, abandoned)
+    mutex.close()
+    assert backend._kernel32.calls == [
+        ("create", None, r"Global\WaggleDanceBridgeMutexUnitUnique", 0, 0x00100001),
+        ("wait", 123, 1234),
+        ("close", 123),
+    ]
+
+
+@pytest.mark.parametrize("wait_result", [WindowsAppendV1Backend.WAIT_FAILED, 0x12345678])
+def test_windows_mutex_closes_handle_on_wait_error(wait_result: int, monkeypatch) -> None:
+    class Kernel:
+        def __init__(self) -> None:
+            self.closed: list[int] = []
+
+        def CreateMutexExW(self, attributes, name, flags, access):
+            return 456
+
+        def WaitForSingleObject(self, handle, timeout):
+            return wait_result
+
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+            return True
+
+    backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
+    backend._supported = True
+    backend._kernel32 = Kernel()
+    monkeypatch.setattr(
+        bridge_writer, "create_bridge_named_mutex",
+        lambda name, *, kernel32: kernel32.CreateMutexExW(None, name, 0, 0x00100001),
+    )
+
+    def raise_error(operation, path):
+        # The backend is a fake on Linux, where ctypes has no Win32 error API.
+        raise OSError(5, operation)
+
+    backend._raise_last_error = raise_error
+    with pytest.raises(OSError):
+        backend.acquire_mutex("unique-test-mutex", 0)
+    assert backend._kernel32.closed == [456]
+
+
+def test_windows_mutex_creation_error_does_not_wait_or_close(monkeypatch) -> None:
+    class Kernel:
+        def CreateMutexExW(self, attributes, name, flags, access):
+            return 0
+
+        def WaitForSingleObject(self, handle, timeout):
+            pytest.fail("failed creation must not wait")
+
+        def CloseHandle(self, handle):
+            pytest.fail("failed creation has no handle to close")
+
+    backend = WindowsAppendV1Backend.__new__(WindowsAppendV1Backend)
+    backend._supported = True
+    backend._kernel32 = Kernel()
+    def denied(name, *, kernel32):
+        assert kernel32.CreateMutexExW(None, name, 0, 0x00100001) == 0
+        raise OSError("CreateMutexExW")
+    monkeypatch.setattr(bridge_writer, "create_bridge_named_mutex", denied)
+    with pytest.raises(OSError, match="CreateMutexExW"):
+        backend.acquire_mutex("unique-test-mutex", 0)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires real Win32 named mutexes")
+def test_windows_mutex_reopens_existing_unique_name() -> None:
+    backend = WindowsAppendV1Backend()
+    name = rf"Local\WaggleDanceBridgeMutexTest-{uuid.uuid4().hex}"
+    first = backend.acquire_mutex(name, 0)
+    try:
+        assert first.acquired and not first.abandoned
+        second = backend.acquire_mutex(name, 0)
+        try:
+            assert second.acquired and not second.abandoned
+        finally:
+            second.release()
+            second.close()
+    finally:
+        first.release()
+        first.close()
 
 
 class _AcceptedPublishObservationBackend(_PortableTestBackend):
@@ -340,11 +569,11 @@ def test_pending_wal_is_durable_before_wait_and_clean_success_removes_it(
         (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
         (APPEND_MUTEX_NAME, APPEND_MUTEX_TIMEOUT_MS),
     ]
-    assert QUEUE_PUBLICATION_MUTEX_NAME == (
+    assert _PRODUCTION_QUEUE_MUTEX_NAME == (
         r"Global\WaggleDanceBridgeAcceptedQueuePublicationV1"
     )
     assert QUEUE_PUBLICATION_MUTEX_TIMEOUT_MS == 10_000
-    assert APPEND_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
+    assert _PRODUCTION_APPEND_MUTEX_NAME == r"Global\WaggleDanceBridgeAppendV1"
     assert APPEND_MUTEX_TIMEOUT_MS == 10_000
     assert result.delivery_status == "canonical"
     assert result.canonical_durable is True
@@ -897,6 +1126,7 @@ def test_acceptance_unknown_markerless_pending_never_auto_replays(tmp_path: Path
                 in script_text
             )
         (isolated_bin / script_name).write_text(script_text, encoding="utf-8")
+    shutil.copy2(source_bin / "BridgeNamedMutex.ps1", isolated_bin)
     drain = isolated_bin / "Drain-AcceptedBridgeQueue.ps1"
     completed = subprocess.run(
         [
@@ -1107,14 +1337,23 @@ def test_windows_python_and_powershell_writers_handoff_on_same_contract(
     if shell is None:
         pytest.skip("PowerShell is unavailable")
     root = tmp_path / "bridge"
+    prefix = "Local\\WdHandoffTest-" + uuid.uuid4().hex + "-"
+    monkeypatch.setattr(bridge_writer, "APPEND_MUTEX_NAME", prefix + "AppendV1")
+    monkeypatch.setattr(bridge_writer, "QUEUE_PUBLICATION_MUTEX_NAME", prefix + "AcceptedQueuePublicationV1")
     write_bridge_event(
         bridge_root=root,
         event=_event(1),
         write_sidecars=False,
         backend=WindowsAppendV1Backend(),
     )
-    script = Path(__file__).resolve().parents[2] / ".agent-bridge" / "bin" / "Write-AgentEvent.ps1"
-    env = os.environ.copy()
+    code = tmp_path / "fixture-bin"
+    shutil.copytree(Path(__file__).resolve().parents[2] / ".agent-bridge/bin", code)
+    for path in code.glob("*.ps1"):
+        source = path.read_text(encoding="utf-8-sig")
+        if "Global\\WaggleDanceBridge" in source:
+            path.write_text(source.replace("Global\\WaggleDanceBridge", prefix), encoding="utf-8-sig")
+    script = code / "Write-AgentEvent.ps1"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENT_BRIDGE_", "WD_BRIDGE_"))}
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)
     env["AGENT_BRIDGE_TEST_FAIL_ON_FULL_VALIDATION"] = "1"
     completed = subprocess.run(
@@ -1208,8 +1447,11 @@ def test_windows_writer_queues_without_mutating_hardlinked_canonical(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows kernel32 concurrency probe")
-def test_windows_backend_serializes_two_python_writers(tmp_path: Path) -> None:
+def test_windows_backend_serializes_two_python_writers(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "bridge"
+    prefix = "Local\\WdConcurrentWriterTest-" + uuid.uuid4().hex + "-"
+    monkeypatch.setattr(bridge_writer, "APPEND_MUTEX_NAME", prefix + "AppendV1")
+    monkeypatch.setattr(bridge_writer, "QUEUE_PUBLICATION_MUTEX_NAME", prefix + "AcceptedQueuePublicationV1")
 
     def emit(index: int) -> None:
         write_bridge_event(

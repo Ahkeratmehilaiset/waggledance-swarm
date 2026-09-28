@@ -18,6 +18,28 @@ from waggledance.core.work_queue import (
 )
 
 
+_IDENTITY_ENV = (
+    "AGENT_BRIDGE_AGENT",
+    "AGENT_BRIDGE_OWNER_SESSION_ID",
+    "AGENT_BRIDGE_OWNER_TOKEN",
+    "AGENT_BRIDGE_RUN_ID",
+    "AGENT_BRIDGE_OWNER_PID",
+    "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts identity-less and bound to no agent label.
+
+    A lane shell carries its own label and owner identity; without this the
+    suite's result would depend on who runs it. Tests that need an owner or a
+    bound privileged label set it explicitly.
+    """
+    for name in _IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _now() -> datetime:
     return datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -110,14 +132,20 @@ def test_apply_archives_legacy_powershell_namespaced_claim_file(
     assert list_claims(bridge_root=bridge) == []
 
 
-def test_fresh_heartbeat_is_not_archived(tmp_path: Path) -> None:
+def test_fresh_heartbeat_is_not_archived(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B7: only the claim's owner may heartbeat it, so the claim needs one.
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "test-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "test-token")
     bridge = tmp_path / ".agent-bridge"
-    claim_task(
+    claim = claim_task(
         agent="claude-1",
         task_id="task-fresh",
         summary="recent",
         bridge_root=bridge,
     )
+    assert claim.owner_session_id == "test-session"
     heartbeat(
         agent="claude-1",
         task_id="task-fresh",
@@ -134,21 +162,41 @@ def test_fresh_heartbeat_is_not_archived(tmp_path: Path) -> None:
     assert (bridge / "work_queue" / "claims" / "task-fresh.json").exists()
 
 
-def test_operator_and_system_claims_are_never_archived(tmp_path: Path) -> None:
+def test_operator_and_system_claims_are_never_archived(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bridge = tmp_path / ".agent-bridge"
     assert PRIVILEGED_AGENTS == frozenset({"operator", "system"})
+    # A reserved label needs a session explicitly bound to it.
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "operator")
     claim_task(
         agent="operator",
         task_id="task-priv-op",
         summary="operator owned",
         bridge_root=bridge,
     )
+    # system has no public claim authority even when bound, so the fixture
+    # relabels a writer-produced claim file instead.
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "system")
+    with pytest.raises(WorkQueueError, match="no public bridge authority"):
+        claim_task(
+            agent="system",
+            task_id="task-priv-sys",
+            summary="system owned",
+            bridge_root=bridge,
+        )
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "claude-1")
     claim_task(
-        agent="system",
+        agent="claude-1",
         task_id="task-priv-sys",
         summary="system owned",
         bridge_root=bridge,
     )
+    system_file = bridge / "work_queue" / "claims" / "task-priv-sys.json"
+    payload = json.loads(system_file.read_text(encoding="utf-8"))
+    payload["agent"] = "system"
+    system_file.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.delenv("AGENT_BRIDGE_AGENT")
     archived = archive_stale_claims(
         bridge_root=bridge,
         now_utc=_stale_now(),

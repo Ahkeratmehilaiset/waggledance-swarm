@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -9,13 +13,37 @@ from waggledance.core.work_queue import (
     DEFAULT_LEASE_SECONDS,
     Claim,
     WorkQueueError,
+    archive_stale_claims,
     check_scope_overlap,
     claim_task,
+    current_owner_identity,
     detect_stale_claims,
     heartbeat,
     list_claims,
     release_task,
 )
+
+_IDENTITY_ENV = (
+    "AGENT_BRIDGE_AGENT",
+    "AGENT_BRIDGE_OWNER_SESSION_ID",
+    "AGENT_BRIDGE_OWNER_TOKEN",
+    "AGENT_BRIDGE_RUN_ID",
+    "AGENT_BRIDGE_OWNER_PID",
+    "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_owner_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs as one known B7 owner, bound to no agent label.
+
+    A lane shell carries its own owner identity and label; without this the
+    suite's result would depend on who runs it.
+    """
+    for name in _IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "test-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "test-token")
 
 
 def test_claim_creates_persistent_claim_file(tmp_path: Path) -> None:
@@ -617,3 +645,426 @@ def test_default_lease_seconds_applied(tmp_path: Path) -> None:
     )
     claimed = datetime.fromisoformat(claim.claimed_at_utc.replace("Z", "+00:00"))
     assert expires - claimed == timedelta(seconds=DEFAULT_LEASE_SECONDS)
+
+
+# -- B7 owner parity (P2) -------------------------------------------------
+# Each refusal has a same-owner or same-label success twin, so a refusal
+# cannot pass just because the operation is broken outright.
+
+TEST_TOKEN_SHA = hashlib.sha256(b"test-token").hexdigest()
+
+
+def _as_session(monkeypatch: pytest.MonkeyPatch, session: str, token: str) -> None:
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", session)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", token)
+
+
+def _without_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("AGENT_BRIDGE_OWNER_SESSION_ID", "AGENT_BRIDGE_OWNER_TOKEN", "AGENT_BRIDGE_RUN_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _claims_dir(bridge: Path) -> Path:
+    path = bridge / "work_queue" / "claims"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_raw_claim(path: Path, **fields: object) -> None:
+    now = "2026-09-28T00:00:00Z"
+    payload: dict[str, object] = {
+        "agent": "codex",
+        "summary": "raw claim",
+        "mode": "read-only",
+        "write_scope": [],
+        "run_id": "",
+        "claimed_at_utc": now,
+        "last_heartbeat_utc": now,
+        "lease_seconds": 900,
+    }
+    payload.update(fields)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _task_ids(claims: Path) -> list[str]:
+    return sorted(json.loads(p.read_text(encoding="utf-8"))["task_id"] for p in claims.glob("*.json"))
+
+
+def test_claim_records_owner_identity_hash_not_token(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="codex", task_id="own-fields", summary="x", bridge_root=bridge)
+    data = json.loads((_claims_dir(bridge) / "own-fields.json").read_text(encoding="utf-8"))
+    assert data["owner_session_id"] == "test-session"
+    assert data["owner_token_sha256"] == TEST_TOKEN_SHA
+    assert "owner_identity" not in data
+    assert "test-token" not in json.dumps(data)
+
+
+def test_claim_without_identity_is_marked_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _without_identity(monkeypatch)
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="codex", task_id="no-id", summary="x", bridge_root=bridge)
+    data = json.loads((_claims_dir(bridge) / "no-id.json").read_text(encoding="utf-8"))
+    assert data["owner_identity"] == "none"
+    assert "owner_session_id" not in data and "owner_token_sha256" not in data
+
+
+def test_owner_identity_precedence_matches_powershell() -> None:
+    token = {"AGENT_BRIDGE_OWNER_TOKEN": "t"}
+    sha = hashlib.sha256(b"t").hexdigest()
+    own = current_owner_identity({**token, "AGENT_BRIDGE_OWNER_SESSION_ID": "own"})
+    run = current_owner_identity({**token, "AGENT_BRIDGE_RUN_ID": "run"})
+    same = current_owner_identity({**token, "AGENT_BRIDGE_OWNER_SESSION_ID": "s", "AGENT_BRIDGE_RUN_ID": "s"})
+    assert own is not None and own.owner_session_id == "own"
+    assert run is not None and run.owner_session_id == "run"
+    assert same is not None and same.owner_token_sha256 == sha
+    assert current_owner_identity({**token, "AGENT_BRIDGE_OWNER_SESSION_ID": "a", "AGENT_BRIDGE_RUN_ID": "b"}) is None
+    assert current_owner_identity({"AGENT_BRIDGE_OWNER_SESSION_ID": "own"}) is None
+
+
+def test_same_label_other_session_cannot_refresh_or_force_take_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="codex", task_id="o1", summary="owner A", bridge_root=bridge)
+    _as_session(monkeypatch, "session-b", "token-b")
+    for force in (False, True):
+        with pytest.raises(WorkQueueError, match="held by another session"):
+            claim_task(agent="codex", task_id="o1", summary="takeover", bridge_root=bridge, force=force)
+    data = json.loads((_claims_dir(bridge) / "o1.json").read_text(encoding="utf-8"))
+    assert data["summary"] == "owner A" and data["owner_token_sha256"] == TEST_TOKEN_SHA
+
+    _as_session(monkeypatch, "test-session", "test-token")
+    refreshed = claim_task(agent="codex", task_id="o1", summary="refresh by A", bridge_root=bridge, force=True)
+    assert refreshed.summary == "refresh by A"
+    assert refreshed.owner_token_sha256 == TEST_TOKEN_SHA
+
+
+def test_bound_session_cannot_act_under_another_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-2")
+    claim_task(agent="codex-2", task_id="o3", summary="own label", bridge_root=bridge)
+
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-lead-1")
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        claim_task(agent="codex-2", task_id="o3-other", summary="x", bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        heartbeat(agent="codex-2", task_id="o3", bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="identity_mismatch"):
+        release_task(agent="codex-2", task_id="o3", bridge_root=bridge)
+    assert _task_ids(_claims_dir(bridge)) == ["o3"]
+
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "codex-2")
+    heartbeat(agent="codex-2", task_id="o3", bridge_root=bridge)
+    release_task(agent="codex-2", task_id="o3", bridge_root=bridge)
+    assert _task_ids(_claims_dir(bridge)) == []
+
+
+def test_reserved_labels_need_a_bound_session_and_never_take_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="codex", task_id="o2", summary="owner A", bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="reserved agent 'operator'"):
+        claim_task(agent="operator", task_id="o2-op", summary="x", bridge_root=bridge)
+
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "operator")
+    claim_task(agent="operator", task_id="o2-op", summary="bound operator", bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="force claim across agents refused"):
+        claim_task(agent="operator", task_id="o2", summary="takeover", bridge_root=bridge, force=True)
+    assert json.loads((_claims_dir(bridge) / "o2.json").read_text(encoding="utf-8"))["agent"] == "codex"
+
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", "system")
+    with pytest.raises(WorkQueueError, match="no public bridge authority"):
+        claim_task(agent="system", task_id="o2-sys", summary="x", bridge_root=bridge)
+
+
+def test_heartbeat_extends_only_the_owning_sessions_claim_and_keeps_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    path = _claims_dir(bridge) / "o5.json"
+    _write_raw_claim(
+        path,
+        task_id="o5",
+        owner_session_id="test-session",
+        owner_token_sha256=TEST_TOKEN_SHA,
+        resources=["repo:tests/x"],
+        git_branch="feature/x",
+        owner_pid=1234,
+    )
+    before = path.read_text(encoding="utf-8")
+
+    _as_session(monkeypatch, "session-b", "token-b")
+    with pytest.raises(WorkQueueError, match="only the owning session"):
+        heartbeat(agent="codex", task_id="o5", bridge_root=bridge)
+    _without_identity(monkeypatch)
+    with pytest.raises(WorkQueueError, match="only the owning session"):
+        heartbeat(agent="codex", task_id="o5", bridge_root=bridge)
+    assert path.read_text(encoding="utf-8") == before
+
+    _as_session(monkeypatch, "test-session", "test-token")
+    later = datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)
+    refreshed = heartbeat(agent="codex", task_id="o5", bridge_root=bridge, now_utc=later)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert refreshed.last_heartbeat_utc == "2026-09-28T01:00:00Z"
+    assert data["last_heartbeat_utc"] == "2026-09-28T01:00:00Z"
+    assert data["owner_session_id"] == "test-session"
+    assert data["owner_token_sha256"] == TEST_TOKEN_SHA
+    assert data["resources"] == ["repo:tests/x"]
+    assert data["git_branch"] == "feature/x"
+    assert data["owner_pid"] == 1234
+
+
+def test_identityless_claim_is_never_extended(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _without_identity(monkeypatch)
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="codex", task_id="no-id-beat", summary="x", bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="only the owning session"):
+        heartbeat(agent="codex", task_id="no-id-beat", bridge_root=bridge)
+
+
+def test_owned_claim_is_released_only_by_its_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claim_task(agent="codex", task_id="o5-rel", summary="owner A", bridge_root=bridge)
+    _as_session(monkeypatch, "session-b", "token-b")
+    with pytest.raises(WorkQueueError, match="owned by another session"):
+        release_task(agent="codex", task_id="o5-rel", bridge_root=bridge, allow_legacy_unowned_claim=True)
+    _without_identity(monkeypatch)
+    with pytest.raises(WorkQueueError, match="owned by another session"):
+        release_task(agent="codex", task_id="o5-rel", bridge_root=bridge, allow_legacy_unowned_claim=True)
+    assert _task_ids(_claims_dir(bridge)) == ["o5-rel"]
+
+    _as_session(monkeypatch, "test-session", "test-token")
+    release_task(agent="codex", task_id="o5-rel", bridge_root=bridge)
+    assert _task_ids(_claims_dir(bridge)) == []
+
+
+def test_none_marked_claim_label_release_only_for_identityless_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    _without_identity(monkeypatch)
+    claim_task(agent="codex", task_id="none-a", summary="x", bridge_root=bridge)
+    claim_task(agent="codex", task_id="none-b", summary="x", bridge_root=bridge)
+
+    _as_session(monkeypatch, "test-session", "test-token")
+    with pytest.raises(WorkQueueError, match="no owner identity"):
+        release_task(agent="codex", task_id="none-a", bridge_root=bridge)
+    release_task(agent="codex", task_id="none-b", bridge_root=bridge, allow_legacy_unowned_claim=True)
+
+    _without_identity(monkeypatch)
+    release_task(agent="codex", task_id="none-a", bridge_root=bridge)
+    assert _task_ids(_claims_dir(bridge)) == []
+
+
+def test_unmarked_pre_b7_claim_needs_explicit_adoption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_identity(monkeypatch)
+    bridge = tmp_path / ".agent-bridge"
+    path = _claims_dir(bridge) / "legacy.json"
+    _write_raw_claim(path, task_id="legacy")
+    with pytest.raises(WorkQueueError, match="pre-B7 claim"):
+        release_task(agent="codex", task_id="legacy", bridge_root=bridge)
+    assert path.exists()
+    release_task(agent="codex", task_id="legacy", bridge_root=bridge, allow_legacy_unowned_claim=True)
+    assert not path.exists()
+
+
+def test_colliding_task_id_never_touches_another_tasks_claim(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    ps_path = _claims_dir(bridge) / "own_9.json"  # the PowerShell name for task own/9
+    _write_raw_claim(ps_path, task_id="own/9", owner_session_id="test-session", owner_token_sha256=TEST_TOKEN_SHA)
+    before = ps_path.read_text(encoding="utf-8")
+
+    with pytest.raises(WorkQueueError, match="no active claim"):
+        release_task(agent="codex", task_id="own_9", bridge_root=bridge)
+    with pytest.raises(WorkQueueError, match="no active claim"):
+        heartbeat(agent="codex", task_id="own_9", bridge_root=bridge)
+    assert ps_path.read_text(encoding="utf-8") == before
+
+    for force in (False, True):
+        claim_task(agent="codex", task_id="own_9", summary="underscore task", bridge_root=bridge, force=force)
+    assert _task_ids(_claims_dir(bridge)) == ["own/9", "own_9"]
+    assert ps_path.read_text(encoding="utf-8") == before
+
+    release_task(agent="codex", task_id="own/9", bridge_root=bridge)
+    release_task(agent="codex", task_id="own_9", bridge_root=bridge)
+    assert _task_ids(_claims_dir(bridge)) == []
+
+
+def _write_session_beat(bridge: Path, session: str, token_sha: str, beat_utc: str, *, raw: str | None = None) -> Path:
+    digest = hashlib.sha256(f"{session}\n{token_sha}".encode("utf-8")).hexdigest()
+    path = bridge / "work_queue" / "heartbeats" / f"{digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if raw is not None:
+        path.write_text(raw, encoding="utf-8")
+    else:
+        path.write_text(
+            json.dumps({
+                "owner_session_id": session,
+                "owner_token_sha256": token_sha,
+                "last_beat_utc": beat_utc,
+                "ttl_seconds": 180,
+            }),
+            encoding="utf-8",
+        )
+    return path
+
+
+SWEEP_NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+
+
+def _owned_expired_claim(bridge: Path, task: str) -> Path:
+    path = _claims_dir(bridge) / f"{task}.json"
+    old = "2026-09-28T10:00:00Z"
+    _write_raw_claim(
+        path,
+        task_id=task,
+        claimed_at_utc=old,
+        last_heartbeat_utc=old,
+        lease_seconds=60,
+        claim_lease_expires_utc="2026-09-28T10:01:00Z",
+        owner_session_id="test-session",
+        owner_token_sha256=TEST_TOKEN_SHA,
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("beat", "kept"),
+    [
+        ("live", True),
+        ("unreadable", True),
+        ("other-owner", True),
+        ("stale", False),
+        ("absent", False),
+        ("future", False),
+    ],
+)
+def test_python_sweeper_keeps_owned_claims_it_cannot_prove_abandoned(
+    tmp_path: Path, beat: str, kept: bool
+) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    path = _owned_expired_claim(bridge, "sweep-owned")
+    if beat == "live":
+        _write_session_beat(bridge, "test-session", TEST_TOKEN_SHA, "2026-09-28T11:59:00Z")
+    elif beat == "unreadable":
+        _write_session_beat(bridge, "test-session", TEST_TOKEN_SHA, "", raw="{not json")
+    elif beat == "other-owner":
+        beat_path = _write_session_beat(bridge, "test-session", TEST_TOKEN_SHA, "2026-09-28T11:00:00Z")
+        beat_path.write_text(
+            json.dumps({
+                "owner_session_id": "someone-else",
+                "owner_token_sha256": TEST_TOKEN_SHA,
+                "last_beat_utc": "2026-09-28T11:00:00Z",
+            }),
+            encoding="utf-8",
+        )
+    elif beat == "stale":
+        _write_session_beat(bridge, "test-session", TEST_TOKEN_SHA, "2026-09-28T11:00:00Z")
+    elif beat == "future":
+        _write_session_beat(bridge, "test-session", TEST_TOKEN_SHA, "2026-09-28T13:00:00Z")
+
+    archived = archive_stale_claims(bridge_root=bridge, now_utc=SWEEP_NOW, max_age_seconds=60, apply=True)
+    assert path.exists() is kept
+    assert len(archived) == (0 if kept else 1)
+
+
+def test_python_sweeper_keeps_owned_claim_whose_lease_has_not_expired(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    path = _claims_dir(bridge) / "sweep-lease.json"
+    _write_raw_claim(
+        path,
+        task_id="sweep-lease",
+        claimed_at_utc="2026-09-28T10:00:00Z",
+        last_heartbeat_utc="2026-09-28T10:00:00Z",
+        lease_seconds=60,
+        claim_lease_expires_utc="2026-09-28T13:00:00Z",
+        owner_session_id="test-session",
+        owner_token_sha256=TEST_TOKEN_SHA,
+    )
+    assert archive_stale_claims(bridge_root=bridge, now_utc=SWEEP_NOW, max_age_seconds=60, apply=True) == []
+    assert path.exists()
+
+
+def test_python_sweeper_removes_only_the_exact_stale_claim_file(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    stale = _claims_dir(bridge) / "own_7.json"  # the PowerShell name for task own/7
+    _write_raw_claim(
+        stale,
+        task_id="own/7",
+        claimed_at_utc="2026-09-28T10:00:00Z",
+        last_heartbeat_utc="2026-09-28T10:00:00Z",
+        owner_identity="none",
+    )
+    claim_task(agent="codex", task_id="own_7", summary="fresh", bridge_root=bridge, now_utc=SWEEP_NOW)
+    archived = archive_stale_claims(bridge_root=bridge, now_utc=SWEEP_NOW, max_age_seconds=60, apply=True)
+    assert [a.claim.task_id for a in archived] == ["own/7"]
+    assert not stale.exists()
+    assert _task_ids(_claims_dir(bridge)) == ["own_7"]
+
+
+def test_python_sweeper_never_deletes_a_successor_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import waggledance.core.work_queue as wq
+
+    bridge = tmp_path / ".agent-bridge"
+    path = _claims_dir(bridge) / "succ.json"
+    _write_raw_claim(
+        path,
+        task_id="succ",
+        claimed_at_utc="2026-09-28T10:00:00Z",
+        last_heartbeat_utc="2026-09-28T10:00:00Z",
+        owner_identity="none",
+    )
+    snapshot = wq._list_claim_entries(_claims_dir(bridge))
+    _write_raw_claim(path, task_id="succ", summary="successor", owner_identity="none")
+    monkeypatch.setattr(wq, "_list_claim_entries", lambda claims_dir: snapshot)
+
+    assert archive_stale_claims(bridge_root=bridge, now_utc=SWEEP_NOW, max_age_seconds=60, apply=True) == []
+    assert json.loads(path.read_text(encoding="utf-8"))["summary"] == "successor"
+
+
+def _powershell() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _python_find(claims: Path, task_id: str) -> Path | None:
+    import waggledance.core.work_queue as wq
+
+    found = wq._find_claim(claims, task_id)
+    return None if found is None else found[0]
+
+
+@pytest.mark.skipif(_powershell() is None, reason="PowerShell is not available")
+def test_heartbeat_path_and_claim_lookup_match_powershell(tmp_path: Path) -> None:
+    bridge = tmp_path / ".agent-bridge"
+    claims = _claims_dir(bridge)
+    _write_raw_claim(claims / "own_9.json", task_id="own/9")
+    helper = Path(__file__).resolve().parents[2] / ".agent-bridge" / "bin" / "ClaimLeaseHeartbeat.ps1"
+    script = (
+        f". '{helper}'\n"
+        f"$hb = Get-BridgeSessionHeartbeatPath -Root '{bridge}' -SessionId 'wd-run' -TokenSha256 '{TEST_TOKEN_SHA}'\n"
+        f"$hit = Find-BridgeClaimFile -ClaimsDir '{claims}' -TaskId 'own/9'\n"
+        f"$miss = Find-BridgeClaimFile -ClaimsDir '{claims}' -TaskId 'own_9'\n"
+        "[pscustomobject]@{ hb = $hb; hit = $hit; miss = [string]$miss } | ConvertTo-Json -Compress\n"
+    )
+    completed = subprocess.run(
+        [_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    expected = hashlib.sha256(f"wd-run\n{TEST_TOKEN_SHA}".encode("utf-8")).hexdigest()
+    assert Path(result["hb"]) == bridge / "work_queue" / "heartbeats" / f"{expected}.json"
+    assert Path(result["hit"]) == claims / "own_9.json"
+    assert result["miss"] == ""
+    assert _python_find(claims, "own/9") == claims / "own_9.json"
+    assert _python_find(claims, "own_9") is None

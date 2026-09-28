@@ -4,8 +4,28 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tools.work_queue import main
 from waggledance.core.work_queue import claim_task
+
+_IDENTITY_ENV = (
+    "AGENT_BRIDGE_AGENT",
+    "AGENT_BRIDGE_OWNER_SESSION_ID",
+    "AGENT_BRIDGE_OWNER_TOKEN",
+    "AGENT_BRIDGE_RUN_ID",
+    "AGENT_BRIDGE_OWNER_PID",
+    "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_owner_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs as one known B7 owner, bound to no agent label."""
+    for name in _IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_SESSION_ID", "test-session")
+    monkeypatch.setenv("AGENT_BRIDGE_OWNER_TOKEN", "test-token")
 
 
 def _run(capsys, *args: str) -> tuple[int, dict]:

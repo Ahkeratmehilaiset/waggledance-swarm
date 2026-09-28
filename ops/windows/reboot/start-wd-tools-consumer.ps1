@@ -24,10 +24,34 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# A lane must never inherit another Claude Code session's identity. Started from an
+# agent's tool shell, these markers make Claude Code treat an interactive lane as a
+# nested child session that writes no transcript and no sessions/<pid>.json
+# (claude-rco-1, 2026-09-27). They also hand that session's peer pipe and token to
+# every lane process. They are removed before anything is started. Only the names
+# are reported, never the values. Operator configuration such as
+# CLAUDE_CODE_DISABLE_CRON or a provider variable is left alone.
+function Clear-WdInheritedClaudeSessionMarkers {
+  $removed = @()
+  foreach ($name in @('CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID',
+      'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_EXECPATH',
+      'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN')) {
+    if (Test-Path -LiteralPath "Env:$name") {
+      # Remove-Item deletes it in both shells; [Environment]::SetEnvironmentVariable
+      # with $null leaves an empty variable under PowerShell 7 ($null becomes '').
+      Remove-Item -LiteralPath "Env:$name"
+      $removed += $name
+    }
+  }
+  return $removed
+}
+$script:WdScrubbedClaudeMarkers = @(Clear-WdInheritedClaudeSessionMarkers)
 $script:WdGitExecutable = ''
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
 }
+if ($script:WdScrubbedClaudeMarkers.Count) { Write-Host ("  scrubbed: inherited Claude session markers {0}" -f ($script:WdScrubbedClaudeMarkers -join ', ')) }
 
 function Get-RequiredText {
     param(
@@ -944,6 +968,8 @@ function Assert-ToolsBootstrapIntegrity {
     }
     foreach ($requiredLeaf in @(
             'AgentBridgeSessionIdentity.ps1',
+        'ClaimLeaseHeartbeat.ps1',
+        'BridgeNamedMutex.ps1',
             'BridgeIncrementalReader.ps1',
             'BridgeLogReader.ps1',
             'Drain-AcceptedBridgeQueue.ps1',

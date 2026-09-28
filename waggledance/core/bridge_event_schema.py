@@ -47,6 +47,8 @@ KNOWN_EVENT_TYPES = frozenset(
         "status",
         "test",
         "wake_request",
+        "triage_disposition",
+        "consumer_tick",
     }
 )
 KNOWN_ACK_STATUSES = frozenset({"acknowledged", "received", "seen"})
@@ -98,6 +100,52 @@ class BridgeEvent(BaseModel):
     in_reply_to_request_digest: StrictStr | None = None
     in_reply_to_requester: dict[str, StrictStr] | None = None
     expected_responders: dict[str, dict[str, StrictStr]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _payload_cannot_override_envelope(cls, value: Any) -> Any:
+        # Check raw presence before model defaults can manufacture an envelope.
+        if not isinstance(value, Mapping):
+            return value
+        contract_keys = (
+            "agent", "agent_uuid", "session_id", "run_id", "task_id",
+            "request_id", "request_digest", "expected_responders",
+            "in_reply_to_request_id", "in_reply_to_request_digest",
+            "in_reply_to_requester",
+        )
+        canonical_keys = {key.casefold(): key for key in cls.model_fields}
+        payload = value.get("payload")
+        # PowerShell's property lookup ignores case. Refuse alternate spellings
+        # and case-duplicates at the two parser-visible levels. Nested result
+        # objects remain application data, not bridge envelope fields.
+        for fields in (value, payload):
+            if not isinstance(fields, Mapping):
+                continue
+            seen: set[str] = set()
+            for key in fields:
+                if not isinstance(key, str):
+                    continue
+                folded = key.casefold()
+                if folded in seen:
+                    raise ValueError(f"duplicate case-insensitive bridge field {key}")
+                seen.add(folded)
+                if folded in canonical_keys and key != canonical_keys[folded]:
+                    raise ValueError(f"bridge field {key} requires canonical lower-case spelling")
+        if not isinstance(payload, Mapping):
+            return value
+        for key in contract_keys:
+            if key not in value["payload"]:
+                continue
+            if key not in value:
+                raise ValueError(f"payload contract field {key} requires top-level field")
+            try:
+                top = json.dumps(value[key], sort_keys=True, separators=(",", ":"), allow_nan=False)
+                nested = json.dumps(value["payload"][key], sort_keys=True, separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"payload contract field {key} is not canonical JSON") from exc
+            if top != nested:
+                raise ValueError(f"payload contract field {key} conflicts with top-level field")
+        return value
 
     @field_validator("request_id", "in_reply_to_request_id")
     @classmethod
@@ -202,8 +250,38 @@ class BridgeEvent(BaseModel):
             and not self.task_id.strip()
         ):
             raise ValueError("ack message requires task_id")
+        self._validate_triage_disposition()
         self._validate_grok_review_freshness()
         return self
+
+    def _validate_triage_disposition(self) -> None:
+        if self.type != "triage_disposition":
+            return
+        if not self.task_id.strip():
+            raise ValueError("triage_disposition requires task_id")
+        if self.status != "recorded":
+            raise ValueError("triage_disposition status must be recorded")
+        if not isinstance(self.payload, Mapping):
+            raise ValueError("triage_disposition payload must be an object")
+        disposition = self.payload.get("disposition")
+        if not isinstance(disposition, str) or disposition not in {"ack_dispatch", "defer"}:
+            raise ValueError(
+                "triage_disposition payload.disposition must be "
+                "ack_dispatch or defer"
+            )
+        target_event_id = self.payload.get("target_event_id")
+        if not _is_nonempty_single_line(target_event_id):
+            raise ValueError(
+                "triage_disposition payload.target_event_id must be "
+                "non-empty single-line text"
+            )
+        if disposition == "defer":
+            for field_name in ("reason", "next_condition"):
+                if not _is_nonempty_single_line(self.payload.get(field_name)):
+                    raise ValueError(
+                        f"triage_disposition payload.{field_name} must be "
+                        "non-empty single-line text for defer"
+                    )
 
     def _validate_grok_review_freshness(self) -> None:
         if not (
@@ -315,6 +393,15 @@ def _is_full_git_sha(value: Any) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(FULL_GIT_SHA_PATTERN, value))
 
 
+def _is_nonempty_single_line(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and "\r" not in value
+        and "\n" not in value
+    )
+
+
 def _is_at_or_after_utc(value: str, epoch: str) -> bool:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     parsed_epoch = datetime.fromisoformat(epoch.replace("Z", "+00:00"))
@@ -329,9 +416,11 @@ def validate_event_line(
 ) -> BridgeEvent:
     """Validate one JSONL line from ``events.jsonl``."""
     try:
-        decoded = json.loads(line)
+        decoded = _decode_event_json_pairs(json.loads(line, object_pairs_hook=_JsonObjectPairs))
     except json.JSONDecodeError as exc:
         raise ValueError(f"line {line_no}: invalid JSON: {exc.msg}") from exc
+    except ValueError as exc:
+        raise ValueError(f"line {line_no}: {exc}") from exc
     if not isinstance(decoded, Mapping):
         raise ValueError(f"line {line_no}: event must be a JSON object")
     try:
@@ -344,6 +433,33 @@ def validate_event_line(
         line_no=line_no,
     )
     return model
+
+
+class _JsonObjectPairs(list):
+    """Keep raw JSON object keys until event/payload duplicates are checked."""
+
+
+def _decode_event_json_pairs(
+    value: Any, *, check_keys: bool = True, event_root: bool = True
+) -> Any:
+    if isinstance(value, _JsonObjectPairs):
+        decoded: dict[str, Any] = {}
+        seen: set[str] = set()
+        for key, item in value:
+            folded = key.casefold()
+            if check_keys and folded in seen:
+                raise ValueError(f"duplicate case-insensitive bridge field {key}")
+            seen.add(folded)
+            decoded[key] = _decode_event_json_pairs(
+                item, check_keys=event_root and folded == "payload", event_root=False
+            )
+        return decoded
+    if isinstance(value, list):
+        return [
+            _decode_event_json_pairs(item, check_keys=False, event_root=False)
+            for item in value
+        ]
+    return value
 
 
 def validate_event_file(

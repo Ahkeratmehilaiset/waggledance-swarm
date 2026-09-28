@@ -17,25 +17,31 @@ $root=if ($env:AGENT_BRIDGE_RUNTIME_ROOT) { $env:AGENT_BRIDGE_RUNTIME_ROOT } els
 $started=[DateTimeOffset]::UtcNow.ToString('o')
 $snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
     -CachePath (Join-Path $root 'shared/cache/reply-index.json') -NoCache:$NoCache
-$requests=@($snapshot.rows | Where-Object {
-    (Get-BridgeContractField $_ 'request_id') -ceq $RequestId -and
-    (Get-BridgeContractField $_ 'agent') -ceq $Requester -and (Test-BridgeRequestLikeEvent $_)
+$rows=@($snapshot.rows)
+$indexedRows=@(for ($position=0; $position -lt $rows.Count; $position++) {
+    [pscustomobject]@{position=$position;event=$rows[$position]}
+})
+$requests=@($indexedRows | Where-Object {
+    (Get-BridgeContractField $_.event 'request_id') -ceq $RequestId -and
+    (Get-BridgeContractField $_.event 'agent') -ceq $Requester -and (Test-BridgeRequestLikeEvent $_.event)
 })
 if (-not $requests.Count) { throw 'Exact request is absent; this is unknown, not pending' }
-$request=$requests[0]
+$request=$requests[0].event
+$requestPosition=$requests[0].position
 foreach ($duplicate in $requests) {
-    if ((Get-BridgeRequestContent $duplicate) -cne (Get-BridgeRequestContent $request) -or
-        (Get-BridgeContractField $duplicate 'request_digest') -cne (Get-BridgeContractField $request 'request_digest')) {
+    if ((Get-BridgeRequestContent $duplicate.event) -cne (Get-BridgeRequestContent $request) -or
+        (Get-BridgeContractField $duplicate.event 'request_digest') -cne (Get-BridgeContractField $request 'request_digest')) {
         throw 'Conflicting content for immutable request ID'
     }
 }
 $targets=@(([string]$request.to -split ',') | ForEach-Object {$_.Trim()} | Where-Object {$_})
 if (-not $targets.Count) { throw 'Request has no explicit target' }
 $results=@(foreach ($target in $targets) {
-    $answers=@($snapshot.rows | Where-Object {
-        (Get-BridgeContractField $_ 'in_reply_to_request_id') -ceq $RequestId -and
-        (Test-BridgeAnswerEvent $_) -and (Test-BridgeReplyBinding $request $_ $target)
-    })
+    $answers=@($indexedRows | Where-Object {
+        (Get-BridgeContractField $_.event 'in_reply_to_request_id') -ceq $RequestId -and
+        (Test-BridgeAnswerEvent $_.event) -and
+        (Test-BridgeReplyBinding $request $_.event $target -RequestPosition $requestPosition -ReplyPosition $_.position)
+    } | ForEach-Object {$_.event})
     [pscustomobject]@{target=$target;state=$(if ($answers.Count) {'answered'} else {'pending_at_snapshot'});
         answers=$answers;answer_validation=@(foreach ($answer in $answers) {
             $validation=Get-BridgeTaskResultValidation -Request $request -Payload $answer.payload -Responder $answer.agent

@@ -14,6 +14,26 @@ if str(ROOT) not in sys.path:
 import tools.work_queue_sweep_stale as sweep_cli  # noqa: E402
 from waggledance.core.work_queue import claim_task  # noqa: E402
 
+_IDENTITY_ENV = (
+    "AGENT_BRIDGE_AGENT",
+    "AGENT_BRIDGE_OWNER_SESSION_ID",
+    "AGENT_BRIDGE_OWNER_TOKEN",
+    "AGENT_BRIDGE_RUN_ID",
+    "AGENT_BRIDGE_OWNER_PID",
+    "AGENT_BRIDGE_OWNER_PROCESS_START_UTC",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts identity-less and bound to no agent label.
+
+    A lane shell carries its own label and owner identity; without this the
+    suite's result would depend on who runs it.
+    """
+    for name in _IDENTITY_ENV:
+        monkeypatch.delenv(name, raising=False)
+
 
 def _now() -> datetime:
     return datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)

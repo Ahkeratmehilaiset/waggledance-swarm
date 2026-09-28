@@ -40,8 +40,9 @@ from tools.bridge_next_action import (  # noqa: E402
     _event_status,
     _event_ts,
     _event_type,
-    _idle_protocol_progressed,
+    _is_correlated_bound_message,
     _is_answer_like,
+    _is_explicit_requester_closure,
     _is_request_like,
     _message,
     _parse_utc,
@@ -50,6 +51,9 @@ from tools.bridge_next_action import (  # noqa: E402
     read_events,
 )
 from waggledance.core.work_queue import AGENT_ID_PATTERN, resolve_bridge_root  # noqa: E402
+from waggledance.core.bridge_request_contract import (  # noqa: E402
+    reply_follows_request, reply_matches_request, request_is_bound,
+)
 
 
 DEFAULT_TAIL = 50000
@@ -214,33 +218,59 @@ def _open_requests_for_agent(
     events: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
     requests = [
-        event
-        for event in events
+        (position, event)
+        for position, event in enumerate(events)
         if _is_peer_request_like(event)
         and _event_agent(event) != agent
         and _addressed_to(event, agent)
         and _task_id(event)
     ]
-    open_requests: list[Mapping[str, Any]] = []
-    for request in requests:
-        request_ts = _event_ts(request)
-        task_id = _task_id(request)
-        answered = any(
-            _event_agent(event) == agent
-            and _task_id(event) == task_id
-            and _event_ts(event) > request_ts
-            and _is_substantive_answer_like(event)
-            for event in events
+    # Retransmission retains the original canonical position, even after an answer.
+    unique_requests = []
+    seen_requests: set[str] = set()
+    for position, request in requests:
+        replay_key = json.dumps(
+            {key: value for key, value in request.items() if not key.startswith("_")},
+            sort_keys=True, default=str,
         )
-        if not answered:
-            answered = any(
-                _task_id(event) == task_id
-                and _event_ts(event) > request_ts
-                and _is_closing_event_like(event)
-                for event in events
-            )
-        if not answered and _idle_protocol_progressed(request, events):
+        if replay_key not in seen_requests:
+            seen_requests.add(replay_key)
+            unique_requests.append((position, request))
+    requests = unique_requests
+    versions: dict[tuple[str, str], set[str]] = {}
+    for _, request in requests:
+        key = (_event_agent(request), _task_id(request))
+        versions.setdefault(key, set()).add(_event_ts(request))
+    open_requests: list[Mapping[str, Any]] = []
+    for request_position, request in requests:
+        task_id = _task_id(request)
+        requester = _event_agent(request)
+        ambiguous = len(versions[(requester, task_id)]) > 1
+        answered = False
+        for reply_position, event in enumerate(events):
+            event_agent = _event_agent(event)
+            requester_closure = event_agent == requester
+            if requester_closure:
+                if not _is_explicit_requester_closure(event):
+                    continue
+            elif event_agent != agent or not (
+                _is_answer_like(event)
+                or (request_is_bound(request) and _is_correlated_bound_message(event))
+            ):
+                continue
+            if _task_id(event) != task_id or not reply_follows_request(
+                request, event, request_position=request_position,
+                reply_position=reply_position,
+            ):
+                continue
+            if (request_is_bound(request) or ambiguous) and not reply_matches_request(
+                request, event, agent, requester_closure=requester_closure,
+                ambiguous_legacy=ambiguous,
+                request_position=request_position, reply_position=reply_position,
+            ):
+                continue
             answered = True
+            break
         if not answered:
             open_requests.append(request)
     return open_requests
@@ -252,49 +282,6 @@ def _is_peer_request_like(event: Mapping[str, Any]) -> bool:
     status_tokens = _status_tokens(_event_status(event))
     return _event_type(event) == "message" and {"status", "query"}.issubset(
         status_tokens
-    )
-
-
-def _is_substantive_answer_like(event: Mapping[str, Any]) -> bool:
-    event_type = _event_type(event)
-    status = _event_status(event)
-    if event_type in {"heartbeat", "liveness", "wake_request"}:
-        return False
-    if event_type == "message" and status in {"received", "seen", "acknowledged"}:
-        return False
-    if _is_answer_like(event):
-        return True
-    return event_type in {
-        "message",
-        "claim",
-        "done",
-        "decision",
-        "blocked",
-        "finding",
-        "test",
-        "handoff",
-        "release",
-    }
-
-
-def _is_closing_event_like(event: Mapping[str, Any]) -> bool:
-    event_type = _event_type(event)
-    if event_type not in {"done", "decision", "blocked", "release", "handoff"}:
-        return False
-    tokens = _status_tokens(_event_status(event))
-    return bool(
-        tokens
-        & {
-            "blocked",
-            "closed",
-            "done",
-            "merged",
-            "postmerge",
-            "resolved",
-            "superseded",
-            "validated",
-            "verified",
-        }
     )
 
 

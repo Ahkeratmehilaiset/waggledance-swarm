@@ -860,6 +860,7 @@ def test_git_layout_head_core_and_objects_have_success_twins(small_git_repo):
 def test_git_marker_directory_alias_is_rejected(small_git_repo):
     root = small_git_repo
     marker = root / ".git"
+    assert doctor._git_metadata_dirs(root, marker) == (marker, marker)
     real = root / "git-real"
     marker.rename(real)
     try:
@@ -872,11 +873,14 @@ def test_git_marker_directory_alias_is_rejected(small_git_repo):
         else:
             marker.symlink_to(real, target_is_directory=True)
         try:
+            with pytest.raises(OSError, match="aliased Git directory"):
+                doctor._git_metadata_dirs(root, marker)
             assert doctor._code_layout(root) == "unknown"
         finally:
             marker.rmdir() if os.name == "nt" else marker.unlink()
     finally:
         real.rename(marker)
+    assert doctor._git_metadata_dirs(root, marker) == (marker, marker)
     assert doctor._code_layout(root) == "development"
 
 
@@ -905,11 +909,22 @@ def test_dangling_git_marker_is_unknown_not_installed(tmp_path, small_git_repo):
     root = tmp_path / "dangling"
     root.mkdir()
     assert doctor._code_layout(root) == "installed"
+    marker = root / ".git"
+    missing = root / "missing-git"
+    if os.name == "nt":
+        cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+        created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                                  str(marker), str(missing)], capture_output=True)
+        if created.returncode:
+            pytest.skip("dangling junction creation unavailable")
+    else:
+        marker.symlink_to(missing, target_is_directory=True)
     try:
-        (root / ".git").symlink_to(root / "missing-git", target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("directory symlink creation unavailable")
-    assert doctor._code_layout(root) == "unknown"
+        assert os.path.lexists(marker)
+        assert not marker.exists()
+        assert doctor._code_layout(root) == "unknown"
+    finally:
+        marker.rmdir() if os.name == "nt" else marker.unlink()
     assert doctor._code_layout(small_git_repo) == "development"
 
 

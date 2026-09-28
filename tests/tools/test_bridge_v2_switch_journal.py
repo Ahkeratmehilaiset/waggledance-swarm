@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 from collections import deque
+import copy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -349,6 +353,76 @@ def test_two_operations_fold_independently():
     assert [o["state"] for o in fold["operations"]] == ["intent_recorded", "attempted"]
 
 
+# --- committed state is a snapshot, never the caller's objects -----------------------------------
+
+def _snapshot(journal):
+    ops = {k: (copy.deepcopy(v.records), list(v.digests), copy.deepcopy(v.binding))
+           for k, v in journal._ops.items()}
+    return json.dumps(journal.fold(), sort_keys=True), ops
+
+
+def test_caller_mutation_of_an_appended_intent_cannot_change_committed_state():
+    j = Journal()
+    b = binding()
+    intent = sj.intent_record("op-1", b, utc(0))
+    j.append(intent)
+    before = _snapshot(j)
+    b["task_id"] = "changed/after_commit"          # the binding object the caller passed
+    intent["binding"]["lane"] = "codex-lead-1"     # the record's nested binding
+    intent["binding"]["expires_at_utc"] = utc(10 ** 6)
+    intent["evidence_digests"].append(D)
+    intent["phase"] = "continued"
+    assert _snapshot(j) == before
+    assert j.operation("op-1")["task_id"] == "codex-lead-1/bridge-v2-switch-journal-20260928"
+    op = j._ops["op-1"]
+    assert op.digests[0] == sj.digest(op.records[0])
+    assert op.binding_digest == sj.digest(op.binding)
+    # The expiry used by the state machine is the committed one.
+    late = sj.next_record(j, "op-1", "attempted", "started", utc(5000), [])
+    with pytest.raises(ContractError) as exc:
+        j.append(late)
+    assert exc.value.code == "intent_expired"
+
+
+def test_caller_mutation_of_later_records_and_evidence_cannot_change_committed_state():
+    r = Run()
+    a = r.step("attempted")
+    b = r.step("applied")
+    before = _snapshot(r.journal)
+    b["evidence_digests"][0] = "e" * 64
+    b["evidence_digests"].append("f" * 64)
+    a["reason"] = "retry"
+    b["phase"] = "verified"
+    assert _snapshot(r.journal) == before
+    assert r.journal.append(r.rec("verified")) == "appended"   # the chain still links
+
+
+def test_returned_views_are_detached_from_committed_state():
+    r = Run()
+    r.step("attempted")
+    view = r.journal.operation("op-1")
+    view["next_phases"].append("continued")
+    view["state"] = "continued"
+    fold = r.journal.fold()
+    fold["operations"][0]["success"] = True
+    assert r.journal.operation("op-1")["state"] == "attempted"
+    assert not r.journal.fold()["operations"][0]["success"]
+    built = sj.next_record(r.journal, "op-1", "applied", "receipt_observed", utc(9), ev(1))
+    built["evidence_digests"].append("0" * 64)
+    assert r.journal.operation("op-1")["last_seq"] == 2
+
+
+def test_nested_subclass_is_refused_before_snapshot():
+    class B(dict):
+        pass
+    j = Journal()
+    intent = sj.intent_record("op-1", binding(), utc(0))
+    intent["binding"] = B(intent["binding"])
+    with pytest.raises(ContractError) as exc:
+        j.append(intent)
+    assert exc.value.code == "invalid_record"
+
+
 # --- hard boundaries and forged authority ------------------------------------------------------
 
 @pytest.mark.parametrize("field", ["grant", "approved", "authority", "max_attempts", "capabilities"])
@@ -548,7 +622,7 @@ def test_every_crash_cut_folds_to_a_committed_prefix_and_never_invents_progress(
             with pytest.raises(ContractError) as exc:
                 sj.append_file(path, records[min(count, len(records) - 1)])
             assert exc.value.code == "torn_tail_requires_repair"
-            assert sj.repair_file(path) == torn
+            assert sj.repair_file(path)["removed_torn_bytes"] == torn
             assert path.read_bytes() == data[:committed]
         if count < len(records):
             assert sj.append_file(path, records[count])[0] == "appended"
@@ -600,6 +674,156 @@ def test_concurrent_modification_between_validate_and_write_is_refused(tmp_path,
     assert exc.value.code == "concurrent_modification"
 
 
+def _torn_journal(tmp_path, name="torn.jsonl"):
+    records = _full_sequence()
+    path = tmp_path / name
+    for record in records[:3]:
+        sj.append_file(path, record)
+    tail = sj.canonical_bytes(records[3])[:25]
+    with open(path, "ab") as handle:
+        handle.write(tail)
+    return path, records, tail
+
+
+def test_repair_preserves_the_torn_tail_in_a_recovery_file(tmp_path):
+    path, records, tail = _torn_journal(tmp_path)
+    committed = path.read_bytes()[:-len(tail)]
+    result = sj.repair_file(path)
+    assert result["removed_torn_bytes"] == len(tail)
+    recovery = Path(result["recovery_path"])
+    assert recovery.parent == path.parent and recovery.read_bytes() == tail
+    assert result["recovery_sha256"] == hashlib.sha256(tail).hexdigest()
+    assert result["committed_sha256"] == hashlib.sha256(committed).hexdigest()
+    assert path.read_bytes() == committed
+    # A second identical torn tail does not overwrite the first recovery copy.
+    with open(path, "ab") as handle:
+        handle.write(tail)
+    again = sj.repair_file(path)
+    assert again["recovery_path"] == result["recovery_path"] and recovery.read_bytes() == tail
+    # A different torn tail gets its own recovery file.
+    with open(path, "ab") as handle:
+        handle.write(tail[:7])
+    third = sj.repair_file(path)
+    assert third["recovery_path"] != result["recovery_path"]
+    assert Path(third["recovery_path"]).read_bytes() == tail[:7]
+    assert sj.append_file(path, records[3])[0] == "appended"
+
+
+def test_repair_refuses_when_the_journal_changes_before_truncation(tmp_path, monkeypatch):
+    path, _, tail = _torn_journal(tmp_path)
+    real = sj.read_journal
+
+    def racing(p):
+        result = real(p)
+        with open(p, "ab") as handle:  # another writer extends the tail meanwhile
+            handle.write(b"more")
+        return result
+    monkeypatch.setattr(sj, "read_journal", racing)
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "concurrent_modification"
+    assert path.read_bytes().endswith(tail + b"more")  # nothing truncated
+
+
+def test_repair_refuses_a_change_after_the_recovery_copy(tmp_path, monkeypatch):
+    path, _, tail = _torn_journal(tmp_path)
+    real = sj._keep_recovery_copy
+
+    def copy_then_race(target, data):
+        real(target, data)
+        with open(path, "r+b") as handle:  # same length, different bytes: only a re-read sees it
+            handle.seek(-1, 2)
+            handle.write(b"X")
+    monkeypatch.setattr(sj, "_keep_recovery_copy", copy_then_race)
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "concurrent_modification"
+    assert path.read_bytes().endswith(tail[:-1] + b"X")  # nothing truncated
+    assert sj.recovery_path(path, tail).read_bytes() == tail
+
+
+def test_repair_refuses_an_occupied_recovery_name_with_other_content(tmp_path):
+    path, _, tail = _torn_journal(tmp_path)
+    name = sj.recovery_path(path, tail)
+    name.write_bytes(b"someone else")
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(path)
+    assert exc.value.code == "recovery_conflict"
+    assert path.read_bytes().endswith(tail)
+
+
+def _make_dir_alias(target: Path, link: Path) -> None:
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except OSError:
+        pass
+    if os.name != "nt":
+        pytest.skip("symlink creation refused by the OS")
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True,
+                   capture_output=True)
+
+
+def test_hardlinked_journal_is_refused(tmp_path):
+    path, records, _ = _torn_journal(tmp_path)
+    sj.repair_file(path)
+    alias = tmp_path / "alias.jsonl"
+    os.link(path, alias)
+    size = path.stat().st_size
+    for call in (lambda: sj.append_file(path, records[3]), lambda: sj.append_file(alias, records[3]),
+                 lambda: sj.repair_file(path), lambda: sj.read_journal_checked(alias)):
+        with pytest.raises(ContractError) as exc:
+            call()
+        assert exc.value.code == "path_alias_refused"
+    assert path.stat().st_size == size
+
+
+def test_journal_reached_through_a_directory_alias_is_refused(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    path, records, _ = _torn_journal(real_dir)
+    link = tmp_path / "linked"
+    _make_dir_alias(real_dir, link)
+    via = link / path.name
+    size = path.stat().st_size
+    for call in (lambda: sj.append_file(via, records[3]), lambda: sj.repair_file(via)):
+        with pytest.raises(ContractError) as exc:
+            call()
+        assert exc.value.code == "path_alias_refused"
+    assert path.stat().st_size == size
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows reparse point")
+def test_journal_reached_through_a_junction_is_refused(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    path, records, _ = _torn_journal(real_dir)
+    link = tmp_path / "junction"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real_dir)], check=True, capture_output=True)
+    assert not stat.S_ISLNK(os.lstat(link).st_mode)  # only the reparse attribute identifies it
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(link / path.name, records[3])
+    assert exc.value.code == "path_alias_refused"
+
+
+def test_symlinked_journal_file_is_refused(tmp_path):
+    path, records, _ = _torn_journal(tmp_path)
+    link = tmp_path / "link.jsonl"
+    try:
+        os.symlink(path, link)
+    except OSError:
+        pytest.skip("file symlink creation refused by the OS (directory alias test covers Windows)")
+    with pytest.raises(ContractError) as exc:
+        sj.repair_file(link)
+    assert exc.value.code == "path_alias_refused"
+
+
+def test_non_regular_journal_is_refused(tmp_path):
+    with pytest.raises(ContractError) as exc:
+        sj.append_file(tmp_path, _full_sequence()[0])
+    assert exc.value.code == "path_alias_refused"
+
+
 def test_live_bridge_paths_are_refused(tmp_path):
     live = tmp_path / ".agent-bridge" / "switch.jsonl"
     live.parent.mkdir()
@@ -638,8 +862,13 @@ def test_cli_contract_append_fold_torn_repair(tmp_path):
         handle.write(sj.canonical_bytes(records[3])[:20])
     torn = _cli("fold", "--journal", str(path))
     assert torn.returncode == 3 and json.loads(torn.stdout)["torn_tail_bytes"] == 20
-    assert json.loads(_cli("repair", "--journal", str(path)).stdout) == {"removed_torn_bytes": 20}
+    repaired = json.loads(_cli("repair", "--journal", str(path)).stdout)
+    assert repaired["removed_torn_bytes"] == 20 and Path(repaired["recovery_path"]).stat().st_size == 20
     assert _cli("fold", "--journal", str(path)).returncode == 0
+    alias = tmp_path / "cli-alias.jsonl"
+    os.link(path, alias)
+    refused = _cli("fold", "--journal", str(alias))
+    assert refused.returncode == 2 and json.loads(refused.stdout) == {"error": "path_alias_refused"}
     nan = tmp_path / "nan.json"
     nan.write_text('{"seq": NaN}', encoding="utf-8")
     assert json.loads(_cli("append", "--journal", str(path), "--record-file", str(nan)).stdout) == {

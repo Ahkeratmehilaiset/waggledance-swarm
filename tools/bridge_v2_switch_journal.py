@@ -25,6 +25,18 @@ Semantics this module enforces, independent of any caller:
 This is a pure evidence journal. It never stops, starts, launches or
 provisions anything, and its output grants no authority (``authority_granted``
 and ``actuation_performed`` are always False).
+
+Committed state is a snapshot: every accepted record (including its nested
+binding and evidence list) is rebuilt from its canonical bytes, so a caller
+that mutates the objects it passed cannot change committed state or digests.
+
+File layer (single writer): journal paths that are, or are reached through, a
+symlink/junction/reparse point, hardlinked files (st_nlink > 1) and non-regular
+files are refused. ``repair`` copies the torn tail to a content-addressed
+sibling ``<journal>.torn-<sha256>`` (O_EXCL, fsync) and re-checks the file
+under its open handle before truncating. There is no OS lock: a writer that
+changes the file after the last check and before the append/truncate syscall
+is NOT detected (see ``SINGLE_WRITER_RACES``); writer fencing is the caller's.
 """
 
 from __future__ import annotations
@@ -36,6 +48,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 from types import MappingProxyType
 from typing import Any
@@ -160,6 +173,11 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def _snapshot(value: Any) -> Any:
+    """Detached deep copy of validated plain JSON data, rebuilt from canonical bytes."""
+    return json.loads(canonical_bytes(value).decode("utf-8"))
+
+
 def _closed(value: Any, fields: frozenset[str]) -> dict[str, Any]:
     if type(value) is not dict or any(type(k) is not str for k in value):
         raise ContractError("invalid_record")
@@ -217,7 +235,7 @@ def parse_binding(raw: Any) -> dict[str, Any]:
     for key in ("intent_digest", "policy_digest"):
         _digest(row[key])
     _utc(row["expires_at_utc"])
-    return row
+    return _snapshot(row)
 
 
 def parse_record(raw: Any) -> dict[str, Any]:
@@ -257,7 +275,9 @@ def parse_record(raw: Any) -> dict[str, Any]:
         _digest(row["binding_digest"])
     if len(canonical_bytes(row)) > HARD_BOUNDARIES["max_record_bytes"]:
         raise ContractError("record_too_large")
-    return row
+    # Every field was type-checked above (plain str/int/None/list/dict only), so the
+    # canonical round trip is lossless; the result shares no object with ``raw``.
+    return _snapshot(row)
 
 
 class _Operation:
@@ -492,10 +512,62 @@ def intent_record(operation_id: str, binding: dict[str, Any], recorded_at_utc: s
 
 # --- file journal -----------------------------------------------------------------------
 
+SINGLE_WRITER_RACES = (
+    "append: another writer can extend or replace the file after the fstat size check and before "
+    "the O_APPEND write; the check narrows the window, it does not close it (no OS lock)",
+    "repair: another writer can change the file after the final under-handle re-read and before "
+    "truncate; the recovery copy still holds the tail that was read",
+    "path: a directory component can be swapped for an alias after the lstat walk and before open; "
+    "the post-open fstat identity check catches a swapped final file, not every swapped parent",
+    "two repairs of the same torn tail agree on the content-addressed recovery name and reuse it",
+)
+
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
+
+
+def _is_alias(st: os.stat_result) -> bool:
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
 def _refuse_live_path(path: Path) -> None:
     parts = {part.casefold() for part in path.resolve().parts}
     if ".agent-bridge" in parts:
         raise ContractError("live_runtime_path_refused")
+
+
+def _refuse_unsafe_path(path: Path) -> os.stat_result | None:
+    """Refuse live-runtime paths and aliases; return the journal's lstat (None if absent).
+
+    Every existing component of the absolute path is lstat-ed: a symlink, junction
+    or other reparse point anywhere refuses. The journal itself must be a regular
+    file with exactly one link.
+    """
+    _refuse_live_path(path)
+    absolute = Path(os.path.abspath(path))
+    for component in [absolute, *absolute.parents]:
+        try:
+            st = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise ContractError("path_alias_refused") from None
+        if _is_alias(st):
+            raise ContractError("path_alias_refused")
+    try:
+        st = os.lstat(absolute)
+    except FileNotFoundError:
+        return None
+    _refuse_unsafe_file(st)
+    return st
+
+
+def _refuse_unsafe_file(st: os.stat_result) -> None:
+    if _is_alias(st) or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        raise ContractError("path_alias_refused")
+
+
+def _same_file(opened: os.stat_result, before: os.stat_result | None) -> bool:
+    return before is None or (opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino)
 
 
 def read_journal(path: Path) -> tuple[Journal, int, int]:
@@ -522,23 +594,35 @@ def _reject_constant(_: str) -> Any:
     raise ValueError("non-finite number")
 
 
+def read_journal_checked(path: Path) -> tuple[Journal, int, int]:
+    """read_journal after the live-path and alias refusals."""
+    _refuse_unsafe_path(path)
+    return read_journal(path)
+
+
 def append_file(path: Path, raw: Any) -> tuple[str, Journal]:
     """Validate against the committed journal, then append one canonical line.
 
     Refuses while a torn tail exists (repair first) and if the file changed
     between validation and write. A duplicate is not written again.
     """
-    _refuse_live_path(path)
+    before = _refuse_unsafe_path(path)
     journal, committed, torn = read_journal(path)
     if torn:
         raise ContractError("torn_tail_requires_repair")
-    result = journal.append(raw)
+    record = parse_record(raw)
+    result = journal.append(record)
     if result == "duplicate":
         return result, journal
-    line = canonical_bytes(parse_record(raw)) + b"\n"
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+    line = canonical_bytes(record) + b"\n"
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
-        if os.fstat(fd).st_size != committed:
+        opened = os.fstat(fd)
+        _refuse_unsafe_file(opened)
+        if not _same_file(opened, before):
+            raise ContractError("concurrent_modification")
+        if opened.st_size != committed:
             raise ContractError("concurrent_modification")
         written = os.write(fd, line)
         if written != len(line):
@@ -549,17 +633,67 @@ def append_file(path: Path, raw: Any) -> tuple[str, Journal]:
     return result, journal
 
 
-def repair_file(path: Path) -> int:
-    """Drop an uncommitted torn tail after proving the committed prefix is valid."""
-    _refuse_live_path(path)
+def recovery_path(path: Path, tail: bytes) -> Path:
+    """Content-addressed sibling that keeps a torn tail recoverable."""
+    return path.with_name(f"{path.name}.torn-{hashlib.sha256(tail).hexdigest()}")
+
+
+def _keep_recovery_copy(target: Path, tail: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(target, flags, 0o600)
+    except FileExistsError:
+        st = os.lstat(target)
+        if _is_alias(st) or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise ContractError("recovery_conflict") from None
+        if target.read_bytes() != tail:
+            raise ContractError("recovery_conflict") from None
+        return
+    try:
+        if os.write(fd, tail) != len(tail):
+            raise ContractError("short_write")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def repair_file(path: Path) -> dict[str, Any]:
+    """Move an uncommitted torn tail to a recovery file, then drop it from the journal.
+
+    The committed prefix must fold cleanly. Under the open handle the file must
+    still be the same regular single-link file with exactly the bytes that were
+    validated, both before the recovery copy is written and just before truncate.
+    """
+    before = _refuse_unsafe_path(path)
+    if before is None:
+        raise ContractError("no_torn_tail")
     _, committed, torn = read_journal(path)
     if not torn:
         raise ContractError("no_torn_tail")
     with open(path, "r+b") as handle:
+        opened = os.fstat(handle.fileno())
+        _refuse_unsafe_file(opened)
+        if not _same_file(opened, before):
+            raise ContractError("concurrent_modification")
+        data = handle.read()
+        if len(data) != committed + torn or data.rfind(b"\n") + 1 != committed:
+            raise ContractError("concurrent_modification")
+        tail = data[committed:]
+        target = recovery_path(path, tail)
+        _keep_recovery_copy(target, tail)
+        handle.seek(0)
+        if os.fstat(handle.fileno()).st_size != len(data) or handle.read() != data:
+            raise ContractError("concurrent_modification")
         handle.truncate(committed)
         handle.flush()
         os.fsync(handle.fileno())
-    return torn
+    return {
+        "removed_torn_bytes": torn,
+        "committed_bytes": committed,
+        "committed_sha256": hashlib.sha256(data[:committed]).hexdigest(),
+        "recovery_path": str(target),
+        "recovery_sha256": hashlib.sha256(tail).hexdigest(),
+    }
 
 
 def api_contract() -> dict[str, Any]:
@@ -573,6 +707,8 @@ def api_contract() -> dict[str, Any]:
         "hard_boundaries": {k: (sorted(v) if isinstance(v, frozenset) else v)
                             for k, v in HARD_BOUNDARIES.items()},
         "commit_rule": "a record is committed only by its terminating newline; torn tails are never folded",
+        "repair_rule": "the torn tail is kept in <journal>.torn-<sha256> before truncation",
+        "single_writer_races": list(SINGLE_WRITER_RACES),
     }
 
 
@@ -591,10 +727,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "contract":
             out: dict[str, Any] = api_contract()
         elif args.command == "fold":
-            journal, _, torn = read_journal(args.journal)
+            journal, _, torn = read_journal_checked(args.journal)
             out = dict(journal.fold(), torn_tail_bytes=torn)
         elif args.command == "repair":
-            out = {"removed_torn_bytes": repair_file(args.journal)}
+            out = repair_file(args.journal)
         else:
             raw = json.loads(args.record_file.read_text(encoding="utf-8"), parse_constant=_reject_constant)
             result, journal = append_file(args.journal, raw)

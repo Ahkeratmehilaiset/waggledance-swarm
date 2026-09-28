@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Inexact, localcontext
 
 import pytest
 
 from tools.bridge_v2_quota_contract import (
     ContractError,
+    MAX_RESERVATIONS,
+    MAX_UNITS_INT,
     evaluate_admission,
     parse_snapshot,
     snapshot_digest,
@@ -81,7 +84,8 @@ def test_exact_boundary_admitted_and_shortfall_denied():
     s = snapshot()
     d = demand(s)
     d["proposed_upper_units"] = 55
-    assert evaluate_admission(s, d, now=NOW)["remaining_after_proposal_units"] == "0"
+    boundary = evaluate_admission(s, d, now=NOW)
+    assert (boundary["state"], boundary["remaining_after_proposal_units"]) == ("admissible", "0")
     d["proposed_upper_units"] = 55.01
     result = evaluate_admission(s, d, now=NOW)
     assert (result["state"], result["reason"]) == ("denied", "insufficient_conservative_headroom")
@@ -142,8 +146,10 @@ def test_unknown_keys_and_missing_fields_do_not_silently_default():
 
 
 @pytest.mark.parametrize("change,reason", [
+    ({"provider": "different"}, "binding_mismatch"),
     ({"account_id": "different"}, "binding_mismatch"),
     ({"pool_id": "different"}, "binding_mismatch"),
+    ({"limit_id": "different"}, "binding_mismatch"),
     ({"reset_epoch": "new-epoch"}, "binding_mismatch"),
     ({"unit": "tokens"}, "binding_mismatch"),
     ({"snapshot_digest": DIGEST}, "snapshot_digest_mismatch"),
@@ -192,3 +198,184 @@ def test_unverified_binding_and_invalid_now_are_unknown():
     s["binding_state"] = "unknown"
     assert evaluate_admission(s, demand(s), now=NOW)["reason"] == "binding_unverified"
     assert evaluate_admission(snapshot(), demand(snapshot()), now=NOW.replace(tzinfo=None))["reason"] == "invalid_now"
+
+
+@pytest.mark.parametrize("tiny", [1e-30, 5e-324])
+def test_tiny_positive_cost_is_not_rounded_away(tiny):
+    s = snapshot()
+    s.update(remaining_lower_bound=1e15, uncertainty_upper_units=0,
+             external_residual_upper_units=0)
+    d = demand(s)
+    d.update(reservations=[], forecast_upper_units=0, incident_reserve_units=0,
+             reviewer_reserve_units=tiny, proposed_upper_units=1e15)
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["state"], result["reason"]) == (
+        "denied", "insufficient_conservative_headroom"
+    )
+    assert result["remaining_after_proposal_units"].startswith("-0.")
+    assert result["remaining_after_proposal_units"] != "0"
+
+
+def test_reservation_sum_is_exact_and_context_independent():
+    s = snapshot()
+    s.update(remaining_lower_bound=1e15, uncertainty_upper_units=0,
+             external_residual_upper_units=0)
+    d = demand(s)
+    d.update(forecast_upper_units=0, incident_reserve_units=0,
+             reviewer_reserve_units=0, proposed_upper_units=1,
+             reservations=[
+                 {"id": "large", "upper_units": 999999999999999, **{
+                     key: s[key] for key in ("provider", "account_id", "pool_id", "limit_id", "reset_epoch", "unit")
+                 }},
+                 {"id": "tiny", "upper_units": 5e-324, **{
+                     key: s[key] for key in ("provider", "account_id", "pool_id", "limit_id", "reset_epoch", "unit")
+                 }},
+             ])
+    with localcontext() as caller:
+        caller.prec = 2
+        caller.Emax = 9
+        caller.Emin = -9
+        caller.traps[Inexact] = True
+        before = caller.copy()
+        result = evaluate_admission(s, d, now=NOW)
+        assert repr(caller) == repr(before)
+    assert (result["state"], result["reason"]) == (
+        "denied", "insufficient_conservative_headroom"
+    )
+
+
+def test_caller_rounding_and_traps_do_not_change_verdict_or_context():
+    s = snapshot()
+    s.update(remaining_lower_bound=996, uncertainty_upper_units=0,
+             external_residual_upper_units=0)
+    d = demand(s)
+    d.update(reservations=[], forecast_upper_units=0, incident_reserve_units=0,
+             reviewer_reserve_units=0, proposed_upper_units=1000)
+    with localcontext() as caller:
+        caller.prec = 2
+        caller.traps[Inexact] = True
+        before = caller.copy()
+        result = evaluate_admission(s, d, now=NOW)
+        assert repr(caller) == repr(before)
+    assert (result["state"], result["remaining_after_proposal_units"]) == ("denied", "-4")
+
+
+@pytest.mark.parametrize("location", ["snapshot", "demand", "reservation"])
+def test_huge_int_is_stably_rejected_before_string_conversion(location):
+    s = snapshot()
+    d = demand(s)
+    huge = 10**5000
+    if location == "snapshot":
+        s["remaining_lower_bound"] = huge
+        expected = "invalid_snapshot"
+    elif location == "demand":
+        d["proposed_upper_units"] = huge
+        expected = "invalid_demand"
+    else:
+        d["reservations"][0]["upper_units"] = huge
+        expected = "invalid_demand"
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["state"], result["reason"], result["detail_code"]) == (
+        "unknown", expected, "invalid_number"
+    )
+
+
+@pytest.mark.parametrize("observed,expires,reset", [
+    ("2026-09-28T12:10:00Z", "2026-09-28T12:10:00Z", "2026-10-01T00:00:00Z"),
+    ("2026-09-28T12:11:00Z", "2026-09-28T12:10:00Z", "2026-10-01T00:00:00Z"),
+    ("2026-09-28T11:59:00Z", "2026-10-02T00:00:00Z", "2026-10-01T00:00:00Z"),
+])
+def test_snapshot_time_order_is_enforced(observed, expires, reset):
+    s = snapshot()
+    s.update(observed_at_utc=observed, expires_at_utc=expires, reset_at_utc=reset)
+    with pytest.raises(ContractError, match="invalid_time_order"):
+        parse_snapshot(s)
+    result = evaluate_admission(s, demand(s), now=NOW)
+    assert (result["reason"], result["detail_code"]) == (
+        "invalid_snapshot", "invalid_time_order"
+    )
+
+
+def test_reservation_sum_cap_and_count_are_enforced():
+    s = snapshot()
+    d = demand(s)
+    template = d["reservations"][0]
+    d["reservations"] = [
+        {**template, "id": "one", "upper_units": MAX_UNITS_INT},
+        {**template, "id": "two", "upper_units": 1},
+    ]
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["reason"], result["detail_code"]) == (
+        "invalid_demand", "reservation_total_out_of_bounds"
+    )
+    d["reservations"] = [{**template, "id": f"r{i}", "upper_units": 0}
+                         for i in range(MAX_RESERVATIONS + 1)]
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["reason"], result["detail_code"]) == (
+        "invalid_demand", "invalid_reservations"
+    )
+
+
+def test_invalid_binding_state_is_rejected():
+    s = snapshot()
+    s["binding_state"] = "implicitly_verified"
+    result = evaluate_admission(s, demand(s), now=NOW)
+    assert (result["reason"], result["detail_code"]) == (
+        "invalid_snapshot", "invalid_binding_state"
+    )
+
+
+@pytest.mark.parametrize("field,reason", [
+    ("forecast_upper_units", "forecast_unknown"),
+    ("incident_reserve_units", "incident_reserve_unknown"),
+    ("reviewer_reserve_units", "reviewer_reserve_unknown"),
+    ("proposed_upper_units", "proposed_upper_unknown"),
+])
+def test_unknown_demand_cost_is_not_substituted_with_zero(field, reason):
+    s = snapshot()
+    d = demand(s)
+    d[field] = None
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["state"], result["reason"], result["remaining_after_proposal_units"]) == (
+        "unknown", reason, None
+    )
+
+
+def test_decision_binds_exact_demand_and_reservation_ledger():
+    s = snapshot()
+    d = demand(s)
+    first = evaluate_admission(s, d, now=NOW)
+    assert first["reservation_count"] == 1
+    assert len(first["demand_digest"]) == len(first["reservation_ledger_digest"]) == 64
+    changed = deepcopy(d)
+    changed["reservations"][0]["id"] = "other-active"
+    second = evaluate_admission(s, changed, now=NOW)
+    assert first["remaining_after_proposal_units"] == second["remaining_after_proposal_units"]
+    assert first["demand_digest"] != second["demand_digest"]
+    assert first["reservation_ledger_digest"] != second["reservation_ledger_digest"]
+    changed["reservations"] = []
+    third = evaluate_admission(s, changed, now=NOW)
+    assert third["reservation_count"] == 0
+    assert third["reservation_ledger_digest"] != second["reservation_ledger_digest"]
+
+
+@pytest.mark.parametrize("stamp", [
+    "2026-09-28 11:59:00Z", "2026-09-28T11:59:00.1234567Z",
+    "2026-W40-1T11:59:00Z", "20260928T115900Z",
+    "2026-09-28T11Z", "2026-09-28T11:59:00+00:00",
+])
+def test_noncanonical_utc_is_rejected_without_truncation(stamp):
+    s = snapshot()
+    s["observed_at_utc"] = stamp
+    with pytest.raises(ContractError, match="invalid_utc"):
+        parse_snapshot(s)
+
+
+def test_float_units_follow_json_text_semantics():
+    s = snapshot()
+    s.update(remaining_lower_bound=1, uncertainty_upper_units=0,
+             external_residual_upper_units=0)
+    d = demand(s)
+    d.update(reservations=[], forecast_upper_units=0, incident_reserve_units=0,
+             reviewer_reserve_units=0, proposed_upper_units=0.1)
+    assert evaluate_admission(s, d, now=NOW)["remaining_after_proposal_units"] == "0.9"

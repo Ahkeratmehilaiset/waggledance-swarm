@@ -5,14 +5,18 @@
 This W0 contract does not read a provider, authenticate an account, acquire an
 atomic reservation, or permit dispatch. Its ``admissible`` result is conditional
 on caller-supplied evidence and must be revalidated against an authoritative
-pool ledger immediately before a separate, authorized side effect.
+pool ledger immediately before a separate, authorized side effect. Timestamps
+use exactly YYYY-MM-DDTHH:MM:SS[.ffffff]Z (one to six fractional digits).
+Float units use their JSON-text/repr decimal value, not their binary fraction.
+Snapshot maximum age is a mandatory external signed-policy check; the expiry
+and reset checks here are not a substitute for that policy.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Context, Decimal, DecimalException, Inexact, InvalidOperation, Overflow, localcontext
 import hashlib
 import json
 import re
@@ -23,9 +27,11 @@ SNAPSHOT_SCHEMA = "wd.bridge-v2-quota-snapshot.v1"
 DEMAND_SCHEMA = "wd.bridge-v2-quota-demand.v1"
 DECISION_SCHEMA = "wd.bridge-v2-quota-decision.v1"
 MAX_UNITS = Decimal("1000000000000000")
+MAX_UNITS_INT = 10**15
 MAX_RESERVATIONS = 4096
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z")
 _BINDING = ("provider", "account_id", "pool_id", "limit_id", "reset_epoch", "unit")
 _SNAPSHOT_FIELDS = frozenset({
     "schema", *_BINDING, "remaining_lower_bound", "uncertainty_upper_units",
@@ -76,9 +82,12 @@ def _units(value: Any, *, nullable: bool = False) -> Decimal | None:
         return None
     if type(value) not in (int, float):  # bool is not a number in this contract
         raise ContractError("invalid_number")
+    # Check before str(): Python may reject conversion of an enormous integer.
+    if type(value) is int and not 0 <= value <= MAX_UNITS_INT:
+        raise ContractError("invalid_number")
     try:
         number = Decimal(str(value))
-    except InvalidOperation:
+    except (InvalidOperation, ValueError):
         raise ContractError("invalid_number") from None
     if not number.is_finite() or number < 0 or number > MAX_UNITS:
         raise ContractError("invalid_number")
@@ -86,10 +95,10 @@ def _units(value: Any, *, nullable: bool = False) -> Decimal | None:
 
 
 def _utc(value: Any) -> datetime:
-    if not isinstance(value, str) or not (value.endswith("Z") or value.endswith("+00:00")):
+    if not isinstance(value, str) or not _UTC.fullmatch(value):
         raise ContractError("invalid_utc")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError:
         raise ContractError("invalid_utc") from None
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
@@ -97,16 +106,20 @@ def _utc(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def snapshot_digest(raw: Mapping[str, Any]) -> str:
-    """Canonical content digest for equality, not proof of provider identity."""
-    if not isinstance(raw, Mapping):
-        raise ContractError("invalid_object")
+def _canonical_digest(raw: Any) -> str:
     try:
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":"),
                              ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError):
         raise ContractError("invalid_object") from None
     return hashlib.sha256(encoded).hexdigest()
+
+
+def snapshot_digest(raw: Mapping[str, Any]) -> str:
+    """Canonical content digest for equality, not proof of provider identity."""
+    if not isinstance(raw, Mapping):
+        raise ContractError("invalid_object")
+    return _canonical_digest(raw)
 
 
 def parse_snapshot(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -141,7 +154,7 @@ def _parse_demand(raw: Mapping[str, Any]) -> dict[str, Any]:
     result["snapshot_digest"] = _digest(row["snapshot_digest"])
     for key in ("forecast_upper_units", "incident_reserve_units",
                 "reviewer_reserve_units", "proposed_upper_units"):
-        result[key] = _units(row[key])
+        result[key] = _units(row[key], nullable=True)
     result["forecast_through_utc"] = _utc(row["forecast_through_utc"])
     reservations = row["reservations"]
     if not isinstance(reservations, list) or len(reservations) > MAX_RESERVATIONS:
@@ -175,13 +188,17 @@ def evaluate_admission(snapshot: Mapping[str, Any], demand: Mapping[str, Any],
 
     The caller must prove provider/account binding, completeness of the active
     reservation ledger and source authenticity separately. A positive result
-    still needs an atomic compare-and-reserve and a fresh policy decision.
+    still needs an atomic compare-and-reserve and a fresh policy decision,
+    including signed-policy maximum age. Digests/counts bind this calculation
+    to caller-supplied data; they do not authenticate that data.
     """
     result: dict[str, Any] = {
         "schema": DECISION_SCHEMA, "state": "unknown", "reason": "invalid_now",
         "detail_code": None, "execution_allowed": False,
         "atomic_reservation_required": True, "snapshot_digest": None,
-        "remaining_after_proposal_units": None, "provenance": None,
+        "demand_digest": None, "reservation_ledger_digest": None,
+        "reservation_count": None, "remaining_after_proposal_units": None,
+        "provenance": None,
     }
     if (not isinstance(now, datetime) or now.tzinfo is None
             or now.utcoffset() != timedelta(0)):
@@ -209,6 +226,10 @@ def evaluate_admission(snapshot: Mapping[str, Any], demand: Mapping[str, Any],
     except ContractError as exc:
         result.update(reason="invalid_demand", detail_code=exc.code)
         return result
+    # Parsing precedes hashing, so every number and identifier is bounded.
+    result["demand_digest"] = snapshot_digest(demand)
+    result["reservation_ledger_digest"] = _canonical_digest(demand["reservations"])
+    result["reservation_count"] = len(proposed["reservations"])
     if proposed["snapshot_digest"] != digest:
         result["reason"] = "snapshot_digest_mismatch"
         return result
@@ -239,14 +260,35 @@ def evaluate_admission(snapshot: Mapping[str, Any], demand: Mapping[str, Any],
         if observed[key] is None:
             result["reason"] = reason
             return result
-    reservation_total = sum((r["upper_units"] for r in proposed["reservations"]), Decimal(0))
-    if reservation_total > MAX_UNITS:
-        result.update(reason="invalid_demand", detail_code="reservation_total_out_of_bounds")
+    for key, reason in (
+        ("forecast_upper_units", "forecast_unknown"),
+        ("incident_reserve_units", "incident_reserve_unknown"),
+        ("reviewer_reserve_units", "reviewer_reserve_unknown"),
+        ("proposed_upper_units", "proposed_upper_unknown"),
+    ):
+        if proposed[key] is None:
+            result["reason"] = reason
+            return result
+    # MAX_UNITS and repr(float) bound magnitudes/exponents. A 1000-digit
+    # private context represents the 4096-entry sum and subnormal float costs
+    # exactly; traps turn any unexpected inexact operation into a refusal.
+    arithmetic = Context(prec=1000)
+    arithmetic.traps[Inexact] = True
+    arithmetic.traps[InvalidOperation] = True
+    arithmetic.traps[Overflow] = True
+    try:
+        with localcontext(arithmetic):
+            reservation_total = sum((r["upper_units"] for r in proposed["reservations"]), Decimal(0))
+            if reservation_total > MAX_UNITS:
+                result.update(reason="invalid_demand", detail_code="reservation_total_out_of_bounds")
+                return result
+            remaining = (observed["remaining_lower_bound"] - observed["uncertainty_upper_units"]
+                         - observed["external_residual_upper_units"] - reservation_total
+                         - proposed["forecast_upper_units"] - proposed["incident_reserve_units"]
+                         - proposed["reviewer_reserve_units"] - proposed["proposed_upper_units"])
+    except DecimalException:
+        result.update(reason="invalid_demand", detail_code="arithmetic_not_exact")
         return result
-    remaining = (observed["remaining_lower_bound"] - observed["uncertainty_upper_units"]
-                 - observed["external_residual_upper_units"] - reservation_total
-                 - proposed["forecast_upper_units"] - proposed["incident_reserve_units"]
-                 - proposed["reviewer_reserve_units"] - proposed["proposed_upper_units"])
     result["remaining_after_proposal_units"] = _text(remaining)
     if remaining >= 0:
         result.update(state="admissible", reason="sufficient_conservative_headroom")

@@ -323,10 +323,41 @@ def test_contract_doc_names_every_class_reason_and_the_contract_id():
     assert wc.CONTRACT in doc
     for code in wc.CLASSES + wc.REASONS:
         assert f'`{code}`' in doc, code
-    for root in wc.CONTROL_ROOTS:
-        assert f'`{root}`' in doc, root
-    for status in wc.BENIGN_NOTICE_STATUSES:
-        assert f'`{status}`' in doc, status
+    # The two closed lists are stated once each in the doc; code and doc must
+    # agree in both directions, so dropping or adding an entry on either side
+    # fails.
+    for heading, code_list in (
+            ('* **Control roots (exact list):**', wc.CONTROL_ROOTS),
+            ('* **Benign notice statuses (closed allowlist, exact, case-sensitive):**',
+             wc.BENIGN_NOTICE_STATUSES)):
+        assert doc.count(heading) == 1, heading
+        bullet = doc.split(heading, 1)[1].split('\n* ', 1)[0]
+        doc_list = re.findall(r'`([^`]+)`', bullet)
+        assert len(doc_list) == len(set(doc_list)), heading
+        assert set(doc_list) == set(code_list), heading
+    roots = wc.CONTROL_ROOTS
+    assert [r for r in roots if any(o != r and o in r for o in roots)] == []
+
+
+def test_every_wake_eligibility_consumer_is_measured_or_explicitly_unmeasured():
+    measured = {'.agent-bridge/bin/Watch-Bridge.ps1', '.agent-bridge/bin/Monitor-AgentBridge.ps1'}
+    unmeasured = {'ops/windows/reboot/Get-WdSwarmParallelStatus.ps1'}
+    consumers = set()
+    for base in ('.agent-bridge/bin', 'ops'):
+        for path in (ROOT / base).rglob('*'):
+            if path.suffix.lower() not in ('.ps1', '.psm1', '.py') or not path.is_file():
+                continue
+            text = path.read_text(encoding='utf-8', errors='replace')
+            calls = [line for line in text.splitlines()
+                     if 'Test-BridgeWakeEligible' in line
+                     and not line.lstrip().startswith(('function ', '#'))
+                     and 'Get-Command Test-BridgeWakeEligible' not in line]
+            if calls:
+                consumers.add(path.relative_to(ROOT).as_posix())
+    assert consumers == measured | unmeasured
+    doc = DOC_PATH.read_text(encoding='utf-8')
+    for path in unmeasured:
+        assert path in doc, path
 
 
 # (name, exact source fragment, replacement): each removes or loosens a guard.
@@ -427,7 +458,27 @@ MUTANTS = [
     ('control_signal_ignores_type',
      "return ((isinstance(etype, str) and etype in CONTROL_TYPES) or",
      'return (False or'),
-]
+    ('max_field_255', 'MAX_FIELD_CHARS = 256', 'MAX_FIELD_CHARS = 255'),
+    ('max_field_257', 'MAX_FIELD_CHARS = 256', 'MAX_FIELD_CHARS = 257'),
+    ('type_length_unchecked',
+     'if len(etype) > MAX_FIELD_CHARS or len(status) > MAX_FIELD_CHARS:',
+     'if len(status) > MAX_FIELD_CHARS:'),
+    ('id_leading_char_widened', "_ID_RE = re.compile(r'[A-Za-z0-9][",
+     "_ID_RE = re.compile(r'[A-Za-z0-9._:-]["),
+    ('id_anchor_allows_trailing_newline', "[A-Za-z0-9._:-]{0,255}\\Z')",
+     "[A-Za-z0-9._:-]{0,255}$')"),
+    ('payload_binding_case_sensitive', '_ascii_lower(k) in PAYLOAD_BINDING_KEYS',
+     'k in PAYLOAD_BINDING_KEYS'),
+    ('payload_binding_empty_counted',
+     "v is not None and v != '' for k, v in payload.items()",
+     'v is not None for k, v in payload.items()'),
+    ('mention_token_split',
+     "return re.search(pattern, _ascii_lower(text)) is not None",
+     "return _ascii_lower(target) in re.split(r'[^a-z0-9._-]+', _ascii_lower(text))"),
+    ('mention_plain_substring',
+     "return re.search(pattern, _ascii_lower(text)) is not None",
+     'return _ascii_lower(target) in _ascii_lower(text)'),
+] + [(f'root_dropped_{root}', f"'{root}',", '') for root in wc.CONTROL_ROOTS]
 
 
 @pytest.mark.parametrize('name,old,new', MUTANTS, ids=[m[0] for m in MUTANTS])

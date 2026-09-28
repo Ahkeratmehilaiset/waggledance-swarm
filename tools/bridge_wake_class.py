@@ -76,8 +76,9 @@ BENIGN_NOTICE_STATUSES = frozenset({
 # It never decides suppression (the allowlist does), so it may over-wake:
 # a root matches anywhere in the status with all separators removed, which
 # catches camelCase and concatenated spellings (mergeHold, rcoveto, onhold).
+# No root contains another root, so each one is independently load-bearing.
 CONTROL_ROOTS = (
-    'hold', 'held', 'veto', 'block', 'cancel', 'supersed', 'withdr',
+    'hold', 'held', 'veto', 'cancel', 'supersed', 'withdr',
     'retract', 'revok', 'revoc', 'reject', 'refus', 'deny', 'denied', 'nack',
     'fail', 'clos', 'stop', 'halt', 'abort', 'freez', 'frozen', 'quarantin',
     'rollback', 'revert', 'changesrequested', 'paus', 'suspend', 'kill',
@@ -89,7 +90,6 @@ CONTROL_ROOTS = (
 MAX_FIELD_CHARS = 256
 _ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z')
 _NON_ALNUM = re.compile(r'[^a-z0-9]+')
-_LOOSE_SPLIT = re.compile(r'[^a-z0-9._-]+')
 _AGENT_RE = re.compile(r'[a-z0-9][a-z0-9._-]{0,127}\Z')
 _MISSING = object()
 
@@ -111,9 +111,16 @@ def has_control_token(status: str) -> bool:
 
 
 def _mentions(value: Any, target: str) -> bool:
-    """Loose, case-insensitive search for target inside any address value."""
+    """Loose, case-insensitive search for target inside any address value.
+
+    The target name counts as mentioned wherever it is not directly preceded
+    or followed by an ASCII letter or digit, so punctuation-adjacent names
+    ("fable-5.", "_fable-5", "(fable-5)") are mentions, while another lane
+    name that merely extends it ("fable-50", "xfable-5") is not.
+    """
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    return _ascii_lower(target) in _LOOSE_SPLIT.split(_ascii_lower(text))
+    pattern = r'(?<![a-z0-9])' + re.escape(_ascii_lower(target)) + r'(?![a-z0-9])'
+    return re.search(pattern, _ascii_lower(text)) is not None
 
 
 def _id_state(value: Any) -> str:

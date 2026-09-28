@@ -6668,6 +6668,2239 @@
     "monitor": false
    },
    "note": "Documented limit: free payload fields and free text are not parsed; a HOLD must be typed or carry a control status."
+  },
+  {
+   "id": "boundary_type_256",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+    "status": "noted",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unknown_type",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_type_257",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+    "status": "noted",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "oversized_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_status_256",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "unlisted_status",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Exactly at the 256-character cap: accepted as a status, and unlisted, so it wakes (legacy suppresses it)."
+  },
+  {
+   "id": "boundary_status_257",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "oversized_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "One past the cap: legacy suppresses, the contract drains."
+  },
+  {
+   "id": "boundary_request_id_256",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+   },
+   "expected": {
+    "class": "request",
+    "reason": "request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_request_id_257",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_reply_id_256",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_request_id_trailing_newline",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": "r-1\n"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_request_id_leading_dot",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notice",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "request_id": ".r1"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "boundary_reply_id_leading_colon",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "answered",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    },
+    "in_reply_to_request_id": ":r1"
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "malformed_request_id",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "payload_binding_empty_request_id",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "request_id": ""
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "payload_binding_null_reply_id",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "in_reply_to_request_id": null
+    }
+   },
+   "expected": {
+    "class": "notice",
+    "reason": "informational_hint",
+    "wakes": false,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "payload_binding_case_variant_key",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "Request_Id": "r-30"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A binding key in any case inside a hinted notice payload drains; legacy suppresses it."
+  },
+  {
+   "id": "payload_result_contract_key",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "info",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational",
+     "result_contract": {
+      "schema": "x"
+     }
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "payload_binding_field",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A result contract inside a hinted notice payload drains; legacy suppresses it."
+  },
+  {
+   "id": "noise_heartbeat_payload_reply_id",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "heartbeat",
+    "status": "alive",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "in_reply_to_request_id": "r-31"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "A liveness row carrying a payload binding drains; legacy drops it."
+  },
+  {
+   "id": "noise_ack_payload_request_id",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "request_id": "r-32"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An ACK carrying a payload request_id drains; legacy drops it."
+  },
+  {
+   "id": "noise_ack_payload_reply_id",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "received",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "in_reply_to_request_id": "r-33"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "noise_payload_not_recognized",
+    "wakes": true,
+    "control_signal": false
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "An ACK carrying a payload in_reply_to_request_id drains; legacy drops it."
+  },
+  {
+   "id": "root_on_bound_reply_hold",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "hold",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-0"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_held",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "held",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-1"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_veto",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-2"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_cancel",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "cancel",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-3"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_supersed",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "supersed",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-4"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_withdr",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "withdr",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-5"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_retract",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "retract",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-6"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_revok",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "revok",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-7"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_revoc",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "revoc",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-8"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_reject",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "reject",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-9"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_refus",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "refus",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-10"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_deny",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "deny",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-11"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_denied",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "denied",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-12"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_nack",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "nack",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-13"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_fail",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "fail",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-14"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_clos",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "clos",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-15"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_stop",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "stop",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-16"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_halt",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "halt",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-17"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_abort",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "abort",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-18"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_freez",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "freez",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-19"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_frozen",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "frozen",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-20"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_quarantin",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "quarantin",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-21"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_rollback",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "rollback",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-22"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_revert",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "revert",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-23"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_changesrequested",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "changesrequested",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-24"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_paus",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "paus",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-25"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_suspend",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "suspend",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-26"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_kill",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "kill",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-27"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_incident",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "incident",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-28"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_emergenc",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "emergenc",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-29"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_escalat",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "escalat",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-30"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_error",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "error",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-31"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_timeout",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "timeout",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-32"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_expir",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "expir",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-33"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_wedg",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "wedg",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-34"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_unsafe",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "unsafe",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-35"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_invalid",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "invalid",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-36"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_conflict",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "conflict",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-37"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_regress",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "regress",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-38"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_broke",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "broke",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-39"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_critical",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "critical",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-40"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_disapprov",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "disapprov",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-41"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_nogo",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "nogo",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-42"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_embargo",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "embargo",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-43"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_lock",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "lock",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-44"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_donot",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "donot",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-45"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_notapprov",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notapprov",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-46"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_notpass",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notpass",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-47"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_notmerg",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notmerg",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-48"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_notready",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "notready",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-49"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "root_on_bound_reply_wait",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5",
+    "type": "message",
+    "status": "wait",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "in_reply_to_request_id": "r-root-50"
+   },
+   "expected": {
+    "class": "bound_reply",
+    "reason": "claimed_reply",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_punct_dot_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5.",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing)."
+  },
+  {
+   "id": "to_punct_dash_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5-",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing)."
+  },
+  {
+   "id": "to_punct_underscore_prefix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "_fable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing)."
+  },
+  {
+   "id": "to_punct_underscore_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5_",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing)."
+  },
+  {
+   "id": "to_punct_parenthesised",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "(fable-5)",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing)."
+  },
+  {
+   "id": "to_punct_angle",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "<fable-5>",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing)."
+  },
+  {
+   "id": "to_punct_shadow_lane_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5-shadow",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it (ambiguous, not accepted routing). Over-wake: a hypothetical lane name extending the target with a separator is treated as a mention."
+  },
+  {
+   "id": "to_collision_alnum_prefix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "xfable-5",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_collision_alnum_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-5x",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_collision_digit_suffix",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "fable-51",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_collision_embedded_longer",
+   "target_agent": "fable-5",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "my_fable-50",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_rco_exact",
+   "target_agent": "claude-rco-1",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-1",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "control",
+    "reason": "control_type",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": true,
+    "monitor": true
+   }
+  },
+  {
+   "id": "to_rco_collision_10",
+   "target_agent": "claude-rco-1",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-10",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_rco_collision_list",
+   "target_agent": "claude-rco-1",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-12,claude-rco-1x",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "not_addressed",
+    "reason": "not_targeted",
+    "wakes": false,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   }
+  },
+  {
+   "id": "to_rco_dot_suffix",
+   "target_agent": "claude-rco-1",
+   "event": {
+    "ts_utc": "2026-09-28T14:00:00Z",
+    "agent": "codex-lead-1",
+    "to": "claude-rco-1.",
+    "type": "decision",
+    "status": "veto",
+    "task_id": "wake-class-v1",
+    "message": "",
+    "payload": {
+     "notification": "informational"
+    }
+   },
+   "expected": {
+    "class": "ambiguous",
+    "reason": "ambiguous_target",
+    "wakes": true,
+    "control_signal": true
+   },
+   "legacy": {
+    "watch": false,
+    "monitor": false
+   },
+   "legacy_difference": {
+    "watch": {
+     "legacy": false,
+     "contract": true
+    },
+    "monitor": {
+     "legacy": false,
+     "contract": true
+    }
+   },
+   "note": "Punctuation next to the target name: legacy drops this veto, the contract drains it."
   }
  ]
 }

@@ -1,9 +1,12 @@
 # Bridge wake-class contract v1 (`wd.wake-class.v1`)
 
 Status: W0 building block (Bridge v2 single-release plan), **pre-acceptance
-candidate**. Revision 2 replaces candidate `bbc54f90`, which RCO1 review
-f8fc8be4 rejected (its token denylist let the hint silence camelCase,
-concatenated and unlisted control words, and noise rows could carry results).
+candidate**. Revision 2 (`d08c7650`) replaced candidate `bbc54f90`, which
+RCO1 review f8fc8be4 and RCO2 review ec47a651 rejected (its token denylist let
+the hint silence camelCase, concatenated, unlisted and legacy request-like
+statuses, and noise rows could carry results). Revision 3 adds the boundary,
+per-root and punctuation-adjacent target hardening from RCO1 de8f1f2f and
+RCO2 ec47a651 N1/N3-N6.
 Pure contract, reference implementation and golden vectors only. Nothing here
 is wired into Watch-Bridge, Monitor-AgentBridge, the reboot status tool or any
 runtime path; the PowerShell port and consumer/ops wiring are later reviewed
@@ -81,28 +84,36 @@ construction. A consumer that routes by class must still send a
 * In any noise payload, `notification` must be exactly `informational`.
 * **Benign notice statuses (closed allowlist, exact, case-sensitive):**
   `informational`, `info`, `notice`, `evidence`, `evidence_update`,
-  `progress`, `progress_summary`, `in_progress`, `planning`. They were chosen
-  narrowly from statuses measured under the hint; presence under the hint does
-  not make a status benign, so result or promotion words (`approved`,
-  `verified`, `answered`, `completed_*`, `published`, `review_findings`, ...)
-  are deliberately absent. Adding a status is a contract change.
-* Control roots: the status is ASCII-lowercased and every non-alphanumeric
-  character removed; it contains a control root when any of these is a
-  substring: `hold`, `held`, `veto`, `block`, `cancel`, `supersed`, `withdr`,
-  `retract`, `revok`, `revoc`, `reject`, `refus`, `deny`, `denied`, `nack`,
-  `fail`, `clos`, `stop`, `halt`, `abort`, `freez`, `frozen`, `quarantin`,
-  `rollback`, `revert`, `changesrequested`, `paus`, `suspend`, `kill`,
-  `incident`, `emergenc`, `escalat`, `error`, `timeout`, `expir`, `wedg`,
-  `unsafe`, `invalid`, `conflict`, `regress`, `broke`, `critical`,
-  `disapprov`, `nogo`, `embargo`, `lock`, `donot`, `notapprov`, `notpass`,
-  `notmerg`, `notready`, `wait`. Substring matching catches camelCase and
-  concatenations (`mergeHold`, `rcoveto`, `onhold`) and over-wakes on purpose
-  (`threshold`). No benign status contains a control root (pinned by a test).
-  The root list is best effort and is **not** what makes suppression safe;
-  the allowlist is.
-* Ids: a well-formed id matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,255}`. A missing
-  key, `null` or `""` means absent; any other value is malformed.
-* Type and status must be non-empty ASCII strings of at most 256 characters.
+  `progress`, `progress_summary`, `in_progress`, `planning`.
+* Why the allowlist is that small: the statuses were chosen narrowly from
+  statuses measured under the hint; presence under the hint does not make a
+  status benign, so result or promotion words (approved, verified, answered,
+  completed_*, published, review_findings, ...) are deliberately absent.
+  Adding a status is a contract change. A test checks that this list and the
+  code list are equal in both directions.
+* **Control roots (exact list):**
+  `hold`, `held`, `veto`, `cancel`, `supersed`, `withdr`, `retract`, `revok`,
+  `revoc`, `reject`, `refus`, `deny`, `denied`, `nack`, `fail`, `clos`,
+  `stop`, `halt`, `abort`, `freez`, `frozen`, `quarantin`, `rollback`,
+  `revert`, `changesrequested`, `paus`, `suspend`, `kill`, `incident`,
+  `emergenc`, `escalat`, `error`, `timeout`, `expir`, `wedg`, `unsafe`,
+  `invalid`, `conflict`, `regress`, `broke`, `critical`, `disapprov`, `nogo`,
+  `embargo`, `lock`, `donot`, `notapprov`, `notpass`, `notmerg`, `notready`,
+  `wait`.
+* How roots match: the status is ASCII-lowercased and every non-alphanumeric
+  character removed; it contains a control root when any root is a substring.
+  This catches camelCase and concatenations (mergeHold, rcoveto, onhold) and
+  over-wakes on purpose (threshold). No root contains another root (block was
+  dropped as redundant with lock), so each root is independently pinned by a
+  bound-reply vector; no benign status contains a root; a test checks that the
+  code and doc root lists are equal in both directions. The root list is best
+  effort and is **not** what makes suppression safe; the allowlist is.
+* Ids: a well-formed id matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,255}` with no
+  trailing newline (at most 256 characters). A missing key, `null` or `""`
+  means absent; any other value is malformed. The same holds for binding keys
+  inside a payload (an empty `request_id` there is absent).
+* Type and status must be non-empty ASCII strings of at most 256 characters
+  (256 is accepted, 257 is `oversized_field`; both pinned).
 
 ## 5. Precedence
 
@@ -116,10 +127,17 @@ Steps run in order; the first match decides. Reason codes are exact.
    `not_addressed` / `no_target`. The event is addressed only when the exact
    key `to` is the only `to`-like key, is a string, and one of its
    comma-separated, whitespace-trimmed entries equals `target_agent` exactly.
-   Otherwise, if any collected value mentions the target loosely
-   (case-insensitive, any separator, inside a non-string value, or as an
-   `expected_responders` key) → `ambiguous` / `ambiguous_target`; else →
-   `not_addressed` / `not_targeted`.
+   Otherwise, if any collected value mentions the target loosely → `ambiguous`
+   / `ambiguous_target`; else →
+   `not_addressed` / `not_targeted`. A loose mention means: the
+   ASCII-lowercased value (a non-string value as its JSON text, so an
+   `expected_responders` key counts) contains the target name with no ASCII
+   letter or digit directly before or after it. So `FABLE-5`, `fable-5;x`,
+   `fable-5 x`, `fable-5.`, `fable-5-`, `_fable-5` and `(fable-5)` are
+   ambiguous and wake, while another lane name that merely extends the target
+   (`fable-50`, `xfable-5`, `claude-rco-10` for `claude-rco-1`) is not a
+   mention. Ambiguous is not accepted routing: it only drains to the inbox,
+   grants nothing, and exact canonical addressing is unchanged.
 4. Any case-variant spelling of `agent`, `to`, `type`, `status`, `payload`,
    `request_id`, `in_reply_to_request_id` or `expected_responders` →
    `ambiguous` / `case_variant_key`.
@@ -182,8 +200,9 @@ them as vectors.) The difference classes are:
   spelling `changes-requested`, and the deliberate over-wakes.
 * Unlisted statuses under the hint (`review_findings`, `review_note`,
   `handoff_published`, unknown future statuses).
-* Targets with the wrong separator (`fable-5;x`, `fable-5 x`) are dropped by
-  both consumers; a JSON array `to` is dropped by Monitor only; a target named
+* Targets with the wrong separator or punctuation next to the name
+  (`fable-5;x`, `fable-5 x`, `fable-5.`, `_fable-5`) are dropped by both
+  consumers; a JSON array `to` is dropped by Monitor only; a target named
   only in `expected_responders` is dropped by both.
 * A sender spelled like the target in another case is treated by legacy as
   self-emission. A missing or empty sender is dropped by Monitor but not by
@@ -220,7 +239,16 @@ them as vectors.) The difference classes are:
   and out of scope.
 * `ops/windows/reboot/Get-WdSwarmParallelStatus.ps1` also consumes
   `Test-BridgeWakeEligible`; its projection is not measured by these vectors
-  and stays explicitly unmeasured until it is.
+  and stays explicitly unmeasured until it is (Lead's wiring slice must
+  measure it). A test inventories every `Test-BridgeWakeEligible` call site
+  under `.agent-bridge/bin` and `ops/` and fails on any consumer that is
+  neither measured (Watch-Bridge, Monitor-AgentBridge) nor listed here as
+  explicitly unmeasured.
+* The legacy harness measures the extracted filter functions and only the
+  agent-inbox Monitor configuration (`-TargetedOnly -IncludeWakeRequests`),
+  not the main loops.
+* Input domain: a JSON-decoded value. A non-JSON Python value (for example a
+  set in `to`) raises `TypeError`; it cannot come from a decoded row.
 * v1 freezes only on acceptance (both RCO reviews). After that, any change to
   vocabularies, precedence or outputs is `wd.wake-class.v2` with its own
   vectors; v1 vectors stay as a regression record.

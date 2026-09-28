@@ -142,6 +142,7 @@ Notation:
 | F5 | T | **new** `tools/bridge_lock_participants.py`. It enumerates participant processes (logon, integrity) and keeps them apart from *proven* mutex handle holders: reading the ACL and the lane tokens does not establish every creator or opener. Missing coverage stays unknown; more than one logon or integrity level means HOLD. |
 | F6 | T | **new** `tools/bridge_v2_dashboard.py` (read-only: pools, lanes, intents, stages). |
 | F21 | F writes, T runs | **new** `tools/wd_profile_qualification.py` + `tests/fixtures/qualification/` (synthetic and replayed tasks per class, adversarial holdouts); receipts `wd.profile-receipt.v1` bound to code SHA, profile, provider version and freshness; isolated worktrees, no production writes. |
+| F29 | T implements, F tests | **new** `configs/bridge_components.json` (`wd.bridge-components.v1`); **new** `tools/wd_bridge_doctor.py` + `.agent-bridge/bin/Test-WdBridgeComponents.ps1` (one manifest, two front ends); **new** `ops/windows/reboot/Initialize-WdBridge.ps1` (first-run local config from templates, never overwriting); **mod** `Start-AgentBridgeSession.ps1`, `start-wd-agent.ps1`, `Deploy-WdRebootBundle.ps1` (call the doctor in preflight); replace hard-coded machine paths in new code with config values (existing examples: `wd_grok_helper.py:17` `STATE_ROOT`, the installer's `$BundleStore` default at `Deploy-WdRebootBundle.ps1:17-28`, the writer's hard-coded fleet targets at `Write-AgentEvent.ps1:668`). |
 | F25 | T | **mod** `Get-WdCapacityStatus.ps1` (:38, :147: every pool with age and source); boot brief line in `start-wd-agent.ps1`; **mod** `bridge_capacity_advisor.py` for a peer-pool view. |
 
 ### Stage 2: wake backpressure
@@ -208,7 +209,7 @@ Notation:
 PowerShell files go under `.agent-bridge/bin/`, which the installer already
 copies whole.
 
-**Size:** 29 slices (F0-F28 minus F14, plus the contract doc). Most are
+**Size:** 30 slices (F0-F29 minus F14, plus the contract doc). Most are
 small to medium. The large ones are F7, F8, F16, F17 and F27.
 
 ## 5. Build order

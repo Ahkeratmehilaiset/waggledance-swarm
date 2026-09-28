@@ -63,6 +63,10 @@ incorporated (§7).
 > käyttöraja umpeutuu ja sen työtä jatkamaan pitää pystyä inkarnoimaan
 > tuuraaja
 
+> ja tee suunnitelma myös sillä periaatteella että jos joku forkkaa vaikka
+> tämän bridgen niin jonkun tarvittavan komponentin puuttuessa se pyytää
+> asentamaan tai ohjeistaa asentamaan puuttuvan osan
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -81,6 +85,7 @@ incorporated (§7).
 | R14 | Plan, then execute: detailed sprint plans are made on a strong model; when the plan is done, the lane returns to the quota-preserving model the situation calls for, and the plan is implemented on that | §2.7 |
 | R15 | All of this happens automatically, without operator intervention: the swarm stays operational and up to date in hard situations, and it learns, like the waggle dance | §2.11 |
 | R16 | When a working model crashes or its usage limit runs out mid-task, a stand-in can be incarnated to continue its work | §2.12 |
+| R17 | Portability: if someone forks the bridge and a required component is missing, the bridge asks to install it or tells how to install it | §2.13 |
 
 ## 1. Current state
 
@@ -855,6 +860,77 @@ identity, an incomplete fence, an unknown external outcome, or no eligible
 profile with headroom is a safety HOLD. A stand-in is never a way around a
 claim, a veto or a gate.
 
+### 2.13 Missing components: detect, explain, offer to install (R17)
+
+A fork, a fresh machine or a new lane may lack a component this package needs.
+Today a missing piece shows up as an obscure failure deep in a script, and
+many paths are hard-coded to this machine (for example `C:\Python\...`,
+`C:\Python\grok-scout-reports`, `C:\Python\wd-reboot-bundles`, the
+runtime root, and the fleet targets in the writer). The rule is that the
+bridge **names what is missing, says what stops working, and tells or offers
+how to install it.**
+
+**Component manifest** (`configs/bridge_components.json`, schema
+`wd.bridge-components.v1`). One entry per component:
+- the id, the kind (runtime, CLI, library, account, platform, configuration
+  or data), and `required` or `optional`;
+- the features that need it (F-numbers), so a missing optional component
+  disables exactly those features;
+- a version constraint and a detection method (a command with an expected
+  output pattern, a file, or an importable module), with a timeout;
+- per-platform install instructions: an official source URL, a pinned
+  package id (for example a `winget` id or a hash-pinned wheel), and the
+  login step for accounts;
+- whether an assisted install is allowed, and whether it needs elevation.
+
+**Components it covers** (initial list):
+- **Runtimes:** Windows PowerShell 5.1, PowerShell 7, Python 3.13 with the
+  hash-pinned wheels of `bridge-code-files.json`, git.
+- **CLIs:** `gh`, Claude Code, Codex CLI, and Grok Build (optional).
+- **Accounts:** a Claude subscription, a ChatGPT subscription, and SuperGrok
+  (optional). Accounts are never installed, only logged in to.
+- **Platform:** Windows named mutexes, job objects and Task Scheduler. On
+  other platforms the doctor says plainly which features are unsupported.
+- **Configuration and data:** the identity registry, the lane manifest
+  (`wd-fleet.json`), the runtime root, the role contract (F2), the model
+  registry, the catalog and the activation config (F0).
+
+**The doctor** (`wd-bridge doctor`; PowerShell and Python front ends over one
+manifest). It runs:
+- on demand;
+- at session start (`Start-AgentBridgeSession.ps1`), in the installer and
+  launcher preflights;
+- lazily, the first time a feature needs a component.
+
+**What it does when something is missing:**
+- **A required component is missing:** the doctor refuses to start and names
+  the component, its version constraint, what it is needed for, and the
+  exact install or login steps. It never fails with a raw stack trace.
+- **An optional component is missing:** the dependent features are disabled
+  with the reason (for example "Grok Build not found: `grok_consult` returns
+  `skipped`; install from <official URL>"), and everything else runs.
+- **Interactive session (a human at the terminal):** it *offers* the
+  install. It shows the exact command and source and asks yes or no, and
+  runs it only on an explicit yes. Only pinned sources are used; there is
+  never a piped remote script, and nothing needing elevation runs without
+  its own prompt.
+- **Non-interactive (a lane or a scheduled task):** it never installs. It
+  posts one `component_missing` status event to the operator with the
+  instructions, deduplicated per component and generation, and the
+  dependent features stay off.
+- **Configuration and data:** a first-run `Initialize-WdBridge.ps1` creates
+  the fork's own local configuration (runtime root, identity registry,
+  lane manifest, paths) from templates, instead of this machine's
+  hard-coded values. Existing files are never overwritten.
+
+**Limits.**
+- Detection is not trust: a found component still passes the existing hash
+  and version pins.
+- An assisted install never touches credentials, never buys anything, and
+  never changes gates or signatures.
+- The repository's own operator rules (CLAUDE.md) still bind this
+  repository; a fork sets its own.
+
 ## 3. Acceptance table
 
 **Owners:** L = Lead, T = Tools, F = fable-5. These are planning proposals,
@@ -902,6 +978,7 @@ boundary; merging alone never mutates production.
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; read-only review mode: an out-of-allowlist tool call in the session log fails the run, and the snapshot holds no `.git`, secrets or runtime data; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each operational-wait cause clears and work resumes with no operator action, while each safety HOLD stays blocked until its condition changes; replay: routing weights converge to the best measured route per class, a stop signal quarantines a failing profile within one tick, exploration stays within its budget, a candidate joins only through the admission policy with an independent quorum; adversarial: poisoned and replayed evidence, correlated lanes, self-grading, model-version drift and oscillation; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
 | F27 | 5 | Stand-in incarnation (§2.12) | L (with F16/F17) | fault injection on the canary: kill mid-step; a limit error mid-step; a stale, misbound or transient limit reading; PID reuse, a recycled child PID, a dead parent with a live child, unrelated descendants; partial WIP write, bad diff, untracked file; a crash just before and just after an external success and before its receipt; freeze during recovery; a partially applied CAS; two simultaneous stand-ins; hand-back failure. Records the observed recovery time and data-loss window | ambiguous identity, an incomplete fence, an unknown external outcome or no eligible profile means a safety HOLD; an unresponsive live owner is never taken over; a quota reading is never kill authority | with F16 and F17 | stand-ins off; the lane waits for its own pool |
+| F29 | 1 | Component manifest + doctor + first-run init (§2.13) | T implements; F tests | in a clean fork clone under an isolated user profile, with each component removed in turn (PATH and file masking): every missing required component refuses start with exact instructions; every missing optional one disables exactly its features with the reason; an interactive run installs only on an explicit yes from a pinned source; a non-interactive run never installs and posts one deduplicated `component_missing`; the hard-coded machine paths are gone from the new code | a missing required component means refuse with instructions; an unknown detection result means treat as missing | deploy (read-only doctor first, then the start hook) | doctor off; the existing behaviour |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
@@ -1025,6 +1102,9 @@ binding are in `BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md`.
   is operator-requested Grok calls from the hourly guard (§2.6); the weekly
   pool still applies.
 - Every lane can see every pool's quota state; seeing grants no authority.
+- A missing component is named with instructions, never a raw failure; the
+  bridge installs only on an explicit yes in an interactive session, from a
+  pinned source (R17).
 - After the future signature, routine operation runs without operator
   intervention; an operational wait has a bounded automatic exit, while a
   safety or authority HOLD stays blocked until its condition or authority
@@ -1186,3 +1266,11 @@ immutably and quarantined rather than reset. A new family must be verified
 ready before it writes. Old vetoes stay in force. The retry budget is shared
 across stand-ins, and more fault-injection cases were added. The
 data-loss window between checkpoints is measured and not denied.
+
+**Twelfth directive (R17).** A fork or a fresh machine that lacks a component
+must be told what is missing and how to install it, or be offered the
+install. Added as §2.13 and F29: a component manifest, a doctor at session
+start and in preflights, refusal with instructions for required components,
+feature-level degradation for optional ones, an install offered only
+interactively from pinned sources, never an automatic install from a lane,
+and a first-run init that replaces this machine's hard-coded paths.

@@ -39,15 +39,40 @@ def literal_sibling_closure(roots):
         if name in seen:
             continue
         seen.add(name)
-        source = (ROOT / ".agent-bridge/bin" / name).read_text(encoding="utf-8-sig")
+        path = ROOT / ".agent-bridge/bin" / name
+        # Keep unresolved names in the closure for an explicit test failure;
+        # never filter away a real missing dependency or crash collection.
+        if not path.is_file():
+            continue
+        source = path.read_text(encoding="utf-8-sig")
         pending.extend(set(re.findall(r"['\"]([A-Za-z0-9_.-]+\.ps1)['\"]", source)) - seen)
     return seen
 
 
 def test_declared_entrypoints_and_literal_sibling_closure_are_required():
     required = required_bridge_scripts()
-    missing = literal_sibling_closure(required | ENTRYPOINTS) - required
+    closure = literal_sibling_closure(required | ENTRYPOINTS)
+    unresolved = sorted(name for name in closure if not (ROOT / ".agent-bridge/bin" / name).is_file())
+    assert not unresolved, f"Unresolved bridge script literals: {unresolved}; inspect references, do not silently exclude them"
+    missing = closure - required
     assert not missing, f"Missing required bridge scripts: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("source", [
+    "# See 'Missing.ps1' outside this directory\n",
+    ". (Join-Path $PSScriptRoot 'Missing.ps1')\n",
+])
+def test_unresolved_literal_is_reported_without_collection_crash(tmp_path, monkeypatch, source):
+    bin_root = tmp_path / ".agent-bridge/bin"
+    bin_root.mkdir(parents=True)
+    (bin_root / "Entry.ps1").write_text(source, encoding="utf-8")
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    monkeypatch.setitem(globals(), "ENTRYPOINTS", {"Entry.ps1"})
+    # Even listing the absent name as required must not hide its absence.
+    monkeypatch.setitem(globals(), "required_bridge_scripts", lambda: {"Entry.ps1", "Missing.ps1"})
+    assert literal_sibling_closure({"Entry.ps1"}) == {"Entry.ps1", "Missing.ps1"}
+    with pytest.raises(AssertionError, match=r"Unresolved bridge script literals:.*Missing.ps1"):
+        test_declared_entrypoints_and_literal_sibling_closure_are_required()
 
 
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])

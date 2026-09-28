@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -594,7 +595,9 @@ def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):
 @pytest.fixture
 def actual_linked_worktree(tmp_path):
     source = Path(doctor.__file__).resolve().parents[1]
-    linked = tmp_path / "linked-worktree"
+    audit_ancestors = [path for path in tmp_path.parents if path.name == ".codex-audit"]
+    base = audit_ancestors[-1] if os.name == "nt" and audit_ancestors else tmp_path
+    linked = base / f"doctor-linked-{uuid.uuid4().hex[:8]}"
     subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
                     "worktree", "add", "--detach", str(linked), "HEAD"],
                    check=True, capture_output=True)
@@ -675,7 +678,10 @@ def test_linked_worktree_core_fsmonitor_is_never_executed(
 
 def test_git_index_unsupported_format_fails_closed(tmp_path, monkeypatch):
     source = Path(doctor.__file__).resolve().parents[1]
-    index = (source / ".git" / "index").read_bytes()
+    marker = source / ".git"
+    gitdir = (Path(marker.read_text(encoding="utf-8").split(": ", 1)[1].strip())
+              if marker.is_file() else marker)
+    index = (gitdir / "index").read_bytes()
     unsupported = bytearray(index)
     unsupported[4:8] = (4).to_bytes(4, "big")
     unsupported[-20:] = hashlib.sha1(unsupported[:-20]).digest()
@@ -694,6 +700,34 @@ def test_git_metadata_reads_are_bounded(tmp_path):
     oversized.write_bytes(b"x" * 257)
     with pytest.raises(OSError):
         doctor._read_bounded_metadata(oversized, 256)
+
+
+def test_git_metadata_growth_after_stat_has_bounded_io(monkeypatch):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    class Meter(BytesIO):
+        calls = []
+
+        def read(self, size=-1):
+            self.calls.append(size)
+            return super().read(size)
+
+    class GrowingPath:
+        def stat(self):
+            return SimpleNamespace(st_size=1)
+
+        def open(self, mode):
+            assert mode == "rb"
+            return Meter(b"x" * 4096)
+
+        def read_bytes(self):
+            pytest.fail("unbounded read_bytes after stale stat")
+
+    monkeypatch.setattr(doctor, "_path_chain_has_alias", lambda _: False)
+    with pytest.raises(OSError):
+        doctor._read_bounded_metadata(GrowingPath(), 256)
+    assert Meter.calls == [257]
 
 
 def test_installed_copy_never_writes_code_even_with_external_fallback(

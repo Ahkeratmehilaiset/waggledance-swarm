@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -30,7 +32,24 @@ PROBES = {
     "grok": ("grok", "--version"),
 }
 SAFE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-VERSION = re.compile(r"\b(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?\b")
+VERSION_TEXT = r"(\d{1,4}\.\d{1,4}\.\d{1,4})"
+PROBE_VERSION_LINES = {
+    "python": re.compile(r"^Python " + VERSION_TEXT + r"$"),
+    "git": re.compile(r"^git version " + VERSION_TEXT + r"(?:\.windows\.\d+)?$"),
+    "powershell": re.compile(r"^(\d{1,4}\.\d{1,4})(?:\.\d{1,5}){0,2}$"),
+    "pwsh": re.compile(r"^(\d{1,4}\.\d{1,4})(?:\.\d{1,5}){0,2}$"),
+    "gh": re.compile(r"^gh version " + VERSION_TEXT + r"(?: \([^\r\n]*\))?$"),
+    "claude": re.compile(r"^" + VERSION_TEXT + r"(?: \(Claude Code\))?$"),
+    "codex": re.compile(r"^codex(?:-cli)? " + VERSION_TEXT + r"$"),
+    "grok": re.compile(r"^grok " + VERSION_TEXT + r"$"),
+}
+NPM_NATIVE = {
+    "claude": ("@anthropic-ai/claude-code", "bin/claude.exe",
+               ("bin/claude.exe",)),
+    "codex": ("@openai/codex", "bin/codex.js",
+              ("node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+               "vendor/x86_64-pc-windows-msvc/bin/codex.exe")),
+}
 OFFICIAL_HOSTS = {
     "python.org", "www.python.org", "git-scm.com", "learn.microsoft.com",
     "github.com", "cli.github.com", "docs.anthropic.com",
@@ -98,7 +117,7 @@ def validate_manifest(data):
     for index, item in enumerate(components):
         loc = f"components[{index}]"
         _keys(item, {"id", "kind", "probe", "platforms", "features", "required_for",
-                     "min_version", "timeout_seconds", "install"},
+                     "min_version", "timeout_seconds", "install", "resolution"},
               {"id", "kind", "probe", "platforms", "features", "required_for",
                "min_version", "timeout_seconds", "install"}, loc)
         if not isinstance(item["id"], str) or not SAFE_ID.fullmatch(item["id"]):
@@ -110,6 +129,24 @@ def validate_manifest(data):
             raise DoctorError(f"{loc}.kind unsupported")
         if not isinstance(item["probe"], str) or item["probe"] not in PROBES:
             raise DoctorError(f"{loc}.probe unsupported")
+        resolution = item.get("resolution")
+        if item["probe"] in NPM_NATIVE:
+            _keys(resolution, {"kind", "package", "bin", "native_relpaths", "trusted_sha256"},
+                  {"kind", "package", "bin", "native_relpaths", "trusted_sha256"},
+                  f"{loc}.resolution")
+            allowed_package, allowed_bin, allowed_paths = NPM_NATIVE[item["probe"]]
+            if (resolution["kind"] != "npm_native" or
+                    resolution["package"] != allowed_package or resolution["bin"] != allowed_bin):
+                raise DoctorError(f"{loc}.resolution not allowlisted for probe")
+            paths = resolution["native_relpaths"]
+            if not isinstance(paths, list) or not paths or len(paths) != len(set(map(str, paths))) or \
+                    any(not isinstance(path, str) or path not in allowed_paths for path in paths):
+                raise DoctorError(f"{loc}.resolution.native_relpaths not allowlisted")
+            pin = resolution["trusted_sha256"]
+            if pin is not None and (not isinstance(pin, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", pin)):
+                raise DoctorError(f"{loc}.resolution.trusted_sha256 invalid")
+        elif resolution is not None:
+            raise DoctorError(f"{loc}.resolution unsupported for probe")
         _ids(item["platforms"], f"{loc}.platforms", PLATFORMS)
         if not set(item["platforms"]).issubset(data["supported_platforms"]):
             raise DoctorError(f"{loc}.platforms not supported by manifest")
@@ -144,6 +181,8 @@ def validate_manifest(data):
         if parsed.scheme != "https" or parsed.hostname not in OFFICIAL_HOSTS or parsed.username or parsed.password:
             raise DoctorError(f"{loc}.install.source_url must be an allowlisted official HTTPS URL")
         package_id = install["package_id"]
+        if item["probe"] in NPM_NATIVE and package_id != resolution["package"]:
+            raise DoctorError(f"{loc}.install.package_id differs from resolution package")
         if package_id is None and item["probe"] == "powershell" and item["platforms"] == ["windows"]:
             continue  # Windows PowerShell 5.1 is an OS component, not a package.
         if not isinstance(package_id, str) or not re.fullmatch(r"[A-Za-z0-9@._/\-]{1,128}", package_id):
@@ -168,12 +207,185 @@ def _safe_executable(name, search_path):
     return None
 
 
-def _run_bounded(argv, timeout):
+def _parse_probe_version(probe, output):
+    """Accept only an exact probe-specific release line, never banner versions."""
+    pattern = PROBE_VERSION_LINES[probe]
+    versions = []
+    for line in output.splitlines():
+        match = pattern.fullmatch(line.strip())
+        if match:
+            value = match.group(1)
+            if probe in {"powershell", "pwsh"}:
+                parts = value.split(".")
+                value = ".".join((parts + ["0", "0"])[:3])
+            versions.append(value)
+    return versions[0] if len(versions) == 1 else None
+
+
+def _sha256_bounded(path, maximum=512 * 1024 * 1024):
+    if not path.is_file() or path.stat().st_size > maximum:
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_npm_native(probe, resolution, search_path):
+    """Locate an allowlisted npm native payload; never execute its shell shims."""
+    package = resolution["package"]
+    for part in search_path.split(os.pathsep):
+        directory = Path(part)
+        if not part or not directory.is_absolute():
+            continue
+        if not any((directory / (probe + suffix)).is_file()
+                   for suffix in (".cmd", ".ps1", "")):
+            continue
+        package_root = directory.joinpath("node_modules", *package.split("/"))
+        metadata_path = package_root / "package.json"
+        try:
+            with metadata_path.open("rb") as stream:
+                metadata_bytes = stream.read(65537)
+            if len(metadata_bytes) > 65536:
+                return None, None, "package_metadata_too_large"
+            metadata = json.loads(metadata_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        except (OSError, UnicodeError, json.JSONDecodeError, DoctorError):
+            return None, None, "package_metadata_invalid"
+        if not isinstance(metadata, dict) or metadata.get("name") != package:
+            return None, None, "package_identity_mismatch"
+        package_version = metadata.get("version")
+        if not isinstance(package_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", package_version):
+            return None, None, "package_version_invalid"
+        if not isinstance(metadata.get("bin"), dict) or metadata["bin"].get(probe) != resolution["bin"]:
+            return None, None, "package_bin_mismatch"
+        for relpath in resolution["native_relpaths"]:
+            candidate = package_root.joinpath(*relpath.split("/"))
+            try:
+                candidate_resolved = candidate.resolve(strict=True)
+                candidate_resolved.relative_to(package_root.resolve(strict=True))
+            except (OSError, ValueError):
+                continue
+            if candidate_resolved.suffix.lower() != ".exe" or not candidate_resolved.is_file():
+                continue
+            try:
+                digest = _sha256_bounded(candidate_resolved)
+            except OSError:
+                return None, None, "binary_hash_error"
+            if digest is None:
+                return None, None, "binary_too_large"
+            provenance = {
+                "method": "npm_native", "package": package,
+                "package_version": package_version,
+                "package_json_path": str(metadata_path),
+                "package_json_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
+                "binary_path": str(candidate_resolved), "sha256": digest,
+                "verified": digest.lower() == (resolution["trusted_sha256"] or "").lower(),
+            }
+            return str(candidate_resolved), provenance, None
+        return None, None, "native_binary_missing"
+    return None, None, "npm_package_not_found"
+
+
+def _windows_kill_on_close_job(process):
+    """Attach only this probe process to a Windows kill-on-close job."""
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
+                    ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                               ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetInformationJobObject.restype = wintypes.BOOL
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+    limits = ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        error = ctypes.get_last_error()
+        kernel.CloseHandle(job)
+        raise OSError(error, "SetInformationJobObject failed")
+    if not kernel.AssignProcessToJobObject(job, wintypes.HANDLE(process._handle)):
+        error = ctypes.get_last_error()
+        kernel.CloseHandle(job)
+        raise OSError(error, "AssignProcessToJobObject failed")
+    return lambda: kernel.CloseHandle(job)
+
+
+def _windows_resume_scoped_process(process):
+    """Resume only after Job attachment, avoiding a fast-child escape race."""
+    import ctypes
+    from ctypes import wintypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    status = ntdll.NtResumeProcess(wintypes.HANDLE(process._handle))
+    if status != 0:
+        raise OSError(status, "NtResumeProcess failed")
+
+
+def _run_bounded(argv, timeout, search_path=None):
+    # Version checks need no account tokens, home directory, or interactive stdin.
+    child_env = {"PATH": search_path if search_path is not None else os.environ.get("PATH", ""),
+                 "NO_COLOR": "1", "CI": "1"}
+    if os.name == "nt":
+        for key in ("SystemRoot", "WINDIR"):
+            if key in os.environ:
+                child_env[key] = os.environ[key]
+    else:
+        child_env["LC_ALL"] = "C"
     try:
         process = subprocess.Popen(argv, shell=False, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL)
+                                   stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                   env=child_env, start_new_session=os.name != "nt",
+                                   creationflags=0x00000004 if os.name == "nt" else 0)
     except OSError:
         return None, "probe_error"
+    close_scope = None
+    if os.name == "nt":
+        try:
+            close_scope = _windows_kill_on_close_job(process)
+            _windows_resume_scoped_process(process)
+        except OSError:
+            if close_scope is not None:
+                close_scope()
+            else:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+            return None, "probe_scope_error"
+    else:
+        close_scope = lambda: os.killpg(process.pid, signal.SIGKILL)
     output = bytearray()
     oversized = [False]
 
@@ -196,10 +408,21 @@ def _run_bounded(argv, timeout):
     try:
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        try:
+            close_scope()
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         reader.join(timeout=1)
         return None, "timeout"
+    try:
+        close_scope()
+    except ProcessLookupError:
+        pass
     reader.join(timeout=1)
     if reader.is_alive():
         return None, "probe_error"
@@ -257,28 +480,67 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
             "auth": "unknown", "quota": "unknown", "turn_readiness": "unknown",
             "install": component["install"],
         }
+        if component["probe"] in NPM_NATIVE:
+            entry["provider_qualification"] = "unknown"
+            entry["provenance"] = None
         if platform not in component["platforms"]:
             entry.update(status="unsupported", reason="platform_unsupported", found=False)
         else:
-            executable = PROBES[component["probe"]][0]
-            resolved = _safe_executable(executable, search_path)
-            if resolved is None:
-                entry.update(status="missing", reason="executable_not_found", found=False)
+            probe = component["probe"]
+            executable = PROBES[probe][0]
+            if probe in NPM_NATIVE and platform == "windows":
+                resolved, provenance, resolution_reason = _resolve_npm_native(
+                    probe, component["resolution"], search_path)
+                if provenance is not None:
+                    entry["provenance"] = provenance
+                    entry["found"] = True
+                    if not provenance["verified"]:
+                        entry["reason"] = "unverified_package_binary"
+                        results.append(entry)
+                        if required:
+                            required_missing.append(component["id"])
+                        else:
+                            disabled.update(selected)
+                        continue
+                elif resolution_reason == "npm_package_not_found":
+                    direct = _safe_executable(executable, search_path)
+                    if direct:
+                        entry.update(found=True, reason="unverified_direct_binary")
+                        try:
+                            direct_hash = _sha256_bounded(Path(direct))
+                        except OSError:
+                            direct_hash = None
+                        entry["provenance"] = {"method": "direct_unverified", "binary_path": direct,
+                                               "sha256": direct_hash, "verified": False}
+                    else:
+                        entry.update(found=False, status="missing", reason="executable_not_found")
+                else:
+                    entry.update(found=None, reason=resolution_reason)
             else:
+                resolved = _safe_executable(executable, search_path)
+                if resolved is None:
+                    entry.update(status="missing", reason="executable_not_found", found=False)
+                else:
+                    entry["found"] = True
+            if resolved is not None and entry["reason"] is None:
                 entry["found"] = True
-                argv = (probe_command(component["probe"]) if probe_command else
-                        [resolved, *PROBES[component["probe"]][1:]])
-                output, reason = _run_bounded(argv, timeout_seconds or component["timeout_seconds"])
+                argv = (probe_command(probe) if probe_command else
+                        [resolved, *PROBES[probe][1:]])
+                output, reason = _run_bounded(
+                    argv, timeout_seconds or component["timeout_seconds"], search_path)
                 if reason:
                     entry["reason"] = reason
                 else:
-                    match = VERSION.search(output)
-                    if not match:
+                    parsed_version = _parse_probe_version(probe, output)
+                    if parsed_version is None:
                         entry["reason"] = "malformed_output"
                     else:
-                        found_version = tuple(int(x or 0) for x in match.groups())
-                        entry["version"] = ".".join(str(x) for x in found_version)
-                        if found_version < _version(component["min_version"], "min_version"):
+                        found_version = _version(parsed_version, "detected version")
+                        entry["version"] = parsed_version
+                        if (entry.get("provenance") and
+                                parsed_version != entry["provenance"]["package_version"]):
+                            entry["reason"] = "package_version_mismatch"
+                        elif found_version < _version(component["min_version"], "min_version"):
                             entry.update(status="wrong_version", reason="below_min_version")
                         else:
                             entry["status"] = "ok"

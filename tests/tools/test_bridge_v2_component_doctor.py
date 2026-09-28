@@ -1,11 +1,15 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from tools.bridge_v2_component_doctor import DoctorError, inspect_components, main, validate_manifest
+from tools.bridge_v2_component_doctor import (
+    DoctorError, _parse_probe_version, _run_bounded, inspect_components, main,
+    validate_manifest,
+)
 
 
 def manifest(probe="python", required=True):
@@ -197,3 +201,106 @@ def test_windows_explicit_path_ignores_cwd_and_batch(tmp_path, monkeypatch):
     result = inspect_components(manifest(), lane="tools", features=["bridge_core"],
                                 search_path=str(empty), platform="windows")
     assert result["components"][0]["status"] == "missing"
+
+
+def test_provider_required_only_when_explicitly_selected():
+    data = json.loads((Path(__file__).resolve().parents[2] / "configs" /
+                       "bridge_v2_components.json").read_text(encoding="utf-8"))
+    core = inspect_components(data, lane="rco2", features=["bridge_core"],
+                              platform="windows", search_path="C:\\does-not-exist")
+    assert {item["id"] for item in core["components"]} == {
+        "python313", "git", "windows_powershell"}
+    selected = inspect_components(data, lane="rco2", features=["provider_codex"],
+                                  platform="windows", search_path="C:\\does-not-exist")
+    assert [item["id"] for item in selected["components"]] == ["codex_cli"]
+    assert selected["components"][0]["auth"] == "unknown"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows npm shim layout")
+def test_npm_native_package_detected_but_unpinned_not_executed(tmp_path):
+    data = manifest("claude")
+    data["components"][0]["install"]["package_id"] = "@anthropic-ai/claude-code"
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": None,
+    }
+    (tmp_path / "claude.cmd").write_text("@echo off\nexit /b 99\n", encoding="utf-8")
+    package = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": "@anthropic-ai/claude-code",
+                                                       "version": "2.1.283",
+                                                       "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    (package / "bin" / "claude.exe").write_bytes(b"inert package binary")
+    result = inspect_components(data, lane="tools", features=["bridge_core"],
+                                search_path=str(tmp_path), platform="windows",
+                                probe_command=lambda _: pytest.fail("untrusted binary executed"))
+    item = result["components"][0]
+    assert item["found"] is True
+    assert item["status"] == "unknown"
+    assert item["reason"] == "unverified_package_binary"
+    assert item["provenance"]["package"] == "@anthropic-ai/claude-code"
+    assert len(item["provenance"]["sha256"]) == 64
+    assert result["exit_code"] == 2
+    data["components"][0]["resolution"]["trusted_sha256"] = item["provenance"]["sha256"]
+    mismatch = inspect_components(data, lane="tools", features=["bridge_core"],
+                                  search_path=str(tmp_path), platform="windows",
+                                  probe_command=lambda _: [sys.executable, "-c",
+                                                           "print('2.1.284 (Claude Code)')"])
+    assert mismatch["components"][0]["reason"] == "package_version_mismatch"
+    assert mismatch["exit_code"] == 2
+
+
+@pytest.mark.parametrize("probe,output,expected", [
+    ("python", "banner 99.9.9\nPython 3.13.7\n", "3.13.7"),
+    ("git", "git version 2.54.0.windows.1\n", "2.54.0"),
+    ("codex", "banner 99.9.9\ncodex-cli 0.157.1\n", "0.157.1"),
+    ("claude", "2.1.283 (Claude Code)\n", "2.1.283"),
+    ("python", "Python 3.14.0rc1\n", None),
+    ("codex", "codex-cli 0.158.0-alpha.1\n", None),
+    ("git", "banner 99.9.9 only\n", None),
+    ("python", "Python 99.9.9\nPython 3.13.7\n", None),
+])
+def test_probe_specific_version_anchors_and_prerelease(probe, output, expected):
+    assert _parse_probe_version(probe, output) == expected
+
+
+def test_probe_child_has_devnull_stdin_and_no_credentials(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-not-for-child")
+    script = ("import os,sys; print('stdin=' + repr(sys.stdin.read(1))); "
+              "print('secret=' + repr(os.getenv('OPENAI_API_KEY')))")
+    output, reason = _run_bounded([sys.executable, "-c", script], 2)
+    assert reason is None
+    assert "stdin=''" in output
+    assert "secret=None" in output
+
+
+def test_timeout_does_not_leave_grandchild_or_pipe_open(tmp_path):
+    marker = tmp_path / "orphaned-child.txt"
+    grandchild = ("import pathlib,time; time.sleep(0.7); "
+                  f"pathlib.Path({str(marker)!r}).write_text('orphaned')")
+    parent = ("import subprocess,sys,time; "
+              f"subprocess.Popen([sys.executable,'-c',{grandchild!r}], "
+              "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+              "time.sleep(5)")
+    started = time.monotonic()
+    _, reason = _run_bounded([sys.executable, "-c", parent], 0.2)
+    assert reason == "timeout"
+    assert time.monotonic() - started < 3
+    time.sleep(1)
+    assert not marker.exists(), "timed-out probe left its grandchild alive"
+
+
+def test_fast_probe_exit_does_not_escape_process_scope(tmp_path):
+    marker = tmp_path / "fast-orphan.txt"
+    grandchild = ("import pathlib,time; time.sleep(0.7); "
+                  f"pathlib.Path({str(marker)!r}).write_text('orphaned')")
+    parent = ("import subprocess,sys; "
+              f"subprocess.Popen([sys.executable,'-c',{grandchild!r}], "
+              "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+              "print('Python 3.13.7')")
+    output, reason = _run_bounded([sys.executable, "-c", parent], 2)
+    assert reason is None
+    assert output.strip() == "Python 3.13.7"
+    time.sleep(1)
+    assert not marker.exists(), "fast probe left its grandchild alive"

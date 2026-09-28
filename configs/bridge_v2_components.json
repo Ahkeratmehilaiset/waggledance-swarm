@@ -57,6 +57,7 @@
       "platforms": ["windows"], "features": ["provider_claude"],
       "required_for": [{"feature": "provider_claude", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "1.0.0", "timeout_seconds": 3,
+      "resolution": {"kind": "npm_native", "package": "@anthropic-ai/claude-code", "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"], "trusted_sha256": null},
       "install": {"source_url": "https://github.com/anthropics/claude-code", "package_id": "@anthropic-ai/claude-code"}
     },
     {
@@ -64,6 +65,7 @@
       "platforms": ["windows"], "features": ["provider_codex"],
       "required_for": [{"feature": "provider_codex", "lanes": ["codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2", "test"], "platforms": ["windows"]}],
       "min_version": "0.1.0", "timeout_seconds": 3,
+      "resolution": {"kind": "npm_native", "package": "@openai/codex", "bin": "bin/codex.js", "native_relpaths": ["node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe", "vendor/x86_64-pc-windows-msvc/bin/codex.exe"], "trusted_sha256": null},
       "install": {"source_url": "https://developers.openai.com/codex/cli", "package_id": "@openai/codex"}
     }
   ]

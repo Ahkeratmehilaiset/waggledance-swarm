@@ -24,6 +24,8 @@ def attempt(**changes):
         "request_id": "request-1",
         "prompt_digest": DIGEST_A,
         "task_id": "task-1",
+        "requester_agent": "requesting-lead",
+        "consumer_agent": "consuming-tools",
         "task_class": "coding",
         "artifact_digest": DIGEST_B,
         "artifact_version": "v1",
@@ -50,6 +52,8 @@ def outcome(a=None, **changes):
         "request_id": a["request_id"],
         "prompt_digest": a["prompt_digest"],
         "task_id": a["task_id"],
+        "requester_agent": a["requester_agent"],
+        "consumer_agent": a["consumer_agent"],
         "task_class": a["task_class"],
         "artifact_digest": a["artifact_digest"],
         "artifact_version": a["artifact_version"],
@@ -121,6 +125,8 @@ def test_exact_replay_deduplicates_but_conflicts_reject():
 @pytest.mark.parametrize("field,value", [
     ("request_id", "other-request"), ("prompt_digest", DIGEST_B),
     ("task_id", "other-task"), ("task_class", "review"),
+    ("requester_agent", "other-requester"),
+    ("consumer_agent", "other-consumer"),
     ("artifact_digest", DIGEST_A), ("artifact_version", "v2"),
     ("observed_profile", "foreign-profile"),
 ])
@@ -146,8 +152,9 @@ def test_self_grading_and_missing_independent_score_cannot_be_favorable():
     joined = join_outcomes([a], [outcome(a)])
     assert joined["attempts"][0]["suggestions"][0]["correctness"] == "correct"
     assert joined["attempts"][0]["suggestions"][0]["evidence_state"] == (
-        "reported_independent_not_authenticated"
+        "reported_evaluator_independence_unverified"
     )
+    assert joined["attempts"][0]["suggestions"][0]["independence_verified"] is False
     assert joined["benefit"]["state"] == "unknown"
 
 
@@ -283,3 +290,77 @@ def test_malformed_or_overlong_task_ids_are_rejected(task_id):
         parse_attempt(attempt(task_id=task_id))
     with pytest.raises(ContractError, match="invalid_task_id"):
         parse_outcome(outcome(task_id=task_id))
+
+
+def test_task_id_path_segments_and_harmless_doubledots():
+    for task_id in ("a/./b", "a/../b", "a/.", "a/.."):
+        with pytest.raises(ContractError, match="invalid_task_id"):
+            parse_attempt(attempt(task_id=task_id))
+    for task_id in ("v1..2", "a..b/c"):
+        assert parse_attempt(attempt(task_id=task_id))["task_id"] == task_id
+
+
+def test_identity_bindings_are_required_and_literal_tripwire_is_expanded():
+    a = attempt(observed_profile="observed-advisor", observed_model="grok-4")
+    for field in ("requester_agent", "consumer_agent"):
+        missing = attempt()
+        del missing[field]
+        with pytest.raises(ContractError, match="missing_field"):
+            parse_attempt(missing)
+        missing_outcome = outcome(a)
+        del missing_outcome[field]
+        with pytest.raises(ContractError, match="missing_field"):
+            parse_outcome(missing_outcome)
+    for evaluator in ("REQUESTING-LEAD", "CONSUMING-TOOLS", "GROK-ADVISOR",
+                      "OBSERVED-ADVISOR", "GROK-4"):
+        fails("self_evaluation", [a], [outcome(a, evaluator_id=evaluator)])
+    joined = join_outcomes([a], [outcome(a, evaluator_id="grok")])
+    suggestion = joined["attempts"][0]["suggestions"][0]
+    assert suggestion["evidence_state"] == "reported_evaluator_independence_unverified"
+    assert suggestion["independence_verified"] is False
+    assert joined["independence_verified"] is False
+
+
+def test_set_digests_bind_unique_validated_rows_and_omissions():
+    a = attempt()
+    failed = attempt(attempt_id="attempt-2", attempt_status="failed", suggestion_ids=[])
+    o = outcome(a)
+    full = join_outcomes([a, failed], [o])
+    replay = join_outcomes([failed, a, deepcopy(a)], [deepcopy(o), o])
+    omitted = join_outcomes([a], [o])
+    assert full["attempt_set_digest"] == replay["attempt_set_digest"]
+    assert full["outcome_set_digest"] == replay["outcome_set_digest"]
+    assert full["attempt_set_digest"] != omitted["attempt_set_digest"]
+    assert full["outcome_set_digest"] == omitted["outcome_set_digest"]
+    assert full["attempt_set_digest"] != full["outcome_set_digest"]
+    assert len(full["attempt_set_digest"]) == len(full["outcome_set_digest"]) == 64
+    assert full["input_set_completeness_authenticated"] is False
+    changed = join_outcomes([a, failed], [o, outcome(a, outcome_id="outcome-2",
+                                                        suggestion_id="suggestion-2")])
+    assert changed["outcome_set_digest"] != full["outcome_set_digest"]
+
+
+def test_casefold_collisions_refuse_without_alias_normalization():
+    a = attempt()
+    fails("attempt_id_casefold_collision", [a, attempt(attempt_id="ATTEMPT-1")], [])
+    fails("outcome_id_casefold_collision", [a],
+          [outcome(a), outcome(a, outcome_id="OUTCOME-1", suggestion_id="suggestion-2")])
+    with pytest.raises(ContractError, match="suggestion_id_casefold_collision"):
+        parse_attempt(attempt(suggestion_ids=["suggestion-1", "SUGGESTION-1"]))
+    assert join_outcomes([a], [outcome(a)])["attempts"][0]["attempt_id"] == "attempt-1"
+
+
+def test_failed_attempt_correctness_is_separate_from_completed_counts():
+    completed = attempt()
+    failed = attempt(attempt_id="failed-1", attempt_status="failed",
+                     suggestion_ids=["failed-suggestion"])
+    failed_outcome = outcome(failed, outcome_id="failed-outcome",
+                             suggestion_id="failed-suggestion", disposition="rejected",
+                             correctness="correct")
+    joined = join_outcomes([completed, failed], [outcome(completed), failed_outcome])
+    assert joined["denominator_attempts"] == 2
+    assert joined["correctness_counts"] == {"correct": 1, "incorrect": 0, "unknown": 1}
+    assert joined["noncompleted_correctness_counts"] == {
+        "correct": 1, "incorrect": 0, "unknown": 0
+    }
+    assert joined["learning_update_allowed"] is False

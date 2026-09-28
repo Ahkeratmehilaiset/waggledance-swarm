@@ -4,8 +4,14 @@
 
 An attempt_id identifies one consultation attempt, including failures and
 skips. Digests are equality bindings, never proof of source authenticity.
-Reported evaluator independence is not authenticated here. No matched or
-paired held-out comparison protocol, preregistered policy, or independent
+Reported evaluator independence is not authenticated here. Set digests bind
+only the supplied validated unique rows, not completeness or provenance.
+Numeric values retain their JSON spelling: 5 and 5.0 conflict on replay.
+The local task-ID evidence domain is max 160 characters and differs from
+other bridge validators; it is not an authoritative shared task contract.
+``correctness_counts`` covers completed attempts only; non-completed claims
+are reported separately and never qualify success. No matched or paired
+held-out comparison protocol, preregistered policy, or independent
 scoring verifier is available in this W0 module; incremental benefit remains
 unknown and no output grants learning, qualification, spend, or dispatch.
 """
@@ -36,18 +42,21 @@ _DIGEST = re.compile(r"[0-9a-f]{64}")
 _UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z")
 _ATTEMPT_FIELDS = frozenset({
     "schema", "attempt_id", "request_id", "prompt_digest", "task_id",
+    "requester_agent", "consumer_agent",
     "task_class", "artifact_digest", "artifact_version", "advisor_profile",
     "attempt_status", "suggestion_ids", "observed_profile", "observed_model",
     "observed_cost_units", "latency_ms", "observed_at_utc", "provenance_refs",
 })
 _OUTCOME_FIELDS = frozenset({
     "schema", "outcome_id", "attempt_id", "request_id", "prompt_digest",
-    "task_id", "task_class", "artifact_digest", "artifact_version",
+    "task_id", "requester_agent", "consumer_agent", "task_class",
+    "artifact_digest", "artifact_version",
     "observed_profile", "suggestion_id", "disposition", "correctness", "evaluator_id",
     "scoring_evidence_digest", "changed_artifact_digest", "judged_at_utc",
     "provenance_refs",
 })
 _BINDING = ("attempt_id", "request_id", "prompt_digest", "task_id",
+            "requester_agent", "consumer_agent",
             "task_class", "artifact_digest", "artifact_version", "observed_profile")
 _STATUSES = ("completed", "failed", "skipped", "timeout", "unknown")
 _DISPOSITIONS = ("used", "rejected", "unused", "unknown")
@@ -80,7 +89,7 @@ def _id(value: Any) -> str:
 
 def _task_id(value: Any) -> str:
     if (not isinstance(value, str) or not _TASK_ID.fullmatch(value)
-            or ".." in value or "//" in value or value.endswith("/")):
+            or any(segment in ("", ".", "..") for segment in value.split("/"))):
         raise ContractError("invalid_task_id")
     return value
 
@@ -136,6 +145,13 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _set_digest(kind: str, row_digests: list[str]) -> str:
+    # Domain-separated, order/replay-invariant binding of unique validated rows.
+    return _canonical_digest({"schema": "wd.bridge-v2-advisory-input-set.v1",
+                              "kind": kind, "count": len(row_digests),
+                              "row_digests": sorted(row_digests)})
+
+
 def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Validate one consultation attempt without inventing missing metrics."""
     row = _object(raw, _ATTEMPT_FIELDS)
@@ -143,6 +159,7 @@ def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ContractError("invalid_schema")
     result = dict(row)
     for key in ("attempt_id", "request_id", "task_class",
+                "requester_agent", "consumer_agent",
                 "artifact_version", "advisor_profile"):
         result[key] = _id(row[key])
     result["task_id"] = _task_id(row["task_id"])
@@ -156,6 +173,8 @@ def parse_attempt(raw: Mapping[str, Any]) -> dict[str, Any]:
     result["suggestion_ids"] = [_id(item) for item in suggestions]
     if len(result["suggestion_ids"]) != len(set(result["suggestion_ids"])):
         raise ContractError("duplicate_suggestion")
+    if len(result["suggestion_ids"]) != len({item.casefold() for item in result["suggestion_ids"]}):
+        raise ContractError("suggestion_id_casefold_collision")
     result["observed_profile"] = (None if row["observed_profile"] is None
                                   else _id(row["observed_profile"]))
     result["observed_model"] = (None if row["observed_model"] is None
@@ -174,6 +193,7 @@ def parse_outcome(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ContractError("invalid_schema")
     result = dict(row)
     for key in ("outcome_id", "attempt_id", "request_id",
+                "requester_agent", "consumer_agent",
                 "task_class", "artifact_version", "suggestion_id"):
         result[key] = _id(row[key])
     result["task_id"] = _task_id(row["task_id"])
@@ -210,17 +230,27 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
     if not isinstance(outcomes, list) or len(outcomes) > MAX_OUTCOMES:
         raise ContractError("invalid_outcomes")
     by_attempt: dict[str, tuple[dict[str, Any], str]] = {}
+    attempt_casefold_ids: dict[str, str] = {}
     for raw in attempts:
         row = parse_attempt(raw)
         digest = _canonical_digest(row)
+        folded = row["attempt_id"].casefold()
+        if folded in attempt_casefold_ids and attempt_casefold_ids[folded] != row["attempt_id"]:
+            raise ContractError("attempt_id_casefold_collision")
+        attempt_casefold_ids[folded] = row["attempt_id"]
         prior = by_attempt.get(row["attempt_id"])
         if prior is not None and prior[1] != digest:
             raise ContractError("conflicting_attempt")
         by_attempt[row["attempt_id"]] = (row, digest)
     by_outcome: dict[str, tuple[dict[str, Any], str]] = {}
+    outcome_casefold_ids: dict[str, str] = {}
     for raw in outcomes:
         row = parse_outcome(raw)
         digest = _canonical_digest(row)
+        folded = row["outcome_id"].casefold()
+        if folded in outcome_casefold_ids and outcome_casefold_ids[folded] != row["outcome_id"]:
+            raise ContractError("outcome_id_casefold_collision")
+        outcome_casefold_ids[folded] = row["outcome_id"]
         prior = by_outcome.get(row["outcome_id"])
         if prior is not None and prior[1] != digest:
             raise ContractError("conflicting_outcome")
@@ -239,7 +269,9 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
             raise ContractError("invalid_time_order")
         if (row["evaluator_id"] is not None
                 and any(row["evaluator_id"].casefold() == profile.casefold()
-                        for profile in (attempt["advisor_profile"], attempt["observed_profile"])
+                        for profile in (attempt["requester_agent"], attempt["consumer_agent"],
+                                        attempt["advisor_profile"], attempt["observed_profile"],
+                                        attempt["observed_model"])
                         if profile is not None)):
             raise ContractError("self_evaluation")
         if row["disposition"] == "used" and attempt["attempt_status"] != "completed":
@@ -251,6 +283,7 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
     status_counts = {status: 0 for status in _STATUSES}
     disposition_counts = {disposition: 0 for disposition in _DISPOSITIONS}
     correctness_counts = {correctness: 0 for correctness in _CORRECTNESS}
+    noncompleted_correctness_counts = {correctness: 0 for correctness in _CORRECTNESS}
     joined = []
     for attempt_id in sorted(by_attempt):
         row, digest = by_attempt[attempt_id]
@@ -263,6 +296,7 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
                     "suggestion_id": suggestion_id, "disposition": "unknown",
                     "correctness": "unknown", "reason": "missing_outcome",
                     "evidence_state": "none", "outcome_digest": None,
+                    "independence_verified": False,
                     "evaluator_id": None, "scoring_evidence_digest": None,
                     "changed_artifact_digest": None,
                 }
@@ -272,24 +306,33 @@ def join_outcomes(attempts: list[Mapping[str, Any]],
                     "suggestion_id": suggestion_id,
                     "disposition": outcome["disposition"],
                     "correctness": outcome["correctness"], "reason": "joined",
-                    "evidence_state": ("reported_independent_not_authenticated"
+                    "evidence_state": ("reported_evaluator_independence_unverified"
                                        if outcome["correctness"] != "unknown"
                                        else "no_correctness_claim"),
+                    "independence_verified": False,
                     "outcome_digest": outcome_digest,
                     "evaluator_id": outcome["evaluator_id"],
                     "scoring_evidence_digest": outcome["scoring_evidence_digest"],
                     "changed_artifact_digest": outcome["changed_artifact_digest"],
                 }
             disposition_counts[suggestion["disposition"]] += 1
-            correctness_counts[suggestion["correctness"]] += 1
+            target_counts = (correctness_counts if row["attempt_status"] == "completed"
+                             else noncompleted_correctness_counts)
+            target_counts[suggestion["correctness"]] += 1
             suggestions.append(suggestion)
         joined.append({**row, "attempt_digest": digest, "suggestions": suggestions})
     return {
         "schema": JOIN_SCHEMA, "attempt_count": len(by_attempt),
         "outcome_count": len(by_outcome), "denominator_attempts": len(by_attempt),
+        "attempt_set_digest": _set_digest("attempt", [digest for _, digest in by_attempt.values()]),
+        "outcome_set_digest": _set_digest("outcome", [digest for _, digest in by_outcome.values()]),
+        "input_set_completeness_authenticated": False,
+        "independence_verified": False,
         "attempt_status_counts": status_counts,
         "disposition_counts": disposition_counts,
-        "correctness_counts": correctness_counts, "attempts": joined,
+        "correctness_counts": correctness_counts,
+        "noncompleted_correctness_counts": noncompleted_correctness_counts,
+        "attempts": joined,
         "benefit": {"state": "unknown", "reason": "comparison_protocol_unimplemented",
                     "attribution": "not_established"},
         "qualification_allowed": False, "learning_update_allowed": False,

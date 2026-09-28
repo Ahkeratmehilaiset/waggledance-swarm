@@ -49,6 +49,10 @@ incorporated (§7).
 > on oikeus säätää toistensa mallia ja efforttia ennakoivana kunnossa pitona
 > ettei toiminta lakka
 
+> esim. seikkaperäiset sprint planit tehdään tehokkaalla mallilla ja sitten
+> kun seikkaperäinen suunitelma on valmis palaudutaan tilanteen vaatimaan
+> käyttörajat ylläpitävään malliin ja toteutetaan
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -64,6 +68,7 @@ incorporated (§7).
 | R11 | Brainstorms and sprint plans are always composed by the swarm's model with the best externally measured intelligence | §2.10 |
 | R12 | No hourly Grok limit applies when the operator asks; every lane knows every other lane's quota | §2.1, §2.6 |
 | R13 | **The purpose of the whole package:** the swarm never runs into quota limits. Limits are forecast, and every swarm member may adjust any other member's model and effort as predictive maintenance, so that work never stops | §2.2 |
+| R14 | Plan, then execute: detailed sprint plans are made on a strong model; when the plan is done, the lane returns to the quota-preserving model the situation calls for, and the plan is implemented on that | §2.7 |
 
 ## 1. Current state
 
@@ -366,7 +371,7 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
   the hourly guard for autonomous calls needs separately signed, measured
   admission rules. That is not in this package.
 
-### 2.7 Cheap routine work, strong planning (R4, R9)
+### 2.7 Cheap routine work, strong planning (R4, R9, R14)
 
 **Task classes** are bridge facts, never free text:
 
@@ -389,6 +394,22 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
 4. The strong model, or the tests, verifies the result.
 5. On failure, escalate one tier at a time; after two escalations the
    principal does the task itself.
+
+**The plan-then-execute cycle (R14).** Sprint work runs in three steps:
+1. **Plan.** The lane gets a `planning` burst on the composer profile
+   (§2.10) and writes a *detailed* sprint plan: for every step, the brief
+   above (goal, files and lines, invariants, pitfalls, acceptance tests,
+   definition of done, what not to touch), so that a cheaper model can
+   carry it out.
+2. **Return.** When the plan is done, meaning committed and recorded with its
+   digest, the executor ends the burst at once. The lane returns to the
+   profile the *current* quota forecast calls for (§2.2, R13), which is not
+   necessarily the profile it had before. The 2 h burst cap remains a
+   backstop, not the normal exit.
+3. **Execute.** The steps are implemented on that quota-preserving profile,
+   by the lane itself or by delegation. A failed step escalates one tier at
+   a time, as above; re-planning goes back to phase 1 only when the plan
+   itself is wrong, not when one step fails.
 
 A routing ledger (class, profile, attempts, success, tokens, pool cost) feeds
 the success rates. With no measurement, the default table above applies, and
@@ -543,7 +564,7 @@ boundary; merging alone never mutates production.
 | F16 | 5 | Serialized executor (§2.4) | L | crash at each phase recovers without a double side effect; F5 green | ambiguous means HOLD, never kill | canary fable-5 (Lead observes, both RCOs available), then Tools and Lead, then each RCO when not reviewing affected work | flag off |
 | F17 | 5 | Continuity state machine (§2.5) | F | a relaunch mid-task keeps its claims per path; requests are reissued, never transferred; a forged handover is rejected | no record means no successor | with F16 | revert |
 | F18 | 5 | `wd-model` | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
-| F19 | 5 | Task classes + brief-then-delegate + ledger | F | ledger shows cost per class; quality holds on F21 tasks | no measurement means signed defaults only | shadow ledger first | prompt table off |
+| F19 | 5 | Task classes + brief-then-delegate + plan-then-execute + ledger | F | ledger shows cost per class; quality holds on F21 tasks; on the canary, a burst ends when its plan is committed, and the return profile equals the forecast's choice | no measurement means signed defaults only; a burst with no recorded plan ends at its cap | shadow ledger first | prompt table off |
 | F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the rule text also goes into the F2 bootstrap contract | prompt rule off |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
@@ -715,3 +736,8 @@ may adjust any other member's model and effort as predictive maintenance.
 executor and guardrails; the reviewer-independence rule was kept and
 generalized to every member. This change comes after Lead's final review
 and still needs Lead's confirmation.
+
+**Eighth directive (R14).** Detailed sprint plans are made on a strong model,
+then the lane returns to the quota-preserving model and implements. Added as
+the plan-then-execute cycle in §2.7 and F19: the burst ends when the plan is
+committed, and the return profile comes from the quota forecast.

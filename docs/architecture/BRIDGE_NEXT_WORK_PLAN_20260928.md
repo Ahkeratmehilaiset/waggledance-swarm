@@ -150,10 +150,13 @@ Evidence labels:
 
 API price is not quota cost and is not used as one.
 
-**What counts as known** (Grok, final round). A cost, quota or quality value
-is known only with validated provenance, a TTL, and a production (not shadow)
-source. A value past its TTL, a shadow output, or a `None` pool is unknown.
-An external score's freshness is the source's own measurement date, never the
+**What counts as known** (Grok and Lead, final round). A cost, quota or
+quality value is known only with validated provenance, stated uncertainty, a
+TTL and, for quality, qualification. The kinds of evidence are kept apart:
+observed provider quota and cost; synthetic or replayed workload results
+(F21, valid for admission); and shadow forecasts, which never drive an
+actuation on their own. A value past its TTL or a `None` pool is unknown. An
+external score's freshness is the source's own measurement date, never the
 time the registry was written.
 
 **`wd-model models [--json]`** gives one row per catalog model and effort,
@@ -175,7 +178,8 @@ operator's readings of the account page).
   each lane's boot brief and wake notification), with its age and source.
 - A lane checks a peer's pool before it sends that peer work or a
   `grok_consult`; a peer in `conserve` or with an unknown pool gets only
-  urgent work, and the sender says why.
+  urgent work, and the sender says why. Urgency never authorizes an
+  unqualified dispatch.
 - Reading another lane's quota grants no authority over it; switching stays
   with the executor (§2.4).
 
@@ -251,8 +255,8 @@ the rest of the package serves.
   forecast of use until its reset. A pool whose forecast crosses its trip
   line before the reset is *at risk*, early enough to act (the lead time is
   a signed parameter).
-- **Who acts.** Any member that sees an at-risk pool submits intents for the
-  lanes on that pool, its own or others'. The executor deduplicates intents
+- **Who acts** (proposed new authority, §4). Any member that sees an at-risk
+  pool submits intents for the lanes on that pool, its own or others'. The executor deduplicates intents
   per pool and tick, so several members seeing the same risk cause one
   action.
 - **Order of measures**, cheapest to the work first:
@@ -263,14 +267,19 @@ the rest of the package serves.
   5. only as the last step, defer non-urgent work; review and incident work
      keep running.
 - **Restore.** When the forecast recovers, the same members raise the lanes
-  back (a revert skips the rate limits).
+  back under the same rate rule (a revert skips the dwell only). An urgent
+  rollback that does not fit that rule HOLDs; it never bypasses it.
+- **Atomic pool admission.** Admission is computed atomically per shared
+  pool, reserving the bounded expected use of simultaneous lane and delegated
+  calls. Lower effort is not assumed to mean lower measured cost.
 - **Limits of the rule.** Every intent passes the guardrails above: unknown
   quota means HOLD, not a guess; reviewer floors hold; there is no purchase
   or budget bypass. A member that cannot act (for example because the
-  executor is down) posts the at-risk forecast to the principals; the
-  operator is informed, never required.
-- **Measure of success:** no pool reaches its limit while a qualified
-  alternative existed, and no lane stops for quota reasons.
+  executor is down) posts the at-risk forecast to the principals and
+  informs the operator.
+- **Measure of success** (an objective with measured evidence, not a
+  guarantee): no pool reaches its limit while a qualified alternative
+  existed, and no lane stops for quota reasons.
 
 ### 2.3 The operator command `wd-model` (alias `wd-malli`) (R1)
 
@@ -311,7 +320,7 @@ switch. It is the PR-3 executor with production ports.
 - the expected generation, PID and start time, and token identity;
 - preconditions: for a relaunch, checkpoint written, safe boundary and
   idle; for an in-session switch, a safe boundary only. A bounded wait, then
-  HOLD with a visible reason and an automatic retry (§2.11). A generation,
+  an operational wait with a visible reason and a bounded retry (§2.11). A generation,
   PID or start-time mismatch means the intent is not applied, and nothing is
   killed.
 
@@ -351,8 +360,8 @@ The fenced CAS works like this:
 - The executor moves the lane's own claims to the new owner token by a
   scoped CAS.
 - The executor checks the result deterministically (the claim state equals
-  the intended CAS result). The other principal's independent check is an
-  audit on top, not the acceptance.
+  the intended CAS result). The other principal's independent verification
+  is also required for the first live canary; after that it is an audit.
 
 **States:**
 
@@ -364,8 +373,11 @@ any failure -> HOLD -> rollback: the previous profile if it is still in the
                safe default profile; never `native`
 ```
 
-If even the rollback cannot start, the lane stays in HOLD and the executor
-retries with backoff automatically; the principals are notified (R15).
+Retries are finite per intent: backoff, a total time and attempt budget,
+and a circuit breaker. If the rollback cannot start within that budget, or
+the identity stays ambiguous, the lane stays in HOLD (a safety HOLD, §2.11)
+and the principals and the operator are notified; there is no endless
+relaunch.
 
 - `QUIESCED`: checkpoint written, at a safe boundary.
 - `FENCED`: the old process is stopped, and that is verified.
@@ -401,12 +413,16 @@ retries with backoff automatically; the principals are notified (R15).
 - **Broker.** One serialized broker calls the existing helper.
   - The existing hourly guard stays the admission rule for autonomous
     calls, and every attempt counts. There are no refunds.
-  - **Operator-requested calls are exempt from the hourly guard (R12).** The
-    operator's direct words, session-observed in the lane that makes the
-    call, are the only trigger; a peer relay is not. The call is recorded as
-    `operator_requested` with the literal instruction, and it still counts
-    in the ledger and the weekly-pool forecast. The exemption never buys
-    top-ups or bypasses a weekly-pool limit error.
+  - **Operator-requested calls are exempt from the hourly guard (R12;
+    proposed new authority, §4).** The operator's direct words,
+    session-observed in the lane that makes the call, are the only trigger;
+    a peer relay is not. Each exemption is a scoped, single-use instruction
+    record with replay prevention, the prompt or request digest and a
+    deadline; one ask never creates an unlimited exemption. The call is
+    recorded as `operator_requested`, and it still counts in the ledger and
+    the weekly-pool forecast. It never buys top-ups or bypasses a
+    weekly-pool limit error. Until that policy is signed and active, the
+    deployed rules stay as they are.
   - **Admission** among waiting requests: lane-class priority from a signed
     table, then age; a self-raised priority is ignored. Effort and timeout
     come from a signed cap table. A request not admitted gets an immediate
@@ -462,7 +478,8 @@ retries with backoff automatically; the principals are notified (R15).
    definition of done, what not to touch), so that a cheaper model can
    carry it out.
 2. **Return.** When the plan is done, meaning committed and recorded with its
-   digest, the executor ends the burst at once. The lane returns to the
+   digest, the lane requests the return at the next safe boundary; the
+   return never forces a transition the rate or dwell rules forbid. The lane returns to the
    profile the *current* quota forecast calls for (§2.2, R13), which is not
    necessarily the profile it had before. The 2 h burst cap remains a
    backstop, not the normal exit.
@@ -513,7 +530,7 @@ signature; it is part of the §4 packet.
 |---|---|
 | Scope race | `WorkQueueV1` created through the #1751 same-logon mutex helpers. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Each mutation writes an idempotency key and an outbox record in the same critical section; bridge events are published from the outbox after the lock is released, so a crash between the two loses no event, and a replay of a bound key returns the original result. |
 | Git guard | Parse leading options. `-C` is guarded against its target. `--git-dir`, `--work-tree` and `--namespace` are refused on branch moves. Only an allowlist of safe `-c` keys passes on a branch move; every other `-c`, and the `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE` and `GIT_NAMESPACE` environment variables, are refused. Unknown options fail closed. |
-| Lease | The heartbeat follows the long-lived worker. The old owner is fenced when stale. Leases retire per task, so a live process never renews a finished task forever. The claim cwd is normalized to an absolute path. The heartbeat proves only that the process lives: a claim with no progress proof beyond a signed bound is marked `wedged`, visibly, and the queue routes other work around it (R15). Automatic takeover of a wedged *live* owner stays deferred (B7, §5). |
+| Lease | The heartbeat follows the long-lived worker. The old owner is fenced when stale. Leases retire per task, so a live process never renews a finished task forever. The claim cwd is normalized to an absolute path. The heartbeat proves only that the process lives: a claim with no progress proof beyond a signed bound is marked `wedged`, visibly; the claim stays held, and other file-disjoint eligible work continues (R15). Automatic takeover of a wedged *live* owner stays deferred (B7, §5). |
 | Reply UX | A pinned `Reply-ToRequest -RequestId` fetches and binds the request itself; the requester can supersede its own request. |
 | Head check | The writer rejects a non-40-hex head on statuses that require a commit (for example `rco_pass`, `build_consensus_pass`), not on every decision. |
 | Claim UX | A discoverable claim schema, a preflight (`-Explain`) and examples. There is no permissive fallback. |
@@ -606,59 +623,77 @@ if all of these hold:
 
 ### 2.11 Automatic operation and learning, like the waggle dance (R15)
 
-**Automatic by default.** After the one signature (§4), every mechanism in
-this package runs without operator intervention. The operator can always
-freeze, override, or read the digest, but is never a required step.
-- **Every HOLD has an automatic exit:** a retry on the next tick when its
-  cause clears, a deterministic tie-break, a rollback to a signed safe
-  default, or a route around the blocked item. A HOLD that persists past a
-  signed bound is escalated to the principals and shown in the digest; it
-  never silently stops other work.
-- **The swarm stays operational:** one lane's failure never stops the rest.
-  Wedged claims are routed around (§2.9), Grok is `skipped` when unavailable
-  (§2.6), the supervisor restarts a dead executor (§2.4), and quota risks are
-  handled before they bite (§2.2, R13).
+These are **objectives with measured evidence, not guarantees**. The new
+authorities they need are listed in §4 as proposed new authority.
 
-**Staying up to date.**
+**Automatic by default.** After the future signature (§4), routine operation
+runs without operator intervention: switching, quota avoidance, routing,
+restarts and learning. The operator can always freeze, override or read the
+digest.
+
+**Two kinds of stop, kept apart:**
+- An **operational wait** (busy queue, a pool waiting for its reset, a
+  composer waiting for capacity, a transient provider error) has an automatic
+  exit: a bounded retry after revalidating the original bounds, a
+  deterministic tie-break, or a route around it to *file-disjoint eligible
+  work*.
+- A **safety or authority HOLD** stays blocked until the actual condition or
+  authority changes: an explicit operator freeze, hold or cancellation;
+  missing authority; ambiguous identity; an integrity mismatch; exhausted
+  qualified capacity. Principals cannot clear these automatically, and no
+  retry or learned change can make an operator freeze expire.
+- Nothing is ever routed around a claim, a veto or a gate.
+
+**The swarm stays operational:** one lane's failure does not stop the rest.
+Wedged claims are marked and other file-disjoint work continues (§2.9), Grok
+is `skipped` when unavailable (§2.6), the supervisor restarts a dead executor
+(§2.4), and quota risks are handled before they bite (§2.2, R13).
+
+**Staying up to date** (proposed new authority, §4):
 - F3 refreshes the registry automatically from its external sources, using
   each source's own measurement date.
-- A new model or version in the registry becomes a **scout candidate**. The
-  qualification harness (F21) measures it automatically under the signed
-  measurement budget. When its receipts meet the signed admission thresholds,
-  it joins the envelope automatically, within the signed ceilings (no fast,
-  priority or credit tiers; tier caps hold).
-- Receipts expire, and are re-measured automatically when a provider version
-  changes.
+- A new model or version becomes a **scout candidate**. The qualification
+  harness (F21) measures it on **isolated synthetic or replayed tasks only**:
+  no production writes, no secrets, no decision authority.
+- A candidate joins the envelope only through a **bounded admission policy**
+  that the future signature names explicitly. The policy defines eligible
+  providers and accounts, data destinations, immutable model and version
+  identity, allowed capabilities, spend and quota caps, evidence freshness,
+  an independent evaluator quorum, de-admission and rollback. A new provider,
+  a new data egress or a paid tier is outside the policy and needs its own
+  signature.
+- Receipts expire, and are re-measured when a provider version changes.
 
 **Learning, like the waggle dance.** A honeybee scout that finds a good food
 source dances to tell the others its direction and quality; more foragers
 follow a better source; a stop signal warns off a bad one; and old
 information fades. The swarm does the same with models and routes:
-- **Scouts.** A small signed share of routine and implementation work (the
-  exploration budget) goes to candidate profiles, to discover better or
-  cheaper routes.
+- **Scouts.** Candidates are explored only in isolation (above). Among
+  *admitted* profiles, a small signed share of routine and implementation
+  work explores alternatives, to find better or cheaper routes.
 - **The dance.** Every finished task publishes an outcome record to the
   shared routing ledger: class, profile, success, attempts, pool cost and the
   verifying tests. That record is the dance: the quality and cost of one
   "food source" (a profile for a task class).
-- **Recruitment.** Routing weights rise with successful outcomes from
-  independent lanes and fall with failures. Weights decay over time, so old
+- **Recruitment.** Routing weights rise with successful outcomes and fall with
+  failures. Only genuinely independent evaluations count: outcomes are
+  deduplicated, and self-grading is excluded. Weights decay over time, so old
   news fades.
-- **Stop signal.** A failure, a limit hit or a quality regression publishes a
-  stop signal that lowers that profile's weight for the class at once, until
-  new successes restore it.
-- **Quorum.** A routing change that affects many lanes, and every automatic
-  envelope admission, needs outcomes from at least a signed number of
-  independent lanes, like the quorum bees use to choose a new nest site.
+- **Stop signal.** A failure, a limit hit or a quality regression
+  quarantines that profile for the class until it is requalified; a few
+  self-reported successes do not lift it.
+- **Quorum.** A routing change that affects many lanes, and every admission,
+  needs independent evaluations from at least a signed number of evaluators,
+  like the quorum bees use to choose a new nest site.
 - **Forecast learning.** Each at-risk forecast (R13) is compared with the
-  actual pool use afterwards; the error recalibrates burn rates and lead
-  times.
+  actual pool use afterwards; the error recalibrates burn-rate and lead-time
+  *estimates*.
 
-**Bounds of learning.** Learning moves only routing weights, forecast
-parameters and envelope admission, and only within the signed thresholds,
-ceilings and budgets. It never changes gates, reviewer floors, budget
-ceilings, signatures or these rules. Every learned change is an event with
-its evidence, and is rolled back automatically if a stop condition trips.
+**Bounds of learning.** Fixed hard guardrails (signed thresholds, ceilings,
+budgets, floors, gates, signatures) are never learned. Learning moves only
+routing weights and forecast estimates, within signed bounds. Every learned
+change is an event with its evidence, and is rolled back automatically if a
+stop condition trips.
 
 ## 3. Acceptance table
 
@@ -705,7 +740,7 @@ boundary; merging alone never mutates production.
 | F19 | 5 | Task classes + brief-then-delegate + plan-then-execute + ledger | F | ledger shows cost per class; quality holds on F21 tasks; on the canary, a burst ends when its plan is committed, and the return profile equals the forecast's choice | no measurement means signed defaults only; a burst with no recorded plan ends at its cap | shadow ledger first | prompt table off |
 | F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the F2 bootstrap contract references the one source of the rule text | previous contract hash and rule text together |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
-| F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each HOLD cause clears and work resumes with no operator action; replay: routing weights converge to the best measured route per class, a stop signal suppresses a failing profile within one tick, exploration stays within its budget, a scout candidate joins the envelope only after quorum and thresholds; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
+| F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each operational-wait cause clears and work resumes with no operator action, while each safety HOLD stays blocked until its condition changes; replay: routing weights converge to the best measured route per class, a stop signal quarantines a failing profile within one tick, exploration stays within its budget, a candidate joins only through the admission policy with an independent quorum; adversarial: poisoned and replayed evidence, correlated lanes, self-grading, model-version drift and oscillation; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
@@ -758,10 +793,24 @@ on a partial signature.
 
 Freeze and the kill switch take precedence over every stage.
 
+**Proposed new authority** (Lead, final round). These are material new
+authorities. They are *not* covered by Lead's ecb3a643 confirmation or by the
+#1751 signature, and the operator quotes in §0 are requirements for this
+design, not authority. Each one is named explicitly in the future signature,
+and the current gate code, holds and deployed rules stay unchanged until that
+exact amendment is reviewed and signed:
+- every-member switch intents (R13);
+- the bounded automatic admission policy (§2.11);
+- permanent operation after a dated qualification window, with continuous
+  evidence freshness, stop conditions and revocation checks; expiry before
+  qualification blocks activation;
+- the scoped single-use operator Grok exemption (§2.6).
+
 **Optional bits.** The packet lists the policy features (the Rule 8
 amendment, F19, F24 and the §2.11 learning) as separate bits, so the operator
-could sign the queue and guard fixes without the policy changes. The
-proposal is all bits on, in one signature.
+could sign the queue and guard fixes without the policy changes. Mixed bits
+need a dependency check, and there is never a partial signature over a
+larger unsigned code scope. The proposal is all bits on, in one signature.
 
 **Explicitly excluded:** Stage-2 cutover, Rule 9b activation, approval
 carry-forward, any budget bypass, and fast or credit tiers. Merge authority
@@ -810,10 +859,13 @@ pass. Discussion and isolated tests need no extra approval.
   is operator-requested Grok calls from the hourly guard (§2.6); the weekly
   pool still applies.
 - Every lane can see every pool's quota state; seeing grants no authority.
-- After the one signature everything runs without operator intervention;
-  every HOLD has an automatic exit (R15).
-- Learning moves only weights, forecasts and envelope admission, within
-  signed bounds; it never changes gates, floors, ceilings or signatures.
+- After the future signature, routine operation runs without operator
+  intervention; an operational wait has a bounded automatic exit, while a
+  safety or authority HOLD stays blocked until its condition or authority
+  changes (R15). Nothing is routed around a claim, a veto or a gate.
+- Learning moves only routing weights and forecast estimates, within signed
+  bounds; hard guardrails, thresholds, gates, floors, ceilings and
+  signatures are never learned.
 - The executor is the only actuator, and a frozen request binding is never
   mutated. Every member may submit intents; none may act directly.
 - The purpose is predictive: no pool reaches its limit while a qualified
@@ -933,3 +985,17 @@ that never uses a session switch (R14 needs the burst; the wait never holds
 the lease), and default-off policy bits (offered as optional, proposal all
 on). Kept from Lead's design rather than Grok's: the buddy fallback runs the
 same executor under the same lock, rather than the supervisor alone.
+
+**Lead on R12-R15** (05:02:23Z, head 6ba09e3b): `modified`, design only. All
+objections and proposals adopted: operational waits separated from safety or
+authority HOLDs (no absolute "every HOLD has an exit", nothing routed around a
+claim, veto or gate); candidates explored only on isolated synthetic or
+replayed tasks; one revert rule; evidence kinds separated instead of a
+blanket production label; finite retries with a circuit breaker; independent
+verification for the first live canary; atomic pool admission; return at a
+safe boundary; a scoped single-use Grok exemption; hard guardrails never
+learned, independent evaluations only, quarantine until requalification; and
+the new authorities listed explicitly in §4 as proposed, not inherited from
+ecb3a643 or #1751. Lead has reviewed the plan text, not independently
+validated the Grok output or the external scores; Grok's content is advisory,
+not peer approval.

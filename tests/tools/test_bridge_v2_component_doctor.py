@@ -301,11 +301,15 @@ def test_verified_binary_handle_denies_replace_and_allows_createprocess(tmp_path
         assert digest == hashlib.sha256(b"original").hexdigest()
         with pytest.raises(OSError):
             replacement.replace(sample)
-    with doctor._locked_windows_binary_digest(Path(sys.executable)) as digest:
+    # sys.executable may be a WindowsApps alias, not a physical file that
+    # CreateFileW can lock (for example on Microsoft Store Python installs).
+    native = Path(os.environ["SystemRoot"]) / "System32" / "where.exe"
+    assert native.is_file()
+    with doctor._locked_windows_binary_digest(native) as digest:
         assert len(digest) == 64
-        output, reason = _run_bounded([sys.executable, "--version"], 2)
+        output, reason = _run_bounded([str(native), "cmd.exe"], 2)
     assert reason is None
-    assert output.startswith("Python ")
+    assert "cmd.exe" in output.lower()
 
 
 def test_malformed_first_npm_shim_fails_closed_and_reports_selected_path(tmp_path):

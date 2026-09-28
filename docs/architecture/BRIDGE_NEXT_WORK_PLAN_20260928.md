@@ -59,6 +59,10 @@ incorporated (§7).
 
 > se voi myös oppia kuten waggle dance
 
+> onko tässä nyt huomioitu se, että joskus suorittava malli kaatuu tai
+> käyttöraja umpeutuu ja sen työtä jatkamaan pitää pystyä inkarnoimaan
+> tuuraaja
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -76,6 +80,7 @@ incorporated (§7).
 | R13 | **The purpose of the whole package:** the swarm never runs into quota limits. Limits are forecast, and every swarm member may adjust any other member's model and effort as predictive maintenance, so that work never stops | §2.2 |
 | R14 | Plan, then execute: detailed sprint plans are made on a strong model; when the plan is done, the lane returns to the quota-preserving model the situation calls for, and the plan is implemented on that | §2.7 |
 | R15 | All of this happens automatically, without operator intervention: the swarm stays operational and up to date in hard situations, and it learns, like the waggle dance | §2.11 |
+| R16 | When a working model crashes or its usage limit runs out mid-task, a stand-in can be incarnated to continue its work | §2.12 |
 
 ## 1. Current state
 
@@ -484,7 +489,9 @@ relaunch.
    necessarily the profile it had before. The 2 h burst cap remains a
    backstop, not the normal exit.
 3. **Execute.** The steps are implemented on that quota-preserving profile,
-   by the lane itself or by delegation. A failed step escalates one tier at
+   by the lane itself or by delegation. Every finished step is committed and
+   its status recorded in the plan's step journal, so every step boundary is
+   a durable checkpoint a stand-in can continue from (§2.12). A failed step escalates one tier at
    a time, as above; re-planning goes back to phase 1 only when the plan
    itself is wrong, not when one step fails.
 
@@ -695,6 +702,66 @@ routing weights and forecast estimates, within signed bounds. Every learned
 change is an event with its evidence, and is rolled back automatically if a
 stop condition trips.
 
+### 2.12 Stand-in incarnation after a crash or an exhausted limit (R16)
+
+§2.5 covers *planned* switches, which quiesce at a safe boundary and write a
+checkpoint first. This section covers the unplanned case: the working model
+crashes, hangs up, or hits its usage limit mid-task, with no safe boundary
+and no fresh checkpoint, and possibly with its own pool unusable until the
+reset.
+
+**Continuous checkpoints** (so there is always something to continue from):
+- the step journal of the plan-then-execute cycle (§2.7): one committed step
+  at a time, with its status;
+- a periodic work-in-progress record for the current step: a WIP commit or a
+  saved diff on the task branch, the last test result, and a short "next
+  action" note. It is written at a signed interval and at every tool-call
+  batch that changes files.
+
+**Detection.** The supervisor (not a peer) classifies the lane as down:
+- *crashed*: the process is gone, verified by PID and start time;
+- *limit-exhausted*: the CLI reports a classified limit error (the §2.6
+  error classes, stderr kept), or the pool reading shows it exhausted;
+- *unresponsive*: alive but with no progress proof past a signed bound
+  (`wedged`, §2.9).
+
+**Incarnation.** For *crashed* and *limit-exhausted*, the executor starts a
+**stand-in** automatically:
+1. **Profile.** The best eligible profile for the task's class on a pool
+   with headroom, from another pool or family if the lane's own pool is
+   exhausted (§2.2 eligibility, atomic pool admission). A change of family
+   means another CLI, so it is always the identity-changing path of §2.5.
+2. **Fence.** A crashed owner is verified gone. A limit-exhausted owner is
+   still alive, so the executor stops its whole process tree first, as in
+   `FENCED`. An *unresponsive* live owner is not taken over automatically
+   (B7 stays deferred, §5): it stays a safety HOLD, and other file-disjoint
+   work continues.
+3. **Claims.** The dead owner's claims move to the stand-in's owner token by
+   the fenced CAS of §2.5, checked deterministically.
+4. **Context.** The stand-in boots with the same role contract (F2), the
+   task's plan and step journal, the WIP record and the branch. It first
+   verifies the WIP state (the tests of the last finished step pass, the
+   diff applies) and continues from the next unfinished step. If the WIP
+   state cannot be verified, it restarts the current step from the last
+   committed checkpoint and records that.
+5. **Requests.** Requests bound to the old identity are never transferred:
+   the executor posts `identity_changed` and the requesters reissue (§2.5).
+6. **Authority.** A stand-in inherits no RCO vote, veto clearance, signature
+   or privilege. If an RCO lane goes down mid-review, its stand-in starts the
+   review afresh at the exact head; the other RCO's decisions are unaffected.
+
+**Handing back.** When the original lane's pool recovers, the stand-in
+finishes its current step and hands the task back at that step boundary, by
+the same checkpoint and fenced-CAS path; or it keeps the task if the
+forecast (R13) says so.
+
+**Limits.** Stand-in starts are finite per task (a retry and time budget and
+a circuit breaker). Ambiguous identity, a failed fence or no eligible profile
+with headroom is a safety HOLD. The stand-in is an operational measure,
+never a way around a claim, a veto or a gate. Starting stand-ins
+automatically is part of the proposed every-member and automatic-operation
+authority in §4.
+
 ## 3. Acceptance table
 
 **Owners:** L = Lead, T = Tools, F = fable-5. These are planning proposals,
@@ -741,6 +808,7 @@ boundary; merging alone never mutates production.
 | F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the F2 bootstrap contract references the one source of the rule text | previous contract hash and rule text together |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each operational-wait cause clears and work resumes with no operator action, while each safety HOLD stays blocked until its condition changes; replay: routing weights converge to the best measured route per class, a stop signal quarantines a failing profile within one tick, exploration stays within its budget, a candidate joins only through the admission policy with an independent quorum; adversarial: poisoned and replayed evidence, correlated lanes, self-grading, model-version drift and oscillation; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
+| F27 | 5 | Stand-in incarnation (§2.12) | L (with F16/F17) | fault injection on the canary: kill the process mid-step, and force a limit error mid-step. The stand-in starts on another eligible pool, takes the claims by fenced CAS, verifies the WIP state and continues from the next unfinished step with no lost or duplicated step; an RCO stand-in re-reviews from scratch; requests are reissued, not transferred; hand-back at a step boundary | ambiguous identity, a failed fence or no eligible profile means a safety HOLD; an unresponsive live owner is never taken over | with F16 and F17 | stand-ins off; the lane waits for its own pool |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
@@ -804,6 +872,8 @@ exact amendment is reviewed and signed:
 - permanent operation after a dated qualification window, with continuous
   evidence freshness, stop conditions and revocation checks; expiry before
   qualification blocks activation;
+- automatic stand-in incarnation after a crash or an exhausted limit
+  (§2.12);
 - the scoped single-use operator Grok exemption (§2.6).
 
 **Optional bits.** The packet lists the policy features (the Rule 8
@@ -999,3 +1069,13 @@ the new authorities listed explicitly in §4 as proposed, not inherited from
 ecb3a643 or #1751. Lead has reviewed the plan text, not independently
 validated the Grok output or the external scores; Grok's content is advisory,
 not peer approval.
+
+**Eleventh directive (R16).** The operator asked whether a crashed or
+limit-exhausted working model can be replaced by an incarnated stand-in. §2.5
+only covered planned switches, so §2.12 and F27 were added: continuous
+checkpoints (step journal and WIP record), supervisor-side detection, an
+automatic stand-in on another eligible pool through the identity-changing
+path, claims by fenced CAS, continuation from the next unfinished step,
+no inherited authority, and hand-back at a step boundary. An unresponsive
+live owner is still not taken over (B7 stays deferred). This needs Lead's
+review.

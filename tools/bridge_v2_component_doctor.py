@@ -450,6 +450,79 @@ def _windows_resume_scoped_process(process):
         raise OSError(status, "NtResumeProcess failed")
 
 
+def _read_bounded_metadata(path, maximum):
+    if _path_chain_has_alias(path) or path.stat().st_size > maximum:
+        raise OSError("unsafe or oversized Git metadata")
+    data = path.read_bytes()
+    if len(data) > maximum:
+        raise OSError("Git metadata changed while reading")
+    return data
+
+
+def _index_tracks_doctor(data):
+    """Accept complete SHA-1 index v2/v3 entries; reject split/v4 indexes."""
+    if (len(data) < 32 or data[:4] != b"DIRC" or
+            int.from_bytes(data[4:8], "big") not in (2, 3) or
+            hashlib.sha1(data[:-20]).digest() != data[-20:]):
+        return False
+    version = int.from_bytes(data[4:8], "big")
+    count = int.from_bytes(data[8:12], "big")
+    cursor = 12
+    found = False
+    for _ in range(count):
+        if cursor + 62 > len(data) - 20:
+            return False
+        flags = int.from_bytes(data[cursor + 60:cursor + 62], "big")
+        path_start = cursor + 62
+        if flags & 0x4000:
+            if version != 3 or path_start + 2 > len(data) - 20:
+                return False
+            path_start += 2
+        end = data.find(b"\x00", path_start, len(data) - 20)
+        if end < 0 or end - path_start > 4096:
+            return False
+        if data[path_start:end] == b"tools/bridge_v2_component_doctor.py":
+            found = True
+        cursor += ((end + 1 - cursor + 7) // 8) * 8
+    while cursor < len(data) - 20:
+        if cursor + 8 > len(data) - 20:
+            return False
+        signature = data[cursor:cursor + 4]
+        size = int.from_bytes(data[cursor + 4:cursor + 8], "big")
+        cursor += 8 + size
+        if signature not in {b"TREE", b"REUC", b"UNTR", b"FSMN", b"EOIE", b"IEOT"}:
+            return False
+    return found and cursor == len(data) - 20
+
+
+def _git_metadata_dirs(code_root, marker):
+    if marker.is_dir():
+        if _path_chain_has_alias(marker):
+            raise OSError("aliased Git directory")
+        return marker, marker
+    pointer = _read_bounded_metadata(marker, 4096).decode("utf-8").strip()
+    if not pointer.startswith("gitdir: "):
+        raise OSError("invalid linked worktree pointer")
+    target = Path(pointer[len("gitdir: "):])
+    raw_gitdir = target if target.is_absolute() else code_root / target
+    if _path_chain_has_alias(raw_gitdir):
+        raise OSError("aliased linked Git directory")
+    gitdir = raw_gitdir.resolve()
+    if not gitdir.is_dir():
+        raise OSError("unsafe linked Git directory")
+    backlink = _read_bounded_metadata(gitdir / "gitdir", 4096).decode("utf-8").strip()
+    if _path_chain_has_alias(Path(backlink)) or Path(backlink).resolve() != marker.resolve():
+        raise OSError("linked worktree backlink mismatch")
+    common_name = _read_bounded_metadata(gitdir / "commondir", 4096).decode("utf-8").strip()
+    raw_common = gitdir / common_name
+    if _path_chain_has_alias(raw_common):
+        raise OSError("aliased common Git directory")
+    common = raw_common.resolve()
+    if not common.is_dir():
+        raise OSError("unsafe common Git directory")
+    return gitdir, common
+
+
 def _code_layout(code_root):
     """Read Git metadata only; never run ambient Git or waive ownership checks.
 
@@ -457,25 +530,19 @@ def _code_layout(code_root):
     security attestation of repository contents or a provider trust anchor.
     """
     marker = code_root / ".git"
-    if not marker.exists():
+    if not os.path.lexists(marker):
         return "installed"
     if os.name == "nt" and code_root.drive.upper() != "C:":
         return "unknown"
     try:
-        if not marker.is_dir() or _path_chain_has_alias(marker):
-            return "unknown"
-        head = (marker / "HEAD").read_text(encoding="ascii").strip()
-        config = (marker / "config").read_text(encoding="utf-8")
-        index_path = marker / "index"
-        if index_path.stat().st_size > 32 * 1024 * 1024:
-            return "unknown"
-        index = index_path.read_bytes()
+        gitdir, common = _git_metadata_dirs(code_root, marker)
+        head = _read_bounded_metadata(gitdir / "HEAD", 256).decode("ascii").strip()
+        config = _read_bounded_metadata(common / "config", 1024 * 1024).decode("utf-8")
+        index = _read_bounded_metadata(gitdir / "index", 32 * 1024 * 1024)
         if ((head.startswith("ref: refs/heads/") or
              re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head)) and
-                "[core]" in config and (marker / "objects").is_dir() and
-                index[:4] == b"DIRC" and
-                int.from_bytes(index[4:8], "big") in (2, 3, 4) and
-                b"tools/bridge_v2_component_doctor.py\x00" in index):
+                "[core]" in config and (common / "objects").is_dir() and
+                _index_tracks_doctor(index)):
             return "development"
     except (OSError, UnicodeError, ValueError):
         pass

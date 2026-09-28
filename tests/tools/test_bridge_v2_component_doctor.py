@@ -591,6 +591,111 @@ def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):
     assert output.startswith("Python ")
 
 
+@pytest.fixture
+def actual_linked_worktree(tmp_path):
+    source = Path(doctor.__file__).resolve().parents[1]
+    linked = tmp_path / "linked-worktree"
+    subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
+                    "worktree", "add", "--detach", str(linked), "HEAD"],
+                   check=True, capture_output=True)
+    try:
+        yield linked
+    finally:
+        subprocess.run(["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true", "-C", str(source),
+                        "worktree", "remove", "--force", str(linked)],
+                       check=True, capture_output=True)
+
+
+def test_actual_linked_worktree_uses_its_repo_audit(
+        actual_linked_worktree, monkeypatch):
+    linked = actual_linked_worktree
+    assert (linked / ".git").is_file()
+    audit = linked / ".codex-audit"
+    audit.mkdir()
+    monkeypatch.setattr(doctor, "__file__", str(linked / "tools" /
+                                                "bridge_v2_component_doctor.py"))
+    assert doctor._code_layout(linked) == "development"
+    output, reason = _run_bounded([sys.executable, "--version"], 2,
+                                  runtime_audit_root=audit)
+    assert reason is None
+    assert output.startswith("Python ")
+
+
+def test_linked_worktree_malformed_backlink_fails_closed(actual_linked_worktree):
+    marker = actual_linked_worktree / ".git"
+    gitdir = Path(marker.read_text(encoding="utf-8").split(": ", 1)[1].strip())
+    backlink = gitdir / "gitdir"
+    original = backlink.read_bytes()
+    try:
+        backlink.write_text("C:/wrong/.git\n", encoding="utf-8")
+        assert doctor._code_layout(actual_linked_worktree) == "unknown"
+    finally:
+        backlink.write_bytes(original)
+
+
+def test_linked_worktree_alias_gitdir_fails_closed(actual_linked_worktree, tmp_path):
+    marker = actual_linked_worktree / ".git"
+    gitdir = Path(marker.read_text(encoding="utf-8").split(": ", 1)[1].strip())
+    commondir = gitdir / "commondir"
+    original = commondir.read_bytes()
+    common = (gitdir / original.decode("utf-8").strip()).resolve()
+    alias = tmp_path / "common-alias"
+    if os.name == "nt":
+        cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+        created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                                  str(alias), str(common)], capture_output=True)
+        if created.returncode:
+            pytest.skip("junction creation unavailable")
+    else:
+        alias.symlink_to(common, target_is_directory=True)
+    try:
+        commondir.write_text(f"{alias}\n", encoding="utf-8")
+        assert doctor._code_layout(actual_linked_worktree) == "unknown"
+    finally:
+        commondir.write_bytes(original)
+        alias.rmdir() if os.name == "nt" else alias.unlink()
+
+
+def test_linked_worktree_core_fsmonitor_is_never_executed(
+        actual_linked_worktree, monkeypatch):
+    original_read = doctor._read_bounded_metadata
+
+    def config_with_hook(path, maximum):
+        data = original_read(path, maximum)
+        if path.name == "config":
+            return data + b"\n[core]\nfsmonitor = !untrusted-hook\n"
+        return data
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(doctor, "_read_bounded_metadata", config_with_hook)
+        scoped.setattr(doctor.subprocess, "run", lambda *args, **kwargs:
+                       pytest.fail("core.fsmonitor spawned a command"))
+        assert doctor._code_layout(actual_linked_worktree) == "development"
+
+
+def test_git_index_unsupported_format_fails_closed(tmp_path, monkeypatch):
+    source = Path(doctor.__file__).resolve().parents[1]
+    index = (source / ".git" / "index").read_bytes()
+    unsupported = bytearray(index)
+    unsupported[4:8] = (4).to_bytes(4, "big")
+    unsupported[-20:] = hashlib.sha1(unsupported[:-20]).digest()
+    assert doctor._index_tracks_doctor(bytes(unsupported)) is False
+    assert doctor._index_tracks_doctor(index) is True
+    split_body = index[:-20] + b"link" + (0).to_bytes(4, "big")
+    assert doctor._index_tracks_doctor(split_body + hashlib.sha1(split_body).digest()) is False
+    target = b"tools/bridge_v2_component_doctor.py"
+    other = index[:-20].replace(target, b"tools/bridge_v2_component_doctor.xy", 1)
+    decoy = other + b"TREE" + len(target).to_bytes(4, "big") + target
+    assert doctor._index_tracks_doctor(decoy + hashlib.sha1(decoy).digest()) is False
+
+
+def test_git_metadata_reads_are_bounded(tmp_path):
+    oversized = tmp_path / "HEAD"
+    oversized.write_bytes(b"x" * 257)
+    with pytest.raises(OSError):
+        doctor._read_bounded_metadata(oversized, 256)
+
+
 def test_installed_copy_never_writes_code_even_with_external_fallback(
         tmp_path, monkeypatch):
     installed = tmp_path / "installed"

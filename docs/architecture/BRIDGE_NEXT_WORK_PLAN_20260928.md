@@ -7,15 +7,16 @@ starts only after the #1751 rollout has finished and been verified.
 
 ## 0. The operator's requirements
 
-The operator's words (2026-09-28, Finnish; translation below):
+The operator's words, verbatim including typos (2026-09-28, Finnish; the
+requirements table below restates them in English):
 
-> välitä lista leadille sellaisilla muutoksilla että mahdollisimman käyttäjä
-> ystävällinen mallin vaihto on mahdollista ja ne keskeneräiset ovat sinun
+> välitä lista leadille sellaisilla muuttoksilla että mahdollisimman käyttäjä
+> ystävällinen mallin vaihto on mahdollista ja ne kekskeneräiset ovat sinun
 > suunnittelemana suunniteltu loppuun ja miten ne istuvat nykyiseen. Bridgen
 > pitää olla tietoinen jokaisen eri mallin käyttörajasta ja kustannuksesta,
-> Grok pitää olla käytettävissä ja kaikki mallit niin etteivät ne perustyössä
-> käytä kalleinta mallia mutta suunnittelu ja brainstormeissa pystyvät
-> käyttämään mallia joka on tehokas.
+> Grok pitää olla käytettävissä ja ja kaikki mallit niin etteivät ne
+> perustyössä käytä kalleinta mallia mutta suunnitelu ja brainstormeissa
+> pystyvät käyttämään mallia joka on tehhokas.
 
 | # | Requirement | Where in this plan |
 |---|---|---|

@@ -61,6 +61,12 @@ def build_subdivision_runtime_commit_envelope(
     rollback = _normalize_rollback_policy(rollback_policy)
 
     guardrails = {
+        "canary_policy_input_well_formed": (
+            canary_policy is None or isinstance(canary_policy, Mapping)
+        ),
+        "rollback_policy_input_well_formed": (
+            rollback_policy is None or isinstance(rollback_policy, Mapping)
+        ),
         "preflight_schema_current": (
             preflight.get("schema_version")
             == SUBDIVISION_ACTIVATION_PREFLIGHT_SCHEMA
@@ -206,9 +212,16 @@ def build_subdivision_runtime_commit_envelope(
 
 
 def _normalize_canary_policy(
-    policy: Mapping[str, Any] | None,
+    policy: Any,
 ) -> dict[str, Any]:
-    raw = dict(policy or {})
+    if policy is not None and not isinstance(policy, Mapping):
+        return {
+            "post_merge_canary_required": False,
+            "signal_kind": "",
+            "min_confirmations": 0,
+            "fp_threshold": 1.0,
+        }
+    raw = dict(policy) if isinstance(policy, Mapping) else {}
     min_confirmations = raw.get(
         "min_confirmations", MIN_CANARY_CONFIRMATIONS
     )
@@ -237,9 +250,18 @@ def _normalize_canary_policy(
 
 
 def _normalize_rollback_policy(
-    policy: Mapping[str, Any] | None,
+    policy: Any,
 ) -> dict[str, Any]:
-    raw = dict(policy or {})
+    if policy is not None and not isinstance(policy, Mapping):
+        return {
+            "auto_rollback_eligibility_required": False,
+            "target_must_be_known_green_consensus": False,
+            "result_tree_must_equal_target_tree": False,
+            "failure_signal_must_be_debounced": False,
+            "operator_escalate_on_uncertainty": False,
+            "forbidden_surfaces_blocked": False,
+        }
+    raw = dict(policy) if isinstance(policy, Mapping) else {}
     return {
         "auto_rollback_eligibility_required": raw.get(
             "auto_rollback_eligibility_required", True

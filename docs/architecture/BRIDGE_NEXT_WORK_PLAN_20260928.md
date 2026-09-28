@@ -393,50 +393,76 @@ signature; it is part of the §4 packet.
 ### 2.10 The composer rule for brainstorms and sprint plans (R11)
 
 **Rule.** The final synthesis of every brainstorm and every sprint plan is
-written by the **composer**: the available model and effort with the highest
-external intelligence index in the registry. Other lanes and models contribute
+written by the **composer**: among the *eligible* profiles, the one with the
+highest external intelligence index. Other lanes and models contribute
 inputs, objections and rounds; the composer writes the document of record.
 
-**Source of the ranking**
-- The registry's recorded external index (today the Artificial Analysis
-  Intelligence Index, v4.3.2 in `configs/model_registry.json`, updated
-  2026-09-27), with its version, provenance and freshness. It is refreshed
-  by the registry refresh (F3), never by hand in a session.
-- Only profiles in the signed envelope count (F21 receipt, known quota cost).
+**Step 1: eligibility first** (Lead, final round). A profile is eligible only
+if all of these hold:
+- it is a signed profile in the envelope, with F21 quality and quota-cost
+  evidence;
+- the budget projection allows it (the §2.2 trip lines and premium-burst
+  cap);
+- it is available now (pool not exhausted or in `conserve`, provider up);
+- its effort is allowed for the `planning` class.
+
+**Step 2: ranking** among eligible profiles only.
+- Only comparable scores count: the same named index and version (today the
+  Artificial Analysis Intelligence Index v4.3.2 in `configs/model_registry.json`,
+  updated 2026-09-27). Provider model ids and effort settings are bound
+  exactly.
+- The ranking reads one **frozen registry snapshot**, recorded by digest per
+  synthesis, so a registry refresh cannot change the winner mid-task. The
+  registry is refreshed only by F3, never by hand in a session.
 - **Ties** (equal index, or overlapping uncertainty where the source gives
   it): the higher coding index wins, then the lower quota cost.
-- A stale index (older than the registry's freshness bound) or a missing one
-  means the rule reports `composer_unknown` and the principal names its
-  choice and reason in the document. There is no silent guess.
-- Today (MEASURED from the registry): `claude-opus-5-5` at `max` effort, index
-  58; then `claude-opus-5-5` `xhigh` 56; `claude-fable-5-1` `max` and
-  `gpt-6-astra` `max` 53.
+- The registry values are a local snapshot of an external source, not an
+  independent verification by the swarm.
+- In today's snapshot the top entries are `claude-opus-5-5` `max` (58),
+  `claude-opus-5-5` `xhigh` (56), and `claude-fable-5-1` `max` and
+  `gpt-6-astra` `max` (53). Which of them is eligible depends on step 1.
+
+**When the ranking is unknown** (stale, missing or incomparable scores)
+- The result is `composer_unknown`. A principal may then write a clearly
+  labelled **provisional synthesis** with a profile that still passes every
+  step-1 condition. It is never presented as satisfying the highest-index
+  rule.
+- No eligible profile at all means HOLD.
+
+**When the top profile is unavailable**
+- Wait up to a stated deadline with a bounded retry count, with no costly
+  polling loop; a freeze stops the wait.
+- Then use the next eligible profile in the ranking, and record
+  `composer_fallback` with the reason.
+- A fallback never bypasses any step-1 condition.
 
 **How the composer runs**
 - A principal whose own profile is the composer writes the synthesis itself.
 - Otherwise it composes through a subagent or a headless call on the composer
-  profile (brief-then-delegate in reverse: the inputs are the brief), or asks
-  the executor for a `planning` burst switch (§2.4, §2.7).
-- Grok composes only if it ranks top AND the call goes through `grok_consult`
-  with the hourly guard; it is never switched to automatically (§2.6).
+  profile (the inputs are the brief), or asks the executor for a `planning`
+  burst switch (§2.4, §2.7).
+- **Subagent and headless composition pass the same admission controls as a
+  lane switch** (envelope, budget, burst cap). Otherwise delegation would be a
+  budget or envelope bypass.
+- Grok composes only if it ranks top among eligible profiles AND the call goes
+  through `grok_consult`; it is never switched to automatically (§2.6).
 
-**When the composer is unavailable** (quota exhausted, pool in conserve, or
-provider down)
-- Wait up to a stated deadline, then use the next-highest available profile.
-- The document records `composer_fallback` with the reason, and the profile
-  that composed it.
-- The budget and premium-burst caps still apply. The rule never bypasses a
-  budget or the hourly Grok guard.
+**Evidence recorded with every brainstorm and sprint-plan document**
+- the requested profile and effort, and the observed ones separately, with
+  run evidence when available (for example the CLI's recorded model id);
+  unknown execution evidence stays unknown and is never inferred from a lane
+  name or a policy label;
+- the digest of the input plan, the ranking snapshot digest, and any
+  `composer_unknown` or `composer_fallback` reason.
 
 **What the rule is and is not**
-- It chooses who *writes* the synthesis. It is not an approval, a review
-  or a gate; RCO review and the signature rules are unchanged.
+- It chooses who *writes* the synthesis. The composer produces an artifact
+  only: it cannot change signers or gates, and it cannot expand the approved
+  scope. RCO review and the signature rules are unchanged.
 - It reconciles Lead's round-1 point that a benchmark is only task-specific
   evidence: the external index is used for this one role, with provenance,
-  because the operator directed it. It does not rank models for other task
-  classes; those still use F21 measurements.
-- Every brainstorm and sprint-plan document records its composer profile,
-  the index value and version used, and any fallback.
+  because the operator directed it. Other task classes still rank by F21
+  measurements.
 
 ## 3. Acceptance table
 
@@ -481,7 +507,7 @@ boundary; merging alone never mutates production.
 | F17 | 5 | Continuity state machine (§2.5) | F | a relaunch mid-task keeps its claims per path; requests are reissued, never transferred; a forged handover is rejected | no record means no successor | with F16 | revert |
 | F18 | 5 | `wd-model` | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
 | F19 | 5 | Task classes + brief-then-delegate + ledger | F | ledger shows cost per class; quality holds on F21 tasks | no measurement means signed defaults only | shadow ledger first | prompt table off |
-| F24 | 5 | Composer rule (§2.10) | F | the chosen composer equals the registry top on fixtures (ties, stale, missing, unavailable); every brainstorm and sprint-plan document records its composer | unknown or stale index means `composer_unknown`, recorded; unavailable means a recorded `composer_fallback` | with F19; the rule text also goes into the F2 bootstrap contract | prompt rule off |
+| F24 | 5 | Composer rule (§2.10) | F | fixtures: top unavailable; stale, missing and incomparable scores; no eligible candidate; quota change before dispatch; freeze during the wait; duplicate requests; delegated composition refused when a lane switch would be. Every document records requested and observed profile, snapshot digest and any fallback | ineligible means skipped; unknown ranking means a labelled provisional synthesis or HOLD; no eligible profile means HOLD | with F19; the rule text also goes into the F2 bootstrap contract | prompt rule off |
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
@@ -527,6 +553,11 @@ Freeze and the kill switch take precedence over every stage.
 **Explicitly excluded:** Stage-2 cutover, Rule 9b activation, approval
 carry-forward, any budget bypass, and fast or credit tiers. Merge authority
 stays under Rules 9a and 9b. This packet does not change them.
+
+**Measurements come before the catalog signature.** The minimum sample
+sizes and tolerances for F3 and F21 are fixed before the evidence is
+collected. Incomplete measurements give a smaller envelope, never a guessed
+pass. Discussion and isolated tests need no extra approval.
 
 **Steps:**
 1. #1751 rollout.
@@ -620,8 +651,19 @@ Joint recommendation (Lead, verbatim):
 Implementation specifications, test evidence and the frozen signature packet
 remain separate gates.
 
-**Addendum after round 3** (fable-5, 2026-09-28). The operator's fifth
-directive (R11) added the composer rule (§2.10, F24). It was composed by
-fable-5 on `claude-opus-5-5`, the current registry top, and sent to Lead for
-confirmation or objection; it is not yet part of the confirmed joint
-proposal until Lead answers.
+**Addendum after round 3** (fable-5, 2026-09-28). Lead's round-3
+confirmation covered head ecb3a643 only. After it, the operator's fifth and
+sixth directives added the composer rule (R11: §2.10, F24) and quota
+visibility with the operator-requested Grok exemption (R12: §2.1, §2.6, F25).
+fable-5 wrote the addenda in a session whose recorded model id is
+`claude-opus-5-5`; its effort level has no execution evidence.
+
+**Final improvement round** (at the operator's request; Lead 04:51:02Z on head
+a5425f12, Grok separately). Lead marked the composer addendum `modified`
+(design only) and asked for: eligibility before ranking, comparable scores
+only, a frozen snapshot, a labelled provisional synthesis or HOLD when the
+ranking is unknown, a bounded wait, requested versus observed profile
+evidence, the same admission controls for delegated composition, an
+artifact-only composer, and measurements ordered before the catalog
+signature with thresholds fixed in advance. All were adopted in §2.10, F24
+and §4.

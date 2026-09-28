@@ -781,10 +781,43 @@ def test_isolated_worktree_registry_cleans_after_deliberate_failure(isolated_git
     assert inventory.count("worktree ") == 1 and "prunable" not in inventory
 
 
-def test_isolated_git_fixture_suppresses_live_global_hook_and_signing(monkeypatch):
+@contextmanager
+def _created_repo_audit():
+    """Yield the checkout's .codex-audit; remove it afterwards only if this run created it."""
     repo_audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
-    repo_audit.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="doctor-hostile-", dir=repo_audit) as scratch:
+    created_repo_audit = not repo_audit.exists()
+    repo_audit.mkdir(mode=0o700, exist_ok=True)
+    try:
+        yield repo_audit
+    finally:
+        if created_repo_audit:
+            _remove_created_repo_audit_if_empty(repo_audit)
+
+
+def test_created_repo_audit_removes_only_what_it_created(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "__file__", str(tmp_path / "tools" / "doctor.py"))
+    repo_audit = tmp_path / ".codex-audit"
+    with _created_repo_audit() as audit:
+        assert audit == repo_audit and audit.is_dir()
+    assert not repo_audit.exists()
+    with pytest.raises(RuntimeError, match="primary failure"):
+        with _created_repo_audit():
+            raise RuntimeError("primary failure")
+    assert not repo_audit.exists()
+    repo_audit.mkdir()
+    (repo_audit / "keep.txt").write_text("pre-existing\n")
+    with _created_repo_audit():
+        pass
+    assert (repo_audit / "keep.txt").read_text() == "pre-existing\n"
+    (repo_audit / "keep.txt").unlink()
+    with _created_repo_audit():
+        pass
+    assert repo_audit.is_dir()
+
+
+def test_isolated_git_fixture_suppresses_live_global_hook_and_signing(monkeypatch):
+    with _created_repo_audit() as repo_audit, \
+            tempfile.TemporaryDirectory(prefix="doctor-hostile-", dir=repo_audit) as scratch:
         scratch = Path(scratch)
         control = scratch / "control"
         control.mkdir()
@@ -826,10 +859,27 @@ def test_isolated_git_fixture_suppresses_live_global_hook_and_signing(monkeypatc
             assert doctor._code_layout(source) == "development"
 
 
-def test_small_git_repo_cannot_mutate_committed_victim(monkeypatch):
-    repo_audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
-    repo_audit.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="doctor-victim-", dir=repo_audit) as scratch:
+def _run_small_git_repo(scratch):
+    assert doctor._code_layout(small_git_repo.__wrapped__(scratch / "fixture")) == "development"
+
+
+def _run_isolated_git_repo(scratch):
+    with _isolated_git_repo() as repo:
+        assert doctor._code_layout(repo) == "development"
+
+
+def _run_isolated_worktree(scratch):
+    with _isolated_git_repo() as repo:
+        with _isolated_worktree(repo, repo.parent / "victim-linked") as linked:
+            assert doctor._code_layout(linked) == "development"
+
+
+@pytest.mark.parametrize("run_fixture", [
+    _run_small_git_repo, _run_isolated_git_repo, _run_isolated_worktree,
+], ids=["small_git_repo", "isolated_git_repo", "isolated_worktree"])
+def test_git_fixtures_cannot_mutate_committed_victim(monkeypatch, run_fixture):
+    with _created_repo_audit() as repo_audit, \
+            tempfile.TemporaryDirectory(prefix="doctor-victim-", dir=repo_audit) as scratch:
         scratch = Path(scratch)
         victim = scratch / "victim"
         victim.mkdir()
@@ -853,16 +903,22 @@ def test_small_git_repo_cannot_mutate_committed_victim(monkeypatch):
             tree = subprocess.run(_fixture_git_command(victim, "-C", str(victim),
                                                       "ls-tree", "-r", "HEAD"),
                                   check=True, capture_output=True, env=env).stdout
+            registry = subprocess.run(_fixture_git_command(victim, "-C", str(victim),
+                                                          "worktree", "list", "--porcelain"),
+                                      check=True, capture_output=True, env=env).stdout
             return (head, tree, hashlib.sha256((victim / ".git" / "index").read_bytes()).digest(),
                     hashlib.sha256((victim / ".git" / "config").read_bytes()).digest(),
-                    (victim / "sentinel.txt").read_bytes())
+                    (victim / "sentinel.txt").read_bytes(), registry,
+                    (victim / ".git" / "worktrees").exists())
 
         before = snapshot()
         monkeypatch.setenv("GIT_DIR", str(victim / ".git"))
         monkeypatch.setenv("GIT_WORK_TREE", str(victim))
         monkeypatch.setenv("GIT_INDEX_FILE", str(victim / ".git" / "index"))
-        root = small_git_repo.__wrapped__(scratch / "fixture")
-        assert doctor._code_layout(root) == "development"
+        run_fixture(scratch)
+        monkeypatch.delenv("GIT_DIR")
+        monkeypatch.delenv("GIT_WORK_TREE")
+        monkeypatch.delenv("GIT_INDEX_FILE")
         assert snapshot() == before
 
 

@@ -11,7 +11,10 @@
     substantive replies are ACKs and infrastructure liveness traffic.
 #>
 
-
+# wd.wake-class.v1 API (Get-BridgeWakeClass). Loaded unconditionally so a
+# missing file fails loudly instead of leaving a consumer without the API.
+# The legacy boolean Test-BridgeWakeEligible below is unchanged.
+. (Join-Path $PSScriptRoot 'BridgeWakeClass.ps1')
 
 function Get-BridgeEventTargets {
     param([Parameter(Mandatory)] [object] $Event)

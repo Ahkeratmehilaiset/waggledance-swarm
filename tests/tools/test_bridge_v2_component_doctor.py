@@ -630,6 +630,30 @@ def test_layout_recognition_does_not_execute_ambient_git(tmp_path, monkeypatch):
 
 @pytest.fixture
 def isolated_git_repo():
+    with _isolated_git_repo() as repo:
+        yield repo
+
+
+def _fixture_git_env(repo):
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith("GIT_")}
+    config = repo.parent / "fixture-global-config"
+    config.touch()
+    env["GIT_CONFIG_GLOBAL"] = str(config)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
+def _fixture_git_command(repo, *args):
+    hooks = repo.parent / "empty-hooks"
+    hooks.mkdir(exist_ok=True)
+    return ["git", "-c", f"safe.directory={repo}",
+            "-c", f"core.hooksPath={hooks}", "-c", "commit.gpgsign=false",
+            *args]
+
+
+@contextmanager
+def _isolated_git_repo():
     code_root = Path(doctor.__file__).resolve().parents[1]
     repo_audit = code_root / ".codex-audit"
     created_repo_audit = not repo_audit.exists()
@@ -639,16 +663,20 @@ def isolated_git_repo():
             repo = Path(scratch) / "repo"
             (repo / "tools").mkdir(parents=True)
             (repo / "tools" / "bridge_v2_component_doctor.py").write_text("# fixture\n")
-            subprocess.run(["git", "init", "-q", str(repo)], check=True,
-                           capture_output=True)
-            subprocess.run(["git", "-c", f"safe.directory={repo}", "-C", str(repo),
-                            "add", "tools/bridge_v2_component_doctor.py"],
-                           check=True, capture_output=True)
-            subprocess.run(["git", "-c", f"safe.directory={repo}",
-                            "-c", "user.name=Doctor Fixture",
-                            "-c", "user.email=doctor-fixture@example.invalid", "-C", str(repo),
-                            "commit", "-q", "-m", "doctor fixture"],
-                           check=True, capture_output=True)
+            env = _fixture_git_env(repo)
+            template = repo.parent / "empty-template"
+            template.mkdir()
+            subprocess.run(_fixture_git_command(repo, "-c", f"init.templateDir={template}",
+                                                "init", "-q", str(repo)), check=True,
+                           capture_output=True, env=env)
+            subprocess.run(_fixture_git_command(repo, "-C", str(repo), "add",
+                                                "tools/bridge_v2_component_doctor.py"),
+                           check=True, capture_output=True, env=env)
+            subprocess.run(_fixture_git_command(repo, "-c", "user.name=Doctor Fixture",
+                                                "-c", "user.email=doctor-fixture@example.invalid",
+                                                "-C", str(repo), "commit", "-q", "-m",
+                                                "doctor fixture"),
+                           check=True, capture_output=True, env=env)
             assert doctor._code_layout(repo) == "development"
             yield repo
     finally:
@@ -658,11 +686,13 @@ def isolated_git_repo():
 
 @contextmanager
 def _isolated_worktree(source, linked, relative=False):
-    command = ["git", "-c", f"safe.directory={source}", "-c", "core.longpaths=true",
-               "-C", str(source), "worktree", "add"]
+    env = _fixture_git_env(source)
+    command = _fixture_git_command(source, "-c", "core.longpaths=true",
+                                   "-C", str(source), "worktree", "add")
     if relative:
         command.append("--relative-paths")
-    created = subprocess.run(command + ["--detach", str(linked), "HEAD"], capture_output=True)
+    created = subprocess.run(command + ["--detach", str(linked), "HEAD"],
+                             capture_output=True, env=env)
     if created.returncode:
         detail = created.stderr.decode("utf-8", errors="replace")
         if relative and "relative-paths" in detail and \
@@ -672,17 +702,29 @@ def _isolated_worktree(source, linked, relative=False):
     try:
         yield linked
     finally:
-        removed = subprocess.run(["git", "-c", f"safe.directory={source}",
-                                  "-c", "core.longpaths=true", "-C", str(source),
-                                  "worktree", "remove", "--force", str(linked)],
-                                 capture_output=True)
-        subprocess.run(["git", "-c", f"safe.directory={source}", "-C", str(source),
-                        "worktree", "prune"], check=True, capture_output=True)
-        inventory = subprocess.run(["git", "-c", f"safe.directory={source}",
-                                    "-C", str(source), "worktree", "list", "--porcelain"],
-                                   check=True, capture_output=True).stdout.decode("utf-8")
-        assert inventory.count("worktree ") == 1 and "prunable" not in inventory
-        assert removed.returncode == 0, removed.stderr.decode("utf-8", errors="replace")
+        body_error = sys.exc_info()[1]
+        cleanup_errors = []
+        for args in (("-c", "core.longpaths=true", "-C", str(source),
+                      "worktree", "remove", "--force", str(linked)),
+                     ("-C", str(source), "worktree", "prune"),
+                     ("-C", str(source), "worktree", "list", "--porcelain")):
+            try:
+                result = subprocess.run(_fixture_git_command(source, *args),
+                                        check=True, capture_output=True, env=env)
+                if args[-2:] == ("list", "--porcelain"):
+                    inventory = result.stdout.decode("utf-8")
+                    if inventory.count("worktree ") != 1 or "prunable" in inventory:
+                        cleanup_errors.append(AssertionError(
+                            "isolated fixture worktree registry is not clean: " + inventory))
+            except (OSError, subprocess.CalledProcessError) as exc:
+                cleanup_errors.append(exc)
+        if cleanup_errors:
+            if body_error is not None:
+                raise BaseExceptionGroup("worktree body and cleanup both failed",
+                                         [body_error, *cleanup_errors])
+            if len(cleanup_errors) == 1:
+                raise cleanup_errors[0]
+            raise ExceptionGroup("worktree cleanup failed", cleanup_errors)
 
 
 @pytest.fixture
@@ -731,9 +773,76 @@ def test_isolated_worktree_registry_cleans_after_deliberate_failure(isolated_git
     with pytest.raises(RuntimeError, match="deliberate body failure"):
         with _isolated_worktree(isolated_git_repo, isolated_git_repo.parent / "failure-linked"):
             raise RuntimeError("deliberate body failure")
-    inventory = subprocess.run(["git", "-c", f"safe.directory={isolated_git_repo}",
-                                "-C", str(isolated_git_repo), "worktree", "list", "--porcelain"],
-                               check=True, capture_output=True).stdout.decode("utf-8")
+    inventory = subprocess.run(_fixture_git_command(isolated_git_repo, "-C",
+                                                     str(isolated_git_repo), "worktree",
+                                                     "list", "--porcelain"),
+                               check=True, capture_output=True,
+                               env=_fixture_git_env(isolated_git_repo)).stdout.decode("utf-8")
+    assert inventory.count("worktree ") == 1 and "prunable" not in inventory
+
+
+def test_isolated_git_fixture_ignores_hostile_git_environment_and_config(monkeypatch):
+    repo_audit = Path(doctor.__file__).resolve().parents[1] / ".codex-audit"
+    repo_audit.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="doctor-hostile-", dir=repo_audit) as scratch:
+        scratch = Path(scratch)
+        decoy = scratch / "decoy"
+        decoy.mkdir()
+        subprocess.run(_fixture_git_command(decoy, "init", "-q", str(decoy)),
+                       check=True, capture_output=True, env=_fixture_git_env(decoy))
+        before = sorted(str(path.relative_to(decoy)) for path in decoy.rglob("*"))
+        hooks = scratch / "hostile-hooks"
+        hooks.mkdir()
+        marker = scratch / "hook-ran"
+        (hooks / "pre-commit").write_text(
+            "#!/bin/sh\nprintf touched > '" + marker.as_posix() + "'\nexit 99\n")
+        (hooks / "post-checkout").write_text(
+            "#!/bin/sh\nprintf touched > '" + marker.as_posix() + "'\nexit 99\n")
+        global_config = scratch / "hostile-global-config"
+        global_config.write_text("[core]\n\thooksPath = " + hooks.as_posix() +
+                                 "\n[commit]\n\tgpgsign = true\n" +
+                                 "[init]\n\ttemplateDir = " + hooks.as_posix() + "\n")
+        monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(global_config))
+        monkeypatch.setenv("GIT_TEMPLATE_DIR", str(hooks))
+        with _isolated_git_repo() as source:
+            with _isolated_worktree(source, source.parent / "hostile-linked"):
+                pass
+            assert not (source / ".git" / "hooks" / "pre-commit").exists()
+        assert not marker.exists()
+        assert before == sorted(str(path.relative_to(decoy)) for path in decoy.rglob("*"))
+
+
+def test_isolated_worktree_reports_body_and_cleanup_failures(isolated_git_repo,
+                                                               monkeypatch):
+    real_run = subprocess.run
+
+    def cleanup_failure_after_real_remove(command, *args, **kwargs):
+        result = real_run(command, *args, **kwargs)
+        if "worktree" in command and "remove" in command:
+            raise subprocess.CalledProcessError(41, command,
+                                                stderr=b"deliberate cleanup failure")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", cleanup_failure_after_real_remove)
+    with pytest.raises(ExceptionGroup) as caught:
+        with _isolated_worktree(isolated_git_repo,
+                                isolated_git_repo.parent / "double-failure-linked"):
+            raise RuntimeError("deliberate body failure")
+    errors = caught.value.exceptions
+    assert any(isinstance(error, RuntimeError) and
+               "deliberate body failure" in str(error) for error in errors)
+    assert any(isinstance(error, subprocess.CalledProcessError) and
+               error.returncode == 41 and error.stderr == b"deliberate cleanup failure"
+               for error in errors)
+    inventory = real_run(_fixture_git_command(isolated_git_repo, "-C",
+                                               str(isolated_git_repo), "worktree",
+                                               "list", "--porcelain"),
+                         check=True, capture_output=True,
+                         env=_fixture_git_env(isolated_git_repo)).stdout.decode("utf-8")
     assert inventory.count("worktree ") == 1 and "prunable" not in inventory
 
 

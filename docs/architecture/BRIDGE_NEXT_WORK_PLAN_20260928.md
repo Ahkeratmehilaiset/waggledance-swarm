@@ -693,7 +693,7 @@ signature; it is part of the §4 packet.
 
 | Item | Design |
 |---|---|
-| Scope race | A **new** `WorkQueueV1` mutex (none exists today; the Python work queue takes no lock at all), created through the #1751 same-logon mutex helpers. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Each mutation writes an idempotency key and an outbox record in the same critical section; bridge events are published from the outbox after the lock is released, so a crash between the two loses no event, and a replay of a bound key returns the original result. |
+| Scope race | A **new** `WorkQueueV1` mutex, created through the #1751 same-logon mutex helpers. Today there is no queue-wide lock. There **is** a per-claim lock: `Enter-BridgeClaimLock`, a sibling `<claim>.lock` opened with `FileShare.None`, held by the PowerShell sweep, heartbeat, release and refresh. The Python work queue never takes it, and the PowerShell scope scan and new-claim create run outside it (map F8). The lock order is the queue mutex first, then the per-claim lock, and Python takes the same per-claim lock. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Each mutation writes an idempotency key and an outbox record in the same critical section; bridge events are published from the outbox after the lock is released, so a crash between the two loses no event, and a replay of a bound key returns the original result. |
 | Git guard | Parse leading options. `-C` is guarded against its target. `--git-dir`, `--work-tree` and `--namespace` are refused on branch moves. Only an allowlist of safe `-c` keys passes on a branch move; every other `-c`, and the `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE` and `GIT_NAMESPACE` environment variables, are refused. Unknown options fail closed. |
 | Lease | The heartbeat follows the long-lived worker. The old owner is fenced when stale. Leases retire per task, so a live process never renews a finished task forever. The claim cwd is normalized to an absolute path. The heartbeat proves only that the process lives: a claim with no progress proof beyond a signed bound is marked `wedged`, visibly; the claim stays held, and other file-disjoint eligible work continues (R15). Automatic takeover of a wedged *live* owner stays deferred (B7, §5). |
 | Reply UX | A pinned `Reply-ToRequest -RequestId` fetches and binds the request itself; the requester can supersede its own request. |
@@ -1110,7 +1110,8 @@ on a partial signature.
 - F21 receipts regenerated at the frozen head;
 - the signed parameters: trip lines, tick, hysteresis, forecast lead time,
   admission thresholds, measurement and exploration budgets, quorum size,
-  learning bounds, Grok admission table and composer share;
+  learning bounds, Grok admission table, composer share, and the wake
+  digest's maximum delivery delay (R18);
 - the SHA256 of:
   - the `CLAUDE.md` Rule 8 amendment;
   - the signed catalog (profiles with F21 receipts, the members and
@@ -1118,6 +1119,10 @@ on a partial signature.
     envelope);
   - the Grok routing policy;
   - the composer rule (§2.10);
+  - the role contract (F2), which also carries the standing wake rules
+    (R18);
+  - the component manifest with its pinned install sources, versions and
+    digests (R17);
   - the activation plan.
 
 **The activation plan lists for every stage:**
@@ -1174,7 +1179,7 @@ The code-level slice map, the release runbook and the exact signature
 binding are in `BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md`.
 
 **Steps:**
-1. #1751 rollout.
+1. #1751 rollout (done 2026-09-28 07:16:29Z, Lead's `rollout_verified`).
 2. The interface contract (F15/F16/F17), then file-disjoint slices in stage
    order, reviewed as they land.
 3. Freeze; one isolated matrix; CI; dual RCO at the exact head; build

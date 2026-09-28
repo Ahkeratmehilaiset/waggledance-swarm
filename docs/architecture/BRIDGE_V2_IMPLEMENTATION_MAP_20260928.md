@@ -1,8 +1,8 @@
 # Bridge v2 implementation map: code level, release and production
 
 Status: **design companion to `BRIDGE_NEXT_WORK_PLAN_20260928.md`** (same
-PR #1753). It maps every plan feature (F1-F27, plus F28 below) to today's code
-on `main` c5f7c933, and describes one path from the code to a release and to
+PR #1753). It maps every plan feature (F1-F30, plus the map-only F0 and F28) to
+today's code on `main` c5f7c933, and describes one path from the code to a release and to
 production under one operator signature. It grants no authority: no merge,
 deploy, activation, signature or assignment.
 
@@ -25,7 +25,7 @@ These change the plan's §1 statements and some slice sizes.
 | # | Fact (READ) | Where | Effect on the plan |
 |---|---|---|---|
 | C1 | *(corrected after Lead's review)* The PowerShell writer does check identity: `agent_uuid` is checked against the identity registry and the agent profile (`Assert-AgentUuidMatchesIdentityRegistry` :508 and `Assert-AgentUuidMatchesProfile` :476, both called at :549-550). What it lacks is the **reserved-label and session-origin** enforcement that `Assert-AgentBridgeSessionIdentity` (:47, refusal at :68-72) gives the claim, release, heartbeat, liveness and session scripts. Whether an unbound `agent=operator` event succeeds therefore depends on the registry and profile checks, and has not been reproduced. The stale sweep writes as `system` (`Invoke-StaleClaimSweep.ps1:276`). | `Write-AgentEvent.ps1:476,508,549-550`; `AgentBridgeSessionIdentity.ps1:47,68-72` | F23 first reproduces, in isolation, both writers with the registry and profile present, missing and mismatched; then it fixes only what reproduces. |
-| C2 | There is no `WorkQueueV1` mutex and no `work_queue_busy` anywhere. The Python work queue takes no lock: `heartbeat` and `release_task` are unlocked, and `_write_json_file` (:900) finishes with `tmp.replace(path)` (:920), which by reading could recreate a claim archived meanwhile; that runtime outcome is **not yet reproduced**. The PowerShell claim scope-conflict scan is also unlocked. | `waggledance/core/work_queue.py:339-403,406-461,900,920`; `Claim-AgentTask.ps1:111-148` | F8 is a new lock plus a CAS rewrite, larger than "wire the #1751 helper"; the race is reproduced before a fix is claimed. |
+| C2 | There is no `WorkQueueV1` mutex and no `work_queue_busy` anywhere. *(Corrected by the Grok review:)* a PowerShell per-claim lock exists (`Enter-BridgeClaimLock`, `ClaimLeaseHeartbeat.ps1:229`), but the Python work queue never takes it or any other lock: `heartbeat` and `release_task` are unlocked, and `_write_json_file` (:900) finishes with `tmp.replace(path)` (:920), which by reading could recreate a claim archived meanwhile; that runtime outcome is **not yet reproduced**. The PowerShell claim scope-conflict scan is also unlocked. | `waggledance/core/work_queue.py:339-403,406-461,900,920`; `Claim-AgentTask.ps1:111-148` | F8 is a new lock plus a CAS rewrite, larger than "wire the #1751 helper"; the race is reproduced before a fix is claimed. |
 | C3 | The git guard takes the verb from `$GitArgs[0]` and parses no leading option. `GIT_CONFIG_*` is not checked. `-Force` trusts a self-asserted `operator`/`system` label. There are no tests under `tests/**`; the only coverage is a smoke script outside CI. | `Invoke-BridgeGit.ps1:88-108,305-307,382` | F9 also covers `-Force` identity and adds the first pytest suite. |
 | C4 | `Assert-AgentBridgeClaimOwner` is defined but never called. | `AgentBridgeSessionIdentity.ps1:215` | F10 wires it into claim force, release and heartbeat. |
 | C5 | Role prompts live outside the repo (`C:\Python\wd-agent-prompts\*.md`, from `wd-fleet.json` `lanes[].prompt`) and are not hashed; the launcher only checks that they are non-empty. | `start-wd-agent.ps1:2000,2225,2473` | F2 must bring the role contract into the repo and the bundle manifest. |
@@ -149,7 +149,6 @@ Notation:
 | F5 | T | **new** `tools/bridge_lock_participants.py`. It enumerates participant processes (logon, integrity) and keeps them apart from *proven* mutex handle holders: reading the ACL and the lane tokens does not establish every creator or opener. Missing coverage stays unknown; more than one logon or integrity level means HOLD. |
 | F6 | T | **new** `tools/bridge_v2_dashboard.py` (read-only: pools, lanes, intents, stages). |
 | F21 | F writes, T runs | **new** `tools/wd_profile_qualification.py` + `tests/fixtures/qualification/` (synthetic and replayed tasks per class, adversarial holdouts); receipts `wd.profile-receipt.v1` bound to code SHA, profile, provider version and freshness; isolated worktrees, no production writes. |
-| F30 | L implements, F tests | **mod** `ops/windows/reboot/start-wd-tools-consumer.ps1` (`Invoke-WdNativeToolsWakeStep` :503; replace the fixed messages at :542-564 with a header plus one validated line per binding, read from the `wd.bridge-wake-observation.v1` snapshot already parsed at :575-586, moved before the send); **mod** `.agent-bridge/bin/BridgeTelemetry.ps1` (`Write-BridgeWakeObservation` :28: add task id, event type/status, `ts_utc`, the canonical event SHA-256 and the wake class to each binding; classify by type and status only); **mod** `Watch-Bridge.ps1` (informational events go to a digest, not a wake); **new** `.agent-bridge/bin/Get-BridgeEvent.ps1` (exact fetch by canonical event hash plus requester, session and reply discriminator; returns the full request, message and payload for the complete pinned validation); classification by validated binding and control precedence (bound replies, corrections, vetoes, HOLDs, cancels, supersedes and blocking failures are always immediate; unknown means a generic drain); the digest is durable, and processed is marked only after handling, never on enqueue; **mod** the F2 role contract (takes the standing rules now in the wake text); **mod** `tests/tools/test_wd_native_tools_wake.py` (:75 asserts `TRUNCATED ROUTING SUMMARY`) and `tests/tools/test_wd_lead_reply_delivery.py` (:38, :41, :140), plus every consumer that `git grep` finds for the wake strings. Depends on F1, F2 and F7. |
 | F29 | T implements, F tests | **new** `configs/bridge_components.json` (`wd.bridge-components.v1`); **new** `tools/wd_bridge_doctor.py` + `.agent-bridge/bin/Test-WdBridgeComponents.ps1` (one manifest, two front ends); **new** `ops/windows/reboot/Initialize-WdBridge.ps1` (first-run local config from templates, never overwriting); **new** a dependency-free bootstrap check (platform shell only: stderr steps plus a local receipt, published later and deduplicated once the writer works); requiredness per feature and lane, with four separate provider states (CLI, auth, quota, observed turn); **mod** `Start-AgentBridgeSession.ps1`, `start-wd-agent.ps1`, `Deploy-WdRebootBundle.ps1` (call the doctor in preflight); replace hard-coded machine paths in new code with config values (existing examples: `wd_grok_helper.py:17` `STATE_ROOT`, the installer's `$BundleStore` default at `Deploy-WdRebootBundle.ps1:17-28`, the writer's hard-coded fleet targets at `Write-AgentEvent.ps1:668`). |
 | F25 | T | **mod** `Get-WdCapacityStatus.ps1` (:38, :147: every pool with age and source); boot brief line in `start-wd-agent.ps1`; **mod** `bridge_capacity_advisor.py` for a peer-pool view. |
 
@@ -158,6 +157,7 @@ Notation:
 | F | Owner | Code change |
 |---|---|---|
 | F7 | L | **mod** `Watch-Bridge.ps1` (:119-181: durable watermark plus a dirty flag, alongside the byte cursor); **mod** `start-wd-tools-consumer.ps1` relay (`Invoke-WdNativeToolsWakeStep` :503, `Send-WdNativeToolsQueueMessage` :471: one outstanding typed notification per lane, reconcile instead of resubmit); **mod** `start-wd-agent.ps1:253-281` (Lead imports); **new** `.agent-bridge/bin/Drain-BridgeWake.ps1` (pinned drain helper, watermark authority); vetoes, cancels and late replies bypass coalescing; backlog migration and a rollback to the relay under the F0 flag. |
+| F30 | L implements, F tests | **mod** `ops/windows/reboot/start-wd-tools-consumer.ps1` (`Invoke-WdNativeToolsWakeStep` :503; replace the fixed messages at :542-564 with a header plus one validated line per binding, read from the `wd.bridge-wake-observation.v1` snapshot already parsed at :575-586, moved before the send); **mod** `.agent-bridge/bin/BridgeTelemetry.ps1` (`Write-BridgeWakeObservation` :28: add task id, event type/status, `ts_utc`, the canonical event SHA-256 and the wake class to each binding; classify by type and status only); **mod** `Watch-Bridge.ps1` (informational events go to a digest, not a wake); **new** `.agent-bridge/bin/Get-BridgeEvent.ps1` (exact fetch by canonical event hash plus requester, session and reply discriminator; returns the full request, message and payload for the complete pinned validation); classification by validated binding and control precedence (bound replies, corrections, vetoes, HOLDs, cancels, supersedes and blocking failures are always immediate; unknown means a generic drain); the digest is durable, and processed is marked only after handling, never on enqueue; **mod** the F2 role contract (takes the standing rules now in the wake text); **mod** `tests/tools/test_wd_native_tools_wake.py` (:75 asserts `TRUNCATED ROUTING SUMMARY`) and `tests/tools/test_wd_lead_reply_delivery.py` (:38, :41, :140), plus every consumer that `git grep` finds for the wake strings. Depends on F1, F2 and F7. |
 
 ### Stage 3: queue and guard correctness
 
@@ -217,12 +217,12 @@ Notation:
 PowerShell files go under `.agent-bridge/bin/`, which the installer already
 copies whole.
 
-**Size:** 31 slices (F0-F30 minus F14, plus the contract doc). Most are
+**Size:** 31 slices (F0-F30 minus F14, plus the contract doc). F14 was never assigned; it is a numbering gap, not a removed slice. Most are
 small to medium. The large ones are F7, F8, F16, F17 and F27.
 
 ## 5. Build order
 
-1. #1751 rollout finished, on its own signed path (a named branch with an
+1. **Done 2026-09-28 07:16:29Z:** the #1751 rollout finished, on its own signed path (a named branch with an
    upstream at c5f7c933 after the operator continues; no v2 tooling).
 2. F0 + the interface contract, reviewed.
 3. File-disjoint slices, in parallel within a stage, in stage order 1 → 5,
@@ -320,10 +320,13 @@ and time), binds:
 - Which checks branch protection requires, if any.
 - Where earlier bridge release notes live; no tooling creates the `bridge-*`
   tags.
-- The active bundle, per Lead: the known deployment is still d26357e1.
-  #1751 (main c5f7c933) has both main CI runs green, but the installer
-  DryRun refused the detached HEAD, and no tag, release or activation has
-  happened. The #1751 release notes are identified in its signed packet.
+- *(Resolved 2026-09-28.)* The active bundle is now c5f7c933: Lead's
+  `rollout_verified` at 07:16:29Z (manifest
+  44D95CAF3A0F1E173C562E745279E1453F5800BA55721C711DE5876AABA61197, named
+  branch `deploy/bridge-20260928-c5f7c933`). All five lanes were restarted
+  in order and passed the bound generation, launcher and persistence proofs.
+  Observed along the way: F13 (PSModulePath) and F16 (same-source time)
+  items.
 - Whether the cause-B latch fix for Rule 9b has landed; it is not needed
   here.
 - Whether the Claude capacity hooks are applied in every lane worktree.

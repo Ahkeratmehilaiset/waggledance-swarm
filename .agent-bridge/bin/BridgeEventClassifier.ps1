@@ -203,6 +203,37 @@ function Test-BridgeAnswerEvent {
     return $true
 }
 
+function Test-BridgeInformationalNoticeSuppressible {
+    param([Parameter(Mandatory)] [object] $Event)
+    Set-StrictMode -Version Latest
+    # payload.notification=informational is a sender hint, not a validated
+    # classification. It may digest only a demonstrably non-actionable notice:
+    # a message/status/intent row whose status carries no control meaning.
+    # Controls (decision, finding, blocked, rco_review, test, done, release,
+    # wake_request, any unknown type) and statuses with a control token in any
+    # position and case (cancel/supersede/withdraw/close, hold, veto, block,
+    # fail, reject, changes_requested, ...) always wake: an ambiguous row
+    # drains. The token list covers every requester-closure status. Waking
+    # grants no authority and accepts no binding.
+    $type=$Event.PSObject.Properties['type']
+    $status=$Event.PSObject.Properties['status']
+    if ($null -eq $type -or $null -eq $status) { return $false }
+    if (@('message','status','intent') -cnotcontains [string]$type.Value) { return $false }
+    $text=([string]$status.Value).ToLowerInvariant()
+    if ($text.Contains('changes_requested')) { return $false }
+    $controlTokens=@(
+        'hold','held','veto','vetoed','block','blocked','blocking','blocker',
+        'cancel','cancelled','canceled','supersede','superseded','withdraw','withdrawn',
+        'retract','retracted','revoke','revoked','reject','rejected',
+        'fail','failed','failure','failing',
+        'close','closed','stop','halt','abort','aborted'
+    )
+    foreach ($token in ($text -split '[^a-z0-9]+')) {
+        if ($token -and $controlTokens -ccontains $token) { return $false }
+    }
+    return $true
+}
+
 function Test-BridgeWakeEligible {
     param([Parameter(Mandatory)] [object] $Event)
     Set-StrictMode -Version Latest
@@ -221,7 +252,8 @@ function Test-BridgeWakeEligible {
     $payload=$Event.PSObject.Properties['payload']
     if ($null -ne $payload -and $null -ne $payload.Value) {
         $notification=$payload.Value.PSObject.Properties['notification']
-        if ($null -ne $notification -and $notification.Value -ceq 'informational') { return $false }
+        if ($null -ne $notification -and $notification.Value -ceq 'informational' -and
+            (Test-BridgeInformationalNoticeSuppressible $Event)) { return $false }
     }
     return $true
 }

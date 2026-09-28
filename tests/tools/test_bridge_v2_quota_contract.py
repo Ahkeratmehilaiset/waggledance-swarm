@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from decimal import Inexact, localcontext
+from decimal import (DefaultContext, Decimal, Inexact, ROUND_UP, getcontext,
+                     localcontext)
 
 import pytest
 
@@ -379,3 +380,90 @@ def test_float_units_follow_json_text_semantics():
     d.update(reservations=[], forecast_upper_units=0, incident_reserve_units=0,
              reviewer_reserve_units=0, proposed_upper_units=0.1)
     assert evaluate_admission(s, d, now=NOW)["remaining_after_proposal_units"] == "0.9"
+
+
+@pytest.mark.parametrize("location", ["snapshot", "demand", "reservation"])
+def test_float_above_max_units_is_rejected_in_every_numeric_path(location):
+    s = snapshot()
+    d = demand(s)
+    if location == "snapshot":
+        s["remaining_lower_bound"] = 1e16
+        reason = "invalid_snapshot"
+    elif location == "demand":
+        d["proposed_upper_units"] = 1e16
+        reason = "invalid_demand"
+    else:
+        d["reservations"][0]["upper_units"] = 1e16
+        reason = "invalid_demand"
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["state"], result["reason"], result["detail_code"]) == (
+        "unknown", reason, "invalid_number"
+    )
+
+
+@pytest.mark.parametrize("location", ["snapshot", "demand", "reservation"])
+def test_exact_max_units_float_is_accepted(location):
+    s = snapshot()
+    s.update(remaining_lower_bound=1e15, uncertainty_upper_units=0,
+             external_residual_upper_units=0)
+    d = demand(s)
+    d.update(reservations=[], forecast_upper_units=0, incident_reserve_units=0,
+             reviewer_reserve_units=0, proposed_upper_units=0)
+    if location == "snapshot":
+        s["remaining_lower_bound"] = 1e15
+        d["snapshot_digest"] = snapshot_digest(s)
+        d["proposed_upper_units"] = 1e15
+    elif location == "demand":
+        d["proposed_upper_units"] = 1e15
+    else:
+        template = demand(s)["reservations"][0]
+        d["reservations"] = [{**template, "upper_units": 1e15}]
+    result = evaluate_admission(s, d, now=NOW)
+    assert (result["state"], result["remaining_after_proposal_units"]) == (
+        "admissible", "0"
+    )
+
+
+def test_process_default_context_cannot_change_exact_verdict_or_mutate_contexts():
+    s = snapshot()
+    s.update(remaining_lower_bound=100, uncertainty_upper_units=0,
+             external_residual_upper_units=0)
+    d = demand(s)
+    d.update(reservations=[], forecast_upper_units=0, incident_reserve_units=0,
+             reviewer_reserve_units=0, proposed_upper_units=20)
+    tiny = snapshot()
+    tiny.update(remaining_lower_bound=1e15, uncertainty_upper_units=0,
+                external_residual_upper_units=0)
+    tiny_demand = demand(tiny)
+    tiny_demand.update(reservations=[], forecast_upper_units=0,
+                       incident_reserve_units=0, reviewer_reserve_units=5e-324,
+                       proposed_upper_units=1e15)
+    original_default = DefaultContext.copy()
+    original_caller = getcontext().copy()
+    try:
+        DefaultContext.prec = 2
+        DefaultContext.rounding = ROUND_UP
+        DefaultContext.Emax = 1
+        DefaultContext.Emin = -1
+        DefaultContext.capitals = 0
+        DefaultContext.clamp = 1
+        for signal in original_default.flags:
+            DefaultContext.flags[signal] = True
+            DefaultContext.traps[signal] = not original_default.traps[signal]
+        hostile_default = repr(DefaultContext)
+        ordinary = evaluate_admission(s, d, now=NOW)
+        shortfall = evaluate_admission(tiny, tiny_demand, now=NOW)
+        assert repr(DefaultContext) == hostile_default
+        assert repr(getcontext()) == repr(original_caller)
+    finally:
+        for field in ("prec", "rounding", "Emax", "Emin", "capitals", "clamp"):
+            setattr(DefaultContext, field, getattr(original_default, field))
+        for signal in original_default.flags:
+            DefaultContext.flags[signal] = original_default.flags[signal]
+            DefaultContext.traps[signal] = original_default.traps[signal]
+    assert (ordinary["state"], ordinary["remaining_after_proposal_units"]) == (
+        "admissible", "80"
+    )
+    assert shortfall["state"] == "denied"
+    assert Decimal(shortfall["remaining_after_proposal_units"]) == Decimal("-5e-324")
+    assert repr(DefaultContext) == repr(original_default)

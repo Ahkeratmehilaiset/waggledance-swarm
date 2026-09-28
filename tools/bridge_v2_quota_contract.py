@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from decimal import Context, Decimal, DecimalException, Inexact, InvalidOperation, Overflow, localcontext
+from decimal import (MAX_EMAX, MIN_EMIN, ROUND_HALF_EVEN, Context, Decimal,
+                     DecimalException, Inexact, InvalidOperation, Overflow, localcontext)
 import hashlib
 import json
 import re
@@ -271,11 +272,15 @@ def evaluate_admission(snapshot: Mapping[str, Any], demand: Mapping[str, Any],
             return result
     # MAX_UNITS and repr(float) bound magnitudes/exponents. A 1000-digit
     # private context represents the 4096-entry sum and subnormal float costs
-    # exactly; traps turn any unexpected inexact operation into a refusal.
-    arithmetic = Context(prec=1000)
-    arithmetic.traps[Inexact] = True
-    arithmetic.traps[InvalidOperation] = True
-    arithmetic.traps[Overflow] = True
+    # exactly. Specify every Context field: omitted fields inherit mutable
+    # process-global DefaultContext and can reject otherwise-valid evidence.
+    # The bounded domain needs at most 19 integer places and 324 fractional
+    # places; the full Decimal exponent range is safely wider than that.
+    arithmetic = Context(
+        prec=1000, rounding=ROUND_HALF_EVEN, Emax=MAX_EMAX, Emin=MIN_EMIN,
+        capitals=1, clamp=0, flags=[],
+        traps=[Inexact, InvalidOperation, Overflow],
+    )
     try:
         with localcontext(arithmetic):
             reservation_total = sum((r["upper_units"] for r in proposed["reservations"]), Decimal(0))

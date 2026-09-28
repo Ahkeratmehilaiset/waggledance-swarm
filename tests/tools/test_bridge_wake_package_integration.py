@@ -11,18 +11,47 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = "BridgeWakeClass.ps1"
 RELATIVE = rf"tools-bootstrap\.agent-bridge\bin\{MODULE}"
-LIBRARIES = (
-    "BridgeRequestContract.ps1",
-    "BridgeTaskResult.ps1",
-    "BridgeTelemetry.ps1",
-    "BridgeReplyIndex.ps1",
-    "BridgeResourceScope.ps1",
-    "BridgeRoster.ps1",
-)
+ENTRYPOINTS = {
+    "Get-BridgeNextAction.ps1", "Read-AgentBridge.ps1",
+    "Claim-AgentTask.ps1", "Release-AgentTask.ps1", "Write-AgentEvent.ps1",
+    "Monitor-AgentBridge.ps1", "Write-BridgeTaskReply.ps1",
+    "Start-BridgeRequestTurn.ps1", "Get-BridgeReplySnapshot.ps1",
+    "Record-BridgeReplyObservation.ps1",
+}
+PREFIX = "tools-bootstrap/.agent-bridge/bin/"
+
+
+def required_bridge_scripts():
+    source = (ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8-sig")
+    gate = source.split("foreach ($required in @(", 1)[1].split("$targetRoot =", 1)[0]
+    return {name.removeprefix(PREFIX) for name in re.findall(r"'([^']+)'", gate)
+            if name.startswith(PREFIX)}
+
+
+def literal_sibling_closure(roots):
+    # Conservative literal sibling references, including execution-evidence
+    # hash lists. Not a PowerShell parser: computed paths and ops/Python
+    # imports require their own integration acceptance.
+    seen = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        source = (ROOT / ".agent-bridge/bin" / name).read_text(encoding="utf-8-sig")
+        pending.extend(set(re.findall(r"['\"]([A-Za-z0-9_.-]+\.ps1)['\"]", source)) - seen)
+    return seen
+
+
+def test_declared_entrypoints_and_literal_sibling_closure_are_required():
+    required = required_bridge_scripts()
+    missing = literal_sibling_closure(required | ENTRYPOINTS) - required
+    assert not missing, f"Missing required bridge scripts: {sorted(missing)}"
 
 
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
-@pytest.mark.parametrize("missing", [None, "BridgeEventClassifier.ps1", MODULE, *LIBRARIES])
+@pytest.mark.parametrize("missing", [None, *sorted(literal_sibling_closure(required_bridge_scripts() | ENTRYPOINTS))])
 def test_deploy_required_gate_rejects_missing_bridge_libraries(shell, missing):
     executable = shutil.which(shell)
     if executable is None:
@@ -35,7 +64,7 @@ def test_deploy_required_gate_rejects_missing_bridge_libraries(shell, missing):
         "tools-bootstrap/.agent-bridge/bin/BridgeEventClassifier.ps1",
         f"tools-bootstrap/.agent-bridge/bin/{MODULE}",
     }
-    files.update(f"tools-bootstrap/.agent-bridge/bin/{name}" for name in LIBRARIES)
+    files.update(PREFIX + name for name in literal_sibling_closure(required_bridge_scripts() | ENTRYPOINTS))
     if missing:
         files.remove(f"tools-bootstrap/.agent-bridge/bin/{missing}")
     entries = ";".join(f"'{name}'='hash'" for name in sorted(files))

@@ -144,12 +144,18 @@ def test_wrong_version_and_timeout_override():
                            timeout_seconds=100)
 
 
-@pytest.mark.parametrize("script,expected", [
-    ("import time;time.sleep(2)", "timeout"),
-    ("import sys;sys.exit(7)", "nonzero_exit"),
-    ("print('not-a-version')", "malformed_output"),
+# The probe budget includes child start-up. A real child that must COMPLETE gets
+# COMPLETED_CHILD_BUDGET, well above cold-start latency on a loaded host; only the
+# timeout case uses the 1 s manifest budget, which its 2 s sleep can never meet.
+COMPLETED_CHILD_BUDGET = 10
+
+
+@pytest.mark.parametrize("script,expected,budget", [
+    ("import time;time.sleep(2)", "timeout", None),
+    ("import sys;sys.exit(7)", "nonzero_exit", COMPLETED_CHILD_BUDGET),
+    ("print('not-a-version')", "malformed_output", COMPLETED_CHILD_BUDGET),
 ])
-def test_real_subprocess_failures_are_unknown(script, expected):
+def test_real_subprocess_failures_are_unknown(script, expected, budget):
     # The injected probe is a real child process; manifest data cannot supply argv.
     def child(_):
         return [sys.executable, "-c", script]
@@ -157,7 +163,7 @@ def test_real_subprocess_failures_are_unknown(script, expected):
     result = inspect_components(manifest(), lane="tools", features=["bridge_core"],
                                 search_path=str(Path(sys.executable).parent),
                                 platform="windows" if sys.platform == "win32" else "linux",
-                                probe_command=child)
+                                probe_command=child, timeout_seconds=budget)
     item = result["components"][0]
     assert item["status"] == "unknown"
     assert item["reason"] == expected
@@ -242,7 +248,7 @@ def test_oversized_real_subprocess_output_is_unknown():
     result = inspect_components(manifest(), lane="tools", features=["bridge_core"],
                                 search_path=str(Path(sys.executable).parent),
                                 platform="windows" if sys.platform == "win32" else "linux",
-                                probe_command=child)
+                                probe_command=child, timeout_seconds=COMPLETED_CHILD_BUDGET)
     assert result["components"][0]["status"] == "unknown"
     assert result["components"][0]["reason"] == "output_too_large"
 
@@ -274,7 +280,8 @@ def test_quoted_absolute_path_entry_is_used_without_cwd_fallback(tmp_path):
                                 probe_command=lambda _: [sys.executable, "-c",
                                                          "import os; print('Python 3.13.7' if "
                                                          f"os.environ['PATH'] == {str(tmp_path)!r} "
-                                                         "else 'bad-path')"])
+                                                         "else 'bad-path')"],
+                                timeout_seconds=COMPLETED_CHILD_BUDGET)
     assert result["components"][0]["status"] == "ok"
     assert result["components"][0]["selected_path"] == str(executable)
 
@@ -496,6 +503,7 @@ def test_power_shell_probe_minimum_uses_full_numeric_version(
     result = inspect_components(
         data, lane="tools", features=["bridge_core"], search_path=str(tmp_path),
         platform="windows", probe_command=lambda _: [sys.executable, "-c", f"print({output!r})"],
+        timeout_seconds=COMPLETED_CHILD_BUDGET,
     )
     item = result["components"][0]
     assert item["status"] == status

@@ -658,3 +658,152 @@ saving arrives already at step 10.
 - **Kernel-name and runtime-root isolation** in every test of bridge code.
 - **Exact-head dual-RCO review** for (a)-class work; Grok review is advisory
   and runs before it.
+
+## 9. Converged package after brainstorm round 1 (supersedes §7 where they differ)
+
+Round 1 with Lead: fable-5 request 04:34:53Z, Lead's bound reply 04:36:20Z.
+The operator's directives (verbatim, 2026-09-28):
+
+> brainstormaa leadin kanssa 3 kierrosta ja tee yhteenveto lopuksi
+> kokonaisuudesta nyt tehdään kaikki parannukset kerralla ja mahdollisimman
+> vähillä allerkijoituksilla ja stepeillä
+
+> brain stormiin tulee ottaa mukaan myös muut keskeneräiset stepit mitä esim
+> lead ja sinä löysitte bridgeen liittyen ja samaan toteutus kokonaisuuteen
+
+### 9.1 Adopted from Lead's round-1 objections
+
+1. **Sibling defaults.** "A `/model` in one window changes sibling defaults" is
+   documented in `docs/BRIDGE_EFFECTIVE_MODEL.md` but not reproduced. It must
+   be reproduced on the installed CLIs before it is called a bug. The explicit
+   launch (F13) is needed either way.
+2. **No budget refunds.** The `max_turns` refund in §4.3 is withdrawn. Every
+   attempt consumes budget, as the hourly guard counts it today.
+3. **Cost is quota, not API price.**
+   - Cost is measured pool points per token (PR-13), never an API price.
+   - A benchmark score is task-specific evidence with provenance, not a
+     universal intelligence rank.
+   - `account_pool` comes only from validated provenance, never from a
+     manifest.
+4. **Unknown cost switches nothing.** It does not permit an assumed downgrade
+   either. A switch needs a known, qualified fallback, and reviewer and
+   task-class floors are kept. This replaces "may lower but never raise" in
+   §3.7 and §8.
+5. **No budget bypass.** There is no `--force-budget` in this package. An
+   environment identity or an agent-composed `operator` event is never
+   operator authentication.
+6. **Coverage, not elapsed time.** Activation needs coverage predicates, not
+   elapsed time. A shadow run with too few decisions is inconclusive.
+7. **One executor.** There is one serialized external executor with:
+   - a durable intent and an idempotency key;
+   - expected generation, PID and start time, and token identity;
+   - checkpoint and idle preconditions.
+   Principals submit bounded intents. The buddy fallback invokes the **same**
+   executor only after its exclusive ownership is proven, never a second path.
+   Unknown owner, logon or integrity means HOLD. Recovery distinguishes
+   queued, applied and verified, and never kills on an ambiguous identity.
+8. **Deferred:** approval carry-forward, break-glass, broad casing-policy
+   changes, the full PR-10/14/16 frameworks and the app-server transport.
+   Minimal qualification of every enabled profile is **not** deferred.
+
+### 9.2 Acceptance table
+
+**Owner abbreviations:** L = Lead, T = Tools, F = fable-5. Owners are proposals,
+not assignments. Every row ships behind a default-off flag unless it is
+read-only.
+
+Every (a)-class row also needs:
+- dual-RCO review at the exact head;
+- independent tests; Tools never solely validates its own broker or registry;
+- kernel-name and runtime-root isolation.
+
+**Stage 1: measurement and contracts** (read-only or additive)
+
+| # | Feature | Current behaviour | Change | Owner | Evidence threshold | Fail-closed | Activation | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| F1 | Wake telemetry | relay rows, no watermark | event revision ids; enqueue, start, end and coverage times; pending count; wake and suppress reasons; no-op ratio; p50/p95 latency | L | numbers reproduce from the ledger on an isolated trace | unknown fields shown as unknown | on merge (read-only) | remove the reader |
+| F2 | One versioned bootstrap/role contract | contradictory layers (3PACK roles, the HEADLESS prompt) | one contract with a version and hash, verified at session start; obsolete layers become historical; CI lints the active prompt set | L | lint passes; a fresh and a resumed session report the same hash | missing or wrong hash means fail closed | at rollout | previous contract |
+| F3 | Registry v2 + stored cost | benchmarks only; cost meter on stdout | pool / `limit_id` with provenance; measured pool points per Mtok stored daily; tier; context; Haiku and Grok rows | T | the meter reproduces the operator's pool readings within tolerance on 7 days of data | missing value shown as unknown | on merge | revert data |
+| F4 | Grok measurement | stderr dropped; no tokens or model | JSON output; model, effort, session and tokens; error classes; one ledger that also covers calibration and manual runs; no refunds | T | every call in a week appears in the ledger | unclassified error means cooldown | on merge | helper pin |
+| F5 | Lock-participant evidence | none | read-only tool: PID and start, logon SID, integrity, name | T | runs before activation and after reboot | more than one logon or integrity means exit non-zero and HOLD | gate for Stage 5 | n/a |
+| F6 | Dashboard | scattered | read-only: task, owner, exact head, state, pending gate, age, checkpoint freshness, known-noise classes; material changes only | T | matches canonical revisions on a replay | unknown shown as unknown | on merge | n/a |
+| F21 | Minimal qualification | none | fixed small suite per enabled profile (seeded-bug review, test repair, doc truth): quality score plus measured cost | T runs, F writes the suite | every profile in the envelope has a receipt | no receipt means not in the envelope | before the catalog signature | n/a |
+
+**Stage 2: wake backpressure** (the largest cost saver; built and tested first)
+
+| # | Feature | Current | Change | Owner | Evidence | Fail-closed | Activation | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| F7 | One outstanding wake per lane | 5 s debounce only; backlog drains as no-op turns | durable watermark plus dirty flag; typed notification; pinned drain helper; late replies, cancellations and vetoes never coalesced; no-op drains invisible to the operator | L | the audit's acceptance list (100 events while busy give 1 pending wake; urgent veto not hidden; 30 idle min give 0 model calls; crash recovery) on an isolated runtime | on doubt, deliver (never drop) | canary on Tools, then all lanes, each stage with stop conditions | flag off returns to the relay |
+
+**Stage 3: queue and guard correctness**
+
+| # | Feature | Current | Change | Owner | Evidence | Fail-closed | Activation | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| F8 | Work-queue serialization (§6.1; replaces #1567) | check-then-write race across task ids | `WorkQueueV1` via the #1751 mutex helpers; claim, release, heartbeat and sweep inside the lock | F | cross-runtime race harness: exactly one winner, no resurrection | timeout gives `work_queue_busy`, never unlocked | at rollout | revert |
+| F9 | Git-guard options (§6.2) | a leading option skips the guard | parse options; `-C` guarded against its target; `--git-dir`, `--work-tree`, `--namespace` and `-c core.*` refused on branch moves; `GIT_CONFIG_*` refused | F | the probe matrix with success twins | unknown option on a branch move means refuse | at rollout | revert |
+| F10 | Lease bound to the real worker | a short-lived shell PID; Lead's claim expired after 532 s | heartbeat follows the long-lived session; renewed during legitimate work; quiet waiting is not death | F | a long operation keeps its claim; a killed owner loses it | owner unknown means no renewal | at rollout | revert |
+| F11 | `Reply-ToRequest -RequestId` + requester supersede | agents hand-extract exact JSON; stranded requests stay open | the pinned helper fetches and binds; the requester can supersede its own request | F | binding identical to `-ReplyToEventJson` on the corpus | ambiguous id means refuse | at rollout | revert |
+| F12 | Head validation on `rco_pass` | an abbreviated head silently fails its slot | writer rejects a non-40-hex head on decision events | F | negative tests | reject | at rollout | revert |
+
+**Stage 4: registry use and explicit launch**
+
+| # | Feature | Current | Change | Owner | Evidence | Fail-closed | Activation | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| F13 | Explicit per-lane launch + preflight enforce (PR-9) | `native`; preflight only alerts | every launch passes its profile explicitly; a mismatch refuses the launch | L (one owner, one contract with F16) | preflight equals D3 on every lane after a relaunch | mismatch means refuse | per-lane canary | manifest `native` |
+
+**Stage 5: policy and actuator** (last)
+
+| # | Feature | Current | Change | Owner | Evidence | Fail-closed | Activation | Rollback |
+|---|---|---|---|---|---|---|---|---|
+| F15 | Switching policy (pure) | shadow advisor | envelope, principals, triggers, budget, rate, reviewer independence, operator precedence, known-qualified-fallback rule | F | property tests of every §3.5 guardrail; shadow decisions logged | unknown means HOLD | shadow until the coverage predicate holds | flag off |
+| F16 | Serialized external executor | no production ports | durable intent, idempotency, identity preconditions, queued/applied/verified recovery, a process-tree job object (the task limit does not reach the child) | L | crash at each phase recovers without a double side effect; F5 evidence green | ambiguous identity means HOLD, never kill | single-lane canary (fable-5), then the others; both RCOs never together | flag off; manual relaunch |
+| F17 | Session handover on relaunch | open requests and own claims stranded with the old session | the executor writes a handover record; claims move to the new session by CAS; requests accept the successor through the record; in-session switch preferred | F | a relaunch mid-task keeps its claims and answers its requests; a forged handover is rejected | no record means no successor | with F16 | revert |
+| F18 | `wd-model` CLI | none | `status`, `models`, `set`/`reset` within the envelope with expiry, `freeze`; no budget bypass | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
+| F19 | Task classes + brief-then-delegate + routing ledger | none | the §5 classes; subagent/`codex exec` executors without bridge authority; escalation; ledger | F | the ledger shows cost per class; quality holds on F21 tasks | no measurement means the default table | shadow ledger first | prompt table off |
+| F20 | `grok_consult` + broker | Lead-only helper; bridge refuses Grok | a request kind for any lane; one serialized broker around the existing helper; the hourly guard stays the admission rule; `skipped` replies; reply to the requester | T implements; F + RCOs test | a week of requests: none lost, budget never exceeded | unavailable means `skipped` | with Stage 5 | flag off |
+
+**Policy files in the same packet:**
+- the `CLAUDE.md` Rule 8 amendment (§5.3);
+- the signed catalog: profiles approved by F21 receipts, principals, and an envelope without fast or credit tiers;
+- the activation plan (9.3).
+
+**Not in the package:**
+- break-glass (F17 covers the common case);
+- S10 and broad casing changes (current binding semantics are preserved);
+- carry-forward, Rule 9b and Stage-2;
+- the full PR-10, PR-14 and PR-16 frameworks, and the app-server transport;
+- other Global mutexes: evidence only, via F5.
+
+**Closed as superseded:**
+- #1567 by F8;
+- #1638 by F7, if Lead agrees;
+- #1656 folded into F3 or closed;
+- the #1751 slices, after main CI.
+
+### 9.3 One signature, enumerated activation
+
+The operator signs once. The single packet contains:
+- head, tree, base, tag and notes SHA256;
+- the digests of the catalog, the policy files and the activation plan;
+- explicit exclusions.
+
+The activation plan lists, per stage:
+- the flag;
+- the coverage predicate (for example, for F15: at least 50 shadow decisions
+  across at least 3 pools and 3 lanes, zero guardrail violations, and the
+  acceptance matrix passed);
+- the canary lane, stop conditions and rollback;
+- an expiry: predicates not met within 14 days leave the stage off until a new
+  signature.
+
+`wd-model freeze` and an operator kill switch take precedence over every stage.
+Nothing activates on elapsed time alone.
+
+**Steps:**
+1. The #1751 rollout.
+2. Build slices in stage order, file-disjoint, reviewed as they land.
+3. Freeze; one isolated matrix; CI; dual RCO at the exact head; build
+   consensus.
+4. One signature.
+5. Merge and staged activation, each stage self-verifying against its
+   predicate.

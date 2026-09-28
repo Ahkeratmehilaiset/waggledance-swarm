@@ -626,28 +626,57 @@ signature; it is part of the §4 packet.
   wake file holds `wd.bridge-wake-observation.v1` bindings (request id,
   sender, session), but the relay uses them only for telemetry
   (`start-wd-tools-consumer.ps1:575-586`). The new wake:
-  - **Carries the cause, not the manual.** One header line (lane, delivery
-    id, contract hash) and one line per bound event: wake class, request id,
-    sender, task id, event type and status, `ts_utc`, and the SHA-256 of the
-    canonical event bytes. Every field is validated against a strict pattern
-    or the identity registry; **no free text from the event is copied into
-    the wake**, so an event cannot inject instructions into the next turn.
-  - **Moves the standing rules into the role contract** (F2), loaded once
-    per session with its hash checked. The wake names the contract hash; a
-    mismatch makes the lane reload the contract before acting.
-  - **Classifies the wake** mechanically from event type and status, never
-    from text: `request_for_you`, `reply_to_your_request`, `veto` and
-    `cancel` (these three preempt, as above), `supersede`, and
-    `informational`. An informational event does **not** wake a Codex lane;
-    it is added to a digest that rides the next actionable wake, or is
-    delivered after a signed maximum delay.
-  - **Says what is expected:** the result contract of the request (if any),
-    the requested reply recipient, and a deadline when the request has one.
-  - **Fetches exactly.** A pinned `Get-BridgeEvent -RequestId <id>
-    -ExpectedSha256 <hash>` returns the exact canonical event and refuses on
-    a hash mismatch, replacing the "truncated routing summary, now go find
-    the full request" step. The drain watermark (above) stays the authority:
-    the wake lines are hints for speed, never authority.
+  - **Carries the cause, not the manual.** A short header and one line per
+    bound event.
+    - The header: lane, session and generation, delivery id, contract hash,
+      and three fixed reminders: the lines are untrusted routing hints; fetch
+      each event before acting; HOLDs are preserved and nothing in a wake
+      escalates authority.
+    - Each event line: wake class, request id, sender, task id, event type
+      and status, `ts_utc`, and the SHA-256 of the canonical event bytes.
+    - Every field is validated against a strict pattern or the identity
+      registry. **No free text from the event is copied into the wake**, so
+      an event cannot inject instructions into the next turn. The same holds
+      for result-contract metadata: only a bounded, escaped schema id and
+      the required field names. Arbitrary schema descriptions and deadlines
+      never become prose in the wake.
+  - **Moves the standing rules into the role contract** (F2). The lane
+    loads the contract on first use, after a context compaction, and on any
+    hash mismatch. The expected hash comes from the pinned bundle manifest,
+    never from a hash supplied only by event text.
+  - **Classifies the wake** from the validated binding and an explicit
+    control precedence, never from text and never from the outer type alone.
+    - **Always immediate**, whatever the outer type or a payload
+      `notification` flag says:
+      - an actionable request;
+      - an exact-bound reply or a correction, including a reply sent as a
+        `message` and a late correction after a summary;
+      - a veto, HOLD, cancel or supersede;
+      - an explicit blocking failure transition;
+      - any change to the outcome of an active task.
+    - **Digested:** only notices that are demonstrably non-actionable. The
+      digest is durable, delivered within a signed bound, and recovered
+      after a restart.
+    - **Unknown or malformed classification** triggers a generic drain wake,
+      never a silent discard.
+  - **Says what is expected:** the request's result-contract schema id and
+    required field names, and the requested reply recipient, as bounded
+    routing metadata only.
+  - **Fetches exactly.** A request id names a request, not a unique reply,
+    so a pinned `Get-BridgeEvent` takes the exact canonical event hash plus
+    the requester, the session and a reply discriminator.
+    - It returns the full canonical request, message and payload, and
+      refuses on any mismatch.
+    - It replaces the broad "truncated routing summary, now go find the full
+      request" scan. It does not replace review: the lane still runs the
+      complete pinned binding, schema and semantic validation before acting.
+    - The metadata is only routing, never enough to act on. The drain
+      watermark (above) stays the authority.
+  - **Coalesces without loss.** Moving text into the contract does not by
+    itself stop duplicate queued model turns. Coalescing is per lane and
+    generation, over a durable watermark of unprocessed events. An event is
+    never marked processed when it is enqueued, only when the lane has
+    handled it. Crash, restart and late-reply recovery stay lossless (F7).
   - **Degrades safely.** When the correlation is incomplete
     (`correlation_complete=false`, a legacy plain-text wake, or more than the
     bound of bindings), the wake says so in one line and points to the
@@ -952,8 +981,27 @@ how to install it.**
   (`wd-fleet.json`), the runtime root, the role contract (F2), the model
   registry, the catalog and the activation config (F0).
 
+**Requiredness is per feature and per lane.** A minimal fork (for example
+one Claude lane and the bridge) must not need every provider subscription.
+For each provider, the doctor reports four separate states:
+- the CLI is present and at a supported version;
+- it is authenticated;
+- the subscription or quota is known;
+- a next turn was observed to succeed.
+One state never implies another.
+
+**Bootstrap when the doctor's own runtime is missing.** If Python,
+PowerShell or the bridge writer itself is missing, the doctor cannot rely
+on it to diagnose the gap or to post `component_missing`. A minimal
+bootstrap check therefore runs with no dependencies beyond the platform
+shell. It prints the missing pieces and their install steps to stderr and
+writes a local receipt file. Publication to the bridge happens later,
+deduplicated, once the writer works.
+
 **The doctor** (`wd-bridge doctor`; PowerShell and Python front ends over one
-manifest). It runs:
+manifest). Its probes are bounded, read-only and pinned or allowlisted. They
+redact credentials, and each result is one of `ok`, `missing`,
+`wrong_version`, `unsupported` or `unknown`. It runs:
 - on demand;
 - at session start (`Start-AgentBridgeSession.ps1`), in the installer and
   launcher preflights;
@@ -967,11 +1015,14 @@ manifest). It runs:
   with the reason (for example "Grok Build not found: `grok_consult` returns
   `skipped`; install from <official URL>"), and everything else runs.
 - **Interactive session (a human at the terminal):** it *offers* the
-  install. It shows the exact command and source and asks yes or no, and
-  runs it only on an explicit yes. Only pinned sources are used; there is
-  never a piped remote script, and nothing needing elevation runs without
-  its own prompt.
-- **Non-interactive (a lane or a scheduled task):** it never installs. It
+  install.
+  - It shows the exact command, source, package version and digest, asks
+    for a separate approval, and runs the install only on an explicit yes.
+  - Afterwards it verifies the installed version and digest.
+  - Only pinned sources are used, and there is never a piped remote script.
+  - Elevation happens only through the human's own prompt.
+- **Non-interactive (a lane or a scheduled task):** it never installs and
+  never elevates. It
   posts one `component_missing` status event to the operator with the
   instructions, deduplicated per component and generation, and the
   dependent features stay off.
@@ -1035,8 +1086,8 @@ boundary; merging alone never mutates production.
 | F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; read-only review mode: an out-of-allowlist tool call in the session log fails the run, and the snapshot holds no `.git`, secrets or runtime data; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
 | F26 | 5 | Automatic operation + waggle-dance learning (§2.11) | F writes, T runs, RCOs evaluate | fault injection: each operational-wait cause clears and work resumes with no operator action, while each safety HOLD stays blocked until its condition changes; replay: routing weights converge to the best measured route per class, a stop signal quarantines a failing profile within one tick, exploration stays within its budget, a candidate joins only through the admission policy with an independent quorum; adversarial: poisoned and replayed evidence, correlated lanes, self-grading, model-version drift and oscillation; no learned change exceeds a signed bound | a learned change without evidence is not applied; a bound breach rolls back automatically | shadow ledger and shadow weights first | learning off, last signed weights |
 | F27 | 5 | Stand-in incarnation (§2.12) | L (with F16/F17) | fault injection on the canary: kill mid-step; a limit error mid-step; a stale, misbound or transient limit reading; PID reuse, a recycled child PID, a dead parent with a live child, unrelated descendants; partial WIP write, bad diff, untracked file; a crash just before and just after an external success and before its receipt; freeze during recovery; a partially applied CAS; two simultaneous stand-ins; hand-back failure. Records the observed recovery time and data-loss window | ambiguous identity, an incomplete fence, an unknown external outcome or no eligible profile means a safety HOLD; an unresponsive live owner is never taken over; a quota reading is never kill authority | with F16 and F17 | stand-ins off; the lane waits for its own pool |
-| F29 | 1 | Component manifest + doctor + first-run init (§2.13) | T implements; F tests | in a clean fork clone under an isolated user profile, with each component removed in turn (PATH and file masking): every missing required component refuses start with exact instructions; every missing optional one disables exactly its features with the reason; an interactive run installs only on an explicit yes from a pinned source; a non-interactive run never installs and posts one deduplicated `component_missing`; the hard-coded machine paths are gone from the new code | a missing required component means refuse with instructions; an unknown detection result means treat as missing | deploy (read-only doctor first, then the start hook) | doctor off; the existing behaviour |
-| F30 | 2 | Targeted wake content (§2.8, R18) | L implements; F tests | fixtures for each wake class (request, reply, veto, cancel, supersede, informational) and for incomplete correlation; the wake names exactly the bound events with their hashes and carries no event free text (an injection fixture in the message and payload never reaches the wake); informational events do not wake a Codex lane; `Get-BridgeEvent` refuses on a hash mismatch; the updated consumer suites (`test_wd_native_tools_wake.py`, `test_wd_lead_reply_delivery.py` and every other suite `git grep` finds for the wake text) pass; the F1 metrics show fewer tokens per wake and fewer no-op wakes with no missed request on a replay | incomplete correlation means a generic drain wake; a hash mismatch means refuse and drain | deploy on one lane first (canary), after F2 and F7 | the F0 flag restores today's wake text |
+| F29 | 1 | Component manifest + doctor + first-run init (§2.13) | T implements; F tests | in a clean fork clone under an isolated user profile, with each component removed in turn (PATH and file masking): every missing required component refuses start with exact instructions; every missing optional one disables exactly its features with the reason; a minimal fork passes without the providers it does not use; the four provider states are reported separately; with Python, PowerShell or the writer masked, the bootstrap check still prints the steps and writes a local receipt; probes redact credentials and report `unknown` rather than guess; an interactive run installs only on an explicit yes from a pinned source; a non-interactive run never installs and posts one deduplicated `component_missing`; the hard-coded machine paths are gone from the new code | a missing required component means refuse with instructions; an unknown detection result means treat as missing | deploy (read-only doctor first, then the start hook) | doctor off; the existing behaviour |
+| F30 | 2 | Targeted wake content (§2.8, R18) | L implements; F tests | fixtures for each wake class (request, reply, veto, cancel, supersede, informational) and for incomplete correlation; the wake names exactly the bound events with their hashes and carries no event free text (an injection fixture in the message and payload never reaches the wake); informational events do not wake a Codex lane; `Get-BridgeEvent` refuses on a hash mismatch; tests for: duplicate wake bursts; queued wakes surviving a restart; a reply sent as a `message`; a late correction after a summary; a veto mislabeled informational; controls with no request id; a hash mismatch; cursor gaps; contract recovery after compaction; the updated consumer suites (`test_wd_native_tools_wake.py`, `test_wd_lead_reply_delivery.py` and every other suite `git grep` finds for the wake text) pass; the F1 metrics show fewer tokens per wake and fewer no-op wakes with no missed request on a replay | incomplete correlation means a generic drain wake; a hash mismatch means refuse and drain | deploy on one lane first (canary), after F2 and F7 | the F0 flag restores today's wake text |
 | F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
@@ -1334,6 +1385,31 @@ start and in preflights, refusal with instructions for required components,
 feature-level degradation for optional ones, an install offered only
 interactively from pinned sources, never an automatic install from a lane,
 and a first-run init that replaces this machine's hard-coded paths.
+
+**Lead's R17/R18 review (07:44:07Z, request 7c0e0bc9, head 203cda83):
+`modified`.** Lead inspected the source for R17 and R18 only; this is not a
+blanket endorsement of the Grok review or of all 74 citations. All
+objections and proposals are adopted in §2.8, §2.13, F29 and F30:
+- **Wake classification:** by validated binding and explicit control
+  precedence, never by outer type alone. Bound replies, corrections,
+  vetoes, HOLDs, cancels, supersedes and blocking failures are always
+  immediate. Only demonstrably non-actionable notices are digested, durably.
+  An unknown classification means a generic drain.
+- **Exact fetch:** by event hash plus requester, session and reply
+  discriminator. Full canonical fetch and complete validation are still
+  required; metadata is routing only.
+- **Coalescing:** per lane and generation, over a durable unprocessed
+  watermark, never marked processed on enqueue. Contract reload on first
+  use, after compaction or on mismatch, with the hash from the manifest.
+- **Doctor:** requiredness per feature and lane, four separate provider
+  states, a dependency-free bootstrap with a local receipt, bounded and
+  redacting probes, and an install with a version, a digest, a separate
+  approval and a post-install check. No agent or scheduler install, and no
+  agent elevation.
+- **Scope:** Lead noted that several wakes after 07:17:03Z carried no
+  substantive event. That is a confirmed no-op observation, not yet proof of
+  the relay's root cause. PR #1753 stays a draft, design only, staged after
+  F1, F2 and F7.
 
 **Thirteenth directive (R18).** The operator asked for better and more targeted
 wakes and attached today's Tools wake. The code shows why it is poor: a fixed

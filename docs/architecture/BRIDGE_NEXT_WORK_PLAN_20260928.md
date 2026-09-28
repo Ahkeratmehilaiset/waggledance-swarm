@@ -134,9 +134,12 @@ Evidence labels:
   discoverability.
 - SUSPECTED: a per-lane wrapper misattributes execution evidence. The Lead
   path is fine today, but the `start-wd-tools-consumer` branch is unverified.
-- SUSPECTED: a writer may not refuse an unbound reserved `agent=operator`
-  event when the registry or profile lacks an entry (`Write-AgentEvent.ps1`
-  437-499).
+- READ (code, 2026-09-28): `Write-AgentEvent.ps1` never calls
+  `Assert-AgentBridgeSessionIdentity`, so any caller can write an event as
+  `agent=operator` or `system`; the reserved-label refusal exists only in the
+  claim, release, heartbeat and session scripts. The earlier SUSPECTED
+  wording (lines 437-499) was wrong about the location. See
+  `BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md` §1 C1.
 - MEASURED: a scheduled task's time limit does not reach a
   `wd_silent_launch` child.
 
@@ -535,7 +538,7 @@ signature; it is part of the §4 packet.
 
 | Item | Design |
 |---|---|
-| Scope race | `WorkQueueV1` created through the #1751 same-logon mutex helpers. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Each mutation writes an idempotency key and an outbox record in the same critical section; bridge events are published from the outbox after the lock is released, so a crash between the two loses no event, and a replay of a bound key returns the original result. |
+| Scope race | A **new** `WorkQueueV1` mutex (none exists today; the Python work queue takes no lock at all), created through the #1751 same-logon mutex helpers. Claim, release, heartbeat and applied sweep run inside it. A timeout gives `work_queue_busy`; nothing proceeds unlocked. Each mutation writes an idempotency key and an outbox record in the same critical section; bridge events are published from the outbox after the lock is released, so a crash between the two loses no event, and a replay of a bound key returns the original result. |
 | Git guard | Parse leading options. `-C` is guarded against its target. `--git-dir`, `--work-tree` and `--namespace` are refused on branch moves. Only an allowlist of safe `-c` keys passes on a branch move; every other `-c`, and the `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE` and `GIT_NAMESPACE` environment variables, are refused. Unknown options fail closed. |
 | Lease | The heartbeat follows the long-lived worker. The old owner is fenced when stale. Leases retire per task, so a live process never renews a finished task forever. The claim cwd is normalized to an absolute path. The heartbeat proves only that the process lives: a claim with no progress proof beyond a signed bound is marked `wedged`, visibly; the claim stays held, and other file-disjoint eligible work continues (R15). Automatic takeover of a wedged *live* owner stays deferred (B7, §5). |
 | Reply UX | A pinned `Reply-ToRequest -RequestId` fetches and binds the request itself; the requester can supersede its own request. |
@@ -916,6 +919,9 @@ stays under Rules 9a and 9b. This packet does not change them.
 sizes and tolerances for F3 and F21 are fixed before the evidence is
 collected. Incomplete measurements give a smaller envelope, never a guessed
 pass. Discussion and isolated tests need no extra approval.
+
+The code-level slice map, the release runbook and the exact signature
+binding are in `BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md`.
 
 **Steps:**
 1. #1751 rollout.

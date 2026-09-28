@@ -41,6 +41,9 @@ incorporated (§7).
 > sen koostaa aina se tehokkaista malleita jolla on sen parven paras mitattu
 > älykkyys ulkopuolisten raporttejen mukaan
 
+> Ei ole mitään tunniin kiintiörajaa jos minä kysyn ja jatkossa parven täytyy
+> tietää toistensa kiintiö
+
 | # | Requirement (English restatement) | Where |
 |---|---|---|
 | R1 | Model switching is as user-friendly as possible | §2.2, §2.3 |
@@ -54,6 +57,7 @@ incorporated (§7).
 | R9 | Routine work goes to the most cost-effective model, prepared with the best initialization | §2.7 |
 | R10 | Everything at once: every open bridge item Lead and fable-5 found, with the fewest signatures and steps | §3, §4 |
 | R11 | Brainstorms and sprint plans are always composed by the swarm's model with the best externally measured intelligence | §2.10 |
+| R12 | No hourly Grok limit applies when the operator asks; every lane knows every other lane's quota | §2.1, §2.6 |
 
 ## 1. Current state
 
@@ -136,6 +140,18 @@ API price is not quota cost and is not used as one.
 
 Unknown values are shown as unknown. This table is the principals' decision
 input, and a compact copy goes into their boot brief.
+
+**Shared quota visibility (R12).** Every lane, not only the principals, can
+read every pool's state: each Claude and Codex pool, and Grok's weekly pool
+as far as it is measurable (F4 ledger tokens, calibrated against the
+operator's readings of the account page).
+- It is a read-only snapshot (`wd-model status --json`, and a compact line in
+  each lane's boot brief and wake notification), with its age and source.
+- A lane checks a peer's pool before it sends that peer work or a
+  `grok_consult`; a peer in `conserve` or with an unknown pool gets only
+  urgent work, and the sender says why.
+- Reading another lane's quota grants no authority over it; switching stays
+  with the executor (§2.4).
 
 ### 2.2 Who may switch, and within what (R1, R6)
 
@@ -293,8 +309,14 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
   arbitration, research, brainstorm), effort, a prompt file of at most 24 KB,
   a deadline and a priority. This replaces the refusal in `bridge_workflow.py`.
 - **Broker.** One serialized broker calls the existing helper.
-  - The existing hourly guard stays the admission rule, and every attempt
-    counts. There are no refunds.
+  - The existing hourly guard stays the admission rule for autonomous
+    calls, and every attempt counts. There are no refunds.
+  - **Operator-requested calls are exempt from the hourly guard (R12).** The
+    operator's direct words, session-observed in the lane that makes the
+    call, are the only trigger; a peer relay is not. The call is recorded as
+    `operator_requested` with the literal instruction, and it still counts
+    in the ledger and the weekly-pool forecast. The exemption never buys
+    top-ups or bypasses a weekly-pool limit error.
   - The result is a bound reply to the requester.
 - **Unavailable.** A limit, auth, timeout or budget failure gives a reply of
   `skipped` with the reason class. The requester carries on. **Grok is never a
@@ -303,8 +325,9 @@ REQUESTED -> QUIESCED -> FENCED -> APPLIED -> VERIFIED -> CONTINUED
   - JSON output: model, effort, session, tokens, error class.
   - One ledger that includes calibration and manual runs.
   - The timeout scales with effort.
-- **Budget.** Loosening the hourly guard later needs separately signed,
-  measured admission rules. That is not in this package.
+- **Budget.** Apart from the operator-requested exemption above, loosening
+  the hourly guard for autonomous calls needs separately signed, measured
+  admission rules. That is not in this package.
 
 ### 2.7 Cheap routine work, strong planning (R4, R9)
 
@@ -459,7 +482,8 @@ boundary; merging alone never mutates production.
 | F18 | 5 | `wd-model` | F | end-to-end on the canary | refusal prints the reason | with F16 | n/a |
 | F19 | 5 | Task classes + brief-then-delegate + ledger | F | ledger shows cost per class; quality holds on F21 tasks | no measurement means signed defaults only | shadow ledger first | prompt table off |
 | F24 | 5 | Composer rule (§2.10) | F | the chosen composer equals the registry top on fixtures (ties, stale, missing, unavailable); every brainstorm and sprint-plan document records its composer | unknown or stale index means `composer_unknown`, recorded; unavailable means a recorded `composer_fallback` | with F19; the rule text also goes into the F2 bootstrap contract | prompt rule off |
-| F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded | unavailable means `skipped` | with Stage 5 | flag off |
+| F20 | 5 | `grok_consult` + broker | T implements; F and RCOs test | none lost; the hourly guard is never exceeded by an autonomous call; an operator-requested call passes only with a session-observed, recorded instruction, and a relayed one is refused | unavailable means `skipped` | with Stage 5 | flag off |
+| F25 | 1 | Shared quota visibility (§2.1) | T | every lane's boot brief and `wd-model status` show every pool with age and source; matches the F3 meter on a replay | unknown shown as unknown; no work routed to an unknown pool except urgent, with the reason | deploy (read-only) | remove the reader |
 
 **Closures**, each only after a diff and test mapping, never by title alone:
 - #1567, superseded by F8;
@@ -537,7 +561,10 @@ stays under Rules 9a and 9b. This packet does not change them.
 - Unknown means HOLD. There is no assumed downgrade and no raise.
 - Grok is never a gate, and never part of automatic model switching until its
   pool is measurable.
-- No automatic purchase, no fast tier, no budget bypass.
+- No automatic purchase, no fast tier, no budget bypass. The only exemption
+  is operator-requested Grok calls from the hourly guard (§2.6); the weekly
+  pool still applies.
+- Every lane can see every pool's quota state; seeing grants no authority.
 - The executor is the only actuator, and a frozen request binding is never
   mutated.
 - Every switch is an event with its inputs, verified by D3, with a rollback.

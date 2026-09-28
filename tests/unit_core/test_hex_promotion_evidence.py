@@ -17,6 +17,30 @@ _TS = "2026-07-04T17:00:00Z"
 _DIGEST = "sha256:" + "ab" * 32
 
 
+class _ExplosiveBool:
+    def __bool__(self) -> bool:
+        raise AssertionError("boolean coercion must not run")
+
+
+class _LiarList(list):
+    def __len__(self) -> int:
+        return 0
+
+
+class _LiarFlags(dict):
+    def get(self, key, default=None):
+        if key == "runtime_authority_granted":
+            return False
+        return super().get(key, default)
+
+
+class _LiarRecord(dict):
+    def get(self, key, default=None):
+        if key == "commit_candidate_prepared":
+            return True
+        return super().get(key, default)
+
+
 def _ready_application(**overrides):
     app = {
         "application_digest": _DIGEST,
@@ -125,6 +149,40 @@ def test_build_rejects_missing_application_digest() -> None:
             commit_application=_ready_application(application_digest="not-a-digest"))
 
 
+@pytest.mark.parametrize("missing_field", ["blockers", *H._RUNTIME_AUTHORITY_FLAGS])
+def test_build_rejects_missing_complete_evidence_field(missing_field: str) -> None:
+    application = _ready_application()
+    del application[missing_field]
+
+    with pytest.raises(H.PromotionEvidenceError):
+        _record(application)
+
+
+@pytest.mark.parametrize("bad_blockers", [None, (), {}, "", 0])
+def test_build_rejects_non_list_blockers(bad_blockers: object) -> None:
+    with pytest.raises(H.PromotionEvidenceError):
+        _record(_ready_application(blockers=bad_blockers))
+
+
+def test_build_rejects_list_subclass_that_hides_a_blocker() -> None:
+    blockers = _LiarList(["real_blocker"])
+    assert list.__len__(blockers) == 1
+    assert len(blockers) == 0
+
+    with pytest.raises(H.PromotionEvidenceError, match="plain list"):
+        _record(_ready_application(blockers=blockers))
+
+
+@pytest.mark.parametrize("flag", H._RUNTIME_AUTHORITY_FLAGS)
+@pytest.mark.parametrize("bad_value", [None, 0, 1, "false", _ExplosiveBool()])
+def test_build_rejects_non_literal_runtime_authority_flags(
+    flag: str,
+    bad_value: object,
+) -> None:
+    with pytest.raises(H.PromotionEvidenceError):
+        _record(_ready_application(**{flag: bad_value}))
+
+
 # --- hash-chained ledger ---------------------------------------------------------
 def test_chain_append_read_verify_and_count(tmp_path) -> None:
     path = str(tmp_path / "promotion_evidence.jsonl")
@@ -191,6 +249,34 @@ def test_non_bool_scalar_shapes_are_rejected(field, bad_value) -> None:
     forged = _reforge(_record(), **{field: bad_value})
     assert H.is_valid_promotion_evidence(forged) is False
     assert H.wellformed_reason(forged) is not None
+
+
+def test_verifier_rejects_flag_dict_subclass_that_hides_true_storage() -> None:
+    record = _record()
+    flags = _LiarFlags(record["runtime_authority_flags"])
+    flags["runtime_authority_granted"] = True
+    record["runtime_authority_flags"] = flags
+    record[H._HASH_FIELD] = H.compute_record_hash(record)
+
+    assert dict.__getitem__(flags, "runtime_authority_granted") is True
+    assert flags.get("runtime_authority_granted") is False
+    assert record[H._HASH_FIELD] == H.compute_record_hash(record)
+    assert H.wellformed_reason(record) == "runtime_authority_flags_type"
+    assert H.is_valid_promotion_evidence(record) is False
+    assert H.count_shadow_to_candidate_promotions([record]) == 0
+
+
+def test_verifier_rejects_record_dict_subclass_that_hides_not_prepared() -> None:
+    record = _LiarRecord(
+        _record(_ready_application(commit_candidate_prepared=False))
+    )
+
+    assert dict.__getitem__(record, "commit_candidate_prepared") is False
+    assert record.get("commit_candidate_prepared") is True
+    assert record[H._HASH_FIELD] == H.compute_record_hash(record)
+    assert H.wellformed_reason(record) == "record_mapping_type"
+    assert H.is_valid_promotion_evidence(record) is False
+    assert H.count_shadow_to_candidate_promotions([record]) == 0
 
 
 def test_wellformed_but_non_clean_record_is_persisted_but_not_counted(tmp_path) -> None:

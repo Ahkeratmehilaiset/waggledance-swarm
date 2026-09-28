@@ -9,12 +9,13 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
+from types import MappingProxyType
 from pathlib import Path
-from urllib.parse import urlparse
 
 
 SCHEMA = "wd.bridge-components.v1"
@@ -52,11 +53,18 @@ NPM_NATIVE = {
               ("node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
                "vendor/x86_64-pc-windows-msvc/bin/codex.exe")),
 }
-OFFICIAL_HOSTS = {
-    "python.org", "www.python.org", "git-scm.com", "learn.microsoft.com",
-    "github.com", "cli.github.com", "docs.anthropic.com",
-    "developers.openai.com", "docs.x.ai", "x.ai",
-}
+OFFICIAL_INSTALL = MappingProxyType({
+    "python": ("https://www.python.org/downloads/", "Python.Python.3.13"),
+    "git": ("https://git-scm.com/downloads", "Git.Git"),
+    "powershell": ("https://learn.microsoft.com/powershell/scripting/install/installing-windows-powershell", None),
+    "pwsh": ("https://learn.microsoft.com/powershell/scripting/install/installing-powershell", "Microsoft.PowerShell"),
+    "gh": ("https://cli.github.com/", "GitHub.cli"),
+    "claude": ("https://github.com/anthropics/claude-code", "@anthropic-ai/claude-code"),
+    "codex": ("https://developers.openai.com/codex/cli", "@openai/codex"),
+})
+# Empty until a separately reviewed code change supplies an authoritative pin.
+# Neither manifest bytes nor an observed digest can populate this mapping.
+APPROVED_NATIVE_PINS = MappingProxyType({})
 
 
 class DoctorError(ValueError):
@@ -113,6 +121,12 @@ def validate_manifest(data):
         _ids(profile["features"], f"profiles.{alias}.features")
     if not any(alias == profile["lane"] for alias, profile in profiles.items()):
         raise DoctorError("profiles require at least one canonical lane")
+    for alias, profile in profiles.items():
+        canonical = profiles.get(profile["lane"])
+        if canonical is None or canonical["lane"] != profile["lane"]:
+            raise DoctorError(f"profiles.{alias} canonical lane missing")
+        if set(profile["features"]) != set(canonical["features"]):
+            raise DoctorError(f"profiles.{alias} alias features differ from canonical lane")
     components = data["components"]
     if not isinstance(components, list) or not components or len(components) > 64:
         raise DoctorError("components must contain 1..64 entries")
@@ -145,9 +159,8 @@ def validate_manifest(data):
             if not isinstance(paths, list) or not paths or len(paths) != len(set(map(str, paths))) or \
                     any(not isinstance(path, str) or path not in allowed_paths for path in paths):
                 raise DoctorError(f"{loc}.resolution.native_relpaths not allowlisted")
-            pin = resolution["trusted_sha256"]
-            if pin is not None and (not isinstance(pin, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", pin)):
-                raise DoctorError(f"{loc}.resolution.trusted_sha256 invalid")
+            if resolution["trusted_sha256"] is not None:
+                raise DoctorError(f"{loc}.resolution.trusted_sha256 needs an externally approved anchor")
         elif resolution is not None:
             raise DoctorError(f"{loc}.resolution unsupported for probe")
         _ids(item["platforms"], f"{loc}.platforms", PLATFORMS)
@@ -174,22 +187,11 @@ def validate_manifest(data):
                 raise DoctorError(f"{loc}.required_for platform not supported")
         install = item["install"]
         _keys(install, {"source_url", "package_id"}, {"source_url", "package_id"}, f"{loc}.install")
-        url = install["source_url"]
-        if not isinstance(url, str) or len(url) > 512:
-            raise DoctorError(f"{loc}.install.source_url invalid")
-        try:
-            parsed = urlparse(url)
-        except ValueError as exc:
-            raise DoctorError(f"{loc}.install.source_url invalid") from exc
-        if parsed.scheme != "https" or parsed.hostname not in OFFICIAL_HOSTS or parsed.username or parsed.password:
-            raise DoctorError(f"{loc}.install.source_url must be an allowlisted official HTTPS URL")
-        package_id = install["package_id"]
-        if item["probe"] in NPM_NATIVE and package_id != resolution["package"]:
-            raise DoctorError(f"{loc}.install.package_id differs from resolution package")
-        if package_id is None and item["probe"] == "powershell" and item["platforms"] == ["windows"]:
-            continue  # Windows PowerShell 5.1 is an OS component, not a package.
-        if not isinstance(package_id, str) or not re.fullmatch(r"[A-Za-z0-9@._/\-]{1,128}", package_id):
-            raise DoctorError(f"{loc}.install.package_id invalid")
+        official = OFFICIAL_INSTALL.get(item["probe"])
+        if official is None or install["source_url"] != official[0]:
+            raise DoctorError(f"{loc}.install.source_url must match the exact official source")
+        if install["package_id"] != official[1]:
+            raise DoctorError(f"{loc}.install.package_id must match the official package identifier")
     declared_features = {feature for item in components for feature in item["features"]}
     for alias, profile in profiles.items():
         if not set(profile["features"]).issubset(declared_features):
@@ -197,12 +199,21 @@ def validate_manifest(data):
     return data
 
 
+def _path_directories(search_path):
+    for part in search_path.split(os.pathsep):
+        part = part.strip()
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in ('"', "'"):
+            part = part[1:-1]
+        if not part or '"' in part or "'" in part:
+            continue
+        directory = Path(part)
+        if directory.is_absolute():
+            yield directory
+
+
 def _safe_executable(name, search_path):
     """Search absolute PATH entries only; never use cwd or Windows batch files."""
-    for part in search_path.split(os.pathsep):
-        directory = Path(part)
-        if not part or not directory.is_absolute():
-            continue
+    for directory in _path_directories(search_path):
         candidates = [directory / (name + ".exe")] if os.name == "nt" else [directory / name]
         for candidate in candidates:
             if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -278,19 +289,39 @@ def _run_verified_npm_native(argv, timeout, search_path, path, trusted_sha256):
         return None, "binary_lock_error"
 
 
+def _path_chain_has_alias(path):
+    """Refuse reparse/symlink aliases in an npm provenance chain."""
+    for component in (path, *path.parents):
+        try:
+            mode = component.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        try:
+            junction = hasattr(component, "is_junction") and component.is_junction()
+        except OSError:
+            return True
+        if (stat.S_ISLNK(mode.st_mode) or
+                bool(getattr(mode, "st_file_attributes", 0) &
+                     getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)) or
+                junction):
+            return True
+    return False
+
+
 def _resolve_npm_native(probe, resolution, search_path):
     """Locate an allowlisted npm native payload; never execute its shell shims."""
     package = resolution["package"]
-    for part in search_path.split(os.pathsep):
-        directory = Path(part)
-        if not part or not directory.is_absolute():
-            continue
+    for directory in _path_directories(search_path):
         shim = next((directory / (probe + suffix)
                      for suffix in (".cmd", ".ps1", "")
                      if (directory / (probe + suffix)).is_file()), None)
         if shim is None:
             continue
         package_root = directory.joinpath("node_modules", *package.split("/"))
+        if _path_chain_has_alias(package_root):
+            return None, None, "package_path_alias", str(shim)
         metadata_path = package_root / "package.json"
         try:
             with metadata_path.open("rb") as stream:
@@ -309,6 +340,8 @@ def _resolve_npm_native(probe, resolution, search_path):
             return None, None, "package_bin_mismatch", str(shim)
         for relpath in resolution["native_relpaths"]:
             candidate = package_root.joinpath(*relpath.split("/"))
+            if _path_chain_has_alias(candidate):
+                return None, None, "package_path_alias", str(shim)
             try:
                 candidate_resolved = candidate.resolve(strict=True)
                 candidate_resolved.relative_to(package_root.resolve(strict=True))
@@ -322,13 +355,16 @@ def _resolve_npm_native(probe, resolution, search_path):
                 return None, None, "binary_hash_error", str(shim)
             if digest is None:
                 return None, None, "binary_too_large", str(shim)
+            approved_pin = APPROVED_NATIVE_PINS.get(probe)
             provenance = {
                 "method": "npm_native", "package": package,
                 "package_version": package_version,
                 "package_json_path": str(metadata_path),
                 "package_json_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
                 "binary_path": str(candidate_resolved), "sha256": digest,
-                "verified": digest.lower() == (resolution["trusted_sha256"] or "").lower(),
+                "verified": bool(approved_pin) and digest.lower() == approved_pin.lower(),
+                "pin_source": "code_reviewed" if approved_pin else "unknown",
+                "trust": "approved" if approved_pin and digest.lower() == approved_pin.lower() else "unknown",
             }
             return str(candidate_resolved), provenance, None, str(candidate_resolved)
         return None, None, "native_binary_missing", str(shim)
@@ -423,9 +459,21 @@ def _run_bounded(argv, timeout, search_path=None):
         return None, "probe_scope_error"
 
 
+def _close_probe_scope(close_scope):
+    try:
+        close_scope()
+    except ProcessLookupError:
+        pass
+    except OSError:
+        return "probe_scope_error"
+    return None
+
+
 def _run_bounded_scoped(argv, timeout, search_path, paths):
     # Version checks need no account tokens, home directory, or interactive stdin.
-    child_env = {"PATH": search_path if search_path is not None else os.environ.get("PATH", ""),
+    raw_path = search_path if search_path is not None else os.environ.get("PATH", "")
+    safe_path = os.pathsep.join(str(directory) for directory in _path_directories(raw_path))
+    child_env = {"PATH": safe_path,
                  "NO_COLOR": "1", "CI": "1", "HOME": str(paths["home"]),
                  "USERPROFILE": str(paths["home"]), "APPDATA": str(paths["appdata"]),
                  "LOCALAPPDATA": str(paths["localappdata"]),
@@ -456,7 +504,8 @@ def _run_bounded_scoped(argv, timeout, search_path, paths):
             _windows_resume_scoped_process(process)
         except OSError:
             if close_scope is not None:
-                close_scope()
+                if _close_probe_scope(close_scope):
+                    process.kill()  # Only the suspended child created above.
             else:
                 process.kill()
             process.wait()
@@ -486,22 +535,23 @@ def _run_bounded_scoped(argv, timeout, search_path, paths):
     try:
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            close_scope()
-        except ProcessLookupError:
-            pass
+        scope_error = _close_probe_scope(close_scope)
+        if scope_error:
+            try:
+                process.kill()  # Only our direct child; never a foreign PID.
+            except ProcessLookupError:
+                pass
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
         reader.join(timeout=1)
-        return None, "timeout"
-    try:
-        close_scope()
-    except ProcessLookupError:
-        pass
+        return None, scope_error or "timeout"
+    scope_error = _close_probe_scope(close_scope)
     reader.join(timeout=1)
+    if scope_error:
+        return None, scope_error
     if reader.is_alive():
         return None, "probe_error"
     if oversized[0]:
@@ -562,6 +612,8 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
         if component["probe"] in NPM_NATIVE:
             entry["provider_qualification"] = "unknown"
             entry["provenance"] = None
+            entry["pin_source"] = "unknown"
+            entry["trust"] = "unknown"
         if platform not in component["platforms"]:
             entry.update(status="unsupported", reason="platform_unsupported", found=False)
         else:
@@ -573,6 +625,8 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                 entry["selected_path"] = selected_path
                 if provenance is not None:
                     entry["provenance"] = provenance
+                    entry["pin_source"] = provenance["pin_source"]
+                    entry["trust"] = provenance["trust"]
                     entry["found"] = True
                     if not provenance["verified"]:
                         entry["reason"] = "unverified_package_binary"
@@ -592,7 +646,8 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                         except OSError:
                             direct_hash = None
                         entry["provenance"] = {"method": "direct_unverified", "binary_path": direct,
-                                               "sha256": direct_hash, "verified": False}
+                                               "sha256": direct_hash, "verified": False,
+                                               "pin_source": "unknown", "trust": "unknown"}
                     else:
                         entry.update(found=False, status="missing", reason="executable_not_found")
                 else:
@@ -611,7 +666,7 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
                 if entry.get("provenance") and entry["provenance"]["verified"]:
                     output, reason = _run_verified_npm_native(
                         argv, timeout_seconds or component["timeout_seconds"], search_path,
-                        resolved, component["resolution"]["trusted_sha256"])
+                        resolved, APPROVED_NATIVE_PINS[probe])
                     if reason in {"binary_changed_before_execution", "binary_lock_error",
                                   "binary_too_large"}:
                         entry["provenance"]["verified"] = False
@@ -644,6 +699,7 @@ def inspect_components(data, *, lane, features, search_path=None, platform=None,
         "schema": REPORT_SCHEMA, "platform": platform, "lane": canonical_lane,
         "features": features, "components": results,
         "required_missing": required_missing, "disabled_features": sorted(disabled),
+        "presence_scope": "components_only", "readiness": "unknown",
         "overall": "blocked" if required_missing else "ok",
         "exit_code": 2 if required_missing else 0,
     }

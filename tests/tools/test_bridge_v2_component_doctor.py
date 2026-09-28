@@ -16,6 +16,13 @@ from tools.bridge_v2_component_doctor import (
 
 
 def manifest(probe="python", required=True):
+    installs = {
+        "python": ("https://www.python.org/downloads/", "Python.Python.3.13"),
+        "powershell": ("https://learn.microsoft.com/powershell/scripting/install/installing-windows-powershell", None),
+        "pwsh": ("https://learn.microsoft.com/powershell/scripting/install/installing-powershell", "Microsoft.PowerShell"),
+        "claude": ("https://github.com/anthropics/claude-code", "@anthropic-ai/claude-code"),
+    }
+    source_url, package_id = installs.get(probe, installs["python"])
     return {
         "schema": "wd.bridge-components.v1",
         "supported_platforms": ["windows", "linux", "darwin"],
@@ -28,8 +35,7 @@ def manifest(probe="python", required=True):
             "required_for": [{"feature": "bridge_core", "lanes": ["codex-tools-1"],
                               "platforms": ["windows", "linux", "darwin"]}] if required else [],
             "min_version": "3.0.0", "timeout_seconds": 1,
-            "install": {"source_url": "https://www.python.org/downloads/",
-                        "package_id": "Python.Python.3.13"},
+            "install": {"source_url": source_url, "package_id": package_id},
         }],
     }
 
@@ -41,6 +47,46 @@ def test_manifest_rejects_untrusted_command_before_probe(tmp_path):
         validate_manifest(data)
     data = manifest("python -c unsafe")
     with pytest.raises(DoctorError, match="probe"):
+        validate_manifest(data)
+
+
+def test_caller_manifest_cannot_self_pin_provider():
+    data = manifest("claude")
+    data["components"][0]["install"]["package_id"] = "@anthropic-ai/claude-code"
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": "a" * 64,
+    }
+    with pytest.raises(DoctorError, match="externally approved|trusted_sha256"):
+        validate_manifest(data)
+
+
+@pytest.mark.parametrize("probe,url,package", [
+    ("python", "https://github.com/lookalike/python", "Python.Python.3.13"),
+    ("python", "https://www.python.org/downloads/../evil", "Python.Python.3.13"),
+    ("python", "https://www.python.org/downloads/", "../../evil"),
+    ("claude", "https://github.com/someone-else/claude-code-lookalike",
+     "@anthropic-ai/claude-code"),
+    ("claude", "https://github.com/anthropics/claude-code", "../../evil"),
+])
+def test_install_metadata_is_exact_per_probe(probe, url, package):
+    data = manifest(probe)
+    if probe == "claude":
+        data["components"][0]["resolution"] = {
+            "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+            "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+            "trusted_sha256": None,
+        }
+    data["components"][0]["install"] = {"source_url": url, "package_id": package}
+    with pytest.raises(DoctorError, match="install"):
+        validate_manifest(data)
+
+
+def test_profile_alias_must_match_canonical_features():
+    data = manifest()
+    data["profiles"]["tools"]["features"] = ["other_feature"]
+    with pytest.raises(DoctorError, match="alias|canonical"):
         validate_manifest(data)
 
 
@@ -71,6 +117,8 @@ def test_actual_python_probe_success():
     assert item["found"] is True
     assert item["version"].startswith("3.")
     assert item["auth"] == item["quota"] == item["turn_readiness"] == "unknown"
+    assert result["readiness"] == "unknown"
+    assert result["presence_scope"] == "components_only"
 
 
 def test_wrong_version_and_timeout_override():
@@ -206,6 +254,28 @@ def test_windows_explicit_path_ignores_cwd_and_batch(tmp_path, monkeypatch):
     assert result["components"][0]["status"] == "missing"
 
 
+def test_quoted_absolute_path_entry_is_used_without_cwd_fallback(tmp_path):
+    executable = tmp_path / ("python.exe" if os.name == "nt" else "python")
+    executable.write_bytes(b"inert version-probe fixture")
+    executable.chmod(0o755)
+    result = inspect_components(manifest(), lane="tools", features=["bridge_core"],
+                                search_path=f'"{tmp_path}"',
+                                platform="windows" if os.name == "nt" else "linux",
+                                probe_command=lambda _: [sys.executable, "-c",
+                                                         "import os; print('Python 3.13.7' if "
+                                                         f"os.environ['PATH'] == {str(tmp_path)!r} "
+                                                         "else 'bad-path')"])
+    assert result["components"][0]["status"] == "ok"
+    assert result["components"][0]["selected_path"] == str(executable)
+
+
+def test_scope_close_permission_error_is_classified_not_manifest_error():
+    def denied():
+        raise PermissionError("controlled POSIX killpg denial")
+
+    assert doctor._close_probe_scope(denied) == "probe_scope_error"
+
+
 def test_provider_required_only_when_explicitly_selected():
     data = json.loads((Path(__file__).resolve().parents[2] / "configs" /
                        "bridge_v2_components.json").read_text(encoding="utf-8"))
@@ -236,7 +306,7 @@ def test_npm_native_package_detected_but_unpinned_not_executed(tmp_path):
                                                        "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
     (package / "bin" / "claude.exe").write_bytes(b"inert package binary")
     result = inspect_components(data, lane="tools", features=["bridge_core"],
-                                search_path=str(tmp_path), platform="windows",
+                                search_path=f'"{tmp_path}"', platform="windows",
                                 probe_command=lambda _: pytest.fail("untrusted binary executed"))
     item = result["components"][0]
     assert item["found"] is True
@@ -244,51 +314,28 @@ def test_npm_native_package_detected_but_unpinned_not_executed(tmp_path):
     assert item["reason"] == "unverified_package_binary"
     assert item["provenance"]["package"] == "@anthropic-ai/claude-code"
     assert len(item["provenance"]["sha256"]) == 64
+    assert item["pin_source"] == item["trust"] == "unknown"
     assert result["exit_code"] == 2
     data["components"][0]["resolution"]["trusted_sha256"] = item["provenance"]["sha256"]
-    mismatch = inspect_components(data, lane="tools", features=["bridge_core"],
-                                  search_path=str(tmp_path), platform="windows",
-                                  probe_command=lambda _: [sys.executable, "-c",
-                                                           "print('2.1.284 (Claude Code)')"])
-    assert mismatch["components"][0]["reason"] == "package_version_mismatch"
-    assert mismatch["exit_code"] == 2
+    with pytest.raises(DoctorError, match="externally approved"):
+        inspect_components(data, lane="tools", features=["bridge_core"],
+                           search_path=str(tmp_path), platform="windows")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows executable handle binding")
 def test_npm_native_swap_after_initial_hash_never_executes(tmp_path, monkeypatch):
-    data = manifest("claude")
-    data["components"][0]["install"]["package_id"] = "@anthropic-ai/claude-code"
-    data["components"][0]["resolution"] = {
-        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
-        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
-        "trusted_sha256": hashlib.sha256(b"original executable bytes").hexdigest(),
-    }
-    (tmp_path / "claude.cmd").write_text("@echo off\n", encoding="utf-8")
-    package = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code"
-    (package / "bin").mkdir(parents=True)
-    (package / "package.json").write_text(
-        json.dumps({"name": "@anthropic-ai/claude-code", "version": "2.1.283",
-                    "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
-    executable = package / "bin" / "claude.exe"
+    executable = tmp_path / "claude.exe"
     executable.write_bytes(b"original executable bytes")
-    replacement = package / "bin" / "replacement.exe"
+    expected_digest = doctor._sha256_bounded(executable)
+    replacement = tmp_path / "replacement.exe"
     replacement.write_bytes(b"swapped executable bytes")
-    original_hash = doctor._sha256_bounded
-
-    def swap_after_hash(path, *args, **kwargs):
-        digest = original_hash(path, *args, **kwargs)
-        replacement.replace(executable)
-        return digest
-
-    monkeypatch.setattr(doctor, "_sha256_bounded", swap_after_hash)
+    replacement.replace(executable)
     monkeypatch.setattr(doctor, "_run_bounded", lambda *args, **kwargs:
                         pytest.fail("swapped binary reached process launch"))
-    result = inspect_components(data, lane="tools", features=["bridge_core"],
-                                search_path=str(tmp_path), platform="windows")
-    item = result["components"][0]
-    assert item["status"] == "unknown"
-    assert item["reason"] == "binary_changed_before_execution"
-    assert item["provenance"]["verified"] is False
+    output, reason = doctor._run_verified_npm_native(
+        [str(executable), "--version"], 2, str(tmp_path), str(executable), expected_digest)
+    assert output is None
+    assert reason == "binary_changed_before_execution"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows file share and CreateProcess semantics")
@@ -340,6 +387,40 @@ def test_malformed_first_npm_shim_fails_closed_and_reports_selected_path(tmp_pat
     assert item["status"] == "unknown"
     assert item["reason"] == "package_metadata_invalid"
     assert item["selected_path"] == str(first / "claude.cmd")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction provenance")
+def test_junctioned_npm_package_chain_is_not_native_provenance(tmp_path):
+    prefix = tmp_path / "npm"
+    scope = prefix / "node_modules" / "@anthropic-ai"
+    scope.mkdir(parents=True)
+    (prefix / "claude.cmd").write_text("@echo off\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    (outside / "bin").mkdir(parents=True)
+    (outside / "package.json").write_text(json.dumps({
+        "name": "@anthropic-ai/claude-code", "version": "2.1.283",
+        "bin": {"claude": "bin/claude.exe"}}), encoding="utf-8")
+    (outside / "bin" / "claude.exe").write_bytes(b"inert linked binary")
+    junction = scope / "claude-code"
+    cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+    created = subprocess.run([str(cmd), "/d", "/c", "mklink", "/J",
+                              str(junction), str(outside)], capture_output=True)
+    if created.returncode:
+        pytest.skip("junction creation unavailable in this test environment")
+    data = manifest("claude")
+    data["components"][0]["resolution"] = {
+        "kind": "npm_native", "package": "@anthropic-ai/claude-code",
+        "bin": "bin/claude.exe", "native_relpaths": ["bin/claude.exe"],
+        "trusted_sha256": None,
+    }
+    result = inspect_components(data, lane="tools", features=["bridge_core"],
+                                search_path=str(prefix), platform="windows",
+                                probe_command=lambda _: pytest.fail("linked binary executed"))
+    item = result["components"][0]
+    assert item["status"] == "unknown"
+    assert item["reason"] == "package_path_alias"
+    assert item["selected_path"] == str(prefix / "claude.cmd")
+    assert item["provenance"] is None
 
 
 @pytest.mark.parametrize("probe,output,expected", [

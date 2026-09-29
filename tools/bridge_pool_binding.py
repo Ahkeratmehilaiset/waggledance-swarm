@@ -22,7 +22,8 @@ pool, and nothing here derives a pool from them.
 * the provider, the subject (Codex auth context or Claude native session) and every
   observed limit id match the receipt;
 * the pool exists in a valid v2 model registry, belongs to the same provider, is
-  ``verified`` there, and its ``limit_id`` (when set) is covered by the receipt;
+  verified there at ``now`` (the registry's ``pool_state`` when it has one, so a verified
+  pool past its TTL is stale), and its ``limit_id`` (when set) is covered by the receipt;
 * last, an injected verifier returns exactly ``True`` for a copy of the receipt. The
   receipt's authenticity comes from the trusted caller's reviewed verifier; none ships
   with this module, so nothing binds by default.
@@ -42,6 +43,11 @@ import re
 from typing import Any, Callable
 
 from tools.wd_model_registry import MEASURING_KINDS, SCHEMA_V2, validate_registry
+
+try:  # F3 registry review fixes (RCO1 af1d0ef8): pools carry a TTL and a verified pool expires.
+    from tools.wd_model_registry import pool_state as _registry_pool_state
+except ImportError:  # an earlier registry revision: pools carry no freshness yet
+    _registry_pool_state = None
 
 RECEIPT_SCHEMA = "wd.pool-binding-receipt.v1"
 DECISION_SCHEMA = "wd.pool-binding-decision.v1"
@@ -191,16 +197,24 @@ def _receipt(receipt: Any) -> dict:
     return receipt
 
 
-def _pool(registry: Any, pool_id: str, provider: str) -> dict:
+def _pool(registry: Any, pool_id: str, provider: str, now: datetime) -> dict:
     try:
         validate_registry(registry)
     except Exception:  # noqa: BLE001 - any registry defect is a refusal, never a guess
         raise Refused("registry_invalid") from None
     _require(registry["schema"] == SCHEMA_V2, "registry_has_no_pools")
     pool = registry["pools"].get(pool_id)
-    _require(pool is not None, "pool_unknown")
+    _require(pool is not None, "pool_not_in_registry")
     _require(pool["provider"] == provider, "pool_provider_mismatch")
-    _require(pool["verification"] == "verified", "pool_unverified")
+    if _registry_pool_state is not None:
+        # The registry's own rule: verified only inside the pool's TTL (stale and unknown are not verified).
+        try:
+            state = _registry_pool_state(pool, now)
+        except Exception:  # noqa: BLE001
+            state = "unknown"
+    else:
+        state = "verified" if pool["verification"] == "verified" else "unverified"
+    _require(state == "verified", "pool_state_" + (state if state in ("stale", "unverified") else "unknown"))
     return pool
 
 
@@ -228,7 +242,7 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         _require(observed - current <= FUTURE_SKEW, "observation_from_the_future")
         _require(issued <= observed < expires, "observation_outside_receipt_window")
         _require(limits <= set(body["limit_ids"]), "limit_not_covered")
-        pool = _pool(registry, body["pool"], provider)
+        pool = _pool(registry, body["pool"], provider, current)
         _require(pool["limit_id"] is None or pool["limit_id"] in body["limit_ids"], "pool_limit_not_covered")
         # Authenticity last, on a copy: the answer must be exactly True.
         _require(verifier is not None and callable(verifier), "verifier_missing")

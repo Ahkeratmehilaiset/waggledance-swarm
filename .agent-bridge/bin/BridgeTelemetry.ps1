@@ -107,11 +107,20 @@ function Write-BridgeStageObservation {
     # turn_completed is the ONLY source of a no-op ratio: the agent states explicitly
     # whether its turn acted. Nothing else (a pending or missing stage, a queue
     # acceptance) may be read as a no-op.
+    $binding = if ($null -ne $Request) { Get-BridgeStageBinding $Request } else { $null }
     if ($Stage -ceq 'turn_completed') {
         if ($ActionOutcome -cnotin @('acted','noop')) { throw 'turn_completed needs ActionOutcome acted or noop' }
-        # One outcome per turn: the reader deduplicates by this identity, so none may be invented.
-        if (-not $DeliveryId -and $null -eq $Request) {
-            throw 'turn_completed needs a turn identity: DeliveryId or a bound Request'
+        # One outcome per TURN, checked AFTER binding exactly as the reader keys it: a per-turn
+        # DeliveryId (the relay's per-wake id, or one minted once at model_turn_started), or a
+        # bound Request with its requester session AND the reply this turn wrote. A request
+        # alone names the request, not the turn (RCO1 SF1/SF2). Nothing is dropped silently:
+        # a Request that does not bind throws even when a DeliveryId is present.
+        if ($null -ne $Request -and $null -eq $binding) { throw 'turn_completed Request does not bind a request' }
+        if (-not $DeliveryId) {
+            $reply = if ($ReplyTimestamp) { $ReplyTimestamp } elseif ($null -ne $binding) { [string]$binding.reply_ts_utc } else { '' }
+            if ($null -eq $binding -or -not [string]$binding.session_id -or -not $reply) {
+                throw 'turn_completed needs a turn identity: DeliveryId, or a bound Request with its session and reply'
+            }
         }
     } elseif ($ActionOutcome) {
         throw 'ActionOutcome is recorded only with stage turn_completed'
@@ -128,14 +137,14 @@ function Write-BridgeStageObservation {
     if ($Stage -ceq 'turn_completed') { $observation['action_outcome'] = $ActionOutcome }
     if ($null -ne $metadata) { $observation['metadata'] = $metadata }
     if ($null -ne $Request) {
-        $Request=Get-BridgeStageBinding $Request
-        if($null -eq $Request){return}
+        # Flow stages stay best-effort: an unbindable request records nothing (turn_completed threw above).
+        if($null -eq $binding){return}
         foreach ($pair in @(@('request_id','request_id'),@('requester','agent'),@('requester_session_id','session_id'))) {
-            $property = $Request.PSObject.Properties[$pair[1]]
+            $property = $binding.PSObject.Properties[$pair[1]]
             if ($null -ne $property) { $observation[$pair[0]] = $property.Value }
         }
         if (-not $observation.request_id) { return }
-        if(-not $ReplyTimestamp -and $Request.PSObject.Properties['reply_ts_utc'] -and $Request.reply_ts_utc){$observation.reply_ts_utc=[string]$Request.reply_ts_utc}
+        if(-not $ReplyTimestamp -and $binding.PSObject.Properties['reply_ts_utc'] -and $binding.reply_ts_utc){$observation.reply_ts_utc=[string]$binding.reply_ts_utc}
     }
     $directory = Join-Path $BridgeRoot 'shared\telemetry'
     [void][IO.Directory]::CreateDirectory($directory)

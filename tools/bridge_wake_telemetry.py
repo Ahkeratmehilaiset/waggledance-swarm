@@ -289,14 +289,18 @@ def validate_wake(snapshot: Any, now: datetime | None) -> dict:
 def turn_identity(record: dict) -> tuple | None:
     """A reliable identity for one turn_completed outcome, or None (unknown, never invented).
 
-    A delivery id names one relayed turn for one target. Without one, a request-bound turn
-    is identified by target, request id, requester, requester session and the reply it
-    answered. Anything less identifies no turn."""
+    A delivery id is the per-turn id: the relay's per-wake id, or one id minted once at
+    model_turn_started for a non-relay turn and passed to every stage of that turn. Without
+    one, only a request-bound outcome that names its requester session AND the reply the turn
+    wrote identifies a turn: that reply is the turn's own answer. A request alone names the
+    REQUEST, not the turn, so two separate reply-less wakes on one request stay two
+    unidentified outcomes, never one merged turn (RCO1 SF1). One turn must keep ONE identity:
+    written once with a delivery id and once without, it is counted twice (documented)."""
     if record["delivery_id"]:
         return ("delivery", record["target"], record["delivery_id"])
-    if record["request_id"] is not None and record["session"]:
-        reply = record["reply"].isoformat() if record["reply"] else ""
-        return ("request", record["target"], record["request_id"], record["requester"], record["session"], reply)
+    if record["request_id"] is not None and record["session"] and record["reply"] is not None:
+        return ("reply", record["target"], record["request_id"], record["requester"], record["session"],
+                record["reply"].isoformat())
     return None
 
 

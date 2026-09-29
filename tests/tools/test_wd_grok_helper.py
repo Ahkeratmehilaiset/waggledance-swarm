@@ -381,6 +381,40 @@ def test_one_call_per_rolling_hour_survives_reload(tmp_path):
     assert status(tmp_path, NOW+timedelta(hours=1))["eligible"]
 
 
+@pytest.mark.parametrize("age", [1, 5000])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("with_exception", [False, True])
+def test_unfinished_attempt_is_preserved_without_a_new_consultation(tmp_path, age, legacy, with_exception):
+    state = {"schema": SCHEMA, "status": "reserved", "task_id": "previous/task",
+             "request_id": "previous-request", "last_attempt_utc": (NOW-timedelta(seconds=age)).isoformat()}
+    if not legacy:
+        state["timeout_seconds"] = 300
+    write_state(tmp_path, state)
+    grant = exception_file(tmp_path) if with_exception else {}
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    events = []
+    report = consult(tmp_path, "brainstorm/r2", "ask", ["fake"], now=NOW, **grant,
+                     runner=lambda *a, **k: pytest.fail("unfinished attempt bypass"),
+                     emitter=lambda stage, event: events.append((stage, event)))
+    assert report["decision"] == "deferred_unreconciled_attempt"
+    assert report["status"] == "deferred" and report["consultation_attempted"] is False
+    assert report["task_id"] == "brainstorm/r2" and report["request_id"] is None
+    assert report["previous_attempt"]["task_id"] == "previous/task"
+    assert report["previous_attempt"]["request_id"] == "previous-request"
+    assert wd_grok_helper.consultation_exit_code(report) == 2
+    assert (tmp_path / "hourly-state.json").read_bytes() == before
+    assert [event[0] for event in events] == ["deferred"]
+    assert events[0][1]["task_id"] == "brainstorm/r2"
+
+
+@pytest.mark.parametrize("report, expected", [({"status": "answered"}, 0),
+                                            ({"status": "failed"}, 1),
+                                            ({"status": "deferred"}, 2),
+                                            ({"status": "reserved"}, 2), ({}, 2)])
+def test_only_answered_consultation_has_success_exit(report, expected):
+    assert wd_grok_helper.consultation_exit_code(report) == expected
+
+
 def test_consult_uses_verbatim_prompt_mode(tmp_path):
     seed(tmp_path)
     commands = []

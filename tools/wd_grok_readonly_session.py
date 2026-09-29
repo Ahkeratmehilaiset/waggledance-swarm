@@ -713,7 +713,7 @@ def main() -> int:
                                       "isolation": surface["isolation"], "read_only_guarantee": False,
                                       "runtime_tested": False}
         print(json.dumps(report, ensure_ascii=False))
-        return 0 if report.get("status") != "failed" else 1
+        return helper.consultation_exit_code(report)
     except (ValueError, OSError, KeyError) as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}))
         return 2

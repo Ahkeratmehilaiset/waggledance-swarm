@@ -399,7 +399,11 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         unresolved = previous.get("status") in ("reserved", "interrupted_or_unknown")
         if unresolved or (not previous["eligible"] and grant is None):
             decision = 'deferred_unreconciled_attempt' if unresolved else 'deferred_hourly_limit'
-            deferred = {**previous, 'task_id': task_id, 'decision': decision}
+            deferred = {"schema": SCHEMA, "task_id": task_id, "request_id": None,
+                        "status": "deferred", "decision": decision,
+                        "consultation_attempted": False, "eligible": False,
+                        "next_eligible_utc": previous["next_eligible_utc"],
+                        "previous_attempt": previous}
             observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': decision,
                            'next_eligible_utc': previous['next_eligible_utc']}
             record_lifecycle(emitter, 'deferred', observation)
@@ -522,6 +526,11 @@ def read_exception(path: Path | None, digest: str | None, task_id: str, now: dat
                                   "max_attempts", "issued_at_utc", "expires_at_utc")} | {"sha256": digest.lower()}
 
 
+def consultation_exit_code(report: dict) -> int:
+    """Only an answered consultation is success; an observation is not one."""
+    return {"answered": 0, "failed": 1}.get(report.get("status"), 2)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status", action="store_true")
@@ -567,7 +576,9 @@ def main() -> int:
                              emitter=emit_bridge_event, exception_path=args.exception_path,
                              exception_sha256=args.exception_sha256)
         print(json.dumps(report, ensure_ascii=False))
-        return 0 if report.get("status") != "failed" else 1
+        if args.status or args.prompt_file is None:
+            return 0 if report.get("status") != "failed" else 1
+        return consultation_exit_code(report)
     except (ValueError, OSError, KeyError) as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}))
         return 2

@@ -45,6 +45,11 @@ consultation defers with `deferred_unreconciled_attempt` while the durable state
 is still `reserved`, before or after its deadline, without overwriting that
 reservation or consuming an exception attempt. An explicit reconciliation
 adapter is not included; no process-exit or readiness guarantee is implied.
+Deferred consultation responses have `status=deferred`,
+`consultation_attempted=false`, and a null new `request_id`. The prior attempt
+is kept under `previous_attempt`, never relabelled as the new caller's task.
+Both consultation entrypoints exit 2 for a deferral (0 only for an answered
+consultation, 1 for a failed attempt); `-Status` remains a read-only observation.
 
 For long consultations, keep the caller window and its command wait alive long
 enough for the configured session (up to 2400 seconds) plus completion logging.

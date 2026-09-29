@@ -79,11 +79,14 @@ def status(root: Path, now: datetime | None = None) -> dict:
             raise ValueError("Invalid reserved consultation timeout")
         deadline = reserved_at + timedelta(seconds=timeout_seconds)
         report["reservation_deadline_utc"] = deadline.isoformat()
+        # An unfinished attempt has NO next-eligible time: neither the clock nor an exception
+        # reconciles it. The clock cooldown stays visible on its own field.
+        report.update(next_eligible_utc=None, hourly_budget_next_eligible_utc=eligible.isoformat(),
+                      hourly_budget_eligible=report["eligible"], eligible=False)
         if now >= deadline:
             # This is an observation only: preserve the durable reservation and
             # do not infer process exit, refund budget or make it ready again.
-            report.update(status="interrupted_or_unknown", recorded_status=state["status"],
-                          raw_state=state, hourly_budget_eligible=report["eligible"], eligible=False)
+            report.update(status="interrupted_or_unknown", recorded_status=state["status"], raw_state=state)
     return report
 
 
@@ -399,13 +402,22 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         unresolved = previous.get("status") in ("reserved", "interrupted_or_unknown")
         if unresolved or (not previous["eligible"] and grant is None):
             decision = 'deferred_unreconciled_attempt' if unresolved else 'deferred_hourly_limit'
+            # The clock cooldown is its own field; an unreconciled attempt has no next-eligible time.
+            clock_next = previous.get("hourly_budget_next_eligible_utc") or previous["next_eligible_utc"]
+            next_eligible = None if unresolved else previous["next_eligible_utc"]
+            # A deferral reserves nothing, so it never mints a consultation request_id. Its
+            # lifecycle event carries its own observation_id (GROK-READONLY.md, deferrals).
+            observation_id = uuid.uuid4().hex
             deferred = {"schema": SCHEMA, "task_id": task_id, "request_id": None,
+                        "observation_id": observation_id,
                         "status": "deferred", "decision": decision,
                         "consultation_attempted": False, "eligible": False,
-                        "next_eligible_utc": previous["next_eligible_utc"],
+                        "next_eligible_utc": next_eligible,
+                        "hourly_budget_next_eligible_utc": clock_next,
                         "previous_attempt": previous}
-            observation = {'task_id': task_id, 'request_id': uuid.uuid4().hex, 'status': decision,
-                           'next_eligible_utc': previous['next_eligible_utc']}
+            observation = {'task_id': task_id, 'request_id': None, 'observation_id': observation_id,
+                           'status': decision, 'next_eligible_utc': next_eligible,
+                           'hourly_budget_next_eligible_utc': clock_next}
             record_lifecycle(emitter, 'deferred', observation)
             if observation.get('bridge_event_errors'):
                 deferred['bridge_event_errors'] = observation['bridge_event_errors']

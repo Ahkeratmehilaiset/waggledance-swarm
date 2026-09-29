@@ -38,9 +38,13 @@ function New-FakeMutex([string]$Mode) {
         $log.Add('release')
         if ($this.Mode -eq 'releasefail') { throw [System.ApplicationException]::new('not owned') }
     }
-    $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $log.Add('dispose') }
+    $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value {
+        $log.Add('dispose')
+        if ($this.Mode -eq 'disposefail') { throw [System.ObjectDisposedException]::new('fake') }
+    }
     return $fake
 }
+$match = { param($n, $m) 'match' }
 """
 
 
@@ -92,12 +96,14 @@ def test_the_twin_and_python_refuse_the_same_roots(tmp_path, shell, raw):
             mutex_name(raw)
 
 
-def _invoke(tmp_path: Path, mode: str, extra: str = "", timeout_ms: int = 300, body: str | None = None) -> str:
-    claim = _claim(tmp_path)
+def _invoke(tmp_path: Path, mode: str, extra: str = "", timeout_ms: int = 300, body: str | None = None,
+            inspector: str = "$match", claim: Path | None = None) -> str:
+    claim = _claim(tmp_path) if claim is None else claim
     body = f"Set-Content -LiteralPath {_q(tmp_path / 'ran.txt')} ran" if body is None else body
+    acl = "" if inspector is None else f"-AclInspector {inspector} "
     return (f"{extra}\n$factory = {{ param($n) $log.Add('create'); New-FakeMutex {_q(mode)} }}\n"
             f"try {{ Invoke-BridgeV2QueueLocked -RuntimeRoot {_q(tmp_path / 'runtime')} -ClaimPath {_q(claim)} "
-            f"-TimeoutMs {timeout_ms} -MutexFactory $factory -ScriptBlock {{ {body} }}; "
+            f"-TimeoutMs {timeout_ms} -MutexFactory $factory {acl}-ScriptBlock {{ {body} }}; "
             f"$outcome = 'ok' }} catch {{ $outcome = 'ERR:' + $_.Exception.Message }}\n"
             "[pscustomobject]@{ outcome = $outcome; log = @($log) } | ConvertTo-Json -Compress")
 
@@ -158,7 +164,7 @@ def test_a_refused_or_ambiguous_factory_waits_on_nothing(tmp_path, shell, factor
     claim = _claim(tmp_path)
     result = _ps(shell, f"$factory = {{ param($n) $log.Add('create'); {factory} }}\n"
                         f"try {{ Invoke-BridgeV2QueueLocked -RuntimeRoot {_q(tmp_path / 'runtime')} "
-                        f"-ClaimPath {_q(claim)} -MutexFactory $factory -ScriptBlock {{ 'ran' }} }} "
+                        f"-ClaimPath {_q(claim)} -MutexFactory $factory -AclInspector $match -ScriptBlock {{ 'ran' }} }} "
                         "catch { 'ERR:' + $_.Exception.Message }\n'LOG:' + ($log -join ',')")
     lines = result.stdout.splitlines()
     assert "ran" not in lines and any("create/open refused" in line for line in lines)
@@ -171,7 +177,7 @@ def test_a_missing_claims_directory_is_refused_before_any_mutex(tmp_path, shell)
     claim = tmp_path / "runtime" / "work_queue" / "claims" / "task.json"   # directory NOT created
     result = _ps(shell, "$factory = { param($n) $log.Add('create'); New-FakeMutex 'ok' }\n"
                         f"try {{ Invoke-BridgeV2QueueLocked -RuntimeRoot {_q(tmp_path / 'runtime')} "
-                        f"-ClaimPath {_q(claim)} -MutexFactory $factory -ScriptBlock {{ 'ran' }} }} "
+                        f"-ClaimPath {_q(claim)} -MutexFactory $factory -AclInspector $match -ScriptBlock {{ 'ran' }} }} "
                         "catch { 'ERR:' + $_.Exception.Message }\n'LOG:' + ($log -join ',')")
     assert "claims directory is missing" in result.stdout
     assert "create" not in result.stdout.split("LOG:")[-1]
@@ -183,6 +189,80 @@ def test_off_windows_the_twin_has_no_fallback_lock(tmp_path, shell):
     result = _ps(shell, f"Invoke-BridgeV2QueueLocked -RuntimeRoot 'C:/runtime' -ClaimPath {_q(tmp_path / 'c.json')} "
                         "-ScriptBlock { 'ran' }")
     assert result.returncode != 0 and "ran" not in result.stdout
+
+
+# -- Tools 8c6066ff: F8-DACL-INHERITED, F8-CLEANUP, F8-WALL-CLOCK, F8-ROOT-CLAIM ----------
+
+def _report(result) -> dict:
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_without_a_reviewed_inspector_the_twin_refuses_before_any_create(tmp_path, shell):
+    report = _report(_ps(shell, _invoke(tmp_path, "ok", inspector=None)))
+    assert "no reviewed inspector seam" in report["outcome"] and report["log"] == []
+    assert not (tmp_path / "ran.txt").exists()
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+@pytest.mark.parametrize("inspector", ["{ param($n, $m) 'mismatch' }", "{ param($n, $m) 'Match' }",
+                                       "{ param($n, $m) $true }", "{ param($n, $m) }",
+                                       "{ param($n, $m) throw 'READ_CONTROL refused' }"])
+def test_acl_evidence_other_than_an_exact_match_refuses_before_the_wait(tmp_path, shell, inspector):
+    report = _report(_ps(shell, _invoke(tmp_path, "ok", inspector=inspector)))
+    assert "not a match" in report["outcome"] and report["log"] == ["create", "dispose"]   # opened, never waited
+    assert not (tmp_path / "ran.txt").exists()
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_failed_dispose_is_never_success_and_never_masks_the_body(tmp_path, shell):
+    clean = _report(_ps(shell, _invoke(tmp_path / "clean", "disposefail")))
+    assert "cleanup failed after a clean body" in clean["outcome"] and (tmp_path / "clean" / "ran.txt").exists()
+    assert clean["log"] == ["create", "wait:300", "release", "dispose"]      # every cleanup still attempted
+    failed = _report(_ps(shell, _invoke(tmp_path / "failed", "disposefail", body="throw 'body boom'")))
+    assert "body boom" in failed["outcome"] and "cleanup failed" not in failed["outcome"]
+    assert failed["log"] == ["create", "wait:300", "release", "dispose"]
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_non_contention_claim_lock_failure_is_refused_at_once_with_its_real_type(tmp_path, shell):
+    (_claim(tmp_path).with_name("task.json.lock")).mkdir()                    # a directory: not a sharing violation
+    report = _report(_ps(shell, _invoke(tmp_path, "ok", timeout_ms=5000)))
+    assert "claim lock open refused: UnauthorizedAccessException" in report["outcome"]
+    assert "busy" not in report["outcome"] and not (tmp_path / "ran.txt").exists()
+    assert report["log"] == ["create", "wait:5000", "release", "dispose"]
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+@pytest.mark.parametrize("claim,fragment", [
+    ("outside/work_queue/claims/task.json", "must be <root>/work_queue/claims/<name>.json"),
+    ("runtime/work_queue/claims/sub/task.json", "must be <root>/work_queue/claims/<name>.json"),
+    ("runtime/work_queue/other/task.json", "must be <root>/work_queue/claims/<name>.json"),
+    ("runtime/work_queue/claims/task.json:evil", "alternate stream is forbidden"),
+])
+def test_a_claim_outside_the_root_claims_directory_is_refused_before_any_create(tmp_path, shell, claim, fragment):
+    report = _report(_ps(shell, _invoke(tmp_path, "ok", claim=tmp_path / claim)))
+    assert fragment in report["outcome"] and report["log"] == []
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_the_claim_lock_budget_is_validated_separately(tmp_path, shell):
+    report = _report(_ps(shell, _invoke(tmp_path, "ok", extra="", body="'ran'").replace(
+        "-TimeoutMs 300", "-TimeoutMs 300 -ClaimLockTimeoutMs 70000")))
+    assert "ClaimLockTimeoutMs must be within 1..60000" in report["outcome"] and report["log"] == []
+
+
+def test_the_claim_lock_wait_is_a_monotonic_budget_that_retries_only_contention():
+    source = TWIN.read_text(encoding="utf-8")
+    assert "Get-Date" not in source and "[Diagnostics.Stopwatch]::StartNew()" in source
+    assert "Test-BridgeV2LockContention" in source and "-in @(32, 33)" in source
 
 
 def test_the_twin_defines_functions_only_and_reads_no_environment():

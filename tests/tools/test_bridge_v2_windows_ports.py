@@ -24,8 +24,8 @@ HANDLE = 4242
 class Kernel32:
     """Scripted kernel32: records every call; nothing touches the OS."""
 
-    def __init__(self, outcome=WAIT_OBJECT_0, release_ok=True):
-        self.outcome, self.release_ok, self.calls = outcome, release_ok, []
+    def __init__(self, outcome=WAIT_OBJECT_0, release_ok=True, close_ok=True):
+        self.outcome, self.release_ok, self.close_ok, self.calls = outcome, release_ok, close_ok, []
 
     def WaitForSingleObject(self, handle, milliseconds):
         self.calls.append(("wait", handle, milliseconds))
@@ -37,10 +37,11 @@ class Kernel32:
 
     def CloseHandle(self, handle):
         self.calls.append(("close", handle))
-        return 1
+        return 1 if self.close_ok else 0
 
 
-def port(kernel32, created=None, handle=HANDLE):
+def port(kernel32, created=None, handle=HANDLE, verdict="match"):
+    """The port with fixture seams; ``verdict`` is what the injected ACL inspector reports."""
     created = [] if created is None else created
 
     def create(name):
@@ -48,7 +49,13 @@ def port(kernel32, created=None, handle=HANDLE):
         if isinstance(handle, Exception):
             raise handle
         return handle
-    return WindowsRootMutex(kernel32=kernel32, create=create, platform="nt"), created
+
+    def inspect_acl(name, opened):
+        assert opened == handle
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict
+    return WindowsRootMutex(kernel32=kernel32, create=create, platform="nt", inspect_acl=inspect_acl), created
 
 
 def name_for(tmp_path):
@@ -199,6 +206,98 @@ def test_the_transaction_locks_the_derived_name_before_the_claim_lock(tmp_path):
 def test_opt_in_is_required():
     with pytest.raises(QueueTransactionError, match="opted in"):
         ports.opt_in_windows_queue_transactions("C:/runtime", opt_in=False)
+
+
+# -- Tools 8c6066ff: F8-DACL-INHERITED, F8-CLEANUP -------------------------------------
+
+def test_without_a_reviewed_inspector_the_adapter_refuses_before_any_create(tmp_path):
+    kernel32, created = Kernel32(), []
+    mutex = WindowsRootMutex(kernel32=kernel32, create=lambda name: created.append(name) or HANDLE, platform="nt")
+    with pytest.raises(MutexUnavailable, match="no reviewed inspector seam"):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pytest.fail("the body must not run")
+    assert created == [] and kernel32.calls == []
+    import inspect
+    # The opt-in pair builds the port with NO inspector, so its hold always refuses (dormant).
+    assert "mutex=WindowsRootMutex()," in inspect.getsource(ports.opt_in_windows_queue_transactions)
+
+
+class Sneaky(str):
+    pass
+
+
+@pytest.mark.parametrize("verdict", ["mismatch", "unknown", "", "Match", None, True, 1, Sneaky("match"),
+                                     OSError(5, "READ_CONTROL refused")])
+def test_acl_evidence_other_than_an_exact_match_refuses_before_the_wait(tmp_path, verdict):
+    kernel32 = Kernel32()
+    mutex, created = port(kernel32, verdict=verdict)
+    with pytest.raises(MutexUnavailable, match="not a match"):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pytest.fail("the body must not run")
+    assert created == [name_for(tmp_path)] and names(kernel32) == ["close"]   # opened, never waited on
+
+
+def test_the_constructor_has_no_trust_flag():
+    import inspect
+    assert set(inspect.signature(WindowsRootMutex).parameters) == {"kernel32", "create", "platform", "inspect_acl"}
+
+
+def test_a_false_close_after_a_clean_body_is_never_success(tmp_path):
+    kernel32 = Kernel32(close_ok=False)
+    mutex, _ = port(kernel32)
+    with pytest.raises(MutexUnavailable, match="CloseHandle returned FALSE"):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pass
+    assert names(kernel32) == ["wait", "release", "close"]
+
+
+class RaisingClose(Kernel32):
+    def CloseHandle(self, handle):
+        self.calls.append(("close", handle))
+        raise OSError(6, "invalid handle")
+
+
+def _notes(exc):
+    return " ".join(getattr(exc, "__notes__", []))
+
+
+def test_a_raising_close_never_masks_the_body_and_the_note_says_so(tmp_path):
+    kernel32 = RaisingClose(release_ok=False)
+    mutex, _ = port(kernel32)
+    with pytest.raises(KeyError) as caught:
+        with mutex.hold(name_for(tmp_path), 1.0):
+            raise KeyError("body")
+    assert names(kernel32) == ["wait", "release", "close"]                  # both attempted independently
+    if hasattr(BaseException, "add_note"):
+        assert "ReleaseMutex returned FALSE" in _notes(caught.value) and "CloseHandle raised OSError" in _notes(caught.value)
+
+
+class RaisingWait(Kernel32):
+    def WaitForSingleObject(self, handle, milliseconds):
+        self.calls.append(("wait", handle, milliseconds))
+        raise OSError(6, "wait failed")
+
+
+def test_a_raising_wait_keeps_its_error_and_still_closes(tmp_path):
+    kernel32 = RaisingWait(close_ok=False)
+    mutex, _ = port(kernel32)
+    with pytest.raises(OSError, match="wait failed") as caught:
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pytest.fail("the body must not run")
+    assert names(kernel32) == ["wait", "close"]
+    if hasattr(BaseException, "add_note"):
+        assert "CloseHandle returned FALSE" in _notes(caught.value)
+
+
+@pytest.mark.parametrize("outcome,error", [(WAIT_TIMEOUT, LockTimeout), (WAIT_FAILED, MutexUnavailable),
+                                           (WAIT_ABANDONED, MutexAbandoned)])
+def test_a_failed_close_is_reported_on_every_refusal_path(tmp_path, outcome, error):
+    kernel32 = Kernel32(outcome=outcome, close_ok=False)
+    mutex, _ = port(kernel32)
+    with pytest.raises(error, match="CloseHandle returned FALSE"):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pytest.fail("the body must not run")
+    assert names(kernel32)[-1] == "close"
 
 
 def test_source_has_no_subprocess_environment_or_fallback_lock():

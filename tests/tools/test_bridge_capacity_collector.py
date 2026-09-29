@@ -368,10 +368,13 @@ def _pool_registry():
     from tools.wd_model_registry import load_registry
     registry, _ = load_registry(Path(__file__).resolve().parents[2] / 'configs' / 'model_registry.json')
     registry = copy.deepcopy(registry)
-    registry['pools']['codex-plus-weekly'] = {
-        'provider': 'codex', 'limit_id': 'codex', 'window': 'weekly', 'tier': 'standard',
-        'verification': 'verified',
-        'provenance': {'kind': 'operator_reading', 'reference': 'plan page', 'observer': 'operator'}}
+    pool = {'provider': 'codex', 'limit_id': 'codex', 'window': 'weekly', 'tier': 'standard',
+            'verification': 'verified',
+            'provenance': {'kind': 'operator_reading', 'reference': 'plan page', 'observer': 'operator'}}
+    from tools import wd_model_registry
+    if 'ttl_seconds' in wd_model_registry.POOL_KEYS:  # pools carry freshness from RCO1 af1d0ef8 on
+        pool.update(measured_at=(POOL_NOW - timedelta(days=1)).strftime('%Y-%m-%d'), ttl_seconds=30 * 86400)
+    registry['pools']['codex-plus-weekly'] = pool
     return registry
 
 

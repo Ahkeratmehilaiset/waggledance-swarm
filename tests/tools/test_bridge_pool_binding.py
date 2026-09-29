@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tools import bridge_pool_binding as binding
+from tools import wd_model_registry as registry_module
 from tools.wd_model_registry import load_registry
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,18 +31,30 @@ def iso(value: datetime) -> str:
     return value.isoformat()
 
 
+POOLS_HAVE_TTL = "ttl_seconds" in registry_module.POOL_KEYS  # RCO1 af1d0ef8 and later
+
+
+def pool_entry(verified: bool, measured_at: str = "2026-09-29", ttl_seconds: int = 30 * 86400, **values) -> dict:
+    """A pool valid under both registry revisions (with and without pool freshness)."""
+    entry = dict(values, verification="verified" if verified else "unverified")
+    if POOLS_HAVE_TTL:
+        entry.update(measured_at=measured_at if verified else "unknown",
+                     ttl_seconds=ttl_seconds if verified else None)
+    return entry
+
+
 def registry(**pools) -> dict:
     result = copy.deepcopy(SHIPPED)
     result["pools"].update({
-        "codex-plus-weekly": {"provider": "codex", "limit_id": "codex", "window": "weekly", "tier": "standard",
-                              "verification": "verified",
-                              "provenance": {"kind": "operator_reading", "reference": "plan page", "observer": "operator"}},
-        "claude-max-weekly": {"provider": "claude", "limit_id": None, "window": "weekly", "tier": "premium",
-                              "verification": "unverified",
-                              "provenance": {"kind": "plan_transcription", "reference": "plan", "observer": None}},
-        "claude-max-verified": {"provider": "claude", "limit_id": "claude", "window": "weekly", "tier": "premium",
-                                "verification": "verified",
-                                "provenance": {"kind": "local_measurement", "reference": "m", "observer": None}},
+        "codex-plus-weekly": pool_entry(True, provider="codex", limit_id="codex", window="weekly", tier="standard",
+                                        provenance={"kind": "operator_reading", "reference": "plan page",
+                                                    "observer": "operator"}),
+        "claude-max-weekly": pool_entry(False, provider="claude", limit_id=None, window="weekly", tier="premium",
+                                        provenance={"kind": "plan_transcription", "reference": "plan",
+                                                    "observer": None}),
+        "claude-max-verified": pool_entry(True, provider="claude", limit_id="claude", window="weekly", tier="premium",
+                                          provenance={"kind": "local_measurement", "reference": "m",
+                                                      "observer": None}),
     })
     result["pools"].update(pools)
     return result
@@ -111,7 +124,7 @@ def test_a_claude_session_binds_only_through_its_own_receipt():
     assert_refused(decide(claude_observation(), receipt(provider="claude", pool="claude-max-weekly",
                                                         limit_ids=["claude"],
                                                         subject={"kind": "native_session", "id": SESSION})),
-                   "pool_unverified")
+                   "pool_state_unverified")
 
 
 def test_without_a_receipt_the_auth_context_is_never_a_pool():
@@ -199,7 +212,7 @@ def test_malformed_receipts_are_refused(body, reason):
     (receipt(issued_at_utc=iso(NOW - timedelta(minutes=5))), None, "observation_outside_receipt_window"),
     (receipt(), codex_observation(observed_at=iso(NOW + timedelta(minutes=30))), "observation_from_the_future"),
     (receipt(limit_ids=["codex_other"]), None, "limit_not_covered"),
-    (receipt(pool="no-such-pool"), None, "pool_unknown"),
+    (receipt(pool="no-such-pool"), None, "pool_not_in_registry"),
     (receipt(pool="grok-weekly-shared"), None, "pool_provider_mismatch"),
 ])
 def test_binding_mismatches_are_refused(body, observation, reason):
@@ -218,10 +231,22 @@ def test_every_observed_limit_must_be_covered():
 def test_the_registry_pool_limit_must_be_covered_and_verified():
     reg = registry(**{"codex-plus-weekly": dict(registry()["pools"]["codex-plus-weekly"], limit_id="codex_spark")})
     assert_refused(decide(reg=reg), "pool_limit_not_covered")
-    unverified = registry(**{"codex-plus-weekly": {
-        "provider": "codex", "limit_id": None, "window": "weekly", "tier": "unknown", "verification": "unverified",
-        "provenance": {"kind": "plan_transcription", "reference": "plan", "observer": None}}})
-    assert_refused(decide(reg=unverified), "pool_unverified")
+    unverified = registry(**{"codex-plus-weekly": pool_entry(
+        False, provider="codex", limit_id=None, window="weekly", tier="unknown",
+        provenance={"kind": "plan_transcription", "reference": "plan", "observer": None})})
+    assert_refused(decide(reg=unverified), "pool_state_unverified")
+
+
+@pytest.mark.skipif(not hasattr(registry_module, "pool_state"), reason="registry without pool freshness")
+def test_a_verified_pool_past_its_ttl_is_stale_and_never_binds():
+    stale = registry(**{"codex-plus-weekly": pool_entry(
+        True, measured_at="2026-08-01", ttl_seconds=86400, provider="codex", limit_id="codex", window="weekly",
+        tier="standard", provenance={"kind": "operator_reading", "reference": "plan page", "observer": None})})
+    assert_refused(decide(reg=stale), "pool_state_stale")
+    future = registry(**{"codex-plus-weekly": pool_entry(
+        True, measured_at="2026-10-05", provider="codex", limit_id="codex", window="weekly", tier="standard",
+        provenance={"kind": "operator_reading", "reference": "plan page", "observer": None})})
+    assert_refused(decide(reg=future), "pool_state_unknown")  # dated in the future: never verified
 
 
 @pytest.mark.parametrize("reg,reason", [

@@ -40,14 +40,40 @@ function From-Json([string]$Text) {
     return ($Text | ConvertFrom-Json @arguments)
 }
 function Blocked([string]$Reason) { [pscustomobject]@{status='blocked'; reason=$Reason} | ConvertTo-Json -Compress; exit 0 }
-function Invoke-Helper([string]$Name, [string[]]$Arguments) {
+function Invoke-HelperText([string]$Name, [string[]]$Arguments) {
     # A failing helper writes to stderr; in PS 5.1 that must not become terminating here.
+    # Any non-zero exit discards stdout: partial output is unknown, never evidence.
     $ErrorActionPreference = 'Continue'
     $shell = (Get-Process -Id $PID).Path
     $out = & $shell -NoProfile -NonInteractive -File (Join-Path $Bin $Name) @Arguments 2>&1 |
         Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | Out-String
     if ($LASTEXITCODE -ne 0) { return $null }
-    return From-Json $out
+    return $out
+}
+function Get-Field($Event, [string]$Name) {
+    $property = $Event.PSObject.Properties[$Name]
+    if ($null -ne $property) { return $property.Value }
+    return $null
+}
+# One acceptance check for every path (snapshot, inventory-resolved, ID-less recent view).
+function Assert-Accepted($Request, [string]$ExpectedId) {
+    $payload = Get-Field $Request 'payload'
+    $ids = @((Get-Field $Request 'request_id'), $(if ($null -ne $payload) { Get-Field $payload 'request_id' } else { $null }) |
+        Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+    if ($ExpectedId) {
+        if (-not $ids.Count -or @($ids | Where-Object { [string]$_ -cne $ExpectedId }).Count) { Blocked 'routing_mismatch' }
+    } elseif ($ids.Count) { Blocked 'recent_row_has_request_id' }
+    if ([string](Get-Field $Request 'agent') -cne [string]$incoming.agent -or
+        [string](Get-Field $Request 'task_id') -cne [string]$routing.task_id -or
+        [string](Get-Field $Request 'ts_utc') -cne [string]$incoming.ts_utc) { Blocked 'routing_mismatch' }
+    $targets = @(([string](Get-Field $Request 'to') -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($targets -cnotcontains 'codex-tools-1') { Blocked 'wrong_target' }
+}
+function Accepted($Request, [string]$Path, $State) {
+    # The exact JSON a reply/turn helper would receive.
+    [pscustomobject]@{status='ok'; path=$Path; state=$State;
+        request_json=($Request | ConvertTo-Json -Depth 32 -Compress)} | ConvertTo-Json -Depth 4 -Compress
+    exit 0
 }
 $routing = From-Json ([IO.File]::ReadAllText($RoutingPath))
 $incoming = $routing.incoming
@@ -55,36 +81,29 @@ if ($routing.action -cne 'answer_incoming' -or $null -eq $incoming) { Blocked 'n
 if ($incoming.request_binding_conflict -eq $true) { Blocked 'request_binding_conflict' }
 $requestId = [string]$incoming.request_id
 if (-not $requestId) {
-    $inventory = Invoke-Helper 'Get-BridgeRequestInventory.ps1' @('-Agent', [string]$incoming.agent)
-    if ($null -eq $inventory) { Blocked 'inventory_failed' }
-    $matches = @($inventory.requests | Where-Object {
+    $text = Invoke-HelperText 'Get-BridgeRequestInventory.ps1' @('-Agent', [string]$incoming.agent)
+    if ($null -eq $text) { Blocked 'inventory_failed' }
+    $matches = @((From-Json $text).requests | Where-Object {
         [string]$_.request.task_id -ceq [string]$routing.task_id -and [string]$_.request.ts_utc -ceq [string]$incoming.ts_utc })
     if ($matches.Count -gt 1) { Blocked 'ambiguous_inventory_match' }
     if ($matches.Count -eq 0) {
-        # No request_id: only the exact recent-view retrieval applies.
-        $recent = & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -File (Join-Path $Bin 'Read-AgentBridge.ps1') `
-            -Agent codex-tools-1 -Raw -NoAckReceived -NoContinuity 2>$null | Where-Object { $_ -notmatch '^RECENT EVENTS' } | Out-String
+        # Zero inventory matches do not prove the ID absent: the row itself must lack one.
+        $text = Invoke-HelperText 'Read-AgentBridge.ps1' @('-Agent', 'codex-tools-1', '-Raw', '-NoAckReceived', '-NoContinuity')
+        if ($null -eq $text) { Blocked 'recent_read_failed' }
+        $recent = ($text -split "`r?`n" | Where-Object { $_ -notmatch '^RECENT EVENTS' }) -join "`n"
         $rows = @(From-Json $recent | Where-Object { [string]$_.agent -ceq [string]$incoming.agent -and
             [string]$_.task_id -ceq [string]$routing.task_id -and [string]$_.ts_utc -ceq [string]$incoming.ts_utc })
         if ($rows.Count -ne 1) { Blocked 'legacy_request_not_in_recent_view' }
-        [pscustomobject]@{status='ok'; path='recent_view'; request=$rows[0]} | ConvertTo-Json -Depth 32 -Compress
-        exit 0
+        Assert-Accepted $rows[0] ''
+        Accepted $rows[0] 'recent_view' $null
     }
     $requestId = [string]$matches[0].request_id
 }
-$snapshot = Invoke-Helper 'Get-BridgeReplySnapshot.ps1' @('-RequestId', $requestId, '-Requester', [string]$incoming.agent)
-if ($null -eq $snapshot) { Blocked 'snapshot_failed' }
-$request = $snapshot.request
-$targets = @(([string]$request.to -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-if ([string]$request.request_id -cne $requestId -or [string]$request.agent -cne [string]$incoming.agent -or
-    [string]$request.task_id -cne [string]$routing.task_id -or [string]$request.ts_utc -cne [string]$incoming.ts_utc) {
-    Blocked 'routing_mismatch'
-}
-if ($targets -cnotcontains 'codex-tools-1') { Blocked 'wrong_target' }
-$state = @($snapshot.results | Where-Object { $_.target -ceq 'codex-tools-1' })[0].state
-# The exact JSON a reply/turn helper would receive.
-[pscustomobject]@{status='ok'; path='snapshot'; state=$state;
-    request_json=($request | ConvertTo-Json -Depth 32 -Compress)} | ConvertTo-Json -Depth 4 -Compress
+$text = Invoke-HelperText 'Get-BridgeReplySnapshot.ps1' @('-RequestId', $requestId, '-Requester', [string]$incoming.agent)
+if ($null -eq $text) { Blocked 'snapshot_failed' }
+$snapshot = From-Json $text
+Assert-Accepted $snapshot.request $requestId
+Accepted $snapshot.request 'snapshot' (@($snapshot.results | Where-Object { $_.target -ceq 'codex-tools-1' })[0].state)
 """
 
 
@@ -122,7 +141,7 @@ def _route(rows: list[dict]) -> dict:
     return json.loads(json.dumps(report))
 
 
-def _retrieve(tmp_path: Path, shell: str, rows: list[dict], routing: dict) -> dict:
+def _retrieve(tmp_path: Path, shell: str, rows: list[dict], routing: dict, bin_dir: Path = BIN) -> dict:
     shared = tmp_path / "shared"
     shared.mkdir(parents=True, exist_ok=True)
     (shared / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
@@ -131,7 +150,7 @@ def _retrieve(tmp_path: Path, shell: str, rows: list[dict], routing: dict) -> di
     harness = tmp_path / "procedure_harness.ps1"
     harness.write_text(HARNESS, encoding="utf-8")
     process = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(harness),
-                              "-Bin", str(BIN), "-RoutingPath", str(routing_path)],
+                              "-Bin", str(bin_dir), "-RoutingPath", str(routing_path)],
                              env=_env(tmp_path), capture_output=True, text=True, encoding="utf-8", timeout=300)
     assert process.returncode == 0, process.stderr
     return json.loads(process.stdout)
@@ -145,6 +164,11 @@ def test_procedure_prescribes_the_exact_retrieval_the_harness_runs() -> None:
         "Get-BridgeRequestInventory.ps1 -Agent <incoming.agent>",
         "request.task_id and request.ts_utc exactly equal the routing task_id and incoming.ts_utc",
         "its to field lists codex-tools-1",
+        "resolve that uniquely resolved request_id with the same snapshot command",
+        "accept its single matching row only if that row itself carries no request_id, neither top-level nor in payload",
+        "zero inventory matches do not prove the ID is absent",
+        "a failed or non-zero-exit recent read is unknown even if it printed partial output",
+        "Apply one identical acceptance check on every path",
         "never pick the latest or closest request and never invent fields",
         "ConvertFrom-Json -DateKind String",
         "does not enumerate HOLD/cancel/finding controls",
@@ -237,3 +261,51 @@ def test_legacy_request_without_id_hidden_by_noise_is_blocked_not_invented(tmp_p
     # Visible in the recent view, the legacy request is still selected exactly.
     visible = _retrieve(tmp_path / "visible", shell, [*_noise(60), legacy], _route([*_noise(60), legacy]))
     assert visible["status"] == "ok" and visible["path"] == "recent_view"
+
+
+def _legacy_routing() -> tuple[dict, dict]:
+    legacy = _request(None, status="request")
+    return legacy, _route([*_noise(60), legacy])
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_legacy_recent_row_to_another_target_is_blocked(tmp_path: Path, shell: str) -> None:
+    legacy, routing = _legacy_routing()
+    impostor = dict(legacy, to="fable-5")  # same sender, task_id and ts_utc
+    assert _retrieve(tmp_path, shell, [*_noise(60), impostor], routing) == {"status": "blocked", "reason": "wrong_target"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("where", ("top_level", "payload"))
+def test_recent_row_that_carries_a_request_id_is_not_treated_as_legacy(tmp_path: Path, shell: str, where: str) -> None:
+    legacy, routing = _legacy_routing()
+    # Not request-like, so the inventory has zero matches; that does not prove the ID absent.
+    row = dict(legacy, type="message", status="answered", payload=dict(legacy["payload"]))
+    if where == "top_level":
+        row["request_id"] = "hidden-id-v1"
+    else:
+        row["payload"]["request_id"] = "hidden-id-v1"
+    result = _retrieve(tmp_path, shell, [*_noise(60), row], routing)
+    assert result == {"status": "blocked", "reason": "recent_row_has_request_id"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_duplicate_legacy_rows_in_recent_view_are_ambiguous(tmp_path: Path, shell: str) -> None:
+    legacy, routing = _legacy_routing()
+    result = _retrieve(tmp_path, shell, [*_noise(60), legacy, legacy], routing)
+    assert result == {"status": "blocked", "reason": "legacy_request_not_in_recent_view"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_failed_recent_read_never_accepts_partial_stdout(tmp_path: Path, shell: str) -> None:
+    legacy, routing = _legacy_routing()
+    fake_bin = tmp_path / "bin"
+    shutil.copytree(BIN, fake_bin)
+    # The reader prints the exact row, then fails: its partial output is unknown.
+    (fake_bin / "Read-AgentBridge.ps1").write_text("\n".join((
+        "param([string]$Agent,[switch]$Raw,[switch]$NoAckReceived,[switch]$NoContinuity)",
+        f"'{json.dumps([legacy])}'",
+        "exit 3",
+    )) + "\n", encoding="utf-8")
+    result = _retrieve(tmp_path / "root", shell, [*_noise(60), legacy], routing, bin_dir=fake_bin)
+    assert result == {"status": "blocked", "reason": "recent_read_failed"}

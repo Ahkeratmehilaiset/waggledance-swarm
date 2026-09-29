@@ -83,10 +83,10 @@ $requestId = [string]$incoming.request_id
 if (-not $requestId) {
     $text = Invoke-HelperText 'Get-BridgeRequestInventory.ps1' @('-Agent', [string]$incoming.agent)
     if ($null -eq $text) { Blocked 'inventory_failed' }
-    $matches = @((From-Json $text).requests | Where-Object {
+    $inventoryMatches = @((From-Json $text).requests | Where-Object {
         [string]$_.request.task_id -ceq [string]$routing.task_id -and [string]$_.request.ts_utc -ceq [string]$incoming.ts_utc })
-    if ($matches.Count -gt 1) { Blocked 'ambiguous_inventory_match' }
-    if ($matches.Count -eq 0) {
+    if ($inventoryMatches.Count -gt 1) { Blocked 'ambiguous_inventory_match' }
+    if ($inventoryMatches.Count -eq 0) {
         # Zero inventory matches do not prove the ID absent: the row itself must lack one.
         $text = Invoke-HelperText 'Read-AgentBridge.ps1' @('-Agent', 'codex-tools-1', '-Raw', '-NoAckReceived', '-NoContinuity')
         if ($null -eq $text) { Blocked 'recent_read_failed' }
@@ -97,7 +97,7 @@ if (-not $requestId) {
         Assert-Accepted $rows[0] ''
         Accepted $rows[0] 'recent_view' $null
     }
-    $requestId = [string]$matches[0].request_id
+    $requestId = [string]$inventoryMatches[0].request_id
 }
 $text = Invoke-HelperText 'Get-BridgeReplySnapshot.ps1' @('-RequestId', $requestId, '-Requester', [string]$incoming.agent)
 if ($null -eq $text) { Blocked 'snapshot_failed' }
@@ -180,14 +180,15 @@ def test_procedure_prescribes_the_exact_retrieval_the_harness_runs() -> None:
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
-def test_bound_request_hidden_by_60_noise_is_recovered_exactly(tmp_path: Path, shell: str) -> None:
-    request = _request("exact-hidden-v1")
+@pytest.mark.parametrize("timestamp", (TS, "2026-09-29T09:50:00.1234560Z"))
+def test_bound_request_hidden_by_60_noise_is_recovered_exactly(tmp_path: Path, shell: str, timestamp: str) -> None:
+    request = _request("exact-hidden-v1", ts_utc=timestamp)
     rows = [request, *_noise(60)]
     routing = _route(rows)
     assert routing["action"] == "answer_incoming"
     assert routing["task_id"] == request["task_id"]
     assert routing["incoming"]["request_id"] == "exact-hidden-v1"
-    assert routing["incoming"]["ts_utc"] == TS
+    assert routing["incoming"]["ts_utc"] == timestamp
     assert routing["incoming"]["message"] != request["message"]  # truncated routing summary
 
     result = _retrieve(tmp_path, shell, rows, routing)
@@ -238,15 +239,16 @@ def test_mismatched_routing_never_selects_another_request(tmp_path: Path, shell:
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
-def test_routing_without_request_id_uses_exact_inventory_match_or_blocks(tmp_path: Path, shell: str) -> None:
-    request = _request("inventory-only-v1")
+@pytest.mark.parametrize("timestamp", (TS, "2026-09-29T09:50:00.1234560Z"))
+def test_routing_without_request_id_uses_exact_inventory_match_or_blocks(tmp_path: Path, shell: str, timestamp: str) -> None:
+    request = _request("inventory-only-v1", ts_utc=timestamp)
     rows = [request, *_noise(60)]
     routing = _route(rows)
     routing["incoming"]["request_id"] = None
     result = _retrieve(tmp_path / "one", shell, rows, routing)
     assert result["status"] == "ok" and json.loads(result["request_json"]) == request
 
-    twin = _request("inventory-twin-v1")  # same sender, task_id and ts_utc: ambiguous
+    twin = _request("inventory-twin-v1", ts_utc=timestamp)  # same sender, task_id and ts_utc: ambiguous
     result = _retrieve(tmp_path / "two", shell, [request, twin, *_noise(60)], routing)
     assert result == {"status": "blocked", "reason": "ambiguous_inventory_match"}
 

@@ -1,5 +1,8 @@
 """Native terminal bridge delivery preserves wakes without overlapping sessions."""
 import json
+import hashlib
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,176 @@ from test_wd_startup_recovery import load, q
 
 TOOLS = REBOOT / 'start-wd-tools-consumer.ps1'
 THREAD = '01a0a07b-ca98-71e1-90cb-d588435a2d8d'
+
+
+def test_lead_imports_continuity_dependencies_from_verified_code():
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8')
+    imports = source.split('$imports = @{', 1)[1].split('foreach ($file', 1)[0]
+    for name in ('Invoke-WdContinuityDecision', 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents'):
+        assert f"'{name}'" in imports
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'corrupt_log', 'tampered_helper'])
+def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, case):
+    bundle = tmp_path / 'bundle'
+    helper_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
+    helper_dir.mkdir(parents=True)
+    files = {}
+    for leaf in ('BridgeLogReader.ps1', 'BridgeIncrementalReader.ps1'):
+        target = helper_dir / leaf
+        shutil.copyfile(REBOOT.parents[2] / '.agent-bridge/bin' / leaf, target)
+        files[target.relative_to(bundle).as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest().upper()
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': files}), encoding='utf-8')
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    if case == 'tampered_helper':
+        (helper_dir / 'BridgeIncrementalReader.ps1').write_text('throw "tampered"')
+    runtime = tmp_path / 'runtime'
+    (runtime / 'shared').mkdir(parents=True)
+    event = dict(agent='claude-rco-2', task_id='work' if case != 'foreign_task' else 'other',
+                 type='message' if case == 'result' else 'finding', status='full_suite_result',
+                 ts_utc='2026-09-28T22:59:00Z', payload={'notification': 'informational'})
+    if case == 'global_hold':
+        event.update(agent='operator', task_id='global', status='hold', to='all')
+    if case == 'peer_hold':
+        event.update(agent='fable-5', status='unsafe')
+    content = json.dumps(event) + '\n'
+    if case == 'masked_hold':
+        content += json.dumps(dict(event, type='message', status='in_progress')) + '\n'
+    (runtime / 'shared/events.jsonl').write_text('BROKEN\n' if case == 'corrupt_log' else content)
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Test-WdContinuityControlEvents')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+try {{
+ $held=Test-WdContinuityControlEvents -RuntimeRoot {q(runtime)} -TaskId work -Agent codex-lead-1 -CheckpointAt '2026-09-28T22:00:00Z'
+ @{{ok=$true;held=$held}}|ConvertTo-Json -Compress
+}} catch {{@{{ok=$false;error=$_.Exception.Message}}|ConvertTo-Json -Compress}}
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report['ok'] == (case not in ('corrupt_log', 'tampered_helper')), report
+    if report['ok']:
+        assert report['held'] == (case in ('finding', 'masked_hold', 'global_hold', 'peer_hold')), report
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('status', ['in_progress', 'operator_signature_pending', 'sentinel_idle', 'handoff'])
+def test_real_guard_cli_drives_native_recovery_without_accepting_results(tmp_path, ps, status):
+    journal = tmp_path / '.codex-audit/wd-turn-loop'
+    journal.mkdir(parents=True)
+    checkpoint = dict(schema='wd.lane-current.v1', agent='codex-lead-1', worktree=str(tmp_path),
+                      status=status, task_id='legacy-awaiting-suite', next_action='Read RCO2 full-suite result',
+                      blockers=[], next_wakeup_utc=None, updated_at_utc='2026-09-28T21:56:00Z')
+    (journal.parent / 'wd-current-state.json').write_text(json.dumps(checkpoint))
+    guard = REBOOT.parents[2] / 'tools/bridge_continuity_guard.py'
+    assert guard.is_file(), 'Fable implementation must be integrated, not stubbed'
+    wrapper = tmp_path / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(
+        "[CmdletBinding(PositionalBinding=$false)]\nparam([Parameter(Position=0)][string]$Tool,"
+        "[Parameter(ValueFromRemainingArguments)][string[]]$ToolArguments)\n"
+        f"& {q(sys.executable)} {q(guard)} @ToolArguments\n"
+        "$global:LASTEXITCODE=$LASTEXITCODE\n", encoding='utf-8')
+    cli = tmp_path / 'queue-cli.bin'
+    cli.write_bytes(b'test fixture, not executable')
+    cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ('Assert-WdTurnPath', 'Write-WdTurnJson'):
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    for name in ('Invoke-WdContinuityDecision', 'Invoke-WdNativeContinuityStep'):
+        script += load(TOOLS, name)
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(wrapper)}
+$script:calls=0
+function Test-WdContinuityControlEvents {{param($RuntimeRoot,$TaskId) return $false}}
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+ if ($Message -notmatch 'Nothing here says a dependency completed; nothing is accepted') {{throw 'unsafe wake'}}
+ $script:calls++; return 'queue-id'
+}}
+$errors=@()
+1..2 | ForEach-Object {{
+ try {{Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -Now '2026-09-29T05:00:00Z' | Out-Null}}
+ catch {{$errors += $_.Exception.Message}}
+}}
+@{{calls=$script:calls;errors=$errors}} | ConvertTo-Json -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report['calls'] == (1 if status == 'in_progress' else 0), report
+    if status == 'in_progress':
+        assert not report['errors'], report
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['dispatch', 'rollover', 'stale_session', 'retry', 'wait', 'hold', 'idle_ok', 'unknown', 'uncertain', 'bad_identity'])
+def test_work_bound_guard_queues_once_or_fails_closed(tmp_path, ps, case):
+    journal = tmp_path / '.codex-audit/wd-turn-loop'
+    journal.mkdir(parents=True)
+    checkpoint = dict(schema='wd.lane-current.v1', agent='codex-lead-1',
+                      worktree=str(tmp_path), status='in_progress', task_id='authorized-task',
+                      next_action='continue scoped work', next_wakeup_utc=None,
+                      updated_at_utc='2026-09-28T20:00:00Z')
+    if case == 'bad_identity':
+        checkpoint['agent'] = 'codex-tools-1'
+    (journal.parent / 'wd-current-state.json').write_text(json.dumps(checkpoint))
+    ledger = journal / f'continuity-v1-{THREAD}.json'
+    cli = tmp_path / 'queue-cli.bin'
+    cli.write_bytes(b'non-executable test double')
+    cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeContinuityStep')
+    verdict = case if case in ('wait', 'hold', 'idle_ok', 'unknown') else 'dispatch'
+    script += f"""
+$script:calls=0
+function Test-WdContinuityControlEvents {{param($RuntimeRoot,$TaskId) return $false}}
+function Invoke-WdContinuityDecision {{
+ param($Snapshot,$NowUtc)
+ if($Snapshot.evidence.scope -cne 'checkpoint_only') {{throw 'false evidence completeness'}}
+ return [pscustomobject]@{{schema='wd.continuity-decision.v1';agent='codex-lead-1';
+ authority='none';verdict='{verdict}';target='codex-lead-1';action_key=('a'*64);reasons=@('fixture')}}
+}}
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+ $script:calls++
+ if(($ThreadId -cne '{THREAD}' -and '{case}' -ne 'rollover') -or $Message -notmatch 'not a new assignment') {{throw 'unsafe routing'}}
+ if('{case}' -eq 'uncertain') {{throw 'ambiguous queue timeout'}}
+ return 'queue-id'
+}}
+$errors=@()
+$sessionStart=if ('{case}' -eq 'stale_session') {{'2026-09-29T04:59:00Z'}} else {{'2026-09-28T00:00:00Z'}}
+1..2 | ForEach-Object {{
+ try {{Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+ -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -SessionStartedAt $sessionStart -Now '2026-09-29T05:00:00Z' | Out-Null}}
+ catch {{$errors += $_.Exception.Message}}
+}}
+if ('{case}' -eq 'retry') {{
+ foreach ($time in @('2026-09-29T06:00:00Z','2026-09-29T07:00:00Z')) {{
+  try {{Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
+   -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -Now $time | Out-Null}}
+  catch {{$errors += $_.Exception.Message}}
+ }}
+}}
+if ('{case}' -eq 'rollover') {{
+ try {{Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '11a0a07b-ca98-71e1-90cb-d588435a2d8d' -Worktree {q(tmp_path)} `
+ -Generation next -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -Now '2026-09-29T05:01:00Z' | Out-Null}}
+ catch {{$errors += $_.Exception.Message}}
+}}
+@{{calls=$script:calls;errors=$errors}} | ConvertTo-Json -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report['calls'] == (2 if case == 'rollover' else 1 if case in ('dispatch', 'retry', 'uncertain') else 0), report
+    assert len(report['errors']) == (2 if case in ('retry', 'uncertain', 'unknown', 'hold', 'bad_identity', 'stale_session') else 0), report
+    if case in ('dispatch', 'rollover', 'retry', 'uncertain'):
+        state = json.loads(ledger.read_text(encoding='utf-8-sig'))
+        assert len(state['entries']) == 1
+        assert state['entries'][0]['status'] == ('submitting' if case == 'uncertain' else 'queued')
+    else:
+        assert not ledger.exists()
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

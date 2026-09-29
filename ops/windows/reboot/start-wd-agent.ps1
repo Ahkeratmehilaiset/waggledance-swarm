@@ -263,7 +263,8 @@ function Invoke-WdNativeLeadTerminal {
   $imports = @{
     'Invoke-WdLaneTurnLoop.ps1' = @('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot')
     'start-wd-tools-consumer.ps1' = @('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
-      'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')
+      'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess',
+      'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep','Test-WdContinuityControlEvents')
   }
   foreach ($file in $imports.Keys) {
     $tokens=$null; $parseErrors=$null
@@ -2233,6 +2234,9 @@ $startupPrompt = (
   $stateRule,
   $laneStateWriter
 )
+$startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStatePath +
+  '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
+  $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +

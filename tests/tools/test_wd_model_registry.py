@@ -705,3 +705,98 @@ def test_input_keys_in_error_messages_are_bounded():
     with pytest.raises(RegistryError) as caught:
         validate_registry(with_v2(lambda r: r["models"].update({key: {"provider": "codex"}})))
     assert "x" * 100 not in str(caught.value)
+
+
+# ---------------------------------------------------------------- RCO2 fa7da7b1 R1: the public clock
+
+from datetime import tzinfo  # noqa: E402
+
+from tools.wd_model_registry import pool_state  # noqa: E402
+
+
+class _NoOffset(tzinfo):
+    """A tzinfo that names no offset: the datetime is naive and must never be read as local time."""
+
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return None
+
+
+BAD_CLOCKS = {
+    "none": None,
+    "naive": datetime(2026, 10, 1, 12, 0, 0),
+    "offsetless_tzinfo": T0.replace(tzinfo=_NoOffset()),
+    "string": "2026-10-01T12:00:00Z",
+    "epoch_seconds": T0.timestamp(),
+    "date": T0.date(),
+    "bool": True,
+    "extreme_max": datetime.max.replace(tzinfo=timezone(-timedelta(hours=23))),
+    "extreme_min": datetime.min.replace(tzinfo=timezone(timedelta(hours=23))),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD_CLOCKS))
+def test_a_missing_naive_wrong_type_or_extreme_clock_is_a_conservative_unknown(name):
+    now = BAD_CLOCKS[name]
+    assert observation_state(observation(), now) == "unknown"                     # never a TypeError/OverflowError
+    assert pool_state(VERIFIED_POOL, now) == "unknown"
+    for status in ("historical", "unverified", "unknown"):                         # these never read the clock
+        assert observation_state(observation(status=status), now) == status
+    assert pool_state(dict(VERIFIED_POOL, verification="unverified"), now) == "unverified"
+
+
+def test_an_aware_clock_in_any_offset_is_normalized_to_utc():
+    helsinki = timezone(timedelta(hours=3))
+    obs = observation()                                     # measured 11:00Z with a 2 h TTL, like VERIFIED_POOL
+    for now, state, pool in ((T0, "fresh", "verified"),
+                             (T0 + timedelta(hours=2), "stale", "stale"),
+                             (T0 - timedelta(hours=2), "unknown", "unknown")):       # dated in the future
+        for clock in (now, now.astimezone(helsinki)):
+            assert observation_state(obs, clock) == state
+            assert pool_state(VERIFIED_POOL, clock) == pool
+
+
+def test_the_ttl_and_future_skew_boundaries_are_exact():
+    tick = timedelta(microseconds=1)
+    edge = datetime(2026, 10, 1, 13, 0, 0, tzinfo=timezone.utc)                  # 11:00Z + 7200 s: still fresh
+    assert observation_state(observation(), edge) == "fresh" and pool_state(VERIFIED_POOL, edge) == "verified"
+    assert observation_state(observation(), edge + tick) == "stale"
+    assert pool_state(VERIFIED_POOL, edge + tick) == "stale"
+    skew = datetime(2026, 10, 1, 10, 55, 0, tzinfo=timezone.utc)                 # measured_at 5 min ahead: tolerated
+    assert observation_state(observation(), skew) == "fresh" and pool_state(VERIFIED_POOL, skew) == "verified"
+    assert observation_state(observation(), skew - tick) == "unknown"
+    assert pool_state(VERIFIED_POOL, skew - tick) == "unknown"
+
+
+def test_the_model_table_never_reads_an_offsetless_tzinfo_as_local_time():
+    registry = validate_registry(with_v2(lambda r: r["observations"].append(observation())))
+    table = model_table(registry, T0.replace(tzinfo=_NoOffset()))
+    assert table["generated_for_utc"] is None
+    row = next(r for r in table["rows"] if (r["model"], r["effort"]) == ("gpt-6-sol", "high"))
+    assert row["context_tokens"]["state"] == "unknown" and row["context_tokens"]["value"] is None
+    assert row["quality_general"]["state"] == "historical"                        # time-independent evidence stays
+    with pytest.raises(RegistryError, match="timezone-aware"):
+        model_table(registry, datetime(2026, 10, 1, 12))                          # a plain naive time is still refused
+
+
+def test_a_symlink_swapped_in_after_the_check_fails_the_open_on_posix(tmp_path, monkeypatch):
+    import os
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("no O_NOFOLLOW: the Windows reparse race is disclosed in BRIDGE_MODEL_REGISTRY.md, not closed")
+    target = write(tmp_path, REGISTRY, "target.json")
+    link = tmp_path / "registry.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    load_registry(target)                                                          # success twin: a regular file
+    # The race: the pre-open check saw a regular file, then the path became a symlink.
+    monkeypatch.setattr(type(link), "is_symlink", lambda self: False)
+    monkeypatch.setattr(type(link), "lstat", lambda self: target.stat())
+    with pytest.raises(RegistryError, match="unreadable"):
+        load_registry(link)

@@ -19,7 +19,8 @@ if ($LifecycleBase64) {
     $event=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($LifecycleBase64)) | ConvertFrom-Json
     if ($event.stage -cnotin @('started','answered','failed','deferred')) { throw 'Invalid Grok lifecycle stage' }
     $state=$event.state
-    if ([string]$state.task_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_./-]{0,159}$') { throw 'Invalid consultation task' }
+    # Full-match checks end with \z: .NET $ also matches before a final newline (RCO1 G1).
+    if ([string]$state.task_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_./-]{0,159}\z') { throw 'Invalid consultation task' }
     $contextPath=Join-Path $PSScriptRoot 'BridgeCodeContext.ps1'
     if ((Get-FileHash -LiteralPath $contextPath).Hash -cne $manifest.files.'BridgeCodeContext.ps1') { throw 'Bridge context hash mismatch' }
     . $contextPath
@@ -36,11 +37,11 @@ if ($LifecycleBase64) {
     $observationId=[string]$state.observation_id
     if ($event.stage -ceq 'deferred') {
         # A deferral reserves nothing: it names its own observation, never a consultation id.
-        if ($requestId -or $observationId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid Grok deferral observation' }
+        if ($requestId -or $observationId -cnotmatch '^[0-9a-f]{32}\z') { throw 'Invalid Grok deferral observation' }
         $consultationId=$null
         $session='grok-deferral-' + $observationId
     } else {
-        if ($observationId -or $requestId -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid Grok consultation id' }
+        if ($observationId -or $requestId -cnotmatch '^[0-9a-f]{32}\z') { throw 'Invalid Grok consultation id' }
         $consultationId=$requestId
         $session='grok-consult-' + $requestId
     }
@@ -81,7 +82,7 @@ if ($Inventory) {
     $tool = 'tools/wd_grok_readonly_session.py'
     $arguments = @('--inventory')
 } elseif ($ReadOnly) {
-    if (-not $PromptPath -or -not $TaskId -or -not $RepositoryPath -or $Commit -cnotmatch '^[a-fA-F0-9]{40}$') {
+    if (-not $PromptPath -or -not $TaskId -or -not $RepositoryPath -or $Commit -cnotmatch '^[a-fA-F0-9]{40}\z') {
         throw '-ReadOnly requires -PromptPath, -TaskId, -RepositoryPath and a full 40-character -Commit'
     }
     $fleetPath = Join-Path $PSScriptRoot 'wd-fleet.json'
@@ -93,12 +94,12 @@ if ($Inventory) {
     $arguments += @('--repo', ([IO.Path]::GetFullPath($RepositoryPath)), '--commit', $Commit,
         '--git-executable', [string]$fleet.git_executable, '--max-rounds', [string]$MaxRounds)
     if ($AcknowledgeInheritedSurface) {
-        if ($AcknowledgeInheritedSurface -cnotmatch '^[a-fA-F0-9]{64}$') { throw 'Inherited surface acknowledgement must be a SHA256 digest' }
+        if ($AcknowledgeInheritedSurface -cnotmatch '^[a-fA-F0-9]{64}\z') { throw 'Inherited surface acknowledgement must be a SHA256 digest' }
         $arguments += @('--acknowledge-inherited-surface', $AcknowledgeInheritedSurface)
     }
 }
 if ($ExceptionPath -or $ExceptionSha256) {
-    if (-not $PromptPath -or $Status -or -not $ExceptionPath -or $ExceptionSha256 -cnotmatch '^[a-fA-F0-9]{64}$') {
+    if (-not $PromptPath -or $Status -or -not $ExceptionPath -or $ExceptionSha256 -cnotmatch '^[a-fA-F0-9]{64}\z') {
         throw 'Task exception requires a consultation, path and SHA256'
     }
     $arguments += @('--exception-path', ([IO.Path]::GetFullPath($ExceptionPath)), '--exception-sha256', $ExceptionSha256)

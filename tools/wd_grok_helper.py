@@ -38,8 +38,21 @@ def emit_bridge_event(stage: str, state: dict) -> None:
                             timeout=45, env=environment)
     if result.returncode:
         raise OSError('Grok bridge lifecycle writer failed')
-    receipt = json.loads(result.stdout.lstrip('\ufeff')).get('_bridge_delivery', {})
-    if not receipt.get('accepted') or not receipt.get('canonical_durable'):
+    _confirm_canonical_receipt(result.stdout)
+
+
+def _confirm_canonical_receipt(stdout: object) -> None:
+    """The writer's -ReceiptJson must be a JSON object whose ``_bridge_delivery`` object has
+    ``accepted`` and ``canonical_durable`` equal to the literal JSON ``true``. Anything else
+    (not JSON, a non-object, a truthy string or number) is a visible OSError. The caller makes
+    one attempt and never retries or refunds (RCO1 G2)."""
+    try:
+        parsed = json.loads(stdout.lstrip('\ufeff')) if isinstance(stdout, str) else None
+    except (ValueError, RecursionError):
+        parsed = None
+    receipt = parsed.get('_bridge_delivery') if isinstance(parsed, dict) else None
+    if (not isinstance(receipt, dict) or receipt.get('accepted') is not True
+            or receipt.get('canonical_durable') is not True):
         raise OSError('Grok lifecycle was not confirmed canonical')
 
 

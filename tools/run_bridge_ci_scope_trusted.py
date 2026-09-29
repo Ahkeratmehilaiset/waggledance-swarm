@@ -9,6 +9,8 @@ base/head, the independently observed merge-base and protected-main tip,
 an absolute trusted Git executable, and an existing ``.codex-audit`` parent
 outside the proposed checkout. A stale/missing policy or any uncertainty
 returns ``scope=full``. This helper never launches pytest or edits workflows.
+Invalid CLI arguments exit nonzero without JSON. Consumers must treat any
+nonzero exit, missing/invalid JSON or non-bridge scope as full, never approval.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Sequence
 
 SCHEMA = "wd.bridge-ci-scope.v1"
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
+_PATH = re.compile(r"[A-Za-z0-9._/-]+\Z")
 _POLICY = ("tools/classify_bridge_ci_scope.py", "tools/select_affected_tests.py")
 
 
@@ -38,7 +41,7 @@ def _sha(value: str) -> bool:
 
 
 def _safe_path(value: str) -> bool:
-    if type(value) is not str or not value or "\\" in value or "\x00" in value:
+    if type(value) is not str or not _PATH.fullmatch(value):
         return False
     parsed = PurePosixPath(value)
     return (bool(parsed.parts) and not parsed.is_absolute() and str(parsed) == value
@@ -73,7 +76,7 @@ def _run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Compl
 def _validate_output(raw: bytes, base: str, head: str, checkout: Path) -> dict | None:
     try:
         value = json.loads(raw.decode("utf-8", "strict"))
-    except (UnicodeError, ValueError):
+    except (UnicodeError, ValueError, RecursionError):
         return None
     if type(value) is not dict or set(value) != {
         "schema", "scope", "base", "head", "changed_files", "tests", "reason"
@@ -109,7 +112,7 @@ def _validate_output(raw: bytes, base: str, head: str, checkout: Path) -> dict |
 def run_scope(*, checkout: str | Path, base: str, head: str,
               expected_merge_base: str, protected_base: str,
               audit_parent: str | Path, git_executable: str | Path) -> dict:
-    """Return a validated router result; all failures become full."""
+    """Return a validated result; expected validation and I/O failures become full."""
     full = lambda reason: _full(base, head, reason)
     if not all(_sha(value) for value in (base, head, expected_merge_base, protected_base)):
         return full("exact nonzero lowercase 40-hex commit inputs required")
@@ -182,14 +185,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                  "protected-base", "audit-parent", "git-executable"):
         parser.add_argument("--" + name, required=True)
     args = parser.parse_args(argv)
-    print(json.dumps(run_scope(checkout=args.repo_root, base=args.base, head=args.head,
-                               expected_merge_base=args.expected_merge_base,
-                               protected_base=args.protected_base,
-                               audit_parent=args.audit_parent,
-                               git_executable=args.git_executable), sort_keys=True))
+    try:
+        result = run_scope(checkout=args.repo_root, base=args.base, head=args.head,
+                           expected_merge_base=args.expected_merge_base,
+                           protected_base=args.protected_base,
+                           audit_parent=args.audit_parent,
+                           git_executable=args.git_executable)
+    except Exception as exc:
+        # Final CLI safety boundary: expose the failure class without arbitrary
+        # exception text. A structured full result is not permission to narrow.
+        result = _full(args.base, args.head,
+                       f"trusted caller unavailable: {type(exc).__name__}")
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

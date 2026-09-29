@@ -197,3 +197,30 @@ def test_trusted_git_and_audit_parent_must_be_outside_checkout(tmp_path):
     nested_audit.mkdir()
     assert _call(checkout, audit, base, head, audit_parent=nested_audit)["scope"] == "full"
 
+
+@pytest.mark.parametrize("character", ["\n", "\r", "\t", "\x1b", "\u202e", " ", ":", ";", "$"])
+def test_control_and_shell_characters_are_not_safe_paths(character):
+    assert not caller._safe_path(f"tests/tools/a{character}b.py")
+
+
+def test_deeply_nested_router_json_is_rejected(tmp_path):
+    depth = sys.getrecursionlimit() + 100
+    raw = b"[" * depth + b"0" + b"]" * depth
+    assert caller._validate_output(raw, "a" * 40, "b" * 40, tmp_path) is None
+
+
+def test_unexpected_cli_runtime_failure_returns_full_json(monkeypatch, capsys):
+    def fail(**kwargs):
+        raise RuntimeError("diagnostic should not leak arbitrary exception text")
+
+    monkeypatch.setattr(caller, "run_scope", fail)
+    assert caller.main([
+        "--repo-root", ".", "--base", "a" * 40, "--head", "b" * 40,
+        "--expected-merge-base", "a" * 40, "--protected-base", "a" * 40,
+        "--audit-parent", ".codex-audit", "--git-executable", "git",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["scope"] == "full"
+    assert result["tests"] == []
+    assert result["base"] == "a" * 40 and result["head"] == "b" * 40
+    assert result["reason"] == "trusted caller unavailable: RuntimeError"

@@ -16,20 +16,28 @@ SWEEP = ROOT / ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1"
 
 @pytest.mark.parametrize("shell", ["powershell", "pwsh"])
 @pytest.mark.parametrize(
-    ("request_sender", "request_to", "responder_session", "expected_to"),
+    ("request_sender", "request_to", "responder_session", "expected_to",
+     "identity_complete", "duplicate_request"),
     [
         ("codex-lead-1", "codex-tools-1", "tools-session-regression",
-         "codex-tools-1,codex-lead-1"),
+         "codex-tools-1,codex-lead-1", True, None),
         ("codex-lead-1", "fable-5", "tools-session-regression",
-         "codex-tools-1"),
+         "codex-tools-1", True, None),
         ("codex-lead-1", "codex-tools-1", "different-session",
-         "codex-tools-1"),
-        (None, None, None, "codex-tools-1"),
+         "codex-tools-1", True, None),
+        ("codex-lead-1", "codex-tools-1", "tools-session-regression",
+         "codex-tools-1", False, None),
+        ("codex-lead-1", "codex-tools-1", "tools-session-regression",
+         "codex-tools-1", True, "different"),
+        ("codex-lead-1", "codex-tools-1", "tools-session-regression",
+         "codex-tools-1,codex-lead-1", True, "identical"),
+        (None, None, None, "codex-tools-1", False, None),
     ],
 )
 def test_stale_release_addresses_only_verified_owner_and_dispatcher(
     tmp_path: Path, shell: str, request_sender: str | None,
     request_to: str | None, responder_session: str | None, expected_to: str,
+    identity_complete: bool, duplicate_request: str | None,
 ) -> None:
     executable = shutil.which(shell)
     if executable is None:
@@ -62,13 +70,10 @@ def test_stale_release_addresses_only_verified_owner_and_dispatcher(
         event = {
             "ts_utc": (past - timedelta(minutes=1)).isoformat(),
             "agent": request_sender,
-            "agent_uuid": "d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
-            "session_id": "lead-session-regression",
             "type": "wake_request",
             "task_id": task,
             "status": "assigned",
             "to": request_to,
-            "request_id": "stale-routing-regression",
             "expected_responders": {
                 "codex-tools-1": {
                     "agent_uuid": claim["agent_uuid"],
@@ -76,7 +81,22 @@ def test_stale_release_addresses_only_verified_owner_and_dispatcher(
                 }
             },
         }
-        (shared / "events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+        if identity_complete:
+            event.update(
+                agent_uuid="d3c9d1d1-96a9-4eb8-a8e2-6f05f9d1a101",
+                session_id="lead-session-regression",
+                request_id="stale-routing-regression",
+            )
+        rows = [event]
+        if duplicate_request:
+            rows.append(dict(
+                event,
+                request_id=("different-request" if duplicate_request == "different"
+                            else event["request_id"]),
+            ))
+        (shared / "events.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
 
     env = os.environ.copy()
     env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(runtime)
@@ -90,6 +110,7 @@ def test_stale_release_addresses_only_verified_owner_and_dispatcher(
         check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert list((runtime / "work_queue/done").glob("*.stale_lease.json"))
     events = [json.loads(line) for line in (shared / "events.jsonl").read_text(
         encoding="utf-8-sig"
     ).splitlines()]

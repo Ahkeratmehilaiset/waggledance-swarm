@@ -138,12 +138,33 @@ function Get-StaleClaimDispatcher {
             if ([string]$responder.Value.agent_uuid -cne [string]$Claim.agent_uuid -or
                 [string]$responder.Value.session_id -cne [string]$Claim.owner_session_id) { continue }
             $sender = [string]$event.agent
+            # Legacy envelopes can lack these fields. Do not return one and
+            # then dereference its missing members under StrictMode after the
+            # claim has already been archived.
+            if (-not $event.PSObject.Properties['request_id'] -or
+                -not $event.PSObject.Properties['agent_uuid'] -or
+                -not $event.PSObject.Properties['session_id']) { continue }
             if ($sender -cmatch '^[a-z][a-z0-9_-]{1,32}$' -and
-                $sender -cne [string]$Claim.agent) { $candidateEvents += $event }
+                $sender -cne [string]$Claim.agent -and
+                [string]$event.request_id -cmatch '^[A-Za-z0-9._:-]{1,128}$' -and
+                [string]$event.agent_uuid -cmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' -and
+                [string]$event.session_id -cmatch '^[A-Za-z0-9._:-]{1,128}$') {
+                $candidateEvents += $event
+            }
         }
-        $senders = @($candidateEvents | ForEach-Object { [string]$_.agent } | Select-Object -Unique)
-        if ($senders.Count -ne 1) { return $null }
-        return $candidateEvents[-1]
+        # Replayed copies of one request are harmless; two distinct requests
+        # from even the same sender are ambiguous, not permission to pick last.
+        if ($candidateEvents.Count -eq 0) { return $null }
+        $first = $candidateEvents[0]
+        foreach ($candidate in $candidateEvents) {
+            if ([string]$candidate.agent -cne [string]$first.agent -or
+                [string]$candidate.request_id -cne [string]$first.request_id -or
+                [string]$candidate.agent_uuid -cne [string]$first.agent_uuid -or
+                [string]$candidate.session_id -cne [string]$first.session_id) {
+                return $null
+            }
+        }
+        return $first
     } catch {
         # Unknown or incomplete history cannot authorize a guessed recipient.
         return $null

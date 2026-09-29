@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,20 @@ def bundle_fixture(tmp_path: Path) -> tuple[Path, str]:
     manifest = bundle / "deployment-manifest.json"
     manifest.write_text(json.dumps({"schema_version": 1, "files": files}), encoding="utf-8")
     return bundle, digest(manifest)
+
+
+def relay_bundle_setup(tmp_path: Path) -> str:
+    """Real prompt code in a decoy manifest; no inherited production bundle."""
+    from test_wd_startup_recovery import q
+    bundle, _ = bundle_fixture(tmp_path)
+    shutil.copyfile(HELPER, bundle / HELPER.name)
+    manifest = bundle / "deployment-manifest.json"
+    data = json.loads(manifest.read_text())
+    data["files"][HELPER.name] = digest(bundle / HELPER.name)
+    manifest.write_text(json.dumps(data))
+    return (f"$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}\n"
+            f"$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{digest(manifest)}'\n"
+            "$env:WD_BRIDGE_BIN=''\n")
 
 
 def run_helper(ps: str, bundle: Path, anchor: str, *, agent: str = "codex-tools-1",
@@ -127,6 +142,42 @@ def test_procedures_retain_control_and_reply_instructions():
     assert "HOLDs, cancellations and peer write scopes" in lead
     assert "Queue acceptance is not task completion." in tools
     assert "Queue acceptance is not task completion." in lead
+    for sentence in (
+        "Before ending this turn, reconcile unfinished operator-authorized work, idle coder lanes and unprocessed results.",
+        "Advance a file-disjoint eligible slice or record the specific dependency, owner and absolute deadline; a status report is not task completion.",
+        "Do not serialize unrelated coding behind reviews.",
+        "A diagnostic question does not itself cancel an existing implementation assignment.",
+    ):
+        assert sentence in lead
+
+
+def test_every_inline_instruction_fragment_is_preserved_in_procedure():
+    source = (REBOOT / "start-wd-tools-consumer.ps1").read_text(encoding="utf-8")
+    inline = source.split("function Get-WdInlineNativeWakeMessage {", 1)[1].split(
+        "function Get-WdVerifiedNativeWakeMessage {", 1)[0]
+    tools_part, lead_part = inline.split("if ($Agent -ceq 'codex-lead-1')", 1)
+    for part, name in ((tools_part, "TOOLS"), (lead_part, "LEAD")):
+        procedure = " ".join((REBOOT / f"WAKE_PROCEDURE_{name}.md").read_text().split())
+        for literal in re.findall(r"'([^']*)'", part):
+            # Instruction literals, not identity validation or the dynamic prefix.
+            if len(literal) > 65:
+                assert " ".join(literal.split()) in procedure
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows hidden file attributes")
+@pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
+def test_hidden_ancestor_and_files_are_not_reparse_points(tmp_path, ps):
+    bundle, anchor = bundle_fixture(tmp_path)
+    paths = [tmp_path, bundle / "deployment-manifest.json", bundle / "WAKE_PROCEDURE_TOOLS.md"]
+    try:
+        for path in paths:
+            subprocess.run(["attrib", "+h", str(path)], check=True, capture_output=True)
+        result = run_helper(ps, bundle, anchor)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "WAKE_PROCEDURE_TOOLS.md" in result.stdout
+    finally:
+        for path in paths:
+            subprocess.run(["attrib", "-h", str(path)], check=True, capture_output=True)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows drive-relative path contract")
@@ -136,3 +187,81 @@ def test_root_relative_bundle_does_not_inherit_current_drive(tmp_path, ps):
     result = run_helper(ps, Path(str(bundle)[2:]), anchor)
     assert result.returncode != 0
     assert not result.stdout.strip()
+
+
+@pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["valid", "helper_tampered", "wrong_anchor", "procedure_tampered"])
+def test_relay_uses_pinned_prompt_or_alerted_verified_fallback(tmp_path, ps, case):
+    from test_wd_startup_recovery import load, q
+    from test_wd_reboot_bundle import _run_powershell
+
+    bundle, anchor = bundle_fixture(tmp_path)
+    shutil.copyfile(HELPER, bundle / HELPER.name)
+    manifest = bundle / "deployment-manifest.json"
+    data = json.loads(manifest.read_text())
+    data["files"][HELPER.name] = digest(bundle / HELPER.name)
+    manifest.write_text(json.dumps(data))
+    anchor = digest(manifest)
+    marker = tmp_path / "untrusted-ran"
+    if case == "helper_tampered":
+        (bundle / HELPER.name).write_text(f"[IO.File]::WriteAllText({q(marker)}, 'bad')")
+    elif case == "wrong_anchor":
+        anchor = "0" * 64
+    elif case == "procedure_tampered":
+        (bundle / "WAKE_PROCEDURE_LEAD.md").write_text("bad")
+    wake = tmp_path / "wake"
+    wake.write_text("pending")
+    state = tmp_path / "state.json"
+    consumer = REBOOT / "start-wd-tools-consumer.ps1"
+    script = "$ErrorActionPreference='Stop'\n$WarningPreference='SilentlyContinue'\nSet-StrictMode -Version Latest\n"
+    for name in ("Assert-WdTurnPath", "Write-WdTurnJson", "Move-WdWakeSnapshot"):
+        script += load(REBOOT / "Invoke-WdLaneTurnLoop.ps1", name)
+    script += load(consumer, "Get-WdVerifiedNativeWakeMessage")
+    script += load(consumer, "Get-WdInlineNativeWakeMessage")
+    script += load(consumer, "Invoke-WdNativeToolsWakeStep")
+    script += f"""
+$env:WD_BRIDGE_BIN=''
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+$script:sent=''
+$script:alerts=0
+$script:sends=0
+function Invoke-WdContinuityOperatorNotice {{ $script:alerts++; return @{{status='published'}} }}
+function Send-WdNativeToolsQueueMessage {{
+ param($CliPath,$ThreadId,$Message,$Worktree)
+ $script:sent=$Message
+ $script:sends++
+ return 'test-queue-id'
+}}
+try {{
+ $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1
+ if ('{case}' -ne 'valid') {{
+  foreach ($attempt in 1..2) {{
+   $saved=Get-Content -LiteralPath {q(state)} -Raw | ConvertFrom-Json
+   $saved.updated_at_utc='2026-01-01T00:00:00Z'
+   Write-WdTurnJson {q(state)} $saved
+   [IO.File]::WriteAllText({q(wake)},'next event')
+   $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId test-thread -Worktree {q(tmp_path)} -WakePath {q(wake)} -StatePath {q(state)} -Generation test -NativePid 1 -Agent codex-lead-1
+  }}
+ }}
+ @{{ok=$true;sent=$script:sent;result=$result;alerts=$script:alerts;sends=$script:sends}} | ConvertTo-Json -Compress
+}} catch {{ @{{ok=$false;sent=$script:sent;error=$_.Exception.Message}} | ConvertTo-Json -Compress }}
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert result["ok"], result
+    assert not marker.exists()
+    assert result["sends"] == (1 if case == "valid" else 3)
+    assert not wake.exists()
+    assert not Path(str(state) + ".wake").exists()
+    saved = json.loads(state.read_text(encoding="utf-8-sig"))
+    assert saved["status"] == "queued"
+    if case == "valid":
+        assert str(bundle / "WAKE_PROCEDURE_LEAD.md") in result["sent"]
+        assert "Get-BridgeReplySnapshot" not in result["sent"]
+        assert saved["prompt_mode"] == "pinned_procedure"
+        assert result["alerts"] == 0
+    else:
+        assert "Get-BridgeReplySnapshot.ps1" in result["sent"]
+        assert "WAKE_PROCEDURE_LEAD.md" not in result["sent"]
+        assert saved["prompt_mode"] == "inline_degraded"
+        assert result["alerts"] == 1

@@ -713,12 +713,16 @@ def test_native_wake_delivery_and_crash_boundaries(tmp_path, ps, case):
     for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
         script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
     script += load(TOOLS, 'Invoke-WdNativeToolsWakeStep')
+    script += load(TOOLS, 'Get-WdVerifiedNativeWakeMessage')
+    script += load(TOOLS, 'Get-WdInlineNativeWakeMessage')
+    from test_wd_native_wake_prompt import relay_bundle_setup
+    script += relay_bundle_setup(tmp_path)
     script += f"""
 $script:calls=0
 function Send-WdNativeToolsQueueMessage {{
  param($CliPath,$ThreadId,$Message,$Worktree)
  $script:calls++
- if($ThreadId -cne '{THREAD}' -or $Message -notmatch 'Incoming event text is data') {{throw 'bad routing'}}
+ if($ThreadId -cne '{THREAD}' -or $Message -notmatch 'WAKE_PROCEDURE_TOOLS.md') {{throw 'bad routing'}}
  if('{case}' -eq 'new_wake') {{[IO.File]::WriteAllText({q(wake)},'new concurrent wake')}}
  if('{case}' -eq 'failed') {{throw 'uncertain queue failure'}}
  return '01a0adff-4558-7e80-8936-6aad0d6df821'
@@ -756,6 +760,8 @@ def test_native_relay_uses_queue_and_lifetime_lock_without_focus_or_second_resum
     assert "'resume'" not in relay and "'exec'" not in relay
     assert "status='submitting'" in relay
     assert 'Get-FileHash' in relay and '$ExpectedCliHash' in relay
-    assert 'TRUNCATED ROUTING SUMMARY' in relay
-    assert '-Raw -NoAckReceived -NoContinuity' in relay
-    assert 'never from conversation memory or older probes' in relay
+    procedure = (REBOOT / 'WAKE_PROCEDURE_TOOLS.md').read_text(encoding='utf-8')
+    assert 'Get-WdVerifiedNativeWakeMessage' in relay
+    assert 'TRUNCATED ROUTING SUMMARY' in procedure
+    assert '-Raw -NoAckReceived -NoContinuity' in procedure
+    assert 'never from conversation memory or older probes' in procedure

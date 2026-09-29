@@ -36,7 +36,7 @@ if (-not [IO.Directory]::Exists($root)) {
 }
 $component = $root
 while ($component) {
-    $componentItem = Get-Item -LiteralPath $component -ErrorAction Stop
+    $componentItem = Get-Item -LiteralPath $component -Force -ErrorAction Stop
     if (($componentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Native wake bundle path contains a reparse point'
     }
@@ -56,7 +56,7 @@ function Assert-DirectBundleFile {
     if (-not [IO.File]::Exists($path)) {
         throw ('Native wake bundle file is missing: ' + $Name)
     }
-    $item = Get-Item -LiteralPath $path -ErrorAction Stop
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw ('Native wake bundle file is a reparse point: ' + $Name)
     }
@@ -65,25 +65,26 @@ function Assert-DirectBundleFile {
 
 # Avoid a PowerShell 7 parent's PSModulePath breaking Get-FileHash discovery
 # in Windows PowerShell 5.1. Match the existing continuity publisher contract.
-function Get-NativeWakeFileHash {
-    param([string] $Path)
+function Get-NativeWakeBytesHash {
+    param([byte[]] $Bytes)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
-        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-        try { $hash = $sha.ComputeHash($stream) } finally { $stream.Dispose() }
+        $hash = $sha.ComputeHash($Bytes)
         return ([BitConverter]::ToString($hash)).Replace('-', '')
     } finally { $sha.Dispose() }
 }
 
 $manifestPath = Assert-DirectBundleFile -Root $root -Name 'deployment-manifest.json'
-if ((Get-Item -LiteralPath $manifestPath).Length -gt 1048576) {
+if ((Get-Item -LiteralPath $manifestPath -Force).Length -gt 1048576) {
     throw 'Native wake deployment manifest is oversized'
 }
-$manifestHash = Get-NativeWakeFileHash -Path $manifestPath
+$manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+if ($manifestBytes.Length -gt 1048576) { throw 'Native wake deployment manifest is oversized' }
+$manifestHash = Get-NativeWakeBytesHash -Bytes $manifestBytes
 if (-not [string]::Equals($manifestHash, $ExpectedManifestHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Native wake deployment manifest differs from its trusted anchor'
 }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+$manifest = [Text.Encoding]::UTF8.GetString($manifestBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
 if ($null -eq $manifest -or $manifest.schema_version -ne 1 -or $null -eq $manifest.files) {
     throw 'Native wake deployment manifest has an invalid schema'
 }
@@ -94,10 +95,12 @@ if ($entries.Count -ne 1 -or [string]$entries[0].Value -cnotmatch '^[0-9A-Fa-f]{
     throw ('Native wake procedure is not hash-pinned in the manifest: ' + $procedureName)
 }
 $procedurePath = Assert-DirectBundleFile -Root $root -Name $procedureName
-if ((Get-Item -LiteralPath $procedurePath).Length -gt 65536) {
+if ((Get-Item -LiteralPath $procedurePath -Force).Length -gt 65536) {
     throw 'Native wake procedure is oversized'
 }
-$procedureHash = Get-NativeWakeFileHash -Path $procedurePath
+$procedureBytes = [IO.File]::ReadAllBytes($procedurePath)
+if ($procedureBytes.Length -gt 65536) { throw 'Native wake procedure is oversized' }
+$procedureHash = Get-NativeWakeBytesHash -Bytes $procedureBytes
 if (-not [string]::Equals($procedureHash, [string]$entries[0].Value, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Native wake procedure differs from its deployment manifest pin'
 }

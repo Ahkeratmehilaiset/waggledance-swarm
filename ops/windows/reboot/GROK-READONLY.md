@@ -75,15 +75,38 @@ JSON: a deferral has `status: "deferred"` and a `decision`; a block has
 `status: "blocked"` and an `error`. A deferral never presents the earlier
 attempt's answer as its own: that attempt is nested under `previous_attempt`,
 and the exit stays 2. Caller semantics, deliberately:
-- A run where this script is the process's own `-File` target
-  (`powershell -File Invoke-WdGrok.ps1 ...`) exits with that code. Before this
-  change, `-File` reported 0 even after a failed consultation.
+- SUPPORTED: a run where this script is the process's own explicit, top-level
+  `-File` target (`powershell -File Invoke-WdGrok.ps1 ...` or
+  `pwsh -File Invoke-WdGrok.ps1 ...`) exits with that code. Before this change,
+  `-File` reported 0 even after a failed consultation. The script detects this
+  case from the process command line. The first `-File` token (also `-f`, `-fi`,
+  `-fil` or a `/` form) must be followed by this script's own path; the paths
+  are compared in full and case-insensitively.
+- UNVERIFIED, not a runtime guarantee: a positional invocation with no `-File`
+  token, such as `pwsh Invoke-WdGrok.ps1 ...` (pwsh treats the first positional
+  argument as the file) or `powershell Invoke-WdGrok.ps1 ...` (Windows
+  PowerShell treats it as a command). Other hosts and unusual command lines are
+  also unverified. No `-File` token names this script, so it does not `exit`,
+  and the process exit code is whatever the host reports: it may be 0 after a
+  failed or deferred consultation. Do not rely on the process exit code in these
+  forms. Use the explicit `-File` form, or read `$LASTEXITCODE` and the JSON
+  `status`.
 - A PowerShell caller that runs the script with `&` from another script, or
-  dot-sources it, keeps the `Invoke-WdBridgePython.ps1` convention. There is no
-  `exit` (it would abandon the caller's output capture); the code is in
-  `$LASTEXITCODE`, and output capture is unchanged.
-- A wrapper that ends without publishing a code is reported as 1.
+  dot-sources it, keeps the `Invoke-WdBridgePython.ps1` convention. This also
+  holds when that other script is itself the process's `-File` target. There is
+  no `exit` (it would abandon the caller's output capture), the code is in
+  `$LASTEXITCODE`, and output capture is unchanged. A dot-source runs in the
+  caller's scope, so the script's `$ErrorActionPreference = 'Stop'` and its
+  local variables stay in that scope.
+- A wrapper that ends without publishing a code is reported as 1: the script
+  sets `$LASTEXITCODE` to 1 before it calls the Python wrapper.
 - `-Command` callers use `& '<Invoke-WdGrok.ps1>' ...; exit $LASTEXITCODE`.
+
+The fixtures for these forms (a top-level `-File`, an in-process `&` capture, a
+dot-source, a distinct outer `-File` script calling with `&` or `.`, and a
+wrapper that publishes no code) use an isolated copy of this script with a stub
+Python wrapper. They are authored but have NOT been run. The positional forms
+have no fixture and stay unverified.
 
 For long consultations, keep the caller window and its command wait alive long
 enough for the configured session (up to 2400 seconds) plus completion logging.

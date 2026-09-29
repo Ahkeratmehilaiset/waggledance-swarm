@@ -139,9 +139,11 @@ WEEKLY = "WD-AgentValue-Weekly"
 STALL = "WD-ConsensusStallDetector"
 LEGACY = "WD-BridgeMergeDriver"
 WEEKLY_EXECUTE = "C:\\Python\\project2-master\\.python\\Python313\\python.exe"
-STALL_EXECUTE = "C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe"
+STALL_EXECUTE = "C:\\Python\\project2-master\\.python\\Python313\\python.exe"
 STALL_ORIGINAL = "C:\\Python\\wd_consensus_stall_detector.py --alert"
 STALL_HIDDEN = f'"{STALL_EXECUTE}" "C:\\Python\\wd_consensus_stall_detector.py" --alert'
+STALL_ALIAS = "C:\\Users\\janik\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe"
+STALL_ALIAS_HIDDEN = f'"{STALL_ALIAS}" "C:\\Python\\wd_consensus_stall_detector.py" --alert'
 STALL_OTHER = "C:\\Python\\other.py"
 STALL_WD = "C:\\Python"
 OTHER_EXECUTE = "C:\\Python\\other.exe"
@@ -407,3 +409,67 @@ def test_an_unverified_stall_detector_pin_changes_nothing(ps, tmp_path):
     assert "scheduled console task action drifted: WD-ConsensusStallDetector" in record["error"]
     assert record["calls"] == []
     assert record["tasks"][STALL]["arguments"] == STALL_ORIGINAL + bad
+
+
+def alias_task(form: str, launcher: Path, suffix: str = "", working_directory: str = STALL_WD,
+               enabled: bool = True) -> str:
+    if form == "bare":
+        return task_literal(STALL_ALIAS, STALL_ORIGINAL + suffix, working_directory, enabled)
+    return task_literal(str(launcher), STALL_ALIAS_HIDDEN + suffix, working_directory, enabled)
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("form", ["bare", "hidden"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_the_exact_windowsapps_alias_forms_migrate_to_the_explicit_interpreter(ps, tmp_path, form, enabled):
+    launcher = tmp_path / "wd_silent_launch.exe"
+    tasks = {STALL: alias_task(form, launcher, enabled=enabled), LEGACY: legacy_enabled()}
+    plan = run_apply(ps, tmp_path, tasks, apply=False)
+    assert plan["error"] == ""
+    assert plan["calls"] == []
+    assert {job["name"]: job for job in plan["result"]["jobs"]}[STALL] == {
+        "name": STALL, "action": "migrate-hidden", "enabled": enabled}
+    record = run_apply(ps, tmp_path, tasks)
+    assert record["error"] == ""
+    assert f"set {STALL}" in record["calls"]
+    assert record["tasks"][STALL] == {"execute": record["launcher"], "arguments": STALL_HIDDEN,
+                                      "working_directory": STALL_WD, "enabled": enabled}
+    assert {job["name"]: job for job in record["result"]["jobs"]}[STALL] == {
+        "name": STALL, "action": "hidden-exact", "enabled": enabled}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("form", ["bare", "hidden"])
+@pytest.mark.parametrize("case", ["pinned", "other_working_directory", "extra_argument"])
+def test_any_other_windowsapps_alias_form_still_drifts(ps, tmp_path, form, case):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    launcher = tmp_path / "wd_silent_launch.exe"
+    task = {"pinned": alias_task(form, launcher, good),
+            "other_working_directory": alias_task(form, launcher, working_directory=""),
+            "extra_argument": alias_task(form, launcher, " --verbose")}[case]
+    record = run_apply(ps, tmp_path, {STALL: task, LEGACY: legacy_enabled()})
+    assert "scheduled console task action drifted: WD-ConsensusStallDetector" in record["error"]
+    assert record["calls"] == []
+    assert record["tasks"][STALL]["execute"] in (STALL_ALIAS, str(launcher))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_alias_task_that_changes_between_plan_and_apply_is_not_migrated(ps, tmp_path):
+    launcher = tmp_path / "wd_silent_launch.exe"
+    change = f"$global:WdTasks[{q(STALL)}] = {alias_task('hidden', launcher)}"
+    record = run_apply(ps, tmp_path, {STALL: alias_task("bare", launcher), LEGACY: legacy_enabled()},
+                       change=change, at="hold")
+    assert "scheduled console task changed between plan and apply: WD-ConsensusStallDetector" in record["error"]
+    assert not [call for call in record["calls"] if call.startswith("set ")]
+    assert record["tasks"][STALL]["arguments"] == STALL_ALIAS_HIDDEN
+
+
+def test_only_the_stall_detector_declares_legacy_alias_forms():
+    text = SCRIPT.read_text(encoding="utf-8")
+    stall = text.index("name = 'WD-ConsensusStallDetector'")
+    weekly = text.index("name = 'WD-AgentValue-Weekly'")
+    assert text.count("legacy_actions = @(") == 1
+    assert stall < text.index("legacy_actions = @(") < weekly
+    assert text.count(r"WindowsApps\python.exe") == 2                 # the two legacy forms only
+    assert r"original_execute = 'C:\Python\project2-master\.python\Python313\python.exe'" in text[stall:weekly]

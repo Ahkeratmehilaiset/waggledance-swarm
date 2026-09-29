@@ -22,6 +22,8 @@ WD-ConsensusStallDetector task. With --alert it posts through the Write-AgentEve
 of a deployed reboot bundle, pinned by --bridge-bundle and --bridge-manifest-sha256 and
 verified file by file against that manifest (as wd_agent_value_metric.py does). Without
 a pin it never posts: the July runtime-root writer is no longer used.
+It also never posts on a PR it cannot classify: the (a)-class classifier is not in any
+bundle, so it is not imported, and every stall is reported locally only.
 """
 from __future__ import annotations
 
@@ -31,7 +33,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,8 +76,11 @@ def reporting_env(bridge_root):
 
 
 def gh_json(args: list[str]):
+    # gh writes UTF-8; the Windows locale default would misdecode it, or raise on
+    # a byte it leaves undefined (0x81 in 'Á').
     out = subprocess.run(
-        ["gh", *args], check=False, text=True, capture_output=True, timeout=60
+        ["gh", *args], check=False, text=True, encoding="utf-8", errors="replace",
+        capture_output=True, timeout=60,
     )
     if out.returncode != 0 or not out.stdout.strip():
         return None
@@ -89,7 +93,8 @@ def gh_json(args: list[str]):
 def ci_all_green(number: int) -> bool | None:
     out = subprocess.run(
         ["gh", "pr", "checks", str(number), "--repo", REPO],
-        check=False, text=True, capture_output=True, timeout=60,
+        check=False, text=True, encoding="utf-8", errors="replace",
+        capture_output=True, timeout=60,
     )
     lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
     if not lines:
@@ -184,49 +189,17 @@ def has_operator_signature_hold(events: list[dict], branch: str) -> bool:
     return False
 
 
-_CLASSIFY_AB = None
+def is_operator_signature_class(pr: dict) -> bool | None:
+    """Whether the PR's changed paths are (a)-class, which never auto-merges and
+    always waits for an explicit operator signature; None when it cannot be told.
 
-
-def _load_classify_ab():
-    """Best-effort import of classify_ab from the fresh tools checkout the
-    merge-driver uses. Returns None if unavailable (detector still works)."""
-    global _CLASSIFY_AB
-    if _CLASSIFY_AB is not None:
-        return _CLASSIFY_AB
-    # classify_ab imports waggledance.* so the REPO ROOT must be on the path
-    # (the classifier is under tools/ and pulls the charter loader).
-    for repo_root in ("C:/Python/_wd_tools_current",
-                      "C:/Python/project2-master"):
-        try:
-            if repo_root not in sys.path:
-                sys.path.insert(0, repo_root)
-            from tools.check_standing_consensus_sign_class import classify_ab  # type: ignore
-            _CLASSIFY_AB = classify_ab
-            return _CLASSIFY_AB
-        except Exception:
-            continue
-    _CLASSIFY_AB = False  # sentinel: tried and failed
+    classify_ab lives in the WD repository and imports the charter loader, which
+    no reboot bundle carries. Importing it from a checkout would run unpinned
+    code, so there is no trusted classifier here and the answer is always None.
+    diagnose() then withholds the bridge alert: an (a)-class PR waiting on its
+    signature must not be reported as a stall.
+    """
     return None
-
-
-def is_operator_signature_class(pr: dict) -> bool:
-    """True when the PR's changed paths are (a)-class -> it cannot auto-merge
-    and ALWAYS requires an explicit operator signature, so a 'not merging'
-    consensus-stall alert on it is a false positive regardless of how complete
-    the build/RCO consensus is. Fail-open: any error -> not recognized (so a
-    genuine stall is never silently hidden by a classifier hiccup)."""
-    classify = _load_classify_ab()
-    if classify is None:
-        return False
-    try:
-        raw = gh_json(["pr", "view", str(pr["number"]), "--repo", REPO,
-                       "--json", "files"]) or {}
-        paths = [f.get("path") for f in raw.get("files", []) if f.get("path")]
-        if not paths:
-            return False
-        return classify(paths).get("ab_class") == "a"
-    except Exception:
-        return False
 
 
 def diagnose(pr: dict, events: list[dict]) -> dict | None:
@@ -235,7 +208,8 @@ def diagnose(pr: dict, events: list[dict]) -> dict | None:
     if has_operator_signature_hold(events, branch):
         print(f"[hold] PR #{pr['number']} ({branch}) is operator-signature-held; not a stall")
         return None
-    if is_operator_signature_class(pr):
+    signature_class = is_operator_signature_class(pr)
+    if signature_class:
         print(f"[hold] PR #{pr['number']} ({branch}) is (a)-class -> operator signature required; not a stall")
         return None
     by_task, vetoes = collect_signals(events, head)
@@ -269,6 +243,8 @@ def diagnose(pr: dict, events: list[dict]) -> dict | None:
         "vetoes": vetoes,
         "slots": status,
         "problems": problems,
+        # Alert only on a PR known not to be (a)-class; unknown fails closed.
+        "alert_eligible": signature_class is False,
     }
 
 
@@ -318,19 +294,41 @@ def post_alert(branch: str, message: str, do_post: bool,
     cmd = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(writer),
            "-Agent", MONITOR_AGENT, "-Role", "monitor", "-Type", "message",
            "-TaskId", branch, "-Status", "consensus_stall_detected",
-           "-To", to, "-Message", message]
+           "-To", to, "-Message", message, "-ReceiptJson"]
     if payload_head:
         cmd += ["-PayloadJson", json.dumps({"head": payload_head})]
     try:
+        # Captured as bytes: the console code page is not UTF-8, and a decode in
+        # subprocess's reader thread would lose the receipt after a durable write.
         result = subprocess.run(
             cmd,
-            check=False, capture_output=True, text=True, timeout=60,
+            check=False, capture_output=True, timeout=60,
             env=reporting_env(RUNTIME_ROOT),
         )
     except Exception as exc:
         return f"ALERT-FAILED:{type(exc).__name__}"
     if result.returncode != 0:
         return f"ALERT-FAILED:exit-{result.returncode}"
+    return delivery_note(result.stdout, to)
+
+
+def delivery_note(stdout: bytes, to: str) -> str:
+    """ALERTED only when the writer's -ReceiptJson receipt says the event is durable
+    in the canonical log this detector reads. Exit 0 alone can mean queued."""
+    lines = [ln for ln in stdout.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+    try:
+        delivery = json.loads(lines[-1])["_bridge_delivery"]
+    except Exception:
+        return "ALERT-UNCONFIRMED:no-receipt"
+    if not isinstance(delivery, dict):
+        return "ALERT-UNCONFIRMED:no-receipt"
+    status = delivery.get("delivery_status")
+    if (delivery.get("accepted") is not True or delivery.get("canonical_durable") is not True
+            or status != "canonical"):
+        return f"ALERT-UNCONFIRMED:{status if status in ('queued', 'suppressed') else 'not-canonical'}"
+    path = delivery.get("events_path")
+    if not isinstance(path, str) or os.path.normcase(os.path.normpath(path)) != os.path.normcase(str(BRIDGE)):
+        return "ALERT-UNCONFIRMED:other-log"
     return f"ALERTED->{to}"
 
 
@@ -348,6 +346,8 @@ def maybe_alert(d: dict, state: dict, now: datetime, do_post: bool,
     last = rec.get("last_alert")
     if last and (now - datetime.fromisoformat(last)).total_seconds() / 60.0 < REALERT_MIN:
         return "recently-alerted"
+    if d.get("alert_eligible") is not True:
+        return "ALERT-WITHHELD:unclassified"
     frag = [s for s, v in d["slots"].items() if str(v).startswith("FRAGMENTED")]
     miss = [s for s, v in d["slots"].items() if v == "MISSING"]
     fix = []
@@ -365,7 +365,11 @@ def maybe_alert(d: dict, state: dict, now: datetime, do_post: bool,
            f"Addressed to the stale slots - please re-post at this exact head.")
     note = post_alert(d["branch"], msg, do_post,
                       recipients=(stale_agents or None), payload_head=full_head, pin=pin)
-    rec["last_alert"] = now.isoformat()
+    # Only an alert whose receipt proves it durable in the canonical log starts the
+    # re-alert quiet period; a dry, skipped, failed or unconfirmed one must not
+    # hold back the next run that can post.
+    if note.startswith("ALERTED->"):
+        rec["last_alert"] = now.isoformat()
     return note
 
 

@@ -982,6 +982,10 @@ function Invoke-WdNativeToolsWakeRelay {
                 } catch {
                     $nextContinuityCheck = [DateTimeOffset]::UtcNow.AddSeconds(
                         (Get-WdContinuityRetryDelay -ErrorText $_.Exception.Message))
+                    # A bounded prefix still being read is normal progress, not
+                    # an operator incident. Withhold recovery, but keep ordinary
+                    # delivery active and do not create an alert on each page.
+                    if ($_.Exception.Message -ceq 'Continuity canonical scan catching up; recovery withheld') { continue }
                     # Re-evaluate evidence cheaply on the next cycle so a fixed
                     # checkpoint can recover without restarting this launcher.
                     # Ambiguous delivery stays blocked by the durable ledger.

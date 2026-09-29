@@ -132,6 +132,30 @@ def test_guard_errors_back_off_but_history_catchup_is_bounded_between_wakes(ps):
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('catching_up', [True, False])
+def test_relay_history_catchup_is_not_an_operator_incident(tmp_path, ps, catching_up):
+    (tmp_path / '.codex-audit/wd-turn-loop').mkdir(parents=True)
+    error = 'Continuity canonical scan catching up; recovery withheld' if catching_up else 'Continuity work held'
+    script = "$ErrorActionPreference='Stop'\n$WarningPreference='SilentlyContinue'\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Get-WdContinuityRetryDelay')
+    script += load(TOOLS, 'Invoke-WdNativeToolsWakeRelay')
+    script += f"""
+$script:iterations=0; $script:wakes=0; $script:notices=0; $script:alerts=0
+function Invoke-WdNativeToolsWakeStep {{$script:wakes++}}
+function Invoke-WdNativeContinuityStep {{throw '{error}'}}
+function Write-WdTurnJson {{$script:alerts++}}
+function Invoke-WdContinuityOperatorNotice {{$script:notices++; return @{{status='published'}}}}
+$native=[pscustomobject]@{{Id=123;StartTime=[DateTime]::UtcNow.AddMinutes(-3)}}
+$native|Add-Member ScriptMethod WaitForExit {{$script:iterations++; return $script:iterations -gt 1}}
+Invoke-WdNativeToolsWakeRelay -Native $native -CliPath unused -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(tmp_path / 'runtime')} -Generation fixture -ExpectedCliHash ('a'*64) -SessionId fixture -WarningAction SilentlyContinue
+@{{wakes=$script:wakes;notices=$script:notices;alerts=$script:alerts}}|ConvertTo-Json -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report == dict(wakes=1, notices=0 if catching_up else 1, alerts=0 if catching_up else 1), report
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('checkpoint_mode', ['missing', 'heartbeat'])
 def test_real_operator_publisher_and_caller_publish_once_without_ending_host(tmp_path, ps, checkpoint_mode):
     from test_wd_continuity_alert import MOCK_WRITER

@@ -3,8 +3,10 @@
 
 Read-only. This program never invokes pytest or a shell, and does not change
 the workflow. Callers must inspect ``scope``; exit zero alone is not approval.
-Test-only shared-provider changes use the reviewed transitive consumer set;
-an unknown test outside the explicit Bridge map forces full scope.
+Test-only shared-provider changes use the reviewed transitive consumer set.
+The caller must load this script and its sibling map from a trusted base;
+this script verifies their bytes against that base but cannot secure a caller
+that executes PR-controlled Python before making the routing decision.
 """
 
 from __future__ import annotations
@@ -26,6 +28,15 @@ bridge_test_closure = selector.bridge_test_closure
 
 SCHEMA = "wd.bridge-ci-scope.v1"
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}\Z")
+_POLICY_FILES = frozenset({
+    "tools/classify_bridge_ci_scope.py",
+    "tools/select_affected_tests.py",
+    "docs/BRIDGE_TEST_BOUNDARY.md",
+    "tests/tools/test_classify_bridge_ci_scope.py",
+    "tests/tools/test_select_affected_tests.py",
+    "tools/run_release_ci_status_evidence.py",
+    "tests/tools/test_release_ci_status_evidence.py",
+})
 
 
 def _result(scope: str, base: str, head: str, changed: list[str],
@@ -74,16 +85,25 @@ def classify_scope(base: str, head: str, repo_root: str | Path = ".",
         root = Path(repo_root).resolve(strict=True)
         if not root.is_dir():
             return full("checkout root is not a directory")
-        for loaded, relative in ((Path(__file__), "tools/classify_bridge_ci_scope.py"),
-                                 (Path(selector.__file__), "tools/select_affected_tests.py")):
-            target = root / relative
-            if not target.is_file() or loaded.read_bytes() != target.read_bytes():
-                return full(f"loaded tool differs from checkout: {relative}")
+        if Path(__file__).resolve().parent != Path(selector.__file__).resolve().parent:
+            return full("classifier and selector were loaded from different directories")
         for commit in (base, head):
             probe = run_git(["git", "cat-file", "-t", commit], cwd=root,
                             capture_output=True, check=False)
             if probe.returncode != 0 or probe.stdout != b"commit\n":
                 return full(f"git commit unavailable or not a commit: {commit}")
+        common = run_git(["git", "merge-base", base, head], cwd=root,
+                         capture_output=True, check=False)
+        if common.returncode != 0 or common.stdout.strip().decode("ascii", "strict").lower() != base.lower():
+            return full("base is not the exact merge-base of head")
+        for loaded, relative in ((Path(__file__), "tools/classify_bridge_ci_scope.py"),
+                                 (Path(selector.__file__), "tools/select_affected_tests.py")):
+            original = run_git(["git", "show", f"{base}:{relative}"], cwd=root,
+                               capture_output=True, check=False)
+            if original.returncode != 0 or not isinstance(original.stdout, bytes):
+                return full(f"trusted base policy missing: {relative}")
+            if loaded.read_bytes() != original.stdout:
+                return full(f"loaded tool differs from trusted base: {relative}")
         checkout = run_git(["git", "rev-parse", "HEAD"], cwd=root,
                            capture_output=True, check=False)
         if checkout.returncode != 0 or checkout.stdout.strip().decode("ascii", "strict").lower() != head.lower():
@@ -106,6 +126,8 @@ def classify_scope(base: str, head: str, repo_root: str | Path = ".",
         return full(f"git or strict decode unavailable: {type(exc).__name__}")
     if not changed or len(changed) != len(set(changed)):
         return full("empty or duplicate changed path set")
+    if any(path in _POLICY_FILES or path.startswith(".github/workflows/") for path in changed):
+        return full("CI routing policy or contract changed; bootstrap requires full scope")
     bridge_tests = set().union(*BRIDGE_EXPLICIT_TESTS.values())
     selected: set[str] = set()
     for path in changed:

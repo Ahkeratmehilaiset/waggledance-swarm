@@ -104,10 +104,14 @@ BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
         tests/tools/test_bridge_event_classifier_wake_request.py
         tests/tools/test_bridge_interim_reply_parity.py
         tests/tools/test_bridge_session_watcher_probe.py
+        tests/tools/test_bridge_wake_continuity.py
+        tests/tools/test_bridge_inbox_recovery.py
         tests/tools/test_bridge_task_result.py
         tests/tools/test_session_liveness_supervisor_report.py
         tests/tools/test_wd_continuity_alert.py
+        tests/tools/test_wd_event_driven_wake.py
         tests/tools/test_wd_reboot_bundle.py
+        tests/tools/test_wd_swarm_parallel_status.py
     """.split()),
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1": frozenset({
         "tests/tools/test_bridge_stale_routing.py",

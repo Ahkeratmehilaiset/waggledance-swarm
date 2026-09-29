@@ -11,6 +11,15 @@ import pytest
 from tools.select_affected_tests import BRIDGE_EXPLICIT_TESTS, bridge_test_closure, select_affected_tests
 
 
+def test_classifier_direct_runtime_consumers_are_explicitly_mapped():
+    assert {
+        "tests/tools/test_bridge_wake_continuity.py",
+        "tests/tools/test_bridge_inbox_recovery.py",
+        "tests/tools/test_wd_event_driven_wake.py",
+        "tests/tools/test_wd_swarm_parallel_status.py",
+    } <= BRIDGE_EXPLICIT_TESTS[".agent-bridge/bin/BridgeEventClassifier.ps1"]
+
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "select_affected_tests.py"
 

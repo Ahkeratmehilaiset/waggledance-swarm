@@ -68,7 +68,12 @@ reviewed a 38-file Bridge-only test set at head `57d4b894` and measured 1920
 Windows passes. Its classifier reach includes `Watch-Bridge.ps1:114` and
 `Monitor-AgentBridge.ps1:130`; the explicit classifier mapping therefore also
 requires `test_bridge_session_watcher_probe.py` and
-`test_session_liveness_supervisor_report.py`. That measured run does **not**
+`test_session_liveness_supervisor_report.py`. Direct classifier runtime
+consumers are also explicitly mapped: `Watch-Bridge.ps1` to
+`test_bridge_wake_continuity.py`, `Monitor-AgentBridge.ps1` to
+`test_bridge_inbox_recovery.py`, event-driven wake to
+`test_wd_event_driven_wake.py`, and status to
+`test_wd_swarm_parallel_status.py`. That measured run does **not**
 cover the later prompt/inventory/incoming tests or this revised map.
 
 The three shared test modules `test_wd_reboot_bundle.py`,
@@ -88,11 +93,23 @@ general `tests/tools` allowlist. A source containing the provider name is
 only discovery evidence, never a substitute for the explicit map.
 
 `tools/classify_bridge_ci_scope.py` is the read-only, exact-commit CI router.
-It requires a clean checkout (including staged/untracked status), matching
-loaded classifier/map bytes, an exact NUL-delimited git diff and readable
-mapped tests. This document/selector/router still make **no CI workflow
-change**; independent review of the complete candidate and fixture closure
-is required before wiring.
+It requires a clean checkout (including staged/untracked status), the base
+commit to be the exact merge-base of the requested head, an exact
+NUL-delimited git diff and readable mapped tests. The caller must obtain both
+the router and its sibling selector from a trusted protected BASE commit
+(for example by materializing `git show BASE:tools/...` outside the PR
+checkout), execute that isolated copy without importing Python from the PR
+checkout, and pass the exact BASE and HEAD. The router compares both loaded
+files byte-for-byte with BASE git blobs; they are **not** required to match
+HEAD checkout files. Missing/unreadable BASE policy or a mismatch returns
+`full`. Any changed router, selector, boundary document, routing contract
+test, release-CI checker, or `.github/workflows/` file returns `full`
+independently of the mutable source-to-test map. A map edit becomes effective
+only after it enters the trusted protected base. The code cannot secure a
+caller that executes PR-controlled Python before routing. This
+document/selector/router still make **no CI workflow change**; independent
+review of the complete candidate and fixture closure is required before
+wiring.
 
 To inspect a proposed change, run the selector with the exact changed paths:
 

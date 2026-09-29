@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import json
 from pathlib import Path
 from shutil import copyfile
 
@@ -183,7 +185,7 @@ def test_shared_fixture_only_selects_both_direct_consumers_transitively(tmp_path
 
 
 def fake_git(changed: tuple[str, ...], *, diff_code=0, object_code=0,
-             status_code=0, head=HEAD):
+             status_code=0, head=HEAD, merge_base=BASE, show_code=0):
     calls = []
 
     def run(command, **kwargs):
@@ -192,6 +194,12 @@ def fake_git(changed: tuple[str, ...], *, diff_code=0, object_code=0,
         assert command[0] == "git"
         if command[1:3] == ["cat-file", "-t"]:
             return subprocess.CompletedProcess(command, object_code, b"commit\n", b"")
+        if command[1] == "merge-base":
+            return subprocess.CompletedProcess(command, 0, (merge_base + "\n").encode(), b"")
+        if command[1] == "show":
+            relative = command[2].split(":", 1)[1]
+            source = ci_scope if relative == "tools/classify_bridge_ci_scope.py" else selector
+            return subprocess.CompletedProcess(command, show_code, Path(source.__file__).read_bytes(), b"")
         if command[1:3] == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(command, 0, (head + "\n").encode(), b"")
         if command[1] == "status":
@@ -212,6 +220,7 @@ def real_git_repo(tmp_path: Path) -> tuple[Path, str, str]:
         return completed.stdout.strip()
 
     git("init", "-q")
+    git("config", "core.autocrlf", "false")
     git("config", "user.name", "Bridge Fixture")
     git("config", "user.email", "bridge-fixture@example.invalid")
     git("add", "-A")
@@ -265,6 +274,70 @@ def test_complete_eight_path_bridge_fixture_narrows(tmp_path):
     assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in EIGHT)))
     assert result["changed_files"] == list(EIGHT)
     assert any(command[1:5] == ("diff", "--name-only", "-z", "--no-renames") for command in calls)
+
+
+@pytest.mark.parametrize("policy", [
+    "tools/classify_bridge_ci_scope.py", "tools/select_affected_tests.py",
+    "docs/BRIDGE_TEST_BOUNDARY.md", "tests/tools/test_classify_bridge_ci_scope.py",
+    "tests/tools/test_select_affected_tests.py", "tools/run_release_ci_status_evidence.py",
+    "tests/tools/test_release_ci_status_evidence.py", ".github/workflows/tests.yml",
+])
+def test_policy_change_forces_full_independent_of_map(tmp_path, policy):
+    root = fixture_repo(tmp_path)
+    run, _ = fake_git((EIGHT[0], policy))
+    result = classify_scope(BASE, HEAD, root, run_git=run)
+    assert result["scope"] == "full", result
+    assert "policy" in result["reason"]
+
+
+def test_non_merge_base_or_missing_base_policy_fails_full(tmp_path):
+    root = fixture_repo(tmp_path)
+    run, _ = fake_git(EIGHT, merge_base="c" * 40)
+    assert "merge-base" in classify_scope(BASE, HEAD, root, run_git=run)["reason"]
+    run, _ = fake_git(EIGHT, show_code=128)
+    assert "base policy missing" in classify_scope(BASE, HEAD, root, run_git=run)["reason"]
+
+
+def test_head_self_extending_map_cannot_narrow_product_change(tmp_path):
+    root, base, _ = real_git_repo(tmp_path)
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                              text=True, check=True).stdout.strip()
+    product = root / "waggledance/core/solver.py"
+    product.parent.mkdir(parents=True)
+    product.write_text("product change\n", encoding="utf-8")
+    mapping = root / "tools/select_affected_tests.py"
+    mapping.write_text(mapping.read_text(encoding="utf-8") +
+                       '\nBRIDGE_EXPLICIT_TESTS["waggledance/core/solver.py"] = frozenset({"tests/tools/test_wd_reboot_bundle.py"})\n',
+                       encoding="utf-8")
+    git("add", "--", "tools/select_affected_tests.py", "waggledance/core/solver.py")
+    git("commit", "-qm", "adversarial head map and product")
+    head = git("rev-parse", "HEAD")
+    result = classify_scope(base, head, root)
+    assert result["scope"] == "full", result
+    assert "policy" in result["reason"]
+
+
+def test_trusted_base_cli_does_not_import_poisoned_head_map(tmp_path):
+    root, base, _ = real_git_repo(tmp_path / "checkout")
+    mapping = root / "tools/select_affected_tests.py"
+    mapping.write_text('raise RuntimeError("head map must not execute")\n' +
+                       mapping.read_text(encoding="utf-8"), encoding="utf-8")
+    subprocess.run(["git", "add", "--", "tools/select_affected_tests.py"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "poison head map"], cwd=root, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+                          text=True, check=True).stdout.strip()
+    trusted = tmp_path / "trusted" / "tools"
+    trusted.mkdir(parents=True)
+    for relative in ("classify_bridge_ci_scope.py", "select_affected_tests.py"):
+        copyfile(root / "tools" / "classify_bridge_ci_scope.py" if relative == "classify_bridge_ci_scope.py"
+                 else selector.__file__, trusted / relative)
+    completed = subprocess.run([sys.executable, "-B", str(trusted / "classify_bridge_ci_scope.py"),
+                                "--base", base, "--head", head, "--repo-root", str(root)],
+                               cwd=trusted.parent, capture_output=True, text=True, check=True)
+    result = json.loads(completed.stdout)
+    assert result["scope"] == "full", result
+    assert "policy" in result["reason"]
 
 
 @pytest.mark.parametrize("extra", ["waggledance/x/app.py", "tests/tools/test_product_only.py", "pyproject.toml"])

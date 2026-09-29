@@ -11,7 +11,10 @@ timeout, or an exhausted round budget ends the session failed; there is no retry
 Budget: the whole session runs as the ``runner`` of ``wd_grok_helper.consult``. The
 global hourly reservation, task exceptions, OS lock and lifecycle events therefore stay
 the helper's own; there is no alternate budget. Each model round is accounted in
-``<request_id>-rounds.jsonl`` beside the helper's request file.
+``<request_id>-rounds.jsonl`` beside the helper's request file. The session total is
+``max_rounds * 300`` s (at most 2400 s), passed to consult as its one ``timeout_seconds``;
+each model process gets ``min(300, remaining)`` s. The inherited surface is re-inventoried
+immediately before every model process.
 
 NOT a guaranteed read-only boundary. Grok 0.2.14 still loads inherited hooks, plugin MCP
 and LSP servers from the user profile. No documented per-invocation switch disables
@@ -27,6 +30,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
@@ -50,6 +54,8 @@ MAX_ACTIONS_PER_ROUND = 4
 MAX_REPLY_BYTES = 256 * 1024
 MAX_ACTION_TEXT_BYTES = MAX_ACTIONS_PER_ROUND * 4096 + 64
 MIN_ROUND_SECONDS = 5.0
+ROUND_TIMEOUT_SECONDS = 300
+MAX_SESSION_SECONDS = MAX_ROUNDS * ROUND_TIMEOUT_SECONDS
 SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 REQUEST_FILE = re.compile(r"([0-9a-f]{32})-request\.md")
 
@@ -201,6 +207,49 @@ class _Inventory:
         if servers:
             self.add(kind, path, _names(servers))
 
+    def claude_json(self, path: Path):
+        """~/.claude.json is mostly session state; only explicit mcpServers are executable.
+
+        Reads the top-level ``mcpServers`` and ``projects[*].mcpServers`` only, and hashes
+        that canonical subtree instead of the file, so unrelated state writes do not change
+        the digest. Malformed executable configuration fails closed as a problem.
+        """
+        if not path.is_file():
+            return
+        key = os.path.normcase(str(path))
+        try:
+            data = _load_json(path)
+            if not isinstance(data, dict):
+                raise ValueError("not a JSON object")
+            scopes = {}
+            top = data.get("mcpServers")
+            if top is not None:
+                scopes["user"] = top
+            projects = data.get("projects")
+            if projects is not None:
+                if not isinstance(projects, dict):
+                    raise ValueError("projects is not an object")
+                for project, entry in projects.items():
+                    if not isinstance(entry, dict):
+                        raise ValueError("project entry is not an object")
+                    if entry.get("mcpServers") is not None:
+                        scopes["project:" + project] = entry["mcpServers"]
+            names = []
+            for scope, servers in scopes.items():
+                if not isinstance(servers, dict) or not all(isinstance(s, dict) for s in servers.values()):
+                    raise ValueError("mcpServers is not an object of server objects")
+                names.extend(scope + ":" + name for name in servers)
+        except (ValueError, OSError, AttributeError, TypeError, RecursionError) as exc:
+            self.problems.append({"path": key, "error": type(exc).__name__})
+            return
+        if names:
+            canonical = json.dumps({s: v for s, v in scopes.items() if v}, sort_keys=True,
+                                   separators=(",", ":"), ensure_ascii=True)
+            self.entries[("claude_json_mcp", key)] = {
+                "kind": "claude_json_mcp", "path": key, "names": sorted(names),
+                "sha256": hashlib.sha256(canonical.encode("ascii")).hexdigest(),
+                "hash_basis": "mcpServers_subtree"}
+
     def plugin_root(self, root: Path):
         """Walk a plugin or marketplace root; record each plugin that can run code."""
         if not root.is_dir():
@@ -272,7 +321,7 @@ def inherited_surface(cwd: Path) -> dict:
         claude = home / ".claude"
         inventory.settings_hooks(claude / "settings.json")
         inventory.settings_hooks(claude / "settings.local.json")
-        inventory.mcp_json(home / ".claude.json", "claude_json_mcp")
+        inventory.claude_json(home / ".claude.json")
         plugin_roots.append(claude / "plugins" / "cache")
         for index, field in (("installed_plugins.json", "installPath"), ("known_marketplaces.json", "installLocation")):
             path = claude / "plugins" / index
@@ -462,7 +511,9 @@ class ReadonlySessionRunner:
         self.used = True
         base = validate_consult_argv(argv)
         root = base["prompt"].parent
-        deadline = monotonic() + float(timeout)
+        if type(timeout) not in (int, float) or not 0 < timeout <= MAX_SESSION_SECONDS:
+            raise ValueError("Read-only session timeout must be a number in (0, 2400]")
+        deadline = monotonic() + min(float(timeout), float(self.max_rounds * ROUND_TIMEOUT_SECONDS))
         rounds_path = root / (base["request_id"] + "-rounds.jsonl")
         summary = {"schema": "wd.grok-readonly-session.v1", "commit": self.commit,
                    "surface_digest": self.surface["digest"], "isolation": self.surface["isolation"],
@@ -470,14 +521,10 @@ class ReadonlySessionRunner:
                    "session_id": None, "outcome": None, "reads": 0}
         final_text, last_text = None, None
         try:
-            # Re-check immediately before the first model launch: the surface may have changed.
-            if surface_gate(Path(cwd or root), self.acknowledged)["digest"] != self.surface["digest"]:
-                raise ValueError("Inherited surface changed after preflight")
             prompt = base["prompt"].read_text(encoding="utf-8") + protocol_header(self.commit, self.max_rounds)
             session_id = None
             for round_number in range(1, self.max_rounds + 1):
-                remaining = deadline - monotonic()
-                if remaining < MIN_ROUND_SECONDS:
+                if deadline - monotonic() < MIN_ROUND_SECONDS:
                     raise ValueError("Read-only session time limit reached")
                 prompt_file = root / (base["request_id"] + "-round-" + str(round_number) + ".md")
                 prompt_file.write_text(prompt, encoding="utf-8")
@@ -486,8 +533,16 @@ class ReadonlySessionRunner:
                           "resume": session_id is not None, "prompt_sha256": _sha256(prompt_file)}
                 started = monotonic()
                 try:
+                    # Re-check immediately before EVERY model process: the surface may change
+                    # between rounds (plugin install, hook edit), and each round loads it anew.
+                    if surface_gate(Path(cwd or root), self.acknowledged)["digest"] != self.surface["digest"]:
+                        raise ValueError("Inherited surface changed after preflight")
+                    remaining = deadline - monotonic()
+                    if remaining < MIN_ROUND_SECONDS:
+                        raise ValueError("Read-only session time limit reached")
                     result = self.model_runner(command, capture_output=True, stdin=subprocess.DEVNULL,
-                                               timeout=remaining, env=env, cwd=cwd)
+                                               timeout=min(float(ROUND_TIMEOUT_SECONDS), remaining),
+                                               env=env, cwd=cwd)
                     record.update(returncode=result.returncode, reply_bytes=len(result.stdout or b""))
                     if result.returncode != 0:
                         raise ValueError("Grok round exited nonzero")
@@ -604,10 +659,14 @@ def main() -> int:
             raise ValueError("Lead request exceeds 24000 bytes")
         runner = ReadonlySessionRunner(broker, clock, broker.sha, surface, max_rounds=args.max_rounds,
                                        acknowledged=args.acknowledge_inherited_surface)
+        if "timeout_seconds" not in inspect.signature(helper.consult).parameters:
+            raise ValueError("wd_grok_helper.consult lacks the timeout_seconds keyword (Tools interface)")
+        # Single source for the session total: max_rounds * 300 s, validated 2..8 rounds above.
         report = helper.consult(helper.STATE_ROOT, args.task_id, prompt,
                                 helper.advisory_command(executable, model["model"]),
                                 runner=runner, emitter=helper.emit_bridge_event,
-                                exception_path=args.exception_path, exception_sha256=args.exception_sha256)
+                                exception_path=args.exception_path, exception_sha256=args.exception_sha256,
+                                timeout_seconds=args.max_rounds * ROUND_TIMEOUT_SECONDS)
         report["readonly_session"] = {"commit": broker.sha, "surface_digest": surface["digest"],
                                       "isolation": surface["isolation"], "read_only_guarantee": False,
                                       "runtime_tested": False}

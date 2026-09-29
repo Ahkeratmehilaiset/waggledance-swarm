@@ -1,0 +1,193 @@
+{
+  "policy": {
+    "schema": "wd.bridge-v2-activation.v1",
+    "policy_version": 1,
+    "expires_utc": null,
+    "revocation_max_age_seconds": null,
+    "features": {
+      "F1": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F2": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F3": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F4": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F5": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F6": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F7": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F8": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F9": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F10": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F11": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F12": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F13": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F15": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F16": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F17": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F18": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F19": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F20": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F21": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F22": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F23": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F24": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F25": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F26": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F27": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F28": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F29": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      },
+      "F30": {
+        "enabled": false,
+        "stage": null,
+        "requires": [],
+        "requires_bits": []
+      }
+    },
+    "policy_bits": {
+      "rule8_amendment": false,
+      "f19_routing_policy": false,
+      "f24_composer_rule": false,
+      "learning_2_11": false
+    },
+    "policy_bit_requires": {},
+    "parameters": {}
+  },
+  "signature": null
+}

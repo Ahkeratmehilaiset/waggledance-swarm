@@ -311,19 +311,66 @@ class IntOffset(tzinfo):
         return 3600   # datetime.utcoffset() itself raises TypeError for a non-timedelta
 
 
+class Moment(datetime):
+    """A datetime subclass could override utcoffset/astimezone: it is never a clock value."""
+
+
+class StatefulOffset(tzinfo):
+    """An offset on the first read, None afterwards: a second read would fall back to LOCAL time."""
+
+    def __init__(self, first):
+        self.first, self.calls = first, 0
+
+    def utcoffset(self, dt):
+        self.calls += 1
+        return self.first if self.calls == 1 else None
+
+
 @pytest.mark.parametrize("now", [
     datetime(2026, 9, 29, 22, 0), "2026-09-29T22:00:00Z", None,
     datetime(2026, 9, 29, 22, 0, tzinfo=Offsetless()), datetime(2026, 9, 29, 22, 0, tzinfo=BrokenZone()),
     datetime(2026, 9, 29, 22, 0, tzinfo=IntOffset()),
+    datetime(2026, 9, 29, 22, 0, tzinfo=tzinfo()),                # the base tzinfo raises NotImplementedError
+    Moment(2026, 9, 29, 22, 0, tzinfo=timezone.utc),              # a subclass, even with a real UTC zone
     datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=1))),   # not representable in UTC
-], ids=["naive", "text", "none", "offsetless", "broken", "int_offset", "unrepresentable"])
+], ids=["naive", "text", "none", "offsetless", "broken", "int_offset", "not_implemented", "subclass",
+        "unrepresentable"])
 def test_the_clock_must_be_timezone_aware_with_a_real_offset(now):
-    assert_refused(decide(now=now), "clock_invalid")   # a code, never binding_error:TypeError
+    assert_refused(decide(now=now), "clock_invalid")   # a code, never binding_error:<Type>
 
 
 def test_an_aware_non_utc_clock_is_normalized_and_binds():
     decision = decide(now=NOW.astimezone(timezone(timedelta(hours=-7))))
     assert decision["account_pool"] == "codex-plus-weekly" and decision["reason"] is None
+
+
+@pytest.mark.parametrize("first,reason", [(timedelta(0), None), (timedelta(hours=-2), "receipt_expired")])
+def test_the_clock_offset_is_read_once_and_never_falls_back_to_local_time(first, reason):
+    zone = StatefulOffset(first)
+    decision = decide(now=datetime(2026, 9, 29, 22, 0, tzinfo=zone))   # -02:00 reads as 24:00Z, past 23:00Z
+    assert zone.calls == 1
+    if reason is None:
+        assert decision["account_pool"] == "codex-plus-weekly"
+    else:
+        assert_refused(decision, reason)
+
+
+@pytest.mark.parametrize("skew,accepted", [
+    (timedelta(minutes=5), True),                      # the 5-minute future skew is INCLUSIVE
+    (timedelta(minutes=5, seconds=1), False),          # one second more refuses
+])
+def test_the_future_skew_boundary_is_five_minutes_inclusive(skew, accepted):
+    ahead = iso(NOW + skew)
+    decision = decide(observation=codex_observation(observed_at=ahead), body=receipt(issued_at_utc=ahead))
+    if accepted:
+        assert decision["account_pool"] == "codex-plus-weekly"
+    else:
+        assert_refused(decision, "receipt_not_yet_valid")
+    later = decide(observation=codex_observation(observed_at=ahead))   # receipt issued an hour ago
+    if accepted:
+        assert later["account_pool"] == "codex-plus-weekly"
+    else:
+        assert_refused(later, "observation_from_the_future")
 
 
 def test_unhashable_and_hostile_values_refuse_without_raising():

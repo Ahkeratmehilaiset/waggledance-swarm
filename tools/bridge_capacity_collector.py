@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
@@ -273,18 +274,65 @@ def _utc_now() -> datetime:
 
 
 def _aware_utc(moment: Any) -> datetime:
-    """``moment`` normalized to UTC. A non-datetime, a naive time, a tzinfo whose utcoffset()
-    is None (astimezone would silently read that as LOCAL time), a broken tzinfo or a time
-    not representable in UTC is refused with InputError, never a TypeError."""
-    if not isinstance(moment, datetime):
-        raise InputError('apply_pool_binding clock must return a datetime')
+    """``moment`` as aware UTC (RCO1 7f32cfea S2): exactly a ``datetime`` (no subclass), its UTC
+    offset read ONCE and required to be exactly a ``timedelta``, subtracted from the naive wall
+    time and marked UTC. There is no ``astimezone``, so a missing, stateful or broken offset can
+    never fall back to LOCAL time. A naive time, a None or non-timedelta offset, a tzinfo that
+    raises (even NotImplementedError) or an unrepresentable time is InputError, never TypeError.
+    The same rule as ``tools.bridge_pool_binding._aware_utc`` (there: None, clock_invalid)."""
+    if type(moment) is not datetime:
+        raise InputError('apply_pool_binding clock must return exactly a datetime')
     try:
-        current = moment.astimezone(timezone.utc) if moment.utcoffset() is not None else None
-    except Exception:  # noqa: BLE001 - a broken tzinfo is not a time
+        offset = moment.utcoffset()
+        current = None if type(offset) is not timedelta else \
+            (moment.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001 - an unreadable offset or an unrepresentable time is not a time
         current = None
     if current is None:
         raise InputError('apply_pool_binding needs a timezone-aware time with a real UTC offset')
     return current
+
+
+_DECISION_FIELDS = ('schema', 'pool_identity_state', 'execution_allowed', 'provider', 'subject_id', 'account_pool',
+                    'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc', 'reason')
+_STORED_FIELDS = ('account_pool', 'receipt_id', 'receipt_sha256', 'provenance_kind', 'expires_at_utc')
+
+
+def _decision_fields(decision: Any) -> dict:
+    """Every field the apply step uses, read from the binder's decision exactly ONCE, before any
+    caller code runs again (RCO1 7f32cfea S1). A non-dict or unreadable decision has none."""
+    if not isinstance(decision, dict):
+        return {}
+    try:
+        return {key: decision.get(key) for key in _DECISION_FIELDS}
+    except Exception:  # noqa: BLE001 - an unreadable decision is a refusal
+        return {}
+
+
+def _applied_binding(fields: dict, own: dict) -> dict | None:
+    """The validated binding as immutable locals: exact ``str`` values for everything stored and
+    the parsed expiry. None unless this is a verified binding for this exact provider and subject."""
+    provider = own.get('provider')
+    subject_field = POOL_SUBJECT_FIELDS.get(provider) if type(provider) is str else None
+    subject = own.get(subject_field) if subject_field is not None else None
+    stored = {key: fields.get(key) for key in _STORED_FIELDS}
+    if not (all(type(value) is str for value in stored.values())
+            and type(fields.get('provider')) is str and type(fields.get('subject_id')) is str):
+        return None
+    expires = _time(stored['expires_at_utc'])
+    if not (fields.get('schema') == POOL_DECISION_SCHEMA
+            and fields.get('pool_identity_state') == 'verified_binding'
+            and fields.get('execution_allowed') is False
+            and subject_field is not None and fields['provider'] == provider
+            and type(subject) is str and subject.strip() and fields['subject_id'] == subject
+            and own.get('account_pool') is None
+            and _token(stored['account_pool'], r'[a-z0-9][a-z0-9._-]{0,63}')
+            and _token(stored['receipt_id'], r'[0-9a-f]{32}')
+            and _token(stored['receipt_sha256'], r'[0-9a-f]{64}')
+            and stored['provenance_kind'] in ('operator_reading', 'local_measurement', 'f21_receipt')
+            and expires is not None):
+        return None
+    return dict(stored, expires=expires)
 
 
 def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
@@ -302,10 +350,18 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     sampled exactly once, AFTER the binder returns and immediately before the expiry
     comparison, and that time must be STRICTLY before the decision's expiry. Time spent in
     the binder or its verifier therefore counts, so a slow, cached or delayed decision never
-    sets even a momentarily expired pool. The sample must be an aware datetime with a real
-    UTC offset and is normalized to UTC; a non-callable clock (refused before the binder
-    runs), a failing clock, a non-datetime, a naive time, an offsetless or broken tzinfo is
-    refused with InputError, never a TypeError.
+    sets even a momentarily expired pool. The sample must be exactly a datetime whose one
+    offset read is exactly a timedelta; it is normalized to UTC without astimezone (never a
+    local-time fallback). A non-callable clock (refused before the binder runs), a failing
+    clock, a subclass or non-datetime, a naive time, an offsetless, stateful-None or broken
+    tzinfo is refused with InputError, never a TypeError.
+
+    No caller code can change a validated value (RCO1 7f32cfea S1): the observation is
+    deep-copied once into a private record (the result is built from it), the binder gets its
+    own deep copy (no shared nested payload), and every decision field is read ONCE and
+    validated into immutable locals BEFORE the clock runs; nothing is re-read afterwards, so
+    a binder that keeps its returned dict and a clock that edits it (or the caller's
+    observation) changes nothing.
 
     A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
     windows, freshness or headroom, which stay unknown unless separately evidenced."""
@@ -315,45 +371,35 @@ def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     if not callable(sample):
         raise InputError('apply_pool_binding clock must be callable')
     try:
-        decision = binder(dict(observation))
+        own = copy.deepcopy(observation)      # private: neither the binder nor the clock can reach it
+        argument = copy.deepcopy(own)
+    except Exception:  # noqa: BLE001 - only a plain JSON-shaped record is bound
+        raise InputError('apply_pool_binding needs a deep-copyable observation record') from None
+    try:
+        decision = binder(argument)
     except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection
         decision = {'reason': 'binder_failed:' + type(exc).__name__}
-    decision = _dict(decision)
-    provider = observation.get('provider')
-    subject_field = POOL_SUBJECT_FIELDS.get(provider) if isinstance(provider, str) else None
-    verified = (decision.get('schema') == POOL_DECISION_SCHEMA
-                and decision.get('pool_identity_state') == 'verified_binding'
-                and decision.get('execution_allowed') is False
-                and subject_field is not None and decision.get('provider') == provider
-                and _text(observation.get(subject_field))
-                and decision.get('subject_id') == observation.get(subject_field)
-                and observation.get('account_pool') is None
-                and _token(decision.get('account_pool'), r'[a-z0-9][a-z0-9._-]{0,63}')
-                and _token(decision.get('receipt_id'), r'[0-9a-f]{32}')
-                and _token(decision.get('receipt_sha256'), r'[0-9a-f]{64}')
-                and decision.get('provenance_kind') in ('operator_reading', 'local_measurement', 'f21_receipt')
-                and _time(decision.get('expires_at_utc')) is not None)
+    fields = _decision_fields(decision)
+    applied = _applied_binding(fields, own)   # validated immutable locals, before any caller code runs again
+    reason = fields.get('reason') if type(fields.get('reason')) is str else None
     # The apply boundary: sampled once, after the binder returned, right before the comparison.
     try:
         moment = sample()
     except Exception as exc:  # noqa: BLE001 - an unreadable clock is refused, never guessed
         raise InputError('apply_pool_binding clock failed: ' + type(exc).__name__) from None
     current = _aware_utc(moment)
-    expired = verified and not current < _time(decision['expires_at_utc'])
-    verified = verified and not expired
-    result = dict(observation)
-    if verified:
-        result.update(account_pool=decision['account_pool'], pool_identity_state='verified_binding',
-                      pool_binding={'receipt_id': decision['receipt_id'],
-                                    'receipt_sha256': decision['receipt_sha256'],
-                                    'provenance_kind': decision['provenance_kind'],
-                                    'expires_at_utc': decision['expires_at_utc']})
+    expired = applied is not None and not current < applied['expires']
+    if applied is not None and not expired:
+        own.update(account_pool=applied['account_pool'], pool_identity_state='verified_binding',
+                   pool_binding={'receipt_id': applied['receipt_id'], 'receipt_sha256': applied['receipt_sha256'],
+                                 'provenance_kind': applied['provenance_kind'],
+                                 'expires_at_utc': applied['expires_at_utc']})
     else:
         # Only a code-shaped reason is kept: no spaces, '@' or other free text is saved.
-        reason = 'decision_expired' if expired else decision.get('reason')
-        result['pool_binding'] = {'state': 'unverified', 'reason': reason if _token(reason, r'[A-Za-z0-9_.:-]{1,128}')
-                                  else 'binding_refused'}
-    return result
+        reason = 'decision_expired' if expired else reason
+        own['pool_binding'] = {'state': 'unverified', 'reason': reason if _token(reason, r'[A-Za-z0-9_.:-]{1,128}')
+                               else 'binding_refused'}
+    return own
 
 
 def _token(value: Any, pattern: str) -> bool:

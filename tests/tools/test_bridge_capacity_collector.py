@@ -516,12 +516,14 @@ class SteppedClock:
 ])
 def test_time_spent_in_the_binder_counts_at_the_apply_boundary(elapsed, applied):
     clock = SteppedClock(POOL_NOW)
+    reads_seen_by_binder = []
 
     def slow_binder(observation):
-        assert clock.reads == []   # nothing sampled before the binder returns
+        reads_seen_by_binder.append(list(clock.reads))   # recorded, asserted outside (a raise here is caught)
         clock.moment = POOL_NOW + elapsed   # the binder and its verifier "took" this long
         return _verified_decision(expires_at_utc=(POOL_NOW + timedelta(seconds=1)).isoformat())
     row = collector.apply_pool_binding(OBSERVATION, slow_binder, clock=clock)
+    assert reads_seen_by_binder == [[]]          # nothing was sampled before the binder returned
     assert clock.reads == [POOL_NOW + elapsed]   # sampled exactly once, after the binder
     assert (row['account_pool'] == 'codex-plus-weekly') is applied
     assert (row.get('pool_identity_state') == 'verified_binding') is applied
@@ -544,16 +546,56 @@ def test_the_default_clock_is_sampled_once_after_the_binder_returns(monkeypatch)
 
 
 def test_without_a_binder_the_same_object_returns_and_no_clock_is_read_or_validated(monkeypatch):
-    def forbidden():
-        raise AssertionError('the dormant default must never read a clock')
-    monkeypatch.setattr(collector, '_utc_now', forbidden)
+    reads = []
+    monkeypatch.setattr(collector, '_utc_now', lambda: reads.append('default') or POOL_NOW)
     value = {'provider': 'codex', 'account_pool': None}
     assert collector.apply_pool_binding(value) is value
-    assert collector.apply_pool_binding(value, None, clock=forbidden) is value
+    assert collector.apply_pool_binding(value, None, clock=lambda: reads.append('injected') or POOL_NOW) is value
     assert collector.apply_pool_binding(value, None, clock='not a clock') is value
+    assert reads == []                                   # no clock of any kind was read
+    collector.apply_pool_binding(value, lambda o: {'reason': 'x'})
+    assert reads == ['default']                          # control: with a binder the default clock IS read once
 
 
-def test_an_aware_non_utc_clock_is_normalized_to_utc():
+def test_a_clock_that_edits_the_kept_decision_or_the_callers_observation_changes_nothing():
+    # RCO1 7f32cfea S1: validated values are local snapshots before the clock (caller code) runs.
+    kept = _verified_decision()
+    caller_observation = dict(OBSERVATION, payload={'nested': {'value': 1}})
+    edits = []
+
+    def binder(observation):
+        observation['payload']['nested']['value'] = 'binder was here'   # its own deep copy (N6)
+        return kept                                                     # and it keeps its returned dict
+
+    def clock():
+        kept.update(expires_at_utc='x', account_pool='Free Text', receipt_id='z' * 32,
+                    provenance_kind='plan_transcription', subject_id='d' * 64)
+        caller_observation.update(provider='claude', auth_context_id='d' * 64, account_pool='other')
+        edits.append('done')
+        return POOL_NOW
+    row = collector.apply_pool_binding(caller_observation, binder, clock=clock)
+    assert edits == ['done']                                            # the edits really happened first
+    assert row['account_pool'] == 'codex-plus-weekly' and row['pool_identity_state'] == 'verified_binding'
+    assert row['provider'] == 'codex' and row['auth_context_id'] == POOL_SUBJECT
+    assert row['pool_binding'] == {'receipt_id': 'b' * 32, 'receipt_sha256': 'f' * 64,
+                                   'provenance_kind': 'operator_reading',
+                                   'expires_at_utc': (POOL_NOW + timedelta(hours=1)).isoformat()}
+    assert row['payload']['nested']['value'] == 1                        # the binder only saw a copy
+    assert caller_observation['payload']['nested']['value'] == 1
+
+
+def test_a_clock_edit_after_an_expired_decision_still_reports_the_expiry():
+    kept = _verified_decision(expires_at_utc=POOL_NOW.isoformat())
+
+    def clock():
+        kept.update(expires_at_utc=(POOL_NOW + timedelta(hours=9)).isoformat(), reason='mail ops@example.test')
+        return POOL_NOW
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: kept, clock=clock)
+    assert row['account_pool'] is None
+    assert row['pool_binding'] == {'state': 'unverified', 'reason': 'decision_expired'}   # the snapshot expiry
+
+
+def test_an_aware_non_utc_clock_compares_as_the_same_instant():
     plus3 = timezone(timedelta(hours=3))
     expires = POOL_NOW + timedelta(seconds=1)
 
@@ -580,6 +622,30 @@ class _IntOffset(tzinfo):
         return 3600   # datetime.utcoffset() itself raises TypeError for a non-timedelta
 
 
+class _TimedeltaSubclass(timedelta):
+    pass
+
+
+class _SubclassOffset(tzinfo):
+    def utcoffset(self, dt):
+        return _TimedeltaSubclass(0)   # not exactly a timedelta
+
+
+class _Moment(datetime):
+    """A datetime subclass: it could override utcoffset/astimezone, so it is never a clock value."""
+
+
+class _StatefulOffset(tzinfo):
+    """An offset on the first read, None afterwards: a second read would fall back to LOCAL time."""
+
+    def __init__(self, first):
+        self.first, self.calls = first, 0
+
+    def utcoffset(self, dt):
+        self.calls += 1
+        return self.first if self.calls == 1 else None
+
+
 def _failing_clock():
     raise OSError('clock source down')
 
@@ -589,13 +655,45 @@ def _failing_clock():
     _fixed(datetime(2026, 9, 29, 22, tzinfo=_Offsetless())),
     _fixed(datetime(2026, 9, 29, 22, tzinfo=_BrokenZone())),
     _fixed(datetime(2026, 9, 29, 22, tzinfo=_IntOffset())),
+    _fixed(datetime(2026, 9, 29, 22, tzinfo=tzinfo())),        # the base tzinfo raises NotImplementedError
+    _fixed(datetime(2026, 9, 29, 22, tzinfo=_SubclassOffset())),
+    _fixed(_Moment(2026, 9, 29, 22, tzinfo=timezone.utc)),     # a subclass, even with a real UTC zone
     _fixed(datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=1)))),   # not representable in UTC
     _fixed('2026-09-29T22:00:00Z'), _fixed(None), _failing_clock,
-], ids=['naive', 'offsetless', 'broken', 'int_offset', 'unrepresentable', 'text', 'none', 'failing'])
+], ids=['naive', 'offsetless', 'broken', 'int_offset', 'not_implemented', 'timedelta_subclass', 'subclass',
+        'unrepresentable', 'text', 'none', 'failing'])
 def test_an_invalid_clock_sample_refuses_with_input_error_never_type_error(clock):
-    with pytest.raises(InputError) as refused:
+    with pytest.raises(InputError):   # a TypeError (or any other type) would fail this test
         collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), clock=clock)
-    assert not isinstance(refused.value, TypeError)
+
+
+@pytest.mark.parametrize('first,applied', [
+    (timedelta(0), True),                        # read once: UTC 22:00, before the 23:00 expiry
+    (timedelta(hours=-2), False),                # read once: 24:00Z, after it (never local time)
+])
+def test_the_clock_offset_is_read_exactly_once_and_never_falls_back_to_local_time(first, applied):
+    zone = _StatefulOffset(first)
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(),
+                                       clock=_fixed(datetime(2026, 9, 29, 22, tzinfo=zone)))
+    assert zone.calls == 1
+    assert (row['account_pool'] == 'codex-plus-weekly') is applied
+
+
+def test_the_collector_and_pool_binding_clock_normalizers_agree():
+    from tools import bridge_pool_binding as binding
+    corpus = [POOL_NOW, POOL_NOW.astimezone(timezone(timedelta(hours=-7))), datetime(2026, 9, 29, 22),
+              datetime(2026, 9, 29, 22, tzinfo=_Offsetless()), datetime(2026, 9, 29, 22, tzinfo=_BrokenZone()),
+              datetime(2026, 9, 29, 22, tzinfo=_IntOffset()), datetime(2026, 9, 29, 22, tzinfo=tzinfo()),
+              datetime(2026, 9, 29, 22, tzinfo=_SubclassOffset()), _Moment(2026, 9, 29, 22, tzinfo=timezone.utc),
+              datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=1))), '2026-09-29T22:00:00Z', None]
+    for moment in corpus:
+        expected = binding._aware_utc(moment)
+        if expected is None:
+            with pytest.raises(InputError):
+                collector._aware_utc(moment)
+        else:
+            assert collector._aware_utc(moment) == expected and expected.tzinfo is timezone.utc
+    assert binding._aware_utc(POOL_NOW.astimezone(timezone(timedelta(hours=-7)))) == POOL_NOW   # twin
 
 
 @pytest.mark.parametrize('clock', [POOL_NOW, 'utcnow', 0])

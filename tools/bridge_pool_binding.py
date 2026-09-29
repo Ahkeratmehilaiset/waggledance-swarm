@@ -17,9 +17,10 @@ pool, and nothing here derives a pool from them.
 * the receipt has the exact ``wd.pool-binding-receipt.v1`` shape, and its provenance is a
   measuring kind (operator reading, local measurement or an F21 receipt), never a
   transcription, documentation or benchmark;
-* ``now`` is an aware datetime with a real UTC offset, normalized to UTC (a naive time, a
-  tzinfo whose utcoffset() is None, a broken tzinfo or an unrepresentable time refuses
-  as ``clock_invalid``);
+* ``now`` is exactly a ``datetime`` whose UTC offset, read ONCE, is exactly a ``timedelta``;
+  it is normalized by subtraction, never ``astimezone`` (a subclass, a naive time, a None,
+  stateful or raising offset, or an unrepresentable time refuses as ``clock_invalid``, and
+  nothing ever falls back to local time);
 * the receipt is valid at ``now`` (issued no more than 5 minutes ahead, not expired, a
   lifetime of at most 24 hours), and the observation was made inside that window and is
   dated no more than 5 minutes after ``now`` (up to 5 minutes of future skew is tolerated,
@@ -58,7 +59,7 @@ import json
 import re
 from typing import Any, Callable
 
-from tools.wd_model_registry import MEASURING_KINDS, SCHEMA_V2, pool_state, validate_registry
+from tools.wd_model_registry import FUTURE_SKEW, MEASURING_KINDS, SCHEMA_V2, pool_state, validate_registry
 
 RECEIPT_SCHEMA = "wd.pool-binding-receipt.v1"
 DECISION_SCHEMA = "wd.pool-binding-decision.v1"
@@ -78,8 +79,7 @@ COLLECTOR_POOL_STATES = {"codex": "unverified_auth_context", "claude": "unknown"
 CLAUDE_LIMIT_ID = "claude"
 
 MAX_RECEIPT_LIFETIME = timedelta(hours=24)
-FUTURE_SKEW = timedelta(minutes=5)
-MAX_LIMIT_IDS = 16
+MAX_LIMIT_IDS = 16   # FUTURE_SKEW (5 min, inclusive) is the registry's own constant (RCO1 7f32cfea N1)
 HEX32 = re.compile(r"[0-9a-f]{32}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 POOL_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -115,14 +115,20 @@ def _utc(value: Any) -> datetime | None:
 
 
 def _aware_utc(moment: Any) -> datetime | None:
-    """``moment`` normalized to UTC, or None: a non-datetime, a naive time, a tzinfo whose
-    utcoffset() is None (astimezone would silently read that as LOCAL time), a broken
-    tzinfo or a time not representable in UTC."""
-    if not isinstance(moment, datetime):
+    """``moment`` as aware UTC, or None (clock_invalid) (RCO1 7f32cfea S2): exactly a ``datetime``
+    (no subclass), its UTC offset read ONCE and required to be exactly a ``timedelta``, subtracted
+    from the naive wall time and marked UTC. There is no ``astimezone``, so a missing, stateful or
+    broken offset can never fall back to LOCAL time. A naive time, a None or non-timedelta offset,
+    a tzinfo that raises (even NotImplementedError) or an unrepresentable time is None. The same
+    rule as ``tools.bridge_capacity_collector._aware_utc`` (there: InputError)."""
+    if type(moment) is not datetime:
         return None
     try:
-        return moment.astimezone(timezone.utc) if moment.utcoffset() is not None else None
-    except Exception:  # noqa: BLE001 - a broken tzinfo is not a time
+        offset = moment.utcoffset()
+        if type(offset) is not timedelta:
+            return None
+        return (moment.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001 - an unreadable offset or an unrepresentable time is not a time
         return None
 
 

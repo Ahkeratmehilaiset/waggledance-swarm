@@ -207,7 +207,7 @@ try {{Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'operator_failure', 'ordinary_wait', 'foreign_broadcast', 'operator_retracted', 'camel_control', 'corrupt_log', 'tampered_helper'])
+@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'operator_failure', 'ordinary_wait', 'foreign_broadcast', 'operator_retracted', 'camel_control', 'rewrite_prefix', 'corrupt_log', 'tampered_helper'])
 def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, case):
     bundle = tmp_path / 'bundle'
     helper_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
@@ -241,6 +241,8 @@ def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, ca
         event.update(agent='operator', task_id='other', to='codex-lead-1', type='decision', status='operator_signed_head_exact_retracted')
     if case == 'camel_control':
         event.update(type='message', status='changesRequested')
+    if case == 'rewrite_prefix':
+        event.update(type='message', status='notice')
     if case == 'masked_hold':
         event.update(status='changes_requested')
     content = json.dumps(event) + '\n'
@@ -255,11 +257,16 @@ $env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
 try {{
  $held=Test-WdContinuityControlEvents -RuntimeRoot {q(runtime)} -TaskId work -Agent codex-lead-1 -CheckpointAt '2026-09-28T22:00:00Z'
+ if ('{case}' -eq 'rewrite_prefix') {{
+  $log={q(runtime / 'shared/events.jsonl')}
+  [IO.File]::WriteAllText($log, [IO.File]::ReadAllText($log).Replace('notice','hold  '))
+  $held=Test-WdContinuityControlEvents -RuntimeRoot {q(runtime)} -TaskId work -Agent codex-lead-1
+ }}
  @{{ok=$true;held=$held}}|ConvertTo-Json -Compress
 }} catch {{@{{ok=$false;error=$_.Exception.Message}}|ConvertTo-Json -Compress}}
 """
     report = json.loads(_run_powershell(script, executable=ps).stdout)
-    assert report['ok'] == (case not in ('corrupt_log', 'tampered_helper')), report
+    assert report['ok'] == (case not in ('corrupt_log', 'tampered_helper', 'rewrite_prefix')), report
     if report['ok']:
         assert report['held'] == (case in ('finding', 'masked_hold', 'global_hold', 'peer_hold', 'camel_control')), report
 

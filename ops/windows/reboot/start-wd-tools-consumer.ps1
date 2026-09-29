@@ -644,16 +644,54 @@ function Test-WdContinuityControlEvents {
     $cacheVariable = Get-Variable -Name WdContinuityControlCache -Scope Script -ErrorAction SilentlyContinue
     if ($null -eq $cacheVariable -or $null -eq $cacheVariable.Value -or
         $cacheVariable.Value.key -cne $cacheKey) {
-        $script:WdContinuityControlCache = @{key=$cacheKey;cursor=$null;held=$false}
+        $script:WdContinuityControlCache = @{key=$cacheKey;cursor=$null;held=$false;prefixLength=0;prefixHash=''}
     }
     $cache = $script:WdContinuityControlCache
     # A later log truncation, rotation or ordinary message cannot release HOLD.
     if ($cache.held) { return $true }
+    # The canonical reader binds identity, generation and length, not content
+    # rewritten in-place below its offset. Anchor a bounded initial prefix as
+    # well; ordinary appends do not alter it. A mismatch is unknown this cycle
+    # and forces a complete bounded rescan, never approval from the old cursor.
+    $readPrefix = {
+        param([string] $FilePath, [int] $Count)
+        $stream = [IO.File]::Open($FilePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            if ($Count -eq 0) { $Count = [int][Math]::Min(65536, $stream.Length) }
+            $bytes = New-Object byte[] $Count
+            $offset = 0
+            while ($offset -lt $Count) {
+                $read = $stream.Read($bytes, $offset, $Count - $offset)
+                if ($read -eq 0) { throw 'Continuity canonical prefix truncated' }
+                $offset += $read
+            }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { return @{length=$Count;hash=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')} }
+            finally { $sha.Dispose() }
+        } finally { $stream.Dispose() }
+    }
+    try {
+        $prefix = & $readPrefix $eventsPath $cache.prefixLength
+        if ($cache.prefixLength -gt 0 -and $prefix.hash -cne $cache.prefixHash) {
+            throw 'Continuity canonical prefix changed; rebuild required'
+        }
+    } catch {
+        $cache.cursor=$null; $cache.prefixLength=0; $cache.prefixHash=''
+        throw
+    }
     $view = Read-BridgeEventDelta -Path $eventsPath -Cursor $cache.cursor -MaxBytes 1048576 -MaxRows 1000
     if ($view.status -notin @('OK','IDLE') -or $null -eq $view.candidate_cursor) {
-        $cache.cursor = $null
+        $cache.cursor=$null; $cache.prefixLength=0; $cache.prefixHash=''
         throw 'Continuity canonical snapshot unavailable; rebuild required'
     }
+    try {
+        $after = & $readPrefix $eventsPath $prefix.length
+        if ($after.hash -cne $prefix.hash) { throw 'Continuity canonical prefix changed during read; rebuild required' }
+    } catch {
+        $cache.cursor=$null; $cache.prefixLength=0; $cache.prefixHash=''
+        throw
+    }
+    $cache.prefixLength=$prefix.length; $cache.prefixHash=$prefix.hash
     foreach ($event in @($view.rows)) {
         $recipients = @()
         if ($event.PSObject.Properties['to']) { $recipients = @(([string]$event.to) -split '[,;\s]+' | Where-Object { $_ }) }

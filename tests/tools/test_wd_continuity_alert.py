@@ -440,6 +440,13 @@ def test_last_slot_publishes_one_ledger_full_notice_instead_of_the_alert(env):
     assert len(entries) == 256
     assert (entries[-1]["key"], entries[-1]["reason"], entries[-1]["status"]) == \
         (result["notice_key"], "alert_ledger_full", "published")
+    assert result["notice_key"] != result["alert_key"]
+    assert result["alert_key"] not in {e["key"] for e in entries}  # the requested alert was never sent
+    # Repeating the ORIGINAL request must not look delivered: still ledger_full, no call.
+    proc, again, alive = env.run()
+    ok(proc, again, alive, "unknown", 1)
+    assert again["reason_code"] == "ledger_full" and "ledger_full_notice" not in again
+    assert len(env.calls()) == 1
 
 
 def test_ledger_full_notice_is_sent_exactly_once(env):

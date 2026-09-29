@@ -14,13 +14,25 @@ and ``resolve_bridge_root`` there is the single documented environment reader. E
 
 B7 ownership (F10 alignment): the authority is the owner session id plus the SHA-256 of
 the owner token; pid and process-start fields are informational and never checked here.
-An owned claim is refreshed, heartbeated or released only by its owning identity; an
-``owner_identity: none`` claim only by an identity-less caller; a pre-B7 unowned claim is
-released only with ``allow_legacy_unowned_claim``. Heartbeat never recreates an archived
-claim. The facade's ``archive_stale_claims`` keeps the core selection rules (operator and
-system never swept; an owned claim only when its lease expired AND its session heartbeat
-is provably not live; last heartbeat falling back to claimed_at) and applies only through
-injected transactions: without ports a sweep is refused, never defaulted.
+The caller presents the RAW token it holds (``OwnerIdentity``) and only its SHA-256 is
+written or compared, exactly as core derives it; the SHA-256 readable in a claim file is
+never a credential (RCO1 S8). An owned claim is refreshed, heartbeated or released only
+by its owning identity; an ``owner_identity: none`` claim only by an identity-less
+caller; a pre-B7 unowned claim is released only with ``allow_legacy_unowned_claim``.
+Heartbeat never recreates an archived claim. A write claim is refused while any active
+claim is unreadable or over the size bound (overlap unknown, never skipped, S9); only
+other WRITE claims conflict, and a stored string scope is one entry list, never its
+characters (S7). The facade's ``archive_stale_claims`` keeps the core selection rules
+(operator and system never swept; an owned claim only when its lease expired AND its
+session heartbeat is provably not live; last heartbeat falling back to claimed_at) and
+applies only through injected transactions: without ports a sweep is refused, never
+defaulted. A changed claim is skipped as in core; every other transaction refusal (lock
+timeout, a blocked claim, a record conflict, a bound) is a ``WorkQueueError`` (S6).
+
+Consumer composition is DEFERRED (Lead's B1 decision): the consumers keep core until
+validated ports, publication and fencing exist. This module never falls back to or
+imports core, and its ports-less apply refusal must not be hidden by weakening a core
+CLI test.
 Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
 """
 from __future__ import annotations
@@ -34,8 +46,8 @@ from pathlib import Path
 import re
 from typing import Sequence
 
-from tools.bridge_v2_queue_transactions import (Plan, QueueTransactions, Refused, read_bytes_or_none,
-                                                sha256_or_none)
+from tools.bridge_v2_queue_transactions import (Plan, QueueTransactionError, QueueTransactions, Refused,
+                                                read_bytes_or_none, sha256_or_none)
 from tools.bridge_v2_resource_scope import ScopeError, resolve_scopes, resources_overlap
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,32}$")
@@ -44,7 +56,9 @@ ALLOWED_MODES = ("read-only", "write")
 OWNER_IDENTITY_NONE = "none"
 DEFAULT_LEASE_SECONDS = 900
 DEFAULT_STALE_MAX_SECONDS = 12 * 60 * 60
-HEX64 = re.compile(r"[0-9a-f]{64}")
+MAX_SUMMARY_CHARS = 16 * 1024
+MAX_SESSION_CHARS = 256
+MAX_TOKEN_CHARS = 4096
 
 
 class WorkQueueError(ValueError):
@@ -53,9 +67,16 @@ class WorkQueueError(ValueError):
 
 @dataclass(frozen=True)
 class OwnerIdentity:
-    """Session id plus SHA-256 of the owner token (never the token itself)."""
+    """The owner session id plus the RAW owner token the caller holds (RCO1 S8). Only the
+    token's SHA-256 (of its UTF-8 bytes, as core ``owner_identity_from_env``) is ever
+    written or compared. The SHA-256 readable in a claim file is never a credential: given
+    as a token, it hashes to something else and matches no claim."""
     owner_session_id: str
-    owner_token_sha256: str
+    owner_token: str = field(repr=False)
+
+    @property
+    def owner_token_sha256(self) -> str:
+        return hashlib.sha256(self.owner_token.encode("utf-8")).hexdigest()
 
 
 # -- legacy-compatible names and parsing ------------------------------------------------
@@ -93,8 +114,11 @@ def _identity(value: OwnerIdentity | None) -> OwnerIdentity | None:
     if value is None:
         return None
     if (type(value) is not OwnerIdentity or not isinstance(value.owner_session_id, str)
-            or not value.owner_session_id or not HEX64.fullmatch(str(value.owner_token_sha256))):
-        raise WorkQueueError("owner identity must be a session id and a token SHA-256")
+            or not 0 < len(value.owner_session_id) <= MAX_SESSION_CHARS):
+        raise WorkQueueError("owner identity must carry a session id")
+    if not isinstance(value.owner_token, str) or not 0 < len(value.owner_token) <= MAX_TOKEN_CHARS:
+        raise WorkQueueError("owner identity needs the raw owner token the caller holds; "
+                             "a SHA-256 read from a claim file is never a credential")
     return value
 
 
@@ -146,6 +170,43 @@ def list_claim_entries(txns: QueueTransactions) -> list[tuple[Path, dict]]:
     return entries
 
 
+def _strict_claim_entries(txns: QueueTransactions) -> list[tuple[Path, dict | None]]:
+    """Every claim file for the overlap check; an unreadable, oversized or non-object one is
+    kept as None (overlap unknown) instead of being skipped (RCO1 S9)."""
+    directory = _claims_dir(txns)
+    entries: list[tuple[Path, dict | None]] = []
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+        try:
+            data = read_bytes_or_none(path)
+            if data is None:
+                continue   # removed meanwhile
+            entries.append((path, _claim_object(data)))
+        except Exception:  # noqa: BLE001 - unreadable: overlap unknown
+            entries.append((path, None))
+    return entries
+
+
+def _requested_scope(values: object) -> tuple[str, ...]:
+    """The caller's write_scope: one string is ONE entry (never its characters); a list or
+    tuple must hold strings only (RCO1 S7)."""
+    if isinstance(values, str):
+        return (values,)
+    if not isinstance(values, (list, tuple)) or not all(isinstance(value, str) for value in values):
+        raise WorkQueueError("write_scope must be a string or a list of strings")
+    return tuple(values)
+
+
+def _stored_scope(value: object) -> tuple[str, ...] | None:
+    """Another claim's stored write_scope: absent or null is empty, a string is one
+    comma-separated entry list, a list must hold strings; any other shape is None
+    (overlap unknown, fail closed) (RCO1 S7)."""
+    if value is None:
+        return ()
+    if isinstance(value, str) or (isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value)):
+        return _scope_entries(value)
+    return None
+
+
 def find_claim(txns: QueueTransactions, task_id: str) -> Path | None:
     """The claim file whose task_id is EXACTLY task_id; a file name is never trusted."""
     preferred = _claims_dir(txns) / f"{safe_name(task_id)}.json"
@@ -179,18 +240,22 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
     identity = _identity(identity)
     if not isinstance(summary, str) or not summary.strip():
         raise WorkQueueError("summary required")
+    if len(summary) > MAX_SUMMARY_CHARS:
+        raise WorkQueueError("summary exceeds 16384 characters")   # S9: bounded before any mutation
     if mode not in ALLOWED_MODES:
         raise WorkQueueError("mode must be read-only or write")
     if type(lease_seconds) is not int or lease_seconds <= 0:
         raise WorkQueueError("lease_seconds must be a positive integer")
+    requested = _requested_scope(write_scope)
     try:
-        scopes = resolve_scopes(list(write_scope), worktree=cwd, bridge_root=str(txns.root))
+        scopes = resolve_scopes(list(requested), worktree=cwd, bridge_root=str(txns.root))
     except ScopeError as exc:
         raise WorkQueueError(str(exc)) from None
     if mode == "write" and not scopes:
         raise WorkQueueError("write claims require at least one write_scope path")
-    entries = [entry.strip() for scope in write_scope for entry in str(scope).split(",") if entry.strip()]
-    normalized = tuple(dict.fromkeys(entries))
+    normalized = _scope_entries(requested)
+    if not txns.ports_on:   # N3: nothing, not even the claims directory, is created without ports
+        raise WorkQueueError("queue ports are off: a mutex port and a claim-lock port are required")
     existing = find_claim(txns, task_id)
     _claims_dir(txns).mkdir(parents=True, exist_ok=True)  # as legacy: the sibling lock needs the directory
     claim_path = existing or _new_claim_path(txns, task_id)
@@ -209,12 +274,19 @@ def claim_task(txns: QueueTransactions, *, agent: str, task_id: str, summary: st
         elif existing is not None:
             raise Refused("the claim was archived meanwhile; a refresh never recreates it")
         if mode == "write":
-            for other_path, other in list_claim_entries(txns):
-                if other_path == claim_path or other.get("task_id") == task_id:
+            for other_path, other in _strict_claim_entries(txns):
+                if other_path == claim_path:
                     continue
+                if other is None:
+                    raise Refused("an active claim is unreadable or over the size bound; overlap unknown")
+                if other.get("task_id") == task_id or str(other.get("mode", "read-only")) != "write":
+                    continue   # as core: only other WRITE claims conflict
+                other_entries = _stored_scope(other.get("write_scope"))
+                if other_entries is None:
+                    raise Refused("an active claim has an unresolvable write scope; overlap unknown")
                 try:
-                    other_scopes = resolve_scopes([str(s) for s in other.get("write_scope", [])],
-                                                  worktree=str(other.get("cwd", "")), bridge_root=str(txns.root))
+                    other_scopes = resolve_scopes(list(other_entries), worktree=str(other.get("cwd", "")),
+                                                  bridge_root=str(txns.root))
                 except ScopeError:
                     raise Refused("an active claim has an unresolvable write scope; overlap unknown") from None
                 if any(resources_overlap(a, b) for a in scopes for b in other_scopes):
@@ -370,12 +442,16 @@ class ArchivedClaim:
 
 
 def _scope_entries(values: object) -> tuple[str, ...]:
+    """Core ``_normalize_write_scope_entries``: comma-split, stripped, first occurrence kept.
+    The dedupe is set-based and linear (RCO1 S5); the 256 KiB read bound caps the input."""
     source = (values,) if isinstance(values, str) else values if isinstance(values, (list, tuple)) else ()
+    seen: set[str] = set()
     result: list[str] = []
     for value in source:
         for item in str(value).split(","):
             item = item.strip()
-            if item and item not in result:
+            if item and item not in seen:
+                seen.add(item)
                 result.append(item)
     return tuple(result)
 
@@ -425,10 +501,13 @@ def _session_heartbeat_state(bridge: Path, claim: Claim, now: datetime) -> str:
     path = bridge / "work_queue" / "heartbeats" / f"{digest}.json"
     if not path.exists():
         return "dead"
-    try:
-        beat = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    try:   # bounded like every other record; a deep nesting is unknown, never a crash (N7)
+        data = read_bytes_or_none(path)
+        beat = None if data is None else json.loads(data.decode("utf-8"))
+    except (QueueTransactionError, OSError, UnicodeDecodeError, ValueError, RecursionError):
         return "unknown"
+    if beat is None:
+        return "dead"
     if not isinstance(beat, dict) or any(name not in beat for name in
                                          ("owner_session_id", "owner_token_sha256", "last_beat_utc")):
         return "unknown"
@@ -496,10 +575,11 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
     if type(max_age_seconds) is not int or max_age_seconds <= 0:
         raise WorkQueueError(f"max_age_seconds must be positive, got {max_age_seconds}")
     bridge = resolve_bridge_root(bridge_root)
-    if apply and (transactions is None or transactions.mutex is None or transactions.claim_lock is None):
-        raise WorkQueueError("sweep refused: the v2 queue has no injected ports (dormant); dry run only")
+    # The consumer prefixes "sweep refused: " itself, so these messages do not (RCO1 N2).
+    if apply and (transactions is None or not transactions.ports_on):
+        raise WorkQueueError("the v2 queue has no injected ports (dormant); dry run only")
     if apply and Path(transactions.root) != bridge:
-        raise WorkQueueError("sweep refused: the transactions are for another runtime root")
+        raise WorkQueueError("the transactions are for another runtime root")
     now = now_utc or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=max_age_seconds)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
@@ -542,6 +622,8 @@ def archive_stale_claims(*, bridge_root: Path | None = None, now_utc: datetime |
                                       _key("stale_archive", claim.task_id, read_bytes_or_none(claim_file), now), plan)
             except Refused:
                 continue  # as core: a changed claim is skipped, not reported as archived
+            except QueueTransactionError as exc:   # timeout, blocked, conflict, bound: one error type (S6)
+                raise WorkQueueError(claim.task_id[:128] + ": " + str(exc)) from None
         archived.append(ArchivedClaim(claim=claim, archived_path=archive_path, age_seconds=age_seconds,
                                       release_reason=reason, applied=apply))
     return archived

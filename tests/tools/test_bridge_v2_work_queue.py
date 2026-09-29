@@ -7,21 +7,24 @@ Refusals have same-fixture success twins; race schedules are deterministic.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import dataclasses
 from datetime import datetime, timedelta, timezone
 import hashlib
+import inspect
 import json
 from pathlib import Path
+import re
 
 import pytest
 
 from tools import bridge_v2_work_queue as wq
-from tools.bridge_v2_queue_transactions import QueueTransactions, Refused, claim_bytes
+from tools.bridge_v2_queue_transactions import LockTimeout, QueueTransactions, Refused, claim_bytes
 from tools.bridge_v2_resource_scope import ScopeError, explain_scope, resolve_scopes
 from tools.bridge_v2_work_queue import OwnerIdentity, WorkQueueError
 
 NOW = datetime(2026, 9, 29, 22, 0, tzinfo=timezone.utc)
-OWNER = OwnerIdentity("session-a", hashlib.sha256(b"token-a").hexdigest())
-OTHER = OwnerIdentity("session-b", hashlib.sha256(b"token-b").hexdigest())
+OWNER = OwnerIdentity("session-a", "token-a")      # the RAW tokens the sessions hold (S8)
+OTHER = OwnerIdentity("session-b", "token-b")
 
 
 class Lock:
@@ -168,8 +171,9 @@ def test_the_facade_sweep_keeps_the_core_selection_rules(env):
 def test_the_facade_sweep_applies_only_through_injected_transactions(env, tmp_path):
     txns = env[0]
     claim(env, task="team/unowned", identity=None, now=NOW - timedelta(hours=13), scope=("tools/u.py",))
-    with pytest.raises(WorkQueueError, match="sweep refused"):
+    with pytest.raises(WorkQueueError, match="no injected ports") as refused:
         wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True)            # no default port
+    assert not str(refused.value).startswith("sweep refused")      # the consumer adds that prefix (N2)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     with pytest.raises(WorkQueueError, match="another runtime root"):
@@ -181,12 +185,24 @@ def test_the_facade_sweep_applies_only_through_injected_transactions(env, tmp_pa
     assert payload["release_reason"] == entry.release_reason and wq.find_claim(txns, "team/unowned") is None
 
 
-def test_the_facade_exports_the_core_names_the_consumers_import():
-    for name in ("AGENT_ID_PATTERN", "DEFAULT_BRIDGE_ROOT", "ArchivedClaim", "Claim", "WorkQueueError",
-                 "archive_stale_claims", "list_claims", "resolve_bridge_root"):
-        assert hasattr(wq, name), name
-    assert wq.AGENT_ID_PATTERN.pattern == r"^[a-z][a-z0-9_-]{1,32}$"
-    assert wq.DEFAULT_BRIDGE_ROOT.name == ".agent-bridge"
+def test_the_facade_exports_the_core_names_with_the_core_shapes():
+    assert isinstance(wq.AGENT_ID_PATTERN, re.Pattern) and wq.AGENT_ID_PATTERN.pattern == r"^[a-z][a-z0-9_-]{1,32}$"
+    assert isinstance(wq.DEFAULT_BRIDGE_ROOT, Path) and wq.DEFAULT_BRIDGE_ROOT.name == ".agent-bridge"
+    assert issubclass(wq.WorkQueueError, ValueError)
+    assert [f.name for f in dataclasses.fields(wq.Claim)] == [
+        "agent", "task_id", "summary", "mode", "write_scope", "run_id", "claimed_at_utc", "last_heartbeat_utc",
+        "lease_seconds", "claim_lease_expires_utc", "role", "agent_uuid", "capabilities", "cwd", "owner_session_id",
+        "owner_token_sha256", "owner_identity"]
+    assert [f.name for f in dataclasses.fields(wq.ArchivedClaim)] == [
+        "claim", "archived_path", "age_seconds", "release_reason", "applied"]
+    assert wq.Claim.__dataclass_params__.frozen and wq.ArchivedClaim.__dataclass_params__.frozen
+    sweep = inspect.signature(wq.archive_stale_claims).parameters
+    assert list(sweep) == ["bridge_root", "now_utc", "max_age_seconds", "apply", "transactions"]
+    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in sweep.values())
+    assert sweep["apply"].default is False and sweep["transactions"].default is None
+    assert sweep["max_age_seconds"].default == 12 * 60 * 60
+    assert list(inspect.signature(wq.list_claims).parameters) == ["bridge_root"]
+    assert list(inspect.signature(wq.resolve_bridge_root).parameters) == ["bridge_root"]
 
 
 def test_resolve_bridge_root_is_core_equal(monkeypatch, tmp_path):
@@ -209,10 +225,143 @@ def test_list_claims_returns_core_claim_objects(env):
     assert record.write_scope == ("tools/a.py",) and record.lease_seconds == 900
     assert record.owner_session_id == "session-a" and record.claim_lease_expires_utc == "2026-09-29T22:15:00Z"
 
+class RecordingLock:
+    def __init__(self):
+        self.entered = []
+
+    @contextmanager
+    def hold(self, target, timeout_seconds):
+        self.entered.append(str(target))
+        yield
+
+
 @pytest.mark.parametrize("agent,task", [("Bad", "t/1"), ("claude-rco-2", "../x"), ("claude-rco-2", "a//b")])
-def test_invalid_names_refuse_before_any_lock(env, agent, task):
+def test_invalid_names_refuse_before_any_lock(tmp_path, agent, task):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (tmp_path / "wt" / "tools").mkdir(parents=True)
+    lock = RecordingLock()
+    txns = QueueTransactions(runtime, mutex=lock, claim_lock=lock, clock=lambda: NOW)
     with pytest.raises(WorkQueueError):
-        claim(env, agent=agent, task=task)
+        claim((txns, str(tmp_path / "wt")), agent=agent, task=task)
+    assert lock.entered == [] and not (runtime / "work_queue").exists()   # before any lock or write
+    claim((txns, str(tmp_path / "wt")))                                    # success twin takes both locks
+    assert len(lock.entered) == 2
+
+
+def test_s8_the_readable_owner_hash_is_never_a_credential(env):
+    claim(env)
+    stored = json.loads(claim_file(env).read_text())["owner_token_sha256"]
+    assert stored == hashlib.sha256(b"token-a").hexdigest()                 # core's derivation of the raw token
+    forged = OwnerIdentity("session-a", stored)                              # the readable hash, as a "token"
+    with pytest.raises(Refused, match="owning session"):
+        wq.heartbeat(env[0], agent="claude-rco-2", task_id="team/task-1", identity=forged, now=NOW)
+    with pytest.raises(Refused, match="another session"):
+        wq.release_task(env[0], agent="claude-rco-2", task_id="team/task-1", identity=forged, now=NOW)
+    with pytest.raises(Refused, match="another session"):
+        claim(env, identity=forged)
+    with pytest.raises(WorkQueueError, match="raw owner token"):
+        wq.heartbeat(env[0], agent="claude-rco-2", task_id="team/task-1", identity=OwnerIdentity("session-a", ""),
+                     now=NOW)
+    wq.heartbeat(env[0], agent="claude-rco-2", task_id="team/task-1", identity=OWNER, now=NOW)   # success twin
+    assert "token-a" not in repr(OWNER)
+
+
+def test_s5_scope_dedupe_is_set_based_and_keeps_the_first_order():
+    many = ",".join(f"tools/f{i}.py" for i in range(20000)) + ",tools/f0.py, tools/f1.py"
+    result = wq._scope_entries(many)
+    assert len(result) == 20000 and result[:2] == ("tools/f0.py", "tools/f1.py")
+    assert wq._scope_entries(["a, b", "b", " a ", ""]) == ("a", "b")
+
+
+def _raw_claim(env, name, **fields):
+    txns, cwd = env
+    directory = txns.root / "work_queue" / "claims"
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {"agent": "fable-5", "task_id": name, "mode": "write", "cwd": cwd, "last_heartbeat_utc": iso(NOW)}
+    record.update(fields)
+    (directory / f"{name}.json").write_bytes(claim_bytes(record))
+    return directory / f"{name}.json"
+
+
+def test_s7_scopes_types_and_modes_are_normalized_like_core(env):
+    stringy = _raw_claim(env, "string-scope", write_scope="tools/a.py")        # ONE entry, never its characters
+    with pytest.raises(Refused, match="write-scope conflict with active claim string-scope"):
+        claim(env, scope=("tools/a.py",))
+    stringy.unlink()
+    _raw_claim(env, "null-scope", write_scope=None)                            # empty, never a TypeError
+    _raw_claim(env, "reader", mode="read-only", write_scope=["tools/a.py"])    # only WRITE claims conflict
+    assert claim(env, scope=("tools/a.py",))["write_scope"] == ["tools/a.py"]  # success twin
+    assert claim(env, task="team/task-8", scope="tools/y.py")["write_scope"] == ["tools/y.py"]   # caller string
+    with pytest.raises(WorkQueueError, match="list of strings"):
+        claim(env, task="team/task-7", scope=[b"tools/x.py"])
+    _raw_claim(env, "odd-scope", write_scope=[{"path": "tools/b.py"}])
+    with pytest.raises(Refused, match="unresolvable write scope"):
+        claim(env, task="team/task-9", scope=("tools/z.py",))
+
+
+def test_s9_oversize_is_refused_before_mutation_and_an_unreadable_claim_blocks_write_claims(env):
+    txns, cwd = env
+    with pytest.raises(WorkQueueError, match="16384"):
+        wq.claim_task(txns, agent="claude-rco-2", task_id="team/big", summary="x" * 20000, mode="write",
+                      write_scope=("tools/big.py",), identity=OWNER, cwd=cwd, now=NOW)
+    assert not (txns.root / "work_queue").exists()
+    huge = txns.root / "work_queue" / "claims" / "huge.json"
+    huge.parent.mkdir(parents=True)
+    huge.write_bytes(b'{"pad": "' + b"x" * (300 * 1024) + b'"}')
+    with pytest.raises(Refused, match="unreadable or over the size bound"):
+        claim(env, scope=("tools/a.py",))                                      # never skipped: overlap unknown
+    assert claim(env, task="team/reader", mode="read-only", scope=())["mode"] == "read-only"   # twin
+    huge.unlink()
+    assert claim(env, scope=("tools/a.py",))["mode"] == "write"                 # success twin
+
+
+def test_n3_ports_off_creates_nothing(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (tmp_path / "wt" / "tools").mkdir(parents=True)
+    with pytest.raises(WorkQueueError, match="ports are off"):
+        claim((QueueTransactions(runtime), str(tmp_path / "wt")))
+    assert not (runtime / "work_queue").exists()
+
+
+class TimeoutLock:
+    @contextmanager
+    def hold(self, target, timeout_seconds):
+        raise LockTimeout("claim lock busy: " + Path(target).name)
+        yield   # pragma: no cover
+
+
+def test_s6_the_facade_maps_every_other_transaction_refusal_to_work_queue_error(env):
+    txns = env[0]
+    claim(env, task="team/unowned", identity=None, now=NOW - timedelta(hours=13), scope=("tools/u.py",))
+    busy = QueueTransactions(txns.root, mutex=RecordingLock(), claim_lock=TimeoutLock())
+    with pytest.raises(WorkQueueError, match="busy") as timed_out:
+        wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=busy)
+    assert str(timed_out.value).startswith("team/unowned: ")
+    archive = txns.root / "work_queue" / "done" / f"{wq.safe_name('team/unowned')}.20260929T220000Z.stale_lease.json"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b'{"someone": "else"}\n')
+    with pytest.raises(WorkQueueError, match="already exists"):
+        wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    assert wq.find_claim(txns, "team/unowned") is not None                   # nothing archived
+    archive.unlink()
+    [entry] = wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW, apply=True, transactions=txns)
+    assert entry.applied is True and wq.find_claim(txns, "team/unowned") is None   # success twin
+
+
+def test_n7_a_deep_or_oversized_session_heartbeat_is_unknown_never_a_crash(env):
+    txns = env[0]
+    claim(env, task="team/owned", now=NOW - timedelta(hours=13), scope=("tools/o.py",))
+    digest = hashlib.sha256(f"{OWNER.owner_session_id}\n{OWNER.owner_token_sha256}".encode()).hexdigest()
+    beat = txns.root / "work_queue" / "heartbeats" / f"{digest}.json"
+    beat.parent.mkdir(parents=True, exist_ok=True)
+    beat.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    assert wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW) == []   # unknown is never swept
+    beat.write_text('{"x": "' + "y" * (300 * 1024) + '"}', encoding="utf-8")
+    assert wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW) == []
+    beat.unlink()
+    assert [a.claim.task_id for a in wq.archive_stale_claims(bridge_root=txns.root, now_utc=NOW)] == ["team/owned"]
 
 
 def test_resource_scopes_explain_and_refuse_ambiguity(env):

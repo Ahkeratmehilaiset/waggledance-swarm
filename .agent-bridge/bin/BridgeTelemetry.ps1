@@ -109,6 +109,10 @@ function Write-BridgeStageObservation {
     # acceptance) may be read as a no-op.
     if ($Stage -ceq 'turn_completed') {
         if ($ActionOutcome -cnotin @('acted','noop')) { throw 'turn_completed needs ActionOutcome acted or noop' }
+        # One outcome per turn: the reader deduplicates by this identity, so none may be invented.
+        if (-not $DeliveryId -and $null -eq $Request) {
+            throw 'turn_completed needs a turn identity: DeliveryId or a bound Request'
+        }
     } elseif ($ActionOutcome) {
         throw 'ActionOutcome is recorded only with stage turn_completed'
     }

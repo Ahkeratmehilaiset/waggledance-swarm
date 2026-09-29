@@ -286,6 +286,20 @@ def validate_wake(snapshot: Any, now: datetime | None) -> dict:
     return report
 
 
+def turn_identity(record: dict) -> tuple | None:
+    """A reliable identity for one turn_completed outcome, or None (unknown, never invented).
+
+    A delivery id names one relayed turn for one target. Without one, a request-bound turn
+    is identified by target, request id, requester, requester session and the reply it
+    answered. Anything less identifies no turn."""
+    if record["delivery_id"]:
+        return ("delivery", record["target"], record["delivery_id"])
+    if record["request_id"] is not None and record["session"]:
+        reply = record["reply"].isoformat() if record["reply"] else ""
+        return ("request", record["target"], record["request_id"], record["requester"], record["session"], reply)
+    return None
+
+
 def _percentile(sorted_values: list[float], fraction: float) -> float:
     """Nearest-rank percentile over a non-empty ascending list (deterministic)."""
     rank = max(1, math.ceil(fraction * len(sorted_values)))
@@ -370,18 +384,44 @@ def build_report(records: list[dict], *, wake: list[dict], inputs: dict, errors:
                 else:
                     durations[name].append(seconds)
 
-    acted = sum(1 for r in outcomes if r["outcome"] == "acted")
-    noop = sum(1 for r in outcomes if r["outcome"] == "noop")
-    by_target = {}
-    for target in sorted({r["target"] for r in outcomes}):
-        a = sum(1 for r in outcomes if r["target"] == target and r["outcome"] == "acted")
-        n = sum(1 for r in outcomes if r["target"] == target and r["outcome"] == "noop")
-        by_target[target] = {"acted": a, "noop": n, "value": round(n / (a + n), 6)}
+    # One outcome per TURN (RCO1 S1): a replayed record is counted once, a turn whose records
+    # disagree is unknown, and an outcome without a reliable turn identity is unknown too.
+    turns: dict[tuple, list[str]] = {}
+    unidentified = duplicates = 0
+    for record in outcomes:
+        key = turn_identity(record)
+        if key is None:
+            unidentified += 1
+            continue
+        seen = turns.setdefault(key, [])
+        duplicates += bool(seen)
+        seen.append(record["outcome"])
+    acted = noop = conflicts = 0
+    per_target: dict[str, list[int]] = {}
+    for key, values in turns.items():
+        if len(set(values)) > 1:
+            conflicts += 1
+            continue
+        counts = per_target.setdefault(key[1], [0, 0])
+        if values[0] == "acted":
+            acted += 1
+            counts[0] += 1
+        else:
+            noop += 1
+            counts[1] += 1
+    by_target = {target: {"acted": a, "noop": n, "value": round(n / (a + n), 6)}
+                 for target, (a, n) in sorted(per_target.items())}
+    reason = None
+    if not acted + noop:
+        reason = "no_explicit_outcomes" if not outcomes else "no_identified_consistent_outcomes"
     noop_ratio = {"value": round(noop / (acted + noop), 6) if acted + noop else None,
-                  "acted": acted, "noop": noop, "by_target": by_target,
-                  "reason": None if acted + noop else "no_explicit_outcomes",
-                  "basis": ("explicit turn_completed outcomes only; never inferred from pending or "
-                            "missing stages or from queue acceptance")}
+                  "acted": acted, "noop": noop, "by_target": by_target, "reason": reason,
+                  "turns": acted + noop, "duplicate_outcomes": duplicates, "conflicting_turns": conflicts,
+                  "unidentified_outcomes": unidentified,
+                  "basis": ("explicit turn_completed outcomes only, one per turn identity (delivery id, or "
+                            "request + requester + session + reply per target); unidentified or conflicting "
+                            "turns are unknown; never inferred from pending or missing stages or from queue "
+                            "acceptance")}
     metadata_reasons: dict[str, int] = {}
     for record in records:
         reason = record.get("metadata", {}).get("reason")

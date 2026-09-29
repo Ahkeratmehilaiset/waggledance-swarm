@@ -6,14 +6,22 @@ Bridge v2 contract kernel (dormant; interface bridge-v2-control-interface.v1): a
 port of the core event schema with no product-package import. Wire shapes, errors, unknown
 and refusal handling are unchanged, with two additions:
 
-* F12 (WRITE only): ``validate_event_for_write`` requires a NEW commit approval to carry a
-  full lowercase 40-hex ``payload.head`` that the message also names, whatever its ``ts_utc``
-  says. A commit approval is a ``decision``, ``rco_review`` or ``finding`` with a status in
-  ``COMMIT_HEAD_STATUSES``, or a ``done`` with ``approved_ci_green``: the forms the gates
-  count. The READ path (``validate_event``/``validate_event_line``) stays exactly core at all
-  times, so the historical log keeps validating. Read acceptance is shape validity, NEVER
-  approval: each gate binds its own semantics (exact head, task, CI, author). Readers can use
-  ``commit_head_status`` to label a line's head format.
+* F12 (WRITE only): ``validate_event_for_write`` requires every NEW approval-shaped line to
+  carry a full lowercase 40-hex ``payload.head`` that the message also names, whatever its
+  ``ts_utc`` says. ``approval_shape`` mirrors how the three gates CLASSIFY lines (their
+  lowercase, separator and token rules over their eligible types): an RCO pass, a
+  build-consensus vote, an approval (including the generic {rco, pass}, approved and
+  acknowledged tokens) or a veto-clearing status, as the union of every gate's vocabulary
+  (Lead 0465f1d7 option a). It is a FORMAT floor and a shape label, never an authorization.
+  Compatibility boundary, deliberately conservative: a new decision/rco_review/finding line
+  with approval vocabulary (even acknowledged, approved, concur, agree) and any
+  veto-clearing line now needs the head, as does a status mixing approval and veto tokens.
+  A canonical veto (the exact block statuses, changes_requested..., a canonical RCO's
+  finding) and the general types the gates never count (message, ack, handoff, ...) are
+  never floored. The READ path (``validate_event``/``validate_event_line``) stays exactly core
+  at all times, so the historical log keeps validating. Read acceptance is shape validity,
+  NEVER approval: each gate binds its own semantics (exact head, task, CI, author). Readers can
+  use ``commit_head_status`` to label a line's head format.
 * F23: ``validate_event_for_write`` accepts a reserved label (``operator``/``system``, as the
   agent or as the role) only with a ``SessionProvenance`` that a trusted entrypoint observed;
   the event's own role, session or environment claims never suffice. Readers get
@@ -75,14 +83,43 @@ GROK_REVIEW_AGENTS = frozenset({"grok-1", "grok-scout-1"})
 GROK_REVIEW_STATUSES = frozenset({"grok_response"})
 ALLOWED_NON_AGENT_TARGETS = frozenset({"github/main"})
 GROK_FRESHNESS_EPOCH_UTC = "2026-05-31T19:24:00Z"
-# F12 (write side only): the commit approvals the gates count carry their full head.
-# check_rco_pass_present: decision/rco_review + rco_pass; idle_consensus_auto_merge: rco_pass
-# and build_consensus_pass on decision/rco_review/finding (its DECISION_EVENT_TYPES);
-# check_bridge_changes_requested: rco_pass_pending_ci and approved_ci_green as well, and on a
-# done event only approved_ci_green is an approval (its DONE_APPROVAL_STATUSES).
-COMMIT_HEAD_STATUSES = frozenset({"rco_pass", "build_consensus_pass", "rco_pass_pending_ci", "approved_ci_green"})
-COMMIT_HEAD_TYPES = frozenset({"decision", "rco_review", "finding"})
-DONE_COMMIT_HEAD_STATUSES = frozenset({"approved_ci_green"})  # a generic done is never an approval
+# F12 (write side only, Lead 0465f1d7 option a): every NEW approval-shaped line carries its full
+# head. "Approval-shaped" mirrors how the gates CLASSIFY a line, never what they authorize; the
+# vocabularies below are copies (no runtime import of gate code), and a fixture proves each gate's
+# own sets and classifiers are covered (gate subset of floor):
+# * check_rco_pass_present: type.lower() in {decision, rco_review}, status.lower() == rco_pass;
+# * idle_consensus_auto_merge: type.lower() in {decision, rco_review, finding} with status.lower()
+#   in its RCO_PASS_STATUSES or BUILD_CONSENSUS_STATUSES, and a consensus CLEAR when its
+#   separator-normalized type is in DECISION_EVENT_TYPES | {done, test} (or normalizes to empty);
+# * check_bridge_changes_requested: a CLEAR (separator-normalized vocabulary) on type.lower() in
+#   {decision, rco_review, finding, done, test}; an APPROVAL on decision/rco_review/finding (a
+#   canonical RCO's finding is a veto by type) or done + approved_ci_green, by its exact
+#   APPROVAL_STATUSES or its generic tokens ({rco, pass}, approved, acknowledged), unless its
+#   exact block rules classify the status first.
+FLOOR_RCO_PASS_STATUSES = frozenset({"rco_pass"})
+FLOOR_BUILD_CONSENSUS_STATUSES = frozenset({"approved", "build_consensus", "build_consensus_pass", "concur",
+                                            "concurred", "agree", "agreed"})
+FLOOR_APPROVAL_STATUSES = frozenset({"rco_pass", "rco_pass_pending_ci", "build_consensus_pass", "approved",
+                                     "approved_ci_green", "acknowledged"})
+FLOOR_APPROVAL_TOKENS = frozenset({"approved", "acknowledged"})   # and the generic pair {rco, pass}
+FLOOR_CLEAR_STATUSES = frozenset({"no_changes_requested", "no_changes_requested_approved",
+                                  "approved_waiver_block_cleared", "lead_no_blocker_rco_pending",
+                                  "producer_no_block_reemit_required"})
+FLOOR_CHANGES_REQUESTED_PREFIXES = ("changes_requested", "rco_changes_requested")
+FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES = frozenset({
+    "concurrence", "payload_corrected", "addressed_exact_head_ci_pending", "resolved", "resolved_ci_green",
+    "resolved_ci_pending", "cleared", "cleared_ci_green", "cleared_ci_pending", "block_clear", "block_cleared",
+    "block_resolved", "retracted", "withdrawn"})
+FLOOR_EXACT_BLOCK_STATUSES = frozenset({"changes_requested", "rco_block", "blocked", "rco_blocked",
+                                        "block_requested"})
+FLOOR_APPROVAL_TYPES = frozenset({"decision", "rco_review", "finding"})
+FLOOR_CLEAR_TYPES = frozenset({"decision", "rco_review", "finding", "done", "test"})
+FLOOR_DONE_APPROVAL_STATUSES = frozenset({"approved_ci_green"})  # a generic done is never an approval
+FLOOR_RCO_AGENTS = frozenset({"claude-rco-1", "claude-rco-2"})   # the canonical RCOs: a finding is a veto
+# Compatibility names (7f070e36): every exact approval status, the approval types, the done approval.
+COMMIT_HEAD_STATUSES = FLOOR_APPROVAL_STATUSES | FLOOR_BUILD_CONSENSUS_STATUSES
+COMMIT_HEAD_TYPES = FLOOR_APPROVAL_TYPES
+DONE_COMMIT_HEAD_STATUSES = FLOOR_DONE_APPROVAL_STATUSES
 # F23: labels that no lane may self-assert; they need provenance from a trusted entrypoint.
 RESERVED_AGENT_LABELS = frozenset({"operator", "system"})
 GROK_PR_WORKTREE_STRICT_EPOCH_UTC = "2026-06-04T08:32:00Z"
@@ -449,14 +486,75 @@ def validate_event_for_write(event: Mapping[str, Any], *,
     return model
 
 
+def _separated(text: str) -> str:
+    """The gates' separator normalization: lowercase, every non-alphanumeric run -> '_', trimmed."""
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def _clear_shaped(status: str) -> bool:
+    """check_bridge_changes_requested._is_clear_status (also used by idle_consensus_auto_merge)."""
+    normalized = _separated(status)
+    if normalized in FLOOR_CLEAR_STATUSES:
+        return True
+    for prefix in FLOOR_CHANGES_REQUESTED_PREFIXES:
+        if normalized.startswith(prefix + "_"):
+            return normalized[len(prefix) + 1:] in FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES
+    return False
+
+
+def _exact_block(status: str) -> bool:
+    """The first, exact block rules of check_bridge_changes_requested._is_blocking_status. A
+    canonical veto (changes_requested..., blocked, rco_block...) is therefore never floored."""
+    normalized = _separated(status)
+    if normalized in FLOOR_EXACT_BLOCK_STATUSES:
+        return True
+    for prefix in FLOOR_CHANGES_REQUESTED_PREFIXES:
+        if normalized == prefix:
+            return True
+        if normalized.startswith(prefix + "_"):
+            return normalized[len(prefix) + 1:] not in FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES
+    return False
+
+
+def _approval_tokens(status: str) -> bool:
+    """check_bridge_changes_requested._is_approval_status's generic token rule."""
+    tokens = {token for token in re.split(r"[^a-z0-9]+", status.lower()) if token}
+    return {"rco", "pass"} <= tokens or bool(tokens & FLOOR_APPROVAL_TOKENS)
+
+
+def approval_shape(event: BridgeEvent) -> str | None:
+    """How the gates would CLASSIFY this line: ``rco_pass``, ``build_consensus``, ``approval``,
+    ``veto_clear``, or None for a general line the gates never count. A shape for the F12 format
+    floor, NEVER an authorization: whether a line counts is still each gate's decision (agent,
+    task, exact head, CI, author). Deliberately conservative: a status that also carries veto
+    tokens (for example ``rco_pass_blocked``) is approval-shaped here although
+    check_bridge_changes_requested classifies it as a block first; only its EXACT block rules
+    are mirrored, so a canonical veto is never floored."""
+    kind, status = event.type.lower(), event.status.lower()
+    kind_separated = _separated(event.type)
+    if _clear_shaped(event.status) and (kind in FLOOR_CLEAR_TYPES or kind_separated in FLOOR_CLEAR_TYPES
+                                        or not kind_separated):
+        return "veto_clear"
+    if kind in FLOOR_APPROVAL_TYPES:
+        if status in FLOOR_RCO_PASS_STATUSES:
+            return "rco_pass"   # counted even on a canonical RCO's finding (idle_consensus_auto_merge)
+        if kind == "finding" and event.agent in FLOOR_RCO_AGENTS:
+            return None         # otherwise a canonical RCO's finding is a veto by type, never an approval
+        if status in FLOOR_BUILD_CONSENSUS_STATUSES:
+            return "build_consensus"
+        if status in FLOOR_APPROVAL_STATUSES or (not _exact_block(event.status) and _approval_tokens(status)):
+            return "approval"
+    if kind == "done" and status in FLOOR_DONE_APPROVAL_STATUSES:
+        return "approval"
+    return None
+
+
 def _is_commit_approval(event: BridgeEvent) -> bool:
-    return event.status in COMMIT_HEAD_STATUSES and (
-        event.type in COMMIT_HEAD_TYPES
-        or (event.type == "done" and event.status in DONE_COMMIT_HEAD_STATUSES))
+    return approval_shape(event) is not None
 
 
 def _require_commit_head(event: BridgeEvent) -> None:
-    """F12 head FORMAT guard for a commit approval; independent of the event's own timestamp."""
+    """F12 head FORMAT floor for an approval-shaped line; independent of the event's own timestamp."""
     if not _is_commit_approval(event):
         return
     head = event.payload.get("head") if isinstance(event.payload, Mapping) else None
@@ -467,18 +565,19 @@ def _require_commit_head(event: BridgeEvent) -> None:
 
 
 def commit_head_status(event: BridgeEvent) -> str:
-    """For readers: the F12 head FORMAT of a line, never an approval.
+    """For readers: the F12 head FORMAT of a line. A label, NEVER an authorization.
 
-    ``not_commit_approval``, ``head_format_valid``, or ``head_format_invalid`` (for example a
-    historical line, or one from a writer without the guard). A gate must still bind the head
-    to the PR, the task, CI and the author itself."""
+    ``not_approval_shaped`` (a general line the gates never count), or for an approval-shaped
+    line ``approval_shaped_head_format_valid`` / ``approval_shaped_head_format_invalid`` (for
+    example a historical line, or one from a writer without the floor). No label says
+    "authorized": a gate must still bind the head to the PR, the task, CI and the author."""
     if not _is_commit_approval(event):
-        return "not_commit_approval"
+        return "not_approval_shaped"
     try:
         _require_commit_head(event)
     except ValueError:
-        return "head_format_invalid"
-    return "head_format_valid"
+        return "approval_shaped_head_format_invalid"
+    return "approval_shaped_head_format_valid"
 
 
 def reserved_label_status(event: BridgeEvent) -> str:
@@ -672,9 +771,22 @@ __all__ = [
     "COMMIT_HEAD_STATUSES",
     "COMMIT_HEAD_TYPES",
     "DONE_COMMIT_HEAD_STATUSES",
+    "FLOOR_RCO_PASS_STATUSES",
+    "FLOOR_BUILD_CONSENSUS_STATUSES",
+    "FLOOR_APPROVAL_STATUSES",
+    "FLOOR_APPROVAL_TOKENS",
+    "FLOOR_CLEAR_STATUSES",
+    "FLOOR_CHANGES_REQUESTED_PREFIXES",
+    "FLOOR_CHANGES_REQUESTED_CLEAR_SUFFIXES",
+    "FLOOR_EXACT_BLOCK_STATUSES",
+    "FLOOR_APPROVAL_TYPES",
+    "FLOOR_CLEAR_TYPES",
+    "FLOOR_DONE_APPROVAL_STATUSES",
+    "FLOOR_RCO_AGENTS",
     "RESERVED_AGENT_LABELS",
     "SessionProvenance",
     "validate_event_for_write",
+    "approval_shape",
     "commit_head_status",
     "reserved_label_status",
     "FULL_GIT_SHA_PATTERN",

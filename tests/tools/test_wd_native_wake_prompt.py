@@ -175,6 +175,22 @@ def test_every_inline_instruction_fragment_is_preserved_in_procedure():
                 assert " ".join(literal.split()) in procedure
 
 
+def test_lead_discovery_is_incremental_without_losing_late_replies():
+    lead = (REBOOT / "WAKE_PROCEDURE_LEAD.md").read_text(encoding="utf-8")
+    for instruction in (
+        "At startup or after loss of the durable discovery checkpoint",
+        "On an ordinary wake, inspect page 1",
+        "Stop paging at a page whose IDs are all in that checkpoint",
+        "Never infer that a known request is answered from its inventory position",
+        "Independently reconcile every known outstanding request ID",
+        "every exact request ID referenced by recent canonical replies",
+        "at most one bounded discovery attempt per turn",
+        "unknown coverage",
+    ):
+        assert instruction in lead
+    assert "Follow every next_cursor" not in lead
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows hidden file attributes")
 @pytest.mark.parametrize("ps", SHELLS, ids=lambda p: Path(p).stem)
 def test_hidden_ancestor_and_files_are_not_reparse_points(tmp_path, ps):

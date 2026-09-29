@@ -183,7 +183,7 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             environment = dict(os.environ)
             for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH", "PYTHONNOUSERSITE"):
                 environment.pop(key, None)
-            result = runner(command + ["--prompt-file", str(prompt_path),
+            result = runner(command + ["--prompt-file", str(prompt_path), "--verbatim",
                             "--no-alt-screen", "--no-subagents", "--max-turns", "1",
                             "--tools", "", "--deny", "*", "--permission-mode", "plan",
                             "--disable-web-search", "--no-memory"],
@@ -193,8 +193,24 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
             state.update(status="answered" if result.returncode == 0 else "failed",
                          exit_code=result.returncode, report_path=str(report_path),
                          report_sha256=hashlib.sha256(report_path.read_bytes()).hexdigest())
+            if result.returncode != 0 and getattr(result, "stderr", None):
+                stderr = result.stderr
+                state.update(stderr_excerpt=stderr[-2048:], stderr_truncated=len(stderr) > 2048)
         except Exception as exc:
             state.update(status="failed", error_type=type(exc).__name__)
+            if isinstance(exc, subprocess.TimeoutExpired) and exc.stdout:
+                partial = exc.stdout
+                if isinstance(partial, bytes):
+                    partial = partial.decode("utf-8", errors="replace")
+                report_path.write_text(partial[-8192:], encoding="utf-8")
+                state.update(partial_report=True, stdout_truncated=len(partial) > 8192,
+                             report_path=str(report_path),
+                             report_sha256=hashlib.sha256(report_path.read_bytes()).hexdigest())
+            stderr = getattr(exc, "stderr", None)
+            if stderr:
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", errors="replace")
+                state.update(stderr_excerpt=stderr[-2048:], stderr_truncated=len(stderr) > 2048)
         state.update(
             duration_seconds=round(max(0.0, monotonic() - started), 6),
             finished_at_utc=datetime.now(timezone.utc).isoformat(),

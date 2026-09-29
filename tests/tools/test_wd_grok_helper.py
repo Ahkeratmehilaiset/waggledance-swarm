@@ -170,6 +170,29 @@ def test_one_call_per_rolling_hour_survives_reload(tmp_path):
     assert status(tmp_path, NOW+timedelta(hours=1))["eligible"]
 
 
+def test_consult_uses_verbatim_prompt_mode(tmp_path):
+    seed(tmp_path)
+    commands = []
+    def runner(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="advice")
+    assert consult(tmp_path, "verbatim", "Review evidence", ["fake"], runner=runner, now=NOW)["status"] == "answered"
+    assert "--verbatim" in commands[0]
+    assert "--prompt-file" in commands[0]
+
+
+def test_failed_consult_records_bounded_stderr_without_refunding_hour(tmp_path):
+    seed(tmp_path)
+    stderr = "noise" * 1000 + "CLI error: invalid option"
+    result = consult(tmp_path, "stderr", "Review evidence", ["fake"], now=NOW,
+                     runner=lambda *a, **k: SimpleNamespace(returncode=2, stdout="", stderr=stderr))
+    assert result["status"] == "failed"
+    assert result["stderr_excerpt"].endswith("CLI error: invalid option")
+    assert len(result["stderr_excerpt"]) <= 2048
+    assert result["stderr_truncated"] is True
+    assert not status(tmp_path, NOW)["eligible"]
+
+
 @pytest.mark.parametrize("failure", ["exit", "exception"])
 def test_failure_consumes_hour(tmp_path, failure):
     seed(tmp_path)
@@ -231,6 +254,19 @@ def test_timeout_records_timing_without_refunding_budget(tmp_path, monkeypatch):
     assert result["error_type"] == "TimeoutExpired"
     assert result["duration_seconds"] == 5.0
     assert not status(tmp_path, NOW + timedelta(minutes=59))["eligible"]
+
+
+def test_timeout_preserves_bounded_partial_output_and_stderr(tmp_path):
+    seed(tmp_path)
+    def runner(*args, **kwargs):
+        raise subprocess.TimeoutExpired("fake", 300, output=b"partial advice", stderr=b"CLI stalled")
+    result = consult(tmp_path, "timeout-output", "Review", ["fake"], now=NOW, runner=runner)
+    assert result["status"] == "failed"
+    assert result["error_type"] == "TimeoutExpired"
+    assert result["stderr_excerpt"] == "CLI stalled"
+    assert result["partial_report"] is True
+    assert Path(result["report_path"]).read_text(encoding="utf-8") == "partial advice"
+    assert not status(tmp_path, NOW)["eligible"]
 
 
 def test_interrupted_reservation_survives_new_process_and_partial_temp(tmp_path):

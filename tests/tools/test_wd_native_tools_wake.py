@@ -256,8 +256,10 @@ def test_tools_notice_real_writer_reaches_only_explicit_runtime(tmp_path, ps, re
     manifest = bundle / 'deployment-manifest.json'
     manifest.write_text(json.dumps({'files': {**files, **registry}}))
     anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
-    runtime = tmp_path / 'explicit-runtime'
-    runtime.mkdir()
+    # AppendV1's Win32 write-through WAL paths must fit the native path limit.
+    # A deeply nested pytest --basetemp can exceed it despite a short event path.
+    runtime = REBOOT.parents[2] / '.codex-audit' / ('nr-' + uuid.uuid4().hex[:16])
+    runtime.mkdir(parents=True)
     script = "$ErrorActionPreference='Stop'\n"
     script += "Get-ChildItem Env: | Where-Object Name -Match '^(AGENT_BRIDGE_|WD_|CLAUDE_CODE_|GIT_)' | ForEach-Object { Remove-Item -LiteralPath ('Env:'+$_.Name) }\n"
     script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')

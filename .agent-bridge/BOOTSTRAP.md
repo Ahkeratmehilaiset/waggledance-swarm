@@ -62,9 +62,14 @@ not documented as proof of the absence of every possible hidden wrapper.
 
 Deployment remains intentionally blocked by
 `configs/bridge_runtime_deployment.v2.json`. Do not populate production host,
-toolchain, collector, runtime, process, or Scheduled Task hashes yet. The
-spool/WAL writer and direct Python writer migration are integrated in this
-source head and are no longer pending prerequisites. Deployment still requires:
+toolchain, collector, runtime, process, or Scheduled Task hashes yet. In this
+source head the direct Python writers (`bridge_loop_tick.py`,
+`idle_protocol_activate.py`, `close_bridge_rco_request.py`) write through
+`tools/bridge_event_writer.py`, but that migration is source-only: the packaged
+reboot bundle does not ship the Python writer, and its canonical writer remains
+the PowerShell `.agent-bridge/bin/Write-AgentEvent.ps1` with its spool/WAL path.
+The Python migration is therefore not evidence about the deployed writer set.
+Deployment still requires:
 
 1. The integrated source stack is merged to a clean canonical `origin/main`.
 2. The Python image hosting the gate, Git, PowerShell, collector, and every

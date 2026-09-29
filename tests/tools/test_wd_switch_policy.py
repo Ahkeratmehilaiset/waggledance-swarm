@@ -170,7 +170,8 @@ def test_deterministic_and_recomputable():
     (lambda e: e["auth"].update(observed_utc=ago(hours=2)), "auth_stale"),
     (lambda e: e["turn"].update(observed_utc=iso(NOW + timedelta(minutes=5))), "turn_from_the_future"),
     (lambda e: e["pool_bindings"][POOL].update(binding="unverified"), "pool_binding_unverified"),
-    (lambda e: e.update(pool_bindings={}), "pool_binding_unknown"),
+    (lambda e: e.update(pool_bindings={}), "pool_binding_unknown"),  # a dict, but no binding for the pool
+    (lambda e: e.update(pool_bindings=None), "pool_binding_unknown"),
     (lambda e: e.update(quota_samples=[]), "quota_samples_unknown"),
     (lambda e: e["quota_samples"][0].update(used_percent="41"), "quota_sample_malformed"),
     (lambda e: e.update(quota_samples=samples(90.0, 95.0)), "target_pool_at_risk"),
@@ -299,6 +300,41 @@ def test_contest_lower_precedence_does_not_block():
     ev["competing_intents"]["items"] = [{"lane": "fable-5", "intent_id": "e" * 32, "created_utc": ago(seconds=5),
                                          "precedence": 2, "target_profile": MEDIUM}]
     assert verdict(ev)[0] == "switch"
+
+
+def conserve_evidence() -> dict:
+    """A conserve: fable-5 lowers opus xhigh -> medium while a weekly limit that only xhigh has is over the trip line.
+
+    The target keeps only the shared claude limit (forecast about 63.9), so the target pool is not at risk."""
+    ev = evidence(current=("claude-opus-5-5", "xhigh"), target=MEDIUM)
+    ev["catalog"]["capacity_policy"]["profiles"][XHIGH]["limits"].append({"id": "claude-xhigh",
+                                                                          "windows": ["seven_day"]})
+    resets = (NOW + timedelta(hours=21)).timestamp()
+    # 75 -> 76 in 55 min with 21 h to reset: forecast about 98.9, over the steady trip line of 70.
+    ev["quota_samples"] += [{"provider": "claude", "limit_id": "claude-xhigh", "window": "seven_day",
+                             "used_percent": used, "resets_at": resets, "duration_minutes": 10080,
+                             "observed_at": ago(minutes=minutes_ago)} for used, minutes_ago in ((75.0, 60), (76.0, 5))]
+    return ev
+
+
+def test_a_conserve_intent_is_classified_from_the_current_windows():
+    ev = conserve_evidence()
+    ev["catalog_sha256"] = inputs_digest(ev["catalog"])
+    record = decide(ev)
+    assert record["verdict"] == "switch" and record["direction"] == "lower" and record["intent_class"] == "conserve"
+
+
+@pytest.mark.parametrize("precedence, expected", [
+    (0, ("stay", ["contested_incumbent_stays"])),  # the operator's competing intent always keeps the incumbent
+    (1, "switch"),  # an equal-precedence competitor yields to a conserve (a raise would stay, see above)
+    (2, "switch"),
+])
+def test_contest_conserve_beats_equal_precedence_but_never_the_operator(precedence, expected):
+    ev = conserve_evidence()
+    ev["competing_intents"]["items"] = [{"lane": "fable-5", "intent_id": "e" * 32, "created_utc": ago(seconds=5),
+                                         "precedence": precedence, "target_profile": XHIGH}]
+    got = verdict(ev)
+    assert (got if isinstance(expected, tuple) else got[0]) == expected
 
 
 def test_duplicate_intent_only_the_earliest_carries():

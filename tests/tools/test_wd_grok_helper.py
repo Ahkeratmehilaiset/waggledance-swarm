@@ -175,10 +175,19 @@ def test_consult_uses_verbatim_prompt_mode(tmp_path):
     commands = []
     def runner(command, **kwargs):
         commands.append(command)
+        sent = Path(command[command.index("--prompt-file") + 1]).read_text(encoding="utf-8")
+        assert sent.startswith("IMPORTANT: This prompt is COMPLETE.")
+        assert "You have NO tools" in sent
+        assert "500 words" in sent
         return SimpleNamespace(returncode=0, stdout="advice")
     assert consult(tmp_path, "verbatim", "Review evidence", ["fake"], runner=runner, now=NOW)["status"] == "answered"
     assert "--verbatim" in commands[0]
     assert "--prompt-file" in commands[0]
+
+
+def test_default_advisory_command_uses_medium_effort():
+    assert wd_grok_helper.advisory_command(Path("grok.exe"), "grok-model") == [
+        "grok.exe", "--model", "grok-model", "--effort", "medium"]
 
 
 def test_failed_consult_records_bounded_stderr_without_refunding_hour(tmp_path):

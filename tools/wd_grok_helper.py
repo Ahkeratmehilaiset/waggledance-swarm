@@ -84,6 +84,10 @@ def write_state(root: Path, state: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def advisory_command(executable: Path, model: str) -> list[str]:
+    return [str(executable), "--model", model, "--effort", "medium"]
+
+
 @contextmanager
 def exclusive(root: Path):
     # Hold an OS lock for the entire consultation. Crash releases the lock,
@@ -172,6 +176,8 @@ def consult(root: Path, task_id: str, prompt: str, command: list[str], *,
         prompt_path = root / (request_id + "-request.md")
         report_path = root / (request_id + "-response.md")
         rules = (
+            "IMPORTANT: This prompt is COMPLETE. You have NO tools and cannot read files. "
+            "Do not try any tool call. Answer directly in at most 500 words and 12 bullets.\n\n"
             "You are Grok, an advisory second opinion for WD lead codex-lead-1. "
             "Use only supplied evidence; separate facts from uncertainty. No write, "
             "merge, deploy, approval or subagent authority. Do not execute commands, "
@@ -304,7 +310,7 @@ def main() -> int:
                         excerpt = saved_report.read(1500)
                     prompt += "\n\nPREVIOUS GROK RESULT (bounded excerpt; full report at recorded path)\n" + excerpt
             report = consult(STATE_ROOT, args.task_id or "", prompt,
-                             [str(executable), "--model", model["model"], "--effort", "high"],
+                             advisory_command(executable, model["model"]),
                              emitter=emit_bridge_event, exception_path=args.exception_path,
                              exception_sha256=args.exception_sha256)
         print(json.dumps(report, ensure_ascii=False))

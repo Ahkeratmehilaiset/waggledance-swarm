@@ -250,6 +250,62 @@ def test_f12_is_the_only_intended_difference_from_core():
     assert _outcome(port.validate_event, short)[0] == "error"
 
 
+@pytest.mark.parametrize("status", ["rco_pass", "build_consensus_pass"])
+def test_f12_write_guard_ignores_the_event_timestamp(status):
+    """A NEW commit-status write cannot be backdated past the guard; the historical read corpus stays accepted."""
+    schema = _kernel("bridge_v2_event_schema")
+    for ts in (BEFORE_EPOCH, "2026-01-01T00:00:00.0000000Z", AFTER_EPOCH):        # full-head success twins
+        good = _event(ts_utc=ts, type="decision", status=status, message="pass at " + HEAD, payload={"head": HEAD})
+        assert schema.validate_event(good).payload["head"] == HEAD
+        assert schema.validate_event_for_write(good).payload["head"] == HEAD
+    for payload, message, reason in (
+            ({}, "no head", "lowercase 40-hex"),                                    # missing
+            ({"head": None}, "null head", "lowercase 40-hex"),
+            ({"head": ""}, "empty head", "lowercase 40-hex"),
+            ({"head": HEAD[:12]}, "at " + HEAD[:12], "lowercase 40-hex"),            # short
+            ({"head": HEAD + "0"}, "at " + HEAD + "0", "lowercase 40-hex"),          # 41 hex
+            ({"head": HEAD.upper()}, "at " + HEAD.upper(), "lowercase 40-hex"),      # uppercase
+            ({"head": " " + HEAD}, "at " + HEAD, "lowercase 40-hex"),                # padded
+            ({"head": int(HEAD[:15], 16)}, "numeric head", "lowercase 40-hex"),      # not a string
+            ({"Head": HEAD}, "at " + HEAD, "lowercase 40-hex"),                      # no case folding of the key
+            ({"head": HEAD}, "a message without the head", "exact head"),            # message does not name it
+            ({"head": HEAD}, "pass at " + HEAD.upper(), "exact head")):              # ordinal, case-sensitive
+        backdated = _event(ts_utc=BEFORE_EPOCH, type="decision", status=status, message=message, payload=payload)
+        assert schema.validate_event(backdated).status == status                   # read: legacy acceptance kept
+        with pytest.raises(ValueError, match=reason):
+            schema.validate_event_for_write(backdated)                              # write: refused anyway
+        with pytest.raises(ValueError, match=reason):
+            schema.validate_event_for_write(dict(backdated, ts_utc="2020-01-01T00:00:00.0000000Z"))
+        with pytest.raises(ValueError, match=reason):
+            schema.validate_event(dict(backdated, ts_utc=AFTER_EPOCH))              # read after the epoch: strict
+
+
+def test_f12_write_guard_leaves_other_statuses_and_types_alone():
+    schema = _kernel("bridge_v2_event_schema")
+    for event in (_event(type="decision", status="approved", message="no head needed"),
+                  _event(type="decision", status="changes_requested", payload={"head": "abc"}),
+                  _event(type="message", status="rco_pass", message="informational, not a decision"),
+                  _event()):
+        assert schema.validate_event_for_write(event).status == event["status"]
+
+
+def test_f12_write_guard_composes_with_the_reserved_provenance_gate():
+    schema = _kernel("bridge_v2_event_schema")
+    provenance = schema.SessionProvenance("operator", "operator-terminal-1", "operator-terminal-launcher")
+    operator = _event(agent="operator", role="operator", agent_uuid="", session_id="operator-terminal-1",
+                      type="decision", status="build_consensus_pass", message="consensus at " + HEAD,
+                      payload={"head": HEAD})
+    with pytest.raises(ValueError, match="verified session provenance"):
+        schema.validate_event_for_write(operator)                                   # F23 still applies
+    assert schema.validate_event_for_write(operator, provenance=provenance).payload["head"] == HEAD
+    headless = dict(operator, message="consensus", payload={})
+    assert schema.validate_event(headless).status == "build_consensus_pass"         # backdated read: legacy
+    with pytest.raises(ValueError, match="lowercase 40-hex"):
+        schema.validate_event_for_write(headless, provenance=provenance)           # provenance never relaxes F12
+    with pytest.raises(ValueError, match="verified session provenance"):
+        schema.validate_event_for_write(headless)                                   # identity is refused first
+
+
 # ---------------------------------------------------------------------------
 # F23: reserved labels need externally observed session provenance
 # ---------------------------------------------------------------------------

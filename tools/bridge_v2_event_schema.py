@@ -7,8 +7,10 @@ port of the core event schema with no product-package import. Wire shapes, error
 and refusal handling are unchanged, with two additions:
 
 * F12: a ``decision`` with a commit status (``COMMIT_HEAD_STATUSES``) carries a full
-  lowercase 40-hex ``payload.head`` that the message also names (writer parity). Lines before
-  ``COMMIT_HEAD_STRICT_EPOCH_UTC`` keep their legacy acceptance.
+  lowercase 40-hex ``payload.head`` that the message also names (writer parity). On READ,
+  lines before ``COMMIT_HEAD_STRICT_EPOCH_UTC`` keep their legacy acceptance; on WRITE,
+  ``validate_event_for_write`` enforces the guard whatever the event's own ``ts_utc`` says,
+  so a new event cannot be backdated past it.
 * F23: ``validate_event_for_write`` accepts a reserved label (``operator``/``system``, as the
   agent or as the role) only with a ``SessionProvenance`` that a trusted entrypoint observed;
   the event's own role, session or environment claims never suffice. Readers get
@@ -274,20 +276,15 @@ class BridgeEvent(BaseModel):
         return self
 
     def _validate_commit_head(self) -> None:
-        """F12: a commit-status decision names the exact full head it is about."""
+        """F12 on READ: the historical log before the strict epoch keeps its legacy acceptance."""
         if self.type != "decision" or self.status not in COMMIT_HEAD_STATUSES:
             return
         try:
             strict = _is_at_or_after_utc(self.ts_utc, COMMIT_HEAD_STRICT_EPOCH_UTC)
         except ValueError:
             strict = True  # an unreadable time never exempts a line
-        if not strict:
-            return
-        head = self.payload.get("head") if isinstance(self.payload, Mapping) else None
-        if not _is_full_git_sha(head):
-            raise ValueError(f"{self.status} head must be lowercase 40-hex sha")
-        if head not in self.message:
-            raise ValueError(f"{self.status} message must contain exact head")
+        if strict:
+            _require_commit_head(self)
 
     def _validate_triage_disposition(self) -> None:
         if self.type != "triage_disposition":
@@ -431,12 +428,16 @@ class SessionProvenance:
 
 def validate_event_for_write(event: Mapping[str, Any], *,
                              provenance: SessionProvenance | None = None) -> BridgeEvent:
-    """Writer-side validation (F23): a reserved label needs matching, externally observed provenance.
+    """Writer-side validation (F23 and F12) for a NEW event.
 
-    ``operator`` or ``system`` as the agent is accepted only when ``provenance`` is a
+    F23: ``operator`` or ``system`` as the agent is accepted only when ``provenance`` is a
     ``SessionProvenance`` (not a look-alike) for that agent, with the event's non-empty
     session_id and a named observer. A reserved role on any other agent is refused. Ordinary
-    agents are unaffected (their identity binding stays with the registry checks)."""
+    agents are unaffected (their identity binding stays with the registry checks).
+
+    F12: every commit-status decision must carry the exact full head, with no epoch exemption.
+    The read-side legacy acceptance exists for the historical log only; the writer never trusts
+    the event's own ``ts_utc`` to relax the guard."""
     model = validate_event(event)
     if model.role in RESERVED_AGENT_LABELS and model.role != model.agent:
         raise ValueError(f"reserved role {model.role} requires the matching reserved agent")
@@ -445,7 +446,19 @@ def validate_event_for_write(event: Mapping[str, Any], *,
                 or not model.session_id or provenance.session_id != model.session_id
                 or not isinstance(provenance.observed_by, str) or not provenance.observed_by.strip()):
             raise ValueError(f"reserved agent label {model.agent} requires verified session provenance")
+    _require_commit_head(model)
     return model
+
+
+def _require_commit_head(event: BridgeEvent) -> None:
+    """F12 head guard, independent of the event's own timestamp (the callers decide the scope)."""
+    if event.type != "decision" or event.status not in COMMIT_HEAD_STATUSES:
+        return
+    head = event.payload.get("head") if isinstance(event.payload, Mapping) else None
+    if not _is_full_git_sha(head):
+        raise ValueError(f"{event.status} head must be lowercase 40-hex sha")
+    if head not in event.message:
+        raise ValueError(f"{event.status} message must contain exact head")
 
 
 def reserved_label_status(event: BridgeEvent) -> str:

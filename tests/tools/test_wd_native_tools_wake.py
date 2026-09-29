@@ -116,6 +116,110 @@ try {{
             assert call['CheckpointDigest'] == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
 
 
+def canonical_progress(value, allow_list=False):
+    """Reference for the caller's shell-independent ProgressKey encoding."""
+    if value is None:
+        return 'null'
+    if isinstance(value, str):
+        units = value.encode('utf-16-le')
+        out = []
+        for i in range(0, len(units), 2):
+            n = units[i] | (units[i + 1] << 8)
+            out.append(chr(n) if 0x20 <= n <= 0x7E and n not in (0x22, 0x5C) else '\\u%04x' % n)
+        return '"' + ''.join(out) + '"'
+    if allow_list and isinstance(value, list):
+        return '[' + ','.join(canonical_progress(item) for item in value) + ']'
+    raise TypeError(type(value))
+
+
+def expected_progress_key(record, fields=('task_id', 'status', 'next_action', 'next_wakeup_utc', 'blockers')):
+    try:
+        text = '{' + ','.join(canonical_progress(f) + ':' + canonical_progress(record[f], f == 'blockers')
+                              for f in fields if f in record) + '}'
+    except TypeError:
+        return None
+    return hashlib.sha256(text.encode('ascii')).hexdigest()
+
+
+PROGRESS_BASE = dict(agent='codex-tools-1', task_id='codex-lead-1/probe-task', status='in_progress',
+                     next_action='Preserve held/cancelled work', next_wakeup_utc=None, blockers=[],
+                     updated_at_utc='2026-09-29T05:00:00Z')
+PROGRESS_CASES = {
+    'base': {},
+    'heartbeat_only': dict(updated_at_utc='2026-09-29T06:00:00Z', history='later heartbeat'),
+    'blockers_one': dict(blockers=['x']),
+    'blockers_scalar': dict(blockers='x'),
+    'blockers_null': dict(blockers=None),
+    'blockers_missing': dict(blockers=...),
+    'blockers_two': dict(blockers=['a', 'b']),
+    'wakeup_set': dict(next_wakeup_utc='2026-09-29T07:00:00Z'),
+    'wakeup_missing': dict(next_wakeup_utc=...),
+    'status_changed': dict(status='waiting'),
+    'escapes': dict(next_action='wait <RCO> & don\'t "quote" \\ tab\there'),
+    'unicode': dict(next_action='äö — ok \U0001f41d'),
+    # JSON numbers/booleans/objects deserialize differently per shell: fail closed, never rounded.
+    'reject_float': dict(next_action=0.84551240822557006),
+    'reject_int64_overflow': dict(blockers=[9223372036854775808]),
+    'reject_uint64_overflow': dict(next_wakeup_utc=18446744073709551616),
+    'reject_small_int': dict(status=1),
+    'reject_bool': dict(status=True),
+    'reject_object': dict(blockers=[{'a': 'b'}]),
+    'reject_nested_list': dict(blockers=[['x']]),
+    'reject_list_outside_blockers': dict(next_action=['x']),
+}
+REJECTED = {case for case in PROGRESS_CASES if case.startswith('reject_')}
+
+
+def progress_record(case):
+    record = dict(PROGRESS_BASE)
+    for key, value in PROGRESS_CASES[case].items():
+        if value is ...:
+            record.pop(key)
+        else:
+            record[key] = value
+    return record
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_operator_notice_progress_key_is_canonical_across_shells(tmp_path, ps):
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    publisher = bundle / 'Send-WdContinuityAlert.ps1'
+    publisher.write_text(
+        'param($Agent,$TaskId,$ThreadId,$Worktree,$Reason,$CheckpointDigest,$ProgressKey)\n'
+        "[IO.File]::WriteAllText((Join-Path $Worktree 'key.txt'), $ProgressKey + ' ' + $Reason + ' ' + $CheckpointDigest)\n"
+        '\'{"schema":"wd.continuity-alert-result.v1","status":"published"}\'\n', encoding='utf-8')
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': {publisher.name: hashlib.sha256(publisher.read_bytes()).hexdigest().upper(),
+                                              **notice_registry(bundle)}}))
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Invoke-WdContinuityOperatorNotice')
+    script += f"$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}\n"
+    script += f"$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'\n"
+    for case in PROGRESS_CASES:
+        worktree = tmp_path / case
+        (worktree / '.codex-audit').mkdir(parents=True)
+        # BOM-less UTF-8 with raw non-ASCII: Windows PowerShell must not decode it as ANSI.
+        (worktree / '.codex-audit/wd-current-state.json').write_text(
+            json.dumps(progress_record(case), ensure_ascii=False), encoding='utf-8')
+        script += (f"Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}' "
+                   f"-Worktree {q(worktree)} -RuntimeRoot {q(tmp_path / 'runtime')} -SessionId fixture-session "
+                   "-ErrorText 'held' | Out-Null\n")
+    _run_powershell(script, executable=ps)
+    calls = {case: (tmp_path / case / 'key.txt').read_text(encoding='utf-8').split(' ') for case in PROGRESS_CASES}
+    keys = {case: call[0] for case, call in calls.items()}
+    # Exact reference digests make PowerShell 5.1 and 7 agree by construction.
+    assert keys == {case: expected_progress_key(progress_record(case)) or '0' * 64 for case in PROGRESS_CASES}
+    for case, (_, reason, digest) in calls.items():
+        assert (reason, digest == '0' * 64) == (('checkpoint_unavailable', True) if case in REJECTED
+                                               else ('hold_possible', False)), (case, reason)
+    assert keys['heartbeat_only'] == keys['base']
+    distinct = [case for case in PROGRESS_CASES if case != 'heartbeat_only' and case not in REJECTED]
+    assert len({keys[case] for case in distinct}) == len(distinct), keys
+
+
 def test_lead_imports_continuity_dependencies_from_verified_code():
     source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8')
     imports = source.split('$imports = @{', 1)[1].split('foreach ($file', 1)[0]
@@ -521,6 +625,67 @@ if ('{case}' -eq 'rollover') {{
         assert state['entries'][0]['status'] == ('submitting' if case == 'uncertain' else 'queued')
     else:
         assert not ledger.exists()
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_native_recovery_progress_hash_is_canonical_across_shells(tmp_path, ps):
+    cli = tmp_path / 'queue-cli.bin'
+    cli.write_bytes(b'non-executable test double')
+    cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest().upper()
+    # The native step reads next_wakeup_utc directly (the state writer always emits it).
+    cases = ('base', 'heartbeat_only', 'status_changed', 'wakeup_set', 'escapes', 'unicode')
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    for name in ['Assert-WdTurnPath', 'Write-WdTurnJson']:
+        script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
+    script += load(TOOLS, 'Invoke-WdNativeContinuityStep')
+    script += """
+function Test-WdContinuityControlEvents {param($RuntimeRoot,$TaskId) return $false}
+function Invoke-WdContinuityDecision {
+ param($Snapshot,$NowUtc)
+ return [pscustomobject]@{schema='wd.continuity-decision.v1';agent='codex-lead-1';
+ authority='none';verdict='dispatch';target='codex-lead-1';action_key=('a'*64);reasons=@('fixture')}
+}
+function Send-WdNativeToolsQueueMessage {param($CliPath,$ThreadId,$Message,$Worktree) return 'queue-id'}
+"""
+    for case in cases:
+        worktree = tmp_path / case
+        (worktree / '.codex-audit/wd-turn-loop').mkdir(parents=True)
+        record = progress_record(case)
+        record.update(schema='wd.lane-current.v1', agent='codex-lead-1', worktree=str(worktree))
+        # BOM-less UTF-8 with raw non-ASCII, as the state writer produces it.
+        (worktree / '.codex-audit/wd-current-state.json').write_text(json.dumps(record, ensure_ascii=False),
+                                                                     encoding='utf-8')
+        script += (f"Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' -Worktree {q(worktree)} "
+                   f"-Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' "
+                   "-SessionStartedAt '2026-09-28T00:00:00Z' -Now '2026-09-29T05:00:00Z' | Out-Null\n")
+    rejected = ('reject_float', 'reject_bool', 'reject_list_outside_blockers')
+    for case in rejected:
+        worktree = tmp_path / case
+        (worktree / '.codex-audit/wd-turn-loop').mkdir(parents=True)
+        record = progress_record(case)
+        record.update(schema='wd.lane-current.v1', agent='codex-lead-1', worktree=str(worktree))
+        (worktree / '.codex-audit/wd-current-state.json').write_text(json.dumps(record), encoding='utf-8')
+        script += (f"$outcome = try {{ Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' "
+                   f"-Worktree {q(worktree)} -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' "
+                   "-SessionStartedAt '2026-09-28T00:00:00Z' -Now '2026-09-29T05:00:00Z'; 'accepted' } "
+                   "catch { $_.Exception.Message }\n"
+                   f"[IO.File]::WriteAllText({q(worktree / 'outcome.txt')}, [string]$outcome)\n")
+    _run_powershell(script, executable=ps)
+    for case in rejected:
+        assert (tmp_path / case / 'outcome.txt').read_text() == 'Continuity progress value type unsupported'
+        assert not (tmp_path / case / f'.codex-audit/wd-turn-loop/continuity-v1-{THREAD}.json').exists()
+    hashes = {}
+    for case in cases:
+        ledger = tmp_path / case / f'.codex-audit/wd-turn-loop/continuity-v1-{THREAD}.json'
+        entries = json.loads(ledger.read_text(encoding='utf-8-sig'))['entries']
+        assert len(entries) == 1 and entries[0]['status'] == 'queued', entries
+        prefix = 'codex-lead-1:' + 'a' * 64 + ':'
+        assert entries[0]['key'].startswith(prefix)
+        hashes[case] = entries[0]['key'][len(prefix):]
+    fields = ('task_id', 'status', 'next_action', 'next_wakeup_utc')
+    assert hashes == {case: expected_progress_key(progress_record(case), fields) for case in cases}
+    assert hashes['heartbeat_only'] == hashes['base']
+    assert len({hashes[case] for case in cases if case != 'heartbeat_only'}) == len(cases) - 1, hashes
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

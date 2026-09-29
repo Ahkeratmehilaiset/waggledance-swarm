@@ -15,6 +15,7 @@ import pytest
 SOURCE = Path(__file__).resolve().parents[2] / 'tools' / 'wd_consensus_stall_detector.py'
 WRITER_RELATIVE = 'tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1'
 REAL_RUN = subprocess.run
+WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
 
 def load_detector():
@@ -44,6 +45,9 @@ def receipt(module, **delivery) -> bytes:
 
 def record_runs(module, monkeypatch, returncode=0, stdout=None):
     calls = []
+    # The command is recorded, never run, so the host need not have Windows PowerShell.
+    real_isfile = module.os.path.isfile
+    monkeypatch.setattr(module.os.path, 'isfile', lambda path: path == WINDOWS_POWERSHELL or real_isfile(path))
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
@@ -77,8 +81,8 @@ def test_a_pinned_alert_runs_the_verified_bundle_writer_with_a_clean_identity(mo
                              payload_head='a' * 40, pin=(str(bundle), sha))
     assert note == 'ALERTED->claude-rco-1'
     [(command, kwargs)] = calls
-    assert command[:5] == ['pwsh', '-NoProfile', '-NonInteractive', '-File',
-                           str((bundle / WRITER_RELATIVE).resolve())]
+    assert command[:8] == [WINDOWS_POWERSHELL, '-NoLogo', '-NoProfile', '-NonInteractive',
+                           '-ExecutionPolicy', 'Bypass', '-File', str((bundle / WRITER_RELATIVE).resolve())]
     assert command[command.index('-Agent') + 1] == 'wd-stall-monitor'
     assert command[command.index('-Role') + 1] == 'monitor'
     assert command[command.index('-Type') + 1] == 'message'
@@ -310,3 +314,23 @@ def test_gh_output_is_decoded_as_utf8(monkeypatch):
     assert module.ci_all_green(1) is True
     emitting(module, monkeypatch, AWKWARD)
     assert module.gh_json(['pr', 'list']) is None
+
+
+def test_a_missing_windows_powershell_fails_closed_before_running_anything(monkeypatch, tmp_path):
+    module = load_detector()
+    bundle, sha = pinned_bundle(tmp_path / 'bundle')
+    calls = record_runs(module, monkeypatch)
+    monkeypatch.setattr(module, 'POWERSHELL', str(tmp_path / 'missing' / 'powershell.exe'))
+    assert module.post_alert('branch', 'message', True, pin=(str(bundle), sha)) == 'ALERT-FAILED:FileNotFoundError'
+    assert calls == []
+
+
+def test_the_writer_never_inherits_a_powershell_7_module_path(monkeypatch, tmp_path):
+    module = load_detector()
+    bundle, sha = pinned_bundle(tmp_path / 'bundle')
+    monkeypatch.setenv('PSModulePath', 'C:/pwsh7/Modules')
+    calls = record_runs(module, monkeypatch)
+    module.post_alert('branch', 'message', True, pin=(str(bundle), sha))
+    [(_, kwargs)] = calls
+    assert not any(key.upper() == 'PSMODULEPATH' for key in kwargs['env'])
+    assert module.POWERSHELL == WINDOWS_POWERSHELL

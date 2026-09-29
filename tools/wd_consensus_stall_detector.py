@@ -68,9 +68,23 @@ def verified_writer(bundle, manifest_sha256, name='Write-AgentEvent.ps1'):
     return root / relative
 
 
+# Windows PowerShell 5.1 by absolute path, as WD-Supervisor runs. A bare 'pwsh' resolves
+# through PATH (here a per-user WindowsApps alias), so an earlier PATH entry could stand
+# in for the pinned writer and forge its receipt.
+POWERSHELL = r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+
+
+def trusted_powershell():
+    if not os.path.isfile(POWERSHELL):
+        raise FileNotFoundError('trusted Windows PowerShell is missing: ' + POWERSHELL)
+    return [POWERSHELL, '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass']
+
+
 def reporting_env(bridge_root):
-    # Never inherit the calling Lead/RCO's UUID, session or capabilities.
-    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('AGENT_BRIDGE_')}
+    # Never inherit the calling Lead/RCO's UUID, session or capabilities, nor a
+    # PowerShell 7 module path, which Windows PowerShell cannot load from.
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().startswith('AGENT_BRIDGE_') and key.upper() != 'PSMODULEPATH'}
     env['AGENT_BRIDGE_RUNTIME_ROOT'] = str(bridge_root)
     return env
 
@@ -289,9 +303,10 @@ def post_alert(branch: str, message: str, do_post: bool,
     to = ",".join(recipients) if recipients else "codex-lead-1"
     try:
         writer = verified_writer(pin[0], pin[1])
+        powershell = trusted_powershell()
     except Exception as exc:
         return f"ALERT-FAILED:{type(exc).__name__}"
-    cmd = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(writer),
+    cmd = [*powershell, "-File", str(writer),
            "-Agent", MONITOR_AGENT, "-Role", "monitor", "-Type", "message",
            "-TaskId", branch, "-Status", "consensus_stall_detected",
            "-To", to, "-Message", message, "-ReceiptJson"]

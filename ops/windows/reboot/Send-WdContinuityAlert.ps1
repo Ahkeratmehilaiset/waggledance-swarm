@@ -34,6 +34,13 @@
     only together. The key then repeats per thread, so an unavailable checkpoint
     is reported once per thread.
 
+    ProgressKey (optional, 64 lowercase hex) is the caller's hash of the stable
+    progress fields (task, status, next action, next wake, blockers). When it is
+    given, the alert key uses it instead of CheckpointDigest, so a heartbeat
+    rewrite that changes only timestamps or history does not alert again. The
+    payload still carries the real CheckpointDigest. The all-zero ProgressKey is
+    accepted only with the unavailable sentinel above.
+
     Output: exactly one JSON line (wd.continuity-alert-result.v1) on the success
     stream. status is one of:
       published         canonical durable event
@@ -53,6 +60,7 @@ param(
     [Parameter(Mandatory)] [string] $Worktree,
     [Parameter(Mandatory)] [string] $Reason,
     [Parameter(Mandatory)] [string] $CheckpointDigest,
+    [string] $ProgressKey = '',
     [string] $BundleRoot = '',
     [string] $ExpectedManifestHash = ''
 )
@@ -151,7 +159,19 @@ function Invoke-ContinuityAlert {
     if ($unavailable -ne ($Reason -ceq 'checkpoint_unavailable')) { Stop-Unknown 'invalid_checkpoint_sentinel' }
     if (-not (Test-AbsoluteDirectory $Worktree)) { Stop-Unknown 'invalid_worktree' }
 
-    $alertKey = Get-Sha256Hex ($Agent + "`n" + $ThreadId + "`n" + $Reason + "`n" + $CheckpointDigest)
+    if ($ProgressKey) {
+        if ($ProgressKey -cnotmatch '^[0-9a-f]{64}$') { Stop-Unknown 'invalid_progress_key' }
+        # The zero key means "no checkpoint to hash" and is bound to the same sentinel.
+        if (($ProgressKey -ceq ('0' * 64)) -ne $unavailable) { Stop-Unknown 'invalid_checkpoint_sentinel' }
+    }
+
+    # Without ProgressKey the key is unchanged. With it, a separate domain tag keeps the
+    # two key spaces apart even if a progress hash ever equals a checkpoint digest.
+    if ($ProgressKey) {
+        $alertKey = Get-Sha256Hex ($Agent + "`n" + $ThreadId + "`n" + $Reason + "`nprogress`n" + $ProgressKey)
+    } else {
+        $alertKey = Get-Sha256Hex ($Agent + "`n" + $ThreadId + "`n" + $Reason + "`n" + $CheckpointDigest)
+    }
 
     $bundle = $BundleRoot
     if (-not $bundle) {
@@ -252,7 +272,8 @@ function Invoke-ContinuityAlert {
 
         # --- durable intent, then publish ---------------------------------------------------------
         $intent = [ordered]@{key = $alertKey; status = 'submitting'; reason = $Reason; task_id = $TaskId;
-            checkpoint_digest = $CheckpointDigest; at_utc = [DateTimeOffset]::UtcNow.ToString('o');
+            checkpoint_digest = $CheckpointDigest; progress_key = $ProgressKey;
+            at_utc = [DateTimeOffset]::UtcNow.ToString('o');
             delivery_status = ''; event_ts_utc = ''}
         $ledger.entries = @($ledger.entries) + @($intent)
         Write-LedgerAtomic $ledgerPath $ledger
@@ -280,7 +301,13 @@ function Invoke-ContinuityAlert {
                     $outcome = 'queued'
                 }
                 $deliveryStatus = [string]$delivery.delivery_status
-                if ($receipt.PSObject.Properties['ts_utc']) { $eventTs = [string]$receipt.ts_utc }
+                if ($receipt.PSObject.Properties['ts_utc']) {
+                    # pwsh 7 ConvertFrom-Json turns the timestamp into a DateTime whose
+                    # [string] form is culture-specific; report ISO 8601 UTC in both shells.
+                    $tsValue = $receipt.ts_utc
+                    if ($tsValue -is [DateTime]) { $eventTs = $tsValue.ToUniversalTime().ToString('o') }
+                    else { $eventTs = [string]$tsValue }
+                }
             }
         } catch {
             $outcome = 'uncertain'

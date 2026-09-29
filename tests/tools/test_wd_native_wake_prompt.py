@@ -151,6 +151,15 @@ def test_procedures_retain_control_and_reply_instructions():
         assert sentence in lead
 
 
+def test_lead_procedure_discovers_requests_without_tail_or_session_cutoff():
+    lead = (REBOOT / "WAKE_PROCEDURE_LEAD.md").read_text(encoding="utf-8")
+    assert "Get-BridgeRequestInventory.ps1 -Agent codex-lead-1" in lead
+    assert "Do not add -SessionId" in lead
+    assert "Discovery is not answer status" in lead
+    assert "HOLD/cancel/finding controls are not enumerated" in lead
+    assert "Do not bulk-resubmit historical requests" in lead
+
+
 def test_every_inline_instruction_fragment_is_preserved_in_procedure():
     source = (REBOOT / "start-wd-tools-consumer.ps1").read_text(encoding="utf-8")
     inline = source.split("function Get-WdInlineNativeWakeMessage {", 1)[1].split(

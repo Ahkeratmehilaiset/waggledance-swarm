@@ -10,8 +10,11 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import threading
 from time import monotonic
+import unicodedata
 import uuid
 
 STATE_ROOT = Path(r"C:\Python\grok-scout-reports")
@@ -86,6 +89,209 @@ def write_state(root: Path, state: dict) -> None:
 
 def advisory_command(executable: Path, model: str) -> list[str]:
     return [str(executable), "--model", model, "--effort", "medium"]
+
+
+def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate broker action key")
+        result[key] = value
+    return result
+
+
+def _broker_path(value: object, *, allow_root: bool = False) -> str:
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 512:
+        raise ValueError("Invalid broker path")
+    if not value and allow_root:
+        return value
+    if (not value or value.startswith(("/", "-")) or value.endswith("/")
+            or any(part in ("", ".", "..") for part in value.split("/"))
+            or any(ch in value for ch in "\\:*?[]")
+            or unicodedata.normalize("NFC", value) != value
+            or any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") for ch in value)):
+        raise ValueError("Noncanonical broker path")
+    return value
+
+
+def parse_broker_action(raw: str) -> dict:
+    """Parse one model-proposed action; this function never grants access itself."""
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 4096:
+        raise ValueError("Broker action exceeds limit")
+    try:
+        action = json.loads(raw, object_pairs_hook=_unique_json_pairs,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Invalid JSON constant")))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("Invalid broker action JSON") from exc
+    if not isinstance(action, dict):
+        raise ValueError("Broker action must be an object")
+    op = action.get("op")
+    allowed = {
+        "read_file": {"op", "path", "start_line", "end_line"},
+        "list_dir": {"op", "path"},
+        "grep": {"op", "path", "query"},
+        "final": {"op", "text"},
+    }
+    required = {
+        "read_file": {"op", "path"}, "list_dir": {"op", "path"},
+        "grep": {"op", "query"}, "final": {"op", "text"},
+    }
+    if not isinstance(op, str) or op not in allowed or not required[op] <= action.keys() or action.keys() - allowed[op]:
+        raise ValueError("Unknown or malformed broker action")
+    if op in ("read_file", "list_dir", "grep"):
+        action["path"] = _broker_path(action.get("path", ""), allow_root=op != "read_file")
+    if op == "read_file":
+        start, end = action.get("start_line", 1), action.get("end_line", 200)
+        if type(start) is not int or type(end) is not int or not 1 <= start <= end <= min(start + 199, 100000):
+            raise ValueError("Invalid broker line range")
+        action["start_line"], action["end_line"] = start, end
+    elif op == "grep":
+        query = action["query"]
+        if (not isinstance(query, str) or not query or len(query.encode("utf-8")) > 128
+                or any(unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zl", "Zp") for ch in query)):
+            raise ValueError("Invalid broker query")
+    elif op == "final":
+        value = action["text"]
+        if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 4096:
+            raise ValueError("Invalid broker final text")
+    return action
+
+
+class GitBlobBroker:
+    """Pure, bounded reads from a caller-pinned Git commit; not a Grok tool runner."""
+
+    def __init__(self, repo: Path, commit_sha: str):
+        if not isinstance(repo, Path) or not repo.is_absolute() or not repo.is_dir():
+            raise ValueError("Absolute existing repository required")
+        if not isinstance(commit_sha, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit_sha):
+            raise ValueError("Full commit SHA required")
+        self.repo = repo.resolve(strict=True)
+        self.git = shutil.which("git")
+        if not self.git:
+            raise ValueError("Git executable unavailable")
+        if Path(self.git).resolve(strict=True).is_relative_to(self.repo):
+            raise ValueError("Git executable must be outside repository")
+        self.sha = commit_sha.lower()
+        self.started = monotonic()
+        self.calls = 0
+        self.source_bytes = 0
+        self.output_bytes = 0
+        # Drop every inherited GIT_* override, including object directories and
+        # configuration injection. None of these fixed plumbing calls runs hooks.
+        self.env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT")
+                    if key in os.environ}
+        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_CONFIG_COUNT="0", GIT_NO_REPLACE_OBJECTS="1",
+                        GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+        top = self._git(["rev-parse", "--show-toplevel"], 2048).decode("utf-8").strip()
+        if Path(top).resolve(strict=True) != self.repo:
+            raise ValueError("Repository path is not its top level")
+        resolved = self._git(["rev-parse", "--verify", self.sha + "^{commit}"], 128).decode("ascii").strip()
+        if resolved.lower() != self.sha:
+            raise ValueError("Commit SHA did not resolve exactly")
+        tree = self._git(["ls-tree", "-rz", "--full-tree", self.sha], 8 * 1024 * 1024)
+        self.blobs = {}
+        folded_paths = set()
+        for record in tree.split(b"\0"):
+            if not record:
+                continue
+            try:
+                header, path_bytes = record.split(b"\t", 1)
+                mode, kind, oid = header.decode("ascii").split(" ")
+                path = _broker_path(path_bytes.decode("utf-8"))
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("Invalid Git tree entry") from exc
+            if mode not in ("100644", "100755") or kind != "blob" or not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", oid.encode("ascii")):
+                raise ValueError("Git tree contains nonregular or invalid entry")
+            folded = path.casefold()
+            if path in self.blobs or folded in folded_paths:
+                raise ValueError("Duplicate or case-colliding Git tree path")
+            self.blobs[path] = oid
+            folded_paths.add(folded)
+            if len(self.blobs) > 50000:
+                raise ValueError("Git tree entry limit exceeded")
+
+    def _git(self, args: list[str], maximum: int) -> bytes:
+        command = [self.git, "--no-pager", "-C", str(self.repo), *args]
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, env=self.env)
+        expired = False
+        def stop():
+            nonlocal expired
+            expired = True
+            process.kill()
+        timer = threading.Timer(10, stop)
+        timer.start()
+        try:
+            output = process.stdout.read(maximum + 1)
+            if len(output) > maximum:
+                process.kill()
+                raise ValueError("Git output limit exceeded")
+            process.wait(timeout=2)
+            if expired or process.returncode:
+                raise ValueError("Git plumbing command failed or timed out")
+            return output
+        finally:
+            timer.cancel()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+            process.stdout.close()
+
+    def _blob(self, oid: str) -> bytes:
+        size = int(self._git(["cat-file", "-s", oid], 32).decode("ascii").strip())
+        if size > 128 * 1024 or size < 0 or self.source_bytes + size > 2 * 1024 * 1024:
+            raise ValueError("Broker blob/session size limit exceeded")
+        data = self._git(["cat-file", "blob", oid], size)
+        if len(data) != size:
+            raise ValueError("Git blob size changed")
+        self.source_bytes += size
+        return data
+
+    def dispatch(self, action: dict) -> dict:
+        # Reparse to reject callers that bypassed the public parser.
+        action = parse_broker_action(json.dumps(action, ensure_ascii=False))
+        if action["op"] == "final":
+            raise ValueError("Final text is handled by the session controller")
+        if self.calls >= 30 or monotonic() - self.started > 60:
+            raise ValueError("Broker action limit exceeded")
+        self.calls += 1
+        op, path = action["op"], action["path"]
+        if op == "read_file":
+            if path not in self.blobs:
+                raise ValueError("File not in pinned Git tree")
+            lines = self._blob(self.blobs[path]).decode("utf-8").splitlines()
+            result = {"text": "\n".join(lines[action["start_line"]-1:action["end_line"]])}
+        elif op == "list_dir":
+            prefix = path + "/" if path else ""
+            if path and not any(name.startswith(prefix) for name in self.blobs):
+                raise ValueError("Directory not in pinned Git tree")
+            entries = sorted({name[len(prefix):].split("/", 1)[0] +
+                              ("/" if "/" in name[len(prefix):] else "")
+                              for name in self.blobs if name.startswith(prefix)})
+            if len(entries) > 200:
+                raise ValueError("Directory entry limit exceeded")
+            result = {"entries": entries}
+        else:
+            prefix = path + "/" if path else ""
+            names = [name for name in sorted(self.blobs) if not path or name == path or name.startswith(prefix)]
+            if not names or len(names) > 256:
+                raise ValueError("Search scope empty or too broad")
+            matches = []
+            for name in names:
+                for line_number, line in enumerate(self._blob(self.blobs[name]).decode("utf-8").splitlines(), 1):
+                    if action["query"] in line:
+                        if len(line.encode("utf-8")) > 512 or len(matches) >= 50:
+                            raise ValueError("Search match limit exceeded")
+                        matches.append({"path": name, "line": line_number, "text": line})
+            result = {"matches": matches}
+        if monotonic() - self.started > 60:
+            raise ValueError("Broker session time limit exceeded")
+        output_size = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        if output_size > 16 * 1024 or self.output_bytes + output_size > 128 * 1024:
+            raise ValueError("Broker output/session limit exceeded")
+        self.output_bytes += output_size
+        return result
 
 
 @contextmanager

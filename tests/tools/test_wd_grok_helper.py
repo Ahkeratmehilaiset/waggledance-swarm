@@ -9,8 +9,102 @@ import pytest
 
 from tools.wd_grok_helper import SCHEMA, consult, exclusive, status, write_state
 from tools import wd_grok_helper
+from tools.wd_grok_helper import GitBlobBroker, parse_broker_action
 
 NOW = datetime(2026, 9, 12, tzinfo=timezone.utc)
+
+
+def test_pure_broker_reads_only_pinned_git_blobs(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                              capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (repo / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "b.txt").write_text("beta\ngamma\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    sha = git("rev-parse", "HEAD")
+    broker = GitBlobBroker(repo, sha)
+    (repo / "a.txt").write_text("dirty and private\n", encoding="utf-8")
+    assert broker.dispatch(parse_broker_action('{"op":"read_file","path":"a.txt","start_line":1,"end_line":2}'))["text"] == "alpha\nbeta"
+    assert broker.dispatch(parse_broker_action('{"op":"list_dir","path":""}'))["entries"] == ["a.txt", "sub/"]
+    assert broker.dispatch(parse_broker_action('{"op":"grep","query":"beta"}'))["matches"] == [
+        {"path": "a.txt", "line": 2, "text": "beta"},
+        {"path": "sub/b.txt", "line": 1, "text": "beta"}]
+    with pytest.raises(ValueError, match="not in pinned"):
+        broker.dispatch({"op": "read_file", "path": ".git/config"})
+    with pytest.raises(ValueError, match="Final text"):
+        broker.dispatch({"op": "final", "text": "done"})
+
+
+def test_pure_broker_rejects_symlink_and_large_blob(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args, input=None):
+        return subprocess.run(["git", "-C", str(repo), *args], input=input,
+                              check=True, capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    oid = git("hash-object", "-w", "--stdin", input=b"outside.txt")
+    git("update-index", "--add", "--cacheinfo", f"120000,{oid},link")
+    tree = git("write-tree")
+    symlink_commit = git("commit-tree", tree, "-m", "symlink")
+    with pytest.raises(ValueError, match="nonregular"):
+        GitBlobBroker(repo, symlink_commit)
+    git("read-tree", "--empty")
+    (repo / "large.txt").write_bytes(b"x" * (128 * 1024 + 1))
+    git("add", "large.txt")
+    large_commit = git("commit-tree", git("write-tree"), "-m", "large")
+    broker = GitBlobBroker(repo, large_commit)
+    with pytest.raises(ValueError, match="size limit"):
+        broker.dispatch({"op": "read_file", "path": "large.txt"})
+    case_tree = git("mktree", input=(f"100644 blob {oid}\tA.txt\n"
+                                     f"100644 blob {oid}\ta.txt\n").encode())
+    case_commit = git("commit-tree", case_tree, "-m", "case collision")
+    with pytest.raises(ValueError, match="case-colliding"):
+        GitBlobBroker(repo, case_commit)
+
+
+def test_pure_broker_rejects_nonfull_sha_and_git_env_override(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    with pytest.raises(ValueError, match="Full commit SHA"):
+        GitBlobBroker(repo, "abcdef")
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "missing"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(tmp_path / "missing"))
+    # There is no commit, but caller-controlled Git overrides cannot turn
+    # this into an object-store read outside the selected repository.
+    with pytest.raises(ValueError, match="Git plumbing"):
+        GitBlobBroker(repo, "a" * 40)
+
+
+@pytest.mark.parametrize("raw", [
+    '{"op":"read_file","path":"a.txt","path":"b.txt"}',
+    '{"op":"read_file","path":"a.txt","extra":1}',
+    '{"op":"read_file","path":"../secret"}',
+    '{"op":"read_file","path":"C:/secret"}',
+    '{"op":"read_file","path":"a\\\\b"}',
+    '{"op":"read_file","path":"a/./b"}',
+    '{"op":"read_file","path":"a//b"}',
+    '{"op":"read_file","path":"a\u202e.txt"}',
+    '{"op":"read_file","path":"a.txt","start_line":true}',
+    '{"op":"read_file","path":"a.txt","start_line":100001,"end_line":100001}',
+    '{"op":"grep","query":""}',
+    '{"op":"grep","query":"x","path":"a*"}',
+    '{"op":"shell","path":"a.txt"}',
+])
+def test_broker_parser_fails_closed(raw):
+    with pytest.raises(ValueError):
+        parse_broker_action(raw)
 
 
 def exception_file(root, **updates):

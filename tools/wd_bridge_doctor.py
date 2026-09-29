@@ -10,12 +10,17 @@ Inputs are explicit files only:
   auth, quota and observed-turn states that some other, authorised tool observed.
 
 The doctor never executes anything, never queries a provider, never authenticates and
-never installs. It only calls ``os.stat`` on configured paths. Every unknown result is
-treated as missing. A callback or a live process is never readiness: a provider is
-ready only when its CLI is present AND fresh explicit evidence shows valid auth,
-available quota and a succeeded observed turn. The report is deterministic for the
-same inputs and ``--now``; it never echoes evidence free text, so credentials placed
-in evidence are not reproduced.
+never installs. It only calls ``os.stat`` on configured paths, and only on local
+absolute paths (a drive-letter path on Windows, ``/...`` elsewhere); UNC, device and
+``//`` paths are refused before any filesystem call. A component that exists is
+``present_unverified``: its version and compatibility are not verified, because that
+would need execution. Every unknown result is treated as missing. A callback or a live
+process is never readiness: a provider is ready only when its CLI is present AND fresh
+explicit evidence shows valid auth, available quota and a succeeded observed turn. The
+report is deterministic for the same inputs and ``--now``. It never echoes evidence
+free text or input key names; an evidence ``source`` is reported only when it names a
+lane declared in the manifest or ``operator``, so credentials placed in evidence are
+not reproduced.
 
 Exit codes: 0 ready, 1 degraded (an optional feature is disabled), 2 refuse (a
 required feature is unsatisfied), 3 invalid input (nothing was evaluated).
@@ -38,11 +43,19 @@ PATHS_SCHEMA = "wd.bridge-local-paths.v1"
 EVIDENCE_SCHEMA = "wd.bridge-provider-evidence.v1"
 REPORT_SCHEMA = "wd.bridge-doctor-report.v1"
 
+# A constant, not __doc__: under python -OO the docstring is None.
+DESCRIPTION = "F29 read-only bridge doctor: report missing components and provider states."
+
 ID_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 LANE_RE = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
-SOURCE_RE = re.compile(r"[A-Za-z0-9._:/-]{1,128}\Z")
+WINDOWS_DRIVE_PATH_RE = re.compile(r"[A-Za-z]:[\\/]")
+OPERATOR_SOURCE = "operator"
 MAX_INPUT_BYTES = 1024 * 1024
+# Explicit nesting bound, checked before parsing: it never depends on the JSON
+# scanner's own recursion limit, which differs between platforms and versions.
+MAX_JSON_DEPTH = 32
 MAX_FUTURE_SKEW = timedelta(seconds=300)
+PRESENT = "present_unverified"
 
 COMPONENT_KINDS = ("directory", "executable")
 EVIDENCE_DIMENSIONS = ("auth", "quota", "observed_turn")
@@ -83,7 +96,7 @@ def _unique(pairs: list[tuple[str, Any]]) -> dict:
     result: dict = {}
     for key, value in pairs:
         if key in result:
-            raise DoctorInputError("duplicate JSON key: " + str(key)[:64])
+            raise DoctorInputError("duplicate JSON key")  # the key itself is never echoed
         result[key] = value
     return result
 
@@ -92,21 +105,70 @@ def _reject_constant(value: str):
     raise DoctorInputError("non-finite JSON constant: " + value)
 
 
+def _local_absolute(raw: str) -> bool:
+    """A fully qualified local path: a drive-letter path on Windows, '/...' elsewhere.
+
+    UNC (\\\\server\\share), device (\\\\.\\, \\\\?\\) and POSIX '//' paths are refused
+    before any filesystem call, because stat or open on them can reach a network share,
+    a pipe or a device. A mapped network drive letter cannot be told apart by its path;
+    that is a documented limit, not a check."""
+    if not raw or "\0" in raw:
+        return False
+    if os.name == "nt":
+        return WINDOWS_DRIVE_PATH_RE.match(raw) is not None
+    return raw.startswith("/") and not raw.startswith("//")
+
+
+def _check_depth(text: str, what: str) -> None:
+    """Iterative nesting bound over the raw text; brackets inside strings do not count."""
+    depth, in_string, escaped = 0, False, False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise DoctorInputError(what + " nests deeper than " + str(MAX_JSON_DEPTH) + " levels")
+        elif char in "]}":
+            depth -= 1
+
+
 def load_json(path: Path, what: str) -> Any:
-    """Strict JSON: bounded size, UTF-8, no duplicate keys, no NaN/Infinity."""
+    """Strict JSON from a local regular file: bounded size and nesting, UTF-8, no
+    duplicate keys, no NaN/Infinity. A FIFO or device is refused without blocking."""
+    if not _local_absolute(str(path)):
+        raise DoctorInputError(what + " path must be a local absolute path")
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_INPUT_BYTES + 1)
+        # O_NONBLOCK (POSIX): opening a FIFO returns at once; fstat then refuses it.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except (OSError, ValueError) as exc:
         raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
+    with os.fdopen(fd, "rb") as stream:
+        try:
+            if not stat_module.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise DoctorInputError(what + " is not a regular file")
+            raw = stream.read(MAX_INPUT_BYTES + 1)
+        except OSError as exc:
+            raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
     if len(raw) > MAX_INPUT_BYTES:
         raise DoctorInputError(what + " exceeds " + str(MAX_INPUT_BYTES) + " bytes")
     try:
-        return json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_unique,
-                          parse_constant=_reject_constant)
+        text = raw.decode("utf-8-sig")
+    except UnicodeError as exc:
+        raise DoctorInputError(what + " is not valid JSON: " + type(exc).__name__) from exc
+    _check_depth(text, what)
+    try:
+        return json.loads(text, object_pairs_hook=_unique, parse_constant=_reject_constant)
     except DoctorInputError:
         raise
-    except (UnicodeError, ValueError, RecursionError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise DoctorInputError(what + " is not valid JSON: " + type(exc).__name__) from exc
 
 
@@ -118,7 +180,8 @@ def _require(condition: bool, message: str) -> None:
 def _exact_keys(value: Any, allowed: set, required: set, what: str) -> None:
     _require(type(value) is dict, what + " must be an object")
     extra, missing = set(value) - allowed, required - set(value)
-    _require(not extra, what + " has unknown keys: " + ",".join(sorted(extra)))
+    # Unknown key names come from the input and are never echoed; only a count is.
+    _require(not extra, what + " has " + str(len(extra)) + " unknown key(s)")
     _require(not missing, what + " lacks keys: " + ",".join(sorted(missing)))
 
 
@@ -222,13 +285,13 @@ def validate_evidence(evidence: Any) -> dict:
 
 
 def check_component(component: dict, paths: dict[str, str]) -> dict:
-    """Return present/missing/unknown for one component; only os.stat is called."""
+    """Return present_unverified/missing/unknown for one component; only os.stat is called."""
     raw = paths.get(component["path_key"])
     result = {"id": component["id"], "kind": component["kind"], "path_key": component["path_key"]}
     if raw is None or raw.strip() == "":
         return {**result, "state": "unknown", "reason": "path_not_configured"}
-    if "\0" in raw or not os.path.isabs(raw):
-        return {**result, "state": "unknown", "reason": "path_not_absolute"}
+    if not _local_absolute(raw):
+        return {**result, "state": "unknown", "reason": "path_not_local_absolute"}
     result["path"] = raw
     try:
         info = os.stat(raw)
@@ -242,7 +305,8 @@ def check_component(component: dict, paths: dict[str, str]) -> dict:
         return {**result, "state": "missing", "reason": "not_a_directory"}
     if component["kind"] == "executable" and not is_file:
         return {**result, "state": "missing", "reason": "not_a_file"}
-    return {**result, "state": "present", "reason": "path_present"}
+    # Existence only: the version and compatibility are not verified (that needs execution).
+    return {**result, "state": PRESENT, "reason": "path_present_version_unverified"}
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -255,8 +319,12 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
 
-def evidence_state(entry: Any, dimension: str, max_age: int, now: datetime) -> dict:
-    """One provider dimension from explicit evidence; anything doubtful is unknown."""
+def evidence_state(entry: Any, dimension: str, max_age: int, now: datetime,
+                   sources: frozenset = frozenset()) -> dict:
+    """One provider dimension from explicit evidence; anything doubtful is unknown.
+
+    ``source`` is echoed only when it is exactly one of ``sources`` (the manifest's
+    lanes and ``operator``): a closed registry, so a token-shaped value never is."""
     if type(entry) is not dict:
         return {"state": "unknown", "reason": "no_evidence"}
     state = entry.get("state")
@@ -271,21 +339,20 @@ def evidence_state(entry: Any, dimension: str, max_age: int, now: datetime) -> d
         return {"state": "unknown", "reason": "stale", "observed_at_utc": observed.isoformat()}
     result = {"state": state, "reason": "fresh_evidence", "observed_at_utc": observed.isoformat()}
     source = entry.get("source")
-    if type(source) is str and SOURCE_RE.fullmatch(source):
+    if type(source) is str and source in sources:
         result["source"] = source
     return result
 
 
 def provider_states(provider: dict, component_results: dict[str, dict], evidence: dict,
-                    ages: dict, now: datetime) -> dict:
-    cli = component_results[provider["cli_component"]]["state"]
-    states = {"cli": {"state": {"present": "installed"}.get(cli, cli),
-                      "reason": component_results[provider["cli_component"]]["reason"]}}
+                    ages: dict, now: datetime, sources: frozenset = frozenset()) -> dict:
+    cli = component_results[provider["cli_component"]]
+    states = {"cli": {"state": cli["state"], "reason": cli["reason"]}}
     entry = evidence.get(provider["id"]) if isinstance(evidence, dict) else None
     for dimension in EVIDENCE_DIMENSIONS:
         states[dimension] = evidence_state(entry.get(dimension) if type(entry) is dict else None,
-                                           dimension, ages[dimension], now)
-    ready = (states["cli"]["state"] == "installed"
+                                           dimension, ages[dimension], now, sources)
+    ready = (states["cli"]["state"] == PRESENT
              and all(states[d]["state"] == POSITIVE[d] for d in EVIDENCE_DIMENSIONS))
     return {"id": provider["id"], "states": states, "ready": ready}
 
@@ -301,8 +368,9 @@ def _applicability(feature: dict, lane: str) -> str:
 def evaluate(manifest: dict, paths: dict[str, str], evidence: dict, lane: str, now: datetime) -> dict:
     """Pure evaluation of validated inputs; returns the deterministic report."""
     _require(lane in manifest["lanes"], "lane is not declared in the manifest")
+    sources = frozenset(manifest["lanes"]) | {OPERATOR_SOURCE}
     components = {cid: check_component(c, paths) for cid, c in sorted(manifest["components"].items())}
-    providers = {pid: provider_states(p, components, evidence, manifest["ages"], now)
+    providers = {pid: provider_states(p, components, evidence, manifest["ages"], now, sources)
                  for pid, p in sorted(manifest["providers"].items())}
     feature_reports, guidance = [], {}
     for fid, feature in sorted(manifest["features"].items()):
@@ -314,7 +382,7 @@ def evaluate(manifest: dict, paths: dict[str, str], evidence: dict, lane: str, n
         reasons = []
         for cid in sorted(feature["components"]):
             state = components[cid]["state"]
-            if state != "present":
+            if state != PRESENT:
                 reasons.append("component:" + cid + ":" + state)
                 if applicability == "required":
                     guidance["component:" + cid] = {
@@ -325,7 +393,7 @@ def evaluate(manifest: dict, paths: dict[str, str], evidence: dict, lane: str, n
             if report["ready"]:
                 continue
             cli_state = report["states"]["cli"]["state"]
-            if cli_state != "installed":
+            if cli_state != PRESENT:
                 reasons.append("provider:" + pid + ":cli:" + cli_state)
                 if applicability == "required":
                     cid = manifest["providers"][pid]["cli_component"]
@@ -360,7 +428,8 @@ def evaluate(manifest: dict, paths: dict[str, str], evidence: dict, lane: str, n
             "missing_required": [guidance[k] for k in sorted(guidance)],
             "installs_performed": False, "authority_effect": "none",
             "note": ("Read-only doctor: no execution, provider query, authentication or install. "
-                     "Unknown is treated as missing; a callback or live process is not readiness.")}
+                     "present_unverified means the path exists; version and compatibility are not "
+                     "verified. Unknown is treated as missing; a callback or live process is not readiness.")}
 
 
 EXIT_CODES = {"ready": 0, "degraded": 1, "refuse": 2}
@@ -389,7 +458,7 @@ def _parse_now(value: str | None) -> datetime:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = DoctorArgumentParser(description=__doc__.split("\n", 1)[0], allow_abbrev=False)
+    parser = DoctorArgumentParser(description=DESCRIPTION, allow_abbrev=False)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--paths-config", type=Path, required=True)
     parser.add_argument("--evidence", type=Path)
@@ -401,6 +470,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         code, report = run(args.manifest, args.paths_config, args.evidence, args.lane, now)
     except DoctorInputError as exc:
         code, report = invalid_input(exc)
+    except Exception as exc:  # noqa: BLE001 - exit 1 means degraded; an unexpected error must not
+        # read as a verdict. Only the exception type is reported, never its (input-derived) text.
+        code, report = invalid_input(DoctorInputError("unexpected " + type(exc).__name__
+                                                      + " while evaluating; treated as invalid input"))
     sys.stdout.write(json.dumps(report, sort_keys=True, ensure_ascii=True) + "\n")
     return code
 

@@ -9,13 +9,19 @@ evaluator's own loader.
 Every transition runs under one bounded OS lock, uses a strictly increasing version,
 publishes atomically (exclusive temp file, fsync, read-back, compare-and-swap against the
 bytes read under the lock, os.replace, directory fsync where the OS supports it) and
-verifies the result through the evaluator. A refused transition publishes nothing.
+verifies the result through the evaluator. A refused transition publishes nothing. The
+compare-and-swap re-read narrows, but cannot close, a race with a writer that ignores the
+lock.
 
 * ``initialize_frozen`` publishes ``frozen=true`` bound to one exact, validated policy.
   It never replaces an existing file silently: replacing requires the SHA-256 of the
   exact existing bytes, keeps those bytes as evidence, and still publishes frozen, so it
   can never grant anything. An unreadable existing state also needs the caller's known
   version high-water mark, so the new version stays above anything the caller accepted.
+  Without a READABLE previous state (first initialization, missing or corrupt file) every
+  feature the policy declares starts REVOKED: a lost denial can never come back as a
+  grant, and each feature needs its own authorized ``unrevoke`` (RCO2 R1). A readable
+  previous state keeps its revocations.
 * ``freeze`` and ``revoke`` are deny-only. They need no authorization, and they carry the
   previous ``updated_utc`` forward: a deny action never refreshes the freshness that the
   policy's ``revocation_max_age_seconds`` checks, so it cannot re-enable a stale state.
@@ -23,11 +29,14 @@ verifies the result through the evaluator. A refused transition publishes nothin
   evaluator already denies everything then); use ``initialize_frozen``.
 * ``unfreeze``, ``unrevoke`` and ``reattest`` are grants. They refuse unless the caller
   passes an ``OperatorAuthorization`` bound to this exact policy digest, current version,
-  action and feature set, unexpired and short-lived, AND a provenance verifier injected
-  by the trusted caller returns exactly ``True`` for it. No verifier ships with this
-  module, so no operational grant is executable until a provenance adapter is reviewed.
-  A string such as "operator" is never an authorization. A grant is single-use: it binds
-  the current version, which the grant itself advances.
+  SHA-256 of the current state bytes (so a reused version number cannot replay a grant,
+  RCO2 R2), action and feature set, unexpired and short-lived, AND a provenance verifier
+  injected by the trusted caller returns exactly ``True`` for it. No verifier ships with
+  this module, so no operational grant is executable until a provenance adapter is
+  reviewed. A string such as "operator" is never an authorization. A grant is single-use:
+  it binds the current state, which the grant itself replaces. Only ``reattest`` refreshes
+  ``updated_utc``; ``unfreeze`` and ``unrevoke`` carry it forward, so they never silently
+  re-attest a stale state (RCO2 R3).
 
 In-process capabilities are not a security boundary against code running in the same
 process. The authenticity of an operator grant must come from the reviewed provenance
@@ -45,6 +54,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import stat
 import time
 
 if __package__:
@@ -84,7 +94,15 @@ class AuthorizationRefused(RevocationError):
 
 
 class PublicationError(RevocationError):
-    """Publication or its read-back failed; re-read the on-disk state (it fails closed)."""
+    """Publication failed BEFORE the replace: nothing was published (``published`` is False)."""
+    published = False
+
+
+class PublishedButUnverified(PublicationError):
+    """Raised AFTER the replace: the new bytes ARE live (``published`` is True), but the
+    directory fsync, the read-back or the evaluator check failed. Re-read the on-disk state;
+    the evaluator fails closed on anything it cannot parse (RCO2 N2)."""
+    published = True
 
 
 @dataclass(frozen=True)
@@ -96,6 +114,7 @@ class OperatorAuthorization:
     action: str
     policy_sha256: str
     from_version: int
+    from_state_sha256: str
     features: tuple
     expires_utc: str
     provenance: object
@@ -144,6 +163,25 @@ def _paths(runtime_root) -> tuple[Path, Path, Path, Path]:
     if not root.is_dir():
         raise RevocationError("runtime_root does not exist")
     return root, root / "bridge_v2", root / activation.REVOCATION_RELATIVE, root / LOCK_RELATIVE
+
+
+def _refuse_reparse(path: Path, what: str) -> None:
+    """A symlink or reparse point (junction) under the runtime root could redirect the lock,
+    the state or its directory; refuse it (RCO2 N3). A missing path is fine."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise StateInvalid(what + " cannot be inspected: " + type(exc).__name__) from exc
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise StateInvalid(what + " is a symlink or reparse point")
+
+
+def _check_local_paths(directory: Path, state_path: Path, lock_path: Path) -> None:
+    _refuse_reparse(directory, "bridge_v2 directory")
+    _refuse_reparse(state_path, "revocation state")
+    _refuse_reparse(lock_path, "revocation lock")
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -216,6 +254,8 @@ else:
 def _locked(lock_path: Path, timeout):
     if type(timeout) not in (int, float) or not 0 < timeout <= MAX_LOCK_TIMEOUT:
         raise RevocationError("lock timeout must be a number in (0, 60] seconds")
+    _refuse_reparse(lock_path.parent, "bridge_v2 directory")
+    _refuse_reparse(lock_path, "revocation lock")
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
     try:
         deadline = time.monotonic() + timeout
@@ -301,17 +341,21 @@ def _publish(runtime_root: Path, directory: Path, state_path: Path, state: dict,
                 temp.unlink()
             except OSError:
                 pass  # a leftover temp file is inert; never mask the original error
-    _fsync_directory(directory)
-    if _read_raw_or_none(state_path) != data:
-        raise PublicationError("published state read-back differs from the intended bytes")
+    # From here on the new bytes are live: every failure says so (PublishedButUnverified).
     try:
+        _fsync_directory(directory)
+        if _read_raw_or_none(state_path) != data:
+            raise PublishedButUnverified("published state read-back differs from the intended bytes")
         verified = activation.load_revocation(
             runtime_root, NO_MAX_AGE, state["policy_sha256"],
             activation._parse_utc(state["updated_utc"], "revocation updated_utc"), min_version=state["version"])
-    except activation.ActivationError as exc:
-        raise PublicationError("the evaluator rejects the published state: " + str(exc)[:160]) from exc
+    except PublishedButUnverified:
+        raise
+    except (OSError, activation.ActivationError) as exc:
+        raise PublishedButUnverified("published, but verification failed: " + type(exc).__name__ + ": "
+                                     + str(exc)[:160]) from exc
     if verified != state:
-        raise PublicationError("the evaluator reads a different state than was published")
+        raise PublishedButUnverified("published, but the evaluator reads a different state")
     return data, hashlib.sha256(data).hexdigest()
 
 
@@ -327,7 +371,8 @@ def _receipt(action: str, previous: dict | None, previous_raw: bytes | None, sta
 
 def read_state(runtime_root, policy_sha256: str) -> dict:
     """Read-only: the current state exactly as the evaluator parses it, bound to this policy."""
-    root, _directory, state_path, _lock = _paths(runtime_root)
+    root, directory, state_path, lock_path = _paths(runtime_root)
+    _check_local_paths(directory, state_path, lock_path)
     raw = _read_raw_or_none(state_path)
     if raw is None:
         raise StateMissing("no revocation state exists")
@@ -354,8 +399,10 @@ def initialize_frozen(runtime_root, policy: dict, policy_sha256: str, *, now: da
     root, directory, state_path, lock_path = _paths(runtime_root)
     directory.mkdir(exist_ok=True)
     with _locked(lock_path, lock_timeout):
+        _refuse_reparse(state_path, "revocation state")
         raw = _read_raw_or_none(state_path)
-        previous, revoked, evidence = None, [], None
+        # R1: without a readable previous state, every declared feature starts revoked.
+        previous, revoked, evidence = None, sorted(policy["features"]), None
         if raw is None:
             if replace_existing_sha256 is not None:
                 raise RevocationError("nothing to replace: no revocation state exists")
@@ -395,6 +442,7 @@ def _transition(action: str, runtime_root, policy_sha256: str, change, *, now, e
     if not directory.is_dir():
         raise StateMissing("no revocation state exists; use initialize_frozen")
     with _locked(lock_path, lock_timeout):
+        _refuse_reparse(state_path, "revocation state")
         raw = _read_raw_or_none(state_path)
         if raw is None:
             raise StateMissing("no revocation state exists; use initialize_frozen")
@@ -405,26 +453,29 @@ def _transition(action: str, runtime_root, policy_sha256: str, change, *, now, e
             raise RevocationError("revocation version changed (compare-and-swap refused)")
         grant = action in GRANT_ACTIONS
         if grant:
-            _check_authorization(authorization, verifier, action, policy_sha256, current, features, current_time)
+            _check_authorization(authorization, verifier, action, policy_sha256, current, raw, features,
+                                 current_time)
         state = change(dict(current, revoked=sorted(set(current["revoked"]))))
         state["version"] = current["version"] + 1
         state["revoked"] = sorted(set(state["revoked"]))
-        # Only an authorized grant attests freshness; a deny action carries it forward unchanged.
-        state["updated_utc"] = _stamp(current_time) if grant else current["updated_utc"]
+        # Only an authorized reattest attests freshness (R3); every other transition carries it forward.
+        state["updated_utc"] = _stamp(current_time) if action == "reattest" else current["updated_utc"]
         _data, sha256 = _publish(root, directory, state_path, state, raw)
         return _receipt(action, current, raw, state, sha256, current_time)
 
 
 def _check_authorization(authorization, verifier, action: str, policy_sha256: str, current: dict,
-                         features: tuple, now: datetime) -> None:
+                         raw: bytes, features: tuple, now: datetime) -> None:
     if type(authorization) is not OperatorAuthorization:
         raise AuthorizationRefused("an OperatorAuthorization capability is required; strings and look-alikes are refused")
     if verifier is None or not callable(verifier):
         raise AuthorizationRefused("no reviewed provenance verifier was injected; grants are refused by default")
     if (authorization.action != action or authorization.policy_sha256 != policy_sha256
             or type(authorization.from_version) is not int or authorization.from_version != current["version"]
+            or type(authorization.from_state_sha256) is not str
+            or authorization.from_state_sha256 != hashlib.sha256(raw).hexdigest()
             or type(authorization.features) is not tuple or authorization.features != features):
-        raise AuthorizationRefused("authorization is bound to another action, policy, version or feature set")
+        raise AuthorizationRefused("authorization is bound to another action, policy, state or feature set")
     try:
         expires = activation._parse_utc(authorization.expires_utc, "authorization expires_utc")
     except activation.ActivationError as exc:

@@ -83,10 +83,13 @@ def env(request, tmp_path):
             self.manifest_hash = sha256_file(manifest)
 
         def run(self, *, agent=AGENT, task=TASK, thread=THREAD, reason=REASON, digest=DIGEST,
-                wt=None, bundle_root=None, manifest_hash=None, mode="canonical", anchors=True):
+                wt=None, bundle_root=None, manifest_hash=None, mode="canonical", anchors=True,
+                progress=None):
             wt = str(worktree) if wt is None else wt
             args = {"Agent": agent, "TaskId": task, "ThreadId": thread, "Worktree": wt,
                     "Reason": reason, "CheckpointDigest": digest}
+            if progress is not None:
+                args["ProgressKey"] = progress
             if anchors:
                 args["BundleRoot"] = str(bundle) if bundle_root is None else bundle_root
                 args["ExpectedManifestHash"] = self.manifest_hash if manifest_hash is None else manifest_hash
@@ -199,6 +202,68 @@ def test_unavailable_sentinel_is_bound_to_its_reason(env, reason, digest):
     ok(proc, result, alive, "unknown", 1)
     assert result["reason_code"] == "invalid_checkpoint_sentinel"
     assert env.calls() == []
+
+
+# --- progress key: heartbeat rewrites do not alert again --------------------------------------
+
+P1, P2 = "1" * 64, "2" * 64
+
+
+def _key(*parts):
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def test_same_progress_key_publishes_once_despite_new_checkpoint_bytes(env):
+    ok(*env.run(digest="a" * 64, progress=P1), "published")
+    proc, result, alive = env.run(digest="b" * 64, progress=P1)  # heartbeat rewrite
+    ok(proc, result, alive, "already_reported")
+    [call] = env.calls()
+    assert json.loads(call["PayloadJson"])["checkpoint_digest"] == "a" * 64  # real byte hash kept
+    entry = env.ledger()["entries"][0]
+    assert (entry["progress_key"], entry["checkpoint_digest"]) == (P1, "a" * 64)
+
+
+def test_changed_progress_key_publishes_again(env):
+    ok(*env.run(progress=P1), "published")
+    ok(*env.run(progress=P2), "published")
+    assert len(env.calls()) == 2
+
+
+def test_alert_key_formula_and_domain_separation(env):
+    _, legacy, _ = env.run()
+    assert legacy["alert_key"] == _key(AGENT, THREAD, REASON, DIGEST)  # unchanged without ProgressKey
+    _, tagged, _ = env.run(progress=DIGEST)  # same hex, other key space
+    assert tagged["status"] == "published"
+    assert tagged["alert_key"] == _key(AGENT, THREAD, REASON, "progress", DIGEST) != legacy["alert_key"]
+
+
+@pytest.mark.parametrize("progress,code", [
+    ("A" * 64, "invalid_progress_key"),
+    ("1" * 63, "invalid_progress_key"),
+    ("g" * 64, "invalid_progress_key"),
+    (" " + "1" * 63, "invalid_progress_key"),
+    ("0" * 64, "invalid_checkpoint_sentinel"),  # zero key needs the unavailable sentinel
+])
+def test_invalid_progress_key_fails_closed(env, progress, code):
+    proc, result, alive = env.run(progress=progress)
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == code
+    assert env.calls() == [] and env.ledger() is None
+
+
+def test_unavailable_sentinel_with_progress_key(env):
+    zero = "0" * 64
+    ok(*env.run(reason="checkpoint_unavailable", digest=zero, progress=zero), "published")
+    proc, result, alive = env.run(reason="checkpoint_unavailable", digest=zero, progress=P1)
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "invalid_checkpoint_sentinel"
+    assert len(env.calls()) == 1
+
+
+def test_event_timestamp_is_iso_utc_in_both_shells(env):
+    _, result, _ = env.run()
+    assert result["event_ts_utc"] == "2026-09-29T06:00:00.0000000Z"
+    assert env.ledger()["entries"][0]["event_ts_utc"] == "2026-09-29T06:00:00.0000000Z"
 
 
 # --- uncertain delivery: visible, never blindly retried ------------------------------------

@@ -161,7 +161,7 @@ $results=@(1..2 | ForEach-Object {{
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'operator_failure', 'ordinary_wait', 'corrupt_log', 'tampered_helper'])
+@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'operator_failure', 'ordinary_wait', 'foreign_broadcast', 'operator_retracted', 'camel_control', 'corrupt_log', 'tampered_helper'])
 def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, case):
     bundle = tmp_path / 'bundle'
     helper_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
@@ -189,6 +189,12 @@ def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, ca
         event.update(agent='operator', task_id='other', type='message', status='wake_send_failed', to='')
     if case == 'ordinary_wait':
         event.update(type='message', status='awaiting_review')
+    if case == 'foreign_broadcast':
+        event.update(agent='codex-lead-1', task_id='other', to='all', type='decision', status='changes_requested')
+    if case == 'operator_retracted':
+        event.update(agent='operator', task_id='other', to='codex-lead-1', type='decision', status='operator_signed_head_exact_retracted')
+    if case == 'camel_control':
+        event.update(type='message', status='changesRequested')
     if case == 'masked_hold':
         event.update(status='changes_requested')
     content = json.dumps(event) + '\n'
@@ -209,7 +215,7 @@ try {{
     report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert report['ok'] == (case not in ('corrupt_log', 'tampered_helper')), report
     if report['ok']:
-        assert report['held'] == (case in ('masked_hold', 'global_hold', 'peer_hold')), report
+        assert report['held'] == (case in ('finding', 'masked_hold', 'global_hold', 'peer_hold', 'camel_control')), report
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

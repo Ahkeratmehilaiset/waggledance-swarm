@@ -653,17 +653,26 @@ function Test-WdContinuityControlEvents {
         if ($event.PSObject.Properties['to']) { $recipients = @(([string]$event.to) -split '[,;\s]+' | Where-Object { $_ }) }
         # A reply about another task is not a lane-wide HOLD merely because
         # it was addressed to this lane. Preserve task and global controls.
-        $inScope = $event.task_id -ceq $TaskId -or $recipients -ccontains 'all' -or
-            ($event.agent -ceq 'operator' -and (-not $recipients.Count -or $recipients -ccontains $Agent))
+        $sameTask = $event.task_id -ceq $TaskId
+        $inScope = $sameTask -or
+            ($event.agent -ceq 'operator' -and (-not $recipients.Count -or
+                $recipients -ccontains 'all' -or $recipients -ccontains $Agent))
         if (-not $inScope) { continue }
         # No producer-clock floor: a standing/backdated control must not vanish
         # when the checkpoint is rewritten. We do not infer a HOLD release.
         # Do not allow a later ordinary message to hide an earlier control.
         # Status tokens express controls; ordinary awaiting/result/failure
-        # observations and positive findings are not themselves safety HOLDs.
+        # observations are not themselves safety HOLDs. Same-task findings
+        # remain conservative blockers until the task is reconciled manually.
         # This does not infer release from a later approval or normal message.
-        if ($event.type -ceq 'blocked' -or
-            $event.status -imatch '(?:^|[_-])(hold|held|pause|paused|stop|stopped|freeze|frozen|block|blocked|blocking|cancel|cancelled|canceled|veto|incident|reject|rejected|abort|aborted|kill|suspend|suspended|unsafe|withdrawn|retracted|revoked|deny|denied|nack|quarantine|rollback|revert|changes_requested|changesrequested)(?:$|[_-])') {
+        $statusTokens = (([string]$event.status -creplace '([a-z])([A-Z])', '$1_$2').ToLowerInvariant() `
+            -replace 'changes[_-]requested', 'changesrequested' -replace 'on[_-]hold', 'onhold') -split '[^a-z0-9]+'
+        $controlTokens = @('hold','held','holding','onhold','pause','paused','block','blocked',
+            'cancel','cancelled','canceled','veto','vetoed','freeze','frozen','stop','stopped',
+            'halt','halted','abort','aborted','quarantine','quarantined','rollback','revert',
+            'reverted','changesrequested')
+        if ($event.type -ceq 'blocked' -or ($sameTask -and $event.type -ceq 'finding') -or
+            @($statusTokens | Where-Object { $controlTokens -ccontains $_ }).Count -gt 0) {
             $cache.held = $true
             return $true
         }

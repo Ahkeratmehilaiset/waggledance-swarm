@@ -90,6 +90,8 @@ def rebind(f0: dict) -> dict:
     (lambda f: f["decision"].update(enabled=1), "f0_decision_disabled"),
     (lambda f: f["pins"].update(trusted_policy_sha256=None), "f0_pins_missing"),
     (lambda f: f["pins"].update(expected_tree="X" * 40), "f0_pins_missing"),
+    # A valid 40-hex tree that differs from the signed one reaches the signature binding.
+    (lambda f: f["pins"].update(expected_tree="4" * 40), "f0_signature_invalid"),
     (lambda f: f["pins"].update(min_revocation_version=0), "f0_pins_missing"),
     (lambda f: f["pins"].update(min_revocation_version=True), "f0_pins_missing"),
     (lambda f: f["document"].pop("signature"), "f0_document_malformed"),
@@ -138,6 +140,17 @@ def test_policy_side_refusals_after_an_honest_rebind():
     f0 = f0_inputs()
     policy_of(f0)["parameters"] = {}
     assert refusal(rebind(f0)) == "f0_parameters_unknown"
+    # A policy that enables nothing may omit its expiry; it never yields F15 parameters.
+    f0 = f0_inputs(enabled=False)
+    policy_of(f0).update(expires_utc=None, revocation_max_age_seconds=None)
+    assert refusal(rebind(f0)) == "f0_policy_unbounded"
+    # Transitive requires, two levels deep: F15 -> F16 -> F17, and F17 is revoked.
+    f0 = f0_inputs()
+    for name, needs in (("F16", ["F17"]), ("F17", [])):
+        policy_of(f0)["features"][name].update(enabled=True, stage=1, requires=needs)
+    policy_of(f0)["features"]["F15"]["requires"] = ["F16"]
+    f0["revocation"]["revoked"] = ["F17"]
+    assert refusal(rebind(f0)) == "f0_dependency_blocked"
 
 
 @pytest.mark.parametrize("now", [None, "2026-09-29T21:00:00Z", datetime(2026, 9, 29, 21, 0)])
@@ -182,24 +195,29 @@ def test_integration_real_f0_decision_is_accepted(tmp_path):
     assert switch_activation(f0, NOW)["parameters"] == PARAMETERS
 
 
-@pytest.mark.parametrize("change", [
-    lambda f: f["revocation"].update(frozen=True),
-    lambda f: f["revocation"].update(revoked=["F15"]),
-    lambda f: f["revocation"].update(updated_utc=ago(hours=2)),
-    lambda f: f["pins"].update(min_revocation_version=4),
-    lambda f: f["pins"].update(expected_head="3" * 40),
-    lambda f: f["pins"].update(trusted_policy_sha256="d" * 64),
-    lambda f: f["document"]["signature"].update(expires_utc=ago(minutes=1), signed_utc=ago(hours=2)),
+@pytest.mark.parametrize("change, code", [
+    (lambda f: f["revocation"].update(frozen=True), "f0_frozen"),
+    (lambda f: f["revocation"].update(revoked=["F15"]), "f0_revoked"),
+    (lambda f: f["revocation"].update(updated_utc=ago(hours=2)), "f0_revocation_stale"),
+    (lambda f: f["pins"].update(min_revocation_version=4), "f0_revocation_rollback"),
+    (lambda f: f["pins"].update(expected_head="3" * 40), "f0_signature_invalid"),
+    (lambda f: f["pins"].update(expected_tree="4" * 40), "f0_signature_invalid"),
+    (lambda f: f["pins"].update(trusted_policy_sha256="d" * 64), "f0_policy_unbound"),
+    (lambda f: f["document"]["signature"].update(expires_utc=ago(minutes=1), signed_utc=ago(hours=2)), "f0_expired"),
 ])
-def test_integration_both_refuse_the_same_inputs(tmp_path, change):
+def test_integration_both_refuse_the_same_inputs(tmp_path, change, code):
     f0 = f0_inputs()
     change(f0)
     decision = activation.evaluate("F15", **write_f0(tmp_path, f0))
     assert decision.enabled is False
     f0["decision"] = asdict(decision)
     assert refusal(f0) == "f0_decision_disabled"  # F0's refusal is carried, never overridden
-    f0["decision"] = dict(asdict(decision), enabled=True)  # even a forged enable is refused
-    assert refusal(f0) != ""
+    # A forged enable BOUND to the real policy digest and revocation version. F0's disabled Decision
+    # has a None digest or version, so an unbound forgery would stop at f0_decision_unbound instead.
+    f0["decision"] = {"feature": "F15", "enabled": True, "reason": "forged",
+                      "policy_sha256": activation.canonical_sha256(policy_of(f0)),
+                      "revocation_version": f0["revocation"]["version"]}
+    assert refusal(f0) == code
 
 
 def test_integration_kill_switch_is_carried_by_the_decision(tmp_path):

@@ -106,6 +106,20 @@ def parse_utc(value: Any) -> datetime | None:
         return None
 
 
+def reply_token(value: Any) -> str | None:
+    """The exact reply IDENTITY: the instant in UTC with every fraction digit kept (up to 9),
+    as YYYY-MM-DDTHH:MM:SS.fffffffffZ. Two replies that differ only in the 7th fraction digit
+    stay distinct, and zone-equivalent spellings of one instant (Z, +00:00, +03:00) are equal.
+    parse_utc keeps only microseconds and is for duration arithmetic, never identity (Tools
+    F1-PRECISION). The zone is whole minutes, so it never touches the fraction."""
+    if parse_utc(value) is None:
+        return None
+    base, fraction, zone = TIMESTAMP_RE.match(value).groups()
+    whole = datetime.fromisoformat(base + ("+00:00" if zone == "Z" else zone)).astimezone(timezone.utc)
+    return (f"{whole.year:04d}-{whole.month:02d}-{whole.day:02d}T{whole.hour:02d}:{whole.minute:02d}:"
+            f"{whole.second:02d}.{(fraction or '').ljust(9, '0')}Z")
+
+
 def _local_absolute(raw: str) -> bool:
     """A drive-letter path on Windows, '/...' elsewhere; UNC, device and '//' refused."""
     if not raw or "\0" in raw:
@@ -247,7 +261,7 @@ def validate_stage(record: Any, now: datetime | None) -> dict:
     result = {"stage": stage, "observed": observed, "target": record["target"], "request_id": request_id,
               "requester": record["requester"], "session": record["requester_session_id"],
               "delivery_id": record["delivery_id"], "reply": parse_utc(reply) if reply else None,
-              "outcome": record.get("action_outcome")}
+              "reply_token": reply_token(reply) if reply else None, "outcome": record.get("action_outcome")}
     if "metadata" in record:
         result["metadata"] = _metadata(record["metadata"])
     return result
@@ -295,12 +309,14 @@ def turn_identity(record: dict) -> tuple | None:
     wrote identifies a turn: that reply is the turn's own answer. A request alone names the
     REQUEST, not the turn, so two separate reply-less wakes on one request stay two
     unidentified outcomes, never one merged turn (RCO1 SF1). One turn must keep ONE identity:
-    written once with a delivery id and once without, it is counted twice (documented)."""
+    written once with a delivery id and once without, it is counted twice (documented): only a
+    genuine binding could prove them one turn, and none exists. The reply part of the key is the
+    exact normalized reply token (reply_token), never a microsecond datetime."""
     if record["delivery_id"]:
         return ("delivery", record["target"], record["delivery_id"])
-    if record["request_id"] is not None and record["session"] and record["reply"] is not None:
+    if record["request_id"] is not None and record["session"] and record.get("reply_token"):
         return ("reply", record["target"], record["request_id"], record["requester"], record["session"],
-                record["reply"].isoformat())
+                record["reply_token"])
     return None
 
 
@@ -350,7 +366,7 @@ def build_report(records: list[dict], *, wake: list[dict], inputs: dict, errors:
         key = (record["request_id"], record["requester"], record["session"], record["target"])
         flow = flows.setdefault(key, {"stages": {}, "replies": {}, "deliveries": set()})
         if record["stage"] in REPLY_STAGES:
-            reply_key = record["reply"].isoformat() if record["reply"] else ""
+            reply_key = record["reply_token"] or ""   # exact identity; durations still use the datetimes
             slot = flow["replies"].setdefault(reply_key, {})
             slot[record["stage"]] = min(filter(None, (slot.get(record["stage"]), record["observed"])))
         current = flow["stages"].get(record["stage"])

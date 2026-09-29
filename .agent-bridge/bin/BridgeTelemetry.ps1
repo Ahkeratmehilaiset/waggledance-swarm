@@ -57,6 +57,69 @@ function Get-BridgeStageBinding {
     return $null
 }
 
+function Test-BridgeObservationPrintable {
+    # Python str.isprintable(): no Unicode 'Other' (Cc Cf Cs Co Cn) or 'Separator' (Zl Zp Zs)
+    # code point except the ASCII space. Surrogate pairs are one code point.
+    param([string]$Value)
+    $index = 0
+    while ($index -lt $Value.Length) {
+        $category = [string][Globalization.CharUnicodeInfo]::GetUnicodeCategory($Value, $index)
+        if ($category -in @('Control','Format','Surrogate','PrivateUse','OtherNotAssigned','LineSeparator','ParagraphSeparator')) { return $false }
+        if ($category -ceq 'SpaceSeparator' -and $Value[$index] -ne ' ') { return $false }
+        if ([char]::IsSurrogatePair($Value, $index)) { $index += 2 } else { $index += 1 }
+    }
+    return $true
+}
+function Test-BridgeObservationId {
+    # The reader's _bounded_id: a string of at most 256 printable characters (non-empty unless allowed).
+    param($Value, [switch]$AllowEmpty)
+    return ($Value -is [string] -and ($AllowEmpty -or $Value -ne '') -and $Value.Length -le 256 -and
+            (Test-BridgeObservationPrintable $Value))
+}
+function Test-BridgeObservationTime {
+    # The reader's parse_utc: at most 40 characters, YYYY-MM-DDTHH:MM:SS[.1-9 digits] then Z or
+    # +HH:MM/-HH:MM, a real calendar time, representable in UTC. ASCII digits only.
+    param([string]$Value)
+    if ($Value.Length -gt 40) { return $false }
+    $match = [regex]::Match($Value, '^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})\z')
+    if (-not $match.Success) { return $false }
+    $local = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($match.Groups[1].Value, 'yyyy-MM-ddTHH:mm:ss',
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$local)) { return $false }
+    $zone = $match.Groups[3].Value
+    if ($zone -ceq 'Z') { return $true }
+    $hours = [int]$zone.Substring(1, 2); $minutes = [int]$zone.Substring(4, 2)
+    if ($hours -gt 23 -or $minutes -gt 59) { return $false }
+    $offsetTicks = ([timespan]::new($hours, $minutes, 0)).Ticks
+    if ($zone[0] -eq '-') { $offsetTicks = -$offsetTicks }
+    $utcTicks = $local.Ticks - $offsetTicks
+    return ($utcTicks -ge [datetime]::MinValue.Ticks -and $utcTicks -le [datetime]::MaxValue.Ticks)
+}
+function Get-BridgeStageObservationProblem {
+    # The first reason tools/bridge_wake_telemetry.validate_stage would discard this record, or ''.
+    param([Parameter(Mandatory)] $Observation)
+    $target = $Observation['target']
+    if (-not ($target -is [string]) -or $target -cnotmatch '^[a-z][a-z0-9-]{0,63}\z') { return 'target must be a lowercase agent id' }
+    foreach ($name in @('delivery_id', 'queue_id', 'report_reference')) {
+        $value = $Observation[$name]
+        if (-not ($value -is [string]) -or $value.Length -gt 1024) { return ($name + ' must be a string of at most 1024 characters') }
+    }
+    if ($null -eq $Observation['request_id']) {
+        if ($null -ne $Observation['requester'] -or $null -ne $Observation['requester_session_id']) { return 'a requester needs a request_id' }
+    } else {
+        if (-not (Test-BridgeObservationId $Observation['request_id'])) { return 'request_id must be a non-empty printable string of at most 256 characters' }
+        foreach ($name in @('requester', 'requester_session_id')) {
+            $value = $Observation[$name]
+            if ($null -ne $value -and -not (Test-BridgeObservationId $value -AllowEmpty)) { return ($name + ' must be a printable string of at most 256 characters') }
+        }
+    }
+    $reply = $Observation['reply_ts_utc']
+    if (-not ($reply -is [string]) -or ($reply -and -not (Test-BridgeObservationTime $reply))) {
+        return 'reply_ts_utc must be empty or ISO-8601 with a zone (at most 40 characters)'
+    }
+    return ''
+}
+
 function Write-BridgeWakeObservation {
     param([string]$Path,[object[]]$Events,
           [string]$Reason='',[Nullable[long]]$Watermark=$null,[Nullable[double]]$LatencyMs=$null,[string]$LatencyBasis='')
@@ -145,6 +208,14 @@ function Write-BridgeStageObservation {
         }
         if (-not $observation.request_id) { return }
         if(-not $ReplyTimestamp -and $binding.PSObject.Properties['reply_ts_utc'] -and $binding.reply_ts_utc){$observation.reply_ts_utc=[string]$binding.reply_ts_utc}
+    }
+    # F1-WRITER-READER (Tools 381ee2ca): refuse exactly what the reader's validate_stage would
+    # discard, BEFORE any directory or file exists. turn_completed throws visibly; the live flow
+    # stages stay best-effort and record nothing (the reader would drop that record anyway).
+    $problem = Get-BridgeStageObservationProblem -Observation $observation
+    if ($problem) {
+        if ($Stage -ceq 'turn_completed') { throw ('turn_completed observation refused: ' + $problem) }
+        return
     }
     $directory = Join-Path $BridgeRoot 'shared\telemetry'
     [void][IO.Directory]::CreateDirectory($directory)

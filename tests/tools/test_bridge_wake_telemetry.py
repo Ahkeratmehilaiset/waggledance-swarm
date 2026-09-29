@@ -366,6 +366,25 @@ def test_writer_records_metadata_and_explicit_outcome_that_the_reporter_accepts(
      "-Request ([pscustomobject]@{request_id='r-1';agent='codex-lead-1'})", "needs a turn identity"),  # no session
     ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-5 "
      "-Request ([pscustomobject]@{agent='codex-lead-1'})", "does not bind a request"),              # never silent
+    # Tools F1-WRITER-READER: what the reader would discard is refused before any file exists.
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp 'not-a-time'",
+     "reply_ts_utc must be empty or ISO-8601"),
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp \"2026-09-29T21:00:00Z`n\"",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # final newline
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-09-29T21:00:00.1234567890Z'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # 10 digits
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-02-30T21:00:00Z'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # no such day
+    ("-Stage turn_completed -ActionOutcome noop -Request $request -ReplyTimestamp '2026-09-29T21:00:00+24:00'",
+     "reply_ts_utc must be empty or ISO-8601"),                                                      # no such zone
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId ('d' * 1025)",
+     "delivery_id must be a string of at most 1024 characters"),                                     # overlong
+    ("-Stage turn_completed -ActionOutcome noop -DeliveryId d-7 "
+     "-Request ([pscustomobject]@{request_id=\"r-1`n\";agent='codex-lead-1';session_id='s-1'})",
+     "request_id must be a non-empty printable string"),                                             # newline id
+    ("-Stage turn_completed -ActionOutcome noop -ReplyTimestamp '2026-09-29T21:00:00Z' "
+     "-Request ([pscustomobject]@{request_id='r-1';agent='codex-lead-1';session_id=('s' * 257)})",
+     "requester_session_id must be a printable string"),                                             # overlong session
     ("-Stage answer_durable -ActionOutcome acted", "recorded only with stage turn_completed"),
     ("-Stage watcher_seen -Reason 'Free Text'", "lowercase token"),
     ("-Stage watcher_seen -Watermark -1", "non-negative byte offset"),
@@ -420,6 +439,50 @@ def test_separate_reply_less_wakes_on_one_request_are_never_one_turn(tmp_path):
                  for i, outcome in enumerate(("noop", "noop", "acted"), 1)]
         ratio = _report(_write(tmp_path / tag, *twins))["noop_ratio"]
         assert (ratio["turns"], ratio["noop"], ratio["acted"], ratio["unidentified_outcomes"]) == (3, 2, 1, 0)
+
+
+def test_the_reply_identity_keeps_every_fraction_digit_and_normalizes_the_zone():
+    # Tools F1-PRECISION: the identity is the exact token; parse_utc (microseconds) is for durations.
+    token = telemetry.reply_token
+    assert token("2026-09-29T21:01:00Z") == "2026-09-29T21:01:00.000000000Z"
+    assert token("2026-09-29T21:01:00.123456789+00:00") == "2026-09-29T21:01:00.123456789Z"
+    assert token("2026-09-30T00:01:00.1234567+03:00") == "2026-09-29T21:01:00.123456700Z"
+    assert token("2026-09-29T21:01:00.1234567Z") != token("2026-09-29T21:01:00.1234568Z")
+    assert telemetry.parse_utc("2026-09-29T21:01:00.1234567Z") == telemetry.parse_utc("2026-09-29T21:01:00.1234568Z")
+    for bad in (None, "", "not-a-time", "2026-09-29T21:01:00", "2026-02-30T21:01:00Z", "2026-09-29T21:01:00Z\n"):
+        assert token(bad) is None
+
+
+def test_replies_differing_only_in_the_seventh_digit_are_two_turns(tmp_path):
+    first, second = "2026-09-29T21:01:00.1234567Z", "2026-09-29T21:01:00.1234568Z"
+    records = [_stage("turn_completed", 70, action_outcome="noop", reply=first),
+               _stage("turn_completed", 71, action_outcome="acted", reply=second)]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["turns"], ratio["conflicting_turns"], ratio["noop"], ratio["acted"]) == (2, 0, 1, 1)
+
+
+def test_zone_equivalent_spellings_of_one_reply_are_one_turn(tmp_path):
+    records = [_stage("turn_completed", 70, action_outcome="noop", reply="2026-09-29T21:01:00.5Z"),
+               _stage("turn_completed", 71, action_outcome="noop", reply="2026-09-30T00:01:00.5000000+03:00")]
+    ratio = _report(_write(tmp_path / "t", *records))["noop_ratio"]
+    assert (ratio["turns"], ratio["duplicate_outcomes"], ratio["unidentified_outcomes"]) == (1, 1, 0)
+
+
+@pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_flow_stage_the_reader_would_discard_records_nothing_and_its_twin_records(tmp_path, shell):
+    # Live flow stages stay best-effort (no new exception for their callers) but never write garbage.
+    bad = _ps(shell, tmp_path / "bad", f"Write-BridgeStageObservation -BridgeRoot '{tmp_path / 'bad'}' "
+                                       f"-Stage watcher_seen -Request {REQUEST} -Target claude-rco-2 -ReplyTimestamp 'not-a-time'")
+    assert bad.returncode == 0, bad.stderr
+    assert not (tmp_path / "bad" / "shared" / "telemetry").exists()                   # not even the directory
+    good = _ps(shell, tmp_path / "good", f"Write-BridgeStageObservation -BridgeRoot '{tmp_path / 'good'}' "
+                                         f"-Stage watcher_seen -Request {REQUEST} -Target claude-rco-2 "
+                                         "-ReplyTimestamp '2026-09-29T21:01:00.1234567Z'")
+    assert good.returncode == 0, good.stderr
+    [record] = _stages(tmp_path / "good")
+    assert record["reply_ts_utc"] == "2026-09-29T21:01:00.1234567Z"
+    assert _report(tmp_path / "good" / "shared" / "telemetry", now=None)["errors"] == {}
 
 
 def test_one_turn_written_with_two_identities_counts_twice_as_documented(tmp_path):

@@ -21,9 +21,12 @@ pool, and nothing here derives a pool from them.
   lifetime of at most 24 hours), and the observation was made inside that window;
 * the provider, the subject (Codex auth context or Claude native session) and every
   observed limit id match the receipt;
-* the pool exists in a valid v2 model registry, belongs to the same provider, is
-  verified there at ``now`` (the registry's ``pool_state`` when it has one, so a verified
-  pool past its TTL is stale), and its ``limit_id`` (when set) is covered by the receipt;
+* the pool exists in a valid v2 model registry (RCO1 af1d0ef8 or later), belongs to the
+  same provider, is ``verified`` at ``now`` by the registry's own ``pool_state`` (a verified
+  pool past its TTL is stale, a future-dated one unknown: both refuse), and its
+  ``limit_id`` (when set) is covered by the receipt. The decision's ``expires_at_utc`` is
+  the EARLIER of the receipt expiry and the pool's freshness expiry (``measured_at`` +
+  ``ttl_seconds``), so a stored binding never outlives the registry verification;
 * last, an injected verifier returns exactly ``True`` for a copy of the receipt. The
   receipt's authenticity comes from the trusted caller's reviewed verifier; none ships
   with this module, so nothing binds by default.
@@ -42,12 +45,7 @@ import json
 import re
 from typing import Any, Callable
 
-from tools.wd_model_registry import MEASURING_KINDS, SCHEMA_V2, validate_registry
-
-try:  # F3 registry review fixes (RCO1 af1d0ef8): pools carry a TTL and a verified pool expires.
-    from tools.wd_model_registry import pool_state as _registry_pool_state
-except ImportError:  # an earlier registry revision: pools carry no freshness yet
-    _registry_pool_state = None
+from tools.wd_model_registry import MEASURING_KINDS, SCHEMA_V2, pool_state, validate_registry
 
 RECEIPT_SCHEMA = "wd.pool-binding-receipt.v1"
 DECISION_SCHEMA = "wd.pool-binding-decision.v1"
@@ -75,6 +73,8 @@ POOL_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 LIMIT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})")
+# The registry's measured_at format: a UTC date (read as its start) or a UTC second.
+REGISTRY_WHEN_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z)?")
 
 
 class Refused(Exception):
@@ -197,7 +197,24 @@ def _receipt(receipt: Any) -> dict:
     return receipt
 
 
-def _pool(registry: Any, pool_id: str, provider: str, now: datetime) -> dict:
+def _pool_fresh_until(pool: dict) -> datetime:
+    """measured_at + ttl_seconds of a pool the registry already called verified."""
+    measured = pool.get("measured_at")
+    ttl = pool.get("ttl_seconds")
+    _require(type(measured) is str and REGISTRY_WHEN_RE.fullmatch(measured) is not None
+             and type(ttl) is int and ttl > 0, "pool_freshness_unknown")
+    try:
+        if "T" in measured:
+            start = datetime.strptime(measured[:-1] + "+0000", "%Y-%m-%dT%H:%M:%S%z")
+        else:
+            start = datetime.strptime(measured + "+0000", "%Y-%m-%d%z")
+        return start + timedelta(seconds=ttl)
+    except (ValueError, OverflowError):
+        raise Refused("pool_freshness_unknown") from None
+
+
+def _pool(registry: Any, pool_id: str, provider: str, now: datetime) -> tuple[dict, datetime]:
+    """The verified pool and the moment its registry verification expires."""
     try:
         validate_registry(registry)
     except Exception:  # noqa: BLE001 - any registry defect is a refusal, never a guess
@@ -206,16 +223,15 @@ def _pool(registry: Any, pool_id: str, provider: str, now: datetime) -> dict:
     pool = registry["pools"].get(pool_id)
     _require(pool is not None, "pool_not_in_registry")
     _require(pool["provider"] == provider, "pool_provider_mismatch")
-    if _registry_pool_state is not None:
-        # The registry's own rule: verified only inside the pool's TTL (stale and unknown are not verified).
-        try:
-            state = _registry_pool_state(pool, now)
-        except Exception:  # noqa: BLE001
-            state = "unknown"
-    else:
-        state = "verified" if pool["verification"] == "verified" else "unverified"
+    # The registry's own rule: verified only inside the pool's TTL; stale and unknown refuse.
+    try:
+        state = pool_state(pool, now)
+    except Exception:  # noqa: BLE001 - an unreadable pool date is unknown, never verified
+        state = "unknown"
     _require(state == "verified", "pool_state_" + (state if state in ("stale", "unverified") else "unknown"))
-    return pool
+    fresh_until = _pool_fresh_until(pool)
+    _require(now < fresh_until, "pool_state_stale")  # belt and braces with pool_state
+    return pool, fresh_until
 
 
 def bind_pool(observation: Any, receipt: Any, registry: Any, *,
@@ -225,7 +241,8 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         "schema": DECISION_SCHEMA, "account_pool": None, "pool_identity_state": UNVERIFIED,
         "reason": None, "provider": None, "subject_kind": None, "subject_id": None,
         "receipt_id": None, "receipt_sha256": None, "provenance_kind": None,
-        "expires_at_utc": None, "execution_allowed": False, "authority_effect": "none"}
+        "expires_at_utc": None, "receipt_expires_at_utc": None, "pool_fresh_until_utc": None,
+        "execution_allowed": False, "authority_effect": "none"}
     try:
         _require(isinstance(now, datetime) and now.tzinfo is not None, "clock_invalid")
         current = now.astimezone(timezone.utc)
@@ -242,8 +259,12 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         _require(observed - current <= FUTURE_SKEW, "observation_from_the_future")
         _require(issued <= observed < expires, "observation_outside_receipt_window")
         _require(limits <= set(body["limit_ids"]), "limit_not_covered")
-        pool = _pool(registry, body["pool"], provider, current)
+        pool, pool_fresh_until = _pool(registry, body["pool"], provider, current)
         _require(pool["limit_id"] is None or pool["limit_id"] in body["limit_ids"], "pool_limit_not_covered")
+        # The binding lasts only while BOTH the receipt and the registry verification hold.
+        decision.update(receipt_expires_at_utc=expires.isoformat(),
+                        pool_fresh_until_utc=pool_fresh_until.isoformat(),
+                        expires_at_utc=min(expires, pool_fresh_until).isoformat())
         # Authenticity last, on a copy: the answer must be exactly True.
         _require(verifier is not None and callable(verifier), "verifier_missing")
         try:

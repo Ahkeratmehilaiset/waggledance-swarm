@@ -363,7 +363,7 @@ def test_rpc_errors_do_not_invent_transport_failures(code, expected):
 POOL_NOW = datetime.now(timezone.utc)
 
 
-def _pool_registry():
+def _pool_registry(**overrides):
     import copy
     from tools.wd_model_registry import load_registry
     registry, _ = load_registry(Path(__file__).resolve().parents[2] / 'configs' / 'model_registry.json')
@@ -371,9 +371,9 @@ def _pool_registry():
     pool = {'provider': 'codex', 'limit_id': 'codex', 'window': 'weekly', 'tier': 'standard',
             'verification': 'verified',
             'provenance': {'kind': 'operator_reading', 'reference': 'plan page', 'observer': 'operator'}}
-    from tools import wd_model_registry
-    if 'ttl_seconds' in wd_model_registry.POOL_KEYS:  # pools carry freshness from RCO1 af1d0ef8 on
-        pool.update(measured_at=(POOL_NOW - timedelta(days=1)).strftime('%Y-%m-%d'), ttl_seconds=30 * 86400)
+    # A verified pool is a dated measurement with a TTL (registry af1d0ef8).
+    pool.update(measured_at=(POOL_NOW - timedelta(days=1)).strftime('%Y-%m-%d'), ttl_seconds=30 * 86400)
+    pool.update(overrides)
     registry['pools']['codex-plus-weekly'] = pool
     return registry
 
@@ -387,9 +387,9 @@ def _pool_receipt(subject):
             'provenance': {'kind': 'operator_reading', 'reference': 'reading by ops@example.test', 'observer': None}}
 
 
-def _pool_binder(subject, verifier=lambda receipt: True):
+def _pool_binder(subject, verifier=lambda receipt: True, **pool_overrides):
     from tools.bridge_pool_binding import bind_pool
-    registry = _pool_registry()
+    registry = _pool_registry(**pool_overrides)
     return lambda observation: bind_pool(observation, _pool_receipt(subject), registry, verifier=verifier,
                                          now=datetime.now(timezone.utc))
 
@@ -491,3 +491,27 @@ def test_status_expires_a_stored_binding_without_rewriting_the_store(tmp_path):
     assert rows['live']['pool_identity_state'] == 'verified_binding'
     assert rows['gone']['account_pool'] is None and rows['gone']['pool_identity_state'] == 'binding_expired'
     assert path.read_bytes() == before
+
+
+def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_path):
+    fresh_until = (POOL_NOW + timedelta(minutes=30)).replace(microsecond=0)
+    measured = (fresh_until - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    observation = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(
+        POOL_SUBJECT, measured_at=measured, ttl_seconds=3600)))
+    assert observation['account_pool'] == 'codex-plus-weekly'
+    # The receipt runs to POOL_NOW + 1 h; the stored binding ends with the pool TTL instead.
+    assert observation['pool_binding']['expires_at_utc'] == fresh_until.isoformat()
+    path = tmp_path / 'observations.db'
+    save_observation(path, observation)
+    live = status(path, now=fresh_until - timedelta(seconds=1))['observations'][0]
+    assert live['account_pool'] == 'codex-plus-weekly'
+    gone = status(path, now=fresh_until)['observations'][0]
+    assert gone['account_pool'] is None and gone['pool_identity_state'] == 'binding_expired'
+
+
+def test_a_stale_registry_pool_never_binds_and_the_missing_verifier_still_refuses():
+    stale = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(
+        POOL_SUBJECT, measured_at='2026-01-01', ttl_seconds=3600)))
+    assert stale['account_pool'] is None and stale['pool_binding']['reason'] == 'pool_state_stale'
+    missing = asyncio.run(collect_codex(Client(), 'context', pool_binder=_pool_binder(POOL_SUBJECT, verifier=None)))
+    assert missing['account_pool'] is None and missing['pool_binding']['reason'] == 'verifier_missing'

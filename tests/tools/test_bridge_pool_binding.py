@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from tools import bridge_pool_binding as binding
-from tools import wd_model_registry as registry_module
 from tools.wd_model_registry import load_registry
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,16 +30,10 @@ def iso(value: datetime) -> str:
     return value.isoformat()
 
 
-POOLS_HAVE_TTL = "ttl_seconds" in registry_module.POOL_KEYS  # RCO1 af1d0ef8 and later
-
-
 def pool_entry(verified: bool, measured_at: str = "2026-09-29", ttl_seconds: int = 30 * 86400, **values) -> dict:
-    """A pool valid under both registry revisions (with and without pool freshness)."""
-    entry = dict(values, verification="verified" if verified else "unverified")
-    if POOLS_HAVE_TTL:
-        entry.update(measured_at=measured_at if verified else "unknown",
-                     ttl_seconds=ttl_seconds if verified else None)
-    return entry
+    """A pool in the exact af1d0ef8 shape: a verified pool is a dated measurement with a TTL."""
+    return dict(values, verification="verified" if verified else "unverified",
+                measured_at=measured_at if verified else "unknown", ttl_seconds=ttl_seconds if verified else None)
 
 
 def registry(**pools) -> dict:
@@ -110,7 +103,9 @@ def test_a_complete_verified_receipt_binds():
     assert decision["reason"] is None and decision["subject_id"] == CONTEXT
     assert decision["receipt_sha256"] == binding.canonical_sha256(receipt())
     assert decision["provenance_kind"] == "operator_reading"
-    assert decision["expires_at_utc"] == iso(NOW + timedelta(hours=1))
+    assert decision["expires_at_utc"] == iso(NOW + timedelta(hours=1))  # receipt ends before the pool TTL
+    assert decision["receipt_expires_at_utc"] == iso(NOW + timedelta(hours=1))
+    assert decision["pool_fresh_until_utc"] == "2026-10-29T00:00:00+00:00"  # 2026-09-29 + 30 days
     text = json.dumps(decision)
     assert "ops@example.test" not in text and REFERENCE not in text  # free text is never copied
     assert decision["execution_allowed"] is False
@@ -237,7 +232,6 @@ def test_the_registry_pool_limit_must_be_covered_and_verified():
     assert_refused(decide(reg=unverified), "pool_state_unverified")
 
 
-@pytest.mark.skipif(not hasattr(registry_module, "pool_state"), reason="registry without pool freshness")
 def test_a_verified_pool_past_its_ttl_is_stale_and_never_binds():
     stale = registry(**{"codex-plus-weekly": pool_entry(
         True, measured_at="2026-08-01", ttl_seconds=86400, provider="codex", limit_id="codex", window="weekly",
@@ -305,3 +299,24 @@ def test_module_is_pure_by_construction():
              for node in ast.walk(tree) if isinstance(node, ast.Call)}
     assert not calls & {"open", "write", "write_text", "write_bytes", "unlink", "remove", "replace", "rename",
                         "system", "popen", "run", "now", "utcnow", "getenv"}, calls
+
+
+def test_a_pool_ttl_ending_before_the_receipt_bounds_the_binding():
+    short = registry(**{"codex-plus-weekly": pool_entry(
+        True, measured_at="2026-09-29T21:30:00Z", ttl_seconds=3600, provider="codex", limit_id="codex",
+        window="weekly", tier="standard",
+        provenance={"kind": "operator_reading", "reference": "plan page", "observer": None})})
+    decision = decide(reg=short)  # now 22:00, pool fresh until 22:30, receipt until 23:00
+    assert decision["account_pool"] == "codex-plus-weekly"
+    assert decision["expires_at_utc"] == "2026-09-29T22:30:00+00:00"  # MIN(receipt, pool freshness)
+    assert decision["receipt_expires_at_utc"] == iso(NOW + timedelta(hours=1))
+    # Negative twin: after the pool TTL but still inside the receipt window, nothing binds.
+    assert_refused(decide(reg=short, now=datetime(2026, 9, 29, 22, 40, tzinfo=timezone.utc)), "pool_state_stale")
+
+
+def test_an_undated_verified_pool_is_refused_by_the_registry_itself():
+    undated = registry(**{"codex-plus-weekly": dict(registry()["pools"]["codex-plus-weekly"], measured_at="unknown")})
+    assert_refused(decide(reg=undated), "registry_invalid")  # verified needs a date and a TTL (af1d0ef8)
+    no_ttl = registry(**{"codex-plus-weekly": dict(registry()["pools"]["codex-plus-weekly"], ttl_seconds=None)})
+    assert_refused(decide(reg=no_ttl), "registry_invalid")
+    assert decide()["account_pool"] == "codex-plus-weekly"  # success twin

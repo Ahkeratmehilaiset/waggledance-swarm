@@ -29,7 +29,7 @@ def test_pure_broker_reads_only_pinned_git_blobs(tmp_path):
     git("add", ".")
     git("commit", "-qm", "fixture")
     sha = git("rev-parse", "HEAD")
-    broker = GitBlobBroker(repo, sha)
+    broker = GitBlobBroker(repo, sha, Path(shutil.which("git")).resolve())
     (repo / "a.txt").write_text("dirty and private\n", encoding="utf-8")
     assert broker.dispatch(parse_broker_action('{"op":"read_file","path":"a.txt","start_line":1,"end_line":2}'))["text"] == "alpha\nbeta"
     assert broker.dispatch(parse_broker_action('{"op":"list_dir","path":""}'))["entries"] == ["a.txt", "sub/"]
@@ -56,19 +56,19 @@ def test_pure_broker_rejects_symlink_and_large_blob(tmp_path):
     tree = git("write-tree")
     symlink_commit = git("commit-tree", tree, "-m", "symlink")
     with pytest.raises(ValueError, match="nonregular"):
-        GitBlobBroker(repo, symlink_commit)
+        GitBlobBroker(repo, symlink_commit, Path(shutil.which("git")).resolve())
     git("read-tree", "--empty")
     (repo / "large.txt").write_bytes(b"x" * (128 * 1024 + 1))
     git("add", "large.txt")
     large_commit = git("commit-tree", git("write-tree"), "-m", "large")
-    broker = GitBlobBroker(repo, large_commit)
+    broker = GitBlobBroker(repo, large_commit, Path(shutil.which("git")).resolve())
     with pytest.raises(ValueError, match="size limit"):
         broker.dispatch({"op": "read_file", "path": "large.txt"})
     case_tree = git("mktree", input=(f"100644 blob {oid}\tA.txt\n"
                                      f"100644 blob {oid}\ta.txt\n").encode())
     case_commit = git("commit-tree", case_tree, "-m", "case collision")
     with pytest.raises(ValueError, match="case-colliding"):
-        GitBlobBroker(repo, case_commit)
+        GitBlobBroker(repo, case_commit, Path(shutil.which("git")).resolve())
 
 
 def test_pure_broker_rejects_nonfull_sha_and_git_env_override(tmp_path, monkeypatch):
@@ -76,7 +76,7 @@ def test_pure_broker_rejects_nonfull_sha_and_git_env_override(tmp_path, monkeypa
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
     with pytest.raises(ValueError, match="Full commit SHA"):
-        GitBlobBroker(repo, "abcdef")
+        GitBlobBroker(repo, "abcdef", Path(shutil.which("git")).resolve())
     monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "missing"))
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
@@ -84,7 +84,123 @@ def test_pure_broker_rejects_nonfull_sha_and_git_env_override(tmp_path, monkeypa
     # There is no commit, but caller-controlled Git overrides cannot turn
     # this into an object-store read outside the selected repository.
     with pytest.raises(ValueError, match="Git plumbing"):
-        GitBlobBroker(repo, "a" * 40)
+        GitBlobBroker(repo, "a" * 40, Path(shutil.which("git")).resolve())
+
+
+def test_broker_rejects_relative_git_executable_and_deep_json():
+    with pytest.raises(ValueError, match="absolute trusted Git"):
+        GitBlobBroker(Path.cwd(), "a" * 40, Path("git"))
+    nested = "[" * 3000 + "]" * 1000
+    with pytest.raises(ValueError):
+        parse_broker_action(nested)
+    deep = []
+    for _ in range(1100):
+        deep = [deep]
+    with pytest.raises(ValueError):
+        GitBlobBroker.dispatch(object.__new__(GitBlobBroker), {"op": "list_dir", "path": "", "extra": deep})
+
+
+def test_broker_deadline_blocks_git_spawn_and_mid_search(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                              capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    for name in ("a.txt", "b.txt"):
+        (repo / name).write_text("match\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    broker = GitBlobBroker(repo, git("rev-parse", "HEAD"), Path(shutil.which("git")).resolve())
+    broker.started = 0
+    broker.clock = lambda: 61
+    monkeypatch.setattr(wd_grok_helper.subprocess, "Popen", lambda *a, **k: pytest.fail("expired session spawned git"))
+    with pytest.raises(ValueError, match="time"):
+        broker._git(["cat-file", "-s", next(iter(broker.blobs.values()))], 32)
+    monkeypatch.undo()
+    intervals = []
+    class TimerStub:
+        def __init__(self, interval, callback):
+            intervals.append(interval)
+        def start(self):
+            pass
+        def cancel(self):
+            pass
+    broker.clock = lambda: 59.5
+    monkeypatch.setattr(wd_grok_helper.threading, "Timer", TimerStub)
+    broker._git(["cat-file", "-s", next(iter(broker.blobs.values()))], 32)
+    assert 0 < intervals[0] <= 0.5
+    monkeypatch.undo()
+    broker.clock = lambda: broker.started
+    calls = []
+    def blob(oid):
+        calls.append(oid)
+        broker.clock = lambda: broker.started + 61
+        return b"match\n"
+    monkeypatch.setattr(broker, "_blob", blob)
+    with pytest.raises(ValueError, match="time"):
+        broker.dispatch({"op": "grep", "query": "match"})
+    assert len(calls) == 1
+
+
+def test_broker_text_and_session_limits(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                              capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (repo / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
+    (repo / "has-nul.txt").write_bytes(b"abc\0def")
+    (repo / "bad.txt").write_bytes(b"\xff")
+    (repo / "long.txt").write_bytes(b"x" * 17000)
+    (repo / "matches.txt").write_text("hit\n" * 51, encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    broker = GitBlobBroker(repo, git("rev-parse", "HEAD"), Path(shutil.which("git")).resolve())
+    assert broker.dispatch({"op": "read_file", "path": "crlf.txt"})["text"] == "one\ntwo"
+    for name in ("has-nul.txt", "bad.txt"):
+        with pytest.raises(ValueError, match="not text"):
+            broker.dispatch({"op": "read_file", "path": name})
+    with pytest.raises(ValueError, match="output/session"):
+        broker.dispatch({"op": "read_file", "path": "long.txt"})
+    with pytest.raises(ValueError, match="Search match limit"):
+        broker.dispatch({"op": "grep", "path": "matches.txt", "query": "hit"})
+    broker.source_bytes = 2 * 1024 * 1024
+    with pytest.raises(ValueError, match="size limit"):
+        broker.dispatch({"op": "read_file", "path": "crlf.txt"})
+    broker.source_bytes = 0
+    broker.output_bytes = 128 * 1024
+    with pytest.raises(ValueError, match="output/session"):
+        broker.dispatch({"op": "list_dir", "path": ""})
+    broker.output_bytes = 0
+    broker.calls = 30
+    with pytest.raises(ValueError, match="action limit"):
+        broker.dispatch({"op": "list_dir", "path": ""})
+
+
+def test_broker_rejects_broad_listing_and_search(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                              capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    for i in range(257):
+        (repo / f"f{i:03}.txt").write_text("needle\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    broker = GitBlobBroker(repo, git("rev-parse", "HEAD"), Path(shutil.which("git")).resolve())
+    with pytest.raises(ValueError, match="Directory entry limit"):
+        broker.dispatch({"op": "list_dir", "path": ""})
+    with pytest.raises(ValueError, match="too broad"):
+        broker.dispatch({"op": "grep", "query": "needle"})
 
 
 @pytest.mark.parametrize("raw", [
@@ -101,6 +217,7 @@ def test_pure_broker_rejects_nonfull_sha_and_git_env_override(tmp_path, monkeypa
     '{"op":"grep","query":""}',
     '{"op":"grep","query":"x","path":"a*"}',
     '{"op":"shell","path":"a.txt"}',
+    '[' * 3000 + ']' * 1000,
 ])
 def test_broker_parser_fails_closed(raw):
     with pytest.raises(ValueError):

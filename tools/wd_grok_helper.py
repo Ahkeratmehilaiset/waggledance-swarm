@@ -10,7 +10,6 @@ import hashlib
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import threading
 from time import monotonic
@@ -121,7 +120,7 @@ def parse_broker_action(raw: str) -> dict:
     try:
         action = json.loads(raw, object_pairs_hook=_unique_json_pairs,
                             parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Invalid JSON constant")))
-    except (json.JSONDecodeError, UnicodeError) as exc:
+    except (json.JSONDecodeError, UnicodeError, RecursionError) as exc:
         raise ValueError("Invalid broker action JSON") from exc
     if not isinstance(action, dict):
         raise ValueError("Broker action must be an object")
@@ -158,21 +157,27 @@ def parse_broker_action(raw: str) -> dict:
 
 
 class GitBlobBroker:
-    """Pure, bounded reads from a caller-pinned Git commit; not a Grok tool runner."""
+    """Pure reads from a caller-pinned commit; caller supplies a trusted Git binary.
 
-    def __init__(self, repo: Path, commit_sha: str):
+    The absolute Git path is an authority-bearing caller input, never a model
+    action or a PATH/current-directory discovery result. No fallback exists.
+    """
+
+    def __init__(self, repo: Path, commit_sha: str, git_executable: Path, *, clock=None):
         if not isinstance(repo, Path) or not repo.is_absolute() or not repo.is_dir():
             raise ValueError("Absolute existing repository required")
         if not isinstance(commit_sha, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit_sha):
             raise ValueError("Full commit SHA required")
         self.repo = repo.resolve(strict=True)
-        self.git = shutil.which("git")
-        if not self.git:
-            raise ValueError("Git executable unavailable")
-        if Path(self.git).resolve(strict=True).is_relative_to(self.repo):
-            raise ValueError("Git executable must be outside repository")
+        if (not isinstance(git_executable, Path) or not git_executable.is_absolute()
+                or not git_executable.is_file()):
+            raise ValueError("An absolute trusted Git executable is required")
+        self.git = git_executable.resolve(strict=True)
+        if self.git.is_relative_to(self.repo):
+            raise ValueError("Trusted Git executable must be outside repository")
         self.sha = commit_sha.lower()
-        self.started = monotonic()
+        self.clock = clock or monotonic
+        self.started = self.clock()
         self.calls = 0
         self.source_bytes = 0
         self.output_bytes = 0
@@ -211,7 +216,14 @@ class GitBlobBroker:
             if len(self.blobs) > 50000:
                 raise ValueError("Git tree entry limit exceeded")
 
+    def _remaining(self) -> float:
+        remaining = 60 - (self.clock() - self.started)
+        if remaining <= 0:
+            raise ValueError("Broker session time limit exceeded")
+        return remaining
+
     def _git(self, args: list[str], maximum: int) -> bytes:
+        timeout = min(10, self._remaining())
         command = [self.git, "--no-pager", "-C", str(self.repo), *args]
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, env=self.env)
@@ -220,7 +232,7 @@ class GitBlobBroker:
             nonlocal expired
             expired = True
             process.kill()
-        timer = threading.Timer(10, stop)
+        timer = threading.Timer(timeout, stop)
         timer.start()
         try:
             output = process.stdout.read(maximum + 1)
@@ -230,6 +242,7 @@ class GitBlobBroker:
             process.wait(timeout=2)
             if expired or process.returncode:
                 raise ValueError("Git plumbing command failed or timed out")
+            self._remaining()
             return output
         finally:
             timer.cancel()
@@ -245,15 +258,25 @@ class GitBlobBroker:
         data = self._git(["cat-file", "blob", oid], size)
         if len(data) != size:
             raise ValueError("Git blob size changed")
+        if b"\0" in data:
+            raise ValueError("NUL-containing Git blob is not text")
+        try:
+            data.decode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError("Non-UTF-8 Git blob is not text") from exc
         self.source_bytes += size
         return data
 
     def dispatch(self, action: dict) -> dict:
         # Reparse to reject callers that bypassed the public parser.
-        action = parse_broker_action(json.dumps(action, ensure_ascii=False))
+        try:
+            action = parse_broker_action(json.dumps(action, ensure_ascii=False))
+        except (RecursionError, TypeError, UnicodeError) as exc:
+            raise ValueError("Invalid broker action") from exc
         if action["op"] == "final":
             raise ValueError("Final text is handled by the session controller")
-        if self.calls >= 30 or monotonic() - self.started > 60:
+        self._remaining()
+        if self.calls >= 30:
             raise ValueError("Broker action limit exceeded")
         self.calls += 1
         op, path = action["op"], action["path"]
@@ -263,6 +286,7 @@ class GitBlobBroker:
             lines = self._blob(self.blobs[path]).decode("utf-8").splitlines()
             result = {"text": "\n".join(lines[action["start_line"]-1:action["end_line"]])}
         elif op == "list_dir":
+            self._remaining()
             prefix = path + "/" if path else ""
             if path and not any(name.startswith(prefix) for name in self.blobs):
                 raise ValueError("Directory not in pinned Git tree")
@@ -279,14 +303,15 @@ class GitBlobBroker:
                 raise ValueError("Search scope empty or too broad")
             matches = []
             for name in names:
+                self._remaining()
                 for line_number, line in enumerate(self._blob(self.blobs[name]).decode("utf-8").splitlines(), 1):
+                    self._remaining()
                     if action["query"] in line:
                         if len(line.encode("utf-8")) > 512 or len(matches) >= 50:
                             raise ValueError("Search match limit exceeded")
                         matches.append({"path": name, "line": line_number, "text": line})
             result = {"matches": matches}
-        if monotonic() - self.started > 60:
-            raise ValueError("Broker session time limit exceeded")
+        self._remaining()
         output_size = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
         if output_size > 16 * 1024 or self.output_bytes + output_size > 128 * 1024:
             raise ValueError("Broker output/session limit exceeded")

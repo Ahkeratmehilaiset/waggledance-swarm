@@ -267,22 +267,53 @@ class MetadataClient:
         return await asyncio.wait_for(receive(), self.timeout)
 
 
-def apply_pool_binding(observation: dict, binder=None, *, now: datetime | None = None) -> dict:
+def _utc_now() -> datetime:
+    """The default apply clock. It is looked up at call time, never frozen into a default."""
+    return datetime.now(timezone.utc)
+
+
+def _aware_utc(moment: Any) -> datetime:
+    """``moment`` normalized to UTC. A non-datetime, a naive time, a tzinfo whose utcoffset()
+    is None (astimezone would silently read that as LOCAL time), a broken tzinfo or a time
+    not representable in UTC is refused with InputError, never a TypeError."""
+    if not isinstance(moment, datetime):
+        raise InputError('apply_pool_binding clock must return a datetime')
+    try:
+        current = moment.astimezone(timezone.utc) if moment.utcoffset() is not None else None
+    except Exception:  # noqa: BLE001 - a broken tzinfo is not a time
+        current = None
+    if current is None:
+        raise InputError('apply_pool_binding needs a timezone-aware time with a real UTC offset')
+    return current
+
+
+def apply_pool_binding(observation: dict, binder=None, *, clock=None) -> dict:
     """F3, additive and dormant. Without a binder (the default on every existing path) the
-    observation is returned unchanged, so account_pool stays None: the raw auth context
-    or session is never a pool. A binder is a trusted caller's closure over
-    tools.bridge_pool_binding.bind_pool (receipt, registry, reviewed verifier, clock). Only
-    its verified decision for this exact provider and subject sets account_pool; any
-    other outcome, including a binder failure, keeps None and records a bounded reason.
-    Only the receipt id, digest, provenance kind and expiry are kept, never its text.
-    The decision must still be valid at the apply boundary: ``now`` (aware, injectable;
-    the current UTC time by default) must be STRICTLY before its expiry, so a cached or
-    delayed decision never sets even a momentarily expired pool (Tools a673ecb4)."""
+    observation is returned unchanged, as the very same object, and the clock is never read,
+    so account_pool stays None: the raw auth context or session is never a pool. A binder
+    is a trusted caller's closure over tools.bridge_pool_binding.bind_pool (receipt,
+    registry, reviewed verifier, clock). Only its verified decision for this exact provider
+    and subject sets account_pool; any other outcome, including a binder failure, keeps
+    None and records a bounded reason. Only the receipt id, digest, provenance kind and
+    expiry are kept, never its text.
+
+    The decision must still be valid at the apply boundary (Tools a673ecb4, 5b2af2cd):
+    ``clock`` (an injectable zero-argument callable; the current UTC time by default) is
+    sampled exactly once, AFTER the binder returns and immediately before the expiry
+    comparison, and that time must be STRICTLY before the decision's expiry. Time spent in
+    the binder or its verifier therefore counts, so a slow, cached or delayed decision never
+    sets even a momentarily expired pool. The sample must be an aware datetime with a real
+    UTC offset and is normalized to UTC; a non-callable clock (refused before the binder
+    runs), a failing clock, a non-datetime, a naive time, an offsetless or broken tzinfo is
+    refused with InputError, never a TypeError.
+
+    A verified binding is pool IDENTITY only. It says nothing about the numeric quota, its
+    windows, freshness or headroom, which stay unknown unless separately evidenced."""
     if binder is None:
         return observation
-    current = datetime.now(timezone.utc) if now is None else now
-    if not isinstance(current, datetime) or current.tzinfo is None:
-        raise InputError('apply_pool_binding needs a timezone-aware time')
+    sample = _utc_now if clock is None else clock
+    if not callable(sample):
+        raise InputError('apply_pool_binding clock must be callable')
     try:
         decision = binder(dict(observation))
     except Exception as exc:  # noqa: BLE001 - a binder failure never fails the collection
@@ -302,6 +333,12 @@ def apply_pool_binding(observation: dict, binder=None, *, now: datetime | None =
                 and _token(decision.get('receipt_sha256'), r'[0-9a-f]{64}')
                 and decision.get('provenance_kind') in ('operator_reading', 'local_measurement', 'f21_receipt')
                 and _time(decision.get('expires_at_utc')) is not None)
+    # The apply boundary: sampled once, after the binder returned, right before the comparison.
+    try:
+        moment = sample()
+    except Exception as exc:  # noqa: BLE001 - an unreadable clock is refused, never guessed
+        raise InputError('apply_pool_binding clock failed: ' + type(exc).__name__) from None
+    current = _aware_utc(moment)
     expired = verified and not current < _time(decision['expires_at_utc'])
     verified = verified and not expired
     result = dict(observation)
@@ -324,7 +361,7 @@ def _token(value: Any, pattern: str) -> bool:
 
 
 async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binder=None,
-                        pool_now: datetime | None = None) -> dict:
+                        pool_clock=None) -> dict:
     started = utcnow()
     before = await client.request('account/read', {'refreshToken': False})
     if before.get('account') is None:
@@ -362,10 +399,10 @@ async def collect_codex(client: MetadataClient, auth_context: str, *, pool_binde
             'account_type': account['type'], 'plan_type': account.get('planType'),
             'payload': quota_payload(limits, 'codex'), 'catalog': catalog,
             'quota_freshness_basis': 'provider_metadata_request',
-            'execution_allowed': False}, pool_binder, now=pool_now)
+            'execution_allowed': False}, pool_binder, clock=pool_clock)
 
 
-def collect_claude(payload: dict, *, pool_binder=None, pool_now: datetime | None = None) -> dict:
+def collect_claude(payload: dict, *, pool_binder=None, pool_clock=None) -> dict:
     session = payload.get('session_id')
     if not _text(session):
         raise InputError('statusline session identity missing')
@@ -378,7 +415,7 @@ def collect_claude(payload: dict, *, pool_binder=None, pool_now: datetime | None
             'effort': _dict(payload.get('effort')).get('level'),
             'payload': quota_payload(payload, 'claude'),
             'usage': {k: _dict(payload.get('context_window')).get(k)
-                      for k in ('total_input_tokens', 'total_output_tokens')}}, pool_binder, now=pool_now)
+                      for k in ('total_input_tokens', 'total_output_tokens')}}, pool_binder, clock=pool_clock)
 
 
 def save_observation(path: Path, observation: dict) -> None:

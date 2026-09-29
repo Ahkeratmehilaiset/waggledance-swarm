@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import json
 from pathlib import Path
 
@@ -296,9 +296,34 @@ def test_only_a_successful_collector_observation_can_bind(observation, reason):
     assert_refused(decide(observation=observation), reason)
 
 
-@pytest.mark.parametrize("now", [datetime(2026, 9, 29, 22, 0), "2026-09-29T22:00:00Z", None])
-def test_the_clock_must_be_timezone_aware(now):
-    assert_refused(decide(now=now), "clock_invalid")
+class Offsetless(tzinfo):
+    def utcoffset(self, dt):
+        return None   # tzinfo present but no offset: astimezone would silently read LOCAL time
+
+
+class BrokenZone(tzinfo):
+    def utcoffset(self, dt):
+        raise RuntimeError("zone database unavailable")
+
+
+class IntOffset(tzinfo):
+    def utcoffset(self, dt):
+        return 3600   # datetime.utcoffset() itself raises TypeError for a non-timedelta
+
+
+@pytest.mark.parametrize("now", [
+    datetime(2026, 9, 29, 22, 0), "2026-09-29T22:00:00Z", None,
+    datetime(2026, 9, 29, 22, 0, tzinfo=Offsetless()), datetime(2026, 9, 29, 22, 0, tzinfo=BrokenZone()),
+    datetime(2026, 9, 29, 22, 0, tzinfo=IntOffset()),
+    datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=1))),   # not representable in UTC
+], ids=["naive", "text", "none", "offsetless", "broken", "int_offset", "unrepresentable"])
+def test_the_clock_must_be_timezone_aware_with_a_real_offset(now):
+    assert_refused(decide(now=now), "clock_invalid")   # a code, never binding_error:TypeError
+
+
+def test_an_aware_non_utc_clock_is_normalized_and_binds():
+    decision = decide(now=NOW.astimezone(timezone(timedelta(hours=-7))))
+    assert decision["account_pool"] == "codex-plus-weekly" and decision["reason"] is None
 
 
 def test_unhashable_and_hostile_values_refuse_without_raising():

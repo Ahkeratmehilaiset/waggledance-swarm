@@ -17,15 +17,25 @@ pool, and nothing here derives a pool from them.
 * the receipt has the exact ``wd.pool-binding-receipt.v1`` shape, and its provenance is a
   measuring kind (operator reading, local measurement or an F21 receipt), never a
   transcription, documentation or benchmark;
+* ``now`` is an aware datetime with a real UTC offset, normalized to UTC (a naive time, a
+  tzinfo whose utcoffset() is None, a broken tzinfo or an unrepresentable time refuses
+  as ``clock_invalid``);
 * the receipt is valid at ``now`` (issued no more than 5 minutes ahead, not expired, a
-  lifetime of at most 24 hours), and the observation was made inside that window;
+  lifetime of at most 24 hours), and the observation was made inside that window and is
+  dated no more than 5 minutes after ``now`` (up to 5 minutes of future skew is tolerated,
+  beyond that it refuses);
 * the provider, the subject (Codex auth context or Claude native session) and every
   observed limit id match the receipt;
 * the pool exists in a valid v2 model registry (RCO1 af1d0ef8 or later), belongs to the
   same provider, is ``verified`` at ``now`` by the registry's own ``pool_state`` (a verified
-  pool past its TTL is stale, a future-dated one unknown: both refuse), and its
-  ``limit_id`` (when set) is covered by the receipt AND was measured by this observation
-  (an unobserved pool limit is unknown, never lent by a broader receipt). The observation
+  pool past its TTL is stale; one whose ``measured_at`` lies MORE than 5 minutes after
+  ``now`` is unknown, while up to 5 minutes of future skew is tolerated, the registry's
+  FUTURE_SKEW rule; stale and unknown both refuse), and its ``limit_id`` (when set) is
+  covered by the receipt AND present among this observation's limit ids (an absent pool
+  limit is unknown, never lent by a broader receipt). That is identity coverage only: the
+  presence of a limit id says nothing about its numeric quota, windows, freshness or
+  headroom (an observed limit may carry no window at all), which stay UNKNOWN unless
+  separately evidenced. A verified binding is never quota readiness. The observation
   and receipt are deep-copied before any check, so no alias (for example a verifier that
   closes over the caller's receipt) can change a validated value. The decision's ``expires_at_utc`` is
   the EARLIER of the receipt expiry and the pool's freshness expiry (``measured_at`` +
@@ -101,6 +111,18 @@ def _utc(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
         return parsed.astimezone(timezone.utc)
     except (ValueError, OverflowError):
+        return None
+
+
+def _aware_utc(moment: Any) -> datetime | None:
+    """``moment`` normalized to UTC, or None: a non-datetime, a naive time, a tzinfo whose
+    utcoffset() is None (astimezone would silently read that as LOCAL time), a broken
+    tzinfo or a time not representable in UTC."""
+    if not isinstance(moment, datetime):
+        return None
+    try:
+        return moment.astimezone(timezone.utc) if moment.utcoffset() is not None else None
+    except Exception:  # noqa: BLE001 - a broken tzinfo is not a time
         return None
 
 
@@ -247,8 +269,8 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         "expires_at_utc": None, "receipt_expires_at_utc": None, "pool_fresh_until_utc": None,
         "execution_allowed": False, "authority_effect": "none"}
     try:
-        _require(isinstance(now, datetime) and now.tzinfo is not None, "clock_invalid")
-        current = now.astimezone(timezone.utc)
+        current = _aware_utc(now)
+        _require(current is not None, "clock_invalid")
         # Private snapshots first (Tools a673ecb4): the caller's objects may be aliased by the
         # verifier or another holder; nothing validated below can change afterwards.
         observation, receipt = copy.deepcopy(observation), copy.deepcopy(receipt)
@@ -268,8 +290,9 @@ def bind_pool(observation: Any, receipt: Any, registry: Any, *,
         pool_id = body["pool"]  # captured now; the verifier below can never change it
         pool, pool_fresh_until = _pool(registry, pool_id, provider, current)
         _require(pool["limit_id"] is None or pool["limit_id"] in body["limit_ids"], "pool_limit_not_covered")
-        # The pool's own limit must be one this observation actually measured: a receipt that
-        # lists more limits than were observed never lends the pool an unobserved quota.
+        # The pool's own limit id must be present in this observation: a receipt that lists more
+        # limits than were observed never lends the pool an unobserved limit. Presence is
+        # identity only; the quota numbers and windows stay unknown here.
         _require(pool["limit_id"] is None or pool["limit_id"] in limits, "pool_limit_not_observed")
         # The binding lasts only while BOTH the receipt and the registry verification hold.
         decision.update(receipt_expires_at_utc=expires.isoformat(),

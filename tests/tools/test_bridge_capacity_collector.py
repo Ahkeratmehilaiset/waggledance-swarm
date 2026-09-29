@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -359,14 +359,15 @@ def test_rpc_errors_do_not_invent_transport_failures(code, expected):
 
 
 # -- F3 pool binding (dormant, additive); authored per operator directive, NOT executed yet --
-# Every clock here is fixed and injected (Tools a673ecb4): collection time via a stubbed
-# utcnow, binding time via bind_pool(now=...), apply time via apply_pool_binding(now=...).
+# Every clock here is fixed and injected (Tools a673ecb4, 5b2af2cd): collection time via a
+# stubbed utcnow, binding time via bind_pool(now=...), and apply time via the callable
+# apply_pool_binding(clock=...) / pool_clock=..., which is sampled AFTER the binder. No sleeps.
 
 POOL_NOW = datetime(2026, 9, 29, 22, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
-def pool_clock(monkeypatch):
+def fixed_collection_time(monkeypatch):
     monkeypatch.setattr(collector, 'utcnow', lambda: POOL_NOW.isoformat())
     return POOL_NOW
 
@@ -402,8 +403,12 @@ def _pool_binder(subject, verifier=lambda receipt: True, **pool_overrides):
                                          now=POOL_NOW)
 
 
+def _fixed(moment=POOL_NOW):
+    return lambda: moment
+
+
 def _collect(binder):
-    return asyncio.run(collect_codex(Client(), 'context', pool_binder=binder, pool_now=POOL_NOW))
+    return asyncio.run(collect_codex(Client(), 'context', pool_binder=binder, pool_clock=_fixed()))
 
 
 # The collector's own auth context digest for the Client() fixture.
@@ -421,7 +426,7 @@ def test_default_collection_is_unchanged_and_never_binds_a_pool():
     assert collector.apply_pool_binding(value) is value  # no binder: the very same object
 
 
-def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end(pool_clock):
+def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end(fixed_collection_time):
     observation = _collect(_pool_binder(POOL_SUBJECT))
     assert observation['auth_context_id'] == POOL_SUBJECT and observation['observed_at'] == POOL_NOW.isoformat()
     assert observation['account_pool'] == 'codex-plus-weekly'
@@ -438,7 +443,7 @@ def test_a_verified_receipt_binds_the_collected_codex_pool_end_to_end(pool_clock
                           'reason': 'receipt_expired'}, 'receipt_expired'),
 ])
 def test_a_refused_or_malformed_decision_keeps_the_pool_unknown(binder, reason):
-    row = collect_claude({'session_id': 'thread1'}, pool_binder=binder, pool_now=POOL_NOW)
+    row = collect_claude({'session_id': 'thread1'}, pool_binder=binder, pool_clock=_fixed())
     assert row['account_pool'] is None and row['pool_identity_state'] == 'unknown'
     assert row['pool_binding'] == {'state': 'unverified', 'reason': reason}
 
@@ -446,7 +451,7 @@ def test_a_refused_or_malformed_decision_keeps_the_pool_unknown(binder, reason):
 def test_a_failing_binder_never_fails_the_collection():
     def broken(observation):
         raise RuntimeError('verifier backend down: secret-token')
-    row = collect_claude({'session_id': 'thread1'}, pool_binder=broken, pool_now=POOL_NOW)
+    row = collect_claude({'session_id': 'thread1'}, pool_binder=broken, pool_clock=_fixed())
     assert row['account_pool'] is None
     assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binder_failed:RuntimeError'}
     assert 'secret-token' not in json.dumps(row)
@@ -471,10 +476,10 @@ OBSERVATION = {'provider': 'codex', 'auth_context_id': POOL_SUBJECT, 'account_po
     {'receipt_id': 'reading by ops@example.test'}, {'receipt_sha256': None},
     {'provenance_kind': 'plan_transcription'}, {'pool_identity_state': 'unverified'}])
 def test_a_verified_decision_for_another_subject_or_provider_is_not_applied(change):
-    good = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), now=POOL_NOW)
+    good = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), clock=_fixed())
     assert good['account_pool'] == 'codex-plus-weekly'  # success twin
     assert good['pool_binding']['receipt_id'] == 'b' * 32
-    row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(**change), now=POOL_NOW)
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(**change), clock=_fixed())
     assert row['account_pool'] is None and row['pool_binding']['state'] == 'unverified'
     assert 'ops@example.test' not in json.dumps(row)
 
@@ -486,25 +491,129 @@ def test_a_verified_decision_for_another_subject_or_provider_is_not_applied(chan
 ])
 def test_the_apply_boundary_requires_now_strictly_before_the_decision_expiry(expires, applied):
     row = collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(expires_at_utc=expires.isoformat()),
-                                       now=POOL_NOW)
+                                       clock=_fixed())
     assert (row['account_pool'] == 'codex-plus-weekly') is applied
     if not applied:
         assert row['pool_binding'] == {'state': 'unverified', 'reason': 'decision_expired'}
 
 
-def test_the_apply_boundary_refuses_a_naive_clock():
-    with pytest.raises(InputError, match='timezone-aware'):
-        collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), now=datetime(2026, 9, 29, 22))
+class SteppedClock:
+    """Deterministic apply-time source that a fixture binder advances (no sleeps); counts reads."""
+
+    def __init__(self, moment):
+        self.moment, self.reads = moment, []
+
+    def __call__(self):
+        self.reads.append(self.moment)
+        return self.moment
+
+
+@pytest.mark.parametrize('elapsed,applied', [
+    (timedelta(seconds=2), False),              # expired while the binder ran (Tools 5b2af2cd counterexample)
+    (timedelta(seconds=1), False),              # expires exactly at the apply boundary: strictly before is required
+    (timedelta(microseconds=999999), True),     # success twin: still valid when applied
+    (timedelta(0), True),                       # success twin: a binder that took no time
+])
+def test_time_spent_in_the_binder_counts_at_the_apply_boundary(elapsed, applied):
+    clock = SteppedClock(POOL_NOW)
+
+    def slow_binder(observation):
+        assert clock.reads == []   # nothing sampled before the binder returns
+        clock.moment = POOL_NOW + elapsed   # the binder and its verifier "took" this long
+        return _verified_decision(expires_at_utc=(POOL_NOW + timedelta(seconds=1)).isoformat())
+    row = collector.apply_pool_binding(OBSERVATION, slow_binder, clock=clock)
+    assert clock.reads == [POOL_NOW + elapsed]   # sampled exactly once, after the binder
+    assert (row['account_pool'] == 'codex-plus-weekly') is applied
+    assert (row.get('pool_identity_state') == 'verified_binding') is applied
+    if not applied:
+        assert row['pool_binding'] == {'state': 'unverified', 'reason': 'decision_expired'}
+
+
+def test_the_default_clock_is_sampled_once_after_the_binder_returns(monkeypatch):
+    order = []
+    monkeypatch.setattr(collector, '_utc_now', lambda: order.append('clock') or POOL_NOW)
+
+    def binder(observation):
+        order.append('binder')
+        return _verified_decision()
+    row = collector.apply_pool_binding(OBSERVATION, binder)
+    assert order == ['binder', 'clock'] and row['account_pool'] == 'codex-plus-weekly'
+    expired = collector.apply_pool_binding(OBSERVATION, lambda o: order.append('binder') or _verified_decision(
+        expires_at_utc=POOL_NOW.isoformat()))
+    assert order[2:] == ['binder', 'clock'] and expired['pool_binding']['reason'] == 'decision_expired'
+
+
+def test_without_a_binder_the_same_object_returns_and_no_clock_is_read_or_validated(monkeypatch):
+    def forbidden():
+        raise AssertionError('the dormant default must never read a clock')
+    monkeypatch.setattr(collector, '_utc_now', forbidden)
+    value = {'provider': 'codex', 'account_pool': None}
+    assert collector.apply_pool_binding(value) is value
+    assert collector.apply_pool_binding(value, None, clock=forbidden) is value
+    assert collector.apply_pool_binding(value, None, clock='not a clock') is value
+
+
+def test_an_aware_non_utc_clock_is_normalized_to_utc():
+    plus3 = timezone(timedelta(hours=3))
+    expires = POOL_NOW + timedelta(seconds=1)
+
+    def decide(observation):
+        return _verified_decision(expires_at_utc=expires.isoformat())
+    early = collector.apply_pool_binding(OBSERVATION, decide, clock=_fixed(POOL_NOW.astimezone(plus3)))
+    assert early['account_pool'] == 'codex-plus-weekly'   # 01:00+03:00 is 22:00Z, before the expiry
+    late = collector.apply_pool_binding(OBSERVATION, decide, clock=_fixed(expires.astimezone(plus3)))
+    assert late['pool_binding'] == {'state': 'unverified', 'reason': 'decision_expired'}   # the same instant
+
+
+class _Offsetless(tzinfo):
+    def utcoffset(self, dt):
+        return None   # "aware-looking" but offsetless: astimezone would read it as LOCAL time
+
+
+class _BrokenZone(tzinfo):
+    def utcoffset(self, dt):
+        raise RuntimeError('zone database unavailable')
+
+
+class _IntOffset(tzinfo):
+    def utcoffset(self, dt):
+        return 3600   # datetime.utcoffset() itself raises TypeError for a non-timedelta
+
+
+def _failing_clock():
+    raise OSError('clock source down')
+
+
+@pytest.mark.parametrize('clock', [
+    _fixed(datetime(2026, 9, 29, 22)),                          # naive
+    _fixed(datetime(2026, 9, 29, 22, tzinfo=_Offsetless())),
+    _fixed(datetime(2026, 9, 29, 22, tzinfo=_BrokenZone())),
+    _fixed(datetime(2026, 9, 29, 22, tzinfo=_IntOffset())),
+    _fixed(datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=1)))),   # not representable in UTC
+    _fixed('2026-09-29T22:00:00Z'), _fixed(None), _failing_clock,
+], ids=['naive', 'offsetless', 'broken', 'int_offset', 'unrepresentable', 'text', 'none', 'failing'])
+def test_an_invalid_clock_sample_refuses_with_input_error_never_type_error(clock):
+    with pytest.raises(InputError) as refused:
+        collector.apply_pool_binding(OBSERVATION, lambda o: _verified_decision(), clock=clock)
+    assert not isinstance(refused.value, TypeError)
+
+
+@pytest.mark.parametrize('clock', [POOL_NOW, 'utcnow', 0])
+def test_a_non_callable_clock_is_refused_before_the_binder_runs(clock):
+    calls = []
+    with pytest.raises(InputError, match='callable'):
+        collector.apply_pool_binding(OBSERVATION, lambda o: calls.append(o) or _verified_decision(), clock=clock)
+    assert calls == []
 
 
 def test_only_a_code_shaped_refusal_reason_is_kept():
-    row = collector.apply_pool_binding(OBSERVATION, lambda o: {'reason': 'mail ops@example.test'}, now=POOL_NOW)
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: {'reason': 'mail ops@example.test'}, clock=_fixed())
     assert row['pool_binding'] == {'state': 'unverified', 'reason': 'binding_refused'}
-    row = collector.apply_pool_binding(OBSERVATION, lambda o: {'reason': 'receipt_expired'}, now=POOL_NOW)
+    row = collector.apply_pool_binding(OBSERVATION, lambda o: {'reason': 'receipt_expired'}, clock=_fixed())
     assert row['pool_binding'] == {'state': 'unverified', 'reason': 'receipt_expired'}  # success twin
 
 
-def test_a_receipt_for_another_auth_context_does_not_bind(pool_clock):
+def test_a_receipt_for_another_auth_context_does_not_bind(fixed_collection_time):
     observation = _collect(_pool_binder('e' * 64))
     assert observation['account_pool'] is None
     assert observation['pool_binding'] == {'state': 'unverified', 'reason': 'subject_mismatch'}
@@ -525,7 +634,7 @@ def test_status_expires_a_stored_binding_without_rewriting_the_store(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_path, pool_clock):
+def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_path, fixed_collection_time):
     fresh_until = POOL_NOW + timedelta(minutes=30)
     measured = (fresh_until - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
     observation = _collect(_pool_binder(POOL_SUBJECT, measured_at=measured, ttl_seconds=3600))
@@ -540,7 +649,7 @@ def test_a_binding_expires_with_the_pool_verification_when_that_ends_first(tmp_p
     assert gone['account_pool'] is None and gone['pool_identity_state'] == 'binding_expired'
 
 
-def test_a_stale_registry_pool_never_binds_and_the_missing_verifier_still_refuses(pool_clock):
+def test_a_stale_registry_pool_never_binds_and_the_missing_verifier_still_refuses(fixed_collection_time):
     stale = _collect(_pool_binder(POOL_SUBJECT, measured_at='2026-01-01', ttl_seconds=3600))
     assert stale['account_pool'] is None and stale['pool_binding']['reason'] == 'pool_state_stale'
     missing = _collect(_pool_binder(POOL_SUBJECT, verifier=None))

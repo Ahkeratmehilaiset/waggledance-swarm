@@ -1,8 +1,10 @@
 """Native terminal bridge delivery preserves wakes without overlapping sessions."""
 import json
 import hashlib
+import os
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -231,12 +233,21 @@ try {{Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_tools_notice_real_writer_reaches_only_explicit_runtime(tmp_path, ps):
+@pytest.mark.parametrize('refuse_platform', [False, True])
+def test_tools_notice_real_writer_reaches_only_explicit_runtime(tmp_path, ps, refuse_platform):
     bundle = tmp_path / 'bundle'
     bin_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
     bin_dir.mkdir(parents=True)
+    # Isolated files alone do not isolate the Windows production kernel locks.
+    # Rewrite literals only in this fixture, never add a runtime bypass.
+    mutex_prefix = 'Local\\ContinuityFixture-' + uuid.uuid4().hex + '-'
     for helper in (REBOOT.parents[2] / '.agent-bridge/bin').glob('*.ps1'):
-        shutil.copyfile(helper, bin_dir / helper.name)
+        source = helper.read_text(encoding='utf-8-sig').replace(
+            'Global\\WaggleDanceBridge', mutex_prefix)
+        if refuse_platform and helper.name == 'Write-AgentEvent.ps1':
+            source = source.replace(
+                '[Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT', '$true')
+        (bin_dir / helper.name).write_text(source, encoding='utf-8-sig')
     registry = notice_registry(bundle)
     publisher = bundle / 'Send-WdContinuityAlert.ps1'
     shutil.copyfile(REBOOT / publisher.name, publisher)
@@ -257,6 +268,24 @@ $env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
 Invoke-WdContinuityOperatorNotice -Agent codex-tools-1 -ThreadId '{THREAD}' -Worktree {q(tmp_path)} -RuntimeRoot {q(runtime)} -SessionId tools-fixture -ErrorText 'checkpoint missing' | ConvertTo-Json -Depth 8 -Compress
 """
     report = json.loads(_run_powershell(script, executable=ps).stdout)
+    if refuse_platform or os.name != 'nt':
+        # AppendV1 intentionally refuses unsupported platforms. Keep that
+        # safety fence and prove the caller never upgrades refusal to success.
+        assert report['status'] == 'unknown', report
+        assert report['reason_code'] == 'delivery_uncertain', report
+        assert not (runtime / 'shared/events.jsonl').exists()
+        assert not (runtime / 'spool').exists()
+        ledger_path = tmp_path / '.codex-audit/wd-turn-loop' / f'continuity-alert-v1-{THREAD}.json'
+        before = ledger_path.read_bytes()
+        ledger = json.loads(before)
+        assert len(ledger['entries']) == 1
+        assert ledger['entries'][0]['status'] == 'uncertain'
+        retry = json.loads(_run_powershell(script, executable=ps).stdout)
+        assert retry['status'] == 'unknown'
+        assert retry['reason_code'] == 'delivery_uncertain'
+        assert ledger_path.read_bytes() == before
+        assert not (runtime / 'shared/events.jsonl').exists()
+        return
     assert report['status'] == 'published', report
     events = [json.loads(line) for line in (runtime / 'shared/events.jsonl').read_text(encoding='utf-8-sig').splitlines()]
     assert len(events) == 1

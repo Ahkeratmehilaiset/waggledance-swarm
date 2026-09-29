@@ -889,10 +889,10 @@ def _lifecycle_bundle(tmp_path):
     return script, _ps_env(manifest)
 
 
-def _lifecycle(shell, tmp_path, stage, state):
+def _lifecycle(shell, tmp_path, stage, state, task_id="lifecycle/task"):
     import base64
     script, env = _lifecycle_bundle(tmp_path)
-    encoded = base64.b64encode(json.dumps({"stage": stage, "state": dict(state, task_id="lifecycle/task")})
+    encoded = base64.b64encode(json.dumps({"stage": stage, "state": dict(state, task_id=task_id)})
                                .encode()).decode("ascii")
     return _run_ps(shell, "-File", str(script), "-LifecycleBase64", encoded, env=env)
 
@@ -913,11 +913,39 @@ def _lifecycle(shell, tmp_path, stage, state):
      "Invalid Grok consultation id"),                                                        # mixed
     ("failed", {"request_id": OBSERVATION + "0"}, "Invalid Grok consultation id"),           # wrong: length
     ("failed", {"request_id": "g" * 32}, "Invalid Grok consultation id"),                    # wrong: not hex
+    # G1: .NET $ also matches before a final newline; the checks end with \z.
+    ("deferred", {"observation_id": OBSERVATION + "\n"}, "Invalid Grok deferral observation"),
+    ("answered", {"request_id": OBSERVATION + "\n"}, "Invalid Grok consultation id"),
+    ("started", {"request_id": OBSERVATION + "\r\n"}, "Invalid Grok consultation id"),
 ])
 def test_lifecycle_refuses_wrong_missing_or_mixed_identifiers(tmp_path, shell, stage, state, error):
     rc, out, err = _lifecycle(shell, tmp_path, stage, state)
     assert rc != 0 and error in err, out + err
     assert '"session"' not in out                                    # the stub writer was never reached
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("task_id", ["lifecycle/task\n", "\nlifecycle/task", "", "-dash-first", "x" * 161])
+def test_lifecycle_refuses_a_task_with_a_final_newline_or_a_bad_form(tmp_path, shell, task_id):
+    rc, out, err = _lifecycle(shell, tmp_path, "deferred", {"observation_id": OBSERVATION}, task_id=task_id)
+    assert rc != 0 and "Invalid consultation task" in err, out + err
+    assert '"session"' not in out
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("task_id", ["a", "A.b_c-d/e", "x" * 160])
+def test_lifecycle_keeps_every_allowed_task_form(tmp_path, shell, task_id):
+    rc, out, err = _lifecycle(shell, tmp_path, "deferred", {"observation_id": OBSERVATION}, task_id=task_id)
+    assert rc == 0 and json.loads(out)["task"] == task_id, out + err
+
+
+def test_every_full_match_check_in_the_wrapper_ends_with_the_absolute_anchor():
+    import re
+    wrapper = (REBOOT / "Invoke-WdGrok.ps1").read_text(encoding="utf-8")
+    checks = re.findall(r"-cnotmatch '(\^[^']*)'", wrapper)
+    assert len(checks) >= 6 and all(check.endswith("\\z") for check in checks), checks
 
 
 @pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
@@ -965,34 +993,59 @@ def _stub_writer_process(tmp_path, monkeypatch, returncode, stdout):
     return calls
 
 
-@pytest.mark.parametrize("returncode,stdout,error", [
-    (1, json.dumps(DELIVERED), OSError),                                                 # the writer failed
-    (0, json.dumps({"_bridge_delivery": {"accepted": False, "canonical_durable": True}}), OSError),
-    (0, json.dumps({"_bridge_delivery": {"accepted": True}}), OSError),                  # no durability claim
-    (0, json.dumps({"_bridge_delivery": {"accepted": True, "canonical_durable": None}}), OSError),
-    (0, json.dumps({"_bridge_delivery": {}}), OSError),
-    (0, json.dumps({"receipt": DELIVERED["_bridge_delivery"]}), OSError),                # not the delivery key
-    (0, "not json", ValueError),
-    (0, "", ValueError),
+def _delivery(**receipt):
+    return json.dumps({"_bridge_delivery": receipt})
+
+
+@pytest.mark.parametrize("returncode,stdout", [
+    (1, json.dumps(DELIVERED)),                                                  # the writer failed
+    (0, _delivery(accepted=False, canonical_durable=True)),
+    (0, _delivery(accepted=True)),                                               # no durability claim
+    (0, _delivery(accepted=True, canonical_durable=None)),
+    (0, _delivery()),
+    (0, json.dumps({"receipt": DELIVERED["_bridge_delivery"]})),                 # not the delivery key
+    # G2: only the literal JSON true counts, and every malformed shape is a visible OSError.
+    (0, _delivery(accepted=True, canonical_durable="false")),                    # a truthy string
+    (0, _delivery(accepted=True, canonical_durable="true")),
+    (0, _delivery(accepted=True, canonical_durable=1)),                          # a truthy number
+    (0, _delivery(accepted=1, canonical_durable=True)),
+    (0, _delivery(accepted="yes", canonical_durable=True)),
+    (0, json.dumps({"_bridge_delivery": [True, True]})),                         # delivery not an object
+    (0, json.dumps({"_bridge_delivery": "accepted canonical_durable"})),
+    (0, json.dumps([DELIVERED])),                                                # receipt not an object
+    (0, json.dumps("accepted")),
+    (0, json.dumps(1)),
+    (0, "null"),
+    (0, "not json"),
+    (0, ""),
+    (0, None),                                                                   # no stdout at all
+    (0, "[" * 100000 + "]" * 100000),                                            # nesting beyond the parser
 ])
-def test_lifecycle_receipt_refusals_never_return_normally(tmp_path, monkeypatch, returncode, stdout, error):
+def test_lifecycle_receipt_refusals_are_one_visible_os_error(tmp_path, monkeypatch, returncode, stdout):
     calls = _stub_writer_process(tmp_path, monkeypatch, returncode, stdout)
-    with pytest.raises(error):
+    with pytest.raises(OSError, match="writer failed|not confirmed canonical"):
         wd_grok_helper.emit_bridge_event("deferred", dict(DEFERRAL))
-    assert len(calls) == 1                                                               # one attempt, no retry
+    assert len(calls) == 1                                                       # one attempt, no retry
 
 
-def test_a_canonical_receipt_with_a_bom_is_confirmed_and_carries_the_exact_event(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stdout", [
+    chr(0xFEFF) + json.dumps(DELIVERED),                                         # a BOM prefix
+    json.dumps({"schema": "wd.bridge-event", "_bridge_delivery": {               # the writer's real receipt shape
+        "schema": "waggledance.bridge.delivery-receipt.v1", "accepted": True, "delivery_status": "canonical",
+        "canonical_durable": True, "checkpoint_advanced": True, "wal_id": None, "warning_messages": []}}),
+])
+def test_a_canonical_receipt_is_confirmed_and_carries_the_exact_event(tmp_path, monkeypatch, stdout):
     import base64
-    calls = _stub_writer_process(tmp_path, monkeypatch, 0, "﻿" + json.dumps(DELIVERED))
-    assert wd_grok_helper.emit_bridge_event("deferred", dict(DEFERRAL)) is None          # success twin
+    calls = _stub_writer_process(tmp_path, monkeypatch, 0, stdout)
+    assert wd_grok_helper.emit_bridge_event("deferred", dict(DEFERRAL)) is None  # success twins
     (command,) = calls
     assert json.loads(base64.b64decode(command[-1])) == {"stage": "deferred", "state": DEFERRAL}
     assert command[command.index("-File") + 1].endswith("Invoke-WdGrok.ps1")
 
 
-def test_a_refused_receipt_is_recorded_and_never_refunds_or_retries(tmp_path, monkeypatch):
-    calls = _stub_writer_process(tmp_path, monkeypatch, 0, json.dumps({"_bridge_delivery": {"accepted": True}}))
+@pytest.mark.parametrize("stdout", [_delivery(accepted=True), _delivery(accepted=True, canonical_durable="true")])
+def test_a_refused_receipt_is_recorded_and_never_refunds_or_retries(tmp_path, monkeypatch, stdout):
+    calls = _stub_writer_process(tmp_path, monkeypatch, 0, stdout)
     seed(tmp_path, age=1)
     before = (tmp_path / "hourly-state.json").read_bytes()
     report = consult(tmp_path, "later/task", "ask", ["fake"], now=NOW,

@@ -25,11 +25,15 @@ has its own canonical digest (``registry_snapshot_sha256``). That digest depends
 A cell is a quality observation of class ``general`` on the signed index unit whose
 ``provenance.reference`` is exactly the signed ``index_version`` (F3 v2 has no version
 field), for a subject that is not an F3 candidate (a placeholder model is never rated).
-Ambiguity is decided FIRST, over every FRESH measured observation of the cell (F3
-``observation_state``), whatever its uncertainty (RCO1 S1). A second fresh value, or a
-fresh model-level value (F3 fans that out to every effort), makes the cell unknown, so
-a newer value can never be hidden by a filter and leave an older one ranked. Only then
-must the one remaining observation have an exact effort (a model-level value is never
+Ambiguity is decided FIRST, over every FRESH measured observation (F3
+``observation_state``) that F3 ``_column`` puts in the same quality column of the row:
+the class decides the column, not the unit or the index version, exactly as F3
+``model_table`` groups it (RCO1 S1; RCO2 residual, Lead option a). A second fresh value
+of any uncertainty, unit or version, or a fresh model-level value (F3 fans that out to
+every effort), makes the cell unknown, so a newer value can never be hidden by a filter
+and leave an older one ranked. Only a genuinely separate F3 column (another class, such
+as ``task:<name>``) does not compete. Only then must the one remaining observation be on
+the signed unit and version, have an exact effort (a model-level value is never
 inherited) and an interval uncertainty (exact, none_stated and unknown stay unknown).
 Historical, unverified, stale, unknown and ambiguous cells stay absent. The selector
 then treats them as unknown. Coding scores follow the same rules on unit
@@ -65,8 +69,9 @@ from tools.bridge_v2_activation import (HEX64, ActivationError, Decision, _is_in
 from tools.lane_profile_record import _utc
 from tools.wd_composer_select import EVIDENCE_SCHEMA, FEATURE, POLICY_BIT, SNAPSHOT_SCHEMA, digest
 # pool_state is F3 af1d0ef8 (RCO2 S1: a verified pool expires). A base without it fails at import (fail-closed).
-from tools.wd_model_registry import (MAX_REGISTRY_BYTES, SCHEMA_V2, UNITS, RegistryError, _constant, _pairs, _when,
-                                     observation_state, pool_state, validate_registry)
+# _column is F3's own quality-column key (class only), imported for exact parity with model_table's grouping.
+from tools.wd_model_registry import (MAX_REGISTRY_BYTES, SCHEMA_V2, UNITS, RegistryError, _column, _constant, _pairs,
+                                     _when, observation_state, pool_state, validate_registry)
 
 PIN_KEYS = frozenset({"trusted_policy_sha256", "min_revocation_version"})
 SELECTOR_KEYS = ("index_name", "index_version", "epsilon", "plausibility_bound", "max_evidence_age_seconds",
@@ -149,19 +154,23 @@ def _registry(source: Any, parameters: dict) -> tuple[dict, str]:
 def _cells(registry: dict, parameters: dict, now: datetime) -> tuple[dict, dict]:
     """Fresh, exact-effort, interval-bounded quality cells on the signed index (and coding index).
 
-    Ambiguity is decided over EVERY fresh observation of a cell before any other filter (RCO1 S1)."""
-    wanted = {("general", parameters["index_name"], parameters["index_version"]): 0}
+    Ambiguity is decided the way F3 model_table groups a row (RCO1 S1; RCO2 23:27:08Z residual, Lead
+    9465d68e option a): over EVERY fresh observation that F3 ``_column`` maps to the same quality column
+    for (provider, model, effort), plus the model-level ones F3 offers to every effort, BEFORE the signed
+    unit/version filter. A value on another index, unit or version of the same class therefore competes
+    and unranks the cell; only a genuinely separate F3 column (another class) does not."""
+    signed = {"quality_general": (0, parameters["index_name"], parameters["index_version"])}
     if parameters["coding_index_version"] is not None:
-        wanted[("coding_agent", CODING_UNIT, parameters["coding_index_version"])] = 1
+        signed["quality_coding_agent"] = (1, CODING_UNIT, parameters["coding_index_version"])
     fresh: dict = {}
     model_level: set = set()
     for obs in registry["observations"]:
         subject = obs["subject"]
-        column = wanted.get((obs["class"], obs["unit"], obs["provenance"]["reference"]))
-        if (column is None or obs["kind"] != "quality"
+        if (obs["kind"] != "quality" or _column(obs) not in signed
                 or f"{subject['provider']}/{subject['model']}" in registry["candidates"]
                 or observation_state(obs, now) != "fresh"):
             continue
+        column = _column(obs)
         if subject["effort"] is None:
             model_level.add((column, subject["provider"], subject["model"]))  # F3 offers it to every effort
         else:
@@ -169,13 +178,16 @@ def _cells(registry: dict, parameters: dict, now: datetime) -> tuple[dict, dict]
     columns: tuple[dict, dict] = ({}, {})
     for (column, provider, model, effort), found in fresh.items():
         if len(found) != 1 or (column, provider, model) in model_level:
-            continue  # two current values for one cell, whatever their uncertainty: unknown, never a pick
+            continue  # two current values in one F3 cell, whatever their index, version or uncertainty: unknown
         obs = found[0]
+        index, unit, version = signed[column]
+        if obs["unit"] != unit or obs["provenance"]["reference"] != version:
+            continue  # the one current value is not on the signed index/version: unknown, never a rank
         if obs["uncertainty"]["kind"] != "interval":
             continue  # exact, none_stated and unknown stay unknown
         value = float(obs["value"])
         low, high = obs["uncertainty"]["low"], obs["uncertainty"]["high"]
-        columns[column][(provider, model, effort)] = {
+        columns[index][(provider, model, effort)] = {
             "value": value, "uncertainty": float(max(value - low, high - value)),
             "measured_on": obs["measured_at"][:10], "observation": obs["id"]}
     return columns

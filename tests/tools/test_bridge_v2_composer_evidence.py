@@ -220,23 +220,35 @@ def test_two_current_values_for_one_cell_are_unknown_not_a_pick():
 
 EXACT = {"kind": "exact", "low": None, "high": None, "note": "fixture: exact by construction"}
 LATER = iso(NOW - timedelta(minutes=30))  # newer than the 20:00 interval value
+EARLIER = iso(NOW - timedelta(hours=2))  # older than it
+R0 = "fixture intelligence_index rerun r0"  # another version of the signed index
 
 
 @pytest.mark.parametrize("second", [
     quality("opus-high-exact", OPUS, 40.0, uncertainty=EXACT, measured_at=LATER),  # RCO1 S1: F3 would pick this
     quality("opus-model", OPUS, 40.0, effort=None, measured_at=LATER),  # F3 offers a model-level value to every effort
-    quality("opus-high-older-exact", OPUS, 40.0, uncertainty=EXACT, measured_at=iso(NOW - timedelta(hours=2))),
+    quality("opus-high-older-exact", OPUS, 40.0, uncertainty=EXACT, measured_at=EARLIER),
+    # RCO2 residual (Lead option a): F3 _column keys quality_general by class only, so another index
+    # version or unit of class general is in the SAME F3 cell and competes, whether newer, older or same-time.
+    quality("opus-high-r0-newer", OPUS, 40.0, reference=R0, measured_at=LATER),
+    quality("opus-high-r0-older", OPUS, 40.0, reference=R0, measured_at=EARLIER),
+    quality("opus-high-r0-same-time", OPUS, 40.0, reference=R0),
+    quality("opus-high-r0-exact", OPUS, 40.0, reference=R0, uncertainty=EXACT, measured_at=LATER),
+    quality("opus-high-other-unit", OPUS, 40.0, unit="score_0_100", reference="fixture score run"),
+    quality("opus-model-r0", OPUS, 40.0, effort=None, reference=R0),
 ])
-def test_any_second_fresh_value_makes_the_cell_unknown_whatever_its_uncertainty(second):
+def test_any_second_fresh_value_in_the_f3_cell_makes_it_unknown_whatever_its_uncertainty_unit_or_version(second):
     ev = compose(**inputs((quality("opus-high", OPUS, 60.0), second, quality("sonnet-high", SONNET, 50.0))))["evidence"]
-    assert models(ev) == ["claude-sonnet-5"]
+    assert models(ev) == ["claude-sonnet-5"]  # the signed positive opus value is present, yet never ranked
     assert "unranked:opus:no_registry_entry" in cs.select(ev)["reasons"]
 
 
 @pytest.mark.parametrize("second", [
     quality("opus-high-stale", OPUS, 40.0, measured_at=iso(NOW - timedelta(days=8))),  # F3's fresh value wins
-    quality("opus-high-r0", OPUS, 40.0, reference="fixture intelligence_index rerun r0"),  # another index version
-    quality("opus-high-task", OPUS, 40.0, cls="task:compose"),  # another class
+    quality("opus-high-r0-stale", OPUS, 40.0, reference=R0, measured_at=iso(NOW - timedelta(days=8))),
+    quality("opus-high-r0-historical", OPUS, 40.0, reference=R0, status="historical", provenance="external_benchmark"),
+    quality("opus-high-task", OPUS, 40.0, cls="task:compose"),  # a genuinely separate F3 column
+    quality("opus-high-task-r0", OPUS, 40.0, cls="task:compose", reference=R0, measured_at=LATER),
     quality("opus-xhigh", OPUS, 40.0, effort="xhigh"),  # another cell
 ])
 def test_a_non_competing_observation_leaves_the_cell_ranked(second):
@@ -254,6 +266,23 @@ def test_a_coding_score_follows_the_same_rules(change):
                      **{"reference": CODING, **over})
     ev = compose(**inputs((quality("opus-high", OPUS, 60.0), coding)))["evidence"]
     assert ev["registry_snapshot"]["entries"][0]["coding_score"] is None
+
+
+@pytest.mark.parametrize("measured_at", [LATER, EARLIER, None])
+def test_another_coding_index_version_in_the_f3_cell_unranks_only_the_coding_score(measured_at):
+    signed = quality("opus-high-coding", OPUS, 70.0, cls="coding_agent", unit="coding_agent_index", reference=CODING)
+    other = quality("opus-high-coding-r0", OPUS, 75.0, cls="coding_agent", unit="coding_agent_index",
+                    reference="fixture coding_agent_index rerun r0", measured_at=measured_at)
+    ev = compose(**inputs((quality("opus-high", OPUS, 60.0), signed, other)))["evidence"]
+    entry = ev["registry_snapshot"]["entries"][0]
+    assert (entry["score"], entry["coding_score"]) == (60.0, None)  # the separate general column stays ranked
+
+
+def test_with_no_signed_coding_index_coding_values_never_compete_with_the_score():
+    coding = quality("opus-high-coding", OPUS, 70.0, cls="coding_agent", unit="coding_agent_index", reference=CODING)
+    ev = compose(**inputs((quality("opus-high", OPUS, 60.0), coding), coding_index_version=None))["evidence"]
+    entry = ev["registry_snapshot"]["entries"][0]
+    assert (entry["score"], entry["coding_score"]) == (60.0, None)
 
 
 def test_no_signed_coding_index_means_no_coding_score():

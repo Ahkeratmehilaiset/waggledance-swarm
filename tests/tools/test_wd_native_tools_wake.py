@@ -25,9 +25,16 @@ def notice_registry(bundle):
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-def test_guard_runs_through_real_hash_pinned_bundle_wrapper(tmp_path, ps):
-    from test_wd_bridge_code_context import _stage_fake_bundle
+def test_guard_runs_through_real_hash_pinned_bundle_wrapper(tmp_path, ps, monkeypatch):
+    import test_wd_bridge_code_context as code_context
 
+    # The fleet pin is a Windows interpreter path. Where it is absent (Linux
+    # CI), stage and pin the bundle to this host's interpreter so the real
+    # wrapper and guard still run. The wrapper refuses Windows app-alias
+    # interpreters, so the pin is kept where it exists.
+    if not Path(code_context.BRIDGE_PYTHON).is_file():
+        monkeypatch.setattr(code_context, 'BRIDGE_PYTHON', sys.executable)
+    _stage_fake_bundle = code_context._stage_fake_bundle
     # Real deployment-shaped wrapper/context; unrelated dependency wheel is a
     # fixture. The continuity implementation itself is the real packaged code.
     bundle = _stage_fake_bundle(tmp_path)

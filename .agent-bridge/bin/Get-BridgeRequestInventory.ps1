@@ -17,6 +17,14 @@ param(
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+$root=[string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+$pathRoot=if ([string]::IsNullOrWhiteSpace($root)) { '' } else { [IO.Path]::GetPathRoot($root) }
+$fullyQualified=if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+    $pathRoot -match '^[A-Za-z]:[\\/]$' -or $pathRoot -match '^\\\\[^\\]+\\[^\\]+[\\/]?$'
+} else { $pathRoot -ceq '/' }
+if (-not $fullyQualified) {
+    throw 'AGENT_BRIDGE_RUNTIME_ROOT must be an explicit nonblank absolute path'
+}
 . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
@@ -24,7 +32,6 @@ Set-StrictMode -Version Latest
 if ($IncludeRequest -and -not ($RequestId -or ($TaskId -and $TsUtc))) {
     throw '-IncludeRequest requires -RequestId or both -TaskId and -TsUtc'
 }
-$root=if ($env:AGENT_BRIDGE_RUNTIME_ROOT) { $env:AGENT_BRIDGE_RUNTIME_ROOT } else { Split-Path $PSScriptRoot -Parent }
 $started=[DateTimeOffset]::UtcNow.ToString('o')
 # Read failures, partial rows, rotation and prefix changes throw in the index.
 $snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
@@ -33,6 +40,7 @@ $snapshot=Read-BridgeReplyIndex -Path (Join-Path $root 'shared/events.jsonl') `
 # changed filter could otherwise silently skip older matching requests.
 $cursorSeed=[ordered]@{
     snapshot=$snapshot.candidate_cursor
+    prefix_sha256=$snapshot.prefix_sha256
     agent=$Agent; session_id=$SessionId; request_id=$RequestId
     task_id=$TaskId; ts_utc=$TsUtc
     order='first_indexed_position_desc'; page_size=$PageSize
@@ -125,6 +133,7 @@ $nextCursor=$null
 if ($truncated) { $nextCursor='{0}:{1}:{2}' -f $snapshot.snapshot_length,$requests[-1].first_indexed_position,$cursorHash }
 $output=[pscustomobject]@{
     schema='wd.request-inventory.v2'; requester=$Agent
+    runtime_root_source='environment'
     session_id_filter=$(if ($SessionId) {$SessionId} else {$null})
     request_id_filter=$(if ($RequestId) {$RequestId} else {$null})
     task_id_filter=$(if ($TaskId) {$TaskId} else {$null})

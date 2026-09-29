@@ -14,16 +14,19 @@ SHELLS = list(dict.fromkeys(filter(None, (shutil.which("pwsh"), shutil.which("po
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("explicit_root", (False, True))
 @pytest.mark.parametrize("script,args", [
     ("Get-BridgeRequestInventory.ps1", ["-Agent", "codex-lead-1"]),
     ("Get-BridgeReplySnapshot.ps1", ["-RequestId", "missing-fixture-id"]),
 ])
-def test_missing_runtime_log_has_no_cache_side_effects(tmp_path, shell, script, args):
+def test_missing_runtime_log_has_no_cache_side_effects(tmp_path, shell, script, args, explicit_root):
     package = tmp_path / "bundle/tools-bootstrap/.agent-bridge"
     shutil.copytree(BIN, package / "bin")
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("AGENT_BRIDGE_", "WD_", "CLAUDE_CODE_", "GIT_"))}
     before = {p.relative_to(package) for p in package.rglob("*")}
+    if explicit_root:
+        env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(package)
     result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File",
                              str(package / "bin" / script), *args],
                             env=env, capture_output=True, text=True, timeout=45)

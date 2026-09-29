@@ -508,7 +508,7 @@ class ReadonlySessionRunner:
                     if actions[0]["op"] == "final":
                         final_text = actions[0]["text"]
                         record["outcome"] = summary["outcome"] = "final"
-                        return self._finish(summary, final_text, None, 0)
+                        break
                     left = self.max_rounds - round_number
                     if left < 1:
                         raise ValueError("Round budget exhausted without a final action")
@@ -536,6 +536,8 @@ class ReadonlySessionRunner:
                     record["duration_seconds"] = round(monotonic() - started, 3)
                     summary["rounds"] = round_number
                     self._account(rounds_path, record)
+            if final_text is not None:
+                return self._finish(summary, final_text, None, 0)
             raise ValueError("Round budget exhausted without a final action")
         except subprocess.TimeoutExpired:
             summary["outcome"] = "failed:round timeout"
@@ -552,7 +554,7 @@ class ReadonlySessionRunner:
 
 
 # ---------------------------------------------------------------------------
-# Explicit entry point; never wired into the default helper or scheduled tasks.
+# Explicit entry point: Invoke-WdGrok.ps1 -ReadOnly; never a scheduled model call.
 # ---------------------------------------------------------------------------
 
 def _absolute(value: str, what: str) -> Path:

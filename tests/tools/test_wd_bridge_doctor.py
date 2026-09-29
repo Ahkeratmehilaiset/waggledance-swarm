@@ -201,6 +201,9 @@ def test_report_is_deterministic(tmp_path):
     lambda m: m["features"][0]["required_for_lanes"].append("unknown-lane"),
     lambda m: m["features"][1]["required_for_lanes"].append("*"),
     lambda m: m["provider_state_max_age_seconds"].update(quota=True),
+    lambda m: m["providers"][0].update(cli_component=[]),
+    lambda m: m["providers"][0].update(cli_component="bridge_runtime_root"),
+    lambda m: m["features"][0].update(required_for_lanes=["claude-rco-2"], optional_for_lanes=["*"]),
 ])
 def test_invalid_manifest_is_invalid_input_not_evaluated(tmp_path, mutate):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -225,6 +228,73 @@ def test_duplicate_keys_and_non_finite_constants_are_rejected(tmp_path):
 
 def test_unknown_lane_is_invalid_input(tmp_path):
     code, report = _run(tmp_path, "not-a-lane", _paths(tmp_path), _fresh())
+    assert (code, report["verdict"]) == (3, "invalid_input")
+
+
+@pytest.mark.parametrize("tail", [
+    ["--unknown", "secret-do-not-echo"], ["--now"],
+    ["--now", "not-a-date"], ["--now", "2026-09-29T21:00:00"],
+    ["--now", "0001-01-01T00:00:00+01:00"],
+    ["--now", "9999-12-31T23:59:59-01:00"],
+    ["--paths-conf", "unexpected-abbreviation"],
+])
+def test_cli_invalid_arguments_return_json_without_evaluation(tmp_path, capsys, monkeypatch, tail):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid CLI input must not read files or evaluate components")
+
+    monkeypatch.setattr(doctor, "run", forbidden)
+    argv = ["--manifest", str(MANIFEST), "--paths-config", str(tmp_path / "paths.json"),
+            "--lane", "claude-rco-2"] + tail
+    assert doctor.main(argv) == 3
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["schema"] == doctor.REPORT_SCHEMA and report["verdict"] == "invalid_input"
+    assert report["installs_performed"] is False and report["authority_effect"] == "none"
+    assert "features" not in report and captured.err == ""
+    assert "secret-do-not-echo" not in captured.out
+
+
+def test_cli_missing_required_arguments_return_invalid_json(capsys):
+    assert doctor.main([]) == 3
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["verdict"] == "invalid_input"
+    assert captured.err == ""
+
+
+def test_cli_help_preserves_normal_success(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        doctor.main(["--help"])
+    assert stopped.value.code == 0
+    assert "--paths-config" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("omit,verdict,code", [
+    ((), "ready", 0), (("pwsh_executable",), "degraded", 1),
+    (("git_executable",), "refuse", 2),
+])
+def test_cli_valid_inputs_preserve_verdict_codes(tmp_path, capsys, omit, verdict, code):
+    paths_path, evidence_path = tmp_path / "paths.json", tmp_path / "evidence.json"
+    paths_path.write_text(json.dumps(_paths(tmp_path, omit=omit)), encoding="utf-8")
+    evidence_path.write_text(json.dumps(_fresh()), encoding="utf-8")
+    assert doctor.main(["--manifest", str(MANIFEST), "--paths-config", str(paths_path),
+                        "--evidence", str(evidence_path), "--lane", "claude-rco-2",
+                        "--now", NOW.isoformat()]) == code
+    assert json.loads(capsys.readouterr().out)["verdict"] == verdict
+
+
+def test_json_read_is_bounded_and_size_limit_is_inclusive(tmp_path, monkeypatch):
+    path = tmp_path / "input.json"
+    monkeypatch.setattr(doctor, "MAX_INPUT_BYTES", 16)
+    path.write_bytes(b"{}" + b" " * 14)
+    assert doctor.load_json(path, "fixture") == {}
+    path.write_bytes(b"{}" + b" " * 15)
+    with pytest.raises(doctor.DoctorInputError, match="exceeds"):
+        doctor.load_json(path, "fixture")
+
+
+def test_invalid_input_path_is_reported_not_raised(tmp_path):
+    code, report = doctor.run(Path("invalid\0path"), tmp_path / "paths.json", None,
+                              "claude-rco-2", NOW)
     assert (code, report["verdict"]) == (3, "invalid_input")
 
 

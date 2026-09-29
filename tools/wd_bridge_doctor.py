@@ -68,6 +68,17 @@ class DoctorInputError(ValueError):
     """An input file is missing, oversized or does not match its strict schema."""
 
 
+class DoctorArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # Do not echo arbitrary argv values (which may contain credentials).
+        raise DoctorInputError("invalid command-line arguments; use --help for usage")
+
+
+def invalid_input(error: DoctorInputError) -> tuple[int, dict]:
+    return 3, {"schema": REPORT_SCHEMA, "verdict": "invalid_input", "error": str(error)[:300],
+               "installs_performed": False, "authority_effect": "none"}
+
+
 def _unique(pairs: list[tuple[str, Any]]) -> dict:
     result: dict = {}
     for key, value in pairs:
@@ -86,7 +97,7 @@ def load_json(path: Path, what: str) -> Any:
     try:
         with path.open("rb") as stream:
             raw = stream.read(MAX_INPUT_BYTES + 1)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise DoctorInputError(what + " unreadable: " + type(exc).__name__) from exc
     if len(raw) > MAX_INPUT_BYTES:
         raise DoctorInputError(what + " exceeds " + str(MAX_INPUT_BYTES) + " bytes")
@@ -163,7 +174,10 @@ def validate_manifest(manifest: Any) -> dict:
         _exact_keys(item, PROVIDER_KEYS, PROVIDER_KEYS, "provider")
         _require(type(item["id"]) is str and bool(ID_RE.fullmatch(item["id"])), "invalid provider id")
         _require(item["id"] not in providers, "duplicate provider id " + item["id"])
-        _require(item["cli_component"] in components, "provider " + item["id"] + " names an unknown cli_component")
+        _require(type(item["cli_component"]) is str and item["cli_component"] in components,
+                 "provider " + item["id"] + " names an unknown cli_component")
+        _require(components[item["cli_component"]]["kind"] == "executable",
+                 "provider " + item["id"] + " cli_component must be executable")
         providers[item["id"]] = item
 
     _require(type(manifest["features"]) is list and manifest["features"], "features must be a non-empty list")
@@ -181,7 +195,8 @@ def validate_manifest(manifest: Any) -> dict:
         optional = _string_list(item["optional_for_lanes"], LANE_RE, "optional_for_lanes", allow_star=True)
         for lane in required + optional:
             _require(lane == "*" or lane in lanes, "feature " + item["id"] + " names an unknown lane")
-        _require(not (set(required) & set(optional)) and not ("*" in required and optional),
+        _require(not (set(required) & set(optional)) and not ("*" in required and optional)
+                 and not ("*" in optional and required),
                  "feature " + item["id"] + " is both required and optional for a lane")
         features[item["id"]] = item
     return {"lanes": lanes, "ages": dict(ages), "components": components,
@@ -235,11 +250,9 @@ def _parse_time(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError:
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
 
 
 def evidence_state(entry: Any, dimension: str, max_age: int, now: datetime) -> dict:
@@ -362,8 +375,7 @@ def run(manifest_path: Path, paths_path: Path, evidence_path: Path | None, lane:
         evidence = validate_evidence(load_json(evidence_path, "evidence")) if evidence_path else {}
         report = evaluate(manifest, paths, evidence, lane, now)
     except DoctorInputError as exc:
-        return 3, {"schema": REPORT_SCHEMA, "verdict": "invalid_input", "error": str(exc)[:300],
-                   "installs_performed": False, "authority_effect": "none"}
+        return invalid_input(exc)
     return EXIT_CODES[report["verdict"]], report
 
 
@@ -372,19 +384,23 @@ def _parse_now(value: str | None) -> datetime:
         return datetime.now(timezone.utc)
     parsed = _parse_time(value)
     if parsed is None:
-        raise SystemExit("--now must be an ISO-8601 timestamp with a timezone")
+        raise DoctorInputError("--now must be an ISO-8601 timestamp with a timezone")
     return parsed
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser = DoctorArgumentParser(description=__doc__.split("\n", 1)[0], allow_abbrev=False)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--paths-config", type=Path, required=True)
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--lane", required=True)
     parser.add_argument("--now", help="evaluation time (ISO-8601 with timezone); default: current UTC")
-    args = parser.parse_args(argv)
-    code, report = run(args.manifest, args.paths_config, args.evidence, args.lane, _parse_now(args.now))
+    try:
+        args = parser.parse_args(argv)
+        now = _parse_now(args.now)
+        code, report = run(args.manifest, args.paths_config, args.evidence, args.lane, now)
+    except DoctorInputError as exc:
+        code, report = invalid_input(exc)
     sys.stdout.write(json.dumps(report, sort_keys=True, ensure_ascii=True) + "\n")
     return code
 

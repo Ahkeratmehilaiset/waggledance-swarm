@@ -32,15 +32,29 @@ def snapshot(*rows, **over):
     return snap
 
 
+def pool_block(pid="a", provider="claude", **over):
+    row = {"profile_id": pid, "provider": provider, "pool_id": provider + "/pool", "state": "available",
+           "observed_utc": FRESH, "projected_used_percent": 40.0, "provider_up": True}
+    row.update(over)
+    return row
+
+
+def cost_block(value=1.0, pool_id="claude/pool", **over):
+    row = {"value": value, "unit": "percent_of_pool", "pool_id": pool_id, "window": "5h",
+           "workload": "task:compose", "observed_utc": FRESH}
+    row.update(over)
+    return row
+
+
 def profile(pid, provider, model, effort, **over):
+    """Every receipt names this profile: a fresh positive receipt about another subject proves nothing."""
     row = {"profile_id": pid, "provider": provider, "model": model, "effort": effort, "signed_in_envelope": True,
-           "identity": {"verified": True, "observed_utc": FRESH, "provider": provider, "model": model,
-                        "effort": effort},
-           "auth": {"verified": True, "observed_utc": FRESH},
-           "turn": {"ok": True, "observed_utc": FRESH},
-           "pool": {"pool_id": provider + "/pool", "state": "available", "observed_utc": FRESH,
-                    "projected_used_percent": 40.0, "provider_up": True},
-           "measured_quota_cost": {"value": 1.0, "unit": "percent_of_five_hour_window", "observed_utc": FRESH}}
+           "identity": {"verified": True, "observed_utc": FRESH, "profile_id": pid, "provider": provider,
+                        "model": model, "effort": effort},
+           "auth": {"verified": True, "observed_utc": FRESH, "profile_id": pid},
+           "turn": {"ok": True, "observed_utc": FRESH, "profile_id": pid},
+           "pool": pool_block(pid, provider),
+           "measured_quota_cost": cost_block(pool_id=provider + "/pool")}
     row.update(over)
     return row
 
@@ -61,6 +75,7 @@ def evidence(snap=None, rows=None, **over):
                          "max_evidence_age_seconds": 900, "max_score_age_days": 30, "max_wait_seconds": 600,
                          "budget_mode": "steady", "planning_efforts": ["high", "xhigh"]},
           "registry_snapshot": snap,
+          "task": {"task_id": "task-1", "created_utc": NOW},
           "profiles": profiles() if rows is None else rows}
     ev.update(over)
     return ev
@@ -171,20 +186,21 @@ FUTURE = "2026-09-29T21:05:00Z"
     ({"turn": {"ok": True, "observed_utc": FRESH_BLOCK_STALE}}, "turn_unknown_or_stale"),
     ({"turn": {"ok": "yes", "observed_utc": FRESH}}, "turn_unknown_or_stale"),
     ({"pool": None}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "claude/pool", "state": "available", "observed_utc": FRESH_BLOCK_STALE,
-               "projected_used_percent": 40.0, "provider_up": True}}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "claude/pool", "state": "unknown", "observed_utc": FRESH,
-               "projected_used_percent": 40.0, "provider_up": True}}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "", "state": "available", "observed_utc": FRESH,
-               "projected_used_percent": 40.0, "provider_up": True}}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "claude/pool", "state": "available", "observed_utc": FRESH,
-               "projected_used_percent": "40", "provider_up": True}}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "claude/pool", "state": "available", "observed_utc": FRESH,
-               "projected_used_percent": -1, "provider_up": True}}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "claude/pool", "state": "available", "observed_utc": FRESH,
-               "projected_used_percent": 40.0, "provider_up": "yes"}}, "quota_unknown_or_stale"),
-    ({"pool": {"pool_id": "claude/pool", "state": "available", "observed_utc": FRESH,
-               "projected_used_percent": 70.5, "provider_up": True}}, "budget_over_trip_line"),
+    ({"pool": pool_block(observed_utc=FRESH_BLOCK_STALE)}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(state="unknown")}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(pool_id="")}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(projected_used_percent="40")}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(projected_used_percent=-1)}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(provider_up="yes")}, "quota_unknown_or_stale"),
+    ({"pool": pool_block(projected_used_percent=70.5)}, "budget_over_trip_line"),
+    # RCO/Tools unbound-eligibility: fresh positive receipts about another subject are refused.
+    ({"identity": {"verified": True, "observed_utc": FRESH, "profile_id": "b", "provider": "claude",
+                   "model": "model-a", "effort": "xhigh"}}, "identity_mismatch"),
+    ({"auth": {"verified": True, "observed_utc": FRESH, "profile_id": "b"}}, "auth_unbound"),
+    ({"auth": {"verified": True, "observed_utc": FRESH}}, "auth_unbound"),
+    ({"turn": {"ok": True, "observed_utc": FRESH, "profile_id": "b"}}, "turn_unbound"),
+    ({"pool": pool_block(pid="b")}, "quota_unbound"),
+    ({"pool": pool_block(provider="codex", pool_id="claude/pool")}, "quota_unbound"),
 ])
 def test_missing_or_stale_evidence_is_ineligible_never_a_fallback(over, reason):
     out = run(evidence(rows=with_profile("a", **over)))
@@ -199,8 +215,7 @@ def test_effort_outside_the_planning_class_is_ineligible():
 
 
 def test_budget_mode_changes_the_trip_line():
-    rows = with_profile("a", pool={"pool_id": "claude/pool", "state": "available", "observed_utc": FRESH,
-                                   "projected_used_percent": 85.0, "provider_up": True})
+    rows = with_profile("a", pool=pool_block(projected_used_percent=85.0))
     assert run(evidence(rows=rows))["selected_profile"] == "b"
     ev = evidence(rows=rows)
     ev["parameters"]["budget_mode"] = "burst"
@@ -238,18 +253,34 @@ def test_separated_scores_ignore_the_tie_breakers():
     assert run(evidence(snap=snap, rows=profiles()[:2]))["selected_profile"] == "a"
 
 
-def test_missing_coding_defers_to_measured_cost_then_profile_id():
+def test_missing_coding_defers_to_measured_quota_cost_then_profile_id():
     snap = tie_snapshot({"coding_score": None}, {"coding_score": 75.0})
     rows = profiles()
-    rows[0]["measured_quota_cost"] = {"value": 0.5, "unit": "percent_of_five_hour_window", "observed_utc": FRESH}
-    assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "a"  # cheaper measured cost
-    rows[0]["measured_quota_cost"] = {"value": 0.5, "unit": "usd_api_price", "observed_utc": FRESH}
-    assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "a"  # units differ: profile_id decides
-    rows[0]["measured_quota_cost"] = {"value": 9.0, "unit": "percent_of_five_hour_window", "observed_utc": FRESH}
-    assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "b"
-    rows[0]["measured_quota_cost"] = {"value": 0.1, "unit": "percent_of_five_hour_window",
-                                      "observed_utc": FRESH_BLOCK_STALE}
+    rows[1]["measured_quota_cost"] = cost_block(0.5, pool_id="codex/pool")
+    assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "b"  # quota success twin: cheaper wins
+    rows[1]["measured_quota_cost"] = cost_block(9.0, pool_id="codex/pool")
+    assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "a"
+    rows[1]["measured_quota_cost"] = cost_block(0.5, pool_id="codex/pool", observed_utc=FRESH_BLOCK_STALE)
     assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "a"  # stale cost is missing: profile_id
+
+
+@pytest.mark.parametrize("over", [
+    {"unit": "usd_per_task_api_price"},  # API dollars are never quota, even when both sides share the unit
+    {"unit": "usd_per_mtok_api_price"},
+    {"unit": "usd_api_price"},
+    {"pool_id": "claude/pool"},  # measured on another profile's pool
+    {"window": "weekly"},  # a different window basis than the other member
+    {"workload": "task:other"},
+    {"workload": None},
+])
+def test_non_quota_or_incomparable_cost_is_ignored(over):
+    snap = tie_snapshot({"coding_score": None}, {"coding_score": 75.0})
+    rows = profiles()
+    same_unit = {k: v for k, v in over.items() if k == "unit"}
+    rows[0]["measured_quota_cost"] = cost_block(9.0, **same_unit)
+    rows[1]["measured_quota_cost"] = dict(cost_block(0.5, pool_id="codex/pool"), **over)
+    # b is cheaper only on an ignored cost, so the key is skipped and profile_id decides.
+    assert run(evidence(snap=snap, rows=rows))["selected_profile"] == "a"
 
 
 @pytest.mark.parametrize("snap_change,reason", [
@@ -298,9 +329,21 @@ def previous(score, measured_on, **over):
     return snap
 
 
+def previous_with(measured_on="2026-09-20", **over):
+    snap = snapshot()
+    snap["entries"][0].update(measured_on=measured_on, **over)
+    return snap
+
+
 @pytest.mark.parametrize("prior,reason", [
     (previous(50.0, "2026-09-10"), "refresh_implausible"),
     (previous(59.0, "2026-09-20"), "refresh_without_new_measurement"),
+    # Secondary metrics change the order too, so they need the same refresh evidence.
+    (previous_with(coding_score=60.0), "refresh_without_new_measurement"),
+    (previous_with(uncertainty=2.0), "refresh_without_new_measurement"),
+    (previous_with("2026-09-10", coding_score=50.0), "refresh_implausible"),
+    (previous_with(uncertainty="x"), "previous_score_malformed"),
+    (previous_with(coding_score="70"), "previous_score_malformed"),
     (previous(60.0, "2026-09-25"), "score_measurement_regressed"),
     (previous("x", "2026-09-10"), "previous_score_malformed"),
 ])
@@ -318,15 +361,14 @@ def test_plausible_refresh_and_new_index_previous_pass():
     assert out["verdict"] == cs.UNKNOWN and "registry_snapshot_malformed" in out["reasons"]
 
 
-EXHAUSTED = {"pool_id": "claude/pool", "state": "exhausted", "observed_utc": FRESH,
-             "projected_used_percent": 40.0, "provider_up": True}
+EXHAUSTED = pool_block(state="exhausted")
 
 
 @pytest.mark.parametrize("over,why", [
     ({"pool": EXHAUSTED}, "pool_exhausted"),
     ({"pool": dict(EXHAUSTED, state="conserve")}, "pool_conserve"),
     ({"pool": dict(EXHAUSTED, state="available", provider_up=False)}, "provider_down"),
-    ({"turn": {"ok": False, "observed_utc": FRESH}}, "turn_not_ok"),
+    ({"turn": {"ok": False, "observed_utc": FRESH, "profile_id": "a"}}, "turn_not_ok"),
 ])
 def test_unavailable_top_waits_until_the_signed_deadline(over, why):
     out = run(evidence(rows=with_profile("a", **over)))
@@ -334,11 +376,16 @@ def test_unavailable_top_waits_until_the_signed_deadline(over, why):
     assert out["wait_deadline_utc"] == "2026-09-29T21:10:00Z" and out["unavailable"]["a"] == [why]
 
 
+def task(created_utc):
+    return {"task_id": "task-1", "created_utc": created_utc}
+
+
 def test_wait_deadline_then_labelled_fallback():
     rows = with_profile("a", pool=EXHAUSTED)
-    out = run(evidence(rows=rows, wait={"profile_id": "a", "started_utc": "2026-09-29T20:55:00Z"}))
+    out = run(evidence(rows=rows, task=task("2026-09-29T20:55:00Z")))
     assert out["verdict"] == cs.WAIT and out["wait_deadline_utc"] == "2026-09-29T21:05:00Z"
-    out = run(evidence(rows=rows, wait={"profile_id": "a", "started_utc": "2026-09-29T20:40:00Z"}))
+    assert out["task_id"] == "task-1" and out["policy_sha256"] == POLICY
+    out = run(evidence(rows=rows, task=task("2026-09-29T20:40:00Z")))
     assert out["verdict"] == cs.FALLBACK and out["selected_profile"] == "b"
     assert out["reasons"] == ["top_unavailable_deadline_passed:a"]
     ev = evidence(rows=rows)
@@ -346,21 +393,31 @@ def test_wait_deadline_then_labelled_fallback():
     assert run(ev)["verdict"] == cs.FALLBACK
 
 
-def test_wait_for_another_profile_restarts_and_bad_wait_holds():
+def test_wait_is_bounded_per_task_and_no_wait_record_moves_it():
     rows = with_profile("a", pool=EXHAUSTED)
-    out = run(evidence(rows=rows, wait={"profile_id": "b", "started_utc": "2026-09-29T20:00:00Z"}))
-    assert out["verdict"] == cs.WAIT and out["wait_deadline_utc"] == "2026-09-29T21:10:00Z"
-    for bad in ({"profile_id": "a", "started_utc": FUTURE}, {"profile_id": "a"}, {"started_utc": FRESH}, "a"):
-        assert run(evidence(rows=rows, wait=bad))["verdict"] == cs.HOLD
+    # Tools wait-state forgery: an ancient record cannot force an early fallback, and omitting one
+    # cannot extend the wait. The only start is the task's creation.
+    for record in (None, {"profile_id": "a", "started_utc": "2026-09-01T00:00:00Z"},
+                   {"profile_id": "a", "started_utc": FUTURE}):
+        ev = evidence(rows=rows)
+        if record is not None:
+            ev["wait"] = record
+        out = run(ev)
+        assert out["verdict"] == cs.WAIT and out["wait_deadline_utc"] == "2026-09-29T21:10:00Z"
+    for bad in (None, task(FUTURE), {"created_utc": NOW}, {"task_id": "task-1"}, "task-1"):
+        ev = evidence(rows=rows)
+        ev["task"] = bad
+        out = run(ev)
+        assert out["verdict"] == cs.HOLD and "task" in out["reasons"]
 
 
 def test_stale_quota_is_never_the_fallback():
     rows = with_profile("a", pool=EXHAUSTED)
-    rows[1]["pool"] = dict(EXHAUSTED, state="available", observed_utc=FRESH_BLOCK_STALE)
-    late = {"profile_id": "a", "started_utc": "2026-09-29T20:40:00Z"}
-    out = run(evidence(rows=rows, wait=late))
+    rows[1]["pool"] = pool_block("b", "codex", observed_utc=FRESH_BLOCK_STALE)
+    late = task("2026-09-29T20:40:00Z")
+    out = run(evidence(rows=rows, task=late))
     assert out["verdict"] == cs.FALLBACK and out["selected_profile"] == "c" and out["route"] == "grok_consult"
-    out = run(evidence(rows=rows[:2], wait=late))
+    out = run(evidence(rows=rows[:2], task=late))
     assert out["verdict"] == cs.HOLD and "no_available_fallback" in out["reasons"]
     assert out["selected_profile"] is None
 

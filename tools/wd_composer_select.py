@@ -12,7 +12,12 @@ stale evidence is ineligible, and it never becomes a fallback. Step 2 compares
 only the pinned snapshot's scores on the signed index name and version, bound
 to the profile's exact provider, model and effort. If any candidate cannot be
 ranked, the verdict is composer_unknown, never a guess. The measured quota
-cost is only a tie-breaker, and it is never an API price.
+cost is only a tie-breaker. It must be in an F3 quota unit (never an API price),
+on the profile's own pool, and on a stated window and workload basis.
+
+Every receipt (identity, auth, turn, pool) must name the profile it is about.
+The wait for an unavailable top is bounded per task: it starts at the task's
+creation, so no caller-held wait record can extend or shorten it.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from tools.lane_profile_record import _utc
+from tools.wd_model_registry import QUOTA_UNITS
 
 SCHEMA = "wd.composer-selection.v1"
 EVIDENCE_SCHEMA = "wd.composer-evidence.v1"
@@ -134,18 +140,25 @@ def _eligibility(profile: dict, parameters: dict, now: datetime) -> tuple[str, l
     identity = profile.get("identity")
     if not (_fresh(identity, now, max_age) and identity.get("verified") is True):
         reasons.append("identity_unverified_or_stale")
-    elif any(identity.get(k) != profile[k] for k in ("provider", "model", "effort")):
+    elif any(identity.get(k) != profile[k] for k in PROFILE_KEYS):
         reasons.append("identity_mismatch")
+    # A fresh positive receipt about another subject proves nothing about this profile.
     auth = profile.get("auth")
     if not (_fresh(auth, now, max_age) and auth.get("verified") is True):
         reasons.append("auth_unverified_or_stale")
+    elif auth.get("profile_id") != profile["profile_id"]:
+        reasons.append("auth_unbound")
     turn = profile.get("turn")
     if not (_fresh(turn, now, max_age) and type(turn.get("ok")) is bool):
         reasons.append("turn_unknown_or_stale")
+    elif turn.get("profile_id") != profile["profile_id"]:
+        reasons.append("turn_unbound")
     pool = profile.get("pool")
     if not (_fresh(pool, now, max_age) and _text(pool.get("pool_id")) and pool.get("state") in POOL_STATES
             and type(pool.get("provider_up")) is bool):
         reasons.append("quota_unknown_or_stale")
+    elif pool.get("profile_id") != profile["profile_id"] or pool.get("provider") != profile["provider"]:
+        reasons.append("quota_unbound")
     else:
         projected = _number(pool.get("projected_used_percent"))
         if projected is None or projected < 0:
@@ -204,26 +217,41 @@ def _score(entry: Any, previous: Any, parameters: dict, now: datetime) -> tuple[
         return None, "score_undated"
     if measured > now.date() or (now.date() - measured).days > parameters["max_score_age_days"]:
         return None, "score_stale"
+    coding = None if coding is None else _number(coding)
     if previous is not None:
         old, old_measured = _number(previous.get("score")), _date(previous.get("measured_on"))
-        if old is None or old_measured is None:
+        old_uncertainty, old_coding = _number(previous.get("uncertainty")), previous.get("coding_score")
+        if old is None or old_measured is None or old_uncertainty is None \
+                or (old_coding is not None and _number(old_coding) is None):
             return None, "previous_score_malformed"
+        old_coding = None if old_coding is None else _number(old_coding)
         if old_measured > measured:
             return None, "score_measurement_regressed"
-        if old != score and old_measured == measured:
+        # Every metric that can change the order (score, uncertainty, coding) needs a new measurement.
+        if (old, old_uncertainty, old_coding) != (score, uncertainty, coding) and old_measured == measured:
             return None, "refresh_without_new_measurement"
-        if abs(score - old) > parameters["plausibility_bound"]:
+        bound = parameters["plausibility_bound"]
+        if abs(score - old) > bound or (coding is not None and old_coding is not None
+                                        and abs(coding - old_coding) > bound):
             return None, "refresh_implausible"
-    return {"score": score, "uncertainty": uncertainty, "coding": None if coding is None else _number(coding)}, ""
+    return {"score": score, "uncertainty": uncertainty, "coding": coding}, ""
 
 
 def _cost(profile: dict, parameters: dict, now: datetime) -> dict | None:
-    """The measured quota cost per task (a tie-breaker only). If it is missing, stale or malformed, it counts as missing."""
+    """The measured quota cost (a tie-breaker only), or None, which counts as missing.
+
+    Only an F3 quota unit counts (API dollars never do), measured on this profile's own
+    pool, with a stated window and workload. Its basis (unit, window, workload) must be
+    the same for every tied member, or the key is skipped."""
     cost = profile.get("measured_quota_cost")
-    if not _fresh(cost, now, parameters["max_evidence_age_seconds"]) or not _text(cost.get("unit")):
+    pool = profile.get("pool")
+    if not _fresh(cost, now, parameters["max_evidence_age_seconds"]) or cost.get("unit") not in QUOTA_UNITS \
+            or not isinstance(pool, dict) or cost.get("pool_id") != pool.get("pool_id") \
+            or not _text(cost.get("window")) or not _text(cost.get("workload")):
         return None
     value = _number(cost.get("value"))
-    return None if value is None or value < 0 else {"value": value, "unit": cost["unit"]}
+    return None if value is None or value < 0 else {"value": value,
+                                                   "basis": (cost["unit"], cost["window"], cost["workload"])}
 
 
 def _tied(a: dict, b: dict, epsilon: float) -> bool:
@@ -240,15 +268,19 @@ def _break_tie(group: list[dict]) -> dict:
     keys = []
     if all(c["coding"] is not None for c in group):
         keys.append(lambda c: -c["coding"])
-    units = {c["cost"]["unit"] if c["cost"] else None for c in group}
-    if None not in units and len(units) == 1:
+    bases = {c["cost"]["basis"] if c["cost"] else None for c in group}
+    if None not in bases and len(bases) == 1:
         keys.append(lambda c: c["cost"]["value"])
     keys.append(lambda c: c["profile_id"])
     return min(group, key=lambda c: tuple(k(c) for k in keys))
 
 
 def rank(candidates: list[dict], epsilon: float) -> list[dict]:
-    """Return a total order: repeatedly take the tie group of the highest remaining score and break its tie."""
+    """Return a total order: repeatedly take the tie group of the highest remaining score and break its tie.
+
+    The group is anchored on the highest remaining score. "Tied" is not transitive: a member
+    tied with the anchor may be tied with a third profile that is not tied with the anchor.
+    That third profile is compared again in a later round, so the order stays deterministic."""
     remaining = sorted(candidates, key=lambda c: (-c["score"], c["profile_id"]))
     order = []
     while remaining:
@@ -275,6 +307,9 @@ def _result(verdict: str, reasons: list[str], context: dict, *, selected: dict |
         "route": None if chosen is None else ("grok_consult" if chosen["provider"] == "grok" else "direct"),
         "waiting_for": waiting_for["profile_id"] if waiting_for else None,
         "wait_deadline_utc": _stamp(deadline) if deadline else None,
+        # A wait (or its fallback) is bound to this task, this policy and this snapshot.
+        "task_id": context.get("task_id"),
+        "policy_sha256": context.get("policy_sha256"),
         "ranking": context.get("ranking", []),
         "ineligible": context.get("ineligible", {}),
         "unavailable": context.get("unavailable", {}),
@@ -290,6 +325,7 @@ def _select(evidence: Any, context: dict) -> dict:
     now = _utc(evidence.get("now_utc"))
     _require(now is not None, "evidence_malformed", "now_utc")
     parameters = _gate(evidence)
+    context["policy_sha256"] = parameters["policy_sha256"]
     profiles = evidence.get("profiles")
     _require(isinstance(profiles, list), "evidence_malformed", "profiles")
     for profile in profiles:
@@ -297,6 +333,10 @@ def _select(evidence: Any, context: dict) -> dict:
                  "evidence_malformed", "profile")
     ids = [p["profile_id"] for p in profiles]
     _require(len(set(ids)) == len(ids), "evidence_malformed", "duplicate_profile_id")
+    task = evidence.get("task")
+    created = _utc(task.get("created_utc")) if isinstance(task, dict) else None
+    _require(created is not None and created <= now and _text(task.get("task_id")), "evidence_malformed", "task")
+    context["task_id"] = task["task_id"]
     status = {p["profile_id"]: _eligibility(p, parameters, now) for p in profiles}
     context["ineligible"] = {pid: why for pid, (state, why) in sorted(status.items()) if state == "ineligible"}
     context["unavailable"] = {pid: why for pid, (state, why) in sorted(status.items()) if state == "unavailable"}
@@ -332,14 +372,9 @@ def _select(evidence: Any, context: dict) -> dict:
     if top["state"] == "available":
         return _result(COMPOSER, ["ranked_top_available"], context, selected=top)
 
-    started = now
-    wait = evidence.get("wait")
-    if wait is not None:
-        _require(isinstance(wait, dict) and _text(wait.get("profile_id")), "evidence_malformed", "wait")
-        if wait["profile_id"] == top["profile_id"]:  # a wait for another profile restarts now
-            started = _utc(wait.get("started_utc"))
-            _require(started is not None and started <= now, "evidence_malformed", "wait")
-    deadline = started + timedelta(seconds=parameters["max_wait_seconds"])
+    # Bounded per task: the wait starts when the task was created, so a caller cannot extend it by
+    # omitting a wait record or cut it short with an ancient one.
+    deadline = created + timedelta(seconds=parameters["max_wait_seconds"])
     if now < deadline:
         return _result(WAIT, ["top_unavailable_waiting"], context, waiting_for=top, deadline=deadline)
     if not available:

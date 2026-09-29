@@ -33,9 +33,9 @@ function Get-RootTask {
 }
 
 function Get-VerifiedBridgePinSuffix {
-  # The weekly agent-value metric requires --bridge-bundle and --bridge-manifest-sha256
-  # (wd_agent_value_metric.py), so its task may carry exactly that pin after the base
-  # arguments. The pin is accepted only when it names an existing deployed bundle
+  # The weekly agent-value metric and the consensus-stall detector write through a pinned
+  # bridge writer (--bridge-bundle and --bridge-manifest-sha256), so their tasks may carry
+  # exactly that pin after the base arguments. The pin is accepted only when it names an existing deployed bundle
   # whose deployment manifest hashes to the given value. Returns '' for the bare base
   # arguments, the verified suffix for a pinned form, and $null for anything else.
   param(
@@ -159,6 +159,7 @@ $jobs = @(
     original_working_directory = 'C:\Python'
     hidden_arguments = '"C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\Python\wd_consensus_stall_detector.py" --alert'
     hidden_working_directory = 'C:\Python'
+    bridge_pin = $true
   },
   [pscustomobject]@{
     name = 'WD-AgentValue-Weekly'

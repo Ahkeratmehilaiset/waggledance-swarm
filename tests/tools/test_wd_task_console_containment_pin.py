@@ -116,13 +116,13 @@ def test_the_task_pin_comes_from_either_base_form_and_only_for_a_pinned_job(ps, 
     assert task_pin(ps, [BASE + pin(tmp_path, GEN, "F" * 64)], True, tmp_path) == ""
 
 
-def test_only_the_agent_value_job_takes_a_pin_and_apply_keeps_it():
+def test_exactly_the_two_pinned_writer_jobs_take_a_pin_and_apply_keeps_it():
     text = SCRIPT.read_text(encoding="utf-8")
     weekly = text.index("name = 'WD-AgentValue-Weekly'")
     stall = text.index("name = 'WD-ConsensusStallDetector'")
     assert "bridge_pin = $true" in text[weekly:text.index("}", weekly)]
-    assert "bridge_pin" not in text[stall:text.index("}", stall)]
-    assert text.count("bridge_pin = $true") == 1
+    assert "bridge_pin = $true" in text[stall:text.index("}", stall)]
+    assert text.count("bridge_pin = $true") == 2
     apply = text.index("# Wrapping keeps the verified pin the plan saw")
     assert text.index("$pins[[string]$job.name] = $pin") < apply
     assert text.count("-Arguments $hiddenArguments") == 2                  # the wrap check and the postcondition
@@ -369,3 +369,41 @@ def test_a_dry_run_changes_nothing(ps, tmp_path):
     assert record["result"]["legacy"] == "would-hold"
     assert record["result"]["jobs"] == [{"name": STALL, "action": "absent-skip", "enabled": False},
                                         {"name": WEEKLY, "action": "wrap-hidden", "enabled": False}]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_the_stall_detector_takes_a_verified_pin_and_apply_keeps_it(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    record = run_apply(ps, tmp_path, {
+        STALL: task_literal(STALL_EXECUTE, STALL_ORIGINAL + good, STALL_WD, enabled=False),
+        LEGACY: legacy_enabled(),
+    })
+    assert record["error"] == ""
+    assert record["tasks"][STALL] == {"execute": record["launcher"], "arguments": STALL_HIDDEN + good,
+                                      "working_directory": STALL_WD, "enabled": False}
+    jobs = {job["name"]: job for job in record["result"]["jobs"]}
+    assert jobs[STALL] == {"name": STALL, "action": "hidden-exact", "enabled": False}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_already_hidden_pinned_stall_detector_is_left_untouched(ps, tmp_path):
+    store = tmp_path / "store"
+    good = pin(store, GEN, bundle(store))
+    launcher = tmp_path / "wd_silent_launch.exe"
+    record = run_apply(ps, tmp_path, {STALL: task_literal(str(launcher), STALL_HIDDEN + good, STALL_WD, enabled=True)})
+    assert record["error"] == ""
+    assert record["calls"] == []
+    assert record["tasks"][STALL]["arguments"] == STALL_HIDDEN + good
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_an_unverified_stall_detector_pin_changes_nothing(ps, tmp_path):
+    store = tmp_path / "store"
+    bundle(store)
+    bad = pin(store, GEN, "0" * 64)
+    record = run_apply(ps, tmp_path, {STALL: task_literal(STALL_EXECUTE, STALL_ORIGINAL + bad, STALL_WD, True),
+                                      LEGACY: legacy_enabled()})
+    assert "scheduled console task action drifted: WD-ConsensusStallDetector" in record["error"]
+    assert record["calls"] == []
+    assert record["tasks"][STALL]["arguments"] == STALL_ORIGINAL + bad

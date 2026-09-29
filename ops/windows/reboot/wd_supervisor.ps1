@@ -197,10 +197,16 @@ function Resolve-WdSupervisorGitApplication {
             -ErrorAction Stop
     }
     else {
-        $command = Get-Command `
+        # An unconfigured lookup must name exactly one application: Git Bash puts
+        # mingw64in ahead of cmd, and joining two sources is not a path.
+        $commands = @(Get-Command `
             -Name 'git.exe' `
             -CommandType Application `
-            -ErrorAction Stop
+            -ErrorAction Stop)
+        if ($commands.Count -ne 1) {
+            throw 'supervisor Git lookup is ambiguous; configure watchers.git_executable'
+        }
+        $command = $commands[0]
         $candidate = [IO.Path]::GetFullPath([string]$command.Source)
     }
     if (
@@ -2850,7 +2856,9 @@ if ($toolsEnabled) {
     ) {
         throw 'Tools local conversation differs from its pinned lane posture'
     }
-    $toolsGeneration = Resolve-OwnBundleGeneration -ScriptRoot $PSScriptRoot
+    $toolsGeneration = Resolve-OwnBundleGeneration `
+        -ScriptRoot $PSScriptRoot `
+        -GitExecutable (Get-RequiredText $configuration.watchers 'git_executable')
     $configuredToolsLauncher = [IO.Path]::GetFullPath(
         (Get-RequiredText $tools 'launcher_script')
     )

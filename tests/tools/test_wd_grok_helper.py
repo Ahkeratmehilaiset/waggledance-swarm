@@ -771,3 +771,233 @@ def test_wrapper_exit_code_is_the_python_result_and_capture_is_kept(tmp_path, sh
                                "exit $LASTEXITCODE"],
                               capture_output=True, text=True, timeout=30, env=env)
     assert captured.returncode == code, captured.stdout + captured.stderr
+
+
+# ---------------------------------------------------------------------------
+# Caller-form twins, lifecycle identifiers and canonical-receipt refusal
+# (Tools cffff481 via Lead adb5f93a; authored under the operator no-runs
+# directive, NOT executed by the author). Every fixture uses an isolated copy of
+# the wrapper with STUB packages: a stub Python wrapper, stub bridge context and a
+# stub writer. The production emitter, the real bridge log and Grok are never reached.
+# ---------------------------------------------------------------------------
+
+SHELLS = sorted({p for p in (PS, shutil.which("pwsh")) if p})
+OBSERVATION = "0123456789abcdef" * 2
+
+
+def _ps_env(manifest):
+    import hashlib
+    import os
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    env["WD_REBOOT_EXPECTED_MANIFEST_HASH"] = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    return env
+
+
+def _run_ps(shell, *args, env):
+    import re
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", *args],
+                            capture_output=True, text=True, timeout=30, env=env)
+    return result.returncode, result.stdout, re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
+
+
+def _exit_bundle(tmp_path, code):
+    """The wrapper plus a stub Python wrapper that publishes ``code`` (None: it publishes nothing)."""
+    import hashlib
+    script = tmp_path / "Invoke-WdGrok.ps1"
+    shutil.copyfile(REBOOT / script.name, script)
+    stub = tmp_path / "Invoke-WdBridgePython.ps1"
+    stub.write_text('param([string]$Tool,[switch]$VerifyPackage)\n'
+                    "'{\"status\":\"stub\"}'\n"
+                    + ("" if code is None else f"$global:LASTEXITCODE = {code}\n"))
+    manifest = tmp_path / "deployment-manifest.json"
+    manifest.write_text(json.dumps({"source_commit": "fixture", "files": {
+        stub.name: hashlib.sha256(stub.read_bytes()).hexdigest().upper()}}))
+    return script, _ps_env(manifest)
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("code", [0, 1, 2])
+def test_a_dot_source_never_exits_its_caller_and_leaves_the_code(tmp_path, shell, code):
+    script, env = _exit_bundle(tmp_path, code)
+    rc, out, err = _run_ps(shell, "-Command",
+                           f"$out = . '{script}' -Status; if (-not ($out -match 'stub')) {{ exit 99 }}; "
+                           "'caller-continued'; exit $LASTEXITCODE", env=env)
+    assert rc == code and "caller-continued" in out, out + err
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("code", [0, 1, 2])
+@pytest.mark.parametrize("call", ["&", "."])
+def test_a_distinct_outer_file_target_keeps_running_and_capturing(tmp_path, shell, code, call):
+    # The process's -File target is ANOTHER script: the wrapper must not exit it. Without the
+    # marker line, an early exit with the same code would be indistinguishable.
+    script, env = _exit_bundle(tmp_path, code)
+    outer = tmp_path / "outer.ps1"
+    outer.write_text(f"$out = {call} '{script}' -Status\n"
+                     "if (-not ($out -match 'stub')) { exit 99 }\n"
+                     "'outer-continued'\n"
+                     "exit $LASTEXITCODE\n")
+    rc, out, err = _run_ps(shell, "-File", str(outer), env=env)
+    assert rc == code and "outer-continued" in out, out + err
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_python_wrapper_that_publishes_no_code_is_a_failure(tmp_path, shell):
+    script, env = _exit_bundle(tmp_path, None)
+    rc, out, err = _run_ps(shell, "-File", str(script), "-Status", env=env)
+    assert rc == 1 and '"status":"stub"' in out, out + err
+    # A caller's earlier 0 is not inherited: the wrapper sets 1 before the call.
+    rc, out, err = _run_ps(shell, "-Command",
+                           f"$global:LASTEXITCODE = 0; $out = & '{script}' -Status; exit $LASTEXITCODE", env=env)
+    assert rc == 1, out + err
+
+
+def test_the_readme_separates_supported_file_from_unverified_positional_exit_codes():
+    text = (REBOOT / "GROK-READONLY.md").read_text(encoding="utf-8")
+    assert "SUPPORTED: a run where this script is the process's own explicit, top-level" in text
+    assert "UNVERIFIED, not a runtime guarantee: a positional invocation" in text
+
+
+def _lifecycle_bundle(tmp_path):
+    """A trusted TEST package around the real wrapper: stub bridge context, fleet file and writer."""
+    import hashlib
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    script = bundle / "Invoke-WdGrok.ps1"
+    shutil.copyfile(REBOOT / script.name, script)
+    (bundle / "BridgeCodeContext.ps1").write_text(
+        "function Get-WdBridgeCodePackageDefinition { param([string]$Path)\n"
+        "    [pscustomobject]@{ Hash = (Get-FileHash -LiteralPath $Path).Hash; Definition = $null } }\n"
+        "function Assert-WdBridgeCodePackageIntegrity { param($BundleRoot, $Deployment, $Definition) $null }\n")
+    (bundle / "bridge-code-files.json").write_text("{}")
+    (bundle / "wd-fleet.json").write_text(json.dumps({"runtime_root": str(tmp_path / "runtime")}))
+    writer = bundle / "tools-bootstrap/.agent-bridge/bin/Write-AgentEvent.ps1"
+    writer.parent.mkdir(parents=True)
+    writer.write_text(   # records what it was asked to write; it never touches a bridge log
+        "param([string]$Agent,[string]$Type,[string]$Status,[string]$TaskId,[string]$Message,[string]$To,\n"
+        "    [string]$Role,[string]$AgentUuid,[string]$SessionId,[string]$RunId,[string[]]$Capabilities,\n"
+        "    [string]$PayloadJson,[switch]$ReceiptJson)\n"
+        "[pscustomobject]@{agent=$Agent;status=$Status;to=$To;task=$TaskId;session=$SessionId;run=$RunId;\n"
+        "    receipt=[bool]$ReceiptJson;payload=($PayloadJson | ConvertFrom-Json)} | ConvertTo-Json -Depth 8 -Compress\n")
+    files = {name: hashlib.sha256((bundle / name).read_bytes()).hexdigest().upper()
+             for name in ("BridgeCodeContext.ps1", "bridge-code-files.json", "wd-fleet.json")}
+    manifest = bundle / "deployment-manifest.json"
+    manifest.write_text(json.dumps({"source_commit": "fixture", "files": files}))
+    return script, _ps_env(manifest)
+
+
+def _lifecycle(shell, tmp_path, stage, state):
+    import base64
+    script, env = _lifecycle_bundle(tmp_path)
+    encoded = base64.b64encode(json.dumps({"stage": stage, "state": dict(state, task_id="lifecycle/task")})
+                               .encode()).decode("ascii")
+    return _run_ps(shell, "-File", str(script), "-LifecycleBase64", encoded, env=env)
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("stage,state,error", [
+    ("deferred", {}, "Invalid Grok deferral observation"),                                   # missing
+    ("deferred", {"observation_id": ""}, "Invalid Grok deferral observation"),               # missing (empty)
+    ("deferred", {"request_id": OBSERVATION}, "Invalid Grok deferral observation"),          # wrong: a consultation id
+    ("deferred", {"observation_id": OBSERVATION, "request_id": OBSERVATION},
+     "Invalid Grok deferral observation"),                                                   # mixed
+    ("deferred", {"observation_id": OBSERVATION.upper()}, "Invalid Grok deferral observation"),   # wrong: case
+    ("deferred", {"observation_id": OBSERVATION[:31]}, "Invalid Grok deferral observation"),      # wrong: length
+    ("started", {}, "Invalid Grok consultation id"),                                         # missing
+    ("answered", {"observation_id": OBSERVATION}, "Invalid Grok consultation id"),           # wrong: an observation
+    ("answered", {"request_id": OBSERVATION, "observation_id": OBSERVATION},
+     "Invalid Grok consultation id"),                                                        # mixed
+    ("failed", {"request_id": OBSERVATION + "0"}, "Invalid Grok consultation id"),           # wrong: length
+    ("failed", {"request_id": "g" * 32}, "Invalid Grok consultation id"),                    # wrong: not hex
+])
+def test_lifecycle_refuses_wrong_missing_or_mixed_identifiers(tmp_path, shell, stage, state, error):
+    rc, out, err = _lifecycle(shell, tmp_path, stage, state)
+    assert rc != 0 and error in err, out + err
+    assert '"session"' not in out                                    # the stub writer was never reached
+
+
+@pytest.mark.skipif(PS is None, reason="PowerShell unavailable")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("stage,state,session,consultation,recipient", [
+    ("deferred", {"observation_id": OBSERVATION, "request_id": None}, "grok-deferral-" + OBSERVATION, None,
+     "operator"),
+    ("started", {"request_id": OBSERVATION}, "grok-consult-" + OBSERVATION, OBSERVATION, "operator"),
+    ("answered", {"request_id": OBSERVATION, "observation_id": None}, "grok-consult-" + OBSERVATION,
+     OBSERVATION, "codex-lead-1"),
+])
+def test_lifecycle_binds_each_identifier_to_its_own_session(tmp_path, shell, stage, state, session,
+                                                           consultation, recipient):
+    rc, out, err = _lifecycle(shell, tmp_path, stage, state)
+    assert rc == 0, out + err
+    written = json.loads(out)
+    assert written["agent"] == "grok-scout-1" and written["status"] == "consultation_" + stage
+    assert written["session"] == written["run"] == session and written["receipt"] is True
+    assert written["to"] == recipient and written["task"] == "lifecycle/task"
+    assert written["payload"]["consultation_id"] == consultation
+    assert written["payload"].get("observation_id") == (OBSERVATION if stage == "deferred" else None)
+    assert ("observation_id" in written["payload"]) is (stage == "deferred")
+    assert written["payload"]["authority_effect"] == "none" and written["payload"]["advisory_only"] is True
+
+
+DELIVERED = {"_bridge_delivery": {"accepted": True, "canonical_durable": True}}
+DEFERRAL = {"task_id": "test", "request_id": None, "observation_id": OBSERVATION}
+
+
+def _stub_writer_process(tmp_path, monkeypatch, returncode, stdout):
+    """emit_bridge_event against a STUB process: no PowerShell, no writer and no model ever start."""
+    bundle = tmp_path / "bundle"
+    packaged = bundle / "tools-bootstrap/tools/wd_grok_helper.py"
+    packaged.parent.mkdir(parents=True)
+    (bundle / "Invoke-WdGrok.ps1").write_text("# pinned wrapper fixture")
+    monkeypatch.setattr(wd_grok_helper, "__file__", str(packaged))
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[-2] == "-LifecycleBase64" and "--prompt-file" not in command
+        return SimpleNamespace(returncode=returncode, stdout=stdout)
+    monkeypatch.setattr(wd_grok_helper.subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize("returncode,stdout,error", [
+    (1, json.dumps(DELIVERED), OSError),                                                 # the writer failed
+    (0, json.dumps({"_bridge_delivery": {"accepted": False, "canonical_durable": True}}), OSError),
+    (0, json.dumps({"_bridge_delivery": {"accepted": True}}), OSError),                  # no durability claim
+    (0, json.dumps({"_bridge_delivery": {"accepted": True, "canonical_durable": None}}), OSError),
+    (0, json.dumps({"_bridge_delivery": {}}), OSError),
+    (0, json.dumps({"receipt": DELIVERED["_bridge_delivery"]}), OSError),                # not the delivery key
+    (0, "not json", ValueError),
+    (0, "", ValueError),
+])
+def test_lifecycle_receipt_refusals_never_return_normally(tmp_path, monkeypatch, returncode, stdout, error):
+    calls = _stub_writer_process(tmp_path, monkeypatch, returncode, stdout)
+    with pytest.raises(error):
+        wd_grok_helper.emit_bridge_event("deferred", dict(DEFERRAL))
+    assert len(calls) == 1                                                               # one attempt, no retry
+
+
+def test_a_canonical_receipt_with_a_bom_is_confirmed_and_carries_the_exact_event(tmp_path, monkeypatch):
+    import base64
+    calls = _stub_writer_process(tmp_path, monkeypatch, 0, "﻿" + json.dumps(DELIVERED))
+    assert wd_grok_helper.emit_bridge_event("deferred", dict(DEFERRAL)) is None          # success twin
+    (command,) = calls
+    assert json.loads(base64.b64decode(command[-1])) == {"stage": "deferred", "state": DEFERRAL}
+    assert command[command.index("-File") + 1].endswith("Invoke-WdGrok.ps1")
+
+
+def test_a_refused_receipt_is_recorded_and_never_refunds_or_retries(tmp_path, monkeypatch):
+    calls = _stub_writer_process(tmp_path, monkeypatch, 0, json.dumps({"_bridge_delivery": {"accepted": True}}))
+    seed(tmp_path, age=1)
+    before = (tmp_path / "hourly-state.json").read_bytes()
+    report = consult(tmp_path, "later/task", "ask", ["fake"], now=NOW,
+                     runner=lambda *a, **k: pytest.fail("budget bypass"),
+                     emitter=wd_grok_helper.emit_bridge_event)
+    assert report["decision"] == "deferred_hourly_limit" and len(calls) == 1
+    assert [e["error_type"] for e in report["bridge_event_errors"]] == ["OSError"]
+    assert (tmp_path / "hourly-state.json").read_bytes() == before

@@ -154,12 +154,27 @@ if ($null -ne $legacy -and -not (Test-ActionExact `
 $jobs = @(
   [pscustomobject]@{
     name = 'WD-ConsensusStallDetector'
-    original_execute = 'C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe'
+    original_execute = 'C:\Python\project2-master\.python\Python313\python.exe'
     original_arguments = 'C:\Python\wd_consensus_stall_detector.py --alert'
     original_working_directory = 'C:\Python'
-    hidden_arguments = '"C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\Python\wd_consensus_stall_detector.py" --alert'
+    hidden_arguments = '"C:\Python\project2-master\.python\Python313\python.exe" "C:\Python\wd_consensus_stall_detector.py" --alert'
     hidden_working_directory = 'C:\Python'
     bridge_pin = $true
+    # WindowsApps python.exe is an app-execution alias for whichever Store Python is
+    # installed. Its exact unpinned forms, bare or hidden, migrate to the explicit
+    # interpreter; any other alias form, pinned included, still drifts.
+    legacy_actions = @(
+      [pscustomobject]@{
+        execute = 'C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe'
+        arguments = 'C:\Python\wd_consensus_stall_detector.py --alert'
+        working_directory = 'C:\Python'
+      },
+      [pscustomobject]@{
+        execute = $silentLauncher
+        arguments = '"C:\Users\janik\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\Python\wd_consensus_stall_detector.py" --alert'
+        working_directory = 'C:\Python'
+      }
+    )
   },
   [pscustomobject]@{
     name = 'WD-AgentValue-Weekly'
@@ -197,7 +212,20 @@ foreach ($job in $jobs) {
     -Execute $silentLauncher `
     -Arguments ([string]$job.hidden_arguments + $pin) `
     -WorkingDirectory ([string]$job.hidden_working_directory)
-  if (-not $isOriginal -and -not $isHidden) {
+  $isLegacy = $false
+  $legacyActions = $job.PSObject.Properties['legacy_actions']
+  if (-not $isOriginal -and -not $isHidden -and $null -ne $legacyActions) {
+    foreach ($form in @($legacyActions.Value)) {
+      if (Test-ActionExact `
+          -Task $task `
+          -Execute ([string]$form.execute) `
+          -Arguments ([string]$form.arguments) `
+          -WorkingDirectory ([string]$form.working_directory)) {
+        $isLegacy = $true
+      }
+    }
+  }
+  if (-not $isOriginal -and -not $isHidden -and -not $isLegacy) {
     throw "scheduled console task action drifted: $($job.name)"
   }
   $planned[[string]$job.name] = [pscustomobject]@{
@@ -208,7 +236,7 @@ foreach ($job in $jobs) {
   }
   [void]$plans.Add([pscustomobject]@{
     name = [string]$job.name
-    action = if ($isHidden) { 'hidden-exact' } else { 'wrap-hidden' }
+    action = if ($isHidden) { 'hidden-exact' } elseif ($isLegacy) { 'migrate-hidden' } else { 'wrap-hidden' }
     enabled = [bool]$task.Settings.Enabled
   })
 }

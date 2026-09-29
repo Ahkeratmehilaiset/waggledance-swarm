@@ -41,6 +41,11 @@
     payload still carries the real CheckpointDigest. The all-zero ProgressKey is
     accepted only with the unavailable sentinel above.
 
+    Runtime root: AGENT_BRIDGE_RUNTIME_ROOT must name an existing absolute
+    directory (else unknown runtime_root_missing, before any intent), and the
+    receipt's events_path must be <root>\shared\events.jsonl. Otherwise the
+    delivery is uncertain.
+
     Output: exactly one JSON line (wd.continuity-alert-result.v1) on the success
     stream. status is one of:
       published         canonical durable event
@@ -183,6 +188,12 @@ function Invoke-ContinuityAlert {
     if (-not $expectedHash) { $expectedHash = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH }
     if ($expectedHash -cnotmatch '^[0-9A-Fa-f]{64}$') { Stop-Unknown 'manifest_anchor_missing' $alertKey }
     if (-not (Test-AbsoluteDirectory $bundle)) { Stop-Unknown 'bundle_root_invalid' $alertKey }
+    # Without AGENT_BRIDGE_RUNTIME_ROOT the pinned writer falls back to the bundle's own
+    # .agent-bridge and still reports canonical: a false "operator informed". Require the
+    # caller's root, and bind the receipt's events_path to it below.
+    $runtimeRoot = [string]$env:AGENT_BRIDGE_RUNTIME_ROOT
+    if (-not (Test-AbsoluteDirectory $runtimeRoot)) { Stop-Unknown 'runtime_root_missing' $alertKey }
+    $expectedEventsPath = [IO.Path]::GetFullPath((Join-Path (Join-Path $runtimeRoot 'shared') 'events.jsonl'))
 
     # --- per-thread ledger under its own exclusive lock (the relay lock is not assumed) ---------
     $auditDir = Join-Path $Worktree '.codex-audit'
@@ -294,7 +305,11 @@ function Invoke-ContinuityAlert {
             # Bind the receipt to THIS event; never infer completion from a clean return.
             if ($receipt.agent -ceq $Agent -and $receipt.type -ceq 'message' -and
                 $receipt.status -ceq 'continuity_alert' -and $receipt.to -ceq 'operator' -and
-                $receipt.task_id -ceq $TaskId -and $delivery.accepted -eq $true) {
+                $receipt.task_id -ceq $TaskId -and $delivery.accepted -eq $true -and
+                $delivery.PSObject.Properties['events_path'] -and
+                [string]$delivery.events_path -and [IO.Path]::IsPathRooted([string]$delivery.events_path) -and
+                [IO.Path]::GetFullPath([string]$delivery.events_path).Equals($expectedEventsPath,
+                    [StringComparison]::OrdinalIgnoreCase)) {
                 if ($delivery.delivery_status -ceq 'canonical' -and $delivery.canonical_durable -eq $true) {
                     $outcome = 'published'
                 } elseif ($delivery.delivery_status -ceq 'queued') {

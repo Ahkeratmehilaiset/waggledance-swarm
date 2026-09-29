@@ -45,10 +45,17 @@ if ($mode -eq 'queued') { $deliveryState = 'queued'; $durable = $false }
 if ($mode -eq 'suppressed') { $deliveryState = 'suppressed'; $durable = $false }
 $echoTo = $To
 if ($mode -eq 'wrong_echo') { $echoTo = 'codex-lead-1' }
+# Same root resolution as the pinned writer: the env root, else the bundle's own .agent-bridge.
+$root = if ($env:AGENT_BRIDGE_RUNTIME_ROOT) { $env:AGENT_BRIDGE_RUNTIME_ROOT } else { Split-Path -Parent $PSScriptRoot }
+$eventsPath = Join-Path (Join-Path $root 'shared') 'events.jsonl'
+if ($mode -eq 'wrong_root') { $eventsPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'shared\events.jsonl' }
+if ($mode -eq 'relative_root') { $eventsPath = 'shared\events.jsonl' }
+$delivery = [ordered]@{schema='waggledance.bridge.delivery-receipt.v1'; accepted=$true;
+    delivery_status=$deliveryState; canonical_durable=$durable; events_path=$eventsPath}
+if ($mode -eq 'no_events_path') { $delivery.Remove('events_path') }
 $event = [ordered]@{ts_utc='2026-09-29T06:00:00.0000000Z'; agent=$Agent; type=$Type; task_id=$TaskId;
     status=$Status; to=$echoTo; message=$Message; payload=($PayloadJson | ConvertFrom-Json);
-    _bridge_delivery=[ordered]@{schema='waggledance.bridge.delivery-receipt.v1'; accepted=$true;
-        delivery_status=$deliveryState; canonical_durable=$durable}}
+    _bridge_delivery=$delivery}
 ConvertTo-Json -InputObject $event -Compress -Depth 8
 '''
 
@@ -68,6 +75,8 @@ def env(request, tmp_path):
     worktree.mkdir()
     capture = tmp_path / "capture.jsonl"
     capture.write_text("", encoding="utf-8")
+    runtime = tmp_path / "decoy runtime"
+    runtime.mkdir()
 
     class Env:
         shell = request.param
@@ -84,8 +93,9 @@ def env(request, tmp_path):
 
         def run(self, *, agent=AGENT, task=TASK, thread=THREAD, reason=REASON, digest=DIGEST,
                 wt=None, bundle_root=None, manifest_hash=None, mode="canonical", anchors=True,
-                progress=None):
+                progress=None, runtime_root=""):
             wt = str(worktree) if wt is None else wt
+            runtime_root = str(runtime) if runtime_root == "" else runtime_root
             args = {"Agent": agent, "TaskId": task, "ThreadId": thread, "Worktree": wt,
                     "Reason": reason, "CheckpointDigest": digest}
             if progress is not None:
@@ -97,7 +107,9 @@ def env(request, tmp_path):
             script = (f"$env:WD_TEST_ALERT_CAPTURE = '{capture}'; $env:WD_TEST_ALERT_MODE = '{mode}'; "
                       "Remove-Item Env:WD_BRIDGE_PYTHON_WRAPPER, Env:WD_REBOOT_EXPECTED_MANIFEST_HASH "
                       "-ErrorAction SilentlyContinue; "
-                      f"$r = & '{HELPER}' {quoted}; "
+                      + ("Remove-Item Env:AGENT_BRIDGE_RUNTIME_ROOT -ErrorAction SilentlyContinue; "
+                         if runtime_root is None else f"$env:AGENT_BRIDGE_RUNTIME_ROOT = '{runtime_root}'; ")
+                      + f"$r = & '{HELPER}' {quoted}; "
                       "[Console]::Out.WriteLine('RESULT ' + ($r -join '')); "
                       "[Console]::Out.WriteLine('HOST_ALIVE ' + $LASTEXITCODE)")
             proc = subprocess.run([self.shell, "-NoLogo", "-NoProfile", "-NonInteractive",
@@ -268,7 +280,8 @@ def test_event_timestamp_is_iso_utc_in_both_shells(env):
 
 # --- uncertain delivery: visible, never blindly retried ------------------------------------
 
-@pytest.mark.parametrize("mode", ["suppressed", "throw", "garbage", "wrong_echo"])
+@pytest.mark.parametrize("mode", ["suppressed", "throw", "garbage", "wrong_echo",
+                                  "wrong_root", "relative_root", "no_events_path"])
 def test_uncertain_delivery_is_unknown_and_not_retried(env, mode):
     proc, result, alive = env.run(mode=mode)
     ok(proc, result, alive, "unknown", 1)
@@ -288,6 +301,17 @@ def test_crash_between_intent_and_receipt_blocks_blind_retry(env):
     ok(proc, result, alive, "unknown", 1)
     assert result["reason_code"] == "delivery_uncertain"
     assert len(env.calls()) == 1
+
+
+# --- runtime root: an unrooted write must never count as operator-visible -----------------
+
+@pytest.mark.parametrize("root", [None, "relative\\root", "C:\\definitely\\missing\\wd-root"])
+def test_missing_runtime_root_is_refused_before_any_intent(env, root):
+    # Unset, the real writer falls back to the bundle-local log and still says canonical.
+    proc, result, alive = env.run(runtime_root=root)
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "runtime_root_missing"
+    assert env.calls() == [] and env.ledger() is None
 
 
 # --- trust anchors -------------------------------------------------------------------------

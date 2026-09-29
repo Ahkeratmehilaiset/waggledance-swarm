@@ -1,6 +1,7 @@
 """Synthetic static fixtures. Authorised to write, explicitly NOT RUN at delivery."""
 import pytest
 
+from tools import check_bridge_v2_product_boundary as boundary
 from tools.check_bridge_v2_product_boundary import check_boundary
 
 
@@ -160,3 +161,113 @@ def test_changed_unpackaged_python_cannot_hide_product_import():
     result = inspect(files, package=["tools/main.py"])
     assert result["status"] == "refused"
     assert any(x["reason"] == "source_dependency_not_packaged" for x in result["unknown"])
+
+
+@pytest.mark.parametrize("source, reason", [
+    ("lookup = __builtins__['__import__']\n", "dynamic_execution_or_lookup:__builtins__"),
+    ("loader = __loader__\n", "dynamic_execution_or_lookup:__loader__"),
+    ("spec = __spec__\n", "dynamic_execution_or_lookup:__spec__"),
+    ("kind = obj.__class__\n", "dynamic_import_or_search_path:__class__"),
+    ("classes = obj.__subclasses__()\n", "dynamic_import_or_search_path:__subclasses__"),
+    ("bases = obj.__bases__\n", "dynamic_import_or_search_path:__bases__"),
+    ("order = obj.__mro__\n", "dynamic_import_or_search_path:__mro__"),
+    ("loader = obj.__loader__\n", "dynamic_import_or_search_path:__loader__"),
+    ("spec = obj.__spec__\n", "dynamic_import_or_search_path:__spec__"),
+    ("lookup = obj.__builtins__\n", "dynamic_import_or_search_path:__builtins__"),
+])
+def test_reflection_unknown_and_nonreflective_success_twin(source, reason):
+    result = inspect({"tools/main.py": source})
+    assert result["status"] == "unknown"
+    assert {"path": "tools/main.py", "reason": reason} in result["unknown"]
+    twin = inspect({"tools/main.py": "value = {'loader': 'ordinary data'}\n"})
+    assert twin["status"] == "source_separated"
+    assert twin["execution_allowed"] is False
+
+
+@pytest.mark.parametrize("limit, value, files, base, reason", [
+    ("MAX_FILES", 1, {"tools/main.py": "pass\n"},
+     {"tools/main.py": "old\n"}, "source_file_count_bound_exceeded"),
+    ("MAX_FILE_BYTES", 5, {"tools/main.py": "#ééé\n"}, {}, "source_size_bound_exceeded"),
+    ("MAX_TOTAL_BYTES", 10, {"tools/main.py": "pass\n"}, {},
+     "source_total_bytes_bound_exceeded"),
+    ("MAX_PATH_BYTES", 5, {"tools/main.py": "pass\n"}, {}, "source_size_bound_exceeded"),
+    ("MAX_DECLARATIONS", 0, {"tools/main.py": "pass\n"}, {},
+     "invalid_or_duplicate_declarations"),
+])
+def test_input_bound_unknown_before_parser(monkeypatch, limit, value, files, base, reason):
+    def must_not_parse(*args, **kwargs):
+        pytest.fail("input bound must be checked before parsing")
+    with monkeypatch.context() as patch:
+        patch.setattr(boundary, limit, value)
+        patch.setattr(boundary.ast, "parse", must_not_parse)
+        result = inspect(files, base=base)
+    assert result["status"] == "unknown"
+    assert {"path": "", "reason": reason} in result["unknown"]
+    assert inspect({"tools/main.py": "pass\n"})["status"] == "source_separated"
+
+
+def test_total_byte_boundary_includes_paths_and_both_snapshots(monkeypatch):
+    files = {"tools/main.py": "pass\n"}
+    total = 2 * (len("tools/main.py".encode()) + len("pass\n".encode()))
+    monkeypatch.setattr(boundary, "MAX_TOTAL_BYTES", total)
+    result = inspect(files, base=files, changes=[])
+    assert result["status"] == "source_separated"
+    monkeypatch.setattr(boundary, "MAX_TOTAL_BYTES", total - 1)
+    assert inspect(files, base=files, changes=[])["status"] == "unknown"
+
+
+@pytest.mark.parametrize("source", ["pass\n", "from tools.helper import value\n"])
+def test_ast_budget_including_export_resolution_and_success_twin(monkeypatch, source):
+    files = {"tools/main.py": source, "tools/helper.py": "value=1\n"}
+    with monkeypatch.context() as patch:
+        patch.setattr(boundary, "MAX_AST_NODES", 1)
+        result = inspect(files)
+    assert result["status"] == "unknown"
+    assert any(item["reason"] == "ast_node_bound_exceeded" for item in result["unknown"])
+    assert inspect(files)["status"] == "source_separated"
+
+
+def test_ast_budget_applies_before_semantic_walk(monkeypatch):
+    def must_not_walk(*args, **kwargs):
+        pytest.fail("over-budget AST must not reach semantic walk")
+    monkeypatch.setattr(boundary, "MAX_AST_NODES", 1)
+    monkeypatch.setattr(boundary.ast, "walk", must_not_walk)
+    assert inspect({"tools/main.py": "pass\n"})["status"] == "unknown"
+
+
+def test_export_dependency_cannot_bypass_ast_budget(monkeypatch):
+    # main sorts before zhelper; parsing the latter is triggered by exports.
+    monkeypatch.setattr(boundary, "MAX_AST_NODES", 5)
+    files = {"tools/main.py": "from tools.zhelper import value\n",
+             "tools/zhelper.py": "value=1\n"}
+    result = inspect(files)
+    assert result["status"] == "unknown"
+    assert {"path": "tools/zhelper.py", "reason": "ast_node_bound_exceeded"} in result["unknown"]
+
+
+def test_parsed_dependency_cached_and_budget_not_recounted(monkeypatch):
+    original = boundary.ast.parse
+    parsed = []
+    def record_parse(source, *, filename):
+        parsed.append(filename)
+        return original(source, filename=filename)
+    monkeypatch.setattr(boundary.ast, "parse", record_parse)
+    files = {"tools/main.py": "from tools.helper import value\nfrom tools.helper import value\n",
+             "tools/helper.py": "value=1\n"}
+    assert inspect(files)["status"] == "source_separated"
+    assert sorted(parsed) == sorted(files)
+
+
+@pytest.mark.parametrize("source", ["#\ud800\n", "'\udfff'\n"])
+def test_unencodable_snapshot_unknown(source):
+    result = inspect({"tools/main.py": source})
+    assert result["status"] == "unknown"
+    assert {"path": "", "reason": "invalid_source_encoding"} in result["unknown"]
+
+
+def test_bounds_are_declared_but_never_authority():
+    result = inspect({"tools/main.py": "pass\n"})
+    assert result["input_bounds"]["files"] == boundary.MAX_FILES
+    assert result["input_bounds"]["ast_nodes"] == boundary.MAX_AST_NODES
+    assert result["binding_verified"] is False
+    assert result["authority_effect"] == "none"

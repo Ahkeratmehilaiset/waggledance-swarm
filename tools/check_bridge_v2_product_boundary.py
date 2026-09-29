@@ -12,6 +12,16 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+# Fixed policy ceilings, not caller-controlled overrides. Source/path byte
+# counts use UTF-8. Files count both snapshots; AST nodes count unique parsed
+# head files, including trees used to resolve imported exports.
+MAX_FILES = 1024
+MAX_TOTAL_BYTES = 8 * 1024 * 1024
+MAX_FILE_BYTES = 256 * 1024
+MAX_AST_NODES = 100_000
+MAX_PATH_BYTES = 4096
+MAX_DECLARATIONS = 4096
+
 
 def _path(value: Any) -> bool:
     return (isinstance(value, str) and bool(value) and
@@ -57,6 +67,9 @@ def check_boundary(*, base_sha: str, head_sha: str,
     and unresolved imports remain UNKNOWN (even when likely harmless).
     Package files are authoritative only as *declared inputs*, not verified
     deployment manifests. Package initializers participate in the closure.
+    Bounds limit input work, not parser wall time or arbitrary Python behavior.
+    Callers must supply ordinary, trusted containers (not executable Mapping
+    implementations) and independently bind snapshot bytes to their SHAs.
     """
     violations: set[tuple[str, str]] = set()
     unknown: set[tuple[str, str]] = set()
@@ -71,6 +84,11 @@ def check_boundary(*, base_sha: str, head_sha: str,
                 "closure": sorted(visited), "binding_verified": False,
                 "evidence_scope": "caller-declared static source snapshots only",
                 "execution_allowed": False, "production_ready": False,
+                "input_bounds": {"files": MAX_FILES, "total_bytes": MAX_TOTAL_BYTES,
+                                 "per_file_bytes": MAX_FILE_BYTES,
+                                 "ast_nodes": MAX_AST_NODES,
+                                 "path_bytes": MAX_PATH_BYTES,
+                                 "declarations_per_list": MAX_DECLARATIONS},
                 "authority_effect": "none"}
 
     if any(not isinstance(s, str) or re.fullmatch(r"[0-9a-fA-F]{40}", s) is None
@@ -78,16 +96,50 @@ def check_boundary(*, base_sha: str, head_sha: str,
         unknown.add(("", "invalid_exact_sha"))
     if snapshots_complete is not True:
         unknown.add(("", "snapshot_coverage_unverified"))
-    if (not isinstance(base_sources, Mapping) or not isinstance(head_sources, Mapping)
-            or any(not _path(k) or not isinstance(v, str)
-                   for sources in (base_sources, head_sources) for k, v in sources.items())):
+    if not isinstance(base_sources, Mapping) or not isinstance(head_sources, Mapping):
         unknown.add(("", "invalid_source_snapshot"))
         return report()
+    if len(base_sources) + len(head_sources) > MAX_FILES:
+        unknown.add(("", "source_file_count_bound_exceeded"))
+        return report()
+    total_bytes = 0
+    for sources in (base_sources, head_sources):
+        for path, source in sources.items():
+            if not isinstance(path, str) or not isinstance(source, str):
+                unknown.add(("", "invalid_source_snapshot"))
+                return report()
+            # Character checks bound the allocation made by UTF-8 encoding.
+            if len(path) > MAX_PATH_BYTES or len(source) > MAX_FILE_BYTES:
+                unknown.add(("", "source_size_bound_exceeded"))
+                return report()
+            try:
+                path_bytes = len(path.encode("utf-8"))
+                source_bytes = len(source.encode("utf-8"))
+            except UnicodeError:
+                unknown.add(("", "invalid_source_encoding"))
+                return report()
+            if path_bytes > MAX_PATH_BYTES or source_bytes > MAX_FILE_BYTES:
+                unknown.add(("", "source_size_bound_exceeded"))
+                return report()
+            total_bytes += path_bytes + source_bytes
+            if total_bytes > MAX_TOTAL_BYTES:
+                unknown.add(("", "source_total_bytes_bound_exceeded"))
+                return report()
+            if not _path(path):
+                unknown.add(("", "invalid_source_snapshot"))
+                return report()
     lists = (changed_paths, entrypoints, package_files, stdlib_modules)
-    if any(not isinstance(items, (list, tuple)) or
-           any(not isinstance(item, str) for item in items) or
+    if any(not isinstance(items, (list, tuple)) or len(items) > MAX_DECLARATIONS or
+           any(not isinstance(item, str) or len(item) > MAX_PATH_BYTES for item in items) or
            len(set(items)) != len(items) for items in lists):
         unknown.add(("", "invalid_or_duplicate_declarations"))
+        return report()
+    try:
+        if any(len(item.encode("utf-8")) > MAX_PATH_BYTES for items in lists for item in items):
+            unknown.add(("", "declaration_size_bound_exceeded"))
+            return report()
+    except UnicodeError:
+        unknown.add(("", "invalid_declaration_encoding"))
         return report()
     if any(not _path(p) for items in lists[:3] for p in items):
         unknown.add(("", "noncanonical_declared_path"))
@@ -131,6 +183,40 @@ def check_boundary(*, base_sha: str, head_sha: str,
     pending = (set(entrypoints) | {p for p in packaged if p.endswith(".py")} |
                {p for p in derived if p.endswith(".py") and p in head_sources})
     standard = set(stdlib_modules)
+    trees: dict[str, ast.Module | None] = {}
+    node_count = 0
+    ast_budget_exhausted = False
+
+    def parse(path: str) -> ast.Module | None:
+        nonlocal node_count, ast_budget_exhausted
+        if path in trees:
+            return trees[path]
+        trees[path] = None
+        if ast_budget_exhausted:
+            return None
+        try:
+            tree = ast.parse(head_sources[path], filename=path)
+            # Depth-first iterator stack avoids ast.walk's breadth-sized queue.
+            # Reject before exports or import/reflection analysis sees this tree.
+            stack = [iter((tree,))]
+            while stack:
+                node = next(stack[-1], None)
+                if node is None:
+                    stack.pop()
+                    continue
+                node_count += 1
+                if node_count > MAX_AST_NODES:
+                    ast_budget_exhausted = True
+                    unknown.add((path, "ast_node_bound_exceeded"))
+                    return None
+                stack.append(ast.iter_child_nodes(node))
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            unknown.add((path, "unparseable_python_source"))
+            return None
+        trees[path] = tree
+        return tree
+
+    exports_by_path: dict[str, set[str]] = {}
 
     def resolve(name: str, origin: str) -> str | None:
         root = name.split(".")[0]
@@ -170,10 +256,10 @@ def check_boundary(*, base_sha: str, head_sha: str,
         if source is None or _module(path) is None:
             unknown.add((path, "missing_or_unsupported_python_source"))
             continue
-        try:
-            tree = ast.parse(source, filename=path)
-        except (SyntaxError, ValueError, RecursionError):
-            unknown.add((path, "unparseable_python_source"))
+        tree = parse(path)
+        if tree is None:
+            if ast_budget_exhausted:
+                break
             continue
         name = _module(path) or ""
         package = name if path.endswith("/__init__.py") else name.rpartition(".")[0]
@@ -217,10 +303,11 @@ def check_boundary(*, base_sha: str, head_sha: str,
                     if child in modules:
                         resolve(child, path)
                     elif dependency:
-                        try:
-                            exports = _exports(ast.parse(head_sources[dependency]))
-                        except (SyntaxError, ValueError, RecursionError):
-                            exports = set()
+                        if dependency not in exports_by_path:
+                            dependency_tree = parse(dependency)
+                            exports_by_path[dependency] = (
+                                _exports(dependency_tree) if dependency_tree is not None else set())
+                        exports = exports_by_path[dependency]
                         if alias.name not in exports:
                             unknown.add((path, "unresolved_imported_name:" + child))
                     elif target in standard:
@@ -228,11 +315,16 @@ def check_boundary(*, base_sha: str, head_sha: str,
                     else:
                         unknown.add((path, "unresolved_imported_name:" + child))
             elif isinstance(node, ast.Name) and node.id in {
-                    "__import__", "exec", "eval", "compile", "getattr", "globals", "locals", "vars"}:
+                    "__builtins__", "__loader__", "__spec__", "__import__",
+                    "exec", "eval", "compile", "getattr", "globals", "locals", "vars"}:
                 unknown.add((path, "dynamic_execution_or_lookup:" + node.id))
             elif isinstance(node, ast.Attribute) and node.attr in {
                     "import_module", "exec_module", "load_module", "spec_from_file_location",
                     "SourceFileLoader", "path", "meta_path", "path_hooks", "__dict__",
+                    "__class__", "__subclasses__", "__bases__", "__mro__",
+                    "__builtins__", "__loader__", "__spec__",
                     "__getattribute__", "__import__", "exec", "eval", "compile", "getattr"}:
                 unknown.add((path, "dynamic_import_or_search_path:" + node.attr))
+            if ast_budget_exhausted:
+                break
     return report()

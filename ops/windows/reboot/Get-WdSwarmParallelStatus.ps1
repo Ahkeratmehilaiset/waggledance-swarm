@@ -91,6 +91,26 @@ function Read-WdStatusRecord {
     finally { $stream.Dispose() }
 }
 
+function Get-WdStatusContinuityAlert {
+    param([string] $Worktree, [string] $Agent)
+    $path = Join-Path $Worktree '.codex-audit/wd-turn-loop/continuity-v1-alert.json'
+    $result = [pscustomobject]@{status='not_observed';source_path=$path;reason='no_record';
+        observed_at_utc=$null;runtime_health_verified=$false;task_completion_verified=$false}
+    if (-not [IO.File]::Exists($path)) { return $result }
+    try {
+        $record = Read-WdStatusRecord -Path $path
+        if ($record.schema -cne 'wd.native-continuity-alert.v1' -or $record.agent -cne $Agent -or
+            $record.status -cnotin @('unknown','cleared')) { throw 'invalid continuity alert identity' }
+        [void][DateTimeOffset]::Parse([string]$record.observed_at_utc)
+        $result.status=if ($record.status -ceq 'cleared') {'cleared'} else {'alert'}
+        $result.reason=[string]$record.error
+        $result.observed_at_utc=[string]$record.observed_at_utc
+    } catch {
+        $result.status='unknown'; $result.reason='invalid_continuity_alert'
+    }
+    return $result
+}
+
 function Get-WdStatusWakeObservation {
     param([string] $Root, [string] $Agent, [string] $Worktree,
         [object[]] $Processes, [string] $MonitorFile)
@@ -820,6 +840,7 @@ foreach ($definition in @($definitions)) {
         configured_permission_posture = $definition.configured_permission_posture
         # A manifest/handshake does not prove the GUI is open or a RPC was accepted.
         conversation_control_verified = $false
+        continuity_guard = Get-WdStatusContinuityAlert -Worktree $worktree -Agent $agent
         turn_execution = $turnExecution
         health_observation = [pscustomobject]@{
             process_presence = $(if ($runtime.identity -ceq 'matched' -or $turnExecution.observed_pid) { 'observed' } else { 'unknown' })
@@ -922,6 +943,7 @@ $report = [pscustomobject]@{
                 $_.status -ceq 'blocked'
             }).Count
         blocked_wake_transports = @($lanes | Where-Object { $_.turn_execution.relay_status -ceq 'bridge_wake_blocked' }).Count
+        continuity_alerts = @($lanes | Where-Object { $_.continuity_guard.status -cin @('alert','unknown') }).Count
         pending_wakes = @($lanes | Where-Object { $_.wake_pending }).Count
         unknown_wake_observations = @($lanes | Where-Object { $null -eq $_.wake_pending }).Count
         wake_sentinels_present = @($lanes | Where-Object { $_.sentinel_present }).Count
@@ -938,6 +960,9 @@ if ($Json) {
         runnable_evidence, @{Name='inbox_delivery';Expression={$_.wake_observation.status}},
         sentinel_present -AutoSize
     $report.summary | Format-List
+    $report.lanes | Where-Object { $_.continuity_guard.status -cin @('alert','unknown') } |
+        Select-Object agent, @{Name='continuity_alert';Expression={$_.continuity_guard.reason}},
+            @{Name='recorded_at';Expression={$_.continuity_guard.observed_at_utc}} | Format-Table -AutoSize -Wrap
     $report.lanes | Select-Object agent,
         @{Name='process_presence';Expression={$_.health_observation.process_presence}},
         @{Name='identity_scope';Expression={$_.health_observation.identity_scope}},

@@ -1,0 +1,239 @@
+"""Tools recovers the EXACT incoming request beyond the recent 40-row view.
+
+The routing summary comes from the actual pinned next-action function. The
+harness below performs the steps WAKE_PROCEDURE_TOOLS.md prescribes with the
+actual pinned helpers, and the test pins every command it uses to the procedure
+text, so the documented path is the path exercised here.
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
+
+from tools.bridge_next_action import recommend_next_action
+
+
+ROOT = Path(__file__).resolve().parents[2]
+BIN = ROOT / ".agent-bridge/bin"
+PROCEDURE = ROOT / "ops/windows/reboot/WAKE_PROCEDURE_TOOLS.md"
+SHELLS = list(dict.fromkeys(filter(None, (shutil.which("pwsh"), shutil.which("powershell.exe")))))
+pytestmark = pytest.mark.skipif(not SHELLS, reason="PowerShell is required")
+NOW = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+TS = "2026-09-29T09:50:00.1234567Z"
+_SCRUB = ("AGENT_BRIDGE_", "CLAUDE_CODE_", "WD_", "GIT_")
+
+# The procedure steps, executed with the pinned helpers. Output: one JSON object.
+HARNESS = r"""
+param([string]$Bin, [string]$RoutingPath)
+$ErrorActionPreference = 'Stop'
+function From-Json([string]$Text) {
+    $arguments = @{}
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $arguments.DateKind = 'String' }
+    return ($Text | ConvertFrom-Json @arguments)
+}
+function Blocked([string]$Reason) { [pscustomobject]@{status='blocked'; reason=$Reason} | ConvertTo-Json -Compress; exit 0 }
+function Invoke-Helper([string]$Name, [string[]]$Arguments) {
+    # A failing helper writes to stderr; in PS 5.1 that must not become terminating here.
+    $ErrorActionPreference = 'Continue'
+    $shell = (Get-Process -Id $PID).Path
+    $out = & $shell -NoProfile -NonInteractive -File (Join-Path $Bin $Name) @Arguments 2>&1 |
+        Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | Out-String
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return From-Json $out
+}
+$routing = From-Json ([IO.File]::ReadAllText($RoutingPath))
+$incoming = $routing.incoming
+if ($routing.action -cne 'answer_incoming' -or $null -eq $incoming) { Blocked 'no_incoming' }
+if ($incoming.request_binding_conflict -eq $true) { Blocked 'request_binding_conflict' }
+$requestId = [string]$incoming.request_id
+if (-not $requestId) {
+    $inventory = Invoke-Helper 'Get-BridgeRequestInventory.ps1' @('-Agent', [string]$incoming.agent)
+    if ($null -eq $inventory) { Blocked 'inventory_failed' }
+    $matches = @($inventory.requests | Where-Object {
+        [string]$_.request.task_id -ceq [string]$routing.task_id -and [string]$_.request.ts_utc -ceq [string]$incoming.ts_utc })
+    if ($matches.Count -gt 1) { Blocked 'ambiguous_inventory_match' }
+    if ($matches.Count -eq 0) {
+        # No request_id: only the exact recent-view retrieval applies.
+        $recent = & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -File (Join-Path $Bin 'Read-AgentBridge.ps1') `
+            -Agent codex-tools-1 -Raw -NoAckReceived -NoContinuity 2>$null | Where-Object { $_ -notmatch '^RECENT EVENTS' } | Out-String
+        $rows = @(From-Json $recent | Where-Object { [string]$_.agent -ceq [string]$incoming.agent -and
+            [string]$_.task_id -ceq [string]$routing.task_id -and [string]$_.ts_utc -ceq [string]$incoming.ts_utc })
+        if ($rows.Count -ne 1) { Blocked 'legacy_request_not_in_recent_view' }
+        [pscustomobject]@{status='ok'; path='recent_view'; request=$rows[0]} | ConvertTo-Json -Depth 32 -Compress
+        exit 0
+    }
+    $requestId = [string]$matches[0].request_id
+}
+$snapshot = Invoke-Helper 'Get-BridgeReplySnapshot.ps1' @('-RequestId', $requestId, '-Requester', [string]$incoming.agent)
+if ($null -eq $snapshot) { Blocked 'snapshot_failed' }
+$request = $snapshot.request
+$targets = @(([string]$request.to -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ([string]$request.request_id -cne $requestId -or [string]$request.agent -cne [string]$incoming.agent -or
+    [string]$request.task_id -cne [string]$routing.task_id -or [string]$request.ts_utc -cne [string]$incoming.ts_utc) {
+    Blocked 'routing_mismatch'
+}
+if ($targets -cnotcontains 'codex-tools-1') { Blocked 'wrong_target' }
+$state = @($snapshot.results | Where-Object { $_.target -ceq 'codex-tools-1' })[0].state
+# The exact JSON a reply/turn helper would receive.
+[pscustomobject]@{status='ok'; path='snapshot'; state=$state;
+    request_json=($request | ConvertTo-Json -Depth 32 -Compress)} | ConvertTo-Json -Depth 4 -Compress
+"""
+
+
+def _env(root: Path) -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if not key.startswith(_SCRUB)}
+    env["AGENT_BRIDGE_RUNTIME_ROOT"] = str(root)
+    return env
+
+
+def _request(request_id: str | None, **fields: object) -> dict:
+    row = dict(ts_utc=TS, agent="codex-lead-1", agent_uuid="lead-uuid", session_id="lead-session",
+               run_id="lead-run", to="codex-tools-1", type="wake_request", status="assigned",
+               task_id="codex-lead-1/exact-retrieval", message="Implement the slice. " + "detail " * 80,
+               payload={"result_contract": {"schema": "wd.task-result-contract.v1", "required": ["verdict"]}})
+    if request_id is not None:
+        row.update(request_id=request_id, request_digest=f"digest-{request_id}")
+    row.update(fields)
+    return row
+
+
+def _noise(count: int) -> list[dict]:
+    rows = []
+    for index in range(count):
+        row = dict(ts_utc="2026-09-29T09:55:00Z", agent="fable-5", to="operator", type="message",
+                   status="reported", task_id=f"noise/{index}", message="noise")
+        if index % 2:
+            row.update(to="claude-rco-1", type="wake_request", status="request", request_id=f"noise-{index}")
+        rows.append(row)
+    return rows
+
+
+def _route(rows: list[dict]) -> dict:
+    report = recommend_next_action(agent="codex-tools-1", events=rows, claims=[], now_utc=NOW,
+                                   production_idle_warn_minutes=None)
+    return json.loads(json.dumps(report))
+
+
+def _retrieve(tmp_path: Path, shell: str, rows: list[dict], routing: dict) -> dict:
+    shared = tmp_path / "shared"
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    routing_path = tmp_path / "routing.json"
+    routing_path.write_text(json.dumps(routing), encoding="utf-8")
+    harness = tmp_path / "procedure_harness.ps1"
+    harness.write_text(HARNESS, encoding="utf-8")
+    process = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(harness),
+                              "-Bin", str(BIN), "-RoutingPath", str(routing_path)],
+                             env=_env(tmp_path), capture_output=True, text=True, encoding="utf-8", timeout=300)
+    assert process.returncode == 0, process.stderr
+    return json.loads(process.stdout)
+
+
+def test_procedure_prescribes_the_exact_retrieval_the_harness_runs() -> None:
+    text = " ".join(PROCEDURE.read_text(encoding="utf-8").split())
+    for fragment in (
+        "Exact incoming request retrieval takes precedence over the recent 40-row view below.",
+        "Get-BridgeReplySnapshot.ps1 -RequestId <incoming.request_id> -Requester <incoming.agent>",
+        "Get-BridgeRequestInventory.ps1 -Agent <incoming.agent>",
+        "request.task_id and request.ts_utc exactly equal the routing task_id and incoming.ts_utc",
+        "its to field lists codex-tools-1",
+        "never pick the latest or closest request and never invent fields",
+        "ConvertFrom-Json -DateKind String",
+        "does not enumerate HOLD/cancel/finding controls",
+        "It grants no new authority.",
+    ):
+        assert fragment in text
+    # Exact retrieval precedes, and does not replace, the existing recent-view text.
+    assert text.index("Exact incoming request retrieval") < text.index("fetch the exact selected request with Read-AgentBridge.ps1")
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_bound_request_hidden_by_60_noise_is_recovered_exactly(tmp_path: Path, shell: str) -> None:
+    request = _request("exact-hidden-v1")
+    rows = [request, *_noise(60)]
+    routing = _route(rows)
+    assert routing["action"] == "answer_incoming"
+    assert routing["task_id"] == request["task_id"]
+    assert routing["incoming"]["request_id"] == "exact-hidden-v1"
+    assert routing["incoming"]["ts_utc"] == TS
+    assert routing["incoming"]["message"] != request["message"]  # truncated routing summary
+
+    result = _retrieve(tmp_path, shell, rows, routing)
+    assert result["status"] == "ok" and result["path"] == "snapshot"
+    assert result["state"] == "pending_at_snapshot"
+    assert json.loads(result["request_json"]) == request  # full exact object, dates unchanged
+
+    recent = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(BIN / "Read-AgentBridge.ps1"),
+                             "-Agent", "codex-tools-1", "-Raw", "-NoAckReceived", "-NoContinuity"],
+                            env=_env(tmp_path), capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert recent.returncode == 0, recent.stderr
+    assert "exact-hidden-v1" not in recent.stdout  # the old 40-row path cannot see it
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_identical_duplicate_resolves_and_conflict_blocks(tmp_path: Path, shell: str) -> None:
+    request = _request("dup-v1")
+    rows = [request, *_noise(60), request]
+    assert _retrieve(tmp_path, shell, rows, _route(rows))["status"] == "ok"
+
+    changed = deepcopy(request)
+    changed["message"] = "same immutable id, different content"
+    conflict_rows = [request, *_noise(60), changed]
+    routing = _route([request, *_noise(60)])
+    result = _retrieve(tmp_path / "conflict", shell, conflict_rows, routing)
+    assert result == {"status": "blocked", "reason": "snapshot_failed"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("wrong_target", "stale_routing_ts", "wrong_sender", "binding_conflict_flag"))
+def test_mismatched_routing_never_selects_another_request(tmp_path: Path, shell: str, case: str) -> None:
+    mine = _request("mine-v1")
+    other = _request("other-target-v1", to="fable-5")
+    rows = [mine, other, *_noise(60)]
+    routing = _route(rows)
+    assert routing["incoming"]["request_id"] == "mine-v1"
+    expected = {"wrong_target": "wrong_target", "stale_routing_ts": "routing_mismatch",
+                "wrong_sender": "snapshot_failed", "binding_conflict_flag": "request_binding_conflict"}[case]
+    if case == "wrong_target":
+        routing["incoming"]["request_id"] = "other-target-v1"
+    elif case == "stale_routing_ts":
+        routing["incoming"]["ts_utc"] = "2026-09-29T09:49:59Z"
+    elif case == "wrong_sender":
+        routing["incoming"]["agent"] = "claude-rco-1"
+    else:
+        routing["incoming"]["request_binding_conflict"] = True
+    assert _retrieve(tmp_path, shell, rows, routing) == {"status": "blocked", "reason": expected}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_routing_without_request_id_uses_exact_inventory_match_or_blocks(tmp_path: Path, shell: str) -> None:
+    request = _request("inventory-only-v1")
+    rows = [request, *_noise(60)]
+    routing = _route(rows)
+    routing["incoming"]["request_id"] = None
+    result = _retrieve(tmp_path / "one", shell, rows, routing)
+    assert result["status"] == "ok" and json.loads(result["request_json"]) == request
+
+    twin = _request("inventory-twin-v1")  # same sender, task_id and ts_utc: ambiguous
+    result = _retrieve(tmp_path / "two", shell, [request, twin, *_noise(60)], routing)
+    assert result == {"status": "blocked", "reason": "ambiguous_inventory_match"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_legacy_request_without_id_hidden_by_noise_is_blocked_not_invented(tmp_path: Path, shell: str) -> None:
+    legacy = _request(None, status="request")
+    rows = [legacy, *_noise(60)]
+    routing = _route(rows)
+    assert routing["action"] == "answer_incoming" and routing["incoming"]["request_id"] is None
+    assert _retrieve(tmp_path, shell, rows, routing) == {"status": "blocked", "reason": "legacy_request_not_in_recent_view"}
+    # Visible in the recent view, the legacy request is still selected exactly.
+    visible = _retrieve(tmp_path / "visible", shell, [*_noise(60), legacy], _route([*_noise(60), legacy]))
+    assert visible["status"] == "ok" and visible["path"] == "recent_view"

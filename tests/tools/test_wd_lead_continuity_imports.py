@@ -13,6 +13,8 @@ from test_wd_startup_recovery import load, q
 
 
 CONTINUITY_FUNCTIONS = (
+    'Get-WdInlineNativeWakeMessage',
+    'Get-WdVerifiedNativeWakeMessage',
     'Invoke-WdContinuityDecision',
     'Invoke-WdNativeContinuityStep',
     'Test-WdContinuityControlEvents',
@@ -40,7 +42,8 @@ def test_lead_rejects_incomplete_verified_continuity_imports_before_side_effects
     for function in ('Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot'):
         script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', function)
     for function in (
-        'ConvertTo-WdToolsNativeArgument', 'Invoke-WdNativeToolsWakeStep',
+        'ConvertTo-WdToolsNativeArgument', 'Get-WdInlineNativeWakeMessage',
+        'Get-WdVerifiedNativeWakeMessage', 'Invoke-WdNativeToolsWakeStep',
         'Invoke-WdNativeToolsWakeRelay', *CONTINUITY_FUNCTIONS,
     ):
         script += load(REBOOT / 'start-wd-tools-consumer.ps1', function)
@@ -65,6 +68,7 @@ $groups=@{{
   'Invoke-WdLaneTurnLoop.ps1'=@('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot');
   'start-wd-tools-consumer.ps1'=@(
     'ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
+    'Get-WdInlineNativeWakeMessage','Get-WdVerifiedNativeWakeMessage',
     'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay',
     'Start-WdToolsNativeProcess',
     'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep',

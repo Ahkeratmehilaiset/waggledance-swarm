@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from test_wd_reboot_bundle import REBOOT, LANE_TEST_SHELLS, _run_powershell
+from test_wd_native_wake_prompt import relay_bundle_setup
 from test_wd_startup_recovery import load, q
 
 BIN = REBOOT.parents[2]/'.agent-bridge/bin'
@@ -23,7 +24,10 @@ def test_wake_correlation_survives_snapshot_without_authorizing_execution(tmp_pa
     script = f"$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n. {q(BIN/'BridgeTelemetry.ps1')}\n"
     for name in ('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot'):
         script += load(REBOOT/'Invoke-WdLaneTurnLoop.ps1',name)
-    script += load(REBOOT/'start-wd-tools-consumer.ps1','Invoke-WdNativeToolsWakeStep')
+    for name in ('Get-WdInlineNativeWakeMessage', 'Get-WdVerifiedNativeWakeMessage',
+                 'Invoke-WdNativeToolsWakeStep'):
+        script += load(REBOOT/'start-wd-tools-consumer.ps1', name)
+    script += relay_bundle_setup(tmp_path)
     script += f"""
 $env:WD_BRIDGE_BIN={q(BIN)}
 $event={q(json.dumps(event))}|ConvertFrom-Json
@@ -36,7 +40,7 @@ if('{case}' -ceq 'overflow'){{
 $hint=Get-Content -LiteralPath {q(wake)} -Raw|ConvertFrom-Json
 function Send-WdNativeToolsQueueMessage {{param($CliPath,$ThreadId,$Message,$Worktree) return 'queue-1'}}
 $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId exact-existing-thread -Worktree {q(tmp_path)} `
-  -WakePath {q(wake)} -StatePath {q(state)} -Generation pinned -NativePid 123
+  -WakePath {q(wake)} -StatePath {q(state)} -Generation pinned -NativePid 123 -SessionId fixture-session
 @{{result=$result;hint=$hint}}|ConvertTo-Json -Depth 12
 """
     value = json.loads(_run_powershell(script,executable=ps).stdout)
@@ -81,11 +85,15 @@ def test_bare_legacy_wake_with_telemetry_enabled_does_not_warn(tmp_path, ps, leg
     script=f"$ErrorActionPreference='Stop'\n$env:WD_BRIDGE_BIN={q(BIN)}\n"
     for name in ('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot'):
         script+=load(REBOOT/'Invoke-WdLaneTurnLoop.ps1',name)
-    script+=load(REBOOT/'start-wd-tools-consumer.ps1','Invoke-WdNativeToolsWakeStep')
+    for name in ('Get-WdInlineNativeWakeMessage', 'Get-WdVerifiedNativeWakeMessage',
+                 'Invoke-WdNativeToolsWakeStep'):
+        script+=load(REBOOT/'start-wd-tools-consumer.ps1',name)
+    script+=relay_bundle_setup(tmp_path)
+    script+=f"$env:WD_BRIDGE_BIN={q(BIN)}\n"
     script+=f"""
 function Send-WdNativeToolsQueueMessage {{param($CliPath,$ThreadId,$Message,$Worktree) return 'queue-legacy'}}
 $result=Invoke-WdNativeToolsWakeStep -CliPath unused -ThreadId existing-thread -Worktree {q(tmp_path)} `
-    -WakePath {q(wake)} -StatePath {q(state)} -Generation pinned -NativePid 123
+    -WakePath {q(wake)} -StatePath {q(state)} -Generation pinned -NativePid 123 -SessionId fixture-session
 @{{result=$result}}|ConvertTo-Json
 """
     output=_run_powershell(script,executable=ps)

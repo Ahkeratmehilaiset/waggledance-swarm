@@ -8,9 +8,10 @@ the decision record of docs/architecture/BRIDGE_V2_SWITCH_INTERFACE_CONTRACT.md
 and the mechanical guardrails of docs/architecture/BRIDGE_NEXT_WORK_PLAN_20260928.md
 section 2.2 (plan commit c099c211).
 
-Pure: every input arrives in ``evidence``, including the clock value, the F0
-activation snapshot, the revocation state, the port-verified catalog signature,
-the quota samples and the relaunch history. The module reads no file, environment
+Pure: every input arrives in ``evidence``, including the clock value, the
+caller-verified F0 inputs for feature F15 (re-checked by the pure adapter
+tools/bridge_v2_switch_evidence.py against the caller's pins), the port-verified
+catalog signature, the quota samples and the relaunch history. The module reads no file, environment
 variable, network or clock, calls no port and writes no intent. The same evidence
 always gives the same record, and ``inputs_digest`` lets a reviewer recompute it.
 
@@ -37,6 +38,7 @@ import math
 import re
 from typing import Any
 
+from tools.bridge_v2_switch_evidence import Refusal, switch_activation
 from tools.lane_profile_binding import _base_model
 from tools.lane_profile_catalog import REVIEWER_LANES, classify_transition, effective_mode, is_signed
 from tools.lane_profile_record import _utc
@@ -46,9 +48,6 @@ from tools.wd_lane_relaunch import ABORT, PROCEED, check_request, check_safe_bou
 
 SCHEMA = "wd.switch-decision.v1"
 EVIDENCE_SCHEMA = "wd.switch-evidence.v1"
-ACTIVATION_SCHEMA = "wd.bridge-v2-activation.v1"
-# The F0 flag name is a design: F0 (tools/bridge_v2_activation.py) does not exist yet.
-FEATURE = "switch_policy"
 
 STAY, SWITCH, PARK, OPERATOR = "stay", "switch", "park", "operator_required"
 VERDICTS = (STAY, SWITCH, PARK, OPERATOR)
@@ -62,8 +61,8 @@ PRECEDENCE_OPERATOR, PRECEDENCE_PRINCIPAL, PRECEDENCE_MEMBER = 0, 1, 2
 # Plan 2.2 guardrail 1: the projection must stay within these trip lines.
 TRIP_LINES = {"steady": 70.0, "burst": 90.0, "sprint": 95.0}
 # Plan 2.2: tick length and hysteresis margin are signed parameters; so is the
-# evidence freshness bound. None has a default here.
-SIGNED_PARAMETERS = ("tick_seconds", "hysteresis_percent", "evidence_max_age_seconds", "budget_mode")
+# evidence freshness bound. None has a default here: they come only from the F15
+# block of the signed F0 policy (bridge_v2_switch_evidence.PARAMETER_KEYS).
 
 # Only the operator may: leave the envelope, go below a floor, lower a reviewer.
 OPERATOR_ONLY_TRANSITIONS = ("target_not_allowed", "below_floor", "reviewer_lowering")
@@ -115,39 +114,48 @@ def _fresh(block: Any, now: datetime, max_age: int, what: str) -> dict:
 
 
 def _activation(evidence: dict, now: datetime) -> dict:
-    """F0 gate: trusted, signed, unexpired, enabled, not revoked or frozen; returns the parameters."""
-    activation = evidence.get("activation")
-    _require(isinstance(activation, dict) and activation.get("schema") == ACTIVATION_SCHEMA,
-             PARK, "activation_unknown")
-    provenance = activation.get("provenance")
-    _require(isinstance(provenance, dict) and provenance.get("trusted") is True
-             and isinstance(provenance.get("sha256"), str) and HEX64.fullmatch(provenance["sha256"]) is not None,
-             PARK, "activation_provenance_untrusted")
-    _require(activation.get("signed") is True, PARK, "activation_unsigned")
-    expires = _utc(activation.get("expires_utc"))
-    _require(expires is not None, PARK, "activation_expiry_unknown")
-    _require(now < expires, PARK, "activation_expired")
-    features = activation.get("features")
-    _require(isinstance(features, dict) and features.get(FEATURE) is True, PARK, "feature_disabled")
-    parameters = activation.get("parameters")
-    _require(isinstance(parameters, dict), PARK, "parameters_unknown")
-    for name in SIGNED_PARAMETERS:
-        _require(name in parameters, PARK, "parameter_unknown:" + name)
+    """F0 gate for feature F15, through the pure adapter. Returns the signed F15 parameters.
+
+    The adapter refuses unless F0's own Decision is enabled and agrees with the caller's
+    pins, the signed policy, the revocation state and its high-water mark. This module
+    never evaluates F0 itself."""
+    try:
+        parameters = switch_activation(evidence.get("f0"), now)["parameters"]
+    except Refusal as refusal:
+        raise _Stop(PARK, refusal.code) from None
     _require(_positive_int(parameters["tick_seconds"]), PARK, "parameter_invalid:tick_seconds")
     _require(_positive_int(parameters["evidence_max_age_seconds"]), PARK,
              "parameter_invalid:evidence_max_age_seconds")
     _require(_number(parameters["hysteresis_percent"]) and 0 <= parameters["hysteresis_percent"] <= 100,
              PARK, "parameter_invalid:hysteresis_percent")
     _require(parameters["budget_mode"] in TRIP_LINES, PARK, "parameter_invalid:budget_mode")
-    # The durable revocation and freeze state is checked on every decision (map F0).
-    revocation = _fresh(evidence.get("revocation"), now, parameters["evidence_max_age_seconds"], "revocation")
-    _require(revocation.get("activation_sha256") == provenance["sha256"], PARK, "revocation_binding_mismatch")
-    _require(type(revocation.get("version")) is int and revocation["version"] >= 0, PARK, "revocation_version_unknown")
-    state = revocation.get("state")
-    _require(state in ("clear", "revoked", "frozen"), PARK, "revocation_state_unknown")
-    _require(state != "revoked", PARK, "activation_revoked")
-    _require(state != "frozen", PARK, "operator_freeze")
     return parameters
+
+
+def _observed(evidence: dict, name: str, key: str, now: datetime, max_age: int) -> list:
+    """A list that was actually observed: {observed_utc (fresh), <key>: [...]}. A bare [] is not an observation."""
+    block = _fresh(evidence.get(name), now, max_age, name)
+    items = block.get(key)
+    _require(isinstance(items, list) and all(isinstance(i, dict) for i in items), PARK, name + "_unknown")
+    return items
+
+
+def _revert(history: list, lane: str, current: str, target: str, now: datetime) -> bool:
+    """A revert is derived from the observed relaunch history, never from a label.
+
+    It needs the lane's single latest receipt to be a switch from the target to the
+    current profile. Anything missing or ambiguous is no revert, and the dwell applies."""
+    own = []
+    for entry in history:
+        stamp = _utc(entry.get("ts_utc"))
+        if entry.get("lane") == lane and stamp is not None and stamp <= now:
+            own.append((stamp, entry))
+    if not own:
+        return False
+    latest = max(stamp for stamp, _ in own)
+    newest = [entry for stamp, entry in own if stamp == latest]
+    return (len(newest) == 1 and newest[0].get("outcome") == "switched"
+            and newest[0].get("from_profile") == target and newest[0].get("to_profile") == current)
 
 
 def _catalog(evidence: dict) -> dict:
@@ -156,6 +164,8 @@ def _catalog(evidence: dict) -> dict:
     _require(isinstance(catalog, dict), PARK, "catalog_unknown")
     digest = evidence.get("catalog_sha256")
     _require(isinstance(digest, str) and HEX64.fullmatch(digest) is not None, PARK, "catalog_digest_unknown")
+    # Bound to the content this decision reads: the canonical-JSON sha256 of the injected catalog.
+    _require(digest == inputs_digest(catalog), PARK, "catalog_digest_mismatch")
     _require(is_signed(catalog), PARK, "catalog_unsigned")
     # The signature is verified by a port before the policy runs; the policy only reads the result.
     _require(evidence.get("catalog_signature_verified") is True, PARK, "catalog_signature_unverified")
@@ -214,16 +224,15 @@ def _precedence_of(entry: dict) -> int | None:
     return value if type(value) is int and value in (0, 1, 2) else None
 
 
-def _contest(evidence: dict, lane: str, target: str, precedence: int, intent_class: str) -> None:
+def _contest(evidence: dict, lane: str, target: str, precedence: int, intent_class: str,
+             now: datetime, max_age: int) -> None:
     """Deterministic contest rule (plan 2.2 guardrail 5); needs no operator step."""
     intent = evidence.get("intent")
     _require(isinstance(intent, dict) and isinstance(intent.get("intent_id"), str)
              and HEX32.fullmatch(intent["intent_id"]) is not None
              and _utc(intent.get("created_utc")) is not None, PARK, "intent_identity_unknown")
     own_key = (precedence, _utc(intent["created_utc"]), intent["intent_id"])
-    competing = evidence.get("competing_intents")
-    _require(isinstance(competing, list), PARK, "contention_unknown")
-    for other in competing:
+    for other in _observed(evidence, "competing_intents", "items", now, max_age):
         _require(isinstance(other, dict) and other.get("lane") == lane
                  and isinstance(other.get("intent_id"), str) and HEX32.fullmatch(other["intent_id"]) is not None
                  and _utc(other.get("created_utc")) is not None and _precedence_of(other) is not None
@@ -235,8 +244,10 @@ def _contest(evidence: dict, lane: str, target: str, precedence: int, intent_cla
         if other["target_profile"] == target:
             # The same change requested twice: the earliest by (precedence, time, id) carries it.
             _require(own_key < other_key, STAY, "duplicate_of_earlier_intent")
-        elif other["precedence"] <= precedence and intent_class != "conserve":
-            # An equal-or-higher-precedence intent wants something else: the incumbent stays.
+        elif other["precedence"] < precedence or (other["precedence"] == precedence
+                                                   and intent_class != "conserve"):
+            # A higher-precedence intent always keeps the incumbent (the operator first). An
+            # equal-precedence one does too, unless this intent conserves quota.
             raise _Stop(STAY, "contested_incumbent_stays")
 
 
@@ -247,6 +258,7 @@ def _decide(evidence: Any, context: dict) -> None:
     parameters = _activation(evidence, now)
     max_age = parameters["evidence_max_age_seconds"]
     catalog = _catalog(evidence)
+    context["catalog_sha256"] = evidence["catalog_sha256"]
 
     lane, target = evidence.get("lane"), evidence.get("target_profile")
     _require(isinstance(lane, str) and lane in MEMBERS and lane in catalog["lanes"], PARK, "lane_unknown")
@@ -264,9 +276,9 @@ def _decide(evidence: Any, context: dict) -> None:
     _require(target_spec.get("billing") == "subscription", OPERATOR, "billing_outside_envelope")
     _require(target_spec.get("approved") is True, OPERATOR, "target_not_qualified")
 
-    binding = evidence.get("binding")
-    _require(isinstance(binding, dict) and binding.get("session_identity") == "valid"
-             and binding.get("lane") == lane, PARK, "current_profile_unverified")
+    binding = _fresh(evidence.get("binding"), now, max_age, "binding")
+    _require(binding.get("session_identity") == "valid" and binding.get("lane") == lane,
+             PARK, "current_profile_unverified")
     current = profile_for_observation(catalog, lane, _base_model(binding.get("observed_model_raw")),
                                       binding.get("observed_effort"))
     _require(current is not None, PARK, "current_profile_not_in_catalog")
@@ -281,8 +293,7 @@ def _decide(evidence: Any, context: dict) -> None:
     context["direction"] = direction
 
     # Plan 2.2 guardrail 4: no member changes an RCO that is reviewing that member's work.
-    reviews = evidence.get("active_reviews")
-    _require(isinstance(reviews, list) and all(isinstance(r, dict) for r in reviews), PARK, "active_reviews_unknown")
+    reviews = _observed(evidence, "active_reviews", "items", now, max_age)
     if lane in REVIEWER_LANES and agent != "operator":
         _require(not any(r.get("reviewer") == lane and r.get("author") == agent for r in reviews),
                  OPERATOR, "requester_under_review_by_lane")
@@ -312,7 +323,8 @@ def _decide(evidence: Any, context: dict) -> None:
         w["verdict"] in ("overrun", "exhausted")
         or (_number(w.get("forecast_percent_at_reset")) and w["forecast_percent_at_reset"] > trip)
         for w in current_windows)
-    intent_class = ("revert" if target == evidence.get("last_verified_profile")
+    history = _observed(evidence, "relaunch_history", "entries", now, max_age)
+    intent_class = ("revert" if _revert(history, lane, current, target, now)
                     else "conserve" if conserve else direction)
     context["intent_class"] = intent_class
 
@@ -338,7 +350,7 @@ def _decide(evidence: Any, context: dict) -> None:
     # Rate: the catalog's signed per-lane and fleet budgets and cooldown (check_request).
     # A revert skips the dwell only; it still counts toward the hourly caps.
     rate = check_request(catalog, {"lane": lane, "current_profile": current, "target_profile": target},
-                         evidence.get("relaunch_history"), now=now)
+                         history, now=now)
     if rate["verdict"] == ABORT:
         raise _Stop(STAY, *rate["reasons"])
     if rate["verdict"] != PROCEED:
@@ -352,7 +364,7 @@ def _decide(evidence: Any, context: dict) -> None:
     if boundary["verdict"] != PROCEED:
         raise _Stop(PARK, *("boundary:" + r for r in boundary["reasons"]))
 
-    _contest(evidence, lane, target, precedence, intent_class)
+    _contest(evidence, lane, target, precedence, intent_class, now, max_age)
     raise _Stop(SWITCH, "all_gates_passed", "transition:" + transition["reason"])
 
 
@@ -361,7 +373,7 @@ def decide(evidence: Any) -> dict:
     digest = inputs_digest(evidence)
     context: dict[str, Any] = {"lane": None, "current_profile": None, "target_profile": None,
                                "direction": None, "intent_class": None, "pool": None,
-                               "requester_precedence": None}
+                               "requester_precedence": None, "catalog_sha256": None}
     if digest is None:
         verdict, reasons = PARK, ["evidence_not_canonical_json"]
     else:

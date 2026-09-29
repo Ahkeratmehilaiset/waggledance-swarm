@@ -141,7 +141,11 @@ def _sha256(path: Path) -> str:
 
 
 def _load_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    # Deep nesting raises RecursionError, which no caller catches; report it as malformed.
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except RecursionError as exc:
+        raise ValueError("JSON nesting too deep: " + str(path)) from exc
 
 
 def _names(value) -> list[str]:
@@ -239,12 +243,12 @@ class _Inventory:
                 if not isinstance(servers, dict) or not all(isinstance(s, dict) for s in servers.values()):
                     raise ValueError("mcpServers is not an object of server objects")
                 names.extend(scope + ":" + name for name in servers)
+            canonical = json.dumps({s: v for s, v in scopes.items() if v}, sort_keys=True,
+                                   separators=(",", ":"), ensure_ascii=True)
         except (ValueError, OSError, AttributeError, TypeError, RecursionError) as exc:
             self.problems.append({"path": key, "error": type(exc).__name__})
             return
         if names:
-            canonical = json.dumps({s: v for s, v in scopes.items() if v}, sort_keys=True,
-                                   separators=(",", ":"), ensure_ascii=True)
             self.entries[("claude_json_mcp", key)] = {
                 "kind": "claude_json_mcp", "path": key, "names": sorted(names),
                 "sha256": hashlib.sha256(canonical.encode("ascii")).hexdigest(),
@@ -308,7 +312,7 @@ def inherited_surface(cwd: Path) -> dict:
         if config.is_file():
             try:
                 data = tomllib.loads(config.read_text(encoding="utf-8-sig"))
-            except (tomllib.TOMLDecodeError, OSError) as exc:
+            except (tomllib.TOMLDecodeError, OSError, RecursionError) as exc:
                 inventory.problems.append({"path": os.path.normcase(str(config)), "error": type(exc).__name__})
             else:
                 servers = {name: spec for name, spec in (data.get("mcp_servers") or {}).items()

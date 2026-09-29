@@ -108,8 +108,17 @@ def test_lead_imports_continuity_dependencies_from_verified_code():
     source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8')
     imports = source.split('$imports = @{', 1)[1].split('foreach ($file', 1)[0]
     for name in ('Invoke-WdContinuityDecision', 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents',
-                 'Invoke-WdContinuityOperatorNotice'):
+                 'Invoke-WdContinuityOperatorNotice', 'Get-WdContinuityRetryDelay'):
         assert f"'{name}'" in imports
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_guard_errors_back_off_but_history_catchup_is_bounded_between_wakes(ps):
+    script = load(TOOLS, 'Get-WdContinuityRetryDelay')
+    script += "@(Get-WdContinuityRetryDelay 'held'; Get-WdContinuityRetryDelay 'unknown'; Get-WdContinuityRetryDelay 'Continuity canonical scan catching up; recovery withheld') | ConvertTo-Json -Compress"
+    assert json.loads(_run_powershell(script, executable=ps).stdout) == [300, 300, 1]
+    source = TOOLS.read_text()
+    assert 'Get-WdContinuityRetryDelay -ErrorText $_.Exception.Message' in source
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
@@ -152,7 +161,7 @@ $results=@(1..2 | ForEach-Object {{
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'corrupt_log', 'tampered_helper'])
+@pytest.mark.parametrize('case', ['result', 'finding', 'masked_hold', 'global_hold', 'peer_hold', 'foreign_task', 'operator_failure', 'ordinary_wait', 'corrupt_log', 'tampered_helper'])
 def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, case):
     bundle = tmp_path / 'bundle'
     helper_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
@@ -176,6 +185,12 @@ def test_continuity_control_gate_uses_anchored_canonical_reader(tmp_path, ps, ca
         event.update(agent='operator', task_id='global', status='hold', to='all')
     if case == 'peer_hold':
         event.update(agent='fable-5', status='unsafe')
+    if case == 'operator_failure':
+        event.update(agent='operator', task_id='other', type='message', status='wake_send_failed', to='')
+    if case == 'ordinary_wait':
+        event.update(type='message', status='awaiting_review')
+    if case == 'masked_hold':
+        event.update(status='changes_requested')
     content = json.dumps(event) + '\n'
     if case == 'masked_hold':
         content += json.dumps(dict(event, type='message', status='in_progress')) + '\n'
@@ -194,7 +209,50 @@ try {{
     report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert report['ok'] == (case not in ('corrupt_log', 'tampered_helper')), report
     if report['ok']:
-        assert report['held'] == (case in ('finding', 'masked_hold', 'global_hold', 'peer_hold')), report
+        assert report['held'] == (case in ('masked_hold', 'global_hold', 'peer_hold')), report
+
+
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_control_history_is_incremental_and_cannot_unlatch_a_hold(tmp_path, ps):
+    bundle = tmp_path / 'bundle'
+    helper_dir = bundle / 'tools-bootstrap/.agent-bridge/bin'
+    helper_dir.mkdir(parents=True)
+    files = {}
+    for leaf in ('BridgeLogReader.ps1', 'BridgeIncrementalReader.ps1'):
+        target = helper_dir / leaf
+        shutil.copyfile(REBOOT.parents[2] / '.agent-bridge/bin' / leaf, target)
+        files[target.relative_to(bundle).as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest().upper()
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_text(json.dumps({'files': files}))
+    anchor = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+    runtime = tmp_path / 'runtime'
+    (runtime / 'shared').mkdir(parents=True)
+    log = runtime / 'shared/events.jsonl'
+    row = json.dumps(dict(agent='peer', task_id='other', to='codex-lead-1', type='finding', status='changes_requested', message='x' * 4000)) + '\n'
+    log.write_text(row * 800)
+    script = "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+    script += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', 'Assert-WdTurnPath')
+    script += load(TOOLS, 'Test-WdContinuityControlEvents')
+    script += f"""
+$env:WD_BRIDGE_PYTHON_WRAPPER={q(bundle / 'Invoke-WdBridgePython.ps1')}
+$env:WD_REBOOT_EXPECTED_MANIFEST_HASH='{anchor}'
+function Check {{
+ try {{@{{ok=$true;held=(Test-WdContinuityControlEvents -RuntimeRoot {q(runtime)} -TaskId work -Agent codex-lead-1)}}}}
+ catch {{@{{ok=$false;error=$_.Exception.Message}}}}
+}}
+$checks=@(1..5 | ForEach-Object {{Check}})
+[IO.File]::AppendAllText({q(log)}, '{{"agent":"operator","task_id":"work","type":"decision","status":"hold"}}'+[char]10)
+$held=Check
+[IO.File]::WriteAllText({q(log)}, '{{"agent":"peer","task_id":"work","type":"message","status":"notice"}}'+[char]10)
+$afterTruncate=Check
+@{{checks=$checks;held=$held;afterTruncate=$afterTruncate}} | ConvertTo-Json -Depth 8 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report['checks'][0]['ok'] is False, report
+    assert 'catching up' in report['checks'][0]['error'], report
+    assert report['checks'][-1] == {'ok': True, 'held': False}, report
+    assert report['held'] == {'ok': True, 'held': True}, report
+    assert report['afterTruncate'] == {'ok': True, 'held': True}, report
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
@@ -246,7 +304,7 @@ $errors=@()
 
 
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize('case', ['dispatch', 'rollover', 'stale_session', 'retry', 'wait', 'hold', 'idle_ok', 'unknown', 'uncertain', 'bad_identity'])
+@pytest.mark.parametrize('case', ['dispatch', 'rollover', 'stale_session', 'startup_grace', 'retry', 'wait', 'hold', 'idle_ok', 'unknown', 'uncertain', 'bad_identity'])
 def test_work_bound_guard_queues_once_or_fails_closed(tmp_path, ps, case):
     journal = tmp_path / '.codex-audit/wd-turn-loop'
     journal.mkdir(parents=True)
@@ -283,7 +341,7 @@ function Send-WdNativeToolsQueueMessage {{
  return 'queue-id'
 }}
 $errors=@()
-$sessionStart=if ('{case}' -eq 'stale_session') {{'2026-09-29T04:59:00Z'}} else {{'2026-09-28T00:00:00Z'}}
+$sessionStart=if ('{case}' -eq 'stale_session') {{'2026-09-29T04:57:00Z'}} elseif ('{case}' -eq 'startup_grace') {{'2026-09-29T04:59:00Z'}} else {{'2026-09-28T00:00:00Z'}}
 1..2 | ForEach-Object {{
  try {{Invoke-WdNativeContinuityStep -CliPath {q(cli)} -ThreadId '{THREAD}' -Worktree {q(tmp_path)} `
  -Generation pinned -Agent codex-lead-1 -ExpectedCliHash '{cli_hash}' -SessionStartedAt $sessionStart -Now '2026-09-29T05:00:00Z' | Out-Null}}

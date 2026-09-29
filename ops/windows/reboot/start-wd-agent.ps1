@@ -265,7 +265,7 @@ function Invoke-WdNativeLeadTerminal {
     'start-wd-tools-consumer.ps1' = @('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
       'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess',
       'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep','Test-WdContinuityControlEvents',
-      'Invoke-WdContinuityOperatorNotice')
+      'Invoke-WdContinuityOperatorNotice','Get-WdContinuityRetryDelay')
   }
   foreach ($file in $imports.Keys) {
     $tokens=$null; $parseErrors=$null

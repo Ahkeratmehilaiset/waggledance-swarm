@@ -631,22 +631,47 @@ function Test-WdContinuityControlEvents {
     }
     . (Join-Path $bundle 'tools-bootstrap/.agent-bridge/bin/BridgeIncrementalReader.ps1')
     $eventsPath = Assert-WdTurnPath (Join-Path $RuntimeRoot 'shared/events.jsonl')
-    $view = Read-BridgeEventSnapshot -Path $eventsPath -MaxBytes 268435456
-    if ($view.status -notin @('OK','IDLE')) { throw 'Continuity canonical snapshot unavailable' }
+    # A full 100 MB history scan blocked ordinary delivery for 29 seconds.
+    # Keep only a scoped cursor and conservative HOLD latch in this relay's
+    # memory. Never trust a persisted cache, and never approve a partial scan.
+    $cacheKey = $eventsPath + "`n" + $Agent + "`n" + $TaskId
+    $cacheVariable = Get-Variable -Name WdContinuityControlCache -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $cacheVariable -or $null -eq $cacheVariable.Value -or
+        $cacheVariable.Value.key -cne $cacheKey) {
+        $script:WdContinuityControlCache = @{key=$cacheKey;cursor=$null;held=$false}
+    }
+    $cache = $script:WdContinuityControlCache
+    # A later log truncation, rotation or ordinary message cannot release HOLD.
+    if ($cache.held) { return $true }
+    $view = Read-BridgeEventDelta -Path $eventsPath -Cursor $cache.cursor -MaxBytes 1048576 -MaxRows 1000
+    if ($view.status -notin @('OK','IDLE') -or $null -eq $view.candidate_cursor) {
+        $cache.cursor = $null
+        throw 'Continuity canonical snapshot unavailable; rebuild required'
+    }
     foreach ($event in @($view.rows)) {
         $recipients = @()
         if ($event.PSObject.Properties['to']) { $recipients = @(([string]$event.to) -split '[,;\s]+' | Where-Object { $_ }) }
-        $inScope = $event.task_id -ceq $TaskId -or $recipients -ccontains $Agent -or
-            $recipients -ccontains 'all' -or ($event.agent -ceq 'operator' -and -not $recipients.Count)
+        # A reply about another task is not a lane-wide HOLD merely because
+        # it was addressed to this lane. Preserve task and global controls.
+        $inScope = $event.task_id -ceq $TaskId -or $recipients -ccontains 'all' -or
+            ($event.agent -ceq 'operator' -and (-not $recipients.Count -or $recipients -ccontains $Agent))
         if (-not $inScope) { continue }
         # No producer-clock floor: a standing/backdated control must not vanish
         # when the checkpoint is rewritten. We do not infer a HOLD release.
         # Do not allow a later ordinary message to hide an earlier control.
-        # These conservative substrings are not a HOLD-release resolver.
-        if ($event.type -cin @('decision','finding','blocked') -or
-            $event.status -imatch 'hold|held|paus|stop|freez|block|cancel|veto|incident|signature|nonce|wait|fail|reject|abort|kill|suspend|escalat|emergenc|unsafe|withdr|retract|revok|deny|nack|clos|quarantin|rollback|revert|changesrequested') {
+        # Status tokens express controls; ordinary awaiting/result/failure
+        # observations and positive findings are not themselves safety HOLDs.
+        # This does not infer release from a later approval or normal message.
+        if ($event.type -ceq 'blocked' -or
+            $event.status -imatch '(?:^|[_-])(hold|held|pause|paused|stop|stopped|freeze|frozen|block|blocked|blocking|cancel|cancelled|canceled|veto|incident|reject|rejected|abort|aborted|kill|suspend|suspended|unsafe|withdrawn|retracted|revoked|deny|denied|nack|quarantine|rollback|revert|changes_requested|changesrequested)(?:$|[_-])') {
+            $cache.held = $true
             return $true
         }
+    }
+    $cache.cursor = $view.candidate_cursor
+    if ([int64]$cache.cursor.offset -lt [int64]$view.snapshot_length) {
+        if ($view.reason -ceq 'partial_record') { throw 'Continuity canonical partial record; reconciliation required' }
+        throw 'Continuity canonical scan catching up; recovery withheld'
     }
     return $false
 }
@@ -692,11 +717,21 @@ function Invoke-WdContinuityOperatorNotice {
     return $receipt
 }
 
+function Get-WdContinuityRetryDelay {
+    param([string] $ErrorText)
+    if ($ErrorText -ceq 'Continuity canonical scan catching up; recovery withheld') { return 1 }
+    # Ordinary bridge delivery continues during error/HOLD backoff.
+    return 300
+}
+
 function Invoke-WdNativeContinuityStep {
     param([string] $CliPath, [string] $ThreadId, [string] $Worktree,
         [string] $Generation, [string] $Agent, [string] $ExpectedCliHash, [string] $RuntimeRoot,
         [DateTimeOffset] $SessionStartedAt = [DateTimeOffset]::MinValue,
         [DateTimeOffset] $Now = [DateTimeOffset]::UtcNow)
+    $sessionAge = ($Now - $SessionStartedAt).TotalSeconds
+    if ($sessionAge -lt 0) { throw 'Continuity session timestamp in future' }
+    if ($sessionAge -lt 120) { return 'startup_grace' }
     $path = Assert-WdTurnPath (Join-Path $Worktree '.codex-audit\wd-current-state.json')
     if (-not [IO.File]::Exists($path)) { throw 'Continuity checkpoint missing; work state unknown' }
     $stream = [IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
@@ -836,6 +871,8 @@ function Invoke-WdNativeToolsWakeRelay {
                         $continuityError = ''
                     }
                 } catch {
+                    $nextContinuityCheck = [DateTimeOffset]::UtcNow.AddSeconds(
+                        (Get-WdContinuityRetryDelay -ErrorText $_.Exception.Message))
                     # Re-evaluate evidence cheaply on the next cycle so a fixed
                     # checkpoint can recover without restarting this launcher.
                     # Ambiguous delivery stays blocked by the durable ledger.

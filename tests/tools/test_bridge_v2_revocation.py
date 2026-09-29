@@ -19,6 +19,12 @@ Mutation targets (each mutant must be killed by the named test):
   M12 deny transition accepts another policy binding    -> test_deny_transitions_refuse_missing_corrupt_or_rebound_state
   M13 initialize-replace drops existing revocations     -> test_initialize_replace_needs_exact_bytes_and_keeps_denials
   M14 version reused or not strictly increasing         -> test_expected_version_compare_and_swap, test_grant_is_single_use
+  M15 init without a readable state starts revoked=[]   -> test_initialize_over_unreadable_state_revokes_everything_so_unfreeze_grants_nothing
+  M16 grants bind the version but not the state bytes   -> test_grants_bind_the_exact_state_bytes_not_only_the_version
+  M17 unfreeze/unrevoke refresh updated_utc              -> test_unfreeze_and_unrevoke_never_refresh_a_stale_state
+  M18 post-replace failure reported as not published     -> test_a_failure_after_the_replace_reports_published
+  M19 symlinked/junction directory, state or lock used   -> test_a_symlinked_bridge_directory_is_refused,
+                                                            test_symlinked_state_or_lock_files_are_refused
 """
 from __future__ import annotations
 
@@ -76,8 +82,10 @@ def _init(env, **kwargs) -> dict:
     return rev.initialize_frozen(env["root"], env["policy"], env["digest"], now=NOW, **kwargs)
 
 
-def _auth(env, action, version, features=(), minutes=5, at=NOW, provenance="test-only"):
+def _auth(env, action, version, features=(), minutes=5, at=NOW, provenance="test-only", digest=None):
+    """Bound to the CURRENT state bytes unless ``digest`` is given (R2)."""
     return rev.OperatorAuthorization(action=action, policy_sha256=env["digest"], from_version=version,
+                                     from_state_sha256=digest or _sha(_state_path(env).read_bytes()),
                                      features=tuple(features), expires_utc=_stamp(at + timedelta(minutes=minutes)),
                                      provenance=provenance)
 
@@ -88,9 +96,13 @@ def _trusting(authorization) -> bool:
 
 
 def _unfrozen(env, at=NOW) -> dict:
+    """Init (v1, every declared feature revoked: R1), authorized unfreeze (v2), authorized unrevoke of all (v3)."""
     _init(env)
-    return rev.unfreeze(env["root"], env["digest"], authorization=_auth(env, "unfreeze", 1, at=at),
-                        verifier=_trusting, now=at)
+    rev.unfreeze(env["root"], env["digest"], authorization=_auth(env, "unfreeze", 1, at=at),
+                 verifier=_trusting, now=at)
+    everything = tuple(sorted(env["policy"]["features"]))
+    return rev.unrevoke(env["root"], env["digest"], list(everything),
+                        authorization=_auth(env, "unrevoke", 2, everything, at=at), verifier=_trusting, now=at)
 
 
 def _decide(env, feature="F1", now=NOW) -> act.Decision:
@@ -113,7 +125,8 @@ def test_initialize_frozen_creates_version_1_bound_frozen_and_evaluator_accepts_
     assert receipt["previous_version"] is None and receipt["previous_sha256"] is None
     state = rev.read_state(env["root"], env["digest"])
     assert state == {"schema": act.REVOCATION_SCHEMA, "version": 1, "policy_sha256": env["digest"],
-                     "frozen": True, "revoked": [], "updated_utc": "2026-10-01T12:00:00.000000Z"}
+                     "frozen": True, "revoked": sorted(env["policy"]["features"]),
+                     "updated_utc": "2026-10-01T12:00:00.000000Z"}
     raw = _state_path(env).read_bytes()
     assert _sha(raw) == receipt["sha256"]
     assert raw == (json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
@@ -126,6 +139,9 @@ def test_initialized_state_denies_until_an_authorized_unfreeze(env):
     _unfreeze_receipt = rev.unfreeze(env["root"], env["digest"], authorization=_auth(env, "unfreeze", 1),
                                      verifier=_trusting, now=NOW)
     assert _unfreeze_receipt["version"] == 2 and _unfreeze_receipt["frozen"] is False
+    assert _decide(env).reason == "feature revoked"          # R1: initialization revokes every declared feature
+    rev.unrevoke(env["root"], env["digest"], ["F1"], authorization=_auth(env, "unrevoke", 2, ("F1",)),
+                 verifier=_trusting, now=NOW)
     assert _decide(env).enabled is True
     rev.freeze(env["root"], env["digest"], now=NOW)
     assert _decide(env).reason == "fleet freeze is active"
@@ -146,7 +162,7 @@ def test_initialize_replace_needs_exact_bytes_and_keeps_denials(env):
     rev.revoke(env["root"], env["digest"], ["F2"], now=NOW)
     old = _state_path(env).read_bytes()
     receipt = _init(env, replace_existing_sha256=_sha(old))
-    assert receipt["version"] == 4 and receipt["frozen"] is True and receipt["revoked"] == ["F2"]
+    assert receipt["version"] == 5 and receipt["frozen"] is True and receipt["revoked"] == ["F2"]
     assert Path(receipt["evidence_path"]).read_bytes() == old
     assert rev.read_state(env["root"], env["digest"])["revoked"] == ["F2"]
 
@@ -168,7 +184,7 @@ def test_initialize_rebinds_another_policy_only_frozen(env):
     other_digest = act.canonical_sha256(other)
     current = _state_path(env).read_bytes()
     receipt = rev.initialize_frozen(env["root"], other, other_digest, now=NOW, replace_existing_sha256=_sha(current))
-    assert receipt["version"] == 3 and receipt["frozen"] is True and receipt["policy_sha256"] == other_digest
+    assert receipt["version"] == 4 and receipt["frozen"] is True and receipt["policy_sha256"] == other_digest
     with pytest.raises(rev.StateInvalid):
         rev.read_state(env["root"], env["digest"])
     assert rev.read_state(env["root"], other_digest)["frozen"] is True
@@ -284,13 +300,15 @@ def _bad_grant(env, case):
         "expired": (_auth(env, "unfreeze", 1, minutes=-1), _trusting),
         "too_long": (_auth(env, "unfreeze", 1, minutes=16), _trusting),
         "bad_expiry": (dataclasses.replace(good, expires_utc="2026-10-01T12:05:00+00:00"), _trusting),
+        "stale_state_digest": (_auth(env, "unfreeze", 1, digest="0" * 64), _trusting),
+        "digest_not_text": (dataclasses.replace(good, from_state_sha256=None), _trusting),
     }[case]
 
 
 @pytest.mark.parametrize("case", [
     "none", "string", "lookalike", "no_verifier", "truthy", "false", "raises", "untrusted_provenance",
     "stale_version", "bool_version", "other_policy", "other_action", "features", "list_features",
-    "expired", "too_long", "bad_expiry",
+    "expired", "too_long", "bad_expiry", "stale_state_digest", "digest_not_text",
 ])
 def test_grant_refusals(env, case):
     _init(env)
@@ -316,14 +334,14 @@ def test_grant_is_single_use(env):
 def test_unrevoke_requires_exact_revoked_features(env):
     _unfrozen(env)
     rev.revoke(env["root"], env["digest"], ["F2", "F3"], now=NOW)
-    receipt = rev.unrevoke(env["root"], env["digest"], ["F3"], authorization=_auth(env, "unrevoke", 3, ("F3",)),
+    receipt = rev.unrevoke(env["root"], env["digest"], ["F3"], authorization=_auth(env, "unrevoke", 4, ("F3",)),
                            verifier=_trusting, now=NOW)
-    assert receipt["version"] == 4 and receipt["revoked"] == ["F2"]
+    assert receipt["version"] == 5 and receipt["revoked"] == ["F2"]
     with pytest.raises(rev.RevocationError, match="not revoked"):
-        rev.unrevoke(env["root"], env["digest"], ["F9"], authorization=_auth(env, "unrevoke", 4, ("F9",)),
+        rev.unrevoke(env["root"], env["digest"], ["F9"], authorization=_auth(env, "unrevoke", 5, ("F9",)),
                      verifier=_trusting, now=NOW)
     with pytest.raises(rev.AuthorizationRefused):
-        rev.unrevoke(env["root"], env["digest"], ["F2"], authorization=_auth(env, "unrevoke", 4, ("F3",)),
+        rev.unrevoke(env["root"], env["digest"], ["F2"], authorization=_auth(env, "unrevoke", 5, ("F3",)),
                      verifier=_trusting, now=NOW)
     assert rev.read_state(env["root"], env["digest"])["revoked"] == ["F2"]
 
@@ -331,10 +349,10 @@ def test_unrevoke_requires_exact_revoked_features(env):
 def test_reattest_refreshes_freshness_only_with_authorization(env):
     _unfrozen(env)
     at = NOW + timedelta(minutes=30)
-    receipt = rev.reattest(env["root"], env["digest"], authorization=_auth(env, "reattest", 2, at=at),
+    receipt = rev.reattest(env["root"], env["digest"], authorization=_auth(env, "reattest", 3, at=at),
                            verifier=_trusting, now=at)
     state = rev.read_state(env["root"], env["digest"])
-    assert receipt["version"] == 3 and state["updated_utc"] == "2026-10-01T12:30:00.000000Z"
+    assert receipt["version"] == 4 and state["updated_utc"] == "2026-10-01T12:30:00.000000Z"
     assert state["frozen"] is False and state["revoked"] == []
 
 
@@ -425,3 +443,124 @@ def test_module_ships_no_verifier_cli_or_production_entry_point():
     source = Path(rev.__file__).read_text(encoding="utf-8")
     assert "__main__" not in source and "argparse" not in source
     assert not any(name.lower().startswith(("default_verif", "trusted_verif")) for name in dir(rev))
+
+
+# ---------------------------------------------------------------------------
+# RCO2 review fixes R1-R3 (RCO2 static review of f3ea3c33)
+# ---------------------------------------------------------------------------
+
+def test_initialize_over_unreadable_state_revokes_everything_so_unfreeze_grants_nothing(env):
+    (env["root"] / "bridge_v2").mkdir()
+    _state_path(env).write_bytes(b"{not json")
+    receipt = _init(env, replace_existing_sha256=_sha(b"{not json"), min_version=3)
+    state = rev.read_state(env["root"], env["digest"])
+    assert receipt["version"] == 4 and state["frozen"] is True
+    assert state["revoked"] == sorted(env["policy"]["features"])
+    rev.unfreeze(env["root"], env["digest"], authorization=_auth(env, "unfreeze", 4), verifier=_trusting, now=NOW)
+    assert _decide(env).reason == "feature revoked"          # the lost denials never come back as grants
+
+
+def test_grants_bind_the_exact_state_bytes_not_only_the_version(env):
+    _init(env)                                                # v1
+    rev.freeze(env["root"], env["digest"], now=NOW)           # v2
+    stale = _auth(env, "unfreeze", 2)                         # bound to these v2 bytes
+    _state_path(env).write_bytes(b"{corrupt")
+    # A low high-water mark reuses version 2; a later time makes the new v2 bytes differ from the old v2.
+    rev.initialize_frozen(env["root"], env["policy"], env["digest"], now=NOW + timedelta(minutes=1),
+                          replace_existing_sha256=_sha(b"{corrupt"), min_version=1)
+    assert rev.read_state(env["root"], env["digest"])["version"] == 2
+    assert _sha(_state_path(env).read_bytes()) != stale.from_state_sha256
+    before = _state_path(env).read_bytes()
+    with pytest.raises(rev.AuthorizationRefused):
+        rev.unfreeze(env["root"], env["digest"], authorization=stale, verifier=_trusting, now=NOW)
+    assert _state_path(env).read_bytes() == before
+    fresh = _auth(env, "unfreeze", 2)                         # success twin: bound to the new bytes
+    assert rev.unfreeze(env["root"], env["digest"], authorization=fresh, verifier=_trusting, now=NOW)["version"] == 3
+
+
+def test_unfreeze_and_unrevoke_never_refresh_a_stale_state(tmp_path):
+    env = _env(tmp_path, _policy(revocation_max_age_seconds=3600))
+    _init(env)
+    later = NOW + timedelta(hours=2)
+    rev.unfreeze(env["root"], env["digest"], authorization=_auth(env, "unfreeze", 1, at=later),
+                 verifier=_trusting, now=later)
+    rev.unrevoke(env["root"], env["digest"], ["F1"], authorization=_auth(env, "unrevoke", 2, ("F1",), at=later),
+                 verifier=_trusting, now=later)
+    assert rev.read_state(env["root"], env["digest"])["updated_utc"] == "2026-10-01T12:00:00.000000Z"
+    assert "stale" in _decide(env, now=later).reason
+    rev.reattest(env["root"], env["digest"], authorization=_auth(env, "reattest", 3, at=later),
+                 verifier=_trusting, now=later)                # only an explicit reattest refreshes
+    assert _decide(env, now=later).enabled is True
+
+
+# ---------------------------------------------------------------------------
+# RCO2 N2 (truthful published-versus-failed) and N3 (reparse paths)
+# ---------------------------------------------------------------------------
+
+def test_a_failure_after_the_replace_reports_published(env, monkeypatch):
+    _init(env)
+
+    def failing_fsync(_directory):
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(rev, "_fsync_directory", failing_fsync)
+    with pytest.raises(rev.PublishedButUnverified) as caught:
+        rev.freeze(env["root"], env["digest"], now=NOW)
+    assert caught.value.published is True
+    assert rev.read_state(env["root"], env["digest"])["version"] == 2       # the new state IS live
+
+
+def test_a_failure_before_the_replace_reports_not_published(env, monkeypatch):
+    _init(env)
+    before = _state_path(env).read_bytes()
+    real = rev._read_raw_or_none
+
+    def corrupt_temp_read_back(path, limit=rev.MAX_EVIDENCE_BYTES):
+        data = real(path, limit)
+        if data is not None and Path(path).name.startswith("revocation.json.tmp-"):
+            return data + b"x"
+        return data
+
+    monkeypatch.setattr(rev, "_read_raw_or_none", corrupt_temp_read_back)
+    with pytest.raises(rev.PublicationError) as caught:
+        rev.freeze(env["root"], env["digest"], now=NOW)
+    assert caught.value.published is False and not isinstance(caught.value, rev.PublishedButUnverified)
+    assert _state_path(env).read_bytes() == before
+    assert list((env["root"] / "bridge_v2").glob("revocation.json.tmp-*")) == []
+
+
+def _symlink_or_skip(link: Path, target: Path, directory: bool) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+
+def test_a_symlinked_bridge_directory_is_refused(env, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _symlink_or_skip(env["root"] / "bridge_v2", elsewhere, True)
+    with pytest.raises(rev.StateInvalid, match="symlink or reparse"):
+        _init(env)
+    assert list(elsewhere.iterdir()) == []                                  # nothing written through it
+
+
+def test_symlinked_state_or_lock_files_are_refused(env, tmp_path):
+    _init(env)
+    decoy = tmp_path / "decoy.json"
+    decoy.write_bytes(_state_path(env).read_bytes())
+    lock = env["root"] / "bridge_v2" / "revocation.lock"
+    lock.unlink()
+    _symlink_or_skip(lock, tmp_path / "decoy.lock", False)
+    with pytest.raises(rev.StateInvalid, match="revocation lock is a symlink"):
+        rev.freeze(env["root"], env["digest"], now=NOW)
+    assert not (tmp_path / "decoy.lock").exists()
+    lock.unlink()
+    state = _state_path(env)
+    state.unlink()
+    _symlink_or_skip(state, decoy, False)
+    with pytest.raises(rev.StateInvalid, match="revocation state is a symlink"):
+        rev.freeze(env["root"], env["digest"], now=NOW)
+    with pytest.raises(rev.StateInvalid, match="revocation state is a symlink"):
+        rev.read_state(env["root"], env["digest"])
+    assert json.loads(decoy.read_bytes())["version"] == 1                   # the decoy target is untouched

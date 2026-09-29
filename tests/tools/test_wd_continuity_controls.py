@@ -135,3 +135,26 @@ def test_unreconciled_log_change_never_returns_clear(tmp_path, ps, mutation):
     report = json.loads(_run_powershell(script, executable=ps).stdout)
     assert report["before"] == {"ok": True, "held": False}, report
     assert report["after"]["ok"] is False, report
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_same_length_in_place_prefix_rewrite_cannot_hide_hold(tmp_path, ps):
+    """A cursor must not treat an unchanged EOF as proof its prefix is unchanged."""
+    log, script = _fixture(tmp_path, [_event(status="idle")])
+    marker = b'"status":"idle"'
+    offset = log.read_bytes().index(marker) + len(b'"status":"')
+    script += f"""
+$before=Check
+$stream=[IO.File]::Open({q(log)},[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+try {{
+ [void]$stream.Seek({offset},[IO.SeekOrigin]::Begin)
+ $bytes=[Text.Encoding]::ASCII.GetBytes('hold')
+ $stream.Write($bytes,0,$bytes.Length)
+ $stream.Flush($true)
+}} finally {{$stream.Dispose()}}
+$after=Check
+@{{before=$before;after=$after}} | ConvertTo-Json -Depth 5 -Compress
+"""
+    report = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert report["before"] == {"ok": True, "held": False}, report
+    assert report["after"] != {"ok": True, "held": False}, report

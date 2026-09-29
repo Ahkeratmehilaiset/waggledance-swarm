@@ -22,8 +22,9 @@ Lifecycle, all outcomes truthful and every handle closed:
   the mutex is released again WITHOUT running the body and ``MutexAbandoned`` tells the
   caller to reconcile the queue WAL first; WAIT_FAILED or any other value raises
   ``MutexUnavailable``;
-* a failed ``ReleaseMutex`` is reported (the mutex stays owned by this thread until it
-  exits) unless the body already raised, which is never masked; ``CloseHandle`` always runs.
+* a failed (or raising) ``ReleaseMutex`` is reported (the mutex stays owned by this thread
+  until it exits) unless the body already raised, which is never masked; ``CloseHandle``
+  runs even when ``ReleaseMutex`` raises.
 
 A Windows mutex is owned by a thread: hold it on the thread that runs the transaction.
 Off Windows there is no fallback lock: ``hold`` raises ``MutexUnavailable``. This does not
@@ -79,6 +80,16 @@ def _default_kernel32() -> Any:
     return kernel32
 
 
+def _release_and_close(kernel32: Any, handle: int) -> bool:
+    """ReleaseMutex, then CloseHandle even when ReleaseMutex raises (that counts as a failed release)."""
+    try:
+        return bool(kernel32.ReleaseMutex(handle))
+    except Exception:
+        return False
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 class WindowsRootMutex:
     """``MutexPort`` over a Windows named mutex. Constructing it touches nothing; the kernel
     is used only inside ``hold``. ``kernel32``, ``create`` and ``platform`` are injection
@@ -116,8 +127,7 @@ class WindowsRootMutex:
             kernel32.CloseHandle(handle)
             raise
         if outcome == WAIT_ABANDONED:
-            released = bool(kernel32.ReleaseMutex(handle))
-            kernel32.CloseHandle(handle)
+            released = _release_and_close(kernel32, handle)
             raise MutexAbandoned("the previous holder died inside a queue transaction; reconcile the WAL first"
                                  + ("" if released else "; ReleaseMutex also failed"))
         if outcome != WAIT_OBJECT_0:
@@ -132,8 +142,7 @@ class WindowsRootMutex:
             body_failed = True
             raise
         finally:
-            released = bool(kernel32.ReleaseMutex(handle))
-            kernel32.CloseHandle(handle)
+            released = _release_and_close(kernel32, handle)
             if not released and not body_failed:
                 raise MutexUnavailable("ReleaseMutex failed: the mutex stays owned until this thread exits")
 

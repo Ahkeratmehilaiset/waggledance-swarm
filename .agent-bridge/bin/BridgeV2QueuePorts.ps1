@@ -20,8 +20,10 @@
     without running the body and ask for WAL reconciliation), THEN the exact legacy sibling
     lock "<claim>.json.lock" (FileMode OpenOrCreate, FileAccess ReadWrite, FileShare None,
     retried every 25 ms until the timeout, as Enter-BridgeClaimLock), then the body; release
-    in reverse order in finally. Off Windows there is no fallback lock: without an injected
-    -MutexFactory (a fixture seam) the call refuses.
+    in reverse order in finally. A failed ReleaseMutex is reported unless the claim lock or
+    the body already failed, which is never masked. A factory that throws or does not return
+    exactly one mutex is refused before any wait. Off Windows there is no fallback lock:
+    without an injected -MutexFactory (a fixture seam) the call refuses.
     Not runtime-tested: written under the operator's no-runs directive (2026-09-29).
 #>
 
@@ -101,8 +103,14 @@ function Invoke-BridgeV2QueueLocked {
     if (-not (Test-Path -LiteralPath (Split-Path -Parent $lockPath) -PathType Container)) {
         throw 'the claims directory is missing; nothing is bootstrapped here'
     }
-    $mutex = & $MutexFactory $name
-    if ($null -eq $mutex) { throw 'runtime-root mutex create/open refused' }
+    try { $created = @(& $MutexFactory $name) }
+    catch { throw ('runtime-root mutex create/open refused: ' + $_.Exception.GetType().Name) }
+    if ($created.Count -ne 1 -or $null -eq $created[0]) {
+        # Exactly one mutex object, or nothing is waited on (method calls on an array would fan out).
+        foreach ($item in $created) { if ($null -ne $item -and $item.PSObject.Methods['Dispose']) { $item.Dispose() } }
+        throw 'runtime-root mutex create/open refused: the factory must return exactly one mutex'
+    }
+    $mutex = $created[0]
     try {
         try { $acquired = [bool]$mutex.WaitOne($TimeoutMs) }
         catch {
@@ -112,10 +120,12 @@ function Invoke-BridgeV2QueueLocked {
                 $inner = $inner.InnerException
             }
             if ($null -eq $inner) { throw }
-            try { $mutex.ReleaseMutex() } catch { }   # an abandoned mutex IS owned now: give it back
-            throw 'the previous holder died inside a queue transaction; reconcile the WAL first'
+            $suffix = ''   # an abandoned mutex IS owned now: give it back without running the body
+            try { $mutex.ReleaseMutex() } catch { $suffix = '; ReleaseMutex also failed' }
+            throw ('the previous holder died inside a queue transaction; reconcile the WAL first' + $suffix)
         }
         if (-not $acquired) { throw 'runtime-root mutex busy: bounded wait expired, nothing mutated' }
+        $bodyFailed = $true   # the claim lock and the body: a failure there is never masked by the release
         try {
             $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
             $lock = $null
@@ -129,8 +139,12 @@ function Invoke-BridgeV2QueueLocked {
                 }
             }
             try { & $ScriptBlock } finally { $lock.Dispose() }
+            $bodyFailed = $false
         } finally {
-            $mutex.ReleaseMutex()
+            try { $mutex.ReleaseMutex() }
+            catch {
+                if (-not $bodyFailed) { throw 'ReleaseMutex failed: the mutex stays owned until this thread exits' }
+            }
         }
     } finally {
         $mutex.Dispose()

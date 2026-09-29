@@ -125,6 +125,33 @@ def test_a_failed_release_after_a_clean_body_is_reported(tmp_path):
     assert names(kernel32) == ["wait", "release", "close"]
 
 
+class RaisingRelease(Kernel32):
+    def ReleaseMutex(self, handle):
+        self.calls.append(("release", handle))
+        raise OSError(6, "invalid handle")
+
+
+def test_a_raising_release_still_closes_counts_as_failed_and_never_masks_the_body(tmp_path):
+    kernel32 = RaisingRelease()
+    mutex, _ = port(kernel32)
+    with pytest.raises(MutexUnavailable, match="stays owned"):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pass
+    assert names(kernel32) == ["wait", "release", "close"]
+    kernel32 = RaisingRelease()
+    mutex, _ = port(kernel32)
+    with pytest.raises(KeyError):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            raise KeyError("body")
+    assert names(kernel32) == ["wait", "release", "close"]
+    kernel32 = RaisingRelease(outcome=WAIT_ABANDONED)
+    mutex, _ = port(kernel32)
+    with pytest.raises(MutexAbandoned, match="ReleaseMutex also failed"):
+        with mutex.hold(name_for(tmp_path), 1.0):
+            pytest.fail("the body must not run")
+    assert names(kernel32) == ["wait", "release", "close"]
+
+
 def test_off_windows_there_is_no_fallback_lock(tmp_path):
     kernel32 = Kernel32()
     mutex = WindowsRootMutex(kernel32=kernel32, create=lambda name: HANDLE, platform="posix")

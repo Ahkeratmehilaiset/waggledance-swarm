@@ -34,7 +34,10 @@ function New-FakeMutex([string]$Mode) {
         if ($this.Mode -eq 'abandoned') { throw [System.Threading.AbandonedMutexException]::new() }
         return $true
     }
-    $fake | Add-Member -MemberType ScriptMethod -Name ReleaseMutex -Value { $log.Add('release') }
+    $fake | Add-Member -MemberType ScriptMethod -Name ReleaseMutex -Value {
+        $log.Add('release')
+        if ($this.Mode -eq 'releasefail') { throw [System.ApplicationException]::new('not owned') }
+    }
     $fake | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $log.Add('dispose') }
     return $fake
 }
@@ -89,12 +92,12 @@ def test_the_twin_and_python_refuse_the_same_roots(tmp_path, shell, raw):
             mutex_name(raw)
 
 
-def _invoke(tmp_path: Path, mode: str, extra: str = "", timeout_ms: int = 300) -> str:
+def _invoke(tmp_path: Path, mode: str, extra: str = "", timeout_ms: int = 300, body: str | None = None) -> str:
     claim = _claim(tmp_path)
-    marker = tmp_path / "ran.txt"
+    body = f"Set-Content -LiteralPath {_q(tmp_path / 'ran.txt')} ran" if body is None else body
     return (f"{extra}\n$factory = {{ param($n) $log.Add('create'); New-FakeMutex {_q(mode)} }}\n"
             f"try {{ Invoke-BridgeV2QueueLocked -RuntimeRoot {_q(tmp_path / 'runtime')} -ClaimPath {_q(claim)} "
-            f"-TimeoutMs {timeout_ms} -MutexFactory $factory -ScriptBlock {{ Set-Content -LiteralPath {_q(marker)} ran }}; "
+            f"-TimeoutMs {timeout_ms} -MutexFactory $factory -ScriptBlock {{ {body} }}; "
             f"$outcome = 'ok' }} catch {{ $outcome = 'ERR:' + $_.Exception.Message }}\n"
             "[pscustomobject]@{ outcome = $outcome; log = @($log) } | ConvertTo-Json -Compress")
 
@@ -130,6 +133,36 @@ def test_a_busy_legacy_sibling_lock_releases_the_mutex_and_runs_nothing(tmp_path
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert "claim lock busy" in report["outcome"] and not (tmp_path / "ran.txt").exists()
     assert report["log"] == ["create", "wait:200", "release", "dispose"]   # mutex first, released after
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+def test_a_failed_release_is_reported_but_never_masks_the_body(tmp_path, shell):
+    clean = _ps(shell, _invoke(tmp_path / "clean", "releasefail"))
+    assert clean.returncode == 0, clean.stderr
+    report = json.loads(clean.stdout.strip().splitlines()[-1])
+    assert "stays owned" in report["outcome"] and (tmp_path / "clean" / "ran.txt").exists()
+    assert report["log"] == ["create", "wait:300", "release", "dispose"]
+    failed = _ps(shell, _invoke(tmp_path / "failed", "releasefail", body="throw 'body boom'"))
+    assert failed.returncode == 0, failed.stderr
+    report = json.loads(failed.stdout.strip().splitlines()[-1])
+    assert "body boom" in report["outcome"] and "stays owned" not in report["outcome"]
+    assert report["log"] == ["create", "wait:300", "release", "dispose"]
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda s: Path(s).stem)
+@pytest.mark.parametrize("factory,expected_log", [("throw 'denied'", "create"), ("$null", "create"),
+                                                  ("New-FakeMutex 'ok'; New-FakeMutex 'ok'", "create,dispose,dispose")])
+def test_a_refused_or_ambiguous_factory_waits_on_nothing(tmp_path, shell, factory, expected_log):
+    claim = _claim(tmp_path)
+    result = _ps(shell, f"$factory = {{ param($n) $log.Add('create'); {factory} }}\n"
+                        f"try {{ Invoke-BridgeV2QueueLocked -RuntimeRoot {_q(tmp_path / 'runtime')} "
+                        f"-ClaimPath {_q(claim)} -MutexFactory $factory -ScriptBlock {{ 'ran' }} }} "
+                        "catch { 'ERR:' + $_.Exception.Message }\n'LOG:' + ($log -join ',')")
+    lines = result.stdout.splitlines()
+    assert "ran" not in lines and any("create/open refused" in line for line in lines)
+    assert lines[-1] == "LOG:" + expected_log   # no wait, no release: only surplus objects are disposed
 
 
 @pytest.mark.skipif(not WINDOWS, reason="the twin accepts drive-letter roots only")

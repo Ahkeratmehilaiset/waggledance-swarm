@@ -43,6 +43,7 @@ if ($mode -eq 'garbage') { 'not json'; return }
 $deliveryState = 'canonical'; $durable = $true
 if ($mode -eq 'queued') { $deliveryState = 'queued'; $durable = $false }
 if ($mode -eq 'suppressed') { $deliveryState = 'suppressed'; $durable = $false }
+if ($mode -eq 'long_delivery') { $deliveryState = 'x' * 5000; $durable = $false }
 $echoTo = $To
 if ($mode -eq 'wrong_echo') { $echoTo = 'codex-lead-1' }
 # Same root resolution as the pinned writer: the env root, else the bundle's own .agent-bridge.
@@ -53,7 +54,9 @@ if ($mode -eq 'relative_root') { $eventsPath = 'shared\events.jsonl' }
 $delivery = [ordered]@{schema='waggledance.bridge.delivery-receipt.v1'; accepted=$true;
     delivery_status=$deliveryState; canonical_durable=$durable; events_path=$eventsPath}
 if ($mode -eq 'no_events_path') { $delivery.Remove('events_path') }
-$event = [ordered]@{ts_utc='2026-09-29T06:00:00.0000000Z'; agent=$Agent; type=$Type; task_id=$TaskId;
+$ts = '2026-09-29T06:00:00.0000000Z'
+if ($mode -eq 'long_ts') { $ts = 'x' * 5000 }
+$event = [ordered]@{ts_utc=$ts; agent=$Agent; type=$Type; task_id=$TaskId;
     status=$Status; to=$echoTo; message=$Message; payload=($PayloadJson | ConvertFrom-Json);
     _bridge_delivery=$delivery}
 ConvertTo-Json -InputObject $event -Compress -Depth 8
@@ -406,3 +409,154 @@ def test_full_ledger_fails_closed(env):
     ok(proc, result, alive, "unknown", 1)
     assert result["reason_code"] == "ledger_full"
     assert env.calls() == []
+
+
+# --- reserved last slot: the channel closing is itself operator-visible (F4 option 1) -------
+
+def _fill(env, n, status="published", pad=None):
+    entries = [{"key": hashlib.sha256(str(i).encode()).hexdigest(), "status": status} for i in range(n)]
+    if pad:
+        for e in entries:
+            e["pad"] = "x" * pad
+    _ledger_path(env).write_text(json.dumps({"schema": "wd.continuity-alert-ledger.v1", "agent": AGENT,
+                                             "thread_id": THREAD, "entries": entries}), encoding="utf-8")
+    return entries
+
+
+def test_last_slot_publishes_one_ledger_full_notice_instead_of_the_alert(env):
+    _fill(env, 255)
+    proc, result, alive = env.run()
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "ledger_full"
+    assert result["ledger_full_notice"] == "published"
+    assert result["alert_key"] == _key(AGENT, THREAD, REASON, DIGEST)  # the alert that was NOT sent
+    [call] = env.calls()
+    assert (call["Type"], call["Status"], call["To"]) == ("message", "continuity_alert", "operator")
+    payload = json.loads(call["PayloadJson"])
+    assert payload["reason"] == "alert_ledger_full"
+    assert payload["alert_key"] == result["notice_key"] == _key(AGENT, THREAD, "alert_ledger_full")
+    assert "alert_ledger_full" in call["Message"]
+    entries = env.ledger()["entries"]
+    assert len(entries) == 256
+    assert (entries[-1]["key"], entries[-1]["reason"], entries[-1]["status"]) == \
+        (result["notice_key"], "alert_ledger_full", "published")
+
+
+def test_ledger_full_notice_is_sent_exactly_once(env):
+    _fill(env, 255)
+    ok(*env.run(), "unknown", 1)
+    for digest in ("b" * 64, "c" * 64):
+        proc, result, alive = env.run(digest=digest)
+        ok(proc, result, alive, "unknown", 1)
+        assert result["reason_code"] == "ledger_full"
+        assert "ledger_full_notice" not in result
+    assert len(env.calls()) == 1
+    assert len(env.ledger()["entries"]) == 256
+
+
+def test_boundary_254_publishes_normally_then_the_next_alert_takes_the_reserved_slot(env):
+    _fill(env, 254)
+    ok(*env.run(), "published")
+    assert len(env.ledger()["entries"]) == 255
+    proc, result, alive = env.run(digest="b" * 64)
+    assert (result["reason_code"], result["ledger_full_notice"]) == ("ledger_full", "published")
+    assert [json.loads(c["PayloadJson"])["reason"] for c in env.calls()] == [REASON, "alert_ledger_full"]
+
+
+def test_duplicate_is_answered_before_the_capacity_check(env):
+    entries = _fill(env, 255)
+    ledger = env.ledger()
+    ledger["entries"][0]["key"] = _key(AGENT, THREAD, REASON, DIGEST)
+    _ledger_path(env).write_text(json.dumps(ledger), encoding="utf-8")
+    ok(*env.run(), "already_reported")
+    assert env.calls() == []
+
+
+@pytest.mark.parametrize("mode,notice", [("queued", "queued"), ("suppressed", "uncertain"),
+                                         ("wrong_root", "uncertain")])
+def test_ledger_full_notice_delivery_is_reported_and_never_retried(env, mode, notice):
+    _fill(env, 255)
+    proc, result, alive = env.run(mode=mode)
+    ok(proc, result, alive, "unknown", 1)
+    assert (result["reason_code"], result["ledger_full_notice"]) == ("ledger_full", notice)
+    assert env.ledger()["entries"][-1]["status"] == notice
+    ok(*env.run(digest="b" * 64), "unknown", 1)
+    assert len(env.calls()) == 1
+
+
+def test_crash_during_ledger_full_notice_is_not_retried(env):
+    _fill(env, 255)
+    proc, result, _ = env.run(mode="crash")
+    assert proc.returncode == 7 and result is None
+    assert env.ledger()["entries"][-1]["status"] == "submitting"
+    proc, result, alive = env.run()
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "ledger_full"
+    assert len(env.calls()) == 1
+
+
+def test_callers_cannot_use_the_reserved_reason(env):
+    proc, result, alive = env.run(reason="alert_ledger_full")
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "invalid_reason_code"
+    assert env.calls() == []
+
+
+# --- byte cap: an oversized ledger can never claim a publish --------------------------------
+
+CAP = 262144
+
+
+def _largest_probe_bytes(pad):
+    """Compact JSON of the ledger plus the new entry at its largest possible shape."""
+    entry = {"key": _key(AGENT, THREAD, REASON, DIGEST), "status": "submitting", "reason": REASON,
+             "task_id": TASK, "checkpoint_digest": DIGEST, "progress_key": "",
+             "at_utc": "2026-09-29T06:43:12.1234567+00:00", "delivery_status": "suppressed",
+             "event_ts_utc": "x" * 64}
+    ledger = {"schema": "wd.continuity-alert-ledger.v1", "agent": AGENT, "thread_id": THREAD,
+              "entries": [{"key": hashlib.sha256(b"0").hexdigest(), "status": "published", "pad": "x" * pad},
+                          entry]}
+    return len(json.dumps(ledger, separators=(",", ":")))
+
+
+@pytest.mark.parametrize("margin,expect_published", [(24, False), (-48, True)])
+def test_ledger_byte_cap_is_checked_at_the_final_entry_size_before_the_call(env, margin, expect_published):
+    pad = CAP + margin - _largest_probe_bytes(0)
+    assert _largest_probe_bytes(pad) == CAP + margin
+    _fill(env, 1, pad=pad)
+    before = _ledger_path(env).read_bytes()
+    proc, result, alive = env.run()
+    if expect_published:  # boundary twin: just under the cap still publishes and records it
+        ok(proc, result, alive, "published")
+        assert env.ledger()["entries"][-1]["status"] == "published"
+    else:
+        ok(proc, result, alive, "unknown", 1)
+        assert result["reason_code"] == "ledger_oversized"
+        assert env.calls() == []
+        assert _ledger_path(env).read_bytes() == before
+
+
+def test_oversized_ledger_file_is_refused(env):
+    _fill(env, 1, pad=270000)
+    proc, result, alive = env.run()
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "ledger_oversized"
+    assert env.calls() == []
+
+
+def test_unknown_receipt_delivery_status_cannot_break_the_final_ledger_write(env):
+    _fill(env, 1, pad=CAP - 48 - _largest_probe_bytes(0))
+    proc, result, alive = env.run(mode="long_delivery")
+    ok(proc, result, alive, "unknown", 1)
+    assert result["reason_code"] == "delivery_uncertain"  # recorded, not ledger_oversized
+    last = env.ledger()["entries"][-1]
+    assert (last["status"], last["delivery_status"]) == ("uncertain", "")
+
+
+def test_overlong_receipt_timestamp_cannot_break_the_final_ledger_write(env):
+    # The receipt is untrusted input: its ts_utc must not grow the entry past the pre-checked size.
+    _fill(env, 1, pad=261000 - 700)
+    proc, result, alive = env.run(mode="long_ts")
+    ok(proc, result, alive, "published")
+    assert result["event_ts_utc"] == ""
+    assert env.ledger()["entries"][-1]["status"] == "published"

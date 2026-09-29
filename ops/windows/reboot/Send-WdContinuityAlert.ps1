@@ -25,8 +25,17 @@
     Codex thread after a restart gets its own ledger, so it can still publish. A
     repeated key gives already_reported (or queued again). An uncertain delivery
     (crash, suppressed or unparseable receipt) gives unknown and is never blindly
-    retried, so the failure stays visible. A full ledger fails closed; reconcile
-    it manually.
+    retried, so the failure stays visible.
+
+    Capacity: the ledger holds at most 256 entries and 256 KiB, and nothing is
+    ever evicted. The last slot is reserved: the alert that would take it is NOT
+    sent; instead ONE operator notice with reason alert_ledger_full is sent (key
+    per thread), and the result is unknown ledger_full with ledger_full_notice =
+    published | queued | uncertain. From then on every alert is unknown
+    ledger_full with no call. Starting a new ledger is the ADR-reviewed
+    maintenance action, never automatic. Before any call, the ledger must be able
+    to hold the final entry at its largest size, else unknown ledger_oversized,
+    so a publish is never followed by a failed ledger write.
 
     CheckpointDigest is the lowercase SHA-256 of the checkpoint bytes. When the
     checkpoint is missing or unreadable the caller passes 64 zeros with
@@ -77,6 +86,8 @@ $LedgerSchema = 'wd.continuity-alert-ledger.v1'
 $MaxLedgerBytes = 262144
 $MaxLedgerEntries = 256
 $BinPrefix = 'tools-bootstrap/.agent-bridge/bin/'
+$LedgerFullReason = 'alert_ledger_full'
+$MaxEventTsLength = 64
 $ResultMarker = 'WD_CONTINUITY_ALERT_RESULT'
 $script:AlertResult = $null
 
@@ -156,6 +167,8 @@ function Invoke-ContinuityAlert {
         Stop-Unknown 'invalid_thread_id'
     }
     if ($Reason -cnotmatch '^[a-z0-9][a-z0-9_.:-]{0,127}$') { Stop-Unknown 'invalid_reason_code' }
+    # Reserved for the helper's own last-slot notice; a caller can never spend or forge it.
+    if ($Reason -ceq $LedgerFullReason) { Stop-Unknown 'invalid_reason_code' }
     if ($CheckpointDigest -cnotmatch '^[0-9a-f]{64}$') { Stop-Unknown 'invalid_checkpoint_digest' }
     # Missing or unreadable checkpoint: the caller passes the all-zero digest as an explicit
     # "unavailable" sentinel. It is bound both ways to reason checkpoint_unavailable, so a real
@@ -255,6 +268,15 @@ function Invoke-ContinuityAlert {
             }
         }
         if (@($ledger.entries).Count -ge $MaxLedgerEntries) { Stop-Unknown 'ledger_full' $alertKey }
+        # The last slot is reserved for one notice that the channel is closing; the requested
+        # alert is not sent. The notice key is per thread, so it can only ever be spent once.
+        $capacityNotice = (@($ledger.entries).Count -eq ($MaxLedgerEntries - 1))
+        $sendKey = $alertKey
+        $sendReason = $Reason
+        if ($capacityNotice) {
+            $sendKey = Get-Sha256Hex ($Agent + "`n" + $ThreadId + "`n" + $LedgerFullReason)
+            $sendReason = $LedgerFullReason
+        }
 
         # --- trust: anchored manifest, then every pinned bridge helper the writer may load ---
         $manifestPath = Join-Path $bundle 'deployment-manifest.json'
@@ -282,18 +304,36 @@ function Invoke-ContinuityAlert {
         $writer = Join-Path $bundle ($writerRelative.Replace('/', [IO.Path]::DirectorySeparatorChar))
 
         # --- durable intent, then publish ---------------------------------------------------------
-        $intent = [ordered]@{key = $alertKey; status = 'submitting'; reason = $Reason; task_id = $TaskId;
+        $intent = [ordered]@{key = $sendKey; status = 'submitting'; reason = $sendReason; task_id = $TaskId;
             checkpoint_digest = $CheckpointDigest; progress_key = $ProgressKey;
             at_utc = [DateTimeOffset]::UtcNow.ToString('o');
             delivery_status = ''; event_ts_utc = ''}
+        # The final write after the call must not be able to fail on size: check the entry at
+        # its largest possible shape now, before anything is sent.
+        $largest = [ordered]@{}
+        foreach ($name in @($intent.Keys)) { $largest[$name] = $intent[$name] }
+        $largest.status = 'submitting'
+        $largest.delivery_status = 'suppressed'
+        $largest.event_ts_utc = 'x' * $MaxEventTsLength
+        $probe = [ordered]@{schema = $ledger.schema; agent = $ledger.agent; thread_id = $ledger.thread_id;
+            entries = @(@($ledger.entries) + @($largest))}
+        if ([Text.Encoding]::UTF8.GetByteCount((ConvertTo-Json -InputObject $probe -Depth 6 -Compress)) -gt $MaxLedgerBytes) {
+            Stop-Unknown 'ledger_oversized' $alertKey
+        }
         $ledger.entries = @($ledger.entries) + @($intent)
         Write-LedgerAtomic $ledgerPath $ledger
 
-        $message = 'Continuity alert: lane ' + $Agent + ' needs operator reconciliation (' + $Reason +
+        $message = 'Continuity alert: lane ' + $Agent + ' needs operator reconciliation (' + $sendReason +
             '). Task ' + $TaskId + '. This notice grants no authority and requests no lane action.'
+        if ($capacityNotice) {
+            $message = 'Continuity alert: lane ' + $Agent + ' alert ledger is full (' + $sendReason +
+                '). Further continuity alerts for this thread are NOT sent until the ledger is ' +
+                'reconciled through the reviewed maintenance procedure. Task ' + $TaskId +
+                '. This notice grants no authority and requests no lane action.'
+        }
         $payload = ConvertTo-Json -Compress -InputObject ([ordered]@{schema = 'wd.continuity-alert.v1';
-            agent = $Agent; task_id = $TaskId; reason = $Reason; checkpoint_digest = $CheckpointDigest;
-            alert_key = $alertKey; authority = 'none'})
+            agent = $Agent; task_id = $TaskId; reason = $sendReason; checkpoint_digest = $CheckpointDigest;
+            alert_key = $sendKey; authority = 'none'})
         $outcome = 'uncertain'
         $deliveryStatus = ''
         $eventTs = ''
@@ -315,13 +355,18 @@ function Invoke-ContinuityAlert {
                 } elseif ($delivery.delivery_status -ceq 'queued') {
                     $outcome = 'queued'
                 }
-                $deliveryStatus = [string]$delivery.delivery_status
+                # Record only known values: receipt text is untrusted and the size was pre-checked.
+                if ([string]$delivery.delivery_status -cin @('canonical', 'queued', 'suppressed')) {
+                    $deliveryStatus = [string]$delivery.delivery_status
+                }
                 if ($receipt.PSObject.Properties['ts_utc']) {
                     # pwsh 7 ConvertFrom-Json turns the timestamp into a DateTime whose
                     # [string] form is culture-specific; report ISO 8601 UTC in both shells.
                     $tsValue = $receipt.ts_utc
                     if ($tsValue -is [DateTime]) { $eventTs = $tsValue.ToUniversalTime().ToString('o') }
                     else { $eventTs = [string]$tsValue }
+                    # Untrusted receipt text: never let it grow the entry past the pre-checked size.
+                    if ($eventTs.Length -gt $MaxEventTsLength) { $eventTs = '' }
                 }
             }
         } catch {
@@ -331,6 +376,11 @@ function Invoke-ContinuityAlert {
         $intent.delivery_status = $deliveryStatus
         $intent.event_ts_utc = $eventTs
         Write-LedgerAtomic $ledgerPath $ledger
+        if ($capacityNotice) {
+            # The requested alert was not sent: report the closing channel, never success.
+            Write-AlertResult -Status 'unknown' -AlertKey $alertKey -Extra @{reason_code = 'ledger_full';
+                ledger_full_notice = $outcome; notice_key = $sendKey}
+        }
         if ($outcome -ceq 'uncertain') { Stop-Unknown 'delivery_uncertain' $alertKey }
         Write-AlertResult -Status $outcome -AlertKey $alertKey -Extra @{delivery_status = $deliveryStatus; event_ts_utc = $eventTs}
     } finally {

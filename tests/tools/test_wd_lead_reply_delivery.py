@@ -93,7 +93,12 @@ def test_native_lead_adapter_imports_only_verified_functions_and_relays_in_same_
     for name in ['Assert-WdTurnPath', 'Write-WdTurnJson', 'Move-WdWakeSnapshot']:
         runner += load(REBOOT / 'Invoke-WdLaneTurnLoop.ps1', name)
     code = ''
-    for name in ['ConvertTo-WdToolsNativeArgument', 'Invoke-WdNativeToolsWakeStep', 'Invoke-WdNativeToolsWakeRelay']:
+    # Keep the verified fixture complete: the Lead imports real continuity
+    # functions too, even when this short-lived native child stays in grace.
+    for name in ['ConvertTo-WdToolsNativeArgument', 'Invoke-WdNativeToolsWakeStep',
+                 'Invoke-WdNativeToolsWakeRelay', 'Invoke-WdContinuityDecision',
+                 'Invoke-WdNativeContinuityStep', 'Test-WdContinuityControlEvents',
+                 'Invoke-WdContinuityOperatorNotice', 'Get-WdContinuityRetryDelay']:
         code += load(REBOOT / 'start-wd-tools-consumer.ps1', name)
     code += """
 function Send-WdNativeToolsQueueMessage {
@@ -124,7 +129,9 @@ $global:starts=0; $env:WD_BRIDGE_BIN=''
 $verified=@{{}}
 $groups=@{{'Invoke-WdLaneTurnLoop.ps1'=@('Assert-WdTurnPath','Write-WdTurnJson','Move-WdWakeSnapshot');
  'start-wd-tools-consumer.ps1'=@('ConvertTo-WdToolsNativeArgument','Send-WdNativeToolsQueueMessage',
- 'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess')}}
+ 'Invoke-WdNativeToolsWakeStep','Invoke-WdNativeToolsWakeRelay','Start-WdToolsNativeProcess',
+ 'Invoke-WdContinuityDecision','Invoke-WdNativeContinuityStep','Test-WdContinuityControlEvents',
+ 'Invoke-WdContinuityOperatorNotice','Get-WdContinuityRetryDelay')}}
 foreach($file in $groups.Keys){{
  $definitions=@($groups[$file]|ForEach-Object {{'function '+$_+' {{'+(Get-Command $_).ScriptBlock.ToString()+'}}'}})
  $verified[$file]='throw "top-level must not execute"'+"`n"+($definitions -join "`n")

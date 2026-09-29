@@ -31,6 +31,23 @@ This helper interface alone does not establish that the separately owned
 controller enforces these bounds; check its integrated implementation before
 claiming that behavior.
 
+Reservations record their actual `timeout_seconds`. A status read classifies a
+still-`reserved` attempt past that deadline as `interrupted_or_unknown`; older
+reservations with no recorded timeout use the conservative 2400-second bound.
+The response retains `recorded_status` and the complete `raw_state`. It never
+rewrites the ledger, refunds the reservation or kills a process. Such an unknown
+attempt reports `eligible=false` even after the hour passes; the separate
+`hourly_budget_eligible` field describes only the clock-based budget boundary,
+not readiness. Resolve the durable unknown attempt through an explicitly
+authorized reconciliation rather than treating elapsed time as completion.
+
+For long consultations, keep the caller window and its command wait alive long
+enough for the configured session (up to 2400 seconds) plus completion logging.
+A detached launch with durable stdout/stderr logs and a recorded process
+identity is a recommended caller arrangement when a terminal wait is too short;
+this document does not launch it. Caller waiting must not introduce a free
+wrapper timeout, retry, additional consultation or budget bypass.
+
 No arguments (or `-Status`) checks the old helper status without a model call.
 `-Inventory` alone inventories inherited hooks/MCP/LSP without a model call.
 `-PromptPath` without `-ReadOnly` retains the existing text-only advisory mode.

@@ -111,6 +111,45 @@ function ConvertTo-BridgeUtc {
     }
 }
 
+function Get-StaleClaimDispatcher {
+    # A task-id prefix is not evidence of who assigned the claim. Only an
+    # addressed assignment whose responder identity matches the archived
+    # claim may add the dispatcher to the release recipients.
+    param([object] $Claim, [string] $BridgeRoot)
+
+    if (-not $Claim.PSObject.Properties['agent_uuid'] -or
+        -not $Claim.PSObject.Properties['owner_session_id']) { return $null }
+    $eventsPath = Join-Path (Join-Path $BridgeRoot 'shared') 'events.jsonl'
+    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) { return $null }
+    try {
+        . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
+        $snapshot = Read-BridgeEventTail -Path $eventsPath -MaxLines 5000
+        if ($snapshot.status -in @('BLOCKED', 'RETRY')) { return $null }
+        $candidateEvents = @()
+        foreach ($event in @($snapshot.rows)) {
+            if ([string]$event.type -cne 'wake_request' -or
+                [string]$event.status -cne 'assigned' -or
+                [string]$event.task_id -cne [string]$Claim.task_id) { continue }
+            if (@(([string]$event.to -split ',') | ForEach-Object { $_.Trim() }) -cnotcontains
+                [string]$Claim.agent) { continue }
+            if (-not $event.PSObject.Properties['expected_responders']) { continue }
+            $responder = $event.expected_responders.PSObject.Properties[[string]$Claim.agent]
+            if ($null -eq $responder) { continue }
+            if ([string]$responder.Value.agent_uuid -cne [string]$Claim.agent_uuid -or
+                [string]$responder.Value.session_id -cne [string]$Claim.owner_session_id) { continue }
+            $sender = [string]$event.agent
+            if ($sender -cmatch '^[a-z][a-z0-9_-]{1,32}$' -and
+                $sender -cne [string]$Claim.agent) { $candidateEvents += $event }
+        }
+        $senders = @($candidateEvents | ForEach-Object { [string]$_.agent } | Select-Object -Unique)
+        if ($senders.Count -ne 1) { return $null }
+        return $candidateEvents[-1]
+    } catch {
+        # Unknown or incomplete history cannot authorize a guessed recipient.
+        return $null
+    }
+}
+
 # Emit zero or more swept-claim records into the pipeline; caller
 # wraps with @(...) to always get an array. Avoid the
 # Generic.List + return-comma trick that PSStrictMode's boolean
@@ -261,9 +300,22 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
     try {
         $writeEvent = Join-Path $PSScriptRoot 'Write-AgentEvent.ps1'
         if (Test-Path -LiteralPath $writeEvent -PathType Leaf) {
+            $recipients = @()
+            if ($agent -cmatch '^[a-z][a-z0-9_-]{1,32}$') { $recipients += $agent }
+            $dispatcher = Get-StaleClaimDispatcher -Claim $claim -BridgeRoot $bridgeRoot
+            if ($null -ne $dispatcher -and
+                $recipients -cnotcontains [string]$dispatcher.agent) {
+                $recipients += [string]$dispatcher.agent
+            }
             $payload = [pscustomobject]@{
                 task_id            = [string]$claim.task_id
                 claim_agent        = $agent
+                claim_agent_uuid   = if ($claim.PSObject.Properties['agent_uuid']) { [string]$claim.agent_uuid } else { $null }
+                claim_owner_session_id = if ($claim.PSObject.Properties['owner_session_id']) { [string]$claim.owner_session_id } else { $null }
+                claim_run_id       = if ($claim.PSObject.Properties['run_id']) { [string]$claim.run_id } else { $null }
+                dispatcher_request_id = if ($null -ne $dispatcher) { [string]$dispatcher.request_id } else { $null }
+                dispatcher_agent_uuid = if ($null -ne $dispatcher) { [string]$dispatcher.agent_uuid } else { $null }
+                dispatcher_session_id = if ($null -ne $dispatcher) { [string]$dispatcher.session_id } else { $null }
                 last_heartbeat_utc = $tsString
                 age_seconds        = [int]$ageSeconds
                 stale_threshold_s  = $effectiveLeaseSeconds
@@ -279,6 +331,7 @@ foreach ($file in @(Get-ChildItem -Path $claimsDir -Filter '*.json' -File `
                 -Status stale_lease `
                 -Severity medium `
                 -TaskId ([string]$claim.task_id) `
+                -To ($recipients -join ',') `
                 -Message ("auto-released stale claim by $agent (heartbeat $([int]$ageSeconds)s old)") `
                 -PayloadJson $payloadJson | Out-Null
         }

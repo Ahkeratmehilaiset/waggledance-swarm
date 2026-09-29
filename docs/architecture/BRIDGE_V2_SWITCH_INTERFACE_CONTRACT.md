@@ -1,7 +1,9 @@
 # Bridge v2 switch interface contract (F15 / F16 / F17)
 
-Status: draft contract, Stage 0. Nothing here is activated; every Bridge v2
-flag stays off until F0 exists and is signed. Source plan:
+Status: draft contract, Stage 0. Nothing here is activated. Every Bridge v2
+flag stays off until the F0 policy is signed and enables it; the shipped
+`configs/bridge_v2_activation.json` has every feature off and no signature.
+Source plan:
 `docs/architecture/BRIDGE_V2_IMPLEMENTATION_MAP_20260928.md` at
 `c099c211a6fd71c109b6349e9e6ccd8794def297`. Code facts are read at base
 `8a7576af01e310add445266ed78753a3409f8f7e` and cited as `file:line` there.
@@ -15,7 +17,8 @@ flag stays off until F0 exists and is signed. Source plan:
 | Executor `tools/wd_lane_relaunch_executor.py` | existing, F17 mods | acts only through `Ports` | journal, claim, stop, launch, verify, resume | act when F0 says disabled, or on an intent that fails validation |
 | Production ports `tools/wd_lane_relaunch_ports_windows.py` | F16 | side effects | the thirteen `Ports` methods (§4) | decide policy; swallow a failure as success |
 | Runner `ops/windows/reboot/Invoke-WdSwitchExecutor.ps1` | F16 | serializes | run one executor at a time under the supervisor | run lanes itself, retry a failed intent |
-| F0 `tools/bridge_v2_activation.py` | F0 | gate | `feature_enabled(name)` plus the revocation/freeze state | be bypassed by an environment variable; default on |
+| F0 `tools/bridge_v2_activation.py` | F0 | gate | `evaluate(feature, ...)` -> `Decision(feature, enabled, reason, policy_sha256, revocation_version)` over the signed policy, the revocation/freeze state and the caller's pins | be bypassed by an environment variable; default on |
+| F0 -> F15 adapter `tools/bridge_v2_switch_evidence.py` | F15 | none (pure; refuse-only) | re-check the caller-loaded F0 inputs against the caller's pins with F0's own validators; return the signed F15 parameters | enable anything on its own; read files, clock or environment; take a trust pin from the config it checks; mint a signature |
 
 Separation rule: the policy decides, the executor sequences, the ports act.
 A decision record is advice until the executor re-checks F0, the revocation
@@ -52,9 +55,72 @@ or a missing observation is carried as `"unknown"`, never as a default number.
   yields `park` with the input named, never a guess.
 - `inputs_digest` is the SHA-256 of the canonical injected evidence, so a
   reviewer can recompute the decision.
-- Every input is injected (catalog, F0 policy snapshot, pacing windows,
-  planner output, transition class, clock value). The module imports no
-  I/O, and the same evidence always gives the same record.
+- Every input is injected (catalog, F0 inputs, pacing windows, planner
+  output, transition class, clock value). The module imports no I/O, and the
+  same evidence always gives the same record.
+- `catalog_sha256` is emitted in the record. It must equal the canonical-JSON
+  sha256 of the injected catalog (`catalog_digest_mismatch` otherwise), so
+  the intent's `catalog_sha256` names the content the decision read.
+- Freshness: the session binding, `active_reviews`, `competing_intents` and
+  `relaunch_history` are observed blocks `{observed_utc, items|entries}`
+  within `evidence_max_age_seconds`. A bare list is not an observation and
+  parks, because "no reviews" cannot be told apart from "not observed".
+- `revert` is derived from the observed `relaunch_history`, never from a
+  label. The lane's single latest receipt must be a switch from the target
+  profile to the current one (`outcome: "switched"`, `from_profile`,
+  `to_profile`). If that is missing or ambiguous, the intent is classified by
+  direction and the dwell applies. The receipt field names are a proposal for
+  the F16/F17 receipt writer; until receipts carry them, no intent is a
+  revert.
+- Contest: a strictly higher-precedence intent (the operator first) always
+  keeps the incumbent. A conserve intent overrides equal precedence only.
+
+### 3.1 F0 inputs (`evidence.f0`, feature `F15`)
+
+`decide` passes `evidence.f0` and its own clock value to
+`bridge_v2_switch_evidence.switch_activation`. Any refusal parks with the
+adapter's stable code (`f0_*`). The block holds exactly these keys:
+
+| Key | Content | Owner |
+|---|---|---|
+| `decision` | `dataclasses.asdict` of F0 `evaluate("F15", ...)` | F0, called by the trusted caller |
+| `pins` | `trusted_policy_sha256` (from the operator-signed packet), `expected_head` and `expected_tree` (from the deployed bundle), `min_revocation_version` (the persisted high-water mark) | the trusted caller; never taken from the config |
+| `document` | the activation config `{policy, signature}` as parsed | the trusted caller's one read |
+| `revocation` | the `wd.bridge-v2-revocation.v1` state as loaded | the trusted caller's one read |
+
+The adapter adds no authority.
+- F0's refusal always wins: a Decision that is not enabled refuses first.
+- An enabled Decision is never sufficient on its own. The adapter re-derives
+  the pure part of F0's decision with F0's own `validate_policy`,
+  `canonical_sha256`, `validate_signature`, `_parse_utc` and
+  `_blocked_dependency`.
+- The Decision's `policy_sha256` and `revocation_version` must match what the
+  adapter re-derives.
+- The adapter checks that the revocation state is at or above the high-water
+  pin, bound to the pinned digest, fresh per the policy's
+  `revocation_max_age_seconds`, not frozen, and does not revoke F15 or
+  anything F15 transitively requires.
+- The signed parameters come only from `policy.parameters.F15`, which holds
+  exactly `tick_seconds`, `hysteresis_percent`, `evidence_max_age_seconds`
+  and `budget_mode`. This layout is a proposal for the signing packet; the
+  F0 policy at `482c3f0e` has `parameters: {}`.
+
+The adapter cannot check three things, and they remain with F0 and the caller:
+the kill-switch variable (F0 reads the environment and the Decision carries
+the result), the file reads themselves, and the authenticity of the pins.
+
+REQUIRED and NOT BUILT: an external trusted-caller provenance adapter. It
+must:
+- obtain `trusted_policy_sha256` from the operator-signed packet;
+- obtain `expected_head`/`expected_tree` from the deployed bundle;
+- persist `min_revocation_version` (and advance it to each Decision's
+  `revocation_version`);
+- call F0 `evaluate("F15", ...)` and read the config and revocation state
+  once;
+- assemble `evidence.f0` from exactly those values.
+
+Until it exists, and until the operator signs a policy that enables F15, F15
+is default OFF. No live caller or activation path exists.
 
 ## 4. Port signatures (existing, `wd_lane_relaunch_executor.py:73-92`)
 
@@ -146,6 +212,11 @@ Derivation rules (binding for F16, F17, F27 and every reader):
 
 - `Ports` has no production implementation; every port behavior above is a
   requirement on F16, not an observed property.
-- The runner's serialization, the intent directory layout and the F0 flag
-  names are designs. They do not exist at base `8a7576af`.
+- The runner's serialization and the intent directory layout are designs.
+  They do not exist at base `8a7576af`. The F0 feature name for the switch
+  policy is `F15` (F0 at `482c3f0e`, `FEATURE_NAME`).
+- The trust flags that F15 still reads from injected evidence are caller
+  assertions, not proofs: `requester.verified`, `catalog_signature_verified`,
+  `binding.session_identity`, and each observed block's `observed_utc`. The executor's
+  re-check at dispatch and before each side effect is the real gate.
 - Cross-process timing of the journal and the claim files is not measured.

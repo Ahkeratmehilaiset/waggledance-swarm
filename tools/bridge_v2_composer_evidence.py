@@ -22,27 +22,36 @@ itself and requires the digest to equal the signed ``registry_source_sha256``, t
 parses them with F3's own strict hooks and ``validate_registry``. The derived snapshot
 has its own canonical digest (``registry_snapshot_sha256``). That digest depends on
 ``now``, because cells go stale, so it is derived and never signed.
-A snapshot entry exists only for a FRESH measured observation (F3 ``observation_state``)
-that meets all of these conditions:
-* it is a quality observation of class ``general`` on the signed index unit, and
-  ``provenance.reference`` is exactly the signed ``index_version`` (F3 v2 has no
-  version field);
-* its effort is exact, because a model-level value is never inherited by an effort;
-* its uncertainty is an interval (exact, none_stated and unknown stay unknown);
-* its subject is not an F3 candidate, because a placeholder model is never rated.
-Historical, unverified, stale, unknown and duplicated cells stay absent. The selector
+A cell is a quality observation of class ``general`` on the signed index unit whose
+``provenance.reference`` is exactly the signed ``index_version`` (F3 v2 has no version
+field), for a subject that is not an F3 candidate (a placeholder model is never rated).
+Ambiguity is decided FIRST, over every FRESH measured observation of the cell (F3
+``observation_state``), whatever its uncertainty (RCO1 S1). A second fresh value, or a
+fresh model-level value (F3 fans that out to every effort), makes the cell unknown, so
+a newer value can never be hidden by a filter and leave an older one ranked. Only then
+must the one remaining observation have an exact effort (a model-level value is never
+inherited) and an interval uncertainty (exact, none_stated and unknown stay unknown).
+Historical, unverified, stale, unknown and ambiguous cells stay absent. The selector
 then treats them as unknown. Coding scores follow the same rules on unit
 ``coding_agent_index`` and the signed ``coding_index_version``.
 
-Quota: a profile's pool receipt counts only if it names an F3 pool of the profile's
-provider whose ``pool_state`` is ``verified`` at ``now`` (inside its TTL, not dated in
-the future). The receipt must also have been observed inside that verification
-window, so a later verification never upgrades an older receipt. A kept receipt gets
-``valid_until_utc``, the earliest of its own age bound, the pool's verification
-expiry, and any bound the caller declared. Any other pool receipt is dropped, so the
-selector finds the quota unknown and the profile ineligible. F3 has no workload basis for a quota
-cost, so no measured cost is comparable. Every ``measured_quota_cost`` is None,
-whatever the caller sent, and API dollars are never used.
+Quota: a profile's pool receipt counts only if all of these hold:
+* It names an F3 pool of the profile's provider whose ``pool_state`` is ``verified`` at
+  ``now`` (inside its TTL, not dated in the future). The verification must carry a
+  full timestamp: a date-only ``measured_at`` reads as 00:00Z and cannot order a
+  same-day receipt (RCO1 S2).
+* F3 names that pool for this profile through a FRESH pool-membership observation
+  (F3 ``model_table`` speaks only through a fresh membership; RCO1 S3). The
+  membership must be effort-exact, and every fresh membership that applies
+  (effort-exact or model-level) must name the same pool. Anything else is unknown.
+* The receipt was observed inside the verification window, so a later verification
+  never upgrades an older receipt.
+A kept receipt gets ``valid_until_utc``, the earliest of its own age bound, the pool's
+verification expiry, and any bound the caller declared, truncated to whole seconds. A
+receipt whose bound is not after ``now`` is dropped (RCO1 S4). Any other pool receipt is
+dropped, so the selector finds the quota unknown and the profile ineligible. F3 has no
+workload basis for a quota cost, so no measured cost is comparable. Every
+``measured_quota_cost`` is None, whatever the caller sent, and API dollars are never used.
 """
 from __future__ import annotations
 
@@ -138,29 +147,37 @@ def _registry(source: Any, parameters: dict) -> tuple[dict, str]:
 
 
 def _cells(registry: dict, parameters: dict, now: datetime) -> tuple[dict, dict]:
-    """Fresh, exact-effort, interval-bounded quality cells on the signed index (and coding index)."""
+    """Fresh, exact-effort, interval-bounded quality cells on the signed index (and coding index).
+
+    Ambiguity is decided over EVERY fresh observation of a cell before any other filter (RCO1 S1)."""
     wanted = {("general", parameters["index_name"], parameters["index_version"]): 0}
     if parameters["coding_index_version"] is not None:
         wanted[("coding_agent", CODING_UNIT, parameters["coding_index_version"])] = 1
-    columns: tuple[dict, dict] = ({}, {})
-    ambiguous: set = set()
+    fresh: dict = {}
+    model_level: set = set()
     for obs in registry["observations"]:
         subject = obs["subject"]
         column = wanted.get((obs["class"], obs["unit"], obs["provenance"]["reference"]))
-        if (column is None or obs["kind"] != "quality" or subject["effort"] is None
+        if (column is None or obs["kind"] != "quality"
                 or f"{subject['provider']}/{subject['model']}" in registry["candidates"]
-                or obs["uncertainty"]["kind"] != "interval" or observation_state(obs, now) != "fresh"):
+                or observation_state(obs, now) != "fresh"):
             continue
-        key = (subject["provider"], subject["model"], subject["effort"])
-        if key in columns[column]:
-            ambiguous.add((column, key))  # two current values for one cell: unknown, never a pick
-            continue
+        if subject["effort"] is None:
+            model_level.add((column, subject["provider"], subject["model"]))  # F3 offers it to every effort
+        else:
+            fresh.setdefault((column, subject["provider"], subject["model"], subject["effort"]), []).append(obs)
+    columns: tuple[dict, dict] = ({}, {})
+    for (column, provider, model, effort), found in fresh.items():
+        if len(found) != 1 or (column, provider, model) in model_level:
+            continue  # two current values for one cell, whatever their uncertainty: unknown, never a pick
+        obs = found[0]
+        if obs["uncertainty"]["kind"] != "interval":
+            continue  # exact, none_stated and unknown stay unknown
         value = float(obs["value"])
         low, high = obs["uncertainty"]["low"], obs["uncertainty"]["high"]
-        columns[column][key] = {"value": value, "uncertainty": float(max(value - low, high - value)),
-                                "measured_on": obs["measured_at"][:10], "observation": obs["id"]}
-    for column, key in ambiguous:
-        columns[column].pop(key, None)
+        columns[column][(provider, model, effort)] = {
+            "value": value, "uncertainty": float(max(value - low, high - value)),
+            "measured_on": obs["measured_at"][:10], "observation": obs["id"]}
     return columns
 
 
@@ -178,13 +195,35 @@ def _snapshot(registry: dict, parameters: dict, now: datetime) -> dict:
             "index_version": parameters["index_version"], "entries": entries}
 
 
-def _pool_receipt(pool: Any, provider: Any, registry: dict, max_age: Any, now: datetime) -> dict | None:
-    """The caller's pool receipt while F3 verifies its pool, bounded by both expiries; otherwise None (unknown)."""
+def _membership_names(pool_id: str, profile: dict, registry: dict, now: datetime) -> bool:
+    """True only if F3 names ``pool_id`` for this profile through a FRESH membership (RCO1 S3).
+
+    F3 ``model_table`` resolves a row's pool from its membership observations: the best state
+    wins, the latest wins within it, and a model-level membership is offered to every effort.
+    Conservatively: an effort-exact fresh membership must exist, and EVERY fresh membership that
+    applies (effort-exact or model-level) must name the same pool, so no newer fresh membership
+    can name another pool. Stale, historical, unverified and unknown memberships never name one."""
+    applies = [obs for obs in registry["observations"]
+               if obs["kind"] == "pool" and obs["subject"]["provider"] == profile.get("provider")
+               and obs["subject"]["model"] == profile.get("model")
+               and obs["subject"]["effort"] in (None, profile.get("effort"))
+               and observation_state(obs, now) == "fresh"]
+    return {obs["value"] for obs in applies} == {pool_id} \
+        and any(obs["subject"]["effort"] is not None for obs in applies)
+
+
+def _pool_receipt(pool: Any, profile: dict, registry: dict, max_age: Any, now: datetime) -> dict | None:
+    """The caller's pool receipt while F3 verifies its pool AND names it for this profile, bounded by both
+    expiries; otherwise None (unknown)."""
     if not isinstance(pool, dict) or not isinstance(pool.get("pool_id"), str):
         return None
     known = registry["pools"].get(pool["pool_id"])
-    if known is None or known["provider"] != provider or pool_state(known, now) != "verified":
+    if known is None or known["provider"] != profile.get("provider") or pool_state(known, now) != "verified":
         return None  # unverified, stale, future-dated or unknown pools never count
+    if "T" not in known["measured_at"]:
+        return None  # a date-only verification reads as 00:00Z: it cannot order a same-day receipt (RCO1 S2)
+    if not _membership_names(pool["pool_id"], profile, registry, now):
+        return None  # F3 does not name this pool for this profile (RCO1 S3)
     observed = _utc(pool.get("observed_utc"))
     verified_at = _when(known["measured_at"], "pool measured_at")
     if observed is None or not verified_at <= observed <= now or type(max_age) is not int or max_age <= 0:
@@ -198,24 +237,28 @@ def _pool_receipt(pool: Any, provider: Any, registry: dict, max_age: Any, now: d
         if declared is None:
             return None
         bounds.append(declared)  # a caller's own bound can only shorten the validity
-    return dict(pool, valid_until_utc=min(bounds).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    until = min(bounds).replace(microsecond=0)  # the emitted whole-second bound is the one compared
+    if until <= now:
+        return None  # already expired: a dead receipt never reaches the selector (RCO1 S4)
+    return dict(pool, valid_until_utc=until.strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
 def _profile(profile: dict, registry: dict, parameters: dict, now: datetime) -> dict:
     """The caller's profile with the quota facts F3 cannot confirm set to unknown. It can only lose authority."""
-    pool = _pool_receipt(profile.get("pool"), profile.get("provider"), registry,
-                         parameters["max_evidence_age_seconds"], now)
+    pool = _pool_receipt(profile.get("pool"), profile, registry, parameters["max_evidence_age_seconds"], now)
     return dict(profile, pool=pool, measured_quota_cost=None)
 
 
 def compose(*, decision: Any, pins: Any, policy: Any, registry_source: Any, profiles: Any, task: Any, now: Any,
             previous_snapshot: Any = None) -> dict:
     """Return the F24 evidence envelope and both registry digests. Raises Refusal and confers no authority."""
-    _refuse(isinstance(now, datetime) and now.utcoffset() is not None, "time_unknown")
+    _refuse(type(now) is datetime, "time_unknown")  # the exact type, like the Decision (RCO1 N1)
     try:
+        _refuse(now.utcoffset() is not None, "time_unknown")
         now = now.astimezone(timezone.utc).replace(microsecond=0)  # one instant for F3 and for the selector
-    except (OverflowError, ValueError):
-        raise Refusal("time_unknown") from None  # an extreme aware time has no UTC form
+    except (OverflowError, ValueError, TypeError):
+        # an extreme aware time has no UTC form; a tzinfo with an invalid offset fails visibly too
+        raise Refusal("time_unknown") from None
     policy, policy_sha256 = _bound_policy(decision, pins, policy, now)
     parameters = _parameters(policy)
     registry, source_sha256 = _registry(registry_source, parameters)
